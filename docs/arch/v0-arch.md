@@ -200,13 +200,18 @@ Every runner has an **inbox**: the subset of the mission's messages that are rel
 inbox(X) = all message events in the mission where to = null OR to = X
 ```
 
-`runners msg read` returns the calling runner's inbox, sorted by ULID (chronological).
+`runners msg read` returns the calling runner's inbox, sorted by ULID (chronological). `--since <ts>` restricts to messages newer than a given ULID/timestamp so agents can poll without re-reading history.
 
-This design keeps the storage model simple (one event log per mission, same as before) while giving each runner a clean "what's for me" view. Broadcasts end up in everyone's inbox; direct messages end up in exactly one.
+This design keeps the storage model simple (one event log per mission, same as before) while giving each runner a clean "what for me" view. Broadcasts end up in everyone's inbox; direct messages end up in exactly one.
 
-**Why LLM agents won't see direct messages unless they're told:** agents act on their prompt. They don't spontaneously poll the filesystem. A message landing in the inbox doesn't itself make the agent aware of it. We solve this with an orchestrator action: when a directed message arrives, the orchestrator nudges the recipient's stdin with a one-line hint ("new message from `coder` — run `msg read`"). The agent then reads its inbox as a normal tool call. See §5.5 action `nudge_recipient`.
+**The inbox is pull-based.** Messages are read when the recipient runs `msg read`; the system does not automatically interrupt a busy runner every time mail arrives. This is deliberate — not every direct message is urgent, and auto-interrupting on every DM would blur the signal/message split (§2.7.1 vs §2.7.2) and corrupt in-flight tool calls.
 
-The inbox is not a queue in the delete-on-read sense — messages stay in the log forever (well, for the mission). The "read" in `msg read` is lookup, not consumption. `msg read --since <ts>` lets agents fetch just what's new.
+The recipient learns to read its inbox through two mechanisms:
+
+1. **Convention** — the composed system prompt (§4.3) instructs every runner to check its inbox at natural task boundaries.
+2. **Signals as the urgent wake-up** — if a sender needs the recipient to drop everything, they emit a signal in addition to (or instead of) the message. The signal goes through the orchestrator's policy, which typically injects stdin. On any stdin injection, the orchestrator automatically appends a summary of the recipient's unread inbox messages (§5.5), so urgent wake-ups carry relevant conversation context with them.
+
+The inbox is not a queue in the delete-on-read sense — messages stay in the log forever (well, for the mission). The "read" in `msg read` is lookup, not consumption.
 
 #### 2.7.4 Thread *(v0.x)* — *scoped conversation*
 
@@ -300,7 +305,7 @@ MissionManager builds each runner's prompt from four parts:
 1. **The user-authored brief** (`runners.system_prompt`).
 2. **The mission brief** (`missions.goal_override` or `crews.goal`).
 3. **The roster** — crewmates' names, roles, one-line brief summaries.
-4. **Coordination notes** — how to use `runners signal` and `runners msg`, and the crew's allowed signal types.
+4. **Coordination notes** — how to use `runners signal` and `runners msg`, the crew's allowed signal types, and conventions for inbox checking.
 
 Example for a Reviewer:
 
@@ -322,8 +327,15 @@ Goal: Implement feature X with tests and a clean PR.
 == Coordination ==
 - Signal milestones with `runners signal <type>`.
   Signal types: review_requested, changes_requested, approved, blocked.
-- Post prose with `runners msg post "<text>"`.
-- Read the mission's message stream with `runners msg read`.
+- Post prose with `runners msg post "<text>"` (broadcast) or
+  `runners msg post --to <runner> "<text>"` (direct to one crewmate).
+- Your inbox is `runners msg read` (broadcasts + messages addressed to you).
+  Check it at natural task boundaries:
+    * before starting a new task,
+    * before emitting a signal that affects another runner,
+    * whenever you're waiting on something (poll with `--since <last_ulid>`).
+  Urgent items will also arrive via stdin when someone signals — but by
+  default, the inbox is pull-based.
 ```
 
 ### 4.4 Frontend wiring and human takeover
@@ -461,7 +473,6 @@ On orchestrator boot: open the mission's file, fold events into in-memory state 
 | Action | Effect | Emits event? |
 |---|---|---|
 | `inject_stdin` | write template + `\r` to target runner's PTY writer | `stdin_injected` (signal) |
-| `nudge_recipient` | write a short "new message from X, run `msg read`" hint into the recipient's stdin | `recipient_nudged` (signal) |
 | `ask_human` | add card to HITL panel; wait for click | `human_question` then `human_response` (signals) |
 | `notify_human` | fire a toast | `human_notified` (signal) |
 | `pause_runner` | SIGSTOP to target PTY | `runner_paused` (signal) |
@@ -469,7 +480,30 @@ On orchestrator boot: open the mission's file, fold events into in-memory state 
 
 Emitted events have `causation_id` = the triggering event's `id`.
 
-**Default policy for direct messages.** Every crew starts with a built-in rule `{ when: { kind: "message", to: "*" }, do: { action: "nudge_recipient" } }` that fires on any directed message. This ensures recipients know mail has arrived without the sender having to also emit a signal. Users can disable this per crew if they want silent inboxes.
+**Messages do not trigger orchestrator actions in v0.** The inbox is pull-based (§2.7.3). If a sender needs the recipient to drop everything, they emit a signal — signals are the urgent wake-up mechanism; direct messages are async conversation.
+
+#### 5.5.1 Enriched stdin injection
+
+When `inject_stdin` fires, the orchestrator automatically enriches the template with the recipient's unread inbox summary. Concretely:
+
+1. The orchestrator tracks a per-runner `last_read_ulid` marker. It advances on the recipient's `msg read` calls (observed via the CLI writing an audit event, or inferred from the next read's `--since`).
+2. Before injecting, the orchestrator gathers all inbox messages newer than `last_read_ulid` — i.e. messages the runner hasn't yet seen.
+3. The injected stdin is: `{template}\n\n{unread summary}`.
+
+Example — rule `{when: signal=changes_requested, do: inject_stdin target=coder template="Reviewer requested changes — check msg read for details."}` fires after Reviewer posted two direct messages. The Coder's PTY receives:
+
+```
+Reviewer requested changes — check msg read for details.
+
+You have 2 new messages:
+  [reviewer 12:38]: Line 47 auth.rs needs a null check.
+  [reviewer 12:39]: session.rs timeout is 30s; our convention is 10s.
+Run `runners msg read` for full content.
+```
+
+The Coder wakes up with both the signal and the conversation context in one interruption — no separate polling needed. If the runner does go call `runners msg read`, the injected summary matches.
+
+This makes the urgent path (signal → inject_stdin) carry the async path (direct messages) with it automatically. Senders don't have to decide between "just message" and "signal-plus-message" — they send a message for data, and signal only when they need immediate attention; the enrichment glues the two together on arrival.
 
 **Crash correctness:** emit the event *before* performing the action. Worst case on crash+replay is a duplicate action, recoverable (stdin seen twice; HITL cards deduped by event id). Silent loss is not.
 
@@ -478,20 +512,22 @@ Emitted events have `causation_id` = the triggering event's `id`.
 Two different delivery models, by primitive kind:
 
 - **Signals are orchestrator-routed.** Runners never address other runners with a signal. A signal is emitted into the bus; the orchestrator policy decides what happens (including whether to inject stdin into some specific runner). This keeps all control-flow routing in one place and lets you swap runners without rewriting emitters.
-- **Messages support both broadcast and direct addressing.** A runner can `msg post` (everyone's inbox) or `msg post --to <runner>` (that runner's inbox only). No orchestrator in the delivery path; messages are data, not control. The orchestrator is involved only to nudge recipients so they know mail arrived (§5.5, `nudge_recipient`).
+- **Messages support both broadcast and direct addressing, but are pull-based.** A runner can `msg post` (everyone's inbox) or `msg post --to <runner>` (that runner's inbox only). The orchestrator is *not* in the delivery path — messages sit in the inbox until the recipient runs `msg read`. If a sender needs immediate attention, they emit a signal; signals are the urgent-wake-up channel.
 
 The split:
 
-| | Sender addresses recipient? | Orchestrator involved? |
-|---|:---:|:---:|
-| Signal | No — policy decides | Always |
-| Broadcast message | No | Only to nudge |
-| Direct message | Yes (`--to`) | Only to nudge |
+| | Sender addresses recipient? | Delivery timing | Orchestrator in path? |
+|---|:---:|---|:---:|
+| Signal | No — policy decides | Immediate (via `inject_stdin` etc.) | Always |
+| Broadcast message | No | On recipient's `msg read` | No |
+| Direct message | Yes (`--to`) | On recipient's `msg read` | No |
+
+When the orchestrator does inject stdin on a signal, it automatically enriches the injection with the recipient's unread inbox summary (§5.5.1) — so an urgent signal pulls the associated async conversation along with it. That's how messages effectively "get delivered" to a running agent without a dedicated nudge mechanism.
 
 - **Decoupled control flow** — the Coder doesn't need to know the Reviewer's name to *signal* a review. Swap the Reviewer without rewriting the Coder's signal emissions.
 - **Coupled content flow where it's natural** — if Coder wants to ask Reviewer a specific question, it can just `msg post --to reviewer ...`. The roster injection (§4.3) already tells each runner the current names of its crewmates, so direct addressing works without extra config.
 - **Single policy location** for control — every "when signal X, do Y" lives on the crew row.
-- **Orchestrator is the only side-effecting component** outside runner processes. Direct messaging doesn't violate this — a direct `msg post` writes an event; the actual stdin hint is still an orchestrator action.
+- **No auto-interrupt for messages** — agents check their inboxes on convention and on signal-triggered wake-ups. This preserves the signal/message split (urgent vs async) and keeps in-flight tool calls uncorrupted.
 
 ### 5.7 Known failure modes
 

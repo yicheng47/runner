@@ -28,8 +28,8 @@ v0 proves the loop works end-to-end with two runners on a single mission. v1+ sc
 - **Session** — the live PTY process for a single runner within a single mission.
 - **Signal** — a typed notification runners emit for the orchestrator to route on. Verb grammar (`review_requested`, `approved`, `blocked`).
 - **Message** — prose posted to the mission. Can be broadcast (to the mission) or directed (to a specific runner via `--to`).
-- **Inbox** — each runner's projection of the mission: broadcast messages plus messages addressed directly to it. Read via `runners msg read`.
-- **Orchestrator** — the rule-based router that reads signals and decides what happens next, including nudging runners when directed messages land in their inbox.
+- **Inbox** — each runner's projection of the mission: broadcast messages plus messages addressed directly to it. Read via `runners msg read`. Pull-based: runners check their inbox on convention; there is no automatic interrupt for arriving messages.
+- **Orchestrator** — the rule-based router that reads signals and decides what happens next. Signals are the urgent wake-up channel; when the orchestrator injects stdin on a signal, it also appends a summary of the recipient's unread inbox so relevant messages ride along.
 
 ## 4. v0 scope
 
@@ -71,8 +71,8 @@ The concrete loop v0 must support end-to-end:
    - reads the diff
    - `runners msg post --to coder "Line 47 auth.rs needs a null check."`
    - `runners msg post --to coder "session.rs timeout is 30s; our convention is 10s."`
-       *(orchestrator nudges Coder's stdin: "New message from reviewer — run `msg read`.")*
    - `runners signal changes_requested`
+       *(orchestrator rule fires: injects into Coder's stdin — "Reviewer requested changes — check msg read." — and automatically appends a summary of Coder's 2 unread direct messages.)*
 7. Orchestrator policy for `changes_requested` says `ask_human`. The HITL panel pops a card: *"Reviewer requested changes. Accept and forward to Coder, or override?"*
 8. User clicks **Accept**. Orchestrator injects into Coder's stdin: "Reviewer requested changes — check `runners msg read`."
 9. Coder:
@@ -134,7 +134,12 @@ If v0 doesn't ship this flow working end-to-end, it hasn't shipped.
 
 **Inbox as a concept.** Every runner has an inbox — a projection over the mission's message events where `to = null OR to = my_name`. This is not a separate store; it's a filtered view of the event log. "Inbox" names the view so users and agents share a clear mental model: *I have an inbox; I can read mine; I can address others.*
 
-**How recipients know mail has arrived.** LLM agents don't spontaneously poll. When a directed message arrives, the orchestrator (by default) injects a one-line hint into the recipient's stdin: *"New message from `coder` — run `msg read`."* The agent then reads its inbox as a normal tool call. This nudge is implemented as a built-in orchestrator rule and can be disabled per crew.
+**Messages are pull-based.** The system does not automatically interrupt a busy runner every time a message arrives. Two reasons: (1) not every direct message is urgent, and auto-interrupting would blur the signal/message split; (2) stdin injection on every DM risks corrupting in-flight tool calls.
+
+Runners learn to check their inboxes through two mechanisms:
+
+1. **Convention.** Each runner's composed prompt instructs it to check `runners msg read` at natural task boundaries (before a new task, before emitting a signal, while waiting).
+2. **Signals as the wake-up channel.** If a sender needs immediate attention, they emit a signal in addition to (or instead of) the message. Signal routing through `inject_stdin` automatically enriches the injection with the recipient's unread inbox summary — so urgent wake-ups carry the related conversation with them. See `v0-arch.md` §5.5.1.
 
 ### 6.7 Coordination bus
 - Single append-only NDJSON file per mission at `$APPDATA/runners/crews/{crew_id}/missions/{mission_id}/events.ndjson`.
@@ -173,12 +178,11 @@ See `v0-arch.md` §5.3 for the full three-layer emission mechanism (system promp
   ]
   ```
 - Supported actions in v0:
-  - `inject_stdin` — write a message into the target runner's stdin.
-  - `nudge_recipient` — write a short "new message from X, run `msg read`" hint into the recipient's stdin. Fires by default on any directed message.
+  - `inject_stdin` — write a message into the target runner's stdin. Automatically enriched with the recipient's unread inbox summary, so signal-driven wake-ups carry along any async conversation the recipient hasn't read yet.
   - `ask_human` — show a card in the HITL panel, wait for response.
   - `notify_human` — fire a toast.
   - `pause_runner` / `resume_runner` — SIGSTOP/SIGCONT the target PTY.
-- Rules fire on signals and on directed messages. Broadcast messages don't drive routing in v0 (v0.x: mentions will).
+- Rules fire on signals only. Messages do not trigger orchestrator actions in v0 — the inbox is pull-based. Senders escalate via signals when immediate attention is needed. (v0.x: mentions inside messages will trigger routing.)
 
 ### 6.10 Human-in-the-loop panel
 - Right-rail panel showing all pending `ask_human` cards for the current mission.
