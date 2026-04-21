@@ -691,7 +691,8 @@ One binary. Two verbs. Context always from env. No event-DAG flags in v0 — cau
 crews (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  goal TEXT,
+  purpose TEXT,                       -- short prose shown in Crew Detail; optional
+  goal TEXT,                          -- default mission goal
   orchestrator_policy TEXT,           -- JSON: [{ when, do }]
   signal_types TEXT,                  -- JSON array: allowlist
   created_at TEXT, updated_at TEXT
@@ -709,15 +710,22 @@ runners (
   working_dir TEXT,
   system_prompt TEXT,
   env_json TEXT,
+  lead INTEGER NOT NULL DEFAULT 0,    -- 0 or 1; see §2.2 lead invariant
+  position INTEGER NOT NULL,          -- ordering within the crew (0-based)
   created_at TEXT, updated_at TEXT,
   UNIQUE (crew_id, handle)
 );
 
+-- Enforces the lead invariant (§2.2): exactly one lead per crew.
+CREATE UNIQUE INDEX one_lead_per_crew ON runners(crew_id) WHERE lead = 1;
+
 missions (
   id TEXT PRIMARY KEY,
   crew_id TEXT REFERENCES crews(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,                -- short label shown in missions list + event log
   status TEXT NOT NULL,               -- running | completed | aborted
-  goal_override TEXT,
+  goal_override TEXT,                 -- null means inherit crews.goal
+  cwd TEXT,                           -- mission working dir; exposed as $MISSION_CWD
   started_at TEXT NOT NULL,
   stopped_at TEXT
 );
@@ -727,6 +735,7 @@ sessions (
   mission_id TEXT REFERENCES missions(id) ON DELETE CASCADE,
   runner_id TEXT REFERENCES runners(id) ON DELETE CASCADE,
   status TEXT NOT NULL,               -- running | stopped | crashed
+  pid INTEGER,                        -- OS process id once spawned; null while pending
   started_at TEXT, stopped_at TEXT
 );
 ```

@@ -66,21 +66,9 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
 
 **Deliverables.**
 - `src-tauri/src/db.rs` — connection pool with WAL mode, `rusqlite` migrations runner, bootstrapped at app start.
-- Migration `0001_init.sql` creating (field names match arch §5.2 / §6 data model exactly):
-  - `crews(id, name, purpose, goal, orchestrator_policy, signal_types, created_at, updated_at)`. `purpose` is short prose; `goal` is the default mission goal; `orchestrator_policy` is a JSON blob (nullable / empty for MVP — C8 only uses built-ins but the column is reserved); `signal_types` is a JSON array of allowed signal type strings.
-  - `runners(id, crew_id, handle, display_name, role, runtime, command, args_json, working_dir, env_json, system_prompt, lead, position, created_at, updated_at)` with:
-    - `runtime` = one of `claude-code`, `codex`, `aider`, `shell` (enum stored as TEXT).
-    - `command` + `args_json` are the spawn form; `env_json` is a JSON map merged onto the session env at spawn time; `working_dir` is the runner's PTY cwd override (null = use mission cwd).
-    - `UNIQUE(crew_id, handle)`.
-    - `FOREIGN KEY(crew_id) REFERENCES crews(id) ON DELETE CASCADE`.
-  - `missions(id, crew_id, title, goal_override, cwd, status, started_at, stopped_at)`. `goal_override` is nullable; when null, the mission inherits `crews.goal`.
-  - `sessions(id, mission_id, runner_id, handle, pid, status, started_at, stopped_at)` — persisted so the reopen path (see C7/C8 replay) can identify which runners were active. PTYs themselves are not restored across app restarts.
-- Separate partial index for the lead invariant (SQLite requires a standalone statement for partial uniqueness, not inline in `CREATE TABLE`):
-  ```sql
-  CREATE UNIQUE INDEX one_lead_per_crew ON runners(crew_id) WHERE lead = 1;
-  ```
+- Migration `0001_init.sql` — implements **arch §7.1 verbatim**, including the four tables (`crews`, `runners`, `missions`, `sessions`) and the `one_lead_per_crew` partial unique index. No additions, no renames. The plan used to list the columns inline; that list has been deleted to remove the two-source-of-truth risk the earlier review called out. Implementers copy §7.1 directly into `0001_init.sql`.
 - **Default signal-type allowlist.** Every new crew row is seeded with `signal_types = ["mission_goal", "human_said", "ask_lead", "ask_human", "human_question", "human_response", "inbox_read"]` — the full set of built-in types the MVP needs. Users can extend this list in v0.x; in MVP it is write-only from the DB layer. Without this seeding the CLI will reject the built-in signals at spawn time per arch §5.3 Layer 2.
-- Rust types in `src-tauri/src/model.rs`: `Crew`, `Runner`, `Mission`, `Session`, `Event`, `EventKind`, `SignalType`, serde-derived. Serde field attributes map Rust snake_case fields like `args`, `working_dir`, `env` to the DB/JSON column names `args_json`, `working_dir`, `env_json` consistently.
+- Rust types in `src-tauri/src/model.rs`: `Crew`, `Runner`, `Mission`, `Session`, `Event`, `EventKind`, `SignalType`, serde-derived. Serde field attributes map Rust-idiomatic snake_case (`args`, `env`) to the DB column names (`args_json`, `env_json`) where they differ.
 - TS types in `src/lib/types.ts` hand-synced with Rust (we're not pulling in `ts-rs` yet — too much ceremony for the MVP).
 
 **Tests.** Constraint tests for the partial unique index: inserting two leads in one crew fails; inserting leads across crews succeeds. Round-trip tests for the JSON-blob columns (`orchestrator_policy`, `signal_types`, `env`).
@@ -91,7 +79,7 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
 
 ## C2 — Config CRUD (runners, crews, lead invariant)
 
-**Goal.** Tauri commands for managing runner templates and crews with the lead invariant enforced at the Rust layer in addition to the DB.
+**Goal.** Tauri commands for managing crews and their crew-scoped runners, with the lead invariant enforced at the Rust layer in addition to the DB.
 
 **Deliverables.**
 - `src-tauri/src/commands/crew.rs` — `crew_list`, `crew_create`, `crew_update`, `crew_delete`.
