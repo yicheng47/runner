@@ -1,2 +1,2 @@
-// SQLite persistence for teams, agents, and session history.
+// SQLite persistence for crews, runners, and session history.
 // TODO: implement schema + migrations.

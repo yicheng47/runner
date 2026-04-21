@@ -1,15 +1,17 @@
 # Runners
 
-An editor for teams of local coding agents. Build your crew of Claude Code, Codex, and friends, give each one a role and a brief, and coordinate their work from one window.
+Spawn a runner. Create your crew. Ship the feature.
+
+Runners is a local desktop app for assembling a crew of CLI coding agents — Claude Code, Codex, and friends — giving each runner a role and a brief, and coordinating their work from one window.
 
 > Status: scaffolding. Nothing works yet.
 
 ## What it does
 
-- **Teams** — create a team, pick which agents are on it.
-- **Agents** — each agent is a local CLI runtime (claude, codex, ...) with its own role, system prompt, and working directory.
-- **Event bus** — agents talk to each other through an append-only NDJSON log the orchestrator can read.
-- **Orchestrator** — a rule-based policy that routes events between agents and decides when a human needs to be pulled in.
+- **Crews** — create a crew, pick which runners are on it.
+- **Runners** — each runner is a local CLI runtime (claude, codex, ...) with its own role, system prompt, and working directory.
+- **Event bus** — runners talk to each other through an append-only NDJSON log the orchestrator can read.
+- **Orchestrator** — a rule-based policy that routes events between runners and decides when a human needs to be pulled in.
 
 ## Stack
 
