@@ -201,9 +201,9 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
   - Built-in rules always loaded:
     - `mission_goal → inject_stdin @lead` with a composed prompt including the goal, the crew roster, and coordination instructions (see arch §4 for the template).
     - `broadcast message from human → inject_stdin @lead` (lead-routing invariant).
-    - `directed message → inject_stdin @<to>` (any runner, any sender).
-    - `ask_human signal → emit human_question event + open card in UI`.
-    - `human_response event → inject_stdin to the original asker`.
+    - `directed message → inject_stdin @<to>` (any runner, any sender). This is how lead-mediated HITL works: a worker's "I need to ask the human…" message to `@lead` lands on lead's stdin immediately, and lead's forwarded answer lands on the worker's stdin the same way.
+    - `ask_human signal → emit human_question event + open card in UI`. If `payload.on_behalf_of` is present (the lead-mediated case), carry it into the `human_question` payload so the UI can render the attribution chain.
+    - `human_response event → inject_stdin to the runner that emitted the matching ask_human` — which is the lead in the lead-mediated flow, or the worker in the fallback direct flow. Orchestrator looks up the original asker by `question_id`.
   - Dispatch ledger (in-memory map of `triggering_event_id → handled`) so replay is idempotent.
   - Pending-ask map keyed by `question_id`.
 
@@ -240,7 +240,7 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
 **Deliverables.**
 - `src/pages/MissionWorkspace.tsx` — subscribes to `event/appended`, renders the feed.
 - `src/components/EventFeed.tsx` — message / signal / `ask_human` card variants.
-- `src/components/AskHumanCard.tsx` — buttons emit a `human_response` signal.
+- `src/components/AskHumanCard.tsx` — buttons emit a `human_response` signal. If the underlying `human_question` carries `on_behalf_of`, render the attribution chain (e.g. *@impl → @architect → you*).
 - `src/components/MissionInput.tsx` — the Slack-channel input. Default `to: @<lead>`. `message` / `signal` mode toggle. Submitting calls a Tauri `human_post_message` command that writes to the log.
 - `src/components/RunnersRail.tsx` — list of sessions with status dot, `LEAD` badge, "open pty" action.
 - `src/components/RunnerTerminal.tsx` — xterm.js bound to the session output stream (popped out of the rail).

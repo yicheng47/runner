@@ -103,6 +103,8 @@ The persistent "who's on the team and how they work together" record. A crew has
 
 **Every crew must have exactly one lead runner.** The lead is the human's counterpart in the crew: mission goals and broadcast human messages route to the lead by default, and the lead dispatches work to the other runners via directed messages. This is a hard invariant — a crew with zero runners or zero leads is invalid and cannot start a mission. The first runner added to a new crew becomes lead automatically; the user can reassign lead between existing runners, but cannot remove the lead runner without first designating a replacement. The lead is a routing convention, not a privileged capability: any runner can emit signals, post directed messages, and trigger orchestrator actions. Lead only governs *where inbound-from-human traffic lands by default*.
 
+**Lead is also the default HITL gateway.** When a worker needs human input, it does not ask the human directly — it sends a directed message to the lead, who decides whether to answer from their own context or escalate to the human via `ask_human`. If the lead escalates, the human's answer flows back through the lead, who forwards it to the original worker as another directed message. This keeps the human's attention focused on one interlocutor and lets the lead absorb, filter, or batch worker questions. See §5.5.0 for the protocol details (the `on_behalf_of` payload field and the forwarding flow). Workers *can* emit `ask_human` directly as a fallback — it's not forbidden at the protocol layer — but the default runner system prompt instructs them to route through the lead.
+
 Lifecycle: created by the user, edited freely, deleted when no longer needed. Persisted in SQLite.
 
 ### 2.3 Runner — *one configured agent*
@@ -533,7 +535,8 @@ Every action emits at least one audit signal. Each audit payload carries `trigge
     "question_id": "01HG...",                  // = this event's id; echoed here for convenience
     "triggered_by": <triggering-signal.id>,    // e.g. the changes_requested signal's id
     "prompt": "Reviewer requested changes. Accept or override?",
-    "choices": ["accept", "override"]
+    "choices": ["accept", "override"],
+    "on_behalf_of": "@impl"                    // optional; see "Lead-mediated asks" below
   }
 }
 
@@ -554,6 +557,29 @@ Causality is carried in-payload rather than on the envelope: `human_question.pay
 **Matching semantics for follow-up rules.** Downstream rules match `human_response` by choice value — `{ when: { signal: "human_response", payload: { choice: "accept" } }, do: ... }`. Matches any accept, regardless of which question triggered it.
 
 If two `ask_human` prompts are ever outstanding at once and we need to discriminate between them, v0.x will add richer matching (via the v0.x event-DAG fields). v0 ships the simple case; concurrent prompts are out of scope.
+
+**Lead-mediated asks (the canonical pattern).** By convention (§2.2), workers do not escalate to the human directly. When a worker needs human input, it posts a directed message to the lead:
+
+```
+runners msg post --to @lead "Should I add notify-debouncer-full? Pros: … Cons: …"
+```
+
+The orchestrator's built-in routing injects any directed message with `to: @lead` into the lead's stdin on arrival, so the lead sees it without polling. The lead then decides:
+
+1. **Answer from own context** — lead posts a directed message back to the worker. No human involvement. Done.
+2. **Escalate to human** — lead emits `ask_human` with `payload.on_behalf_of: "@impl"` (the original asker's handle) and a `prompt` that restates the worker's question for the human. The orchestrator renders the card; the UI uses `on_behalf_of` to show the attribution chain (e.g. *@impl → @architect → you*).
+
+When the human clicks a choice, `human_response` fires and the orchestrator injects the result into **the lead's stdin**, not the original worker's. The lead is responsible for forwarding the answer onward via a directed message:
+
+```
+runners msg post --to @impl "Human approved: use notify-debouncer-full."
+```
+
+This is not a new protocol — it is `ask_human` + directed messages composed. The only schema addition is the optional `on_behalf_of` field for UI attribution.
+
+**Why route through the lead.** The lead can absorb, filter, or batch worker questions, and the human's attention stays focused on one interlocutor. The tradeoff is added latency and the possibility of the lead paraphrasing the human's answer imprecisely — both acceptable for v0. The full chain is always visible in the event log for audit.
+
+**Worker-initiated asks.** A worker *may* emit `ask_human` directly (with no `on_behalf_of`); the orchestrator will route `human_response` back to that worker's stdin as in the direct flow. This is a fallback for cases where the lead is paused or unavailable and the system prompt explicitly permits it. It is not the default path.
 
 **Messages do not trigger orchestrator actions in v0.** The inbox is pull-based (§2.7.3). If a sender needs the recipient to drop everything, they emit a signal — signals are the urgent wake-up mechanism; direct messages are async conversation.
 
