@@ -101,7 +101,9 @@ A mission is a container. Everything in the runtime column is either the contain
 
 The persistent "who's on the team and how they work together" record. A crew has a name, a default mission goal, a list of runners, an orchestrator policy, and a signal-type allowlist. It does not run. It is blueprint.
 
-**Every crew must have exactly one lead runner.** The lead is the human's counterpart in the crew: mission goals and broadcast human messages route to the lead by default, and the lead dispatches work to the other runners via directed messages. This is a hard invariant — a crew with zero runners or zero leads is invalid and cannot start a mission. The first runner added to a new crew becomes lead automatically; the user can reassign lead between existing runners, but cannot remove the lead runner without first designating a replacement. The lead is a routing convention, not a privileged capability: any runner can emit signals, post directed messages, and trigger orchestrator actions. Lead only governs *where inbound-from-human traffic lands by default*.
+**Every crew must have exactly one lead runner.** The lead is the human's counterpart in the crew: the mission goal and human-originated broadcast signals route to the lead by default, and the lead dispatches work to the other runners via directed messages. This is a hard invariant — a crew with zero runners or zero leads is invalid and cannot start a mission. The first runner added to a new crew becomes lead automatically; the user can reassign lead between existing runners, but cannot remove the lead runner without first designating a replacement. The lead is a routing convention, not a privileged capability: any runner can emit signals, post directed messages, and trigger orchestrator actions. Lead only governs *where inbound-from-human signals land by default*.
+
+**Lead is also the default HITL gateway.** When a worker needs human input, it does not ask the human directly — it emits an `ask_lead` signal whose payload carries the question. The orchestrator wakes the lead (signals trigger actions; messages don't — see §5.5.0), who decides whether to answer from their own context or escalate to the human via `ask_human`. If the lead escalates, the human's answer flows back to the lead, who forwards it to the original worker as a directed message that the worker picks up on its next `runners msg read`. This keeps the human's attention focused on one interlocutor and lets the lead absorb, filter, or batch worker questions. See §5.5.0 for the protocol details (the `ask_lead` signal, the `on_behalf_of` payload field on `ask_human`, and the forwarding flow). Workers *may* emit `ask_human` directly as a fallback — it's not forbidden at the protocol layer — but the default runner system prompt instructs them to go through the lead.
 
 Lifecycle: created by the user, edited freely, deleted when no longer needed. Persisted in SQLite.
 
@@ -533,7 +535,8 @@ Every action emits at least one audit signal. Each audit payload carries `trigge
     "question_id": "01HG...",                  // = this event's id; echoed here for convenience
     "triggered_by": <triggering-signal.id>,    // e.g. the changes_requested signal's id
     "prompt": "Reviewer requested changes. Accept or override?",
-    "choices": ["accept", "override"]
+    "choices": ["accept", "override"],
+    "on_behalf_of": "@impl"                    // optional; see "Lead-mediated asks" below
   }
 }
 
@@ -554,6 +557,34 @@ Causality is carried in-payload rather than on the envelope: `human_question.pay
 **Matching semantics for follow-up rules.** Downstream rules match `human_response` by choice value — `{ when: { signal: "human_response", payload: { choice: "accept" } }, do: ... }`. Matches any accept, regardless of which question triggered it.
 
 If two `ask_human` prompts are ever outstanding at once and we need to discriminate between them, v0.x will add richer matching (via the v0.x event-DAG fields). v0 ships the simple case; concurrent prompts are out of scope.
+
+**Lead-mediated asks (the canonical pattern).** By convention (§2.2), workers do not escalate to the human directly. The flow is entirely signal-driven — never message-triggered — so it does not violate the pull-based rule below.
+
+1. **Worker asks the lead.** Worker emits an `ask_lead` signal with the question in its payload:
+
+   ```
+   runners signal ask_lead --payload '{"question": "Should I add notify-debouncer-full?", "context": "Pros: … Cons: …"}'
+   ```
+
+   `ask_lead` is a built-in signal type. Its built-in rule is `ask_lead → inject_stdin @lead` (payload rendered into the injection template). The worker's stdin stays blocked waiting; the lead wakes.
+
+2. **Lead decides.**
+   - **Answer from own context.** Lead posts a directed message back to the worker via `runners msg post --to @impl "…"`. The worker picks it up on its next `runners msg read`. Pull-based; no new wake-up needed because the worker is already polling between turns per its system prompt.
+   - **Escalate to human.** Lead emits `ask_human` with `payload.on_behalf_of: "@impl"` (the original asker's handle) and a `prompt` that restates the question for the human. The orchestrator renders the card; the UI uses `on_behalf_of` to show the attribution chain (*@impl → @architect → you*).
+
+3. **Human responds.** On click, `human_response` fires. The orchestrator injects the result into **the lead's stdin** (the lead was the asker of record for that `question_id`). The lead then forwards the answer onward via a directed message:
+
+   ```
+   runners msg post --to @impl "Human approved: use notify-debouncer-full."
+   ```
+
+   The worker picks up the answer on its next `runners msg read`.
+
+This is not a new protocol — it is `ask_lead` + `ask_human` + directed messages composed. The only schema additions are the `ask_lead` signal type and the optional `on_behalf_of` field on `human_question`.
+
+**Why route through the lead.** The lead can absorb, filter, or batch worker questions, and the human's attention stays focused on one interlocutor. The tradeoff is added latency and the possibility of the lead paraphrasing the human's answer imprecisely — both acceptable for v0. The full chain is always visible in the event log for audit.
+
+**Worker-initiated asks.** A worker *may* emit `ask_human` directly (with no `on_behalf_of`); the orchestrator will route `human_response` back to that worker's stdin as in the direct flow. This is a fallback for cases where the lead is paused or unavailable and the system prompt explicitly permits it. It is not the default path.
 
 **Messages do not trigger orchestrator actions in v0.** The inbox is pull-based (§2.7.3). If a sender needs the recipient to drop everything, they emit a signal — signals are the urgent wake-up mechanism; direct messages are async conversation.
 
@@ -660,7 +691,8 @@ One binary. Two verbs. Context always from env. No event-DAG flags in v0 — cau
 crews (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  goal TEXT,
+  purpose TEXT,                       -- short prose shown in Crew Detail; optional
+  goal TEXT,                          -- default mission goal
   orchestrator_policy TEXT,           -- JSON: [{ when, do }]
   signal_types TEXT,                  -- JSON array: allowlist
   created_at TEXT, updated_at TEXT
@@ -678,15 +710,22 @@ runners (
   working_dir TEXT,
   system_prompt TEXT,
   env_json TEXT,
+  lead INTEGER NOT NULL DEFAULT 0,    -- 0 or 1; see §2.2 lead invariant
+  position INTEGER NOT NULL,          -- ordering within the crew (0-based)
   created_at TEXT, updated_at TEXT,
   UNIQUE (crew_id, handle)
 );
 
+-- Enforces the lead invariant (§2.2): exactly one lead per crew.
+CREATE UNIQUE INDEX one_lead_per_crew ON runners(crew_id) WHERE lead = 1;
+
 missions (
   id TEXT PRIMARY KEY,
   crew_id TEXT REFERENCES crews(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,                -- short label shown in missions list + event log
   status TEXT NOT NULL,               -- running | completed | aborted
-  goal_override TEXT,
+  goal_override TEXT,                 -- null means inherit crews.goal
+  cwd TEXT,                           -- mission working dir; exposed as $MISSION_CWD
   started_at TEXT NOT NULL,
   stopped_at TEXT
 );
@@ -696,6 +735,7 @@ sessions (
   mission_id TEXT REFERENCES missions(id) ON DELETE CASCADE,
   runner_id TEXT REFERENCES runners(id) ON DELETE CASCADE,
   status TEXT NOT NULL,               -- running | stopped | crashed
+  pid INTEGER,                        -- OS process id once spawned; null while pending
   started_at TEXT, stopped_at TEXT
 );
 ```
