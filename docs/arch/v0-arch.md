@@ -35,7 +35,7 @@ Runners is a local desktop app. A user configures a **crew** of CLI coding agent
 │  │   │  master  │ ◄────►  │  child: claude-code / codex / shell     │   │   │
 │  │   └──────────┘         │  env: RUNNERS_CREW_ID,                  │   │   │
 │  │                        │       RUNNERS_MISSION_ID,               │   │   │
-│  │                        │       RUNNERS_RUNNER_NAME,              │   │   │
+│  │                        │       RUNNERS_RUNNER_HANDLE,              │   │   │
 │  │                        │       RUNNERS_EVENT_LOG, PATH=…         │   │   │
 │  │                        └─────┬───────────────────────────────────┘   │   │
 │  └─────────────────────────────┼──────────────────────────────────────┘   │
@@ -107,7 +107,14 @@ Lifecycle: created by the user, edited freely, deleted when no longer needed. Pe
 
 An individual CLI agent within a crew: what binary to run, with what args, in what working directory, with what system prompt (the role's brief). Persistent config. A runner doesn't run either; it describes a process that will be spawned when a mission starts.
 
-A runner belongs to exactly one crew. Examples: "Coder (claude-code)", "Reviewer (claude-code)", "Tester (shell)".
+A runner has two identifying fields:
+
+- **`handle`** — a lowercase slug (e.g. `coder`, `reviewer`, `tester`). Required, immutable once set, unique within the crew. Used everywhere addressing is needed: as `from` and `to` in events, as `--to <handle>` on the CLI, and in policy rules. Handles are what runners call each other by.
+- **`display_name`** — a free-form label for the UI (e.g. "Coder", "Lead Reviewer"). Editable; not used in event fields or addressing.
+
+Keeping these separate means renaming a runner for the UI doesn't break briefs, rules, or historical events. `handle` is the identity; `display_name` is just presentation.
+
+A runner belongs to exactly one crew. Examples: `coder` (claude-code), `reviewer` (claude-code), `tester` (shell).
 
 ### 2.4 Orchestrator Policy — *the crew's decision rules*
 
@@ -194,10 +201,10 @@ Messages and signals are separate for good reasons:
 
 #### 2.7.3 Inbox — *"what's in my mailbox"*
 
-Every runner has an **inbox**: the subset of the mission's messages that are relevant to it. The inbox is a **projection** over the event log, not a separate data structure. For runner `X`:
+Every runner has an **inbox**: the subset of the mission's messages that are relevant to it. The inbox is a **projection** over the event log, not a separate data structure. For the runner with handle `h`:
 
 ```
-inbox(X) = all message events in the mission where to = null OR to = X
+inbox(h) = all events in the mission where kind = "message" AND (to = null OR to = h)
 ```
 
 `runners msg read` returns the calling runner's inbox, sorted by ULID (chronological). `--since <ts>` restricts to messages newer than a given ULID/timestamp so agents can poll without re-reading history.
@@ -227,9 +234,11 @@ Facts differ from messages and signals: they're **current state**, not events. R
 
 ### 2.8 Events — *the unifying transport*
 
-Every coordination primitive is persisted as an **event** — one line in the per-mission NDJSON file. Signals become `signal_emitted` events. Messages become `message_posted` events. (Later: `thread_opened`, `fact_recorded`, etc.) This is a transport detail, not a separate concept for users; runners interact through the CLI verbs, not the event schema.
+Every coordination primitive is persisted as an **event** — one line in the per-mission NDJSON file. An event has: `{id, ts, crew_id, mission_id, kind, from, to, type, payload, correlation_id, causation_id}`.
 
-An event has: `{id, ts, crew_id, mission_id, from, to, kind, payload, correlation_id, causation_id}`. `kind` distinguishes primitive types (`signal`, `message`, ...). The orchestrator and UI project events into the primitive-specific views.
+The `kind` field is the primitive discriminator — `signal`, `message`, and (later) `fact`, `thread_opened`. For `kind: "signal"`, the `type` field carries the signal's semantic verb (`review_requested`, `changes_requested`, etc.); for `kind: "message"`, `type` is omitted and the prose lives in `payload.text`. The orchestrator and UI project events into primitive-specific views based on `kind`.
+
+This is a transport detail — runners interact through the CLI verbs (`runners signal`, `runners msg`), not the event schema directly. There is no separate `signal_emitted` or `message_posted` event type; the `kind` field is authoritative.
 
 ## 3. Mission lifecycle
 
@@ -288,7 +297,7 @@ Child inherits:
   PATH                = $APPDATA/runners/bin:<original PATH>
   RUNNERS_CREW_ID     = <ulid>
   RUNNERS_MISSION_ID  = <ulid>
-  RUNNERS_RUNNER_NAME = coder
+  RUNNERS_RUNNER_HANDLE = coder
   RUNNERS_EVENT_LOG   = $APPDATA/runners/crews/<crew>/missions/<mission>/events.ndjson
 
 Reader thread (blocking):
@@ -307,28 +316,31 @@ MissionManager builds each runner's prompt from four parts:
 3. **The roster** — crewmates' names, roles, one-line brief summaries.
 4. **Coordination notes** — how to use `runners signal` and `runners msg`, the crew's allowed signal types, and conventions for inbox checking.
 
-Example for a Reviewer:
+Example for the `reviewer` runner (display name "Reviewer"):
 
 ```
-You are Reviewer, a runner in crew "Feature Ship".
+You are `reviewer` (Reviewer), a runner in crew "Feature Ship".
 Your role: code review.
 
 == Your brief ==
-When the Coder requests review, read their messages and the diff,
+When `coder` requests review, read their messages and the diff,
 then either approve or request changes with specific feedback.
 
 == Mission ==
 Goal: Implement feature X with tests and a clean PR.
 
 == Your crewmates ==
-- Coder (implementation): Writes code. Will signal review_requested and
-  post messages explaining what changed.
+- `coder` (Coder, implementation): Writes code. Will signal review_requested
+  and post messages explaining what changed.
+
+Handles (the lowercase names in backticks above) are what you use to
+address crewmates. Display names are shown for readability only.
 
 == Coordination ==
 - Signal milestones with `runners signal <type>`.
   Signal types: review_requested, changes_requested, approved, blocked.
 - Post prose with `runners msg post "<text>"` (broadcast) or
-  `runners msg post --to <runner> "<text>"` (direct to one crewmate).
+  `runners msg post --to <handle> "<text>"` (direct to one crewmate).
 - Your inbox is `runners msg read` (broadcasts + messages addressed to you).
   Check it at natural task boundaries:
     * before starting a new task,
@@ -390,8 +402,26 @@ One line per event. Append-only. **Each mission has its own file** — scopes lo
 Why a file instead of an in-memory bus:
 - **Debuggable** — `tail -f events.ndjson | jq .`.
 - **Crash-durable** — whatever's on disk survived the crash.
-- **Atomic** — writes < `PIPE_BUF` (4KB on macOS) to `O_APPEND` are atomic; concurrent `runners` invocations interleave correctly.
+- **Atomic** under explicit guards (see §5.1.1) — concurrent `runners` invocations interleave correctly at line granularity.
 - **Replayable for free** — restart the orchestrator, re-scan, resume.
+
+#### 5.1.1 Concurrent-write correctness
+
+Multiple runners can invoke `runners signal` / `runners msg` at the same time from different PTYs. We need line-granular atomicity regardless of filesystem. The approach:
+
+1. Open the log with `O_APPEND | O_WRONLY | O_CREAT`.
+2. Acquire an advisory exclusive lock: `flock(fd, LOCK_EX)`.
+3. Emit exactly one `write(2)` call with the serialized JSON line including the trailing `\n`.
+4. `close(fd)`, which releases the lock.
+
+This gives us:
+- **Ordering**: `O_APPEND` guarantees the write lands at end-of-file at the moment the kernel performs it.
+- **Atomicity across writers**: `flock(LOCK_EX)` serializes writers. Without it we cannot safely rely on filesystem-level write atomicity — `PIPE_BUF` applies to pipes, not regular files, and small-write atomicity on regular files is filesystem-specific.
+- **No partial lines**: a single `write(2)` call of the full line + `\n` means either the whole line lands or none of it does (the kernel writes sequentially under the lock).
+
+**Filesystem requirements.** The app data directory must be on a local POSIX filesystem (APFS, ext4, XFS, etc.). Network filesystems (NFS, SMB) and iCloud-synced volumes may not honor `flock()` or may re-order appends across clients; v0 documents this and checks at app startup.
+
+Writers: only the bundled `runners` CLI writes to the log (the Rust backend also writes orchestrator-generated events — it uses the same `flock`-guarded path). No other process should write to this file; the orchestrator refuses to start a mission if another holder has an exclusive lock at boot.
 
 ### 5.2 Event schema
 
@@ -402,11 +432,11 @@ Why a file instead of an in-memory bus:
   "crew_id": "01HG...",
   "mission_id": "01HG...",
   "kind": "signal",                 // signal | message  (v0.x adds: fact, thread_opened, ...)
-  "from": "coder",                  // runner name | "human" | "orchestrator"
-  "to": null,                       // null = broadcast; runner name = directed (messages);
+  "from": "coder",                  // runner handle | "human" | "orchestrator"
+  "to": null,                       // null = broadcast; runner handle = directed (messages);
                                     //   for signals, always null in v0 (policy decides routing)
   "type": "review_requested",       // for kind=signal; omitted for kind=message
-  "payload": { "...": "..." },      // kind-specific
+  "payload": { "...": "..." },      // kind-specific (e.g. { "text": "..." } for messages)
   "correlation_id": null,
   "causation_id": null
 }
@@ -433,7 +463,8 @@ The backend prepends `$APPDATA/runners/bin/` to PATH and drops the `runners` bin
 
 On invocation, the CLI:
 1. Reads env vars; errors if missing.
-2. Builds an event (ULID, timestamps, `from` = `$RUNNERS_RUNNER_NAME`, `crew_id`, `mission_id`, `kind`).
+2. Builds an event (ULID, timestamps, `from` = `$RUNNERS_RUNNER_HANDLE`, `crew_id`, `mission_id`, `kind`).
+3. For directed messages, validates `--to <handle>` against the crew's runner handles (rejects unknown handles with a clear stderr message).
 3. For signals: validates `type` against the allowlist sidecar at `$APPDATA/runners/crews/{crew_id}/signal_types.json`.
 4. Appends one JSON line to `$RUNNERS_EVENT_LOG` via `open(O_APPEND | O_WRONLY)` + `write_all` + close.
 5. Exits 0.
@@ -470,25 +501,69 @@ On orchestrator boot: open the mission's file, fold events into in-memory state 
 
 ### 5.5 Orchestrator actions
 
-| Action | Effect | Emits event? |
-|---|---|---|
-| `inject_stdin` | write template + `\r` to target runner's PTY writer | `stdin_injected` (signal) |
-| `ask_human` | add card to HITL panel; wait for click | `human_question` then `human_response` (signals) |
-| `notify_human` | fire a toast | `human_notified` (signal) |
-| `pause_runner` | SIGSTOP to target PTY | `runner_paused` (signal) |
-| `resume_runner` | SIGCONT to target PTY | `runner_resumed` (signal) |
+Every action emits at least one signal event with `causation_id` = the triggering event's `id`.
 
-Emitted events have `causation_id` = the triggering event's `id`.
+| Action | Effect | Emits signal(s) with `type` |
+|---|---|---|
+| `inject_stdin` | write template + `\r` to target runner's PTY writer | `stdin_injected`, payload `{ target, watermark }` |
+| `ask_human` | add card to HITL panel; wait for click | `human_question` on card open; `human_response` on click |
+| `notify_human` | fire a toast | `human_notified` |
+| `pause_runner` | SIGSTOP to target PTY | `runner_paused` |
+| `resume_runner` | SIGCONT to target PTY | `runner_resumed` |
+
+#### 5.5.0 `ask_human` — payload shapes and matching
+
+`ask_human { prompt, choices }` produces two correlated signals:
+
+```jsonc
+// When the card is shown:
+{
+  "kind": "signal",
+  "type": "human_question",
+  "from": "orchestrator",
+  "payload": {
+    "prompt": "Reviewer requested changes. Accept or override?",
+    "choices": ["accept", "override"]
+  },
+  "correlation_id": <triggering-signal.id>,   // e.g. the changes_requested signal
+  "causation_id":   <triggering-signal.id>
+}
+
+// When the human clicks a choice:
+{
+  "kind": "signal",
+  "type": "human_response",
+  "from": "human",
+  "payload": {
+    "question_id": <human_question.id>,       // lets rules target a specific card
+    "choice": "accept"                         // the clicked value (always one of choices[])
+  },
+  "correlation_id": <triggering-signal.id>,   // same as the question
+  "causation_id":   <human_question.id>
+}
+```
+
+**Matching semantics for follow-up rules.** Downstream rules can match on `human_response` in two ways:
+
+1. **By choice value** — `{ when: { signal: "human_response", payload: { choice: "accept" } }, do: ... }`. Matches any accept, regardless of which question triggered it.
+2. **By correlation** — rules can reference `$correlation` in `when` clauses (implemented as a lookup into the triggering event's fields). Useful when two `ask_human` prompts are outstanding at once and we need to discriminate: `{ when: { signal: "human_response", correlated_with: { type: "changes_requested" } } }`.
+
+For v0 we ship option (1); option (2) is flagged for v0.x if we hit cases where two outstanding questions collide.
 
 **Messages do not trigger orchestrator actions in v0.** The inbox is pull-based (§2.7.3). If a sender needs the recipient to drop everything, they emit a signal — signals are the urgent wake-up mechanism; direct messages are async conversation.
 
 #### 5.5.1 Enriched stdin injection
 
-When `inject_stdin` fires, the orchestrator automatically enriches the template with the recipient's unread inbox summary. Concretely:
+When `inject_stdin` fires, the orchestrator automatically enriches the template with the recipient's unread inbox summary.
 
-1. The orchestrator tracks a per-runner `last_read_ulid` marker. It advances on the recipient's `msg read` calls (observed via the CLI writing an audit event, or inferred from the next read's `--since`).
-2. Before injecting, the orchestrator gathers all inbox messages newer than `last_read_ulid` — i.e. messages the runner hasn't yet seen.
-3. The injected stdin is: `{template}\n\n{unread summary}`.
+**Watermark tracking.** The orchestrator maintains a per-runner `read_watermark` — the ULID of the newest message that runner has been shown. The watermark advances only on authoritative events, not on heuristics:
+
+- Every `runners msg read` invocation ends by emitting an `inbox_read` audit event with `kind: "signal"`, `type: "inbox_read"`, `from: <runner>`, `payload: { up_to: <max_ulid_returned> }`. The orchestrator advances the runner's watermark to `payload.up_to`.
+- An `inject_stdin` that included an unread summary also emits a `stdin_injected` event with `payload: { watermark: <max_ulid_in_summary> }`, so the next summary is scoped strictly to messages newer than this value — the injection itself counts as showing them.
+
+The watermark is initialized to `"0"` (before any ULID) at mission start and is rebuilt from the log on crash-replay by scanning these events. It is never inferred from `--since` flags (agents can set those to arbitrary values).
+
+**Injection shape.** Before firing, the orchestrator gathers all inbox messages newer than the recipient's watermark. The injected stdin is: `{template}\n\n{unread summary}`, and the watermark advances on the resulting `stdin_injected` event.
 
 Example — rule `{when: signal=changes_requested, do: inject_stdin target=coder template="Reviewer requested changes — check msg read for details."}` fires after Reviewer posted two direct messages. The Coder's PTY receives:
 
@@ -501,9 +576,9 @@ You have 2 new messages:
 Run `runners msg read` for full content.
 ```
 
-The Coder wakes up with both the signal and the conversation context in one interruption — no separate polling needed. If the runner does go call `runners msg read`, the injected summary matches.
+The Coder wakes up with both the signal and the conversation context in one interruption. If the Coder does then call `runners msg read`, the CLI returns the same two messages, emits `inbox_read { up_to: <reviewer's second message ULID> }`, and the watermark is already at that point from the injection — so nothing further is shown on the next signal unless genuinely new.
 
-This makes the urgent path (signal → inject_stdin) carry the async path (direct messages) with it automatically. Senders don't have to decide between "just message" and "signal-plus-message" — they send a message for data, and signal only when they need immediate attention; the enrichment glues the two together on arrival.
+This makes the urgent path (signal → inject_stdin) carry the async path (direct messages) with it automatically. Senders don't decide between "just message" and "signal-plus-message" — they send a message for data, and signal only when they need immediate attention; the enrichment glues the two together on arrival, and the watermark keeps them in sync.
 
 **Crash correctness:** emit the event *before* performing the action. Worst case on crash+replay is a duplicate action, recoverable (stdin seen twice; HITL cards deduped by event id). Silent loss is not.
 
@@ -589,7 +664,8 @@ crews (
 runners (
   id TEXT PRIMARY KEY,
   crew_id TEXT REFERENCES crews(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
+  handle TEXT NOT NULL,               -- lowercase slug, immutable, unique within crew
+  display_name TEXT NOT NULL,         -- free-form UI label
   role TEXT NOT NULL,
   runtime TEXT NOT NULL,
   command TEXT NOT NULL,
@@ -597,7 +673,8 @@ runners (
   working_dir TEXT,
   system_prompt TEXT,
   env_json TEXT,
-  created_at TEXT, updated_at TEXT
+  created_at TEXT, updated_at TEXT,
+  UNIQUE (crew_id, handle)
 );
 
 missions (

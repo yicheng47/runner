@@ -58,9 +58,9 @@ All four are described in `v0-arch.md` §2.7 with milestone tags, so the vision 
 The concrete loop v0 must support end-to-end:
 
 1. User creates a crew called *Feature Ship*.
-2. User spawns two runners on the crew:
-   - **Coder** — runtime `claude-code`, working dir `~/src/myproj`, brief "Implement feature X. When ready, signal `review_requested` and post a message explaining what changed."
-   - **Reviewer** — runtime `claude-code`, same working dir, brief "When review is requested, read the Coder's messages and the diff, then signal `approved` or `changes_requested` and post messages with specific feedback."
+2. User spawns two runners on the crew (handles shown in backticks; display names in parens):
+   - `coder` (Coder) — runtime `claude-code`, working dir `~/src/myproj`, brief "Implement feature X. When ready, signal `review_requested` and post a message explaining what changed."
+   - `reviewer` (Reviewer) — runtime `claude-code`, same working dir, brief "When review is requested, read `coder`'s messages and the diff, then signal `approved` or `changes_requested` and post messages with specific feedback."
 3. User clicks **Start Mission**. Both PTYs spawn. User sees two terminals, one per runner.
 4. Coder writes code, runs tests, then:
    - `runners msg post "Branch feat/x is ready. I refactored auth and added session tests."`
@@ -95,8 +95,9 @@ If v0 doesn't ship this flow working end-to-end, it hasn't shipped.
 ### 6.2 Runner CRUD (scoped to a crew)
 - Spawn, edit, remove runners within a crew.
 - A runner has:
-  - `name` (display, e.g. "Coder")
-  - `role` (short label, e.g. "implementation")
+  - `handle` — lowercase slug (e.g. `coder`). Immutable once set; unique within the crew. Used everywhere addressing is needed (`from`/`to` in events, `--to <handle>` on the CLI, policy rules).
+  - `display_name` — free-form UI label (e.g. "Coder", "Lead Reviewer"). Editable; presentation-only.
+  - `role` — short label, e.g. "implementation".
   - `runtime` — enum: `claude-code | codex | shell`. Adds the right default `command` + `args`.
   - `command` + `args` — concrete binary to spawn. Pre-filled from runtime, editable.
   - `working_dir`
@@ -132,7 +133,7 @@ If v0 doesn't ship this flow working end-to-end, it hasn't shipped.
 - No thread scoping in v0 — one flat stream per mission.
 - Messages are human-readable and runner-readable. They are the "what I think" layer; signals are the "please act" layer.
 
-**Inbox as a concept.** Every runner has an inbox — a projection over the mission's message events where `to = null OR to = my_name`. This is not a separate store; it's a filtered view of the event log. "Inbox" names the view so users and agents share a clear mental model: *I have an inbox; I can read mine; I can address others.*
+**Inbox as a concept.** Every runner has an inbox — a projection over the mission's message events where `to = null OR to = my_handle`. This is not a separate store; it's a filtered view of the event log. "Inbox" names the view so users and agents share a clear mental model: *I have an inbox; I can read mine; I can address others.*
 
 **Messages are pull-based.** The system does not automatically interrupt a busy runner every time a message arrives. Two reasons: (1) not every direct message is urgent, and auto-interrupting would blur the signal/message split; (2) stdin injection on every DM risks corrupting in-flight tool calls.
 
@@ -178,8 +179,8 @@ See `v0-arch.md` §5.3 for the full three-layer emission mechanism (system promp
   ]
   ```
 - Supported actions in v0:
-  - `inject_stdin` — write a message into the target runner's stdin. Automatically enriched with the recipient's unread inbox summary, so signal-driven wake-ups carry along any async conversation the recipient hasn't read yet.
-  - `ask_human` — show a card in the HITL panel, wait for response.
+  - `inject_stdin` — write a message into the target runner's stdin. Automatically enriched with the recipient's unread inbox summary; watermark advances on the resulting `stdin_injected` event (see `v0-arch.md` §5.5.1).
+  - `ask_human` — show a card in the HITL panel; emits a `human_question` signal. On click, emits a `human_response` signal with payload `{ question_id, choice }` and `correlation_id` = the original triggering signal's id. Downstream rules match on `payload.choice`.
   - `notify_human` — fire a toast.
   - `pause_runner` / `resume_runner` — SIGSTOP/SIGCONT the target PTY.
 - Rules fire on signals only. Messages do not trigger orchestrator actions in v0 — the inbox is pull-based. Senders escalate via signals when immediate attention is needed. (v0.x: mentions inside messages will trigger routing.)
@@ -239,7 +240,8 @@ crews (
 runners (
   id TEXT PRIMARY KEY,
   crew_id TEXT REFERENCES crews(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
+  handle TEXT NOT NULL,               -- lowercase slug, immutable, unique within crew
+  display_name TEXT NOT NULL,
   role TEXT NOT NULL,
   runtime TEXT NOT NULL,              -- claude-code | codex | shell
   command TEXT NOT NULL,
@@ -247,7 +249,8 @@ runners (
   working_dir TEXT,
   system_prompt TEXT,
   env_json TEXT,
-  created_at TEXT, updated_at TEXT
+  created_at TEXT, updated_at TEXT,
+  UNIQUE (crew_id, handle)
 );
 
 missions (
