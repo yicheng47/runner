@@ -1,8 +1,12 @@
 # Runners — v0 Architecture
 
-> Companion to `v0-prd.md`. The PRD defines *what* v0 ships; this doc defines *how* it works. Mostly about four things: **missions**, **PTY runner sessions**, **the event bus**, and **shared context**.
+> Companion to `v0-prd.md`. The PRD defines *what* v0 ships; this doc defines *how* it works.
 
-## 1. System overview
+## 1. Overview
+
+Runners is a local desktop app. A user configures a **crew** of CLI coding agents, launches a **mission** to activate it, and watches the crew coordinate in real time. The app is a Tauri 2 binary: Rust backend, React webview, SQLite for config, and a per-mission NDJSON file for live state.
+
+### 1.1 Runtime picture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -10,9 +14,9 @@
 │                                                                             │
 │  ┌──────────────────────┐   ┌──────────────────────┐   ┌─────────────────┐  │
 │  │ MissionManager       │   │ SessionManager       │   │ EventBus        │  │
-│  │  - lifecycle of the  │   │  - spawns PTYs       │   │  - tail NDJSON  │  │
-│  │    live mission      │   │  - reader threads    │   │  - notify watch │  │
-│  │  - roster + brief    │   │  - writer handles    │   │  - ring buffer  │  │
+│  │  - mission lifecycle │   │  - PTY spawn/kill    │   │  - tail NDJSON  │  │
+│  │  - compose prompts   │   │  - reader threads    │   │  - notify watch │  │
+│  │  - roster + brief    │   │  - scrollback rings  │   │  - fact project │  │
 │  └────────┬─────────────┘   └────────┬─────────────┘   └────────┬────────┘  │
 │           │                          │                          │           │
 │           │                          │                          ▼           │
@@ -20,10 +24,9 @@
 │           │                          │               │ Orchestrator     │   │
 │           │                          │               │  - policy rules  │   │
 │           │                          │               │  - action dispch │   │
-│           │                          │               │  - fact project. │   │
 │           │                          │               └────────┬─────────┘   │
 │           │                          │                        │             │
-│           │         inject_stdin / ask_human / ...            │             │
+│           │      inject_stdin / ask_human / pause / ...       │             │
 │           └─────────────────────────►│◄───────────────────────┘             │
 │                                      ▼                                      │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
@@ -33,137 +36,171 @@
 │  │   └──────────┘         │  env: RUNNERS_CREW_ID,                  │   │   │
 │  │                        │       RUNNERS_MISSION_ID,               │   │   │
 │  │                        │       RUNNERS_RUNNER_NAME,              │   │   │
-│  │                        │       RUNNERS_EVENT_LOG, PATH=/bin:...  │   │   │
+│  │                        │       RUNNERS_EVENT_LOG, PATH=…         │   │   │
 │  │                        └─────┬───────────────────────────────────┘   │   │
 │  └─────────────────────────────┼──────────────────────────────────────┘   │
-│                                │                                          │
-│                                │ runs `runners emit ...` / `ctx set ...`  │
+│                                │ runs `runners emit` / `runners ctx`      │
 │                                ▼                                          │
 │                  ┌─────────────────────────────┐                          │
 │                  │  events.ndjson (per mission)│                          │
 │                  └──────────────┬──────────────┘                          │
-│                                 │  notify → EventBus → Orchestrator + UI  │
+│                                 │ notify → EventBus → Orchestrator + UI   │
 └─────────────────────────────────┼─────────────────────────────────────────┘
                                   ▼
-                         Tauri events to webview
                          ┌───────────────────────┐
                          │ React + xterm.js      │
-                         │  - terminal panes     │
-                         │  - event timeline     │
-                         │  - HITL cards         │
-                         │  - facts view         │
+                         │  terminals, timeline, │
+                         │  HITL cards, facts    │
                          └───────────────────────┘
 ```
 
-Five in-process components (MissionManager, SessionManager, EventBus, Orchestrator, Tauri commands), one on-disk artifact (events.ndjson), one webview.
+### 1.2 The one-paragraph story
 
-## 2. Missions
+The user defines a **crew** (configuration: runners + policy). They click **Start Mission**, which creates a **mission** (runtime container), spawns one PTY-backed **session** per runner, and composes each runner's system prompt with the mission brief, the crew roster, and coordination instructions. Runners run real CLI binaries inside PTYs; they emit **events** via a bundled `runners` CLI that appends to the mission's NDJSON file. The **orchestrator** tails that file, applies a rule-based policy, and dispatches actions (inject stdin, ask human, pause, etc.). Runners share state through a **fact** whiteboard backed by the same event log. The UI is a read-only tail that renders terminals, events, facts, and HITL prompts.
 
-### 2.1 Why missions exist
+## 2. Concepts
 
-"Crew" is a config. "Mission" is a run. Without this split, the event log is a flat history of everything that ever happened to the crew, and there's no clean scope for:
-- The current HITL queue
-- The current fact whiteboard
-- Orchestrator in-memory state
-- Event log files (otherwise grow unbounded)
-- UI history ("show me what happened on mission 3")
+Seven domain objects. Two kinds: **configuration** (persistent, edited by the user) and **runtime** (live, created at mission start, torn down at mission end).
 
-With missions, everything scopes to one run, and starting a new mission is a clean reset.
+### 2.1 Relationship diagram
 
-### 2.2 Lifecycle
+```
+Configuration (persistent)          Runtime (live or historical)
+
+  Crew ─┬── Runner ────────────────► Session ────► PTY process
+        │                              ▲
+        │                              │ spawns
+        └── Orchestrator Policy        │
+              │                        │
+              └─ attached to ─► Mission ────► events.ndjson
+                                  │             │
+                                  │             ├─► Event
+                                  │             └─► Fact (via fact_recorded)
+                                  │
+                                  └─► Shared context (brief + roster + facts)
+```
+
+### 2.2 Crew — *a configured team*
+
+The persistent "who's on the team and how they work together" record. A crew has a name, a default mission goal, a list of runners, an orchestrator policy, and an event-type allowlist. It does not run. It is blueprint.
+
+Lifecycle: created by the user, edited freely, deleted when no longer needed. Persisted in SQLite.
+
+### 2.3 Runner — *one configured agent*
+
+An individual CLI agent within a crew: what binary to run, with what args, in what working directory, with what system prompt (the role's brief). Persistent config. A runner doesn't run either; it describes a process that will be spawned when a mission starts.
+
+A runner belongs to exactly one crew. Examples: "Coder (claude-code)", "Reviewer (claude-code)", "Tester (shell)".
+
+### 2.4 Orchestrator Policy — *the crew's decision rules*
+
+A JSON list of `{when, do}` rules attached to the crew. This is where all routing and human-in-the-loop behavior is expressed. Shared across every mission the crew runs (in-memory state like pending asks is per-mission, but the rule set is per-crew).
+
+There is no code here — just a lookup table. No scripting, no LLM. v0 is deliberately dumb.
+
+### 2.5 Mission — *one activation of the crew*
+
+A runtime container. When the user clicks **Start Mission**, a mission row is created, sessions are spawned for every runner, the orchestrator is booted with a fresh in-memory state, and an NDJSON event log is opened. When the mission ends (explicit stop, or all sessions exited), everything in the container shuts down together.
+
+A mission scopes: the event log, the fact whiteboard, pending HITL cards, orchestrator memory. Each mission starts empty on all four.
+
+v0 constraint: a crew can have at most one live mission at a time. A crew can have many historical missions.
+
+### 2.6 Session — *one runner's PTY process*
+
+The live process for one runner inside one mission. One runner × one mission = one session. Owns: a PTY master handle, a reader thread, a writer, a scrollback ring buffer. When the session's child process exits, the session is done; a new one is only created by starting a new mission.
+
+A session is the only object that actually *executes* something — everything else is metadata or a coordination channel.
+
+### 2.7 Event — *a durable coordination message*
+
+One line in a mission's NDJSON file. Structured JSON: `{id, ts, crew_id, mission_id, from, to, type, payload, correlation_id, causation_id}`. Emitted by runners (via the `runners emit` CLI), humans (via the UI), or the orchestrator itself (as a side effect of actions). Consumed by the orchestrator for policy dispatch and by the UI for the timeline.
+
+Events are the system's source of truth for runtime state. The orchestrator's in-memory state is a *projection* of the events; on crash, it's rebuilt by replaying the file.
+
+### 2.8 Fact — *an entry on the shared whiteboard*
+
+A key-value pair any runner can read or write during a mission via the `runners ctx` CLI. Implemented as a specific event type (`fact_recorded`), so facts are just events with a particular shape — no separate store. Last-writer-wins per key. Mission-scoped: each mission starts with an empty whiteboard.
+
+Facts are how runners share state that doesn't fit the event model cleanly: "the PR URL is X," "we're targeting branch Y," "the build is green." Think of events as *things that happened* and facts as *things that are currently true*.
+
+## 3. Mission lifecycle
+
+### 3.1 Start
 
 ```
 user clicks Start Mission on a crew
   └─► MissionManager.start(crew_id):
-        ├─ insert row into `missions` with status=running
+        ├─ insert `missions` row (status=running, mission_id = ULID)
         ├─ mkdir $APPDATA/runners/crews/{crew_id}/missions/{mission_id}/
         ├─ touch events.ndjson
         ├─ for each runner in crew:
-        │     compose system prompt (brief + roster + coordination notes)
+        │     composed_prompt = compose(runner.system_prompt,
+        │                                mission.brief,
+        │                                roster(crew),
+        │                                coordination_notes(crew.event_types))
         │     SessionManager.spawn(mission_id, runner, composed_prompt)
-        ├─ Orchestrator.start(mission_id):  ← fresh state
-        │     open events.ndjson, read history (empty at boot), tail via notify
+        ├─ Orchestrator.start(mission_id)  ← fresh in-memory state
+        │     open events.ndjson, read history (empty), tail via notify
         └─ emit Tauri event: mission:{id}:started
 ```
 
+### 3.2 End
+
 ```
-user clicks End Mission (or all sessions have exited)
+user clicks End Mission  (or all sessions have exited)
   └─► MissionManager.end(mission_id, status):
         ├─ SessionManager.kill_all_in_mission(mission_id)
         ├─ Orchestrator.stop(mission_id)
-        ├─ update `missions` row: status, stopped_at
+        ├─ update `missions` row: status (completed/aborted), stopped_at
         └─ emit Tauri event: mission:{id}:ended
 ```
 
-v0 constraint: one live mission per crew. Starting a new one when one is live is blocked in the UI. (v1 relaxation: concurrent missions per crew.)
+### 3.3 v0 constraint
 
-### 2.3 What the MissionManager owns
+One live mission per crew. Starting a new one while one is live is blocked in the UI. (v1: relax to concurrent missions.)
 
-- The `mission_id` of the currently live mission (if any) per crew.
-- References to the orchestrator instance and session manager entries for that mission.
-- The composed system prompt for each runner, built once at mission start.
+## 4. PTY runner sessions
 
-## 3. PTY runner sessions
+### 4.1 Why PTY
 
-### 3.1 Why PTY at all
+Claude Code and Codex are TUIs. They check `isatty()`; if false, they degrade (no colors, no spinner, sometimes outright refuse). Their output is a stream of escape sequences (`\x1b[2K`, alt-screen toggles) that only a terminal emulator can render.
 
-Claude Code and Codex are TUIs. They check `isatty()`; if false, they degrade (no colors, no spinner, sometimes outright refuse). Their output is a stream of terminal escape sequences (`\x1b[2K`, alt-screen toggles, cursor moves) that only make sense to a terminal emulator.
-
-A pseudo-terminal solves both:
-- The child sees a real terminal on its stdin/stdout/stderr → full TUI mode.
-- We hold the master end, capture the raw byte stream, and feed it to **xterm.js** in the webview, which knows how to render escape sequences.
+A pseudo-terminal gives the child a real terminal on stdin/stdout/stderr (full TUI mode) and hands us the master end as a byte stream that we forward to **xterm.js** in the webview.
 
 Anything less (plain pipes, stdout-only capture) will look broken.
 
-### 3.2 Session lifecycle
-
-A session is one run of one runner, within one mission.
+### 4.2 Spawn
 
 ```
-  spawn (called by MissionManager)
-    └─► portable_pty::openpty(rows, cols)
-          ├─ master handle  → kept by SessionManager
-          └─ slave handle   → given to child via spawn_command()
-    └─► child inherits env + composed system prompt (passed via runtime-specific flag)
-    └─► reader thread:
-          loop { read(master) → emit session:{id}:out event, push to ring buffer }
-          on EOF: wait(child) → emit session:{id}:exit → update sessions row
-    └─► ring buffer (last ~10k lines) for scrollback
+portable_pty::openpty(rows, cols)
+  ├─ master handle  → kept by SessionManager
+  └─ slave handle   → given to child via spawn_command()
+
+Child inherits:
+  PATH                = $APPDATA/runners/bin:<original PATH>
+  RUNNERS_CREW_ID     = <ulid>
+  RUNNERS_MISSION_ID  = <ulid>
+  RUNNERS_RUNNER_NAME = coder
+  RUNNERS_EVENT_LOG   = $APPDATA/runners/crews/<crew>/missions/<mission>/events.ndjson
+
+Reader thread (blocking):
+  loop { read(master) → emit session:{id}:out event, push to scrollback ring }
+  on EOF: wait(child) → emit session:{id}:exit { code } → update sessions row
 ```
 
-On the frontend, on first view:
-1. Ask backend for session's current ring buffer → write into xterm.js to restore scrollback.
-2. Subscribe to `session:{id}:out` → stream live output.
-3. xterm.js `onData` (typing) → invoke `send_input(session_id, bytes)` → `master.writer.write_all(bytes)`.
+System prompt is passed to the runtime via its native flag (`--append-system-prompt` for claude-code; equivalent for each runtime). The runtime enum in the `runners` table owns the flag mapping.
 
-On resize (webview resizes, or xterm fit addon fires):
-1. Frontend sends new (rows, cols) to backend, debounced ~100ms.
-2. `master.resize(rows, cols)` — the kernel delivers SIGWINCH to the child; the TUI redraws at the right size.
+### 4.3 The composed system prompt
 
-Without resize handling, the TUI renders to the wrong width and looks mangled. This is non-optional.
-
-### 3.3 The env the child inherits
-
-```
-PATH                = $APPDATA/runners/bin:<original PATH>
-RUNNERS_CREW_ID     = <ulid>
-RUNNERS_MISSION_ID  = <ulid>
-RUNNERS_RUNNER_NAME = coder
-RUNNERS_EVENT_LOG   = $APPDATA/runners/crews/<crew>/missions/<mission>/events.ndjson
-```
-
-These env vars are how the child — and anything it spawns — finds the `runners` CLI and knows which crew, mission, and runner it's acting as.
-
-### 3.4 The composed system prompt
-
-On mission start, the MissionManager builds each runner's system prompt by concatenating:
+MissionManager builds each runner's prompt from four parts:
 
 1. **The user-authored brief** (`runners.system_prompt`).
-2. **The mission brief** (`missions.goal_override` or falls back to `crews.goal`).
-3. **The roster** — rendered list of crewmates with their names, roles, and a one-line brief summary.
-4. **Coordination notes** — how to use `runners emit`, `runners ctx`, allowed event types.
+2. **The mission brief** (`missions.goal_override` or `crews.goal`).
+3. **The roster** — crewmates' names, roles, one-line brief summaries.
+4. **Coordination notes** — how to use `runners emit`, `runners ctx`, and the crew's allowed event types.
 
-Example composed prompt for the Reviewer:
+Example for a Reviewer:
 
 ```
 You are Reviewer, a runner in crew "Feature Ship".
@@ -185,46 +222,44 @@ Use `runners ctx get <key>` to read facts, `runners ctx set <key> <value>` to re
 Event types in this crew: review_requested, changes_requested, approved, blocked.
 ```
 
-The prompt is passed to the runtime via its native flag: `--append-system-prompt` for claude-code; equivalent for each runtime. The runtime enum in the runners table owns the flag mapping.
+### 4.4 Frontend wiring
 
-### 3.5 Threads, not async
+- On first view: fetch the session's scrollback ring; write to xterm.js to restore history.
+- Subscribe to `session:{id}:out` for live output.
+- xterm.js `onData` → `send_input(session_id, bytes)` → `master.writer.write_all(bytes)`.
+- Frontend window resize → debounced (~100ms) `master.resize(rows, cols)` → SIGWINCH to child. Non-optional; without it, TUIs mis-render.
 
-`portable-pty`'s reader is blocking. Don't wrap it in tokio — spawn an OS thread per session. Writers can stay on the Tauri async runtime; writes are short.
+### 4.5 Threads, not async
 
-### 3.6 Scrollback — in Rust, not xterm.js
+`portable-pty`'s reader is blocking. Spawn an OS thread per session. Writers stay on the Tauri async runtime (writes are short).
 
-xterm.js has scrollback built in, but we want it to survive tab-switches, crashes, and restarts. Keep a `VecDeque<String>` ring (line-granular, ~10k cap) in the SessionManager. Overflow lines append to `$APPDATA/runners/crews/{crew_id}/missions/{mission_id}/sessions/{session_id}.log`.
+### 4.6 Scrollback in Rust
 
-The ring sees raw bytes including alt-screen toggles — acceptable scuff for v0.
+`VecDeque<String>` ring (~10k lines) per session in SessionManager, so scrollback survives tab-switches and app restarts. Overflow lines append to `missions/{mission_id}/sessions/{session_id}.log`. The ring sees raw bytes including alt-screen toggles — acceptable v0 scuff.
 
-### 3.7 Process death + kill semantics
+### 4.7 Death and kill
 
-Reader thread owns the child handle. On `read()` → 0 bytes, call `wait(child)`, emit `session:{id}:exit { code }`, update sessions row. No auto-restart in v0.
+Reader thread owns the child handle. On EOF, it calls `wait()`, emits `session:{id}:exit`, updates the sessions row. No auto-restart in v0.
 
-Kill: drop master handle; `portable-pty` sends SIGHUP; escalate to SIGKILL if the child lingers. v0 targets macOS; Linux best-effort; Windows deferred.
+Kill: drop master → SIGHUP via `portable-pty`; escalate to SIGKILL if child lingers. v0 targets macOS; Linux best-effort; Windows deferred.
 
-## 4. Inter-runner communication (A2A)
+## 5. Event bus (inter-runner communication)
 
-### 4.1 Transport: append-only NDJSON file per mission
+### 5.1 Transport
 
 ```
 $APPDATA/runners/crews/{crew_id}/missions/{mission_id}/events.ndjson
 ```
 
-One line, one event. Source of truth for everything downstream — orchestrator, UI timeline, fact projection, future analytics all read the same file.
+One line per event. Append-only. **Each mission has its own file** — this scopes log rotation (no rotation policy needed; a new mission = a new file), crash-replay (orchestrator reads only the live mission's file), and deletion (drop the mission directory).
 
-Why per-mission:
-- Log rotation is implicit (new mission = new file).
-- Scoping: crash-replay only needs to read the live mission's file.
-- Delete mission = delete directory.
+Why a file instead of an in-memory bus:
+- **Debuggable** — `tail -f events.ndjson | jq .`.
+- **Crash-durable** — whatever's on disk survived the crash.
+- **Atomic** — writes < `PIPE_BUF` (4KB on macOS) to `O_APPEND` are atomic at the OS level; concurrent `runners emit` invocations interleave correctly.
+- **Replayable for free** — restart the orchestrator, re-scan, resume.
 
-Why a file:
-- **Debuggable**: `tail -f events.ndjson | jq .`.
-- **Crash-durable**: whatever's on disk survived the crash.
-- **Atomic appends**: writes < `PIPE_BUF` (4KB on macOS) to a file opened `O_APPEND` are atomic at the OS level. Multiple runners running `runners emit` concurrently interleave correctly.
-- **Replay for free**: restart the orchestrator, re-scan, resume.
-
-### 4.2 Event schema
+### 5.2 Schema
 
 ```jsonc
 {
@@ -234,180 +269,155 @@ Why a file:
   "mission_id": "01HG...",
   "from": "coder",                  // runner name | "human" | "orchestrator"
   "to": null,                       // null = broadcast, or target runner name
-  "type": "review_requested",       // free-form v0; allowlisted per crew
-  "payload": { "...": "..." },      // type-specific JSON
-  "correlation_id": null,           // ties related events into a conversation
+  "type": "review_requested",
+  "payload": { "...": "..." },
+  "correlation_id": null,           // groups events in one conversation
   "causation_id": null              // which event caused this one
 }
 ```
 
-**ULID for `id`** — sortable, embeds a ms timestamp. Two events in the same millisecond still have a defined order.
+- **ULID** — sortable, embeds a ms timestamp, deterministic ordering within a millisecond.
+- **`correlation_id`** — shared by all events in one conversation (e.g. every event in one review cycle). Set by the first emitter; propagated by the orchestrator to events it generates in response.
+- **`causation_id`** — the immediate trigger. Together with correlation, reconstructs the event DAG.
 
-**`correlation_id`** — shared by all events in one "conversation" (e.g. every event in one review cycle). Set by the first emitter and propagated by the orchestrator to events it generates in response.
+### 5.3 How runners emit events
 
-**`causation_id`** — the immediate trigger. Every event has a parent (or null if root). Together, correlation + causation reconstruct the event graph as a DAG.
+The three-layer mechanism that answers "how does the agent know to append?"
 
-### 4.3 How runners emit events
+#### Layer 1 — system prompt tells the convention
 
-The answer is three layers, and answers the question "how does the agent know it should append to the event log?"
-
-#### Layer 1 — system prompt tells the agent the convention
-
-When MissionManager spawns a runner (§3.4), the composed prompt includes a "Coordination" section that describes the `runners emit` CLI and lists the crew's allowed event types. Claude Code / Codex / any LLM agent already knows how to read CLI tool documentation and invoke tools; this is the same capability it uses for `git`, `gh`, `npm`, `pytest`. We just provide one more tool + docs.
+The composed prompt (§4.3) includes a Coordination section describing the `runners emit` CLI and listing allowed event types. LLM agents already know how to read CLI docs and invoke tools — it's the same capability they use for `git`, `gh`, `npm`.
 
 #### Layer 2 — the CLI exists on PATH with context in env
 
-The Tauri backend prepends `$APPDATA/runners/bin/` to PATH and drops the `runners` binary there at install/first-run. At session spawn we set `RUNNERS_CREW_ID`, `RUNNERS_MISSION_ID`, `RUNNERS_RUNNER_NAME`, `RUNNERS_EVENT_LOG`.
+The backend prepends `$APPDATA/runners/bin/` to PATH and drops the `runners` binary there at first run. At session spawn, env vars point at the mission's log and identify the runner.
 
-On invocation:
-1. Reads env vars; errors if missing ("not inside a runners PTY").
-2. Builds an event object (generates ULID, stamps `from`, `ts`, `crew_id`, `mission_id`).
-3. Validates `type` against the allowlist loaded via a sidecar file `$APPDATA/runners/crews/{crew_id}/event_types.json` (written by the backend from `crews.event_types`).
+On invocation, the CLI:
+1. Reads env vars; errors if missing.
+2. Builds an event (ULID, timestamps, `from` = `$RUNNERS_RUNNER_NAME`, `crew_id`, `mission_id`).
+3. Validates `type` against the allowlist sidecar at `$APPDATA/runners/crews/{crew_id}/event_types.json`.
 4. Appends one JSON line to `$RUNNERS_EVENT_LOG` via `open(O_APPEND | O_WRONLY)` + `write_all` + close.
-5. Exits 0 on success, non-zero with clear stderr otherwise.
+5. Exits 0 on success.
 
-Single-writer atomicity holds because each invocation writes ≤ one 4KB line in one `write` syscall.
+Each invocation writes ≤ one 4KB line in one `write` syscall, so concurrent emitters interleave safely.
 
 #### Layer 3 — role briefs reinforce usage
 
-The user-authored brief (`runners.system_prompt`) should include examples at the points where emission matters. We ship defaults per-runtime so first-time users get good behavior without thinking about it.
+User-authored briefs include examples at the moments where emission matters. We ship sensible defaults per-runtime.
 
-Example default brief for a reviewer role:
-> After reading the diff, emit either `approved` or `changes_requested` with a payload listing issues. Do not write code yourself.
+#### Why robust
 
-#### Why this setup is robust
+- No in-band protocol in the PTY stream. Not parsing stdout for magic markers.
+- Works for any CLI agent (MCP or not). Only requirement: can run shell commands.
+- Fails visibly. If the agent forgets to emit, the orchestrator sees nothing and the user sees an idle runner.
+- Fully observable. `$ runners emit review_requested` shows up literally in the terminal pane; the resulting event shows up in the timeline.
 
-- **No out-of-band protocol in the PTY stream.** Not parsing `[[runners:event:...]]` out of stdout.
-- **Works for any CLI agent**, with or without MCP. Only requirement: "can execute shell commands."
-- **Fails visibly.** If the agent never emits, the orchestrator fires no rules and the runner sits idle. The user sees it in the UI and can adjust the brief or inject stdin manually.
-- **Fully observable.** The literal string `$ runners emit review_requested` appears in the terminal pane; the event it produced appears in the timeline pane. One-to-one, no magic.
+#### Failure mode: hallucinated event types
 
-#### The one real failure mode
+CLI validates against the allowlist; unknown types exit non-zero with a clear stderr message. Agent reads the error from shell history and self-corrects.
 
-Hallucinated event types. v0 mitigation: the CLI validates against the allowlist. Unknown type → exit non-zero with `unknown event type "foo"; expected one of: ...`. The agent reads the error from its shell history and self-corrects. v1: stricter JSON schema per event type.
+### 5.4 Consumers
 
-### 4.4 Consumers — orchestrator and UI via `notify`
+Two subscribers to the NDJSON file, both via `notify`:
 
-The NDJSON file has exactly two subscribers, both using the `notify` crate:
-
-- **Orchestrator** — Rust task. On each new line, deserializes, runs policy, dispatches actions. Also updates the fact projection for any `fact_recorded` event.
-- **UI** — Tauri backend re-emits each line as a `mission:{id}:event` event. Frontend renders the timeline pane and fact view.
+- **Orchestrator** — deserializes each new line, runs policy, dispatches actions, updates the fact projection when `fact_recorded` appears.
+- **UI** — the backend re-emits each line as a `mission:{id}:event` Tauri event. Frontend renders timeline, HITL cards, and fact view.
 
 #### Startup replay
 
-On orchestrator start (triggered by mission start):
-1. Open the mission's `events.ndjson`.
-2. Read all events (empty at mission boot; non-empty if the app restarted mid-mission).
-3. Rebuild in-memory state: fact projection, pending `ask_human` cards, correlation tracking.
-4. Switch to tailing mode via `notify`.
+On orchestrator boot (triggered by mission start or app restart mid-mission): open the mission's file, fold events into in-memory state (fact projection, pending asks, correlation tracking), then switch to tailing. The file *is* the state.
 
-This is how we get crash-safety for free — the file *is* the state.
-
-### 4.5 Orchestrator actions
+### 5.5 Orchestrator actions
 
 | Action | Effect | Emits event? |
 |---|---|---|
-| `inject_stdin` | write template + `\r` to target runner's PTY master writer | `stdin_injected` |
-| `ask_human` | add card to HITL panel; waits for user click | `human_question`, then `human_response` on answer |
-| `notify_human` | fire a toast in the UI | `human_notified` |
+| `inject_stdin` | write template + `\r` to target runner's PTY writer | `stdin_injected` |
+| `ask_human` | add card to HITL panel; wait for click | `human_question`, then `human_response` |
+| `notify_human` | fire a toast | `human_notified` |
 | `pause_runner` | SIGSTOP to target PTY | `runner_paused` |
 | `resume_runner` | SIGCONT to target PTY | `runner_resumed` |
 
-Emitted events have `causation_id` = the triggering event's `id`, so the chain is fully reconstructable.
+Emitted events have `causation_id` = the triggering event's `id`. Full chain is reconstructable.
 
-#### Crash correctness
+**Crash correctness:** emit the event *before* performing the action. Worst case on crash+replay is a duplicate action, which is recoverable (stdin seen twice; HITL cards deduped by event id). Silent loss is not.
 
-Emit the event *before* taking the action. Worst case on crash+replay: a duplicate action. Better than silent loss. For `inject_stdin`, a duplicate injection is recoverable (the agent sees the prompt twice). For `ask_human`, dedupe cards by event id.
+### 5.6 Who does delivery
 
-### 4.6 Who does delivery
+Runners never address other runners. They emit; the orchestrator routes. This gives us:
 
-Runners never address other runners. They emit; the orchestrator routes.
+- **Decoupled runners** — Coder doesn't know Reviewer exists. Swap Reviewer without touching Coder's brief.
+- **Single policy location** — every "when X, do Y" lives on the crew row.
+- **Orchestrator is the only side-effecting component** outside runner processes. Easy to reason about.
 
-- **Decoupled runners** — the Coder doesn't know the Reviewer exists. Swap the Reviewer without touching the Coder's brief.
-- **Single policy location** — every "when X happens, do Y" lives on the crew row.
-- **Orchestrator is the only thing with side-effects** outside runner processes. Easy to test, easy to reason about.
-
-### 4.7 Failure modes and v0 mitigations
+### 5.7 Known failure modes
 
 | Failure | Mitigation |
 |---|---|
-| Orchestrator crashes mid-action | Emit event before action; replay on boot; accept duplicate actions |
-| Two runners ask human at once | HITL panel queues both; user answers in order |
-| Event storm (runner bug-looping) | Surface events-per-second warning in UI; no rate limit in v0 |
-| Malformed NDJSON line | Skip line, log warning; file stays valid |
-| NDJSON file grows large in a long mission | End the mission. New mission = new file. |
-| Hallucinated event type | CLI validates against allowlist; clear stderr for self-correction |
+| Orchestrator crashes mid-action | Emit event before action; replay on boot; accept duplicates |
+| Two runners ask human at once | HITL queues both; user answers in order |
+| Event storm (runner bug-looping) | Surface events/sec warning; no rate limit in v0 |
+| Malformed NDJSON line | Skip and warn; file stays valid |
+| NDJSON file grows large | End the mission; new mission = new file |
+| Hallucinated event type | Allowlist validation + clear stderr for self-correction |
 
-## 5. Shared context (mission-scoped)
+## 6. Shared context (mission-scoped)
 
-Three layers, each with different mechanics.
+Three layers, different mechanics. All scoped to the mission — each new mission starts empty on all three.
 
-### 5.1 Mission brief (read-only, prompt-injected)
+### 6.1 Mission brief (read-only, prompt-injected)
 
-`missions.goal_override` or falls back to `crews.goal`. Appears in the composed prompt at spawn (§3.4). Never changes during a mission.
+`missions.goal_override` or falls back to `crews.goal`. Injected into the composed prompt at spawn (§4.3). Never changes during a mission.
 
-### 5.2 Roster (read-only, prompt-injected)
+### 6.2 Roster (read-only, prompt-injected)
 
-Assembled from the crew's runners at mission start. Rendered into each runner's prompt as "== Your crewmates ==" with name, role, one-line brief. Never changes during a mission (v0 constraint: no mid-mission crew changes).
+Rendered from `crew.runners` at mission start into each runner's prompt as `== Your crewmates ==` with name, role, and a one-line brief summary. Never changes during a mission (v0 constraint: no mid-mission crew edits).
 
-### 5.3 Facts — the shared whiteboard (mutable, event-backed)
+This is how the Reviewer knows there's a Coder.
 
-A key-value store any runner can read/write during the mission. Implemented on top of the event log; no second store.
+### 6.3 Facts — the shared whiteboard (mutable, event-backed)
 
-#### Write path
+A KV store any runner reads/writes during the mission, via `runners ctx`. Implemented on the event log — no second store.
 
+**Write:**
 ```
-runners ctx set <key> <value>
-  └─► CLI emits a synthetic event:
-        { type: "fact_recorded", payload: { key, value } }
-      into the same events.ndjson as any other event.
-
-runners ctx unset <key>
-  └─► CLI emits: { type: "fact_recorded", payload: { key, value: null } }
+runners ctx set <key> <value>    → emits { type: "fact_recorded", payload: {key, value} }
+runners ctx unset <key>          → emits { type: "fact_recorded", payload: {key, value: null} }
 ```
 
-#### Read path
+**Read:**
+```
+runners ctx get <key>            → prints value
+runners ctx list                 → prints all current key/value pairs
+```
+
+Last-writer-wins per key. Flat namespace in v0.
+
+**Projection:** the orchestrator maintains a `HashMap<String, Value>`, updated on every `fact_recorded`. Rebuilt from scratch on boot replay. The UI's fact view is driven by this projection via a Tauri event.
+
+**Read path in v0:** the CLI re-scans the log (small, per-mission). If this ever becomes slow, add a localhost HTTP endpoint on the orchestrator.
+
+**Why log-structured:**
+- Single source of truth — facts are events.
+- Auditable — every write is a durable event with who/when.
+- Replayable — projection rebuilds from the log.
+- Atomic — one append per write.
+- Observable — fact updates appear in the timeline.
+
+**Optional snapshot** at `missions/{mission_id}/context.json`, rebuilt from events for `cat`-ability. Not load-bearing.
+
+### 6.4 The `runners` CLI surface
 
 ```
-runners ctx get <key>       → single value
-runners ctx list            → all current key/value pairs
-```
-
-Implementation options for reads:
-- **(A) CLI re-scans the log** (fold fact_recorded events, last-writer-wins). Simple, slightly wasteful on large logs.
-- **(B) Orchestrator serves an HTTP endpoint on localhost**; CLI makes one GET per query. Faster, more moving parts.
-
-**v0: option (A).** Missions are short; logs are small. Upgrade to (B) if profiling shows it matters.
-
-#### Projection
-
-The orchestrator keeps an in-memory `HashMap<String, serde_json::Value>`, updated on each `fact_recorded` event during normal tailing, and rebuilt from scratch on boot replay. The UI's fact view is driven by this projection via a Tauri event emitted on each change.
-
-#### Why log-structured (not a separate table/file)
-
-- **Single source of truth** — facts are events.
-- **Auditable** — you can see who set what and when.
-- **Replayable** — projection rebuilds from the log.
-- **Atomic** — one append per write, no read-modify-write races.
-- **Observable** — a fact update appears in the timeline like any event.
-
-#### Optional snapshot file
-
-The orchestrator may periodically write `missions/{mission_id}/context.json` as a `cat`-friendly snapshot of the current fact projection. Not load-bearing; purely debugger ergonomics.
-
-### 5.4 What the `runners` CLI actually looks like
-
-```
-runners emit   <type> [--payload <json>] [--correlation-id <id>] [--causation-id <id>]
-runners ctx    get <key> | set <key> <value> | unset <key> | list
+runners emit <type> [--payload <json>] [--correlation-id <id>] [--causation-id <id>]
+runners ctx  get <key> | set <key> <value> | unset <key> | list
 runners help
 ```
 
-One binary, two verbs, bundled with the app. Context always read from env vars.
+One binary, two verbs, bundled with the app. Context always from env.
 
-## 6. Data model
+## 7. Data model
 
-### 6.1 SQLite (config + session lifecycle only)
+### 7.1 SQLite (config + session lifecycle)
 
 ```sql
 crews (
@@ -451,7 +461,7 @@ sessions (
 );
 ```
 
-### 6.2 Filesystem
+### 7.2 Filesystem
 
 ```
 $APPDATA/runners/
@@ -464,63 +474,63 @@ $APPDATA/runners/
         └── missions/
             └── {mission_id}/
                 ├── events.ndjson            # per-mission event log
-                ├── context.json             # optional snapshot of facts
+                ├── context.json             # optional fact snapshot
                 └── sessions/
                     └── {session_id}.log     # scrollback overflow
 ```
 
-On macOS `$APPDATA` = `~/Library/Application Support/com.wycstudios.runners`. Dev builds use a `-dev` suffix.
+macOS: `$APPDATA` = `~/Library/Application Support/com.wycstudios.runners`. Dev builds use `-dev` suffix.
 
-## 7. Process and thread model
+## 8. Process and thread model
 
 ```
 Tauri main thread
   ├── Tauri async runtime (tokio)
   │     ├── MissionManager (async)
-  │     ├── Orchestrator task per live mission (notify + policy dispatch)
-  │     └── Command handlers (crew/runner/mission/session/event CRUD)
+  │     ├── Orchestrator task per live mission (notify + dispatch)
+  │     └── Tauri command handlers (CRUD)
   ├── Thread per active session (blocking PTY reader)
   └── Webview process (React + xterm.js)
 ```
 
-For v0 scale (one live mission, ≤ ~10 sessions), this is fine.
+For v0 scale (one live mission, ≤ ~10 sessions): fine.
 
-## 8. What's out of scope for v0 architecture
+## 9. Out of scope for v0
 
 - Concurrent live missions per crew
-- Cross-mission memory (fact carryover)
+- Cross-mission memory (fact or prompt carryover)
 - Remote runners / SSH
-- Secure sandboxing beyond the child's own permissions
+- Sandboxing beyond the child's own permissions
 - MCP-based event emission
 - Auto-restart on crash
 - Event log rotation (solved implicitly by per-mission files)
 - LLM-based orchestrator rules
-- Typed event schemas (JSON Schema per type)
+- Typed event schemas per type
 - Multi-user / multi-machine event bus
 
-## 9. Key architectural bets
+## 10. Architectural bets
 
-1. **Mission is the runtime unit.** Crew is config; mission is a run. Scopes event log, HITL queue, fact whiteboard, orchestrator state.
+1. **Mission is the runtime unit.** Crew is config; mission is a run. Scopes event log, HITL queue, facts, orchestrator state.
 2. **PTY, not pipes.** Required for TUI fidelity.
 3. **NDJSON file per mission, not broker.** Debuggability and crash-durability.
 4. **CLI wrapper, not MCP.** Works with every agent today.
 5. **Orchestrator is the only router.** Runners stay decoupled.
-6. **Facts via event log, not separate store.** Single source of truth.
-7. **Prompt composition at spawn time** (brief + roster + coordination notes). Replaces complicated runtime handshakes.
+6. **Facts on the event log, not a separate store.** Single source of truth.
+7. **Prompt composition at spawn time.** Replaces runtime handshakes.
 8. **xterm.js for rendering.** Don't reinvent the terminal emulator.
-9. **ULID for event IDs.** Sortable + monotonic within ms.
+9. **ULID for event IDs.** Sortable, monotonic within ms.
 
-## 10. Open questions
+## 11. Open questions
 
-1. **CLI installation** — bundled with the `.app`, copied to `$APPDATA/runners/bin/` on first run. Ok?
-2. **Fact read fast path** — (A) CLI re-scans log vs (B) orchestrator HTTP endpoint. v0: (A).
-3. **Resize debounce interval** — 100ms is a guess. Tune with a real TUI.
-4. **Event type allowlist source** — per-crew only (current plan), or global defaults + per-crew additions? Leaning latter.
-5. **`from` field in CLI** — locked to `RUNNERS_RUNNER_NAME` (v0), or overridable via `--from`? v0: locked.
-6. **Mid-mission fact injection** — should the orchestrator ever push "fact X changed" notifications into runners' stdin? v0: no, pull-only. Revisit if it proves awkward.
+1. CLI installation: bundled with `.app`, copied to `$APPDATA/runners/bin/` on first run — ok?
+2. Fact reads: CLI re-scans log (v0) vs orchestrator HTTP endpoint (v0.x if needed).
+3. Resize debounce: 100ms is a guess; tune with a real TUI.
+4. Event type allowlist: per-crew only (current), or global defaults + per-crew overrides?
+5. `from` field: locked to env (v0), or `--from` override?
+6. Mid-mission fact-change notifications (push into stdin vs pull-only): v0 is pull-only.
 
-## 11. What would make this architecture fail
+## 12. What would break this architecture
 
-- A runtime that doesn't support injecting a system prompt at spawn (we'd have to type it into stdin after spawn, ugly but doable).
-- An agent that won't learn to call CLI tools (hasn't happened with any modern coding agent, theoretical risk).
-- NDJSON append atomicity breaking on an exotic filesystem (NFS, iCloud-synced volume). v0: document that app data must be on a local POSIX filesystem.
+- A runtime with no way to inject a system prompt at spawn (we'd type into stdin post-spawn — ugly but doable).
+- An agent that won't learn to call CLI tools (hasn't happened with any modern coding agent).
+- NDJSON append atomicity breaking on an exotic filesystem (NFS, iCloud-synced). v0: document that app data must be on a local POSIX filesystem.
