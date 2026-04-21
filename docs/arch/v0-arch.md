@@ -16,7 +16,7 @@ Runners is a local desktop app. A user configures a **crew** of CLI coding agent
 │  │ MissionManager       │   │ SessionManager       │   │ EventBus        │  │
 │  │  - mission lifecycle │   │  - PTY spawn/kill    │   │  - tail NDJSON  │  │
 │  │  - compose prompts   │   │  - reader threads    │   │  - notify watch │  │
-│  │  - roster + brief    │   │  - scrollback rings  │   │  - fact project │  │
+│  │  - roster + brief    │   │  - scrollback rings  │   │  - projections  │  │
 │  └────────┬─────────────┘   └────────┬─────────────┘   └────────┬────────┘  │
 │           │                          │                          │           │
 │           │                          │                          ▼           │
@@ -35,11 +35,11 @@ Runners is a local desktop app. A user configures a **crew** of CLI coding agent
 │  │   │  master  │ ◄────►  │  child: claude-code / codex / shell     │   │   │
 │  │   └──────────┘         │  env: RUNNERS_CREW_ID,                  │   │   │
 │  │                        │       RUNNERS_MISSION_ID,               │   │   │
-│  │                        │       RUNNERS_RUNNER_NAME,              │   │   │
+│  │                        │       RUNNERS_RUNNER_HANDLE,              │   │   │
 │  │                        │       RUNNERS_EVENT_LOG, PATH=…         │   │   │
 │  │                        └─────┬───────────────────────────────────┘   │   │
 │  └─────────────────────────────┼──────────────────────────────────────┘   │
-│                                │ runs `runners emit` / `runners ctx`      │
+│                                │ runs `runners signal` / `runners msg`    │
 │                                ▼                                          │
 │                  ┌─────────────────────────────┐                          │
 │                  │  events.ndjson (per mission)│                          │
@@ -49,40 +49,57 @@ Runners is a local desktop app. A user configures a **crew** of CLI coding agent
                                   ▼
                          ┌───────────────────────┐
                          │ React + xterm.js      │
-                         │  terminals, timeline, │
-                         │  HITL cards, facts    │
+                         │  terminals, messages, │
+                         │  signals, HITL        │
                          └───────────────────────┘
 ```
 
 ### 1.2 The one-paragraph story
 
-The user defines a **crew** (configuration: runners + policy). They click **Start Mission**, which creates a **mission** (runtime container), spawns one PTY-backed **session** per runner, and composes each runner's system prompt with the mission brief, the crew roster, and coordination instructions. Runners run real CLI binaries inside PTYs; they emit **events** via a bundled `runners` CLI that appends to the mission's NDJSON file. The **orchestrator** tails that file, applies a rule-based policy, and dispatches actions (inject stdin, ask human, pause, etc.). Runners share state through a **fact** whiteboard backed by the same event log. The UI is a read-only tail that renders terminals, events, facts, and HITL prompts.
+The user defines a **crew** (configuration: runners + policy). They click **Start Mission**, which creates a **mission** (runtime container), spawns one PTY-backed **session** per runner, and composes each runner's system prompt with the mission brief, the crew roster, and coordination instructions. Runners run real CLI binaries inside PTYs. They coordinate through two primitives — **signals** (typed events for the orchestrator to route on) and **messages** (flat prose stream for runner-to-runner conversation) — both carried through a bundled `runners` CLI that appends to the mission's NDJSON file. The **orchestrator** tails that file, applies a rule-based policy, and dispatches actions (inject stdin, ask human, pause, etc.). The UI is a read-only tail that renders terminals, messages, signals, and HITL prompts.
 
 ## 2. Concepts
 
-Seven domain objects. Two kinds: **configuration** (persistent, edited by the user) and **runtime** (live, created at mission start, torn down at mission end).
+Domain objects split cleanly into two layers:
+
+- **Configuration** — persistent, user-edited. Outlives missions. Crew, Runner, Orchestrator Policy.
+- **Runtime** — created at mission start, torn down at mission end. Everything here is scoped to a mission: the Mission itself, its Sessions, its coordination primitives (Signals, Messages), and the orchestrator's in-memory state.
+
+The key insight: **Runner is config; Session is its runtime instance** — the same pattern as Crew (config) → Mission (runtime). A runner never runs on its own. A runner runs *inside a mission* as a session. The session is born when the mission starts, lives while the mission runs, and dies when the mission ends.
 
 ### 2.1 Relationship diagram
 
 ```
-Configuration (persistent)          Runtime (live or historical)
-
-  Crew ─┬── Runner ────────────────► Session ────► PTY process
-        │                              ▲
-        │                              │ spawns
-        └── Orchestrator Policy        │
-              │                        │
-              └─ attached to ─► Mission ────► events.ndjson
-                                  │             │
-                                  │             ├─► Event
-                                  │             └─► Fact (via fact_recorded)
-                                  │
-                                  └─► Shared context (brief + roster + facts)
+┌─ Configuration (persistent) ─────────┐    ┌─ Runtime (mission-scoped) ──────────────┐
+│                                      │    │                                         │
+│   Crew ─┬── Runner ──────────────────┼────┼──► Session ─► PTY process               │
+│         │      (describes a role,    │    │     (one instance per runner per         │
+│         │       binary, brief)       │    │      mission; lives & dies with the      │
+│         │                            │    │      mission)                            │
+│         │                            │    │                                         │
+│         └── Orchestrator Policy      │    │     ▲                                    │
+│               │                      │    │     │  spawned & owned by                │
+│               └── attached to ───────┼────┼──► Mission ─── events.ndjson             │
+│                                      │    │     │              │                    │
+│                                      │    │     │              ├─► Signal   [v0]    │
+│                                      │    │     │              ├─► Message  [v0]    │
+│                                      │    │     │              ├─► Thread   [v0.x]  │
+│                                      │    │     │              └─► Fact     [v0.x]  │
+│                                      │    │     │                                   │
+│                                      │    │     ├─► Orchestrator in-memory state    │
+│                                      │    │     │    (pending asks, dispatch ledger)│
+│                                      │    │     │                                   │
+│                                      │    │     └─► Shared context:                 │
+│                                      │    │           brief + roster (v0)           │
+│                                      │    │           + facts (v0.x)                │
+└──────────────────────────────────────┘    └─────────────────────────────────────────┘
 ```
+
+A mission is a container. Everything in the runtime column is either the container itself (Mission) or an object whose lifecycle is scoped by it. **Sessions are first-class members of this container** alongside the coordination bus and the orchestrator state — not a side effect of spawning runners.
 
 ### 2.2 Crew — *a configured team*
 
-The persistent "who's on the team and how they work together" record. A crew has a name, a default mission goal, a list of runners, an orchestrator policy, and an event-type allowlist. It does not run. It is blueprint.
+The persistent "who's on the team and how they work together" record. A crew has a name, a default mission goal, a list of runners, an orchestrator policy, and a signal-type allowlist. It does not run. It is blueprint.
 
 Lifecycle: created by the user, edited freely, deleted when no longer needed. Persisted in SQLite.
 
@@ -90,7 +107,14 @@ Lifecycle: created by the user, edited freely, deleted when no longer needed. Pe
 
 An individual CLI agent within a crew: what binary to run, with what args, in what working directory, with what system prompt (the role's brief). Persistent config. A runner doesn't run either; it describes a process that will be spawned when a mission starts.
 
-A runner belongs to exactly one crew. Examples: "Coder (claude-code)", "Reviewer (claude-code)", "Tester (shell)".
+A runner has two identifying fields:
+
+- **`handle`** — a lowercase slug (e.g. `coder`, `reviewer`, `tester`). Required, immutable once set, unique within the crew. Used everywhere addressing is needed: as `from` and `to` in events, as `--to <handle>` on the CLI, and in policy rules. Handles are what runners call each other by.
+- **`display_name`** — a free-form label for the UI (e.g. "Coder", "Lead Reviewer"). Editable; not used in event fields or addressing.
+
+Keeping these separate means renaming a runner for the UI doesn't break briefs, rules, or historical events. `handle` is the identity; `display_name` is just presentation.
+
+A runner belongs to exactly one crew. Examples: `coder` (claude-code), `reviewer` (claude-code), `tester` (shell).
 
 ### 2.4 Orchestrator Policy — *the crew's decision rules*
 
@@ -98,31 +122,123 @@ A JSON list of `{when, do}` rules attached to the crew. This is where all routin
 
 There is no code here — just a lookup table. No scripting, no LLM. v0 is deliberately dumb.
 
-### 2.5 Mission — *one activation of the crew*
+### 2.5 Mission — *one activation of the crew, and the runtime container*
 
-A runtime container. When the user clicks **Start Mission**, a mission row is created, sessions are spawned for every runner, the orchestrator is booted with a fresh in-memory state, and an NDJSON event log is opened. When the mission ends (explicit stop, or all sessions exited), everything in the container shuts down together.
+A mission is the only runtime container in the system. Everything alive at runtime lives *inside* a mission and dies with it:
 
-A mission scopes: the event log, the fact whiteboard, pending HITL cards, orchestrator memory. Each mission starts empty on all four.
+- A **Session** per runner (the PTY processes — see §2.6).
+- The **coordination bus** — the NDJSON event log carrying signals and messages.
+- The **orchestrator's in-memory state** — pending HITL asks, dispatch ledger (which triggering events have been handled), per-runner read watermarks, (later) fact projection.
+- The **shared context** injected into each runner's composed prompt — the mission brief and the roster.
+
+Lifecycle:
+- **Start**: user clicks Start Mission on a crew. A mission row is created, one session is spawned per runner in the crew, the orchestrator boots with fresh state, and an NDJSON file is opened.
+- **End**: explicit stop, or all sessions exited. Every session is killed, the orchestrator stops, the mission row is closed out.
+
+This framing matters: when we say "the coordination bus is mission-scoped" or "the fact whiteboard is mission-scoped," we're saying the same thing as "sessions are mission-scoped." They all share one lifecycle because they all belong to the same container.
 
 v0 constraint: a crew can have at most one live mission at a time. A crew can have many historical missions.
 
-### 2.6 Session — *one runner's PTY process*
+### 2.6 Session — *one runner's PTY process, running inside a mission*
 
-The live process for one runner inside one mission. One runner × one mission = one session. Owns: a PTY master handle, a reader thread, a writer, a scrollback ring buffer. When the session's child process exits, the session is done; a new one is only created by starting a new mission.
+The runtime instance of a Runner. A Session is to a Runner what a Mission is to a Crew: the *run* of a *configuration*.
 
-A session is the only object that actually *executes* something — everything else is metadata or a coordination channel.
+A session exists if and only if a mission exists. One runner × one mission = one session. When the mission starts, each runner in the crew gets a session spawned for it. When the mission ends, every session in that mission is killed. A session cannot outlive its mission; a session cannot exist without one.
 
-### 2.7 Event — *a durable coordination message*
+A session owns:
+- A PTY master handle (the only object in the system with a file descriptor to a running child process).
+- A blocking reader thread that drains the PTY and pushes to the scrollback ring.
+- A writer for stdin injection (used by the human and by the orchestrator's `inject_stdin` action).
+- A ring buffer (~10k lines) for scrollback that survives frontend tab-switches and app restarts within the mission.
+- An exit status once the child has terminated.
 
-One line in a mission's NDJSON file. Structured JSON: `{id, ts, crew_id, mission_id, from, to, type, payload, correlation_id, causation_id}`. Emitted by runners (via the `runners emit` CLI), humans (via the UI), or the orchestrator itself (as a side effect of actions). Consumed by the orchestrator for policy dispatch and by the UI for the timeline.
+A session is the only object in the system that actually *executes* code — everything else is metadata, a coordination channel, or a projection over the event log.
 
-Events are the system's source of truth for runtime state. The orchestrator's in-memory state is a *projection* of the events; on crash, it's rebuilt by replaying the file.
+### 2.7 Coordination primitives — *what flows between runners*
 
-### 2.8 Fact — *an entry on the shared whiteboard*
+Runners don't share a programming model; they share an IM-like surface. The same way Slack/Lark/Teams gave humans a small vocabulary of coordination (messages, threads, pings, pinned canvas), Runners gives agents a parallel vocabulary. We ship a subset in each milestone.
 
-A key-value pair any runner can read or write during a mission via the `runners ctx` CLI. Implemented as a specific event type (`fact_recorded`), so facts are just events with a particular shape — no separate store. Last-writer-wins per key. Mission-scoped: each mission starts with an empty whiteboard.
+| Primitive | Role | v0 | v0.x | v1+ |
+|---|---|:---:|:---:|:---:|
+| **Signal** | Typed notification; orchestrator routes on these. Verb grammar. | ✅ | | |
+| **Message** | Prose, broadcast or directed to a specific runner. | ✅ | | |
+| **Inbox** | Per-runner projection: broadcasts + messages addressed to me. | ✅ | | |
+| **Thread** | Scoped sub-conversation within a mission. | | ✅ | |
+| **Fact** | KV whiteboard; "what is currently true in this mission." | | ✅ | |
+| **Mention** | Targeted `@name` inside a message's prose (lighter-weight than `--to`). | | | ✅ |
+| **Reaction** | Lightweight signal attached to a message (`👍`, `🔍`, `blocking`). | | | ✅ |
 
-Facts are how runners share state that doesn't fit the event model cleanly: "the PR URL is X," "we're targeting branch Y," "the build is green." Think of events as *things that happened* and facts as *things that are currently true*.
+#### 2.7.1 Signal — *"something happened, please decide"*
+
+Short, typed, orchestrator-routable. Grammar: past-tense verb.
+
+Examples: `review_requested`, `changes_requested`, `approved`, `blocked`.
+
+Signals are machine-readable by design. The orchestrator has rules keyed to signal types. Runners emit them when they want the mission to move to its next state.
+
+A signal carries an optional `payload` (JSON) but the payload is meant for the orchestrator's decision logic, not for runners to read as prose.
+
+#### 2.7.2 Message — *"here's what I think"*
+
+Prose, addressed either to the mission (broadcast) or to a specific crewmate (direct). Runner-to-runner (and human-readable). Grammar: sentence.
+
+Two shapes:
+- **Broadcast** — `runners msg post "<text>"`. Goes to everyone's inbox. Use for status updates, open questions, mission-wide announcements.
+- **Direct** — `runners msg post --to <runner> "<text>"`. Goes to that runner's inbox only. Use for targeted questions, replies, or private back-and-forth.
+
+Examples:
+- broadcast: `"Branch feat/x is ready. Touched auth.rs and session.rs."`
+- direct: `runners msg post --to reviewer "Line 47 in auth.rs: null check missing when the token is expired."`
+- direct reply: `runners msg post --to coder "Kept the 30s timeout — provider is slow on cold start."`
+
+Messages are **flat in v0** — one stream per mission, no thread scoping. Each runner consumes messages through their **inbox** (§2.7.5): broadcasts plus directly-addressed messages.
+
+Messages and signals are separate for good reasons:
+- Signals are typed and small; orchestrator logic keys off them. Messages are prose; orchestrator doesn't parse them.
+- A signal without prose works ("approved"). Prose without a signal works too ("I noticed X"). Conflating them forces every signal to carry prose and every note to carry a type.
+- Runners (LLM agents) already know how to use both: signals are like exit codes, messages are like comments. The CLI keeps them linguistically separate.
+- Direct messages enable real conversation between runners without forcing every interaction through the orchestrator policy.
+
+#### 2.7.3 Inbox — *"what's in my mailbox"*
+
+Every runner has an **inbox**: the subset of the mission's messages that are relevant to it. The inbox is a **projection** over the event log, not a separate data structure. For the runner with handle `h`:
+
+```
+inbox(h) = all events in the mission where kind = "message" AND (to = null OR to = h)
+```
+
+`runners msg read` returns the calling runner's inbox, sorted by ULID (chronological). `--since <ts>` restricts to messages newer than a given ULID/timestamp so agents can poll without re-reading history.
+
+This design keeps the storage model simple (one event log per mission, same as before) while giving each runner a clean "what for me" view. Broadcasts end up in everyone's inbox; direct messages end up in exactly one.
+
+**The inbox is pull-based.** Messages are read when the recipient runs `msg read`; the system does not automatically interrupt a busy runner every time mail arrives. This is deliberate — not every direct message is urgent, and auto-interrupting on every DM would blur the signal/message split (§2.7.1 vs §2.7.2) and corrupt in-flight tool calls.
+
+The recipient learns to read its inbox through two mechanisms:
+
+1. **Convention** — the composed system prompt (§4.3) instructs every runner to check its inbox at natural task boundaries.
+2. **Signals as the urgent wake-up** — if a sender needs the recipient to drop everything, they emit a signal in addition to (or instead of) the message. The signal goes through the orchestrator's policy, which typically injects stdin. On any stdin injection, the orchestrator automatically appends a summary of the recipient's unread inbox messages (§5.5), so urgent wake-ups carry relevant conversation context with them.
+
+The inbox is not a queue in the delete-on-read sense — messages stay in the log forever (well, for the mission). The "read" in `msg read` is lookup, not consumption.
+
+#### 2.7.4 Thread *(v0.x)* — *scoped conversation*
+
+When a mission has 3+ runners or runs for long enough to develop sub-topics, the flat message stream gets noisy. Threads add a scoping layer: messages can be posted to a named thread; runners can `msg read <thread>` to get just that conversation.
+
+Cut from v0 because the v0 demo is two runners on one loop — the whole mission *is* the thread.
+
+#### 2.7.5 Fact *(v0.x)* — *queryable state*
+
+A KV whiteboard. Any runner can `ctx set key value` and `ctx get key`. Mission-scoped; each mission starts with an empty whiteboard. Backed by the event log as a `fact_recorded` event type, projected in-memory by the orchestrator for O(1) reads.
+
+Facts differ from messages and signals: they're **current state**, not events. Reading a fact answers "what is true right now?" not "what happened?" Cut from v0 because the demo doesn't need a dashboard-style current-state view.
+
+### 2.8 Events — *the unifying transport*
+
+Every coordination primitive is persisted as an **event** — one line in the per-mission NDJSON file. An event has: `{id, ts, crew_id, mission_id, kind, from, to, type, payload}`.
+
+The `kind` field is the primitive discriminator — `signal`, `message`, and (later) `fact`, `thread_opened`. For `kind: "signal"`, the `type` field carries the signal's semantic verb (`review_requested`, `changes_requested`, etc.); for `kind: "message"`, `type` is omitted and the prose lives in `payload.text`. The orchestrator and UI project events into primitive-specific views based on `kind`.
+
+This is a transport detail — runners interact through the CLI verbs (`runners signal`, `runners msg`), not the event schema directly. There is no separate `signal_emitted` or `message_posted` event type; the `kind` field is authoritative.
 
 ## 3. Mission lifecycle
 
@@ -138,7 +254,7 @@ user clicks Start Mission on a crew
         │     composed_prompt = compose(runner.system_prompt,
         │                                mission.brief,
         │                                roster(crew),
-        │                                coordination_notes(crew.event_types))
+        │                                coordination_notes(crew.signal_types))
         │     SessionManager.spawn(mission_id, runner, composed_prompt)
         ├─ Orchestrator.start(mission_id)  ← fresh in-memory state
         │     open events.ndjson, read history (empty), tail via notify
@@ -181,7 +297,7 @@ Child inherits:
   PATH                = $APPDATA/runners/bin:<original PATH>
   RUNNERS_CREW_ID     = <ulid>
   RUNNERS_MISSION_ID  = <ulid>
-  RUNNERS_RUNNER_NAME = coder
+  RUNNERS_RUNNER_HANDLE = coder
   RUNNERS_EVENT_LOG   = $APPDATA/runners/crews/<crew>/missions/<mission>/events.ndjson
 
 Reader thread (blocking):
@@ -198,52 +314,82 @@ MissionManager builds each runner's prompt from four parts:
 1. **The user-authored brief** (`runners.system_prompt`).
 2. **The mission brief** (`missions.goal_override` or `crews.goal`).
 3. **The roster** — crewmates' names, roles, one-line brief summaries.
-4. **Coordination notes** — how to use `runners emit`, `runners ctx`, and the crew's allowed event types.
+4. **Coordination notes** — how to use `runners signal` and `runners msg`, the crew's allowed signal types, and conventions for inbox checking.
 
-Example for a Reviewer:
+Example for the `reviewer` runner (display name "Reviewer"):
 
 ```
-You are Reviewer, a runner in crew "Feature Ship".
+You are `reviewer` (Reviewer), a runner in crew "Feature Ship".
 Your role: code review.
 
 == Your brief ==
-Wait for review_requested events. Read the diff on the branch recorded
-in the `pr_branch` fact. Emit `approved` or `changes_requested`.
+When `coder` requests review, read their messages and the diff,
+then either approve or request changes with specific feedback.
 
 == Mission ==
 Goal: Implement feature X with tests and a clean PR.
 
 == Your crewmates ==
-- Coder (implementation): Writes code. Emits review_requested when ready.
+- `coder` (Coder, implementation): Writes code. Will signal review_requested
+  and post messages explaining what changed.
+
+Handles (the lowercase names in backticks above) are what you use to
+address crewmates. Display names are shown for readability only.
 
 == Coordination ==
-Use `runners emit <type> [--payload '{...}']` to signal milestones.
-Use `runners ctx get <key>` to read facts, `runners ctx set <key> <value>` to record them.
-Event types in this crew: review_requested, changes_requested, approved, blocked.
+- Signal milestones with `runners signal <type>`.
+  Signal types: review_requested, changes_requested, approved, blocked.
+- Post prose with `runners msg post "<text>"` (broadcast) or
+  `runners msg post --to <handle> "<text>"` (direct to one crewmate).
+- Your inbox is `runners msg read` (broadcasts + messages addressed to you).
+  Check it at natural task boundaries:
+    * before starting a new task,
+    * before emitting a signal that affects another runner,
+    * whenever you're waiting on something (poll with `--since <last_ulid>`).
+  Urgent items will also arrive via stdin when someone signals — but by
+  default, the inbox is pull-based.
 ```
 
-### 4.4 Frontend wiring
+### 4.4 Frontend wiring and human takeover
 
 - On first view: fetch the session's scrollback ring; write to xterm.js to restore history.
 - Subscribe to `session:{id}:out` for live output.
 - xterm.js `onData` → `send_input(session_id, bytes)` → `master.writer.write_all(bytes)`.
 - Frontend window resize → debounced (~100ms) `master.resize(rows, cols)` → SIGWINCH to child. Non-optional; without it, TUIs mis-render.
 
-### 4.5 Threads, not async
+**Human takeover is a first-class capability.** At any moment, the human can type directly into any runner's stdin — the same writer the orchestrator uses for `inject_stdin`. This is deliberate: the human can step in to answer a prompt the agent is stuck on, correct a bad plan, kill a runaway tool call, or just chat with the agent mid-flight.
+
+The UI surface for this is the xterm pane itself — it's a real terminal, not a log viewer. Typing sends keystrokes through untouched, including special keys (arrows, Enter, Ctrl-C). The agent on the other end can't tell whether the bytes came from the orchestrator, the human, or a replay — which is the whole point.
+
+### 4.5 Sessions outlive the UI
+
+Sessions live in the Rust backend and belong to the mission, not to any webview or tab. Closing the mission control window does *not* kill the sessions — the agents keep running, events keep flowing into the NDJSON file, the orchestrator keeps applying rules. Re-opening the window re-attaches: the frontend fetches each session's scrollback ring to rebuild xterm state, then subscribes to live output from wherever it was.
+
+The only things that end a session in v0 are: user clicks End Mission, the child process exits, or the app itself quits. A closed webview window is none of those.
+
+**Why this matters for human takeover:** if the only way to type into a runner required the UI to be visible, then minimizing or closing the mission view to focus on something else would silently cut the human out of the loop. That's wrong — the human should be able to close the monitor and still inject stdin (or let the orchestrator do it) without anything changing about how agents run.
+
+### 4.6 Writer serialization
+
+The PTY master writer is shared between the human (via `send_input` command) and the orchestrator (via `inject_stdin` action). Concurrent writers could interleave bytes mid-line, which would confuse the TUI on the other end.
+
+Solution: wrap each session's writer in a `tokio::sync::Mutex`. Every write is one `write_all` call under the lock. Small writes (keystrokes, short prompts) are fast enough that contention is invisible.
+
+### 4.7 Threads, not async
 
 `portable-pty`'s reader is blocking. Spawn an OS thread per session. Writers stay on the Tauri async runtime (writes are short).
 
-### 4.6 Scrollback in Rust
+### 4.8 Scrollback in Rust
 
 `VecDeque<String>` ring (~10k lines) per session in SessionManager, so scrollback survives tab-switches and app restarts. Overflow lines append to `missions/{mission_id}/sessions/{session_id}.log`. The ring sees raw bytes including alt-screen toggles — acceptable v0 scuff.
 
-### 4.7 Death and kill
+### 4.9 Death and kill
 
 Reader thread owns the child handle. On EOF, it calls `wait()`, emits `session:{id}:exit`, updates the sessions row. No auto-restart in v0.
 
 Kill: drop master → SIGHUP via `portable-pty`; escalate to SIGKILL if child lingers. v0 targets macOS; Linux best-effort; Windows deferred.
 
-## 5. Event bus (inter-runner communication)
+## 5. Coordination bus
 
 ### 5.1 Transport
 
@@ -251,15 +397,33 @@ Kill: drop master → SIGHUP via `portable-pty`; escalate to SIGKILL if child li
 $APPDATA/runners/crews/{crew_id}/missions/{mission_id}/events.ndjson
 ```
 
-One line per event. Append-only. **Each mission has its own file** — this scopes log rotation (no rotation policy needed; a new mission = a new file), crash-replay (orchestrator reads only the live mission's file), and deletion (drop the mission directory).
+One line per event. Append-only. **Each mission has its own file** — scopes log rotation, crash-replay, and deletion.
 
 Why a file instead of an in-memory bus:
 - **Debuggable** — `tail -f events.ndjson | jq .`.
 - **Crash-durable** — whatever's on disk survived the crash.
-- **Atomic** — writes < `PIPE_BUF` (4KB on macOS) to `O_APPEND` are atomic at the OS level; concurrent `runners emit` invocations interleave correctly.
+- **Atomic** under explicit guards (see §5.1.1) — concurrent `runners` invocations interleave correctly at line granularity.
 - **Replayable for free** — restart the orchestrator, re-scan, resume.
 
-### 5.2 Schema
+#### 5.1.1 Concurrent-write correctness
+
+Multiple runners can invoke `runners signal` / `runners msg` at the same time from different PTYs. We need line-granular atomicity regardless of filesystem. The approach:
+
+1. Open the log with `O_APPEND | O_WRONLY | O_CREAT`.
+2. Acquire an advisory exclusive lock: `flock(fd, LOCK_EX)`.
+3. Emit exactly one `write(2)` call with the serialized JSON line including the trailing `\n`.
+4. `close(fd)`, which releases the lock.
+
+This gives us:
+- **Ordering**: `O_APPEND` guarantees the write lands at end-of-file at the moment the kernel performs it.
+- **Atomicity across writers**: `flock(LOCK_EX)` serializes writers. Without it we cannot safely rely on filesystem-level write atomicity — `PIPE_BUF` applies to pipes, not regular files, and small-write atomicity on regular files is filesystem-specific.
+- **No partial lines**: a single `write(2)` call of the full line + `\n` means either the whole line lands or none of it does (the kernel writes sequentially under the lock).
+
+**Filesystem requirements.** The app data directory must be on a local POSIX filesystem (APFS, ext4, XFS, etc.). Network filesystems (NFS, SMB) and iCloud-synced volumes may not honor `flock()` or may re-order appends across clients; v0 documents this and checks at app startup.
+
+Writers: only the bundled `runners` CLI writes to the log (the Rust backend also writes orchestrator-generated events — it uses the same `flock`-guarded path). No other process should write to this file; the orchestrator refuses to start a mission if another holder has an exclusive lock at boot.
+
+### 5.2 Event schema
 
 ```jsonc
 {
@@ -267,26 +431,35 @@ Why a file instead of an in-memory bus:
   "ts": "2026-04-21T12:34:56.123Z",
   "crew_id": "01HG...",
   "mission_id": "01HG...",
-  "from": "coder",                  // runner name | "human" | "orchestrator"
-  "to": null,                       // null = broadcast, or target runner name
-  "type": "review_requested",
-  "payload": { "...": "..." },
-  "correlation_id": null,           // groups events in one conversation
-  "causation_id": null              // which event caused this one
+  "kind": "signal",                 // signal | message  (v0.x adds: fact, thread_opened, ...)
+  "from": "coder",                  // runner handle | "human" | "orchestrator"
+  "to": null,                       // null = broadcast; runner handle = directed (messages);
+                                    //   for signals, always null in v0 (policy decides routing)
+  "type": "review_requested",       // for kind=signal; omitted for kind=message
+  "payload": { "...": "..." }       // kind-specific (e.g. { "text": "..." } for messages)
 }
 ```
 
-- **ULID** — sortable, embeds a ms timestamp, deterministic ordering within a millisecond.
-- **`correlation_id`** — shared by all events in one conversation (e.g. every event in one review cycle). Set by the first emitter; propagated by the orchestrator to events it generates in response.
-- **`causation_id`** — the immediate trigger. Together with correlation, reconstructs the event DAG.
+For a signal event: `kind=signal`, `type` is set, payload optional.
+For a message event: `kind=message`, `payload.text` is the prose.
 
-### 5.3 How runners emit events
+- **ULID `id`** — sortable, embeds a ms timestamp. Ordering *is* the graph in v0.
 
-The three-layer mechanism that answers "how does the agent know to append?"
+**On `correlation_id` / `causation_id` (deferred).** An earlier draft carried both fields on every event. They're dropped from v0:
+
+- The only real use case in v0 is matching an `ask_human` card to the `human_response` the operator clicks — that's handled in-payload via `human_response.payload.question_id` (§5.5.0).
+- No runner-authored event has a reliable prior cause to cite; exposing `--correlation-id` / `--causation-id` as CLI flags just invites agents to leave them null or hallucinate values.
+- "Groups events in one conversation" has no referent until threads (v0.x) define what a conversation is. Ship the concept with the thing that needs it.
+
+v0.x will reintroduce explicit event-DAG fields when threads and richer routing require them. Until then, the orchestrator's in-memory dispatch table carries causality for the actions that need it.
+
+### 5.3 How runners emit signals and messages
+
+Three layers — answers "how does the agent know to append to the event log?"
 
 #### Layer 1 — system prompt tells the convention
 
-The composed prompt (§4.3) includes a Coordination section describing the `runners emit` CLI and listing allowed event types. LLM agents already know how to read CLI docs and invoke tools — it's the same capability they use for `git`, `gh`, `npm`.
+The composed prompt (§4.3) includes a Coordination section describing the `runners` CLI and listing allowed signal types. LLM agents already know how to read CLI docs and invoke tools — same capability they use for `git`, `gh`, `npm`.
 
 #### Layer 2 — the CLI exists on PATH with context in env
 
@@ -294,60 +467,143 @@ The backend prepends `$APPDATA/runners/bin/` to PATH and drops the `runners` bin
 
 On invocation, the CLI:
 1. Reads env vars; errors if missing.
-2. Builds an event (ULID, timestamps, `from` = `$RUNNERS_RUNNER_NAME`, `crew_id`, `mission_id`).
-3. Validates `type` against the allowlist sidecar at `$APPDATA/runners/crews/{crew_id}/event_types.json`.
+2. Builds an event (ULID, timestamps, `from` = `$RUNNERS_RUNNER_HANDLE`, `crew_id`, `mission_id`, `kind`).
+3. For directed messages, validates `--to <handle>` against the crew's runner handles (rejects unknown handles with a clear stderr message).
+3. For signals: validates `type` against the allowlist sidecar at `$APPDATA/runners/crews/{crew_id}/signal_types.json`.
 4. Appends one JSON line to `$RUNNERS_EVENT_LOG` via `open(O_APPEND | O_WRONLY)` + `write_all` + close.
-5. Exits 0 on success.
+5. Exits 0.
 
-Each invocation writes ≤ one 4KB line in one `write` syscall, so concurrent emitters interleave safely.
+Each invocation writes ≤ one 4KB line in one `write` syscall; concurrent emitters interleave safely.
 
 #### Layer 3 — role briefs reinforce usage
 
-User-authored briefs include examples at the moments where emission matters. We ship sensible defaults per-runtime.
+User-authored briefs include examples at the moments where signaling or messaging matters. We ship sensible defaults per-runtime.
 
 #### Why robust
 
 - No in-band protocol in the PTY stream. Not parsing stdout for magic markers.
 - Works for any CLI agent (MCP or not). Only requirement: can run shell commands.
-- Fails visibly. If the agent forgets to emit, the orchestrator sees nothing and the user sees an idle runner.
-- Fully observable. `$ runners emit review_requested` shows up literally in the terminal pane; the resulting event shows up in the timeline.
+- Fails visibly. If the agent forgets to signal, the orchestrator sees nothing and the user sees an idle runner.
+- Fully observable. `$ runners signal review_requested` shows up literally in the terminal pane; the resulting event shows up in the timeline and messages panel.
 
-#### Failure mode: hallucinated event types
+#### Failure mode: hallucinated signal types
 
 CLI validates against the allowlist; unknown types exit non-zero with a clear stderr message. Agent reads the error from shell history and self-corrects.
+
+Messages have no allowlist — they're prose.
 
 ### 5.4 Consumers
 
 Two subscribers to the NDJSON file, both via `notify`:
 
-- **Orchestrator** — deserializes each new line, runs policy, dispatches actions, updates the fact projection when `fact_recorded` appears.
-- **UI** — the backend re-emits each line as a `mission:{id}:event` Tauri event. Frontend renders timeline, HITL cards, and fact view.
+- **Orchestrator** — deserializes each new line. For signals, runs the policy and dispatches actions. For messages, no-op by default (v0.x: threads, routing-by-mention).
+- **UI** — the backend re-emits each line as a `mission:{id}:event` Tauri event. Frontend splits by `kind` into the messages panel and the signal/timeline panel.
 
 #### Startup replay
 
-On orchestrator boot (triggered by mission start or app restart mid-mission): open the mission's file, fold events into in-memory state (fact projection, pending asks, correlation tracking), then switch to tailing. The file *is* the state.
+On orchestrator boot: open the mission's file, fold events into in-memory state (pending asks, dispatch ledger, read watermarks), then switch to tailing. The file *is* the state.
 
 ### 5.5 Orchestrator actions
 
-| Action | Effect | Emits event? |
+Every action emits at least one audit signal. Each audit payload carries `triggered_by: <triggering-event.id>` so causality is visible without relying on envelope fields.
+
+| Action | Effect | Emits signal(s) with `type` |
 |---|---|---|
-| `inject_stdin` | write template + `\r` to target runner's PTY writer | `stdin_injected` |
-| `ask_human` | add card to HITL panel; wait for click | `human_question`, then `human_response` |
-| `notify_human` | fire a toast | `human_notified` |
-| `pause_runner` | SIGSTOP to target PTY | `runner_paused` |
-| `resume_runner` | SIGCONT to target PTY | `runner_resumed` |
+| `inject_stdin` | write template + `\r` to target runner's PTY writer | `stdin_injected`, payload `{ triggered_by, target, watermark }` |
+| `ask_human` | add card to HITL panel; wait for click | `human_question` on card open; `human_response` on click (shapes in §5.5.0) |
+| `notify_human` | fire a toast | `human_notified`, payload `{ triggered_by, message }` |
+| `pause_runner` | SIGSTOP to target PTY | `runner_paused`, payload `{ triggered_by, target }` |
+| `resume_runner` | SIGCONT to target PTY | `runner_resumed`, payload `{ triggered_by, target }` |
 
-Emitted events have `causation_id` = the triggering event's `id`. Full chain is reconstructable.
+#### 5.5.0 `ask_human` — payload shapes and matching
 
-**Crash correctness:** emit the event *before* performing the action. Worst case on crash+replay is a duplicate action, which is recoverable (stdin seen twice; HITL cards deduped by event id). Silent loss is not.
+`ask_human { prompt, choices }` produces two correlated signals:
+
+```jsonc
+// When the card is shown:
+{
+  "kind": "signal",
+  "type": "human_question",
+  "from": "orchestrator",
+  "payload": {
+    "question_id": "01HG...",                  // = this event's id; echoed here for convenience
+    "triggered_by": <triggering-signal.id>,    // e.g. the changes_requested signal's id
+    "prompt": "Reviewer requested changes. Accept or override?",
+    "choices": ["accept", "override"]
+  }
+}
+
+// When the human clicks a choice:
+{
+  "kind": "signal",
+  "type": "human_response",
+  "from": "human",
+  "payload": {
+    "question_id": <human_question.id>,       // lets rules target a specific card
+    "choice": "accept"                         // the clicked value (always one of choices[])
+  }
+}
+```
+
+Causality is carried in-payload rather than on the envelope: `human_question.payload.triggered_by` records which signal opened the card, and `human_response.payload.question_id` records which card the human clicked. The orchestrator needs no additional schema fields to match them.
+
+**Matching semantics for follow-up rules.** Downstream rules match `human_response` by choice value — `{ when: { signal: "human_response", payload: { choice: "accept" } }, do: ... }`. Matches any accept, regardless of which question triggered it.
+
+If two `ask_human` prompts are ever outstanding at once and we need to discriminate between them, v0.x will add richer matching (via the v0.x event-DAG fields). v0 ships the simple case; concurrent prompts are out of scope.
+
+**Messages do not trigger orchestrator actions in v0.** The inbox is pull-based (§2.7.3). If a sender needs the recipient to drop everything, they emit a signal — signals are the urgent wake-up mechanism; direct messages are async conversation.
+
+#### 5.5.1 Enriched stdin injection
+
+When `inject_stdin` fires, the orchestrator automatically enriches the template with the recipient's unread inbox summary.
+
+**Watermark tracking.** The orchestrator maintains a per-runner `read_watermark` — the ULID of the newest message that runner has been shown. The watermark advances only on authoritative events, not on heuristics:
+
+- Every `runners msg read` invocation ends by emitting an `inbox_read` audit event with `kind: "signal"`, `type: "inbox_read"`, `from: <runner>`, `payload: { up_to: <max_ulid_returned> }`. The orchestrator advances the runner's watermark to `payload.up_to`.
+- An `inject_stdin` that included an unread summary also emits a `stdin_injected` event with `payload: { watermark: <max_ulid_in_summary> }`, so the next summary is scoped strictly to messages newer than this value — the injection itself counts as showing them.
+
+The watermark is initialized to `"0"` (before any ULID) at mission start and is rebuilt from the log on crash-replay by scanning these events. It is never inferred from `--since` flags (agents can set those to arbitrary values).
+
+**Injection shape.** Before firing, the orchestrator gathers all inbox messages newer than the recipient's watermark. The injected stdin is: `{template}\n\n{unread summary}`, and the watermark advances on the resulting `stdin_injected` event.
+
+Example — rule `{when: signal=changes_requested, do: inject_stdin target=coder template="Reviewer requested changes — check msg read for details."}` fires after Reviewer posted two direct messages. The Coder's PTY receives:
+
+```
+Reviewer requested changes — check msg read for details.
+
+You have 2 new messages:
+  [reviewer 12:38]: Line 47 auth.rs needs a null check.
+  [reviewer 12:39]: session.rs timeout is 30s; our convention is 10s.
+Run `runners msg read` for full content.
+```
+
+The Coder wakes up with both the signal and the conversation context in one interruption. If the Coder does then call `runners msg read`, the CLI returns the same two messages, emits `inbox_read { up_to: <reviewer's second message ULID> }`, and the watermark is already at that point from the injection — so nothing further is shown on the next signal unless genuinely new.
+
+This makes the urgent path (signal → inject_stdin) carry the async path (direct messages) with it automatically. Senders don't decide between "just message" and "signal-plus-message" — they send a message for data, and signal only when they need immediate attention; the enrichment glues the two together on arrival, and the watermark keeps them in sync.
+
+**Crash correctness:** emit the event *before* performing the action. Worst case on crash+replay is a duplicate action, recoverable (stdin seen twice; HITL cards deduped by event id). Silent loss is not.
 
 ### 5.6 Who does delivery
 
-Runners never address other runners. They emit; the orchestrator routes. This gives us:
+Two different delivery models, by primitive kind:
 
-- **Decoupled runners** — Coder doesn't know Reviewer exists. Swap Reviewer without touching Coder's brief.
-- **Single policy location** — every "when X, do Y" lives on the crew row.
-- **Orchestrator is the only side-effecting component** outside runner processes. Easy to reason about.
+- **Signals are orchestrator-routed.** Runners never address other runners with a signal. A signal is emitted into the bus; the orchestrator policy decides what happens (including whether to inject stdin into some specific runner). This keeps all control-flow routing in one place and lets you swap runners without rewriting emitters.
+- **Messages support both broadcast and direct addressing, but are pull-based.** A runner can `msg post` (everyone's inbox) or `msg post --to <runner>` (that runner's inbox only). The orchestrator is *not* in the delivery path — messages sit in the inbox until the recipient runs `msg read`. If a sender needs immediate attention, they emit a signal; signals are the urgent-wake-up channel.
+
+The split:
+
+| | Sender addresses recipient? | Delivery timing | Orchestrator in path? |
+|---|:---:|---|:---:|
+| Signal | No — policy decides | Immediate (via `inject_stdin` etc.) | Always |
+| Broadcast message | No | On recipient's `msg read` | No |
+| Direct message | Yes (`--to`) | On recipient's `msg read` | No |
+
+When the orchestrator does inject stdin on a signal, it automatically enriches the injection with the recipient's unread inbox summary (§5.5.1) — so an urgent signal pulls the associated async conversation along with it. That's how messages effectively "get delivered" to a running agent without a dedicated nudge mechanism.
+
+- **Decoupled control flow** — the Coder doesn't need to know the Reviewer's name to *signal* a review. Swap the Reviewer without rewriting the Coder's signal emissions.
+- **Coupled content flow where it's natural** — if Coder wants to ask Reviewer a specific question, it can just `msg post --to reviewer ...`. The roster injection (§4.3) already tells each runner the current names of its crewmates, so direct addressing works without extra config.
+- **Single policy location** for control — every "when signal X, do Y" lives on the crew row.
+- **No auto-interrupt for messages** — agents check their inboxes on convention and on signal-triggered wake-ups. This preserves the signal/message split (urgent vs async) and keeps in-flight tool calls uncorrupted.
 
 ### 5.7 Known failure modes
 
@@ -355,14 +611,15 @@ Runners never address other runners. They emit; the orchestrator routes. This gi
 |---|---|
 | Orchestrator crashes mid-action | Emit event before action; replay on boot; accept duplicates |
 | Two runners ask human at once | HITL queues both; user answers in order |
-| Event storm (runner bug-looping) | Surface events/sec warning; no rate limit in v0 |
+| Event storm | Surface events/sec warning; no rate limit in v0 |
 | Malformed NDJSON line | Skip and warn; file stays valid |
-| NDJSON file grows large | End the mission; new mission = new file |
-| Hallucinated event type | Allowlist validation + clear stderr for self-correction |
+| NDJSON grows large | End the mission; new mission = new file |
+| Hallucinated signal type | Allowlist validation + clear stderr |
+| Runner posts messages nobody reads | Surface "unread by crewmate X" indicator in UI (v0.x) |
 
 ## 6. Shared context (mission-scoped)
 
-Three layers, different mechanics. All scoped to the mission — each new mission starts empty on all three.
+Two layers in v0.
 
 ### 6.1 Mission brief (read-only, prompt-injected)
 
@@ -370,50 +627,26 @@ Three layers, different mechanics. All scoped to the mission — each new missio
 
 ### 6.2 Roster (read-only, prompt-injected)
 
-Rendered from `crew.runners` at mission start into each runner's prompt as `== Your crewmates ==` with name, role, and a one-line brief summary. Never changes during a mission (v0 constraint: no mid-mission crew edits).
+Rendered from `crew.runners` at mission start into each runner's prompt as `== Your crewmates ==` with name, role, and one-line brief summary. Never changes during a mission.
 
 This is how the Reviewer knows there's a Coder.
 
-### 6.3 Facts — the shared whiteboard (mutable, event-backed)
-
-A KV store any runner reads/writes during the mission, via `runners ctx`. Implemented on the event log — no second store.
-
-**Write:**
-```
-runners ctx set <key> <value>    → emits { type: "fact_recorded", payload: {key, value} }
-runners ctx unset <key>          → emits { type: "fact_recorded", payload: {key, value: null} }
-```
-
-**Read:**
-```
-runners ctx get <key>            → prints value
-runners ctx list                 → prints all current key/value pairs
-```
-
-Last-writer-wins per key. Flat namespace in v0.
-
-**Projection:** the orchestrator maintains a `HashMap<String, Value>`, updated on every `fact_recorded`. Rebuilt from scratch on boot replay. The UI's fact view is driven by this projection via a Tauri event.
-
-**Read path in v0:** the CLI re-scans the log (small, per-mission). If this ever becomes slow, add a localhost HTTP endpoint on the orchestrator.
-
-**Why log-structured:**
-- Single source of truth — facts are events.
-- Auditable — every write is a durable event with who/when.
-- Replayable — projection rebuilds from the log.
-- Atomic — one append per write.
-- Observable — fact updates appear in the timeline.
-
-**Optional snapshot** at `missions/{mission_id}/context.json`, rebuilt from events for `cat`-ability. Not load-bearing.
-
-### 6.4 The `runners` CLI surface
+### 6.3 The `runners` CLI surface in v0
 
 ```
-runners emit <type> [--payload <json>] [--correlation-id <id>] [--causation-id <id>]
-runners ctx  get <key> | set <key> <value> | unset <key> | list
+runners signal <type> [--payload <json>]
+runners msg    post <text> [--to <runner>]
+runners msg    read [--since <ts>] [--from <runner>]
 runners help
 ```
 
-One binary, two verbs, bundled with the app. Context always from env.
+One binary. Two verbs. Context always from env. No event-DAG flags in v0 — causality is implicit (ordering in the log) or in-payload where it needs to be explicit (`human_response.payload.question_id`).
+
+- `msg post` with no `--to` → broadcast.
+- `msg post --to <runner>` → directed; lands in that runner's inbox only.
+- `msg read` → the calling runner's inbox (broadcasts + directs addressed to me), sorted by ULID.
+- `msg read --from <runner>` → filter to messages authored by a specific sender.
+- `msg read --since <ts>` → only messages newer than `ts` (for polling without re-reading history).
 
 ## 7. Data model
 
@@ -425,14 +658,15 @@ crews (
   name TEXT NOT NULL,
   goal TEXT,
   orchestrator_policy TEXT,           -- JSON: [{ when, do }]
-  event_types TEXT,                   -- JSON array: allowlist
+  signal_types TEXT,                  -- JSON array: allowlist
   created_at TEXT, updated_at TEXT
 );
 
 runners (
   id TEXT PRIMARY KEY,
   crew_id TEXT REFERENCES crews(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
+  handle TEXT NOT NULL,               -- lowercase slug, immutable, unique within crew
+  display_name TEXT NOT NULL,         -- free-form UI label
   role TEXT NOT NULL,
   runtime TEXT NOT NULL,
   command TEXT NOT NULL,
@@ -440,7 +674,8 @@ runners (
   working_dir TEXT,
   system_prompt TEXT,
   env_json TEXT,
-  created_at TEXT, updated_at TEXT
+  created_at TEXT, updated_at TEXT,
+  UNIQUE (crew_id, handle)
 );
 
 missions (
@@ -466,15 +701,14 @@ sessions (
 ```
 $APPDATA/runners/
 ├── bin/
-│   └── runners                              # the CLI (emit + ctx)
+│   └── runners                              # the CLI (signal + msg)
 ├── runners.db                               # SQLite
 └── crews/
     └── {crew_id}/
-        ├── event_types.json                 # CLI allowlist sidecar
+        ├── signal_types.json                # CLI allowlist sidecar
         └── missions/
             └── {mission_id}/
                 ├── events.ndjson            # per-mission event log
-                ├── context.json             # optional fact snapshot
                 └── sessions/
                     └── {session_id}.log     # scrollback overflow
 ```
@@ -497,40 +731,69 @@ For v0 scale (one live mission, ≤ ~10 sessions): fine.
 
 ## 9. Out of scope for v0
 
+- Threads (v0.x)
+- Facts / shared whiteboard (v0.x)
+- Mentions, reactions (v1)
 - Concurrent live missions per crew
-- Cross-mission memory (fact or prompt carryover)
+- Cross-mission memory
 - Remote runners / SSH
 - Sandboxing beyond the child's own permissions
-- MCP-based event emission
+- MCP-based signal emission
 - Auto-restart on crash
 - Event log rotation (solved implicitly by per-mission files)
 - LLM-based orchestrator rules
-- Typed event schemas per type
-- Multi-user / multi-machine event bus
+- Multi-user / multi-machine coordination bus
 
-## 10. Architectural bets
+## 10. Next milestones (vision)
 
-1. **Mission is the runtime unit.** Crew is config; mission is a run. Scopes event log, HITL queue, facts, orchestrator state.
-2. **PTY, not pipes.** Required for TUI fidelity.
-3. **NDJSON file per mission, not broker.** Debuggability and crash-durability.
+### v0.x — Threads and Facts
+
+**Threads** — when missions grow past 2 runners or 1 hour, messages get noisy. Add:
+- `runners thread open <name>` → returns thread_id
+- `runners msg post --thread <id> <text>`
+- `runners msg read --thread <id>`
+- Orchestrator rules gain "open thread on signal X" action
+- UI splits message stream by thread
+
+**Facts** — the shared whiteboard. Add:
+- `runners ctx set/get/unset/list`
+- `fact_recorded` event type; last-writer-wins projection in orchestrator
+- UI gains a facts panel
+- Solves "current state of the mission" at a glance
+
+Both live on the same event log as new `kind` values. No transport changes.
+
+### v1 — Mentions, reactions, richer routing
+
+- `@runner` mentions inside messages → orchestrator can route on them
+- Reactions (`👍`, `blocking`) on messages — lightweight signals
+- Cross-mission memory / "crew memory"
+- Concurrent missions per crew
+
+## 11. Architectural bets
+
+1. **Mission is the runtime unit.** Crew is config; mission is a run.
+2. **PTY, not pipes.** TUI fidelity is non-negotiable.
+3. **NDJSON file per mission, not broker.** Debuggable and crash-durable.
 4. **CLI wrapper, not MCP.** Works with every agent today.
-5. **Orchestrator is the only router.** Runners stay decoupled.
-6. **Facts on the event log, not a separate store.** Single source of truth.
+5. **Signals and messages as distinct primitives.** Keeps orchestrator simple and prose natural.
+6. **Orchestrator is the only router.** Runners stay decoupled.
 7. **Prompt composition at spawn time.** Replaces runtime handshakes.
-8. **xterm.js for rendering.** Don't reinvent the terminal emulator.
-9. **ULID for event IDs.** Sortable, monotonic within ms.
+8. **Incremental vocabulary.** v0 = signals + messages; v0.x adds threads + facts; v1 adds mentions + reactions.
+9. **xterm.js for rendering.** Don't reinvent the terminal emulator.
+10. **ULID for event IDs.** Sortable, monotonic within ms.
 
-## 11. Open questions
+## 12. Open questions
 
 1. CLI installation: bundled with `.app`, copied to `$APPDATA/runners/bin/` on first run — ok?
-2. Fact reads: CLI re-scans log (v0) vs orchestrator HTTP endpoint (v0.x if needed).
-3. Resize debounce: 100ms is a guess; tune with a real TUI.
-4. Event type allowlist: per-crew only (current), or global defaults + per-crew overrides?
-5. `from` field: locked to env (v0), or `--from` override?
-6. Mid-mission fact-change notifications (push into stdin vs pull-only): v0 is pull-only.
+2. Resize debounce: 100ms is a guess; tune with a real TUI.
+3. Signal type allowlist: per-crew only (current), or global defaults + per-crew overrides?
+4. `from` field: locked to env (v0), or `--from` override?
+5. Does `runners msg read` return everything or paginate? v0: everything, sorted by ULID.
+6. Does the orchestrator ever inject messages (not signals) into runners' stdin? v0: yes — when it routes a signal to a runner, it can include a summary of recent messages as context.
 
-## 12. What would break this architecture
+## 13. What would break this architecture
 
 - A runtime with no way to inject a system prompt at spawn (we'd type into stdin post-spawn — ugly but doable).
-- An agent that won't learn to call CLI tools (hasn't happened with any modern coding agent).
+- An agent that won't learn to call CLI tools.
 - NDJSON append atomicity breaking on an exotic filesystem (NFS, iCloud-synced). v0: document that app data must be on a local POSIX filesystem.
