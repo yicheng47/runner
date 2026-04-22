@@ -236,26 +236,37 @@ pub fn start(
 }
 
 pub fn stop(conn: &mut Connection, app_data_dir: &Path, id: &str) -> Result<Mission> {
-    let mission = get(conn, id)?;
-    if !matches!(mission.status, MissionStatus::Running) {
+    // Mirror `start`: flip status inside a tx and only commit once the
+    // terminal `mission_stopped` event has been appended. If the log write
+    // fails, the mission stays `running` and the operator can retry.
+    let tx = conn.transaction()?;
+
+    // Conditional UPDATE binds the status check and the transition into one
+    // atomic SQL statement. Without this, two racing `mission_stop` calls
+    // could each observe `running`, both commit `completed`, and both append
+    // a `mission_stopped` event (duplicate terminal). With `WHERE status =
+    // 'running'`, the slower of the two updates 0 rows and is rejected
+    // below, so only one writer ever reaches the log append.
+    let stopped_at = now();
+    let affected = tx.execute(
+        "UPDATE missions
+            SET status = 'completed', stopped_at = ?1
+          WHERE id = ?2 AND status = 'running'",
+        params![stopped_at.to_rfc3339(), id],
+    )?;
+    if affected == 0 {
+        // Either the id doesn't exist or the mission isn't running anymore
+        // (a concurrent stop won the race). Fetch for a precise error.
+        let mission = get(&tx, id)?;
         return Err(Error::msg(format!(
             "mission {id} is not running; status = {:?}",
             mission.status
         )));
     }
 
-    // Mirror `start`: flip status inside a tx and only commit once the
-    // terminal `mission_stopped` event has been appended. If the log write
-    // fails, the mission stays `running` and the operator can retry.
-    let tx = conn.transaction()?;
-
-    let stopped_at = now();
-    tx.execute(
-        "UPDATE missions
-            SET status = 'completed', stopped_at = ?1
-          WHERE id = ?2",
-        params![stopped_at.to_rfc3339(), id],
-    )?;
+    // Fetch crew_id now that we know the row exists and we own the
+    // transition; used for the mission-dir path below.
+    let mission = get(&tx, id)?;
 
     let mission_dir = event_log::mission_dir(app_data_dir, &mission.crew_id, id);
     let log = EventLog::open(&mission_dir)?;
@@ -269,9 +280,8 @@ pub fn stop(conn: &mut Connection, app_data_dir: &Path, id: &str) -> Result<Miss
         payload: serde_json::json!({}),
     })?;
 
-    let updated = get(&tx, id)?;
     tx.commit()?;
-    Ok(updated)
+    Ok(mission)
 }
 
 /// Write the crew's signal-type allowlist to
@@ -712,6 +722,87 @@ mod tests {
         let types: Vec<String> =
             serde_json::from_str(&std::fs::read_to_string(&sidecar).unwrap()).unwrap();
         assert!(types.contains(&"mission_goal".to_string()));
+    }
+
+    #[test]
+    fn concurrent_stop_appends_exactly_one_terminal_event() {
+        // Two threads race to stop the same running mission. Without the
+        // conditional UPDATE, both would see `running`, both would flip the
+        // row, and both would append `mission_stopped`. With it, exactly one
+        // UPDATE affects a row and exactly one log append happens.
+        use std::sync::Arc;
+        use std::thread;
+
+        // The default `pool()` helper caps at 1 connection + :memory: which
+        // gives each connection its own isolated DB — unusable for a race.
+        // Use a file-backed DB on disk so multiple pool connections share state.
+        let db_tmp = tempfile::tempdir().unwrap();
+        let db_path = db_tmp.path().join("race.db");
+        let pool = db::open_pool(&db_path).unwrap();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "A", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = Arc::new(tempfile::tempdir().unwrap());
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id: crew_id.clone(),
+                title: "m".into(),
+                goal_override: Some("go".into()),
+                cwd: None,
+            },
+        )
+        .unwrap();
+        drop(conn); // release our pool handle so both threads can grab one
+
+        let pool_a = pool.clone();
+        let pool_b = pool.clone();
+        let tmp_a = Arc::clone(&tmp);
+        let tmp_b = Arc::clone(&tmp);
+        let id = out.mission.id.clone();
+        let id_a = id.clone();
+        let id_b = id.clone();
+        let h1 = thread::spawn(move || {
+            let mut conn = pool_a.get().unwrap();
+            stop(&mut conn, tmp_a.path(), &id_a)
+        });
+        let h2 = thread::spawn(move || {
+            let mut conn = pool_b.get().unwrap();
+            stop(&mut conn, tmp_b.path(), &id_b)
+        });
+        let r1 = h1.join().unwrap();
+        let r2 = h2.join().unwrap();
+
+        // Exactly one succeeded and exactly one failed with "not running".
+        let (ok_count, err_count) = [&r1, &r2].iter().fold((0, 0), |(o, e), r| match r {
+            Ok(_) => (o + 1, e),
+            Err(err) => {
+                assert!(
+                    format!("{err}").contains("not running"),
+                    "loser should report not-running, got {err}"
+                );
+                (o, e + 1)
+            }
+        });
+        assert_eq!((ok_count, err_count), (1, 1));
+
+        // Log has exactly one `mission_stopped` event.
+        let log = EventLog::open(&event_log::mission_dir(tmp.path(), &crew_id, &id)).unwrap();
+        let stopped_events = log
+            .read_from(0)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                e.event
+                    .signal_type
+                    .as_ref()
+                    .map(|t| t.as_str() == "mission_stopped")
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(stopped_events, 1, "exactly one terminal event must land");
     }
 
     #[test]
