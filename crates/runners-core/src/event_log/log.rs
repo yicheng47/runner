@@ -52,18 +52,38 @@ pub struct LogEntry {
 impl EventLog {
     /// Opens (creating if needed) the events file inside `mission_dir`.
     /// The directory is created recursively.
+    ///
+    /// If the previous process died mid-write, the file may end with a
+    /// non-newline tail (bytes of a partial JSON event). We take the flock,
+    /// truncate that tail off, then seed the ULID generator from the last
+    /// *complete* line. This ensures a crash can't glue a stale half-event
+    /// onto the next append.
     pub fn open(mission_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(mission_dir)?;
         let path = mission_dir.join(EVENTS_FILENAME);
-        // Touch so `size()` works before the first append.
-        OpenOptions::new().create(true).append(true).open(&path)?;
+
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(&path)?;
+
+        file.lock_exclusive()?;
+        let repair_then_read = || -> Result<Option<String>> {
+            Self::repair_tail(&file)?;
+            Self::last_id_in_file(&file)
+        };
+        let last_id = repair_then_read();
+        let unlock_res = file.unlock();
+        let last_id = last_id?;
+        unlock_res?;
+
         let this = Self {
             path,
             ulid: UlidGen::new(),
         };
-        // Seed the generator from disk so restarts don't forget prior runs.
-        if let Some(last_id) = this.last_id_on_disk()? {
-            this.ulid.raise_floor_from_str(&last_id)?;
+        if let Some(id) = last_id {
+            this.ulid.raise_floor_from_str(&id)?;
         }
         Ok(this)
     }
@@ -101,6 +121,11 @@ impl EventLog {
     }
 
     fn append_locked(&self, file: &File, draft: EventDraft) -> Result<Event> {
+        // Repair any dangling non-newline tail from a prior crash *before*
+        // reading the last id — otherwise `last_id_in_file` would treat the
+        // partial fragment as the last event and we'd both seed a bogus floor
+        // and glue the new event onto it.
+        Self::repair_tail(file)?;
         // Rebase floor from on-disk tail so any writer that committed while we
         // were waiting for the lock doesn't leave us with an older ULID.
         if let Some(last_id) = Self::last_id_in_file(file)? {
@@ -176,9 +201,64 @@ impl EventLog {
         Ok(out)
     }
 
-    fn last_id_on_disk(&self) -> Result<Option<String>> {
-        let file = File::open(&self.path)?;
-        Self::last_id_in_file(&file)
+    /// Truncate off any non-newline-terminated bytes at the end of the file.
+    ///
+    /// A well-behaved writer always finishes with `\n`. A crashed writer can
+    /// leave JSON bytes without their trailing newline — at which point
+    /// `last_id_in_file` would misread those bytes as the last event, and the
+    /// next `append` would glue its line onto them and produce malformed
+    /// NDJSON that breaks replay.
+    ///
+    /// Caller must hold the exclusive flock on the file.
+    fn repair_tail(file: &File) -> Result<()> {
+        let len = file.metadata()?.len();
+        if len == 0 {
+            return Ok(());
+        }
+        // Cheap check: is the last byte a newline?
+        let mut last_byte = [0u8; 1];
+        {
+            let mut f = file;
+            f.seek(SeekFrom::Start(len - 1))?;
+            let n = std::io::Read::read(&mut f, &mut last_byte)?;
+            if n == 1 && last_byte[0] == b'\n' {
+                return Ok(());
+            }
+        }
+        // Find the highest position of `\n`. Truncate to `pos + 1` so we keep
+        // every complete line and drop the dangling fragment. If no `\n`
+        // exists, the entire file is one incomplete line — truncate to 0.
+        let chunk_size: u64 = 4096;
+        let mut end = len;
+        while end > 0 {
+            let start = end.saturating_sub(chunk_size);
+            let span = (end - start) as usize;
+            let mut buf = vec![0u8; span];
+            let mut f = file;
+            f.seek(SeekFrom::Start(start))?;
+            let mut read = 0;
+            while read < span {
+                let n = std::io::Read::read(&mut f, &mut buf[read..])?;
+                if n == 0 {
+                    break;
+                }
+                read += n;
+            }
+            buf.truncate(read);
+            if let Some(pos) = buf.iter().rposition(|&b| b == b'\n') {
+                // Offset of that `\n` in the whole file is `start + pos`.
+                let keep = start + pos as u64 + 1;
+                file.set_len(keep)?;
+                return Ok(());
+            }
+            if start == 0 {
+                break;
+            }
+            end = start;
+        }
+        // Whole file was one unterminated fragment.
+        file.set_len(0)?;
+        Ok(())
     }
 
     /// Reads the `id` field of the last complete JSON line in the file without
@@ -362,6 +442,61 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let log = EventLog::open(dir.path()).unwrap();
         assert!(log.read_from(0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn open_truncates_dangling_tail_from_crashed_writer() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let committed = {
+            let log = EventLog::open(dir.path()).unwrap();
+            log.append(draft_signal("ask_lead")).unwrap().id
+        };
+        // Simulate a crashed writer: append some bytes of an event with no
+        // trailing '\n'. In a real crash this would be a partial JSON line.
+        let events_path = dir.path().join(EVENTS_FILENAME);
+        {
+            let mut f = OpenOptions::new().append(true).open(&events_path).unwrap();
+            f.write_all(b"{\"id\":\"01CRASHED").unwrap();
+        }
+
+        // Open must cope: truncate the fragment and recover the last complete id.
+        let log = EventLog::open(dir.path()).unwrap();
+        let entries = log.read_from(0).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].event.id, committed);
+
+        // The next append must not glue its line onto the fragment.
+        let next = log.append(draft_signal("ask_lead")).unwrap();
+        let entries = log.read_from(0).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].event.id, next.id);
+    }
+
+    #[test]
+    fn open_handles_file_that_is_only_a_fragment() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join(EVENTS_FILENAME);
+        {
+            let mut f = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&events_path)
+                .unwrap();
+            f.write_all(b"{\"id\":\"not-terminated").unwrap();
+        }
+
+        // File is entirely an unterminated fragment — open must truncate to 0
+        // and still work.
+        let log = EventLog::open(dir.path()).unwrap();
+        assert_eq!(log.size().unwrap(), 0);
+        let evt = log.append(draft_signal("ask_lead")).unwrap();
+        let entries = log.read_from(0).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].event.id, evt.id);
     }
 
     #[test]
