@@ -31,9 +31,9 @@ lint:
 typecheck:
 	pnpm exec tsc --noEmit
 
-# Rust unit + integration tests
+# Rust unit + integration tests (whole workspace — app crate + runners-core)
 test-rust:
-	cd src-tauri && cargo test
+	cargo test --workspace
 
 # Frontend typecheck (v0 has no JS tests yet)
 test-ts: typecheck
@@ -43,16 +43,16 @@ test: test-rust test-ts
 
 # Rust compile-only
 check:
-	cd src-tauri && cargo check
+	cargo check --workspace
 
 # Rust format (rewrites files)
 fmt:
-	cd src-tauri && cargo fmt
+	cargo fmt --all
 
 # Clean dev artifacts
 clean:
-	rm -rf dist node_modules/.vite src-tauri/target/debug
+	rm -rf dist node_modules/.vite target/debug src-tauri/target/debug
 
 # Clean everything including release builds
 clean-all: clean
-	rm -rf src-tauri/target/release
+	rm -rf target/release src-tauri/target/release
