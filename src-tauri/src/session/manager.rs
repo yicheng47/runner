@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -92,15 +92,17 @@ struct SessionHandle {
     #[allow(dead_code)]
     id: String,
     mission_id: String,
-    /// Retained so the master PTY isn't dropped early; without this the
-    /// child's stdin/stdout would be closed the moment `spawn` returns.
-    #[allow(dead_code)]
-    master: Box<dyn MasterPty + Send>,
+    /// Optionally holds the master PTY. `kill` takes it to drop-close the
+    /// terminal (signals the child's SIGHUP) before signaling/joining.
+    master: Option<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
-    /// Process id of the spawned child — used by a future pause/resume path
-    /// (SIGSTOP/SIGCONT via libc) that's out of scope for C6.
-    #[allow(dead_code)]
+    /// OS process id of the spawned child. Used by `kill` to escalate
+    /// SIGTERM → SIGKILL if the PTY hangup alone doesn't reap the child.
     pid: Option<u32>,
+    /// Handle for the reader thread that drains the PTY + reaps the child.
+    /// `kill` joins on it so the caller is guaranteed the `sessions` row is
+    /// in a terminal status by the time we return.
+    reader: Option<thread::JoinHandle<()>>,
 }
 
 pub struct SessionManager {
@@ -117,10 +119,16 @@ impl SessionManager {
     /// Spawn one PTY child for `runner` as part of `mission`. Persists a
     /// `sessions` row, starts the reader thread, and returns a summary for
     /// the frontend.
+    ///
+    /// `app_data_dir` is the root of `$APPDATA/runners/` so we can prepend
+    /// `<app_data_dir>/bin` onto the child's PATH — arch §5.3 Layer 2 and
+    /// v0-mvp.md C9 both require the bundled `runners` CLI to win over any
+    /// system binary with the same name.
     pub fn spawn(
         self: &Arc<Self>,
         mission: &Mission,
         runner: &Runner,
+        app_data_dir: &Path,
         events_log_path: PathBuf,
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
@@ -152,6 +160,20 @@ impl SessionManager {
         for (k, v) in &runner.env {
             cmd.env(k, v);
         }
+        // Prepend the bundled CLI directory to PATH so `runners` on the
+        // child's PATH resolves to our drop (C9 installs it here) before
+        // any system binary with the same name. Inherit the parent PATH
+        // as the tail — if nothing else, agents need `sh`, `git`, `node`.
+        let bin_dir = app_data_dir.join("bin");
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        let parent_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut new_path = std::ffi::OsString::from(bin_dir.as_os_str());
+        if !parent_path.is_empty() {
+            new_path.push(std::ffi::OsString::from(sep.to_string()));
+            new_path.push(parent_path);
+        }
+        cmd.env("PATH", new_path);
+
         cmd.env("RUNNERS_CREW_ID", &mission.crew_id);
         cmd.env("RUNNERS_MISSION_ID", &mission.id);
         cmd.env("RUNNERS_RUNNER_HANDLE", &runner.handle);
@@ -196,9 +218,31 @@ impl SessionManager {
             )?;
         }
 
-        // Spawn the reader thread. On EOF it reaps the child, emits exit,
-        // updates the row, and removes the session from the in-memory map.
-        {
+        // Insert into the live map BEFORE starting the reader thread.
+        // A short-lived child (e.g. `sh -c "echo hi"`) can exit within
+        // microseconds — if we spawned the thread first, its `forget()`
+        // call could run before the insert and leave a stale live handle
+        // for an already-dead session. Handle parts that the reader thread
+        // needs ownership of (child, reader pipe) stay out of the map;
+        // parts the Tauri commands need (master, writer, pid) go in.
+        self.sessions.lock().unwrap().insert(
+            session_id.clone(),
+            SessionHandle {
+                id: session_id.clone(),
+                mission_id: mission.id.clone(),
+                master: Some(pair.master),
+                writer: Mutex::new(writer),
+                pid,
+                reader: None, // populated immediately below
+            },
+        );
+
+        // Spawn the reader thread. On EOF it reaps the child, updates the
+        // DB row, removes the session from the in-memory map, and emits
+        // the `exit` event. `kill` joins this handle to guarantee the
+        // mission_stop → mission_completed transition never races ahead of
+        // the actual child reap.
+        let reader_handle = {
             let session_id_t = session_id.clone();
             let mission_id_t = mission.id.clone();
             let events_t = Arc::clone(&events);
@@ -226,20 +270,15 @@ impl SessionManager {
                     );
                 }
                 events_t.exit(&exit);
-            });
-        }
+            })
+        };
 
-        // Insert into the live map.
-        self.sessions.lock().unwrap().insert(
-            session_id.clone(),
-            SessionHandle {
-                id: session_id.clone(),
-                mission_id: mission.id.clone(),
-                master: pair.master,
-                writer: Mutex::new(writer),
-                pid,
-            },
-        );
+        // Attach the reader handle. We raced to insert-first so the reader
+        // may already be draining by the time we land here — that's fine,
+        // it doesn't touch this slot.
+        if let Some(h) = self.sessions.lock().unwrap().get_mut(&session_id) {
+            h.reader = Some(reader_handle);
+        }
 
         Ok(SpawnedSession {
             id: session_id,
@@ -262,23 +301,62 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Kill the child. Reader thread will see EOF and clean up the row + map.
+    /// Kill the child and wait for the reader thread to reap it.
+    ///
+    /// Sequence:
+    ///   1. Remove the handle from the live map (no further `inject_stdin` /
+    ///      `kill` can target it).
+    ///   2. Drop the master PTY — the child receives SIGHUP and well-behaved
+    ///      programs exit; the reader thread's `read()` returns 0.
+    ///   3. On Unix, belt-and-suspenders: signal SIGTERM (then SIGKILL after
+    ///      200 ms) so a child that ignores SIGHUP can't stall the reader.
+    ///   4. Join the reader thread. It waits the child, updates the DB row
+    ///      to stopped/crashed, emits `session/exit`. Only after this
+    ///      returns is the caller allowed to consider the session dead —
+    ///      which is what `mission_stop` needs in order to flip the mission
+    ///      row without lying about termination.
     pub fn kill(&self, session_id: &str) -> Result<()> {
-        let mut sessions = self.sessions.lock().unwrap();
-        if let Some(handle) = sessions.remove(session_id) {
-            // Dropping the master PTY signals the child by closing stdin /
-            // hanging up the terminal; on Unix this SIGHUP-equivalent, which
-            // for well-behaved shells and interpreters is enough to exit.
-            // portable-pty doesn't expose a portable `kill` on the master,
-            // and we don't have the Child here — we intentionally transferred
-            // ownership into the reader thread. For MVP this is fine; a
-            // harder-kill path (via libc + stored pid) lands with C8.
-            drop(handle);
+        let (pid, master, reader) = {
+            let mut sessions = self.sessions.lock().unwrap();
+            match sessions.remove(session_id) {
+                Some(mut h) => (h.pid, h.master.take(), h.reader.take()),
+                None => return Ok(()),
+            }
+        };
+
+        // Step 2: hang up the terminal. For most children this alone is
+        // enough. We drop before sending signals so the child's next I/O
+        // fails instead of blocking indefinitely.
+        drop(master);
+
+        // Step 3: Unix-only hard-kill escalation.
+        #[cfg(unix)]
+        if let Some(pid) = pid {
+            // SAFETY: `pid` came from `Child::process_id()` on a child we
+            // just started; it hasn't been reaped yet because the reader
+            // thread holds the only `Child` reference. `kill(2)` with an
+            // unknown pid is a no-op returning ESRCH which we ignore.
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = pid; // Windows path lands with a future chunk.
+
+        // Step 4: wait for the reader to reap + update the DB + emit exit.
+        if let Some(h) = reader {
+            let _ = h.join();
         }
         Ok(())
     }
 
     /// Kill every live session; used on mission_stop and at app shutdown.
+    /// Returns only after all reader threads have joined — callers rely on
+    /// that for the "no live sessions after we return" contract.
     pub fn kill_all_for_mission(&self, mission_id: &str) -> Result<()> {
         let ids: Vec<String> = {
             let sessions = self.sessions.lock().unwrap();
@@ -484,6 +562,7 @@ mod tests {
             .spawn(
                 &mission,
                 &runner,
+                std::path::Path::new("/tmp"),
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
                 capture(),
@@ -542,6 +621,7 @@ mod tests {
             .spawn(
                 &mission,
                 &runner,
+                std::path::Path::new("/tmp"),
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
                 capture(),
@@ -578,5 +658,58 @@ mod tests {
         let mgr = SessionManager::new();
         let err = mgr.inject_stdin("nope", b"x").unwrap_err();
         assert!(format!("{err}").contains("session not found"));
+    }
+
+    #[test]
+    fn kill_blocks_until_session_row_is_terminal() {
+        // mission_stop relies on this contract: kill must return only after
+        // the reader thread has updated the DB row to stopped/crashed.
+        let pool = pool_with_schema();
+        let mission = mission();
+        let mut runner = runner("/bin/cat", &[]);
+        insert_crew_runner(&pool, &mission.id, &runner.id);
+        runner.id = {
+            let conn = pool.get().unwrap();
+            conn.query_row("SELECT id FROM runners LIMIT 1", [], |r| r.get(0))
+                .unwrap()
+        };
+        let fresh_mission_id: String = {
+            let conn = pool.get().unwrap();
+            conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
+                .unwrap()
+        };
+        let mission = Mission {
+            id: fresh_mission_id,
+            ..mission
+        };
+
+        let mgr = SessionManager::new();
+        let spawned = mgr
+            .spawn(
+                &mission,
+                &runner,
+                std::path::Path::new("/tmp"),
+                PathBuf::from("/dev/null"),
+                Arc::clone(&pool),
+                capture(),
+            )
+            .unwrap();
+
+        // kill must synchronize on the reader; immediately after it returns,
+        // the DB row should already be terminal (no polling).
+        mgr.kill(&spawned.id).unwrap();
+
+        let conn = pool.get().unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM sessions WHERE id = ?1",
+                params![spawned.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            status != "running",
+            "kill returned while session still running: {status}"
+        );
     }
 }
