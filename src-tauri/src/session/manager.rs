@@ -194,21 +194,25 @@ impl SessionManager {
         drop(pair.slave);
 
         let pid = child.process_id();
-        let reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| Error::msg(format!("clone reader: {e}")))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| Error::msg(format!("take writer: {e}")))?;
 
+        // Everything between `spawn_command` and the live-map insert is
+        // fallible (`try_clone_reader`, `take_writer`, `sessions` INSERT).
+        // If any of it errors we'd otherwise leak the running child — the
+        // session isn't in the map yet, so `mission_start`'s rollback can't
+        // see it and nothing else ever reaps it. Group the fallible work in
+        // an IIFE so a single error handler can kill + wait the child on
+        // every post-spawn failure path.
         let session_id = ulid::Ulid::new().to_string();
         let started_at = Utc::now().to_rfc3339();
-
-        // Persist the row *before* handing the session out; if the insert
-        // fails we want the caller to see the error before it sees events.
-        {
+        let setup_res: Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> = (|| {
+            let reader = pair
+                .master
+                .try_clone_reader()
+                .map_err(|e| Error::msg(format!("clone reader: {e}")))?;
+            let writer = pair
+                .master
+                .take_writer()
+                .map_err(|e| Error::msg(format!("take writer: {e}")))?;
             let conn = pool.get()?;
             conn.execute(
                 "INSERT INTO sessions
@@ -216,7 +220,19 @@ impl SessionManager {
                  VALUES (?1, ?2, ?3, 'running', ?4, ?5)",
                 params![session_id, mission.id, runner.id, pid, started_at],
             )?;
-        }
+            Ok((reader, writer))
+        })();
+        let (reader, writer) = match setup_res {
+            Ok(rw) => rw,
+            Err(e) => {
+                // Reap the orphan. `kill` signals SIGTERM/Windows equivalent;
+                // `wait` blocks until the child is gone so the caller isn't
+                // racing against a live PID when it retries.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
+        };
 
         // Insert into the live map BEFORE starting the reader thread.
         // A short-lived child (e.g. `sh -c "echo hi"`) can exit within
@@ -658,6 +674,56 @@ mod tests {
         let mgr = SessionManager::new();
         let err = mgr.inject_stdin("nope", b"x").unwrap_err();
         assert!(format!("{err}").contains("session not found"));
+    }
+
+    #[test]
+    fn spawn_failure_after_spawn_command_reaps_the_child() {
+        // Force the `sessions` INSERT to fail by dropping the table after the
+        // pool is built. Without the post-spawn cleanup, the child would keep
+        // running after `spawn` returns Err because nothing knows about it.
+        let pool = pool_with_schema();
+        let mission = mission();
+        let mut runner = runner("/bin/cat", &[]);
+        insert_crew_runner(&pool, &mission.id, &runner.id);
+        runner.id = {
+            let conn = pool.get().unwrap();
+            conn.query_row("SELECT id FROM runners LIMIT 1", [], |r| r.get(0))
+                .unwrap()
+        };
+        let fresh_mission_id: String = {
+            let conn = pool.get().unwrap();
+            conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
+                .unwrap()
+        };
+        let mission = Mission {
+            id: fresh_mission_id,
+            ..mission
+        };
+
+        // Break the schema so the next INSERT fails.
+        pool.get()
+            .unwrap()
+            .execute("DROP TABLE sessions", [])
+            .unwrap();
+
+        let mgr = SessionManager::new();
+        let err = mgr
+            .spawn(
+                &mission,
+                &runner,
+                std::path::Path::new("/tmp"),
+                PathBuf::from("/dev/null"),
+                Arc::clone(&pool),
+                capture(),
+            )
+            .unwrap_err();
+        // The error must surface the DB failure, not a spawn failure.
+        assert!(
+            format!("{err}").contains("sessions") || format!("{err}").contains("no such table"),
+            "unexpected error: {err}"
+        );
+        // No live session left behind.
+        assert!(mgr.sessions.lock().unwrap().is_empty());
     }
 
     #[test]
