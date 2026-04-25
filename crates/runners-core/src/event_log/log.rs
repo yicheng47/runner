@@ -49,6 +49,18 @@ pub struct LogEntry {
     pub event: Event,
 }
 
+/// One malformed line surfaced by `read_from_lossy`. The C7 watcher logs
+/// these and skips past them so a single bad line can't freeze the bus.
+#[derive(Debug, Clone)]
+pub struct SkipReport {
+    /// Byte offset where the skipped line started.
+    pub offset: u64,
+    /// Byte offset just past the skipped line's terminating newline. Pass
+    /// as the next `offset` to resume after the corruption.
+    pub next_offset: u64,
+    pub error: String,
+}
+
 impl EventLog {
     /// Opens (creating if needed) the events file inside `mission_dir`.
     /// The directory is created recursively.
@@ -201,6 +213,59 @@ impl EventLog {
         Ok(out)
     }
 
+    /// Like `read_from`, but skips lines that fail to parse instead of
+    /// aborting. Returns successfully-parsed entries and a separate vec of
+    /// skip reports (offset + reason) so the caller can log a warning. Used
+    /// by the C7 watcher: a single corrupted line — say from a buggy CLI
+    /// release someone shipped — must not poison the bus and freeze every
+    /// downstream subscriber on the same offset forever.
+    ///
+    /// IO errors (file truncated, read failed) still propagate — those are
+    /// not per-line corruption and re-trying makes sense.
+    pub fn read_from_lossy(&self, offset: u64) -> Result<(Vec<LogEntry>, Vec<SkipReport>)> {
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut reader = BufReader::new(file);
+
+        let mut out = Vec::new();
+        let mut skipped = Vec::new();
+        let mut pos = offset;
+        let mut buf = String::new();
+        loop {
+            let line_start = pos;
+            buf.clear();
+            let n = reader.read_line(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            pos += n as u64;
+            // A line without a trailing '\n' is incomplete (writer crashed
+            // or torn write). Don't advance past it — the next tick should
+            // re-attempt once the writer finishes the line.
+            if !buf.ends_with('\n') {
+                break;
+            }
+            let trimmed = buf.trim_end_matches(['\n', '\r']);
+            if trimmed.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<Event>(trimmed) {
+                Ok(event) => out.push(LogEntry {
+                    next_offset: pos,
+                    event,
+                }),
+                Err(e) => {
+                    skipped.push(SkipReport {
+                        offset: line_start,
+                        next_offset: pos,
+                        error: e.to_string(),
+                    });
+                }
+            }
+        }
+        Ok((out, skipped))
+    }
+
     /// Truncate off any non-newline-terminated bytes at the end of the file.
     ///
     /// A well-behaved writer always finishes with `\n`. A crashed writer can
@@ -261,18 +326,18 @@ impl EventLog {
         Ok(())
     }
 
-    /// Reads the `id` field of the last complete JSON line in the file without
-    /// loading the whole log. Scans backward from EOF for the preceding newline,
-    /// then parses just that line.
+    /// Reads the `id` field of the most recent JSON line that parses
+    /// cleanly. Skips malformed lines by walking further back so a single
+    /// corrupt line doesn't poison the floor (which would block every
+    /// subsequent `append`) — the C7 watcher's "bad line doesn't poison
+    /// the bus" contract has to extend to the writer side too, otherwise
+    /// open + append both fail and the bus has nothing to read.
     fn last_id_in_file(file: &File) -> Result<Option<String>> {
         let len = file.metadata()?.len();
         if len == 0 {
             return Ok(None);
         }
 
-        // Walk back from EOF in small chunks looking for the *second-to-last*
-        // '\n' (the boundary before the final line). For typical event sizes
-        // (< 4 KB) a single 4 KB read is enough.
         let chunk_size: u64 = 4096;
         let mut end = len;
         let mut line_bytes: Vec<u8> = Vec::new();
@@ -293,25 +358,39 @@ impl EventLog {
             }
             buf.truncate(read);
 
-            // Combine with any bytes we already stitched from a later chunk.
             buf.extend_from_slice(&line_bytes);
             line_bytes = buf;
 
-            // Drop a trailing newline that marks the end of the last line.
             if line_bytes.last() == Some(&b'\n') {
                 line_bytes.pop();
             }
 
-            // Find the newline that precedes the final line. If present, that's
-            // the boundary; everything after it is the last line.
-            if let Some(pos) = line_bytes.iter().rposition(|&b| b == b'\n') {
-                let last = &line_bytes[pos + 1..];
-                return parse_id(last).map(Some);
+            // Try parsing successively-earlier lines from the bytes we've
+            // accumulated so far. If one parses, that's our floor. If none
+            // do, fetch another chunk and retry — a malformed line at the
+            // tail must not fail-fast the way it used to.
+            loop {
+                let candidate_start = match line_bytes.iter().rposition(|&b| b == b'\n') {
+                    Some(pos) => pos + 1,
+                    None if start == 0 => 0,
+                    None => break, // need more bytes from earlier in the file
+                };
+                let candidate = &line_bytes[candidate_start..];
+                if let Ok(id) = parse_id(candidate) {
+                    return Ok(Some(id));
+                }
+                if candidate_start == 0 {
+                    // We've exhausted this buffer's lines and we already
+                    // reached the file head. No valid id anywhere.
+                    return Ok(None);
+                }
+                // Drop the bad candidate (and the newline before it) and
+                // retry against the line that precedes it.
+                line_bytes.truncate(candidate_start - 1);
             }
-            // Otherwise scan further back.
+
             if start == 0 {
-                // Entire file is one line.
-                return parse_id(&line_bytes).map(Some);
+                return Ok(None);
             }
             end = start;
         }
@@ -497,6 +576,46 @@ mod tests {
         let entries = log.read_from(0).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].event.id, evt.id);
+    }
+
+    #[test]
+    fn read_from_lossy_skips_bad_lines_and_advances_past_them() {
+        // Regression for the C7 watcher freeze: `read_from` aborts the whole
+        // call on the first parse error, leaving the consumer's offset stuck
+        // and re-reading the same bad bytes forever. `read_from_lossy` must
+        // skip the bad line, surface a SkipReport, and let later good lines
+        // through.
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let log = EventLog::open(dir.path()).unwrap();
+        let good_a = log.append(draft_signal("ask_lead")).unwrap();
+
+        // Hand-write a malformed-but-newline-terminated line directly into
+        // the file. Append-only writers never produce these in practice, but
+        // a buggy CLI release or a manual edit could.
+        {
+            let mut f = OpenOptions::new()
+                .append(true)
+                .open(dir.path().join(EVENTS_FILENAME))
+                .unwrap();
+            f.write_all(b"this is not json\n").unwrap();
+        }
+
+        let good_b = log.append(draft_signal("ask_lead")).unwrap();
+
+        let (entries, skipped) = log.read_from_lossy(0).unwrap();
+        assert_eq!(entries.len(), 2, "both good events must be returned");
+        assert_eq!(entries[0].event.id, good_a.id);
+        assert_eq!(entries[1].event.id, good_b.id);
+        assert_eq!(skipped.len(), 1, "exactly one skip report");
+        assert!(
+            skipped[0].next_offset > skipped[0].offset,
+            "skip must advance past the bad line"
+        );
+        // Resuming after the second good entry yields nothing — i.e. the
+        // skip's bytes were truly past us.
+        let (more, _) = log.read_from_lossy(entries[1].next_offset).unwrap();
+        assert!(more.is_empty());
     }
 
     #[test]

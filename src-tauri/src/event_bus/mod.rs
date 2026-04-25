@@ -287,10 +287,27 @@ impl BusState {
     /// Drain whatever new lines are on disk and project them through the
     /// emitter. Called both on initial mount (from offset 0) and on every
     /// notify ping.
+    ///
+    /// Uses `read_from_lossy` so a single malformed complete line is logged
+    /// and skipped, never re-tried on the next tick. Without this, one bad
+    /// JSON write — say from a buggy CLI release — would freeze the bus on
+    /// the same offset forever and silently swallow every later event.
     fn tick(&mut self, log: &EventLog, emitter: &dyn BusEmitter) -> Result<()> {
-        let entries = log.read_from(self.next_offset)?;
+        let (entries, skipped) = log.read_from_lossy(self.next_offset)?;
+        for skip in &skipped {
+            eprintln!(
+                "event_bus[{}]: skipping malformed line at offset {} ({})",
+                self.mission_id, skip.offset, skip.error
+            );
+        }
+        // Compute the new `next_offset` from the max of every line seen this
+        // tick — entries AND skips. If we used only entries we'd re-read
+        // skipped bytes whenever a bad line came *after* the last good one;
+        // if we used only skips we'd lose track when bad lines came first.
+        let max_skip_next = skipped.iter().map(|s| s.next_offset).max().unwrap_or(0);
+        let max_entry_next = entries.iter().map(|e| e.next_offset).max().unwrap_or(0);
+        let new_offset = self.next_offset.max(max_skip_next).max(max_entry_next);
         for entry in entries {
-            self.next_offset = entry.next_offset;
             let event = entry.event;
 
             emitter.appended(&AppendedEvent {
@@ -327,6 +344,7 @@ impl BusState {
                 }
             }
         }
+        self.next_offset = new_offset;
         Ok(())
     }
 
@@ -792,6 +810,53 @@ mod tests {
             2,
             "broadcast message should inbox for both lead and coder"
         );
+    }
+
+    #[test]
+    fn malformed_line_is_skipped_with_warning() {
+        // Regression for the v0-mvp-tests.md C7 contract: one bad line
+        // doesn't poison the bus. Without `read_from_lossy`, the consumer
+        // would re-tick the same offset forever and never deliver the good
+        // event after the corruption.
+        use std::io::Write;
+
+        let dir = fresh_mission_dir();
+        let log = EventLog::open(dir.path()).unwrap();
+        log.append(message("lead", None, "first")).unwrap();
+
+        // Hand-write a malformed line directly. A real writer would never
+        // produce this, but a buggy CLI release on PATH could.
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(dir.path().join("events.ndjson"))
+                .unwrap();
+            f.write_all(b"this is not json\n").unwrap();
+        }
+
+        let cap = Arc::new(Capture::default());
+        let _bus = EventBus::for_mission(
+            "mission".into(),
+            dir.path(),
+            &["lead".to_string()],
+            cap_dyn(&cap),
+        )
+        .unwrap();
+        // Wait for initial replay to flush.
+        wait_until(1000, || cap.appended.lock().unwrap().len() == 1);
+
+        // Append another good event AFTER the bad line. The bus must
+        // surface it — proving the corruption didn't freeze the offset.
+        log.append(message("lead", None, "second")).unwrap();
+
+        let arrived = wait_until(3000, || cap.appended.lock().unwrap().len() == 2);
+        assert!(
+            arrived,
+            "bus must skip past the bad line and deliver later events"
+        );
+        let appended = cap.appended.lock().unwrap();
+        assert_eq!(appended[0].event.payload["text"], "first");
+        assert_eq!(appended[1].event.payload["text"], "second");
     }
 
     #[test]
