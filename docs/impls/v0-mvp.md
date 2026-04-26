@@ -8,7 +8,7 @@
 
 From a clean launch of the app, a user can:
 
-1. Create a **Crew** on the Crews page, then add two runners to it (one `claude-code` lead, one `shell` worker) on the **Crew Detail** page. Runners are crew-scoped — there is no shared "template" concept in v0 (per PRD §3). The lead invariant is enforced end-to-end.
+1. Create a **Crew** on the Crews page, then add two runners to it (one `claude-code` lead, one `shell` worker) on the **Crew Detail** page. Per C5.5a, runners are top-level config and shared across crews — adding a runner to a crew creates a `crew_runners` membership row, not a new runner. The lead invariant is per-crew (one lead per crew, enforced via partial unique index on `crew_runners`) and is checked end-to-end.
 2. Click **Start Mission**, fill the goal, and see the Mission workspace open with two live PTY sessions.
 3. Watch the lead runner receive the goal via stdin, draft a plan, and post a directed message to the worker; see the worker pick it up on its next `runners msg read`.
 4. See a worker emit an `ask_lead` signal; watch the lead decide to escalate via `ask_human`; click **Approve** on the resulting card; see the lead receive the response and forward it to the worker.
@@ -80,18 +80,22 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
 
 ## C2 — Config CRUD (runners, crews, lead invariant)
 
-**Goal.** Tauri commands for managing crews and their crew-scoped runners, with the lead invariant enforced at the Rust layer in addition to the DB.
+**Goal.** Tauri commands for managing crews and (top-level, sharable) runners, with the per-crew lead invariant enforced at the Rust layer in addition to the DB.
+
+**Note (post-C5.5a).** This section was originally written for the per-crew runner model. C5.5a moved runner CRUD onto the global `runners` table and put crew membership on `crew_runners`; the live commands match that shape. The descriptions below reflect what actually shipped.
 
 **Deliverables.**
 - `src-tauri/src/commands/crew.rs` — `crew_list`, `crew_create`, `crew_update`, `crew_delete`.
-- `src-tauri/src/commands/runner.rs` — `runner_list(crew_id)`, `runner_create`, `runner_update`, `runner_delete`, `runner_reorder(crew_id, ordered_ids)`, `runner_set_lead(runner_id)`.
+- `src-tauri/src/commands/runner.rs` — `runner_list` (global, no crew arg), `runner_get`, `runner_create`, `runner_update`, `runner_delete`, `runner_activity`. Runners exist independently of any crew.
+- `src-tauri/src/commands/crew_runner.rs` — membership commands: `crew_list_runners(crew_id)`, `crew_add_runner(crew_id, runner_id)`, `crew_remove_runner(crew_id, runner_id)`, `crew_set_lead(crew_id, runner_id)`, `crew_reorder(crew_id, ordered_runner_ids)`.
 - Invariant rules encoded in Rust:
-  - First runner added to a crew is auto-lead.
-  - `runner_set_lead` runs in a transaction: unset old lead, set new lead, single commit.
-  - Deleting the lead while other runners remain auto-promotes the runner at the lowest `position`.
-  - Deleting the last runner of a crew is allowed (crew becomes empty, unstartable).
+  - First runner added to a crew is auto-lead (membership-level, not runner-level).
+  - `crew_set_lead` runs in a transaction: unset old lead, set new lead, single commit.
+  - Removing the lead from a crew while other members remain auto-promotes the runner at the lowest `position`.
+  - Removing the last member of a crew is allowed (crew becomes empty, unstartable).
+  - Deleting a runner globally cascades through `crew_runners` (`ON DELETE CASCADE`); deleting a crew cascades through `crew_runners` but **does not** delete the runner row itself.
 
-**Tests.** `cargo test` covers: auto-lead on first insert, forbidden second lead, lead auto-promotion on delete, atomic reassign.
+**Tests.** `cargo test` covers: auto-lead on first membership insert, forbidden second lead per crew, lead auto-promotion on remove, atomic reassign, runner survives crew delete, same runner can join multiple crews and be lead in each independently.
 
 **Out of scope.** UI, mission, PTY.
 

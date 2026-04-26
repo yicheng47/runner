@@ -409,6 +409,15 @@ fn parse_id(line: &[u8]) -> Result<String> {
         id: String,
     }
     let t: Tail = serde_json::from_slice(line)?;
+    // Validate ULID shape, not just "string-typed `id` field exists". Without
+    // this, a line like `{"id":"not-a-ulid"}` parses cleanly here but blows
+    // up later when `EventLog::open` calls `raise_floor_from_str` — which
+    // would prevent the bus from ever mounting on a corrupted log. Treat
+    // shape failure the same as a JSON parse failure so `last_id_in_file`
+    // walks back to the last *valid* line instead of bailing out.
+    if t.id.parse::<ulid::Ulid>().is_err() {
+        return Err(Error::msg(format!("id {:?} is not a valid ULID", t.id)));
+    }
     Ok(t.id)
 }
 
@@ -576,6 +585,42 @@ mod tests {
         let entries = log.read_from(0).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].event.id, evt.id);
+    }
+
+    #[test]
+    fn open_survives_tail_line_with_non_ulid_id() {
+        // Regression for review finding: a complete JSON line whose `id`
+        // field is the wrong shape (parses as a String but isn't a valid
+        // ULID) used to make `EventLog::open` fail at
+        // `raise_floor_from_str`. The bus could then never mount on a
+        // corrupted log, defeating the whole point of `read_from_lossy`.
+        // `last_id_in_file` must walk back to the last *valid* line.
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let committed = {
+            let log = EventLog::open(dir.path()).unwrap();
+            log.append(draft_signal("ask_lead")).unwrap().id
+        };
+        // Append a complete, parseable, but malformed-id line.
+        {
+            let mut f = OpenOptions::new()
+                .append(true)
+                .open(dir.path().join(EVENTS_FILENAME))
+                .unwrap();
+            f.write_all(b"{\"id\":\"not-a-ulid\"}\n").unwrap();
+        }
+
+        // Open must succeed: walk back past the bad line, recover the prior id.
+        let log = EventLog::open(dir.path()).unwrap();
+
+        // The next append must use a ULID strictly greater than the prior valid id.
+        let next = log.append(draft_signal("ask_lead")).unwrap();
+        assert!(
+            next.id > committed,
+            "next id {} not > prior valid id {}",
+            next.id,
+            committed
+        );
     }
 
     #[test]
