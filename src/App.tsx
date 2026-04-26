@@ -14,7 +14,7 @@ export default function App() {
         <Route path="/crews/:crewId" element={<CrewEditor />} />
         <Route path="/runners" element={<Runners />} />
         <Route path="/runners/:handle" element={<RunnerDetail />} />
-        <Route path="/runners/:handle/chat/:sessionId" element={<RunnerChat />} />
+        <Route path="/runners/:handle/chat" element={<RunnerChat />} />
       </Routes>
     </BrowserRouter>
   );

@@ -119,6 +119,10 @@ struct SessionHandle {
     /// filters on this so direct chats don't get torn down when a mission
     /// stops, and vice versa.
     mission_id: Option<String>,
+    /// The runner this session is an instance of. `kill_all_for_runner`
+    /// filters on this so deleting a runner can reap its live PTY
+    /// children before the cascade nukes the DB rows underneath.
+    runner_id: String,
     /// Optionally holds the master PTY. `kill` takes it to drop-close the
     /// terminal (signals the child's SIGHUP) before signaling/joining.
     master: Option<Box<dyn MasterPty + Send>>,
@@ -273,6 +277,7 @@ impl SessionManager {
             SessionHandle {
                 id: session_id.clone(),
                 mission_id: Some(mission.id.clone()),
+                runner_id: runner.id.clone(),
                 master: Some(pair.master),
                 writer: Mutex::new(writer),
                 pid,
@@ -424,6 +429,7 @@ impl SessionManager {
             SessionHandle {
                 id: session_id.clone(),
                 mission_id: None,
+                runner_id: runner.id.clone(),
                 master: Some(pair.master),
                 writer: Mutex::new(writer),
                 pid,
@@ -580,6 +586,25 @@ impl SessionManager {
             sessions
                 .values()
                 .filter(|s| s.mission_id.as_deref() == Some(mission_id))
+                .map(|s| s.id.clone())
+                .collect()
+        };
+        for id in ids {
+            self.kill(&id)?;
+        }
+        Ok(())
+    }
+
+    /// Kill every live session for `runner_id` — both mission-scoped and
+    /// direct-chat. Used by `runner_delete` so the cascade dropping the
+    /// `sessions` rows doesn't strand the PTY children running underneath.
+    /// Returns only after every reader thread has joined.
+    pub fn kill_all_for_runner(&self, runner_id: &str) -> Result<()> {
+        let ids: Vec<String> = {
+            let sessions = self.sessions.lock().unwrap();
+            sessions
+                .values()
+                .filter(|s| s.runner_id == runner_id)
                 .map(|s| s.id.clone())
                 .collect()
         };

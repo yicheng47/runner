@@ -82,19 +82,18 @@ export default function RunnerDetail() {
     };
   }, [runner?.id]);
 
-  const startChat = async () => {
+  const startChat = () => {
     if (!runner || openingChat) return;
+    // Don't spawn here — pass intent to the chat page in router state.
+    // Spawning before the chat page mounts can race the reader thread:
+    // a fast runner could finish before the listener attaches and the
+    // pane would be stuck at "running" with no output. Letting the chat
+    // page own the spawn means it can subscribe first.
     setOpeningChat(true);
-    setError(null);
-    try {
-      const cwd = chatCwd?.trim() ? chatCwd.trim() : null;
-      const spawned = await api.session.startDirect(runner.id, cwd);
-      navigate(`/runners/${runner.handle}/chat/${spawned.id}`);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setOpeningChat(false);
-    }
+    const cwd = chatCwd?.trim() ? chatCwd.trim() : null;
+    navigate(`/runners/${runner.handle}/chat`, {
+      state: { runnerId: runner.id, cwd },
+    });
   };
 
   return (

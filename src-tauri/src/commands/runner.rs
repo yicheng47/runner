@@ -436,6 +436,13 @@ pub async fn runner_update(
 
 #[tauri::command]
 pub async fn runner_delete(state: State<'_, AppState>, id: String) -> Result<()> {
+    // Reap every live PTY for this runner BEFORE the DB delete.
+    // `sessions.runner_id` is `ON DELETE CASCADE`, so the row drop nukes
+    // the session record — but the in-memory SessionManager still holds
+    // the live child + reader thread. Without `kill_all_for_runner`, the
+    // PTY lingers as a daemon attached to nothing and the Mac's TTY count
+    // climbs every time the user deletes a runner with an open chat.
+    state.sessions.kill_all_for_runner(&id)?;
     let mut conn = state.db.get()?;
     delete(&mut conn, &id)
 }

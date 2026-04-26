@@ -74,7 +74,7 @@ export default function Runners() {
   const onDelete = async (id: string, handle: string) => {
     if (
       !confirm(
-        `Delete runner @${handle}? This removes it from every crew it's in. Sessions stay in history.`,
+        `Delete runner @${handle}? This removes it from every crew it's in, kills any live chats, and erases its session history. Crews and missions are kept.`,
       )
     )
       return;
@@ -231,4 +231,3 @@ function RunnerCard({
     </div>
   );
 }
-
