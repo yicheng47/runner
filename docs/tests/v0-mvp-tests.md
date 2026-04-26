@@ -12,7 +12,7 @@ Single source of truth for MVP test coverage. Pairs with `docs/impls/v0-mvp.md` 
 | **Demo path** | full Definition-of-Done run from `docs/impls/v0-mvp.md` | Human | C11 (gates the `main` merge) |
 
 - **Unit** — pure Rust, SQL constraints, serde roundtrips. No PTY, no Tauri, no filesystem beyond tempdirs.
-- **Integration** — seams: event log + CLI, orchestrator + bus, PTY + sessions. Headless, uses `tempfile` for `$APPDATA` isolation.
+- **Integration** — seams: event log + CLI, router + bus, PTY + sessions. Headless, uses `tempfile` for `$APPDATA` isolation.
 - **Smoke (UI)** — a human clicking through the Tauri app after each UI-bearing chunk. Each UI chunk PR must reproduce the matching checklist in its PR description (per `docs/impls/v0-mvp.md` chunking principles); this file is the authoritative version.
 - **Demo path** — the single end-to-end run from `docs/impls/v0-mvp.md` §"Definition of done". Running it successfully gates closure of v0 MVP (declared on the C11 PR description).
 
@@ -26,7 +26,7 @@ C4  + unit (event log primitives)
 C5  + unit (mission bookkeeping)
 C6  + integration (PTY)
 C7  + unit (notify watcher + projections)
-C8  + unit (orchestrator rules + replay)
+C8  + unit (router handlers + pending-ask reconstruction)
 C9  + integration (CLI ↔ event log)
 C10 + smoke (workspace) + integration (headless E2E)
 C11 + smoke (entrypoint) + demo path
@@ -35,7 +35,7 @@ C11 + smoke (entrypoint) + demo path
 ### Out of scope for v0 testing
 
 - **Windows.** macOS + Linux only for MVP. Skip Windows-specific assertions.
-- **LLM-driven orchestrator.** Rules are deterministic; never assert on "the lead decides to…" beyond what the fixture runner's script does.
+- **LLM-driven routing.** The router is a hardcoded dispatcher; never assert on "the lead decides to…" beyond what the fixture runner's script does.
 - **UI E2E frameworks** (Playwright / webdriver). Surface is too fluid pre-C11.
 - **Network filesystems** (NFS/SMB/iCloud). Arch §5.1.1 documents this as a hard requirement on local POSIX.
 
@@ -114,22 +114,31 @@ Already landed (10 tests):
 - `watermark_rebuilds_on_boot_from_log_scan` — cold start with a pre-existing log; watermarks match what the live session would have produced.
 - `malformed_line_is_skipped_with_warning` — the NDJSON file stays parseable; one bad line doesn't poison the bus.
 
-## C8 — `src-tauri/src/orchestrator/`
+## C8 — `src-tauri/src/router/`
 
-- Rule-by-rule (each fires exactly once per triggering event):
-  - `mission_goal → inject_stdin @lead`
-  - `human_said with payload.target → inject_stdin @target`
-  - `human_said without target → inject_stdin @lead` (default broadcast recipient)
-  - `ask_lead → inject_stdin @lead`
-  - `ask_human → emit human_question + open card`
-  - `ask_human with on_behalf_of → carry it into human_question.payload`
-  - `human_response → inject_stdin to the matching question's asker` (looked up by `question_id`)
-- `dispatch_ledger_prevents_duplicate_actions_on_replay` — replay the same log twice, observe one action per triggering event.
-- `human_response_without_matching_question_is_dropped_with_warning` — must not panic.
-- `messages_do_not_trigger_any_orchestrator_action` — arch §5.5.0 invariant; only signals wake runners.
-- `inject_stdin_enriches_with_unread_inbox_summary` — arch §5.5.1.
-- `inject_stdin_advances_watermark_via_stdin_injected_signal` — so the next summary is scoped strictly newer.
-- `replay_after_reopen_reconstructs_pending_ask_map` — cards re-appear on reboot if unresolved.
+The router is a flat dispatcher, not a rule engine. C8 was reframed in `docs/impls/v0-mvp.md` to drop the dispatch-ledger / replay-idempotence and inbox-summary-enrichment requirements; this section is updated to match. The lead runner owns coordination judgment; the router is the parent-process plumbing that does bootstrap, cross-process stdin push, and the UI bridge.
+
+- Handler-by-handler (each fires once per triggering event under live tail):
+  - `mission_goal → inject_stdin @lead` with the composed launch prompt (`runner.system_prompt + mission goal + roster + coordination instructions + signal allowlist`).
+  - `human_said with payload.target → inject_stdin @target`.
+  - `human_said without target → inject_stdin @lead` (default broadcast recipient).
+  - `ask_lead → inject_stdin @lead` with the worker's `{question, context}` rendered into a stdin template.
+  - `ask_human → emit human_question` event preserving `on_behalf_of` and `triggered_by` (the original `ask_human` id). The card is rendered by the workspace UI (C10) from the appended event, not by the router.
+  - `human_response → inject_stdin to the asker that emitted the matching ask_human` — looked up by `question_id` in the in-memory pending-ask map.
+- `human_response_without_matching_question_emits_mission_warning` — appends a `mission_warning` event to the log; must not panic.
+- `messages_do_not_trigger_router_actions` — arch §5.5.0 invariant; only signals invoke handlers.
+- `pending_ask_map_reconstructs_from_log_on_reopen` — append `ask_human`, unmount the router, remount, append `human_response`, assert the right asker's stdin received the answer.
+
+**Cross-cutting — runtime / prompt adapter (lands in C8):**
+
+- `claude_code_runtime_adds_append_system_prompt` — when `runner.runtime == "claude-code"` and `runner.system_prompt` is set, the resolved command contains `--append-system-prompt <prompt>` on both `SessionManager::spawn` and `spawn_direct`.
+- `direct_chat_does_not_drop_system_prompt` — the runner's default `system_prompt` reaches the child via the runtime adapter even with no mission/roster context.
+- `missing_system_prompt_omits_flag` — runners with no `system_prompt` spawn cleanly with no extra flag.
+
+**Explicitly NOT tested (descoped from the original C8 plan):**
+
+- Dispatch-ledger replay idempotence — the router never re-runs against historical events. Reopen reconstructs only the pending-ask map by replaying `ask_human`/`human_response` rows.
+- Inbox-summary enrichment in injected stdin templates — the lead calls `runner msg read` itself when it wants its inbox; the router does not synthesize summaries or `stdin_injected` watermark events.
 
 ---
 
@@ -233,18 +242,18 @@ Driver pseudocode:
 1.  bootstrap pool + create crew {lead, impl}
 2.  mission_start(crew, "E2E", goal = "solve it", cwd = tmp)
     → events.ndjson now has: mission_start, mission_goal
-3.  orchestrator starts; observes mission_goal → inject_stdin @lead
-    → appends: stdin_injected(target=lead, triggered_by=mission_goal.id)
+3.  router observes mission_goal → inject_stdin @lead with composed launch prompt
+    (no event written — stdin push is not logged)
 4.  driver feeds the `lead` PTY a scripted response: `runner msg post --to impl "go"`
     → appends: message(from=lead, to=impl, text="go")
 5.  driver feeds the `impl` PTY: `runner msg read` then `runner signal ask_lead …`
     → appends: inbox_read(up_to=<msg ulid>), ask_lead(from=impl)
-6.  orchestrator observes ask_lead → inject_stdin @lead (with inbox summary)
-    → appends: stdin_injected(target=lead, watermark=<inbox max>)
+6.  router observes ask_lead → inject_stdin @lead (template renders {question, context}; no inbox summary in MVP)
 7.  driver feeds `lead`: `runner signal ask_human --payload '{"prompt":"…","choices":["yes","no"],"on_behalf_of":"impl"}'`
-    → appends: ask_human(from=lead, payload.on_behalf_of=impl), human_question(from=orchestrator, payload.triggered_by=<ask_human.id>)
-8.  driver simulates human click: orchestrator.handle_human_click(question_id, "yes")
-    → appends: human_response(from=human, payload.question_id=<q.id>, choice=yes), stdin_injected(target=lead, triggered_by=<human_response.id>)
+    → appends: ask_human(from=lead, payload.on_behalf_of=impl), human_question(from=router, payload.triggered_by=<ask_human.id>, payload.on_behalf_of=impl)
+8.  driver simulates human click: router.handle_human_click(question_id, "yes")
+    → appends: human_response(from=human, payload.question_id=<q.id>, choice=yes)
+    → router injects to the asker (lead) — no synthetic event
 9.  driver feeds `lead`: `runner msg post --to impl "Human approved."`
     → appends: message(from=lead, to=impl)
 10. driver feeds `impl`: `runner msg read`
@@ -255,16 +264,15 @@ Driver pseudocode:
 
 Assertions:
 - The ordered sequence of `(kind, type or None, from, to)` tuples matches exactly.
-- No duplicate orchestrator actions even if the test replays the log through a second orchestrator instance (C8's dispatch-ledger idempotence).
-- Every audit signal carries `payload.triggered_by` pointing at a real event id.
+- The router writes no events for handler invocations — only the `human_question` event for the `ask_human → UI bridge` step. (Stdin pushes for `mission_goal`, `human_said`, `ask_lead`, and `human_response` are silent.)
 - After `mission_stop`, every session row is `stopped` and no child processes remain.
 
 ### Crash-replay assertion (same file)
 
-After step 8, **hard-kill** the driver's orchestrator and restart it from scratch against the same log:
+After step 8, **hard-kill** the driver's router and restart it from scratch against the same log:
 - The rebuilt in-memory `pending_ask` map is empty (the question was resolved before the crash).
-- No rule re-fires: steps 3, 6, 8's audit signals exist exactly once each.
-- Watermarks match the live run.
+- The router does not re-inject historical events (live tail starts from current end of log; replay is only used to reconstruct the `pending_ask` map).
+- A fresh `ask_human` appended after restart routes correctly to the new asker.
 
 ---
 
@@ -429,7 +437,7 @@ Expected:
 
 **S10.8 — Messages/signals split**
 
-Expected: feed visibly segregates `kind: message` rows from `kind: signal`. Orchestrator-emitted audit signals (`inject_stdin`, `human_question`, `human_response`, `inbox_read`) all go to the signal panel.
+Expected: feed visibly segregates `kind: message` rows from `kind: signal`. The signal panel shows runner-emitted signals (`mission_goal`, `human_said`, `ask_lead`, `ask_human`, `human_response`, `inbox_read`) plus the router's bridged `human_question`. Stdin pushes (the router's reaction to `mission_goal` / `ask_lead` / `human_response`) are not events and don't appear in the feed.
 
 ### Known gaps — do NOT verify in C10
 
@@ -480,7 +488,7 @@ Expected: modal surfaces a clean error ("crew has no runners" or "no lead"); mis
 1. Start a mission from `Demo Crew`. From the `lead` PTY, open an `ask_human` card (as in S10.4). Close the tab without clicking the card.
 2. Return to Missions list.
 
-Expected: the mission row in Active shows a "pending ask" flag (derived from orchestrator state). Clicking it reopens the workspace with the card still pending.
+Expected: the mission row in Active shows a "pending ask" flag (derived from the router's pending-ask map for mounted missions, or a log scan otherwise). Clicking it reopens the workspace with the card still pending.
 
 **S11.5 — Past tab shows stopped missions**
 
@@ -510,7 +518,7 @@ From a clean launch of the app:
 3. Lead receives the goal via stdin, drafts a plan, and posts a directed message to the worker. Worker picks it up on its next `runner msg read`.
 4. Worker emits an `ask_lead` signal; lead decides to escalate via `ask_human`; click **Approve** on the resulting card; lead receives the response and forwards it to the worker via a directed message.
 5. Post a broadcast human signal from the workspace input; it lands on the lead by default (payload omits `target`).
-6. Close the mission tab and reopen from the Missions list; the feed replays and the orchestrator's in-memory state reconstructs (pending asks, watermarks, dispatch ledger).
+6. Close the mission tab and reopen from the Missions list; the feed replays and the router's in-memory pending-ask map reconstructs from the log. Watermarks rebuild from `inbox_read` rows (per C7).
 
 All six steps must succeed in one session without restarting the app. Capture a screen recording and attach it to the squash-merge PR.
 
