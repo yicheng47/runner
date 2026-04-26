@@ -52,6 +52,40 @@ export interface RunnerActivity {
   last_started_at: Timestamp | null;
 }
 
+// Runner row plus its RunnerActivity, returned by runner_list_with_activity.
+// Both halves are #[serde(flatten)]-merged on the Rust side.
+export interface RunnerWithActivity extends Runner, RunnerActivity {}
+
+// Crew membership row from runner_crews_list — used by Runner Detail
+// "Crews using this runner" panel.
+export interface CrewMembership {
+  crew_id: string;
+  crew_name: string;
+  lead: boolean;
+  position: number;
+  added_at: Timestamp;
+}
+
+// Payload for the Tauri `runner/activity` event the SessionManager emits
+// on every spawn / reap.
+export interface RunnerActivityEvent {
+  runner_id: string;
+  handle: string;
+  active_sessions: number;
+  active_missions: number;
+  crew_count: number;
+}
+
+// Returned by session_start_direct (and by mission_start's session list).
+// mission_id is null for the direct flavor.
+export interface SpawnedSession {
+  id: string;
+  mission_id: string | null;
+  runner_id: string;
+  handle: string;
+  pid: number | null;
+}
+
 export type MissionStatus = "running" | "completed" | "aborted";
 
 export interface Mission {

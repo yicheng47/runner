@@ -38,9 +38,26 @@ use crate::model::{Mission, Runner};
 pub trait SessionEvents: Send + Sync + 'static {
     fn output(&self, ev: &OutputEvent);
     fn exit(&self, ev: &ExitEvent);
+    /// Live activity counter for a runner — emitted on every spawn/reap so
+    /// the Runners list can update its "N sessions / M missions" badges
+    /// without polling. Default no-op so test fakes don't have to opt in.
+    fn runner_activity(&self, _ev: &RunnerActivityEvent) {}
 }
 
-/// Emitter for the real Tauri app — emits `session/output` and `session/exit`.
+/// Payload for `runner/activity`. Derived from the same query
+/// `RunnerActivity` (`runner_activity` Tauri command) returns, so a fresh
+/// page load and a live update agree.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunnerActivityEvent {
+    pub runner_id: String,
+    pub handle: String,
+    pub active_sessions: i64,
+    pub active_missions: i64,
+    pub crew_count: i64,
+}
+
+/// Emitter for the real Tauri app — emits `session/output`, `session/exit`,
+/// and `runner/activity`.
 pub struct TauriSessionEvents(pub tauri::AppHandle);
 
 impl SessionEvents for TauriSessionEvents {
@@ -52,16 +69,23 @@ impl SessionEvents for TauriSessionEvents {
         use tauri::Emitter;
         let _ = self.0.emit("session/exit", ev);
     }
+    fn runner_activity(&self, ev: &RunnerActivityEvent) {
+        use tauri::Emitter;
+        let _ = self.0.emit("runner/activity", ev);
+    }
 }
 
 /// Contents of `session/output` events emitted to the frontend. The raw PTY
 /// bytes are base64-encoded so the event payload is valid JSON regardless of
 /// what the child wrote (ANSI escapes, non-UTF-8, etc.). The frontend decodes
 /// before feeding xterm.js.
+///
+/// `mission_id` is `None` for direct-chat sessions (C8.5) — they have no
+/// parent mission and consumers should filter on `session_id` instead.
 #[derive(Debug, Clone, Serialize)]
 pub struct OutputEvent {
     pub session_id: String,
-    pub mission_id: String,
+    pub mission_id: Option<String>,
     /// Lossy UTF-8 of the chunk — good enough for the MVP debug page. xterm.js
     /// integration in C10 will switch this to base64 bytes.
     pub text: String,
@@ -70,7 +94,7 @@ pub struct OutputEvent {
 #[derive(Debug, Clone, Serialize)]
 pub struct ExitEvent {
     pub session_id: String,
-    pub mission_id: String,
+    pub mission_id: Option<String>,
     pub exit_code: Option<i32>,
     pub success: bool,
 }
@@ -81,7 +105,7 @@ pub struct ExitEvent {
 #[derive(Debug, Clone, Serialize)]
 pub struct SpawnedSession {
     pub id: String,
-    pub mission_id: String,
+    pub mission_id: Option<String>,
     pub runner_id: String,
     pub handle: String,
     pub pid: Option<u32>,
@@ -91,7 +115,14 @@ struct SessionHandle {
     // Kept for debugging and future kill-by-pid / identity checks.
     #[allow(dead_code)]
     id: String,
-    mission_id: String,
+    /// `None` for direct-chat sessions (C8.5). `kill_all_for_mission`
+    /// filters on this so direct chats don't get torn down when a mission
+    /// stops, and vice versa.
+    mission_id: Option<String>,
+    /// The runner this session is an instance of. `kill_all_for_runner`
+    /// filters on this so deleting a runner can reap its live PTY
+    /// children before the cascade nukes the DB rows underneath.
+    runner_id: String,
     /// Optionally holds the master PTY. `kill` takes it to drop-close the
     /// terminal (signals the child's SIGHUP) before signaling/joining.
     master: Option<Box<dyn MasterPty + Send>>,
@@ -245,7 +276,8 @@ impl SessionManager {
             session_id.clone(),
             SessionHandle {
                 id: session_id.clone(),
-                mission_id: mission.id.clone(),
+                mission_id: Some(mission.id.clone()),
+                runner_id: runner.id.clone(),
                 master: Some(pair.master),
                 writer: Mutex::new(writer),
                 pid,
@@ -258,36 +290,15 @@ impl SessionManager {
         // the `exit` event. `kill` joins this handle to guarantee the
         // mission_stop → mission_completed transition never races ahead of
         // the actual child reap.
-        let reader_handle = {
-            let session_id_t = session_id.clone();
-            let mission_id_t = mission.id.clone();
-            let events_t = Arc::clone(&events);
-            let manager_t: Arc<SessionManager> = Arc::clone(self);
-            let pool_t: Arc<DbPool> = Arc::clone(&pool);
-            thread::spawn(move || {
-                let exit = drain_pty_and_reap(
-                    reader,
-                    &mut *child,
-                    &session_id_t,
-                    &mission_id_t,
-                    events_t.as_ref(),
-                );
-                let _ = manager_t.forget(&session_id_t);
-                if let Ok(conn) = pool_t.get() {
-                    let _ = conn.execute(
-                        "UPDATE sessions
-                            SET status = ?1, stopped_at = ?2
-                          WHERE id = ?3",
-                        params![
-                            if exit.success { "stopped" } else { "crashed" },
-                            Utc::now().to_rfc3339(),
-                            session_id_t,
-                        ],
-                    );
-                }
-                events_t.exit(&exit);
-            })
-        };
+        let reader_handle = self.start_reader_thread(
+            session_id.clone(),
+            Some(mission.id.clone()),
+            child,
+            reader,
+            Arc::clone(&pool),
+            Arc::clone(&events),
+            runner.clone(),
+        );
 
         // Attach the reader handle. We raced to insert-first so the reader
         // may already be draining by the time we land here — that's fine,
@@ -296,12 +307,208 @@ impl SessionManager {
             h.reader = Some(reader_handle);
         }
 
+        // Notify subscribers (Runners page, Runner Detail) that this
+        // runner's activity counters changed. Don't fail the spawn if the
+        // counter query hits a transient error — the spawn itself
+        // succeeded; activity badges will reconcile on the next event.
+        emit_runner_activity(&pool, runner, events.as_ref());
+
         Ok(SpawnedSession {
             id: session_id,
-            mission_id: mission.id.clone(),
+            mission_id: Some(mission.id.clone()),
             runner_id: runner.id.clone(),
             handle: runner.handle.clone(),
             pid,
+        })
+    }
+
+    /// Spawn a "direct chat" PTY: a runner process with **no parent
+    /// mission**. Schema-supported since C5.5a (`sessions.mission_id` is
+    /// nullable); C8.5 surfaces it as the "Chat now" affordance on the
+    /// Runner Detail page.
+    ///
+    /// Differences vs. the mission-flavored `spawn`:
+    ///   - No `RUNNERS_MISSION_ID`, `RUNNERS_EVENT_LOG`, or
+    ///     `RUNNERS_CREW_ID` env vars. The runner's CLI is on PATH, but
+    ///     anything it tries to do that needs those vars no-ops or errors
+    ///     gracefully — direct chats are not on any coordination bus.
+    ///   - `cwd` lives on the session row directly, since there's no
+    ///     mission to inherit it from.
+    ///   - The session does not show up in `kill_all_for_mission` for any
+    ///     mission_id, so a `mission_stop` on some unrelated crew never
+    ///     yanks the user's open chat.
+    pub fn spawn_direct(
+        self: &Arc<Self>,
+        runner: &Runner,
+        cwd: Option<&str>,
+        app_data_dir: &Path,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+    ) -> Result<SpawnedSession> {
+        let pty_system = portable_pty::native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| Error::msg(format!("openpty: {e}")))?;
+
+        let mut cmd = CommandBuilder::new(&runner.command);
+        cmd.args(&runner.args);
+
+        // Working directory precedence: explicit `cwd` arg (the user picked
+        // a folder in the Chat now dialog) ► runner's own `working_dir`
+        // override ► inherit parent's. Mirrors `spawn`'s precedence so
+        // behavior is consistent across mission and direct flavors.
+        let resolved_cwd: Option<String> = cwd
+            .map(|s| s.to_string())
+            .or_else(|| runner.working_dir.clone());
+        if let Some(wd) = resolved_cwd.as_deref() {
+            cmd.cwd(wd);
+        }
+
+        for (k, v) in &runner.env {
+            cmd.env(k, v);
+        }
+        // PATH still gets the bundled CLI prepended — the runner might
+        // call `runners --help` interactively; let it find the binary.
+        let bin_dir = app_data_dir.join("bin");
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        let parent_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut new_path = std::ffi::OsString::from(bin_dir.as_os_str());
+        if !parent_path.is_empty() {
+            new_path.push(std::ffi::OsString::from(sep.to_string()));
+            new_path.push(parent_path);
+        }
+        cmd.env("PATH", new_path);
+        cmd.env("RUNNERS_RUNNER_HANDLE", &runner.handle);
+        // Deliberately NOT setting RUNNERS_CREW_ID, RUNNERS_MISSION_ID,
+        // RUNNERS_EVENT_LOG, MISSION_CWD — direct chats are off-bus.
+
+        let mut child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| Error::msg(format!("spawn {}: {e}", runner.command)))?;
+        drop(pair.slave);
+
+        let pid = child.process_id();
+        let session_id = ulid::Ulid::new().to_string();
+        let started_at = Utc::now().to_rfc3339();
+        let setup_res: Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> = (|| {
+            let reader = pair
+                .master
+                .try_clone_reader()
+                .map_err(|e| Error::msg(format!("clone reader: {e}")))?;
+            let writer = pair
+                .master
+                .take_writer()
+                .map_err(|e| Error::msg(format!("take writer: {e}")))?;
+            let conn = pool.get()?;
+            // mission_id is NULL; cwd lives on the session row.
+            conn.execute(
+                "INSERT INTO sessions
+                    (id, mission_id, runner_id, cwd, status, pid, started_at)
+                 VALUES (?1, NULL, ?2, ?3, 'running', ?4, ?5)",
+                params![session_id, runner.id, resolved_cwd, pid, started_at],
+            )?;
+            Ok((reader, writer))
+        })();
+        let (reader, writer) = match setup_res {
+            Ok(rw) => rw,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
+        };
+
+        self.sessions.lock().unwrap().insert(
+            session_id.clone(),
+            SessionHandle {
+                id: session_id.clone(),
+                mission_id: None,
+                runner_id: runner.id.clone(),
+                master: Some(pair.master),
+                writer: Mutex::new(writer),
+                pid,
+                reader: None,
+            },
+        );
+
+        let reader_handle = self.start_reader_thread(
+            session_id.clone(),
+            None,
+            child,
+            reader,
+            Arc::clone(&pool),
+            Arc::clone(&events),
+            runner.clone(),
+        );
+        if let Some(h) = self.sessions.lock().unwrap().get_mut(&session_id) {
+            h.reader = Some(reader_handle);
+        }
+
+        emit_runner_activity(&pool, runner, events.as_ref());
+
+        Ok(SpawnedSession {
+            id: session_id,
+            mission_id: None,
+            runner_id: runner.id.clone(),
+            handle: runner.handle.clone(),
+            pid,
+        })
+    }
+
+    /// Common reader-thread machinery used by both `spawn` (mission) and
+    /// `spawn_direct`. Drains the PTY, reaps the child, flips the DB row,
+    /// removes the live-map entry, and emits `session/exit`. Whatever
+    /// invoked spawn doesn't get a return until `kill` joins this handle,
+    /// which is what mission_stop relies on for the no-lying-about-
+    /// termination contract.
+    // The reader thread genuinely needs every one of these — session_id /
+    // mission_id for event payloads, child + reader for the PTY drain, pool
+    // for the DB row update, events for emitter dispatch, runner for the
+    // post-reap activity recompute. Bundling into a Context struct just
+    // moves the same arity to the call site without buying clarity.
+    #[allow(clippy::too_many_arguments)]
+    fn start_reader_thread(
+        self: &Arc<Self>,
+        session_id: String,
+        mission_id: Option<String>,
+        mut child: Box<dyn portable_pty::Child + Send + Sync>, // portable-pty's Child is Send + Sync; both needed for thread::spawn move + the &mut reborrow inside drain_pty_and_reap.
+        reader: Box<dyn Read + Send>,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+        runner: Runner,
+    ) -> thread::JoinHandle<()> {
+        let manager_t: Arc<SessionManager> = Arc::clone(self);
+        thread::spawn(move || {
+            let exit = drain_pty_and_reap(
+                reader,
+                &mut *child,
+                &session_id,
+                mission_id.as_deref(),
+                events.as_ref(),
+            );
+            let _ = manager_t.forget(&session_id);
+            if let Ok(conn) = pool.get() {
+                let _ = conn.execute(
+                    "UPDATE sessions
+                        SET status = ?1, stopped_at = ?2
+                      WHERE id = ?3",
+                    params![
+                        if exit.success { "stopped" } else { "crashed" },
+                        Utc::now().to_rfc3339(),
+                        session_id,
+                    ],
+                );
+            }
+            // Activity dropped — emit before `exit` so the Runners list
+            // sees the new counts before any session_id-keyed UI cleans up.
+            emit_runner_activity(&pool, &runner, events.as_ref());
+            events.exit(&exit);
         })
     }
 
@@ -378,7 +585,26 @@ impl SessionManager {
             let sessions = self.sessions.lock().unwrap();
             sessions
                 .values()
-                .filter(|s| s.mission_id == mission_id)
+                .filter(|s| s.mission_id.as_deref() == Some(mission_id))
+                .map(|s| s.id.clone())
+                .collect()
+        };
+        for id in ids {
+            self.kill(&id)?;
+        }
+        Ok(())
+    }
+
+    /// Kill every live session for `runner_id` — both mission-scoped and
+    /// direct-chat. Used by `runner_delete` so the cascade dropping the
+    /// `sessions` rows doesn't strand the PTY children running underneath.
+    /// Returns only after every reader thread has joined.
+    pub fn kill_all_for_runner(&self, runner_id: &str) -> Result<()> {
+        let ids: Vec<String> = {
+            let sessions = self.sessions.lock().unwrap();
+            sessions
+                .values()
+                .filter(|s| s.runner_id == runner_id)
                 .map(|s| s.id.clone())
                 .collect()
         };
@@ -394,13 +620,51 @@ impl SessionManager {
     }
 }
 
+/// Compute current activity counters for `runner` and emit a
+/// `runner/activity` event. Best-effort: if the DB roundtrip fails we drop
+/// the emission rather than failing the spawn/reap path. Runners list will
+/// reconcile via the next emission or a manual refresh.
+fn emit_runner_activity(pool: &DbPool, runner: &Runner, events: &dyn SessionEvents) {
+    let Ok(conn) = pool.get() else { return };
+    let active_sessions: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sessions WHERE runner_id = ?1 AND status = 'running'",
+            params![runner.id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let active_missions: i64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT mission_id) FROM sessions
+              WHERE runner_id = ?1 AND status = 'running' AND mission_id IS NOT NULL",
+            params![runner.id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let crew_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM crew_runners WHERE runner_id = ?1",
+            params![runner.id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    events.runner_activity(&RunnerActivityEvent {
+        runner_id: runner.id.clone(),
+        handle: runner.handle.clone(),
+        active_sessions,
+        active_missions,
+        crew_count,
+    });
+}
+
 /// Pumps PTY output → `session/output` events, then waits for the child to
 /// exit. Returns the exit summary that the caller emits as `session/exit`.
+/// `mission_id` is `None` for direct-chat sessions.
 fn drain_pty_and_reap(
     mut reader: Box<dyn Read + Send>,
     child: &mut (dyn portable_pty::Child + Send),
     session_id: &str,
-    mission_id: &str,
+    mission_id: Option<&str>,
     events: &dyn SessionEvents,
 ) -> ExitEvent {
     let mut buf = [0u8; 4096];
@@ -411,7 +675,7 @@ fn drain_pty_and_reap(
                 let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
                 events.output(&OutputEvent {
                     session_id: session_id.into(),
-                    mission_id: mission_id.into(),
+                    mission_id: mission_id.map(str::to_string),
                     text: chunk,
                 });
             }
@@ -427,7 +691,7 @@ fn drain_pty_and_reap(
     };
     ExitEvent {
         session_id: session_id.into(),
-        mission_id: mission_id.into(),
+        mission_id: mission_id.map(str::to_string),
         exit_code,
         success,
     }
@@ -455,6 +719,7 @@ mod tests {
     struct Capture {
         output: Mutex<Vec<OutputEvent>>,
         exit: Mutex<Vec<ExitEvent>>,
+        activity: Mutex<Vec<RunnerActivityEvent>>,
     }
     impl SessionEvents for Capture {
         fn output(&self, ev: &OutputEvent) {
@@ -462,6 +727,9 @@ mod tests {
         }
         fn exit(&self, ev: &ExitEvent) {
             self.exit.lock().unwrap().push(ev.clone());
+        }
+        fn runner_activity(&self, ev: &RunnerActivityEvent) {
+            self.activity.lock().unwrap().push(ev.clone());
         }
     }
 
@@ -776,6 +1044,87 @@ mod tests {
         assert!(
             status != "running",
             "kill returned while session still running: {status}"
+        );
+    }
+
+    #[test]
+    fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
+        // C8.5: a "Chat now" session lives outside any mission. Verify the
+        // sessions row has mission_id IS NULL, the session lands in the
+        // live map, and the runner_activity emission fires on spawn.
+        let pool = pool_with_schema();
+        // We don't go through `insert_crew_runner` here because direct
+        // chat doesn't need a crew or mission — only a runner row.
+        let now = Utc::now().to_rfc3339();
+        let runner_id = ulid::Ulid::new().to_string();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, role, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'directrunner', 'D', 'test', 'shell', '/bin/sh',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+                params![runner_id, now],
+            )
+            .unwrap();
+        }
+
+        let mut runner = runner("/bin/sh", &["-c", "echo direct"]);
+        runner.id = runner_id.clone();
+        runner.handle = "directrunner".into();
+
+        let cap = capture();
+        let mgr = SessionManager::new();
+        let spawned = mgr
+            .spawn_direct(
+                &runner,
+                Some("/tmp"),
+                std::path::Path::new("/tmp"),
+                Arc::clone(&pool),
+                cap.clone(),
+            )
+            .unwrap();
+        assert_eq!(spawned.mission_id, None);
+        assert_eq!(spawned.runner_id, runner_id);
+
+        // Wait for the child to exit so the test isn't racing with the
+        // reader thread for the activity drop.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let conn = pool.get().unwrap();
+            let row: (String, Option<String>) = conn
+                .query_row(
+                    "SELECT status, mission_id FROM sessions WHERE id = ?1",
+                    params![spawned.id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                row.1, None,
+                "direct session must persist with NULL mission_id"
+            );
+            if row.0 != "running" {
+                break;
+            }
+            if Instant::now() > deadline {
+                panic!("direct session never exited");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        // Activity emissions: at least one on spawn (count=1), and one on
+        // reap (count=0). We don't pin exact counts — the spawn-time emit
+        // could race the reap if the child is fast — but the *last*
+        // emission must show zero active sessions for this runner.
+        let activity = cap.activity.lock().unwrap();
+        assert!(!activity.is_empty(), "runner_activity must fire");
+        let last = activity.last().unwrap();
+        assert_eq!(last.runner_id, runner_id);
+        assert_eq!(
+            last.active_sessions, 0,
+            "after reap, active_sessions for this runner must be 0"
         );
     }
 }

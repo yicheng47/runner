@@ -15,6 +15,7 @@
 
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 use tauri::State;
 
 use crate::{
@@ -23,6 +24,20 @@ use crate::{
     model::{CrewRunner, Timestamp},
     AppState,
 };
+
+/// One crew that a given runner is a member of, plus the per-crew `lead`
+/// flag and the membership timestamp. Returned by `runner_crews_list` to
+/// render the "Crews using this runner" panel on Runner Detail. Only the
+/// fields the UI actually shows are projected — the full `Crew` struct
+/// would needlessly drag along policy JSON for every row.
+#[derive(Debug, Clone, Serialize)]
+pub struct CrewMembership {
+    pub crew_id: String,
+    pub crew_name: String,
+    pub lead: bool,
+    pub position: i64,
+    pub added_at: Timestamp,
+}
 
 fn now() -> Timestamp {
     Utc::now()
@@ -117,6 +132,37 @@ pub fn list(conn: &Connection, crew_id: &str) -> Result<Vec<CrewRunner>> {
             runner: r,
             position,
             lead: lead_int != 0,
+            added_at,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+/// Inverse of `list`: every crew this runner sits in, ordered by membership
+/// recency (most recently added first). Drives the Runner Detail "Crews
+/// using this runner" panel.
+pub fn list_crews_for_runner(conn: &Connection, runner_id: &str) -> Result<Vec<CrewMembership>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.id AS crew_id, c.name AS crew_name,
+                cr.lead AS cr_lead, cr.position AS cr_position,
+                cr.added_at AS cr_added_at
+           FROM crew_runners cr
+           JOIN crews c ON c.id = cr.crew_id
+          WHERE cr.runner_id = ?1
+          ORDER BY cr.added_at DESC",
+    )?;
+    let rows = stmt.query_map(params![runner_id], |row| {
+        let added_at_raw: String = row.get("cr_added_at")?;
+        let added_at: Timestamp = added_at_raw.parse().map_err(|e: chrono::ParseError| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+        let lead_int: i64 = row.get("cr_lead")?;
+        Ok(CrewMembership {
+            crew_id: row.get("crew_id")?,
+            crew_name: row.get("crew_name")?,
+            lead: lead_int != 0,
+            position: row.get("cr_position")?,
             added_at,
         })
     })?;
@@ -357,6 +403,15 @@ pub async fn crew_list_runners(
 ) -> Result<Vec<CrewRunner>> {
     let conn = state.db.get()?;
     list(&conn, &crew_id)
+}
+
+#[tauri::command]
+pub async fn runner_crews_list(
+    state: State<'_, AppState>,
+    runner_id: String,
+) -> Result<Vec<CrewMembership>> {
+    let conn = state.db.get()?;
+    list_crews_for_runner(&conn, &runner_id)
 }
 
 #[tauri::command]
