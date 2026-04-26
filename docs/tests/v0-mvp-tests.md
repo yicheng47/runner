@@ -14,7 +14,7 @@ Single source of truth for MVP test coverage. Pairs with `docs/impls/v0-mvp.md` 
 - **Unit** — pure Rust, SQL constraints, serde roundtrips. No PTY, no Tauri, no filesystem beyond tempdirs.
 - **Integration** — seams: event log + CLI, orchestrator + bus, PTY + sessions. Headless, uses `tempfile` for `$APPDATA` isolation.
 - **Smoke (UI)** — a human clicking through the Tauri app after each UI-bearing chunk. Each UI chunk PR must reproduce the matching checklist in its PR description (per `docs/impls/v0-mvp.md` chunking principles); this file is the authoritative version.
-- **Demo path** — the single end-to-end run from `docs/impls/v0-mvp.md` §"Definition of done". Running it successfully gates the squash-merge of `feature/v0-mvp` into `main`.
+- **Demo path** — the single end-to-end run from `docs/impls/v0-mvp.md` §"Definition of done". Running it successfully gates closure of v0 MVP (declared on the C11 PR description).
 
 ### Chunk ↔ tier map
 
@@ -501,7 +501,7 @@ Expected: clicking **Advanced** expands but any inner controls are inert — the
 
 # Demo path (the Definition of Done)
 
-Verbatim from `docs/impls/v0-mvp.md` §"Definition of done". Run this once `feature/v0-mvp` is ready to squash-merge into `main`.
+Verbatim from `docs/impls/v0-mvp.md` §"Definition of done". Run this on the C11 PR — passing it is what closes v0 MVP.
 
 From a clean launch of the app:
 

@@ -1,5 +1,14 @@
 # v0 MVP — C5.5: shared runners + direct sessions
 
+> **Status: integrated.** C5.5a (schema + backend) shipped in PR #13; the
+> Runners-page half originally sketched here as C5.5b was rebuilt and
+> shipped as C8.5 in PR #15. Both are folded into `v0-mvp.md`'s live plan
+> and dependency graph. This file is preserved as the historical
+> amendment for context — read it when you need the *why* behind the
+> top-level Runners + nullable `mission_id` shape, not as live spec.
+>
+> Original framing follows.
+>
 > Amendment to the umbrella plan (`v0-mvp.md`), inserted between C5
 > (mission lifecycle, shipped) and C6 (PTY session runtime). C6 needs the
 > new session schema, so this chunk must land before C6 starts.

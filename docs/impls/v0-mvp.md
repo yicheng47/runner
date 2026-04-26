@@ -1,8 +1,8 @@
 # v0 MVP — Implementation Plan
 
-> Umbrella plan for the first end-to-end vertical slice of Runners. Ships as one feature branch (`feature/v0-mvp`) with **eleven** ordered chunks, each its own commit/PR merged into the feature branch. Once the slice is demo-able end to end, the feature branch squash-merges to `main`.
+> Umbrella plan for the first end-to-end vertical slice of Runner. Twelve ordered chunks (C1–C11 plus the C5.5a amendment), each its own PR merged directly into `main`. The original umbrella-branch model was dropped after C8.5 — see `## Branching` at the bottom for the rationale.
 >
-> Companion to `docs/arch/v0-arch.md` (architecture) and `docs/arch/v0-prd.md` (scope).
+> Companion to `docs/arch/v0-arch.md` (architecture) and `docs/arch/v0-prd.md` (scope). For current build status see the latest snapshot under `docs/logs/`.
 
 ## Definition of done (demo path)
 
