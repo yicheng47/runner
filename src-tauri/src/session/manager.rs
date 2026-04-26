@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::Utc;
 use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use rusqlite::params;
@@ -81,8 +82,8 @@ impl SessionEvents for TauriSessionEvents {
 
 /// Contents of `session/output` events emitted to the frontend. The raw PTY
 /// bytes are base64-encoded so the event payload is valid JSON regardless of
-/// what the child wrote (ANSI escapes, non-UTF-8, etc.). The frontend decodes
-/// before feeding xterm.js.
+/// what the child wrote (ANSI escapes, split UTF-8 sequences, non-UTF-8, etc.).
+/// The frontend decodes before feeding xterm.js.
 ///
 /// `mission_id` is `None` for direct-chat sessions (C8.5) — they have no
 /// parent mission and consumers should filter on `session_id` instead.
@@ -90,9 +91,8 @@ impl SessionEvents for TauriSessionEvents {
 pub struct OutputEvent {
     pub session_id: String,
     pub mission_id: Option<String>,
-    /// Lossy UTF-8 of the chunk — good enough for the MVP debug page. xterm.js
-    /// integration in C10 will switch this to base64 bytes.
-    pub text: String,
+    /// Base64-encoded raw bytes read from the PTY.
+    pub data: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -356,13 +356,14 @@ impl SessionManager {
         // claude-code lay out their input frame on first paint and don't
         // gracefully redraw on later SIGWINCH, so booting at the wrong
         // size leaves a stale 80-col frame stranded in the buffer.
+        let opened = PtySize {
+            rows: rows.unwrap_or(24),
+            cols: cols.unwrap_or(80),
+            pixel_width: 0,
+            pixel_height: 0,
+        };
         let pair = pty_system
-            .openpty(PtySize {
-                rows: rows.unwrap_or(24),
-                cols: cols.unwrap_or(80),
-                pixel_width: 0,
-                pixel_height: 0,
-            })
+            .openpty(opened)
             .map_err(|e| Error::msg(format!("openpty: {e}")))?;
 
         let mut cmd = CommandBuilder::new(&runner.command);
@@ -394,6 +395,16 @@ impl SessionManager {
         }
         cmd.env("PATH", new_path);
         cmd.env("RUNNER_HANDLE", &runner.handle);
+        // Pass the spawn-time grid via COLUMNS/LINES too. portable-pty
+        // sets the kernel winsize via TIOCSWINSZ at openpty time, but
+        // some Node-based TUIs (claude-code, anything using ink) read
+        // these env vars on startup as a fallback / hint and lay out
+        // their initial UI from them, ignoring SIGWINCH that arrives
+        // mid-render. Without this, claude-code paints its input frame
+        // at whatever stale size it picked up.
+        cmd.env("COLUMNS", opened.cols.to_string());
+        cmd.env("LINES", opened.rows.to_string());
+        cmd.env("TERM", "xterm-256color");
         // Deliberately NOT setting RUNNER_CREW_ID, RUNNER_MISSION_ID,
         // RUNNER_EVENT_LOG, MISSION_CWD — direct chats are off-bus.
 
@@ -715,11 +726,10 @@ fn drain_pty_and_reap(
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
                 events.output(&OutputEvent {
                     session_id: session_id.into(),
                     mission_id: mission_id.map(str::to_string),
-                    text: chunk,
+                    data: BASE64.encode(&buf[..n]),
                 });
             }
             Err(_) => break,

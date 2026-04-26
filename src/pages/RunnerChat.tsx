@@ -18,6 +18,7 @@ import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 import { api } from "../lib/api";
@@ -30,7 +31,7 @@ import type { SessionStatus } from "../lib/types";
 interface OutputEvent {
   session_id: string;
   mission_id: string | null;
-  text: string;
+  data: string;
 }
 
 interface ExitEvent {
@@ -81,6 +82,15 @@ const TERMINAL_THEME = {
   brightWhite: "#FFFFFF",
 };
 
+function decodeBase64Chunk(data: string): Uint8Array {
+  const raw = atob(data);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) {
+    bytes[i] = raw.charCodeAt(i);
+  }
+  return bytes;
+}
+
 export default function RunnerChat() {
   const { handle } = useParams<{ handle: string }>();
   const location = useLocation();
@@ -119,10 +129,13 @@ export default function RunnerChat() {
       cols: 80,
       rows: 24,
       theme: TERMINAL_THEME,
+      // System monospace stack. Menlo ships with macOS and carries full
+      // Unicode box-drawing + braille ranges, so claude-code's dividers
+      // and spinner glyphs render without fallback to a proportional
+      // font (which would blow out cell metrics and misalign rows).
       fontFamily:
-        '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
+        'Menlo, "SF Mono", Monaco, Consolas, "Liberation Mono", monospace',
       fontSize: 13,
-      lineHeight: 1.2,
       cursorBlink: true,
       scrollback: 5000,
       allowProposedApi: true,
@@ -130,6 +143,17 @@ export default function RunnerChat() {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(containerRef.current);
+    // WebGL renderer mounts after `open` — it needs the DOM context.
+    // The default canvas renderer in xterm v6 has a known cursor-row
+    // misalignment when the host font's reported metrics disagree with
+    // its measured cell box; WebGL bypasses that path entirely.
+    try {
+      const webgl = new WebglAddon();
+      term.loadAddon(webgl);
+    } catch {
+      // No WebGL context (rare in Tauri's webview, but fall through to
+      // canvas if so).
+    }
     fit.fit();
     term.focus();
 
@@ -208,7 +232,7 @@ export default function RunnerChat() {
     let cancelled = false;
 
     const consumeOutput = (ev: OutputEvent) => {
-      termRef.current?.write(ev.text);
+      termRef.current?.write(decodeBase64Chunk(ev.data));
     };
     const consumeExit = (ev: ExitEvent) => {
       setStatus(ev.success || userEndedRef.current ? "stopped" : "crashed");
@@ -272,9 +296,19 @@ export default function RunnerChat() {
           setErr(msg);
         }
       });
+      // Re-attach after navigation lands on a fresh xterm with no
+      // scrollback. Send a SIGWINCH dance (one col narrower, then back)
+      // so claude-code does a full redraw and repaints its live state
+      // onto our blank grid. Without this, the pane stays empty until
+      // the user types and forces an emit.
       const t = termRef.current;
       if (t) {
-        void api.session.resize(id, t.cols, t.rows).catch(() => {});
+        const cols = t.cols;
+        const rows = t.rows;
+        void api.session
+          .resize(id, Math.max(2, cols - 1), rows)
+          .then(() => api.session.resize(id, cols, rows))
+          .catch(() => {});
       }
       for (const ev of preSpawnBuffer.current.outputs) {
         if (ev.session_id === id) consumeOutput(ev);
