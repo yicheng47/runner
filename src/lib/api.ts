@@ -13,11 +13,14 @@ import type {
   CreateRunnerInput,
   Crew,
   CrewListItem,
+  CrewMembership,
   CrewRunner,
   Mission,
   Runner,
   RunnerActivity,
+  RunnerWithActivity,
   Session,
+  SpawnedSession,
   StartMissionInput,
   StartMissionOutput,
   UpdateCrewInput,
@@ -52,13 +55,19 @@ export const api = {
   },
   runner: {
     list: () => invoke<Runner[]>("runner_list"),
+    listWithActivity: () =>
+      invoke<RunnerWithActivity[]>("runner_list_with_activity"),
     get: (id: string) => invoke<Runner>("runner_get", { id }),
+    getByHandle: (handle: string) =>
+      invoke<Runner>("runner_get_by_handle", { handle }),
     create: (input: CreateRunnerInput) =>
       invoke<Runner>("runner_create", { input }),
     update: (id: string, input: UpdateRunnerInput) =>
       invoke<Runner>("runner_update", { id, input }),
     delete: (id: string) => invoke<void>("runner_delete", { id }),
     activity: (id: string) => invoke<RunnerActivity>("runner_activity", { id }),
+    crews: (runnerId: string) =>
+      invoke<CrewMembership[]>("runner_crews_list", { runnerId }),
   },
   mission: {
     list: (crewId?: string) =>
@@ -74,5 +83,7 @@ export const api = {
     injectStdin: (sessionId: string, text: string) =>
       invoke<void>("session_inject_stdin", { sessionId, text }),
     kill: (sessionId: string) => invoke<void>("session_kill", { sessionId }),
+    startDirect: (runnerId: string, cwd: string | null) =>
+      invoke<SpawnedSession>("session_start_direct", { runnerId, cwd }),
   },
 };

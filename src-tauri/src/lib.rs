@@ -54,12 +54,15 @@ pub fn run() {
             commands::crew::crew_update,
             commands::crew::crew_delete,
             commands::runner::runner_list,
+            commands::runner::runner_list_with_activity,
             commands::runner::runner_get,
+            commands::runner::runner_get_by_handle,
             commands::runner::runner_create,
             commands::runner::runner_update,
             commands::runner::runner_delete,
             commands::runner::runner_activity,
             commands::crew_runner::crew_list_runners,
+            commands::crew_runner::runner_crews_list,
             commands::crew_runner::crew_add_runner,
             commands::crew_runner::crew_remove_runner,
             commands::crew_runner::crew_set_lead,
@@ -71,6 +74,7 @@ pub fn run() {
             commands::session::session_list,
             commands::session::session_inject_stdin,
             commands::session::session_kill,
+            commands::session::session_start_direct,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

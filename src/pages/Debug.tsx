@@ -13,13 +13,14 @@ import { AppShell } from "../components/AppShell";
 
 interface OutputEvent {
   session_id: string;
-  mission_id: string;
+  // null for direct-chat sessions started from the Runners page (C8.5).
+  mission_id: string | null;
   text: string;
 }
 
 interface ExitEvent {
   session_id: string;
-  mission_id: string;
+  mission_id: string | null;
   exit_code: number | null;
   success: boolean;
 }

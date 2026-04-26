@@ -10,13 +10,17 @@
 // directly via `AppHandle::emit`; the frontend subscribes without going
 // through a command.
 
+use std::sync::Arc;
+
 use rusqlite::{params, Row};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::{
-    error::Result,
+    commands::runner,
+    error::{Error, Result},
     model::{Session, SessionStatus, Timestamp},
+    session::manager::{SessionEvents, SpawnedSession, TauriSessionEvents},
     AppState,
 };
 
@@ -104,4 +108,41 @@ pub async fn session_inject_stdin(
 #[tauri::command]
 pub async fn session_kill(state: State<'_, AppState>, session_id: String) -> Result<()> {
     state.sessions.kill(&session_id)
+}
+
+/// Spawn a "direct chat" session for a runner — a PTY with no parent
+/// mission, no orchestrator, no event log (C8.5). Used by the Runner
+/// Detail page's "Chat now" button: the user picks a working directory
+/// and gets a one-on-one terminal with the agent's CLI.
+///
+/// `cwd` defaults to the runner's own `working_dir` when None — that's
+/// what the spawn path resolves anyway, but exposing it on the row gives
+/// future UI surfaces (session list, recent chats) something to show
+/// without a second lookup against the runner config.
+#[tauri::command]
+pub async fn session_start_direct(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    runner_id: String,
+    cwd: Option<String>,
+) -> Result<SpawnedSession> {
+    // Look up the runner under a short-lived connection so we don't hold
+    // a pool slot across the spawn (which itself grabs a connection to
+    // insert the `sessions` row).
+    let runner = {
+        let conn = state.db.get()?;
+        runner::get(&conn, &runner_id)?
+    };
+    let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app));
+    let spawned = state
+        .sessions
+        .spawn_direct(
+            &runner,
+            cwd.as_deref(),
+            &state.app_data_dir,
+            state.db.clone(),
+            emitter,
+        )
+        .map_err(|e| Error::msg(format!("session_start_direct: {e}")))?;
+    Ok(spawned)
 }

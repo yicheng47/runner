@@ -15,7 +15,7 @@ type NavItem = {
 };
 
 const NAV: NavItem[] = [
-  { to: "/runners", label: "Runner", enabled: false, hint: "Coming with C8.5" },
+  { to: "/runners", label: "Runner", enabled: true },
   { to: "/crews", label: "Crew", enabled: true },
   { to: "/missions", label: "Mission", enabled: false, hint: "Coming with C11" },
   { to: "/debug", label: "Debug", enabled: true, hint: "C6 PTY scratch page" },

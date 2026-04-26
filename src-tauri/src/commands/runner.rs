@@ -66,6 +66,19 @@ pub struct RunnerActivity {
     pub last_started_at: Option<Timestamp>,
 }
 
+/// Runner row plus its `RunnerActivity`. Returned by `runner_list_with_activity`
+/// so the Runners list page can render every card's badges in one IPC round-
+/// trip — without this the page would do N+1 calls (one `runner_list` and
+/// one `runner_activity` per row), which also produces a flicker as
+/// counters fill in.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunnerWithActivity {
+    #[serde(flatten)]
+    pub runner: Runner,
+    #[serde(flatten)]
+    pub activity: RunnerActivity,
+}
+
 fn new_id() -> String {
     UlidGen::new().to_string()
 }
@@ -153,11 +166,39 @@ pub fn list(conn: &Connection) -> Result<Vec<Runner>> {
         .map_err(Into::into)
 }
 
+/// `list()` + `activity()` for every runner, in one IPC call. The Runners
+/// list page calls this on mount so each card's "N sessions / M missions"
+/// badge renders without a second-pass flicker. Activity is computed
+/// per row rather than via one giant JOIN — there are at most a few
+/// dozen runners and the queries are indexed; a JOIN would obscure the
+/// fact that `activity()` is the canonical aggregation and the two paths
+/// would drift over time.
+pub fn list_with_activity(conn: &Connection) -> Result<Vec<RunnerWithActivity>> {
+    let runners = list(conn)?;
+    let mut out = Vec::with_capacity(runners.len());
+    for runner in runners {
+        let activity = activity(conn, &runner.id)?;
+        out.push(RunnerWithActivity { runner, activity });
+    }
+    Ok(out)
+}
+
 pub fn get(conn: &Connection, id: &str) -> Result<Runner> {
     let sql = format!("SELECT {SELECT_COLS} FROM runners WHERE id = ?1");
     conn.query_row(&sql, params![id], row_to_runner)
         .optional()?
         .ok_or_else(|| Error::msg(format!("runner not found: {id}")))
+}
+
+/// Look up a runner by its `handle`. Used by `/runners/:handle` so the URL
+/// stays stable across runner-id rotations (the user thinks in handles,
+/// not ULIDs). Handles are globally unique by schema, so this is exactly
+/// 0 or 1 rows.
+pub fn get_by_handle(conn: &Connection, handle: &str) -> Result<Runner> {
+    let sql = format!("SELECT {SELECT_COLS} FROM runners WHERE handle = ?1");
+    conn.query_row(&sql, params![handle], row_to_runner)
+        .optional()?
+        .ok_or_else(|| Error::msg(format!("runner not found: @{handle}")))
 }
 
 pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
@@ -358,9 +399,23 @@ pub async fn runner_list(state: State<'_, AppState>) -> Result<Vec<Runner>> {
 }
 
 #[tauri::command]
+pub async fn runner_list_with_activity(
+    state: State<'_, AppState>,
+) -> Result<Vec<RunnerWithActivity>> {
+    let conn = state.db.get()?;
+    list_with_activity(&conn)
+}
+
+#[tauri::command]
 pub async fn runner_get(state: State<'_, AppState>, id: String) -> Result<Runner> {
     let conn = state.db.get()?;
     get(&conn, &id)
+}
+
+#[tauri::command]
+pub async fn runner_get_by_handle(state: State<'_, AppState>, handle: String) -> Result<Runner> {
+    let conn = state.db.get()?;
+    get_by_handle(&conn, &handle)
 }
 
 #[tauri::command]
