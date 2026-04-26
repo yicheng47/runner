@@ -67,7 +67,7 @@ Rust-level `#[cfg(test)] mod tests` co-located with the module under test. One-l
 Already landed (10 tests):
 
 - `migrations_bootstrap_all_tables` — creates `crews`, `runners`, `missions`, `sessions`.
-- `new_crew_is_seeded_with_default_signal_types` — the seven built-in types land via SQL `DEFAULT`.
+- `new_crew_is_seeded_with_default_signal_types` — the eight built-in types land via SQL `DEFAULT`.
 - `one_lead_per_crew_index_rejects_second_lead` — partial unique index.
 - `one_lead_per_crew_allows_leads_across_crews` — the index is crew-scoped.
 - `unique_handle_within_crew` — `UNIQUE (crew_id, handle)`.
@@ -125,9 +125,11 @@ The router is a flat dispatcher, not a rule engine. C8 was reframed in `docs/imp
   - `ask_lead → inject_stdin @lead` with the worker's `{question, context}` rendered into a stdin template.
   - `ask_human → emit human_question` event preserving `on_behalf_of` and `triggered_by` (the original `ask_human` id). The card is rendered by the workspace UI (C10) from the appended event, not by the router.
   - `human_response → inject_stdin to the asker that emitted the matching ask_human` — looked up by `question_id` in the in-memory pending-ask map.
+  - `runner_status idle|busy → update latest runner status`; non-lead `idle` also injects a short availability update to the lead.
 - `human_response_without_matching_question_emits_mission_warning` — appends a `mission_warning` event to the log; must not panic.
 - `messages_do_not_trigger_router_actions` — arch §5.5.0 invariant; only signals invoke handlers.
 - `pending_ask_map_reconstructs_from_log_on_reopen` — append `ask_human`, unmount the router, remount, append `human_response`, assert the right asker's stdin received the answer.
+- `runner_status_map_reconstructs_from_log_on_reopen` — append `runner_status busy`, then `runner_status idle`, remount, assert the latest state is `idle` and the UI projection reflects it.
 
 **Cross-cutting — runtime / prompt adapter (lands in C8):**
 
@@ -192,7 +194,7 @@ File: `cli/tests/roundtrip.rs` (in the `cli/` crate).
   Spawn `runner signal mission_goal --payload '{"text":"go"}'` with the env a real session has. Assert the NDJSON file grew by exactly one line, parsable as a v0.2 envelope (arch §5.2), with `from` = `$RUNNER_HANDLE`.
 
 - **I2.2 — `runner signal` rejects unknown types.**
-  With the sidecar at `$APPDATA/runner/crews/{id}/signal_types.json` containing the default seven, run `runner signal not_a_real_type`. Exit code non-zero, stderr mentions the allowlist, no line appended.
+  With the sidecar at `$APPDATA/runner/crews/{id}/signal_types.json` containing the default eight, run `runner signal not_a_real_type`. Exit code non-zero, stderr mentions the allowlist, no line appended.
 
 - **I2.3 — `runner msg post --to impl` routes.**
   Assert the envelope has `kind: "message"`, `to: "impl"`, `payload.text` set.
@@ -203,10 +205,13 @@ File: `cli/tests/roundtrip.rs` (in the `cli/` crate).
 - **I2.5 — `runner msg read` emits `inbox_read`.**
   Pre-populate the log with two directed messages to `impl`. Run `runner msg read`. Assert: stdout contains both messages in ULID order, and a final `signal inbox_read` line was appended with `payload.up_to` = max ULID of the two.
 
-- **I2.6 — Concurrent writers interleave atomically.**
+- **I2.6 — `runner status idle` emits `runner_status`.**
+  Run `runner status idle --note "ready for next task"`. Assert the appended signal has `type = "runner_status"`, `from = "$RUNNER_HANDLE"`, and `payload.state = "idle"`.
+
+- **I2.7 — Concurrent writers interleave atomically.**
   10 shells × 100 invocations each write signals to the same log. Resulting NDJSON: exactly 1000 lines, no partial lines, no interleaved bytes. Every line parses.
 
-- **I2.7 — Missing env vars fail fast.**
+- **I2.8 — Missing env vars fail fast.**
   Unset `RUNNER_EVENT_LOG`; CLI exits non-zero with a pointer at which env var is missing.
 
 ### Fixture sketch
@@ -258,13 +263,16 @@ Driver pseudocode:
     → appends: message(from=lead, to=impl)
 10. driver feeds `impl`: `runner msg read`
     → appends: inbox_read(up_to=<approved msg ulid>)
-11. mission_stop
+11. driver feeds `impl`: `runner status idle --note "ready for next task"`
+    → appends: runner_status(from=impl, payload.state=idle)
+    → router updates the status map and injects a short availability update to lead — no synthetic event
+12. mission_stop
     → appends: mission_stopped
 ```
 
 Assertions:
 - The ordered sequence of `(kind, type or None, from, to)` tuples matches exactly.
-- The router writes no events for handler invocations — only the `human_question` event for the `ask_human → UI bridge` step. (Stdin pushes for `mission_goal`, `human_said`, `ask_lead`, and `human_response` are silent.)
+- The router writes no events for handler invocations — only the `human_question` event for the `ask_human → UI bridge` step. (Stdin pushes for `mission_goal`, `human_said`, `ask_lead`, `human_response`, and `runner_status idle` are silent.)
 - After `mission_stop`, every session row is `stopped` and no child processes remain.
 
 ### Crash-replay assertion (same file)
@@ -376,7 +384,7 @@ Expected on first mount:
 
 Expected within ~1s of `mission_start`:
 - `lead` terminal shows the composed prompt (template from arch §4: goal + roster + coordination).
-- Feed contains `stdin_injected` audit with `payload.target = "lead"`, `payload.triggered_by = <mission_goal.id>`.
+- No extra feed row appears for the stdin push; the feed still shows the original `mission_goal` signal.
 
 **S10.3 — Directed message is pull-based**
 
@@ -395,7 +403,7 @@ Expected: the message is returned in stdout; an `inbox_read` signal event append
 
 1. `impl`: `runner signal ask_lead --payload '{"question":"A or B?","context":"A fast, B small."}'`
 
-Expected: `ask_lead` event; `lead` PTY receives rendered injection containing the question; injection includes the unread-inbox summary per arch §5.5.1 (possibly empty).
+Expected: `ask_lead` event; `lead` PTY receives rendered injection containing the question. No unread-inbox summary is injected in MVP; the lead can call `runner msg read` when it wants inbox context.
 
 2. `lead`: `runner signal ask_human --payload '{"prompt":"Use A?","choices":["yes","no"],"on_behalf_of":"impl"}'`
 
@@ -434,10 +442,21 @@ Expected:
 - Sessions reconnect or show a clear "stopped" state consistent with C6's close behavior.
 - Read-watermarks rebuilt from the log; no action double-fires.
 - Any pending `ask_human` cards re-render (none in this scenario).
+- Runner status labels reconstruct from `runner_status` events and current session state.
 
 **S10.8 — Messages/signals split**
 
-Expected: feed visibly segregates `kind: message` rows from `kind: signal`. The signal panel shows runner-emitted signals (`mission_goal`, `human_said`, `ask_lead`, `ask_human`, `human_response`, `inbox_read`) plus the router's bridged `human_question`. Stdin pushes (the router's reaction to `mission_goal` / `ask_lead` / `human_response`) are not events and don't appear in the feed.
+Expected: feed visibly segregates `kind: message` rows from `kind: signal`. The signal panel shows runner-emitted signals (`mission_goal`, `human_said`, `ask_lead`, `ask_human`, `human_response`, `runner_status`, `inbox_read`) plus the router's bridged `human_question`. Stdin pushes (the router's reaction to `mission_goal` / `ask_lead` / `human_response` / `runner_status idle`) are not events and don't appear in the feed.
+
+**S10.9 — Worker idle signal informs lead**
+
+1. In `impl` pane: `runner status busy --note "reading the spec"`.
+2. Then: `runner status idle --note "ready for next task"`.
+
+Expected:
+- Feed shows two `runner_status` signals from `impl`.
+- Runners rail updates `impl` from busy to idle.
+- `lead` PTY receives a short availability update when `impl` reports idle. The router does not assign work; the lead decides whether to send the next directed message.
 
 ### Known gaps — do NOT verify in C10
 
@@ -515,7 +534,7 @@ From a clean launch of the app:
 
 1. On Crews, create **Demo Crew**. Add two runners: one `claude-code` `lead` (real LLM agent), one `shell` worker (e.g. `sh`). The lead invariant holds at every step.
 2. Click **Start Mission**, fill goal `Write a README stub for this repo.`, cwd = a scratch dir. Workspace opens with two live PTYs.
-3. Lead receives the goal via stdin, drafts a plan, and posts a directed message to the worker. Worker picks it up on its next `runner msg read`.
+3. Lead receives the goal via stdin, drafts a plan, and posts a directed message to the worker. Worker picks it up on its next `runner msg read`, then emits `runner_status busy` while working and `runner_status idle` when ready for more work. The lead receives the idle update.
 4. Worker emits an `ask_lead` signal; lead decides to escalate via `ask_human`; click **Approve** on the resulting card; lead receives the response and forwards it to the worker via a directed message.
 5. Post a broadcast human signal from the workspace input; it lands on the lead by default (payload omits `target`).
 6. Close the mission tab and reopen from the Missions list; the feed replays and the router's in-memory pending-ask map reconstructs from the log. Watermarks rebuild from `inbox_read` rows (per C7).

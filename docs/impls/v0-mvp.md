@@ -9,7 +9,7 @@
 > **2026-04-26 plan revision.** C8 was reframed from "orchestrator v0" to "signal router v0" — a flat parent-process dispatcher, not a rule engine. The dispatch ledger, replay idempotence, inbox-summary enrichment, and policy loader were all explicitly descoped because the lead runner already owns coordination judgment; C8 only owns the plumbing (bootstrap, cross-process stdin push, UI bridge) the lead can't do from inside a child PTY. See **C8 — Signal router v0** below for the rationale and the descoped list. The cross-cutting prompt/runtime adapter is now part of C8 instead of a separate prerequisite.
 
 
-The persistence, configuration, PTY runtime, event log, event bus, and top-level runner/direct-chat surfaces are in place. The remaining MVP work is the coordination loop: prompt composition, the signal router that wires events to stdin pushes and UI cards, the `runner` CLI, mission workspace UI, and the final Start Mission entrypoint.
+The persistence, configuration, PTY runtime, event log, event bus, and top-level runner/direct-chat surfaces are in place. The remaining MVP work is the coordination loop: prompt composition, the signal router that wires events to stdin pushes, UI cards, and runner availability updates, the `runner` CLI, mission workspace UI, and the final Start Mission entrypoint.
 
 ### Implemented
 
@@ -40,7 +40,7 @@ The persistence, configuration, PTY runtime, event log, event bus, and top-level
 - **Runner `system_prompt` is stored and displayed but not passed to the runtime.** `runner.system_prompt` is accepted by create/update forms and shown on Runner Detail, but `SessionManager::spawn` and `spawn_direct` currently launch only `runner.command + runner.args`. No runtime adapter adds `--append-system-prompt` for Claude Code or the Codex equivalent yet. This must be fixed before claiming the default system prompt is "used whenever this runner spawns."
 - **Mission prompt composition does not exist yet.** The architecture says the launch prompt is `runner.system_prompt + mission goal + roster + coordination instructions + signal allowlist`, but the current C6/C8 boundary only starts PTYs and appends `mission_goal`. Nothing injects the composed prompt into the child.
 - **No runner-to-runner CLI yet.** The app prepends `$APPDATA/runner/bin` to `PATH`, but there is no `runner` binary installed there, so agents cannot emit `runner signal` or `runner msg` events.
-- **No signal router yet.** The event bus emits events, but no code consumes them to wake the lead, route `ask_lead`, render `ask_human`, or inject `human_response`. Tracked as C8.
+- **No signal router yet.** The event bus emits events, but no code consumes them to wake the lead, route `ask_lead`, render `ask_human`, inject `human_response`, or surface runner availability updates. Tracked as C8.
 - **No mission workspace UI or Start Mission UI yet.** The backend commands exist; the polished `/missions` entrypoint and workspace are still missing.
 
 ### Integrated C5.5 amendment context
@@ -72,13 +72,14 @@ The launch/prompt adapter that was previously listed as a separate cross-cutting
 
 ### C8 — Signal router v0
 
-**Reframing.** The earlier plan called this an "orchestrator" and described it as a deterministic policy state machine with a dispatch ledger and inbox-summary enrichment. That framing oversold what's actually needed. The lead runner is the agent that *thinks* about coordination — it plans, dispatches workers via directed messages, decides when to escalate. C8 is the parent-process plumbing under that lead, doing three things the lead can't do from inside a child PTY:
+**Reframing.** The earlier plan called this an "orchestrator" and described it as a deterministic policy state machine with a dispatch ledger and inbox-summary enrichment. That framing oversold what's actually needed. The lead runner is the agent that *thinks* about coordination — it plans, dispatches workers via directed messages, decides when to escalate. C8 is the parent-process plumbing under that lead, doing four things the lead can't do from inside a child PTY:
 
 1. **Bootstrap.** Write the composed launch prompt (`runner.system_prompt + mission goal + roster + coordination instructions + signal allowlist`) to the lead's stdin on `mission_start`. The lead can't bootstrap itself — there's no LLM yet when the mission opens.
 2. **Cross-process stdin push.** A worker's stdin is owned by the parent. So `ask_lead` (worker → lead's stdin) and `human_said` (UI → lead's or worker's stdin) require a parent-side router.
 3. **UI bridge.** `ask_human` becomes a card on the workspace. The lead emits the signal; only the parent can render the card and capture the click. `human_response` then routes the answer back to the original asker.
+4. **Availability bridge.** Workers self-report `runner_status` (`busy` / `idle`) as signals. The router keeps the latest status map and tells the lead when a worker becomes idle so the lead can assign the next task. The router does not infer status from terminal bytes and does not decide what the worker should do next.
 
-That's it. There are no policy rules to evolve — these are five hardcoded mechanisms. v0.x can revisit policy/LLM-in-the-loop framing if user-defined signal types ever ship; MVP has no place for it.
+That's it. There are no policy rules to evolve — these are a few hardcoded mechanisms. v0.x can revisit policy/LLM-in-the-loop framing if user-defined signal types ever ship; MVP has no place for it.
 
 **Where:** `src-tauri/src/orchestrator/mod.rs` is a stub; rename to `src-tauri/src/router/` with this chunk so the next reader doesn't expect a framework.
 
@@ -91,13 +92,15 @@ That's it. There are no policy rules to evolve — these are five hardcoded mech
   - `ask_lead` → inject the worker's question/context to the lead.
   - `ask_human` → append a `human_question` event preserving `on_behalf_of`; the workspace UI (C10) renders the card from that event.
   - `human_response` → look up the matching `question_id` in an in-memory pending-ask map and inject the answer to the original asker (the lead in the lead-mediated flow, the worker in the direct flow).
+  - `runner_status` → update the latest-status map from `payload.state` (`busy` / `idle`) and inject a short availability update to the lead when a non-lead runner reports `idle`.
 - Pending-ask map: in-memory `HashMap<question_id, asker_handle>` populated when an `ask_human` event is observed (live or during replay). No persistence; on reopen the map is reconstructed by re-reading the log through the same handler.
+- Runner-status map: in-memory `HashMap<runner_handle, RunnerStatus>` populated from `runner_status` events and session lifecycle (`crashed` / `stopped` still come from the session row). Reopen reconstructs it from the log before live tail begins.
 - Dead-session errors produce a visible mission-warning event in the log, not a silent drop. The mission workspace surfaces these.
 
 **Explicitly descoped (was in the original C8 doc, deferred to v0.x):**
 - **Dispatch ledger / replay idempotence.** The router is not re-run against historical events on reopen; live tail starts from the current end of the log. `mission_goal` only fires once per mission anyway, `human_question` is rendered from log replay by the UI (not re-emitted), and re-injecting old prompts into a sleeping LLM is bizarre UX. The pending-ask map is the only state that needs reopen reconstruction — we get it for free by re-reading `ask_human`/`human_response` rows in order, no ledger required.
 - **Inbox-summary enrichment in injected stdin templates.** Originally the router was going to prepend the recipient's unread message summary onto every injection and advance the watermark via a synthesized `stdin_injected` event. MVP drops this — the lead can call `runner msg read` itself when it wants its inbox, and that's the documented contract. Keeping enrichment out of the injection path means the router does not have to write log events, only consume them.
-- **Rule abstraction / policy loader.** No `Rule` trait, no policy JSON loaded from `crews.orchestrator_policy`. The five handlers are a `match signal_type { … }` and that's the whole router.
+- **Rule abstraction / policy loader.** No `Rule` trait, no policy JSON loaded from `crews.orchestrator_policy`. The handlers are a `match signal_type { … }` and that's the whole router.
 
 **Cross-cutting prerequisite — launch/prompt adapter.**
 - `mission_goal`'s injected prompt is `runner.system_prompt + mission goal + roster + coordination instructions + signal allowlist`. There's no composer today.
@@ -120,6 +123,7 @@ Required behavior:
   - `runner signal <type> [--payload <json>]`;
   - `runner msg post <text> [--to <handle>]`;
   - `runner msg read [--since <ulid>] [--from <handle>]`;
+  - `runner status <busy|idle> [--note <text>]` as a convenience wrapper that emits `signal runner_status`;
   - `runner help`.
 - `msg read` must project the caller's inbox and emit `inbox_read` with `payload.up_to = max ULID` for messages shown.
 - Reuse `runner_core::event_log` for append/read; do not duplicate log writer semantics.
@@ -128,7 +132,7 @@ Required behavior:
 Risks to settle:
 - Direct-chat sessions intentionally do not set mission/event-log env vars. CLI commands in that context must print a clear no-bus message or no-op cleanly, not crash the agent process.
 - Packaging needs executable bits on macOS/Linux and a predictable update path when the app ships a newer CLI.
-- The CLI's signal-type validation must match the seven built-ins seeded in C1 before user-defined signal types are opened up.
+- The CLI's signal-type validation must match the eight built-ins seeded in C1 before user-defined signal types are opened up.
 
 ### C10 — Mission workspace UI
 
@@ -229,7 +233,7 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
 **Deliverables.**
 - `src-tauri/src/db.rs` — connection pool with WAL mode, `rusqlite` migrations runner, bootstrapped at app start.
 - Migration `0001_init.sql` — implements **arch §7.1 verbatim**, including the four tables (`crews`, `runners`, `missions`, `sessions`) and the `one_lead_per_crew` partial unique index. No additions, no renames. The plan used to list the columns inline; that list has been deleted to remove the two-source-of-truth risk the earlier review called out. Implementers copy §7.1 directly into `0001_init.sql`.
-- **Default signal-type allowlist.** Every new crew row is seeded with `signal_types = ["mission_goal", "human_said", "ask_lead", "ask_human", "human_question", "human_response", "inbox_read"]` — the full set of built-in types the MVP needs. Users can extend this list in v0.x; in MVP it is write-only from the DB layer. Without this seeding the CLI will reject the built-in signals at spawn time per arch §5.3 Layer 2.
+- **Default signal-type allowlist.** Every new crew row is seeded with `signal_types = ["mission_goal", "human_said", "ask_lead", "ask_human", "human_question", "human_response", "runner_status", "inbox_read"]` — the full set of built-in types the MVP needs. Users can extend this list in v0.x; in MVP it is write-only from the DB layer. Without this seeding the CLI will reject the built-in signals at spawn time per arch §5.3 Layer 2.
 - Rust types in `src-tauri/src/model.rs`: `Crew`, `Runner`, `Mission`, `Session`, `Event`, `EventKind`, `SignalType`, serde-derived. Serde field attributes map Rust-idiomatic snake_case (`args`, `env`) to the DB column names (`args_json`, `env_json`) where they differ.
 - TS types in `src/lib/types.ts` hand-synced with Rust (we're not pulling in `ts-rs` yet — too much ceremony for the MVP).
 
@@ -354,13 +358,14 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
 
 ## C8 — Signal router v0
 
-**Goal.** A flat parent-process dispatcher that wires five signal types into stdin pushes and a UI-card event. Not a framework — a hardcoded `match` of about 200 LOC plus the prompt composer it needs for `mission_goal`. See "C8 — Signal router v0" in the **Remaining v0 work** section above for the full reframing rationale and explicit descoping.
+**Goal.** A flat parent-process dispatcher that wires built-in signal types into stdin pushes, runner availability projection, and a UI-card event. Not a framework — a hardcoded `match` plus the prompt composer it needs for `mission_goal`. See "C8 — Signal router v0" in the **Remaining v0 work** section above for the full reframing rationale and explicit descoping.
 
 **Deliverables.**
 - `src-tauri/src/router/mod.rs` (renamed from the existing `orchestrator/` stub):
   - `Router::for_mission(mission, crew_roster, sessions, log)` — mounted by `mission_start`, unmounted by `mission_stop` and the spawn-rollback path.
-  - `Router::handle_event(&Event)` — single entry point invoked by the bus on each appended event. `EventKind::Message` is a no-op (per arch §5.5.0); `EventKind::Signal` matches on `signal_type` against the five built-ins.
+  - `Router::handle_event(&Event)` — single entry point invoked by the bus on each appended event. `EventKind::Message` is a no-op (per arch §5.5.0); `EventKind::Signal` matches on `signal_type` against the built-ins.
   - In-memory pending-ask map keyed by `question_id`. Reconstructed on reopen by replaying `ask_human` / `human_response` rows through the same handler before live tail begins.
+  - In-memory runner-status map keyed by handle. Reconstructed on reopen by replaying `runner_status` rows and session lifecycle state before live tail begins.
   - Dead-session writes append a `mission_warning` event to the log instead of silently dropping. The workspace UI surfaces these.
 - `src-tauri/src/router/handlers.rs` (or inline in `mod.rs` if it fits):
   - `mission_goal` → compose launch prompt, inject to the lead's stdin via `SessionManager::inject_stdin`.
@@ -368,6 +373,7 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
   - `ask_lead` → render worker's `{question, context}` into a short stdin template, inject to the lead.
   - `ask_human` → append a `human_question` event carrying `on_behalf_of` (if present) and the original `ask_human` id as `triggered_by`. UI renders the card from the appended event in C10.
   - `human_response` → look up `question_id` in the pending-ask map; inject `payload.text` to the original asker. Unmatched `human_response` logs a warning event, no panic.
+  - `runner_status` → accept `payload.state = "busy" | "idle"` and optional `payload.note`; update the status map; when a non-lead reports `idle`, inject a short availability update to the lead.
 - `src-tauri/src/router/prompt.rs` — composes `runner.system_prompt + mission goal + roster + coordination instructions + signal allowlist` into the `mission_goal` injection. Pure function over inputs; no I/O; easy to unit-test.
 - Cross-cutting **launch/prompt adapter** (must land in this chunk):
   - `src-tauri/src/runtime.rs` — adapter trait + per-runtime impls. `claude-code` injects `runner.system_prompt` via `--append-system-prompt`. `codex` ships with a TODO until its CLI flag is verified. Fallback runtimes get a documented no-op + a warning log.
@@ -376,6 +382,7 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
 **Tests.**
 - Each handler fires exactly once per triggering event under live tail.
 - Reopen reconstructs the pending-ask map: append `ask_human` then `mission_stop`, reopen, append `human_response`, assert the right asker's stdin received the answer.
+- Reopen reconstructs the runner-status map from `runner_status` rows; a worker `idle` signal updates the map and reaches the lead.
 - `human_response` without a matching `human_question` emits a `mission_warning`, not a panic.
 - `messages_do_not_trigger_router_actions` — appending an `EventKind::Message` produces no `inject_stdin` call.
 - Runtime adapter resolves `--append-system-prompt` for claude-code on both `spawn` and `spawn_direct`. Missing `system_prompt` is fine (no flag added).
