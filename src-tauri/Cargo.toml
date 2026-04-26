@@ -22,6 +22,7 @@ tauri-plugin-process = "2"
 tauri-plugin-shell = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
+base64 = "0.22"
 rusqlite = { version = "0.32", features = ["bundled", "chrono", "serde_json"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.25"
