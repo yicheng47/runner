@@ -202,6 +202,16 @@ export interface StartMissionOutput {
   goal: string;
 }
 
+// Row shape used by the Missions list page. The mission's own fields are
+// flattened (mirrors `#[serde(flatten)]` on the Rust struct) and joined
+// with the crew's display name + a live pending-ask count read off the
+// router registry. `pending_ask_count` is always 0 for terminal-status
+// missions because their router is unmounted at mission_stop.
+export interface MissionSummary extends Mission {
+  crew_name: string;
+  pending_ask_count: number;
+}
+
 // Tauri payload for `event/appended` — the bus emits this on every newly
 // observed envelope, plus once per historical event during initial replay
 // (so the UI can rehydrate without an extra round-trip).

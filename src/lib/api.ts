@@ -17,6 +17,7 @@ import type {
   CrewRunner,
   Event,
   Mission,
+  MissionSummary,
   PostHumanSignalInput,
   Runner,
   RunnerActivity,
@@ -76,6 +77,11 @@ export const api = {
   mission: {
     list: (crewId?: string) =>
       invoke<Mission[]>("mission_list", crewId ? { crewId } : {}),
+    listSummary: (crewId?: string) =>
+      invoke<MissionSummary[]>(
+        "mission_list_summary",
+        crewId ? { crewId } : {},
+      ),
     get: (id: string) => invoke<Mission>("mission_get", { id }),
     start: (input: StartMissionInput) =>
       invoke<StartMissionOutput>("mission_start", { input }),

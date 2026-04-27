@@ -103,6 +103,7 @@ pub fn run() {
             commands::mission::mission_start,
             commands::mission::mission_stop,
             commands::mission::mission_list,
+            commands::mission::mission_list_summary,
             commands::mission::mission_get,
             commands::mission::mission_events_replay,
             commands::mission::mission_post_human_signal,

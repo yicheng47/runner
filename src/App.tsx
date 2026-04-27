@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import Crews from "./pages/Crews";
 import CrewEditor from "./pages/CrewEditor";
+import Missions from "./pages/Missions";
 import MissionWorkspace from "./pages/MissionWorkspace";
 import Runners from "./pages/Runners";
 import RunnerDetail from "./pages/RunnerDetail";
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="/runners" element={<Runners />} />
           <Route path="/runners/:handle" element={<RunnerDetail />} />
           <Route path="/runners/:handle/chat" element={<RunnerChat />} />
+          <Route path="/missions" element={<Missions />} />
           <Route path="/missions/:id" element={<MissionWorkspace />} />
         </Route>
       </Routes>

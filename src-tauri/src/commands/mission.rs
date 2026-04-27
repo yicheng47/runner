@@ -108,6 +108,18 @@ pub fn list(conn: &Connection, crew_id: Option<&str>) -> Result<Vec<Mission>> {
         .map_err(Into::into)
 }
 
+/// One row in the Missions page list — the mission's own fields denormalized
+/// with the crew name and the live pending-ask count. The pending-ask count
+/// is sourced from `RouterRegistry`, which only holds running missions, so
+/// completed/aborted rows always read as 0 here.
+#[derive(Debug, Clone, Serialize)]
+pub struct MissionSummary {
+    #[serde(flatten)]
+    pub mission: Mission,
+    pub crew_name: String,
+    pub pending_ask_count: usize,
+}
+
 pub fn get(conn: &Connection, id: &str) -> Result<Mission> {
     conn.query_row(
         "SELECT id, crew_id, title, status, goal_override, cwd,
@@ -642,6 +654,38 @@ pub async fn mission_list(
 pub async fn mission_get(state: State<'_, AppState>, id: String) -> Result<Mission> {
     let conn = state.db.get()?;
     get(&conn, &id)
+}
+
+#[tauri::command]
+pub async fn mission_list_summary(
+    state: State<'_, AppState>,
+    crew_id: Option<String>,
+) -> Result<Vec<MissionSummary>> {
+    let conn = state.db.get()?;
+    let missions = list(&conn, crew_id.as_deref())?;
+
+    // Crew name lookup. We could JOIN in SQL, but the row count for
+    // missions is small in v0 and `crew::get` is a single indexed lookup;
+    // doing it in Rust keeps the SQL identical to `list()` and avoids a
+    // second row-mapper for the joined shape.
+    let mut summaries = Vec::with_capacity(missions.len());
+    for m in missions {
+        let crew_name = match crew::get(&conn, &m.crew_id) {
+            Ok(c) => c.name,
+            Err(_) => String::new(), // crew was deleted; row still surfaces
+        };
+        let pending_ask_count = state
+            .routers
+            .get(&m.id)
+            .map(|r| r.pending_ask_count())
+            .unwrap_or(0);
+        summaries.push(MissionSummary {
+            mission: m,
+            crew_name,
+            pending_ask_count,
+        });
+    }
+    Ok(summaries)
 }
 
 #[cfg(test)]
