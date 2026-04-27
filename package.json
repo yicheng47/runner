@@ -13,7 +13,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "package": "tauri build",
-    "lint": "eslint src/"
+    "lint": "eslint src/",
+    "tauri:before:dev": "cargo build -p runner-cli && npm run dev",
+    "tauri:before:build": "cargo build -p runner-cli --release && npm run build"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.1",

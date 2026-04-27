@@ -1,0 +1,26 @@
+[package]
+name = "runner-cli"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+description = "Bundled `runner` CLI agents use to append signals/messages to a mission's NDJSON event log."
+
+# Source-side bin name is `runner-cli` so it doesn't collide with the
+# Tauri app crate, which also produces a `runner` binary in the same
+# workspace `target/` dir. `cli_install` renames it to `runner` when
+# copying into `$APPDATA/runner/bin/` so the on-disk file at the PATH
+# expectation matches what `SessionManager::spawn` looks for.
+[[bin]]
+name = "runner-cli"
+path = "src/main.rs"
+
+[dependencies]
+runner-core = { path = "../crates/runner-core" }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+ulid = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
