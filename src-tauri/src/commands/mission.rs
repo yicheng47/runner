@@ -374,7 +374,11 @@ pub struct PostHumanSignalInput {
 /// envelopes into its feed before subscribing to `event/appended` for live
 /// tailing. Returns lossy-decoded events so a single corrupt line can't
 /// freeze the UI; the bus already tolerates the same.
-pub fn read_events(app_data_dir: &Path, conn: &Connection, mission_id: &str) -> Result<Vec<runner_core::model::Event>> {
+pub fn read_events(
+    app_data_dir: &Path,
+    conn: &Connection,
+    mission_id: &str,
+) -> Result<Vec<runner_core::model::Event>> {
     let mission = get(conn, mission_id)?;
     let mission_dir = event_log::mission_dir(app_data_dir, &mission.crew_id, mission_id);
     let log = EventLog::open(&mission_dir)?;
