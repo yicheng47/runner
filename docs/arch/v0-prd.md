@@ -2,10 +2,7 @@
 
 > Status: draft, open for feedback. Anything in **[OPEN]** is a decision we haven't taken yet.
 >
-> **Canonicity.** `docs/arch/v0-arch.md` is the source of truth for all protocol, schema, and event-model decisions. Where this PRD conflicts with the arch doc, the arch doc wins. Sections marked **⚠️ SUPERSEDED** below have been overtaken by arch updates and are kept only for historical context until the PRD is rewritten:
-> - §5 (Golden path) — the `changes_requested → ask_human → inject Coder` flow has been replaced by lead-mediated HITL (arch §2.2, §5.5.0).
-> - §6.8 (`runner` CLI) — the `--correlation-id` / `--causation-id` flags are dropped (arch §5.2).
-> - §6.11.1 — "clicking a message highlights correlated signals" relies on the dropped correlation fields.
+> **Canonicity.** `docs/arch/v0-arch.md` is the source of truth for all protocol, schema, and event-model decisions. Where this PRD conflicts with the arch doc, the arch doc wins.
 
 ## 1. Problem
 
@@ -20,8 +17,8 @@ A local desktop app where one person can:
 1. Assemble a **crew** of CLI coding agents on their own machine.
 2. Give each **runner** a role and a brief (system prompt / instructions).
 3. **Launch a mission** — one activation of the whole crew — and watch every runner's live output in one window.
-4. Let runners **coordinate** through two channels: **signals** (typed, orchestrator-routable) and **messages** (prose, runner-to-runner).
-5. Get pulled in by an **orchestrator** only when a decision needs a human.
+4. Let runners **coordinate** through two channels: **signals** (typed, router-visible) and **messages** (prose, runner-to-runner).
+5. Get pulled in through the **lead runner** when a decision needs a human.
 
 v0 proves the loop works end-to-end with two runners on a single mission. v1+ scales it.
 
@@ -31,10 +28,10 @@ v0 proves the loop works end-to-end with two runners on a single mission. v1+ sc
 - **Runner** — an individual CLI agent (one PTY, one role, one system prompt).
 - **Mission** — one activation of the crew. Everyone spawns together, shares a coordination bus, ends together.
 - **Session** — the live PTY process for a single runner within a single mission.
-- **Signal** — a typed notification runners emit for the orchestrator to route on. Verb grammar (`review_requested`, `approved`, `blocked`).
+- **Signal** — a typed notification runners emit for the router to handle. Verb grammar (`ask_lead`, `ask_human`, `runner_status`).
 - **Message** — prose posted to the mission. Can be broadcast (to the mission) or directed (to a specific runner via `--to`).
 - **Inbox** — each runner's projection of the mission: broadcast messages plus messages addressed directly to it. Read via `runner msg read`. Pull-based: runners check their inbox on convention; there is no automatic interrupt for arriving messages.
-- **Orchestrator** — the rule-based router that reads signals and decides what happens next. Signals are the urgent wake-up channel; when the orchestrator injects stdin on a signal, it also appends a summary of the recipient's unread inbox so relevant messages ride along.
+- **Signal router** — the parent-process dispatcher that handles built-in signals. It owns wake-up plumbing and HITL card creation; the lead runner owns coordination judgment.
 
 ## 4. v0 scope
 
@@ -51,7 +48,7 @@ All four are described in `v0-arch.md` §2.7 with milestone tags, so the vision 
 - Multiple concurrent missions per crew
 - Cross-mission memory
 - Session replay, session history browsing
-- LLM-based orchestrator (v0 is rule-based only)
+- LLM-based signal routing
 - Remote / cloud / multi-host runners
 - Cost tracking, observability dashboards
 - Runner templates, presets, marketplace
@@ -70,22 +67,12 @@ The concrete loop v0 must support end-to-end:
 4. Coder writes code, runs tests, then:
    - `runner msg post "Branch feat/x is ready. I refactored auth and added session tests."`
    - `runner signal review_requested`
-5. Orchestrator routes `review_requested`: injects into Reviewer's stdin "A review is pending — check `runner msg read`."
-6. Reviewer:
-   - `runner msg read` (sees Coder's message)
-   - reads the diff
-   - `runner msg post --to coder "Line 47 auth.rs needs a null check."`
-   - `runner msg post --to coder "session.rs timeout is 30s; our convention is 10s."`
-   - `runner signal changes_requested`
-       *(orchestrator rule fires: injects into Coder's stdin — "Reviewer requested changes — check msg read." — and automatically appends a summary of Coder's 2 unread direct messages.)*
-7. Orchestrator policy for `changes_requested` says `ask_human`. The HITL panel pops a card: *"Reviewer requested changes. Accept and forward to Coder, or override?"*
-8. User clicks **Accept**. Orchestrator injects into Coder's stdin: "Reviewer requested changes — check `runner msg read`."
-9. Coder:
-   - `runner msg read`
-   - fixes the null check; defends the 30s timeout
-   - `runner msg post "Added null check. Kept 30s timeout — provider is slow on cold start."`
-   - `runner signal review_requested`
-10. Reviewer reads, agrees, `runner signal approved`.
+5. Worker finishes the current task and emits `runner status idle --note "ready for next task"`.
+6. Router records the worker as idle and injects a short availability update into the lead's stdin.
+7. Lead decides whether to assign follow-up work, answer from its own context, or ask the human.
+8. If human input is needed, lead emits `runner signal ask_human --payload '{"prompt":"Approve the change?","choices":["yes","no"],"on_behalf_of":"coder"}'`.
+9. The HITL panel pops a card. User clicks **yes**. UI emits `human_response`; router injects the answer into the lead's stdin.
+10. Lead forwards the answer to the worker with `runner msg post --to coder "Human approved."`; worker reads it on the next `runner msg read`.
 11. User clicks **End Mission**. Sessions terminate, mission status flips to `completed`, the mission appears in the crew's history list.
 
 If v0 doesn't ship this flow working end-to-end, it hasn't shipped.
@@ -94,13 +81,13 @@ If v0 doesn't ship this flow working end-to-end, it hasn't shipped.
 
 ### 6.1 Crew CRUD
 - Create, rename, delete crews.
-- A crew has: `name`, `goal` (default mission brief), list of runners, orchestrator policy, signal-type allowlist.
+- A crew has: `name`, `goal` (default mission brief), list of runners, signal-type allowlist, and a reserved `orchestrator_policy` column for v0.x.
 - Persisted in SQLite.
 
 ### 6.2 Runner CRUD (top-level, shared across crews)
 - Create, edit, delete runners as standalone config; add or remove a runner's membership in a given crew via `crew_runners`. The same runner can sit in multiple crews simultaneously (post-C5.5a).
 - A runner has:
-  - `handle` — lowercase slug (e.g. `coder`). Immutable once set; **globally unique** across the app. Used everywhere addressing is needed (`from`/`to` in events, `--to <handle>` on the CLI, policy rules) so `@coder` names the same runner everywhere it appears.
+  - `handle` — lowercase slug (e.g. `coder`). Immutable once set; **globally unique** across the app. Used everywhere addressing is needed (`from`/`to` in events, `--to <handle>` on the CLI, router state) so `@coder` names the same runner everywhere it appears.
   - `display_name` — free-form UI label (e.g. "Coder", "Lead Reviewer"). Editable; presentation-only.
   - `role` — short label, e.g. "implementation".
   - `runtime` — enum: `claude-code | codex | shell`. Adds the right default `command` + `args`.
@@ -122,14 +109,14 @@ If v0 doesn't ship this flow working end-to-end, it hasn't shipped.
 - Frontend renders with **xterm.js** to preserve ANSI colors, cursor control, and TUI layouts.
 - Scrollback retained per session (cap at ~10k lines; overflow dumped to a per-session log file).
 - Status chip per runner: `idle | running | waiting_for_input | blocked_on_human | crashed`.
-- **Human takeover, first-class.** The xterm pane is a real terminal, not a log viewer. At any moment the human can type directly into a runner's stdin — to answer a prompt, correct a bad plan, kill a runaway tool, or just chat with the agent mid-flight. Keystrokes including arrows, Enter, and Ctrl-C pass through untouched. Same writer path as the orchestrator's `inject_stdin`, so human and orchestrator are symmetric.
-- **Sessions outlive the UI.** Closing the mission control window does not kill sessions — agents keep running, events keep flowing, the orchestrator keeps routing. Re-opening re-attaches by fetching each session's scrollback ring. A session ends only on End Mission, child exit, or app quit. This means the human can close the monitor and still rely on the orchestrator + rules without cutting anyone out of the loop.
+- **Human takeover, first-class.** The xterm pane is a real terminal, not a log viewer. At any moment the human can type directly into a runner's stdin — to answer a prompt, correct a bad plan, kill a runaway tool, or just chat with the agent mid-flight. Keystrokes including arrows, Enter, and Ctrl-C pass through untouched. Same writer path as the router's stdin pushes, so human and router are symmetric.
+- **Sessions outlive the UI.** Closing the mission control window does not kill sessions — agents keep running, events keep flowing, the router keeps handling live signals. Re-opening re-attaches by fetching each session's scrollback ring. A session ends only on End Mission, child exit, or app quit. This means the human can close the monitor and still rely on the router without cutting anyone out of the loop.
 
-### 6.5 Signals — typed orchestrator-routable notifications
+### 6.5 Signals — typed router-visible notifications
 - Runners emit via `runner signal <type> [--payload <json>]`.
 - Types are per-crew allowlisted (stored in `crews.signal_types`).
-- Payload is optional JSON for the orchestrator's decision logic.
-- Emitted signals appear as events in the coordination bus (see §6.7) and drive the orchestrator.
+- Payload is optional JSON for the router and UI.
+- Emitted signals appear as events in the coordination bus (see §6.7) and drive fixed router handlers.
 
 ### 6.6 Messages — prose with broadcast or direct addressing
 - Broadcast: `runner msg post "<text>"` — visible to everyone in the mission.
@@ -145,55 +132,44 @@ If v0 doesn't ship this flow working end-to-end, it hasn't shipped.
 Runners learn to check their inboxes through two mechanisms:
 
 1. **Convention.** Each runner's composed prompt instructs it to check `runner msg read` at natural task boundaries (before a new task, before emitting a signal, while waiting).
-2. **Signals as the wake-up channel.** If a sender needs immediate attention, they emit a signal in addition to (or instead of) the message. Signal routing through `inject_stdin` automatically enriches the injection with the recipient's unread inbox summary — so urgent wake-ups carry the related conversation with them. See `v0-arch.md` §5.5.1.
+2. **Signals as the wake-up channel.** If a sender needs immediate attention, they emit a signal in addition to (or instead of) the message. The signal router handles the built-in wake-up types with fixed parent-process actions. Stdin pushes are not enriched with inbox summaries in MVP; runners call `runner msg read` when they want inbox context.
 
 ### 6.7 Coordination bus
 - Single append-only NDJSON file per mission at `$APPDATA/runner/crews/{crew_id}/missions/{mission_id}/events.ndjson`.
 - Both signals and messages are persisted as events with `kind: "signal"` or `kind: "message"`.
-- File is watched with the `notify` crate. Orchestrator and UI both subscribe.
+- File is watched with the `notify` crate. Router and UI both subscribe.
 - Tailable with `tail -f` for debugging. Per-mission file solves log rotation implicitly.
 
 ### 6.8 `runner` CLI
 
 ```
-runner signal <type> [--payload <json>] [--correlation-id <id>] [--causation-id <id>]
-runner msg    post <text> [--to <runner>] [--correlation-id <id>] [--causation-id <id>]
+runner signal <type> [--payload <json>]
+runner msg    post <text> [--to <runner>]
 runner msg    read [--since <ts>] [--from <runner>]
+runner status <busy|idle> [--note <text>]
 runner help
 ```
 
-One binary, two verbs. Reads context (crew, mission, runner, log path) from env vars injected at PTY spawn. Bundled with the app; dropped at `$APPDATA/runner/bin/runner` on first run; PATH is prepended for each session so agents can invoke it unqualified.
+One binary, three verbs. Reads context (crew, mission, runner, log path) from env vars injected at PTY spawn. Bundled with the app; dropped at `$APPDATA/runner/bin/runner` on first run; PATH is prepended for each session so agents can invoke it unqualified.
 
 See `v0-arch.md` §5.3 for the full three-layer emission mechanism (system prompt → CLI on PATH → role brief examples).
 
-### 6.9 Orchestrator (rule-based)
-- Policy is per-crew, stored as JSON on the crew row. Shared across all missions.
-- In-memory state (pending asks, correlation tracking) is per-mission; cleared on mission end.
-- Policy is an ordered list of `{ when, do }` rules. First match wins. Schema:
-  ```json
-  [
-    { "when": { "signal": "review_requested" },
-      "do": { "action": "inject_stdin", "target": "reviewer",
-              "template": "A review is pending — run `runner msg read` for context." } },
-    { "when": { "signal": "changes_requested" },
-      "do": { "action": "ask_human",
-              "prompt": "Reviewer requested changes. Accept or override?",
-              "choices": ["accept", "override"] } },
-    { "when": { "signal": "approved" },
-      "do": { "action": "notify_human", "message": "Review approved." } }
-  ]
-  ```
-- Supported actions in v0:
-  - `inject_stdin` — write a message into the target runner's stdin. Automatically enriched with the recipient's unread inbox summary; watermark advances on the resulting `stdin_injected` event (see `v0-arch.md` §5.5.1).
-  - `ask_human` — show a card in the HITL panel; emits a `human_question` signal. On click, emits a `human_response` signal with payload `{ question_id, choice }` and `correlation_id` = the original triggering signal's id. Downstream rules match on `payload.choice`.
-  - `notify_human` — fire a toast.
-  - `pause_runner` / `resume_runner` — SIGSTOP/SIGCONT the target PTY.
-- Rules fire on signals only. Messages do not trigger orchestrator actions in v0 — the inbox is pull-based. Senders escalate via signals when immediate attention is needed. (v0.x: mentions inside messages will trigger routing.)
+### 6.9 Signal router (fixed handlers)
+- No user-authored policy rules in MVP. The crew row keeps `orchestrator_policy` only as forward-compatible schema; it is unread in v0.
+- In-memory state (pending asks, latest runner status) is per-mission and cleared on mission end. Reopen reconstructs that state from the log.
+- Supported built-in handlers in v0:
+  - `mission_goal` — compose and inject the launch prompt to the lead.
+  - `human_said` — inject human text to `payload.target`, or to the lead by default.
+  - `ask_lead` — inject the worker's question/context to the lead.
+  - `ask_human` — append a `human_question` signal for the HITL panel. On click, append `human_response` with payload `{ question_id, choice }`.
+  - `human_response` — inject the answer to the runner that emitted the matching `ask_human`.
+  - `runner_status` — update the latest status map; when a non-lead reports `idle`, inject a short availability update to the lead.
+- Messages do not trigger router actions in v0 — the inbox is pull-based. Senders escalate via signals when immediate attention is needed. (v0.x: mentions inside messages may trigger routing.)
 
 ### 6.10 Human-in-the-loop panel
 - Right-rail panel showing all pending `ask_human` cards for the current mission.
-- Each card shows: triggering signal, orchestrator prompt, choices.
-- User clicks a choice → orchestrator emits a `human_response` signal with `correlation_id = triggering signal's id` which downstream rules can match.
+- Each card shows: triggering signal, prompt, choices, and optional `on_behalf_of` attribution.
+- User clicks a choice → the UI emits a `human_response` signal with `payload.question_id` pointing at the `human_question`.
 - Cleared when the mission ends.
 
 ### 6.11 Mission control UI
@@ -203,7 +179,7 @@ One screen per live mission. Surfaces and their responsibilities:
 - **Runner list** — every runner in the crew with a status indicator (`idle | running | waiting_for_input | blocked_on_human | crashed`). Selecting one focuses the main terminal area on it. Includes a control to spawn additional runners.
 - **Focused terminal** — the xterm.js view for the selected runner. Live PTY output with full TUI fidelity, stdin input for human takeover, and scrollback. Terminals stay alive across focus switches (§6.4).
 - **Signals pane** — chronological list of all signals emitted in this mission: timestamp, emitter, type. Scoped to the mission.
-- **HITL panel** — pending `ask_human` cards. Each card shows the triggering signal, the orchestrator's prompt, and choice buttons. Always visible so the operator never misses a pending decision.
+- **HITL panel** — pending `ask_human` cards. Each card shows the triggering signal, the prompt, and choice buttons. Always visible so the operator never misses a pending decision.
 - **Messages pane** — every message in the mission (see §6.11.1 for visibility semantics and view modes).
 - **Mission header** — crew name, mission start time, global controls (Start/Pause/Stop, End Mission).
 
@@ -283,7 +259,7 @@ Signals and messages live in the mission's NDJSON file, not in SQLite. SQLite is
 - **Backend:** Rust, Tauri 2. PTY via `portable-pty`. File watching via `notify`. Persistence via `rusqlite` (WAL).
 - **Frontend:** React 19, TypeScript, Tailwind 4, xterm.js, React Router.
 - **Coordination bus:** NDJSON file per mission.
-- **Orchestrator:** Rust module in the Tauri backend, subscribes to the mission's event file via `notify`.
+- **Signal router:** Rust module in the Tauri backend, subscribes to the mission's event file via `notify`.
 - **`runner` CLI:** small Rust binary, bundled with the app, dropped at `$APPDATA/runner/bin/runner`, PATH-prepended per session.
 
 ## 9. Open questions
@@ -293,7 +269,7 @@ Signals and messages live in the mission's NDJSON file, not in SQLite. SQLite is
 3. **Restart semantics** — if a runner crashes, auto-restart? v0: no.
 4. **Event ordering guarantees** — single-writer per line via `O_APPEND`. Document filesystem requirements (local POSIX).
 5. **Does `msg read` paginate?** v0: return everything, client can filter by `--since`.
-6. **Should the orchestrator include recent messages as context** when injecting stdin on a signal? Leaning yes — helpful for runners that don't immediately think to call `msg read`.
+6. **Should the router include recent messages as context** when injecting stdin on a signal? v0: no — runners call `runner msg read` when they want inbox context.
 
 ## 10. Risks
 
@@ -307,7 +283,7 @@ v0 ships when:
 - [ ] A user can create a crew, spawn two runners, click Start Mission, and see two live terminals.
 - [ ] Runners can emit signals via `runner signal` and the UI shows them in the signal log.
 - [ ] Runners can post and read messages via `runner msg`, and the UI shows the live messages pane.
-- [ ] A rule-based policy can route a signal into another runner's stdin.
-- [ ] A rule-based policy can pause the mission and ask the human a question, then resume based on the answer.
+- [ ] The fixed router can route `ask_lead`, `human_said`, and `human_response` into the right runner's stdin.
+- [ ] The fixed router can turn `ask_human` into a HITL card and return the human response to the asker.
 - [ ] End Mission terminates all sessions, marks the mission completed, and the crew page shows it in history.
 - [ ] The Coder + Reviewer demo loop from §5 works end-to-end without the user touching a terminal outside the app.

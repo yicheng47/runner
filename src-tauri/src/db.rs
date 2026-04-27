@@ -25,6 +25,7 @@ pub const DEFAULT_SIGNAL_TYPES: &[&str] = &[
     "ask_human",
     "human_question",
     "human_response",
+    "runner_status",
     "inbox_read",
 ];
 

@@ -3,7 +3,7 @@ mod db;
 mod error;
 mod event_bus;
 mod model;
-mod orchestrator;
+mod router;
 mod session;
 
 use std::path::PathBuf;
@@ -24,6 +24,10 @@ pub struct AppState {
     /// the opening events are durable; unmounted by `mission_stop` and on
     /// any rollback path.
     pub buses: Arc<event_bus::BusRegistry>,
+    /// Live per-mission signal routers. Mounted alongside the bus so the
+    /// router observes the bootstrap `mission_goal` event during initial
+    /// replay and pushes the launch prompt into the lead's stdin.
+    pub routers: Arc<router::RouterRegistry>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -61,6 +65,7 @@ pub fn run() {
                 app_data_dir,
                 sessions: session::SessionManager::new(),
                 buses: event_bus::BusRegistry::new(),
+                routers: router::RouterRegistry::new(),
             });
             Ok(())
         })

@@ -1,7 +1,7 @@
 -- Migration 0001: initial schema (shared-runner edition).
 --
 -- Superseded the per-crew runner model from the original v0 draft. See
--- docs/impls/v0-mvp-c5-5-shared-runners.md. In MVP (no prod data yet) we
+-- docs/impls/v0-mvp.md. In MVP (no prod data yet) we
 -- rewrite DDL in place rather than layering a 0002 migration. Dev users
 -- delete their local DB file ($APPDATA/runner/runner.db) once to pick
 -- up the new shape.
@@ -25,7 +25,7 @@ CREATE TABLE crews (
     purpose TEXT,
     goal TEXT,
     orchestrator_policy TEXT,
-    signal_types TEXT NOT NULL DEFAULT '["mission_goal","human_said","ask_lead","ask_human","human_question","human_response","inbox_read"]',
+    signal_types TEXT NOT NULL DEFAULT '["mission_goal","human_said","ask_lead","ask_human","human_question","human_response","runner_status","inbox_read"]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
