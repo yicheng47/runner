@@ -127,24 +127,38 @@ pub fn read(since: Option<&str>, from: Option<&str>) -> i32 {
         print_message(ev);
     }
 
-    // Emit `inbox_read` only when something was actually shown — an empty
-    // inbox shouldn't generate noise (or a redundant watermark) in the
-    // log. The bus de-dupes redundant up_to values anyway, but skipping
-    // here keeps the log readable.
-    if let Some(last) = printed.last() {
-        let draft = EventDraft {
-            crew_id: env.crew_id.clone(),
-            mission_id: env.mission_id.clone(),
-            kind: EventKind::Signal,
-            from: env.handle.clone(),
-            to: None,
-            signal_type: Some(SignalType::new("inbox_read")),
-            payload: serde_json::json!({ "up_to": last.id }),
-        };
-        if let Err(e) = log.append(draft) {
-            eprintln!("runner msg read: failed to emit inbox_read: {e}");
-            // Still exit 0 — the user got their messages; failing to
-            // mark them read is a UI-only annoyance.
+    // Emit `inbox_read` only when:
+    //   1. Something was actually shown — an empty inbox shouldn't add
+    //      noise (or a redundant watermark) to the log.
+    //   2. The read was NOT filtered by `--from`. The bus's per-runner
+    //      watermark is global across the inbox projection (any inbox
+    //      message with `id <= up_to` is marked read). If we advance
+    //      it from a filtered read, unread messages from other senders
+    //      whose ids fall below the printed `up_to` get silently
+    //      cleared without ever being shown — exactly the corruption
+    //      the reviewer caught. See the bus's `handle_inbox_read` in
+    //      `src-tauri/src/event_bus/mod.rs`.
+    //
+    // `--since` is safe: it's a forward filter on the already-watermark-
+    // ordered projection, so a printed last id is still a sound
+    // upper-bound on "everything ≤ here has been seen".
+    let safe_to_advance_watermark = from.is_none();
+    if safe_to_advance_watermark {
+        if let Some(last) = printed.last() {
+            let draft = EventDraft {
+                crew_id: env.crew_id.clone(),
+                mission_id: env.mission_id.clone(),
+                kind: EventKind::Signal,
+                from: env.handle.clone(),
+                to: None,
+                signal_type: Some(SignalType::new("inbox_read")),
+                payload: serde_json::json!({ "up_to": last.id }),
+            };
+            if let Err(e) = log.append(draft) {
+                eprintln!("runner msg read: failed to emit inbox_read: {e}");
+                // Still exit 0 — the user got their messages; failing
+                // to mark them read is a UI-only annoyance.
+            }
         }
     }
     0

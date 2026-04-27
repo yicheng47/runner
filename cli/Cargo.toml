@@ -5,10 +5,13 @@ edition.workspace = true
 authors.workspace = true
 description = "Bundled `runner` CLI agents use to append signals/messages to a mission's NDJSON event log."
 
-# Bin name = "runner" so the on-disk file matches the PATH expectation in
-# `SessionManager::spawn` / `spawn_direct` ($APPDATA/runner/bin/runner).
+# Source-side bin name is `runner-cli` so it doesn't collide with the
+# Tauri app crate, which also produces a `runner` binary in the same
+# workspace `target/` dir. `cli_install` renames it to `runner` when
+# copying into `$APPDATA/runner/bin/` so the on-disk file at the PATH
+# expectation matches what `SessionManager::spawn` looks for.
 [[bin]]
-name = "runner"
+name = "runner-cli"
 path = "src/main.rs"
 
 [dependencies]

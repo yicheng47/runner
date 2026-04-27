@@ -12,11 +12,13 @@ use std::process::Command;
 use runner_core::event_log::EventLog;
 use runner_core::model::EventKind;
 
-/// Locate the `runner` binary built by `cargo build -p runner-cli`.
-/// `CARGO_BIN_EXE_runner` is set by Cargo for integration tests of the
-/// crate that defines the binary.
+/// Locate the CLI binary. The source-side name is `runner-cli` (so it
+/// doesn't collide with the Tauri app's `runner` binary in the shared
+/// workspace target dir). At runtime, `cli_install` renames it to
+/// `runner` when copying into `$APPDATA/runner/bin/`. Integration tests
+/// invoke the source artifact directly via `CARGO_BIN_EXE_runner-cli`.
 fn runner_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_runner"))
+    PathBuf::from(env!("CARGO_BIN_EXE_runner-cli"))
 }
 
 struct Fixture {
@@ -240,6 +242,71 @@ fn i2_5_msg_read_prints_inbox_in_order_and_emits_inbox_read() {
     assert_eq!(last.from, "impl");
     assert_eq!(last.payload["up_to"], m2.id);
     assert_ne!(last.payload["up_to"], m1.id);
+}
+
+#[test]
+fn i2_5c_msg_read_with_from_filter_does_not_emit_inbox_read() {
+    // Regression: `--from` only filters which messages are *printed*,
+    // but `inbox_read` advances a global per-runner watermark in the
+    // bus. If the CLI emitted inbox_read on filtered reads, every
+    // message with id ≤ the printed last would be marked read —
+    // including unread messages from other senders that the user
+    // never saw. The CLI must suppress watermark emission on filtered
+    // reads.
+    let f = Fixture::new("C", "M");
+    f.write_signal_types(&standard_signals());
+    f.write_roster(&[("lead", true), ("impl", false), ("reviewer", false)]);
+
+    let log = EventLog::open(&f.mission_dir).unwrap();
+    use runner_core::model::EventDraft;
+    log.append(EventDraft::message(
+        "C",
+        "M",
+        "lead",
+        Some("impl".into()),
+        "from lead first",
+    ))
+    .unwrap();
+    log.append(EventDraft::message(
+        "C",
+        "M",
+        "reviewer",
+        Some("impl".into()),
+        "from reviewer (must stay unread)",
+    ))
+    .unwrap();
+    log.append(EventDraft::message(
+        "C",
+        "M",
+        "lead",
+        Some("impl".into()),
+        "from lead second",
+    ))
+    .unwrap();
+
+    let out = f
+        .cmd("impl", &["msg", "read", "--from", "lead"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Critical: no inbox_read appended. The log must still contain
+    // exactly the three pre-seeded messages.
+    let signals: Vec<_> = f
+        .read_log()
+        .into_iter()
+        .filter(|e| matches!(e.kind, EventKind::Signal))
+        .collect();
+    assert!(
+        !signals
+            .iter()
+            .any(|s| s.signal_type.as_ref().map(|t| t.as_str()) == Some("inbox_read")),
+        "filtered read must NOT emit inbox_read; signals: {signals:?}",
+    );
 }
 
 #[test]
