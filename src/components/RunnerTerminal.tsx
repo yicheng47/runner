@@ -1,16 +1,12 @@
 // Embedded xterm.js bound to a single live session.
 //
-// The mission workspace mounts one of these per session in the roster and
-// keeps them all alive simultaneously (stacked via absolute positioning).
-// Output keeps streaming into hidden instances so switching tabs preserves
-// each PTY's scrollback — without that, a `echo hi` typed in @lead while
-// @impl was the active tab would be lost from xterm's buffer the moment
-// the user switched back.
+// Direct chat and the mission workspace mount one of these per session and
+// keep them alive while switching between tabs/routes. Output keeps streaming
+// into hidden instances so each PTY's scrollback survives UI switches.
 //
-// This component is the second xterm consumer in the app — RunnerChat is
-// the first. Setup mirrors RunnerChat's: WebGL renderer for cell-row
-// alignment, base64 PTY frames to preserve raw bytes, SIGWINCH dance on
-// attach so claude-code repaints onto a fresh grid.
+// Setup: WebGL renderer for cell-row alignment, base64 PTY frames to preserve
+// raw bytes, backend snapshot replay for late attach, and SIGWINCH dance on
+// attach so claude-code/codex repaint onto a fresh grid.
 
 import { useEffect, useRef } from "react";
 
@@ -25,6 +21,7 @@ import { api } from "../lib/api";
 interface OutputEvent {
   session_id: string;
   mission_id: string | null;
+  seq: number;
   data: string;
 }
 
@@ -91,6 +88,8 @@ export function RunnerTerminal({
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const sessionIdRef = useRef<string>(sessionId);
+  const onExitRef = useRef(onExit);
+  const onErrorRef = useRef(onError);
 
   // Keep the latest sessionId visible to the data/resize callbacks without
   // re-creating the terminal on prop change. The session listener below
@@ -99,6 +98,14 @@ export function RunnerTerminal({
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  useEffect(() => {
+    onExitRef.current = onExit;
+  }, [onExit]);
+
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -133,7 +140,7 @@ export function RunnerTerminal({
       const sid = sessionIdRef.current;
       if (!sid) return;
       void api.session.injectStdin(sid, data).catch((e) => {
-        onError?.(String(e));
+        onErrorRef.current?.(String(e));
       });
     });
 
@@ -182,26 +189,38 @@ export function RunnerTerminal({
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [onError]);
+  }, []);
 
-  // Subscribe to the bound session's output + exit. Re-runs on sessionId
-  // change, which means the workspace can recycle a RunnerTerminal across
-  // sessions if it ever needs to (currently it mounts one per session and
-  // keeps it for the mission's lifetime).
+  // Subscribe to the bound session's output + exit. The listener is registered
+  // before snapshot replay so live chunks that arrive during the command round
+  // trip are buffered and merged by seq.
   useEffect(() => {
     let unlistenOutput: (() => void) | null = null;
     let unlistenExit: (() => void) | null = null;
     let cancelled = false;
+    let replayDone = false;
+    let lastWrittenSeq = 0;
+    const pendingLive: OutputEvent[] = [];
+
+    const writeOutput = (ev: OutputEvent) => {
+      termRef.current?.write(decodeBase64Chunk(ev.data));
+    };
 
     void (async () => {
       const [fnOut, fnExit] = await Promise.all([
         listen<OutputEvent>("session/output", (event) => {
           if (event.payload.session_id !== sessionId) return;
-          termRef.current?.write(decodeBase64Chunk(event.payload.data));
+          if (!replayDone) {
+            pendingLive.push(event.payload);
+            return;
+          }
+          if (event.payload.seq <= lastWrittenSeq) return;
+          writeOutput(event.payload);
+          lastWrittenSeq = event.payload.seq;
         }),
         listen<ExitEvent>("session/exit", (event) => {
           if (event.payload.session_id !== sessionId) return;
-          onExit?.(event.payload);
+          onExitRef.current?.(event.payload);
         }),
       ]);
       if (cancelled) {
@@ -211,6 +230,27 @@ export function RunnerTerminal({
       }
       unlistenOutput = fnOut;
       unlistenExit = fnExit;
+
+      let snapshot: OutputEvent[] = [];
+      try {
+        snapshot = await api.session.outputSnapshot(sessionId);
+      } catch (e) {
+        onErrorRef.current?.(String(e));
+      }
+      if (cancelled) return;
+
+      termRef.current?.reset();
+      for (const ev of snapshot) {
+        writeOutput(ev);
+        lastWrittenSeq = Math.max(lastWrittenSeq, ev.seq);
+      }
+      replayDone = true;
+      for (const ev of pendingLive) {
+        if (ev.seq <= lastWrittenSeq) continue;
+        writeOutput(ev);
+        lastWrittenSeq = ev.seq;
+      }
+      pendingLive.length = 0;
 
       // SIGWINCH dance: nudge cols by -1 and back so the agent (claude-code,
       // codex, etc.) emits a fresh redraw onto our blank grid. Without
@@ -233,30 +273,44 @@ export function RunnerTerminal({
       unlistenOutput?.();
       unlistenExit?.();
     };
-  }, [sessionId, onExit]);
+  }, [sessionId]);
 
-  // Activation effect: when this tab moves to the front, fit to the
-  // (possibly newly-laid-out) container, repaint the WebGL canvas with
-  // the current scrollback, and grab focus so keystrokes flow into the
-  // expected PTY. Stacked-but-occluded panes can have stale layout
-  // dimensions, so we always re-fit before refreshing.
+  // Activation effect: when this tab moves to the front, wait for the pane
+  // to become measurable, fit to its container, repaint the WebGL/canvas
+  // renderer with the current scrollback, and grab focus so keystrokes flow
+  // into the expected PTY.
   useEffect(() => {
     if (!active) return;
-    const t = termRef.current;
-    const fit = fitRef.current;
-    if (!t || !fit) return;
-    try {
-      fit.fit();
-      t.refresh(0, t.rows - 1);
-      t.focus();
-    } catch {
-      // Layout not ready yet — the next focus / resize will drive it.
-    }
-    // Also push the (possibly changed) grid down to the PTY so the
-    // agent renders at full width.
-    void api.session.resize(sessionId, t.cols, t.rows).catch(() => {
-      // session may have exited
+    let cancelled = false;
+    let raf1 = 0;
+    let raf2 = 0;
+
+    const activate = () => {
+      if (cancelled) return;
+      const t = termRef.current;
+      const fit = fitRef.current;
+      if (!t || !fit) return;
+      try {
+        fit.fit();
+        t.refresh(0, t.rows - 1);
+        t.focus();
+        void api.session.resize(sessionId, t.cols, t.rows).catch(() => {
+          // session may have exited
+        });
+      } catch {
+        // Layout not ready yet — the next activation / resize will drive it.
+      }
+    };
+
+    raf1 = window.requestAnimationFrame(() => {
+      raf2 = window.requestAnimationFrame(activate);
     });
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(raf1);
+      window.cancelAnimationFrame(raf2);
+    };
   }, [active, sessionId]);
 
   return (

@@ -22,6 +22,7 @@ import type {
   RunnerActivity,
   RunnerWithActivity,
   Session,
+  SessionOutputEvent,
   SpawnedSession,
   StartMissionInput,
   StartMissionOutput,
@@ -91,6 +92,8 @@ export const api = {
     kill: (sessionId: string) => invoke<void>("session_kill", { sessionId }),
     resize: (sessionId: string, cols: number, rows: number) =>
       invoke<void>("session_resize", { sessionId, cols, rows }),
+    outputSnapshot: (sessionId: string) =>
+      invoke<SessionOutputEvent[]>("session_output_snapshot", { sessionId }),
     startDirect: (
       runnerId: string,
       cwd: string | null,

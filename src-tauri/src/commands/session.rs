@@ -20,7 +20,7 @@ use crate::{
     commands::runner,
     error::{Error, Result},
     model::{Session, SessionStatus, Timestamp},
-    session::manager::{SessionEvents, SpawnedSession, TauriSessionEvents},
+    session::manager::{OutputEvent, SessionEvents, SpawnedSession, TauriSessionEvents},
     AppState,
 };
 
@@ -118,6 +118,14 @@ pub async fn session_resize(
     rows: u16,
 ) -> Result<()> {
     state.sessions.resize(&session_id, cols, rows)
+}
+
+#[tauri::command]
+pub async fn session_output_snapshot(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<OutputEvent>> {
+    Ok(state.sessions.output_snapshot(&session_id))
 }
 
 /// Spawn a "direct chat" session for a runner — a PTY with no parent

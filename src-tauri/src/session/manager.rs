@@ -17,7 +17,7 @@
 // `SessionManager::kill_all` at app shutdown (future work; for MVP the
 // child inherits our process group and dies when we exit).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -32,6 +32,8 @@ use serde::Serialize;
 use crate::db::DbPool;
 use crate::error::{Error, Result};
 use crate::model::{Mission, Runner};
+
+const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
 
 /// Decouples the PTY layer from Tauri so the reader thread can be unit-tested
 /// with a fake. Prod wraps an `AppHandle::emit`; tests use a no-op or a
@@ -91,6 +93,9 @@ impl SessionEvents for TauriSessionEvents {
 pub struct OutputEvent {
     pub session_id: String,
     pub mission_id: Option<String>,
+    /// Monotonic per-session sequence number. Frontend attach uses this to
+    /// merge a replay snapshot with live events without duplicating chunks.
+    pub seq: u64,
     /// Base64-encoded raw bytes read from the PTY.
     pub data: String,
 }
@@ -142,12 +147,16 @@ struct SessionHandle {
 
 pub struct SessionManager {
     sessions: Mutex<HashMap<String, SessionHandle>>,
+    output_buffers: Mutex<HashMap<String, VecDeque<OutputEvent>>>,
+    output_seq: Mutex<HashMap<String, u64>>,
 }
 
 impl SessionManager {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             sessions: Mutex::new(HashMap::new()),
+            output_buffers: Mutex::new(HashMap::new()),
+            output_seq: Mutex::new(HashMap::new()),
         })
     }
 
@@ -529,6 +538,7 @@ impl SessionManager {
             let exit = drain_pty_and_reap(
                 reader,
                 &mut *child,
+                manager_t.as_ref(),
                 &session_id,
                 mission_id.as_deref(),
                 events.as_ref(),
@@ -585,6 +595,22 @@ impl SessionManager {
                 .map_err(|e| Error::msg(format!("pty resize failed: {e}")))?;
         }
         Ok(())
+    }
+
+    /// Return the bounded in-memory PTY output snapshot for a session.
+    ///
+    /// Tauri events are live-only; without this, a terminal pane mounted after
+    /// a session already produced output starts blank until the child redraws.
+    /// The snapshot is intentionally process-local and bounded: it covers
+    /// webview reloads / chat switching for live sessions without turning the
+    /// sessions table into a PTY transcript store.
+    pub fn output_snapshot(&self, session_id: &str) -> Vec<OutputEvent> {
+        self.output_buffers
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map(|chunks| chunks.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Kill the child and wait for the reader thread to reap it.
@@ -681,6 +707,35 @@ impl SessionManager {
         self.sessions.lock().unwrap().remove(session_id);
         Ok(())
     }
+
+    fn record_output(
+        &self,
+        session_id: &str,
+        mission_id: Option<&str>,
+        data: String,
+    ) -> OutputEvent {
+        let seq = {
+            let mut seqs = self.output_seq.lock().unwrap();
+            let next = seqs.entry(session_id.to_string()).or_insert(0);
+            *next += 1;
+            *next
+        };
+
+        let ev = OutputEvent {
+            session_id: session_id.into(),
+            mission_id: mission_id.map(str::to_string),
+            seq,
+            data,
+        };
+
+        let mut buffers = self.output_buffers.lock().unwrap();
+        let chunks = buffers.entry(session_id.to_string()).or_default();
+        chunks.push_back(ev.clone());
+        while chunks.len() > MAX_OUTPUT_BUFFER_CHUNKS {
+            chunks.pop_front();
+        }
+        ev
+    }
 }
 
 /// Compute current activity counters for `runner` and emit a
@@ -737,6 +792,7 @@ fn emit_runner_activity(pool: &DbPool, runner: &Runner, events: &dyn SessionEven
 fn drain_pty_and_reap(
     mut reader: Box<dyn Read + Send>,
     child: &mut (dyn portable_pty::Child + Send),
+    manager: &SessionManager,
     session_id: &str,
     mission_id: Option<&str>,
     events: &dyn SessionEvents,
@@ -746,11 +802,8 @@ fn drain_pty_and_reap(
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                events.output(&OutputEvent {
-                    session_id: session_id.into(),
-                    mission_id: mission_id.map(str::to_string),
-                    data: BASE64.encode(&buf[..n]),
-                });
+                let ev = manager.record_output(session_id, mission_id, BASE64.encode(&buf[..n]));
+                events.output(&ev);
             }
             Err(_) => break,
         }
@@ -1172,7 +1225,7 @@ mod tests {
             let row: (String, Option<String>) = conn
                 .query_row(
                     "SELECT status, mission_id FROM sessions WHERE id = ?1",
-                    params![spawned.id],
+                    params![&spawned.id],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .unwrap();
@@ -1188,6 +1241,17 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+
+        let snapshot = mgr.output_snapshot(&spawned.id);
+        assert!(
+            !snapshot.is_empty(),
+            "session output snapshot must replay output"
+        );
+        assert_eq!(snapshot[0].seq, 1);
+        assert!(
+            snapshot.iter().all(|ev| ev.session_id == spawned.id),
+            "snapshot must only include chunks for the requested session"
+        );
 
         // Activity emissions: at least one on spawn (count=1), and one on
         // reap (count=0). We don't pin exact counts — the spawn-time emit

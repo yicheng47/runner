@@ -91,6 +91,13 @@ export interface SpawnedSession {
   pid: number | null;
 }
 
+export interface SessionOutputEvent {
+  session_id: string;
+  mission_id: string | null;
+  seq: number;
+  data: string;
+}
+
 export type MissionStatus = "running" | "completed" | "aborted";
 
 export interface Mission {
