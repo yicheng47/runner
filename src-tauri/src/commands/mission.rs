@@ -109,9 +109,11 @@ pub fn list(conn: &Connection, crew_id: Option<&str>) -> Result<Vec<Mission>> {
 }
 
 /// One row in the Missions page list — the mission's own fields denormalized
-/// with the crew name and the live pending-ask count. The pending-ask count
-/// is sourced from `RouterRegistry`, which only holds running missions, so
-/// completed/aborted rows always read as 0 here.
+/// with the crew name and the pending-ask count. The count comes from the
+/// live `RouterRegistry` when the mission is mounted; otherwise it's
+/// reconstructed from the event log (unmatched `human_question` /
+/// `human_response` pairs) so post-restart and terminal-status missions
+/// still surface unanswered cards.
 #[derive(Debug, Clone, Serialize)]
 pub struct MissionSummary {
     #[serde(flatten)]
@@ -656,6 +658,50 @@ pub async fn mission_get(state: State<'_, AppState>, id: String) -> Result<Missi
     get(&conn, &id)
 }
 
+/// Count `human_question` events in `mission_dir`'s log that have not yet
+/// been answered by a `human_response` referencing them. The router's
+/// in-memory `pending_asks` map is the live source of truth for mounted
+/// missions; this helper covers the cold path: a mission whose router
+/// isn't registered (post-restart, before the user reopens the workspace,
+/// or any mission still flagged `running` in the DB without a live
+/// process behind it). Without it, `mission_list_summary` would silently
+/// drop the pending-ask flag for orphaned running rows.
+fn count_pending_asks_from_log(mission_dir: &Path) -> usize {
+    let log = match EventLog::open(mission_dir) {
+        Ok(l) => l,
+        Err(_) => return 0,
+    };
+    let entries = match log.read_from_lossy(0) {
+        Ok((entries, _skipped)) => entries,
+        Err(_) => return 0,
+    };
+    // pending: human_question.id → still unanswered. Removed when a
+    // matching human_response lands. Mirrors Router::reconstruct_from_log
+    // so a reopen sees the same state as the live registry would have.
+    let mut pending: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for entry in &entries {
+        let event = &entry.event;
+        if !matches!(event.kind, runner_core::model::EventKind::Signal) {
+            continue;
+        }
+        let Some(t) = event.signal_type.as_ref() else {
+            continue;
+        };
+        match t.as_str() {
+            "human_question" => {
+                pending.insert(event.id.clone());
+            }
+            "human_response" => {
+                if let Some(qid) = event.payload.get("question_id").and_then(|v| v.as_str()) {
+                    pending.remove(qid);
+                }
+            }
+            _ => {}
+        }
+    }
+    pending.len()
+}
+
 #[tauri::command]
 pub async fn mission_list_summary(
     state: State<'_, AppState>,
@@ -674,11 +720,20 @@ pub async fn mission_list_summary(
             Ok(c) => c.name,
             Err(_) => String::new(), // crew was deleted; row still surfaces
         };
-        let pending_ask_count = state
-            .routers
-            .get(&m.id)
-            .map(|r| r.pending_ask_count())
-            .unwrap_or(0);
+        // Live router is authoritative when mounted. For unmounted
+        // missions — terminal status, or orphan `running` rows after a
+        // restart — fall back to a log scan so the badge stays accurate
+        // until the workspace remounts the router. Past missions
+        // typically resolve to 0 too (every ask was answered or the
+        // human walked away) but the scan still surfaces genuinely
+        // abandoned cards from a prior run.
+        let pending_ask_count = match state.routers.get(&m.id) {
+            Some(router) => router.pending_ask_count(),
+            None => {
+                let mission_dir = event_log::mission_dir(&state.app_data_dir, &m.crew_id, &m.id);
+                count_pending_asks_from_log(&mission_dir)
+            }
+        };
         summaries.push(MissionSummary {
             mission: m,
             crew_name,
@@ -1181,6 +1236,74 @@ mod tests {
             events[1].signal_type.as_ref().unwrap().as_str(),
             "mission_goal"
         );
+    }
+
+    #[test]
+    fn pending_ask_count_from_log_pairs_questions_with_responses() {
+        // A mission whose router isn't mounted (post-restart, terminal
+        // status, etc.) still needs an accurate pending-ask count for the
+        // Missions list flag. Append two human_question events and answer
+        // only the second one; the helper must report 1 unanswered.
+        use runner_core::model::{EventDraft, EventKind, SignalType};
+
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "A", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id: crew_id.clone(),
+                title: "m".into(),
+                goal_override: None,
+                cwd: None,
+            },
+        )
+        .unwrap();
+
+        let mission_dir = event_log::mission_dir(tmp.path(), &crew_id, &out.mission.id);
+        assert_eq!(
+            count_pending_asks_from_log(&mission_dir),
+            0,
+            "fresh mission has no pending asks"
+        );
+
+        let log = EventLog::open(&mission_dir).unwrap();
+        let q1 = log
+            .append(EventDraft::signal(
+                crew_id.clone(),
+                out.mission.id.clone(),
+                "router",
+                SignalType::new("human_question"),
+                serde_json::json!({"prompt": "?"}),
+            ))
+            .unwrap();
+        let _q2 = log
+            .append(EventDraft::signal(
+                crew_id.clone(),
+                out.mission.id.clone(),
+                "router",
+                SignalType::new("human_question"),
+                serde_json::json!({"prompt": "??"}),
+            ))
+            .unwrap();
+        assert_eq!(count_pending_asks_from_log(&mission_dir), 2);
+
+        // Resolve only the first question.
+        log.append(EventDraft {
+            crew_id: crew_id.clone(),
+            mission_id: out.mission.id.clone(),
+            kind: EventKind::Signal,
+            from: "human".into(),
+            to: None,
+            signal_type: Some(SignalType::new("human_response")),
+            payload: serde_json::json!({"question_id": q1.id, "choice": "yes"}),
+        })
+        .unwrap();
+        assert_eq!(count_pending_asks_from_log(&mission_dir), 1);
     }
 
     #[test]

@@ -204,9 +204,11 @@ export interface StartMissionOutput {
 
 // Row shape used by the Missions list page. The mission's own fields are
 // flattened (mirrors `#[serde(flatten)]` on the Rust struct) and joined
-// with the crew's display name + a live pending-ask count read off the
-// router registry. `pending_ask_count` is always 0 for terminal-status
-// missions because their router is unmounted at mission_stop.
+// with the crew's display name + a pending-ask count. The count is read
+// off the live router registry when the mission is mounted; otherwise the
+// backend reconstructs it from the event log (unmatched human_question /
+// human_response pairs) so post-restart and terminal-status missions
+// still surface unanswered cards.
 export interface MissionSummary extends Mission {
   crew_name: string;
   pending_ask_count: number;
