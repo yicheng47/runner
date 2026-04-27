@@ -33,6 +33,7 @@ import type {
 /** Session row joined with the runner's handle for UI labels. */
 export interface SessionRow extends Session {
   handle: string;
+  lead: boolean;
 }
 
 export const api = {

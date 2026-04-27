@@ -31,6 +31,8 @@ pub struct SessionRow {
     /// Handle of the runner this session instantiates — denormalized so the
     /// frontend can render `@coder`-style labels without a second lookup.
     pub handle: String,
+    /// Whether this runner is the lead for the mission's crew.
+    pub lead: bool,
 }
 
 fn row_to_session(row: &Row<'_>) -> rusqlite::Result<SessionRow> {
@@ -67,6 +69,7 @@ fn row_to_session(row: &Row<'_>) -> rusqlite::Result<SessionRow> {
             stopped_at: stopped_at.map(parse_ts).transpose()?,
         },
         handle: row.get("handle")?,
+        lead: row.get("lead")?,
     })
 }
 
@@ -82,7 +85,8 @@ pub async fn session_list(
     let conn = state.db.get()?;
     let mut stmt = conn.prepare(
         "SELECT s.id, s.mission_id, s.runner_id, s.cwd, s.status, s.pid,
-                s.started_at, s.stopped_at, r.handle
+                s.started_at, s.stopped_at, r.handle,
+                COALESCE(cr.lead, 0) AS lead
            FROM sessions s
            JOIN runners r ON r.id = s.runner_id
            JOIN missions m ON m.id = s.mission_id

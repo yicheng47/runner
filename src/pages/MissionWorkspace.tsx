@@ -6,10 +6,9 @@
 //   - right rail: RunnersRail with status dots + LEAD badge + open pty
 //
 // The rail's "open pty" link selects the runner's terminal tab.
-// Terminals are stacked in the DOM (visibility toggled via z-index +
-// invisible Tailwind class) so each PTY's xterm scrollback survives
-// tab-switching — without that, `echo hi` typed in @lead disappears
-// the moment the user clicks @impl and back.
+// Terminals stay mounted and inactive panes are hidden with display:none, so
+// each PTY's xterm scrollback survives tab-switching. The backend terminal
+// snapshot covers bytes emitted before a pane first mounts.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -49,6 +48,12 @@ export default function MissionWorkspace() {
     if (!id) return;
     let unlisten: (() => void) | null = null;
     let cancelled = false;
+    seenIdsRef.current = new Set();
+    setMission(null);
+    setSessions([]);
+    setEvents([]);
+    setActiveTab("feed");
+    setError(null);
     setLoading(true);
 
     const ingest = (newEvents: Event[]) => {
@@ -137,17 +142,25 @@ export default function MissionWorkspace() {
     };
   }, [id]);
 
-  // Lead handle resolved off the sessions list. The DB's
-  // one_lead_per_crew invariant guarantees at most one is flagged via
-  // crew_runners.lead — but session_list doesn't carry that flag, so we
-  // fall back to deriving it from the latest router-bridged events. For
-  // v0 we just use the first session whose handle matches the
-  // mission_goal recipient, which the router writes to the lead. As a
-  // last resort, the first session in roster order.
+  // Lead handle resolved from the crew_runners.lead flag returned by
+  // session_list. Fall back to roster order only for malformed/old rows.
   const leadHandle = useMemo(() => {
     if (sessions.length === 0) return "";
-    return sessions[0].handle;
+    return sessions.find((s) => s.lead)?.handle ?? sessions[0].handle;
   }, [sessions]);
+
+  const stopMission = useCallback(async () => {
+    if (!mission) return;
+    if (!confirm("Stop this mission?")) return;
+    try {
+      const stopped = await api.mission.stop(mission.id);
+      setMission(stopped);
+      const rows = await api.session.list(mission.id);
+      setSessions(rows);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [mission]);
 
   // Project ask_human → human_question pairings + human_response
   // resolutions out of the feed. Mirrors the router's reconstruct_from_log
@@ -247,11 +260,7 @@ export default function MissionWorkspace() {
           {mission?.status === "running" ? (
             <button
               type="button"
-              onClick={() => {
-                if (!mission) return;
-                if (!confirm("Stop this mission?")) return;
-                void api.mission.stop(mission.id).catch((e) => setError(String(e)));
-              }}
+              onClick={() => void stopMission()}
               className="rounded border border-line-strong bg-raised px-3 py-1 text-[11px] font-semibold text-fg hover:border-fg-3"
             >
               Stop
