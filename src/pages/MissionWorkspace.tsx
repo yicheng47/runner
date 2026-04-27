@@ -290,15 +290,14 @@ export default function MissionWorkspace() {
             </div>
 
             <div className="relative flex flex-1 min-h-0 flex-col">
-              {/* Feed tab. Hidden when a terminal tab is active so the
-                  feed's auto-scroll doesn't fight the terminal's xterm
-                  layout, but kept mounted so its event log subscription
-                  state is preserved. */}
-              <div
-                className={`absolute inset-0 flex flex-col ${
-                  activeTab === "feed" ? "" : "invisible pointer-events-none"
-                }`}
-              >
+              {/* All panes stay mounted. The active one is on top via
+                  z-index; inactive ones are rendered behind it (so
+                  xterm's WebGL canvas keeps its scrollback intact) but
+                  occluded by the active pane's opaque bg-bg. We don't
+                  use visibility:hidden because it leaves WebGL canvas
+                  state in an inconsistent place — when the user
+                  switched back the buffer was visible-but-blank. */}
+              <Pane active={activeTab === "feed"}>
                 <EventFeed
                   missionId={mission.id}
                   events={events}
@@ -313,27 +312,18 @@ export default function MissionWorkspace() {
                   disabled={mission.status !== "running"}
                   onError={setError}
                 />
-              </div>
+              </Pane>
 
-              {/* Terminal tabs — stacked, visibility-toggled. xterm keeps
-                  rendering output into hidden tabs so scrollback is
-                  preserved across switches. */}
               {sessions.map((s) => (
-                <div
-                  key={s.id}
-                  className={`absolute inset-0 flex flex-col bg-bg ${
-                    activeTab === s.id
-                      ? ""
-                      : "invisible pointer-events-none"
-                  }`}
-                >
+                <Pane key={s.id} active={activeTab === s.id}>
                   <div className="flex flex-1 min-h-0 p-3">
                     <RunnerTerminal
                       sessionId={s.id}
                       onError={setError}
+                      active={activeTab === s.id}
                     />
                   </div>
-                </div>
+                </Pane>
               ))}
             </div>
           </div>
@@ -347,6 +337,29 @@ export default function MissionWorkspace() {
           />
         </div>
       )}
+    </div>
+  );
+}
+
+function Pane({
+  active,
+  children,
+}: {
+  active: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className="absolute inset-0 flex flex-col bg-bg"
+      style={{
+        zIndex: active ? 1 : 0,
+        // Inactive panes are visually occluded by the active one's
+        // opaque background, but we also disable pointer events so
+        // clicks/keystrokes can't leak to the panes underneath.
+        pointerEvents: active ? "auto" : "none",
+      }}
+    >
+      {children}
     </div>
   );
 }

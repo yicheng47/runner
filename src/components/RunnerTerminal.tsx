@@ -41,6 +41,11 @@ interface RunnerTerminalProps {
   onExit?: (ev: ExitEvent) => void;
   /** Surface terminal-side errors (stdin push failures, resize errors). */
   onError?: (msg: string) => void;
+  /** True while this terminal's tab is the foremost one in the workspace.
+   *  Every terminal stays mounted (z-stacked) so each PTY's xterm
+   *  scrollback survives tab-switching, but only the active one needs to
+   *  refresh + claim focus when the user comes back to it. */
+  active?: boolean;
 }
 
 const TERMINAL_THEME = {
@@ -80,6 +85,7 @@ export function RunnerTerminal({
   sessionId,
   onExit,
   onError,
+  active,
 }: RunnerTerminalProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -117,6 +123,11 @@ export function RunnerTerminal({
       // No WebGL — fall through to canvas. RunnerChat does the same.
     }
     fit.fit();
+    // Don't auto-focus on mount: in the workspace, multiple
+    // RunnerTerminals mount at once before any tab is selected, and the
+    // last-mounted one would steal focus and shove the page into its
+    // own scroll position. The activation effect below grabs focus when
+    // the tab becomes active.
 
     const onDataDisposable = term.onData((data) => {
       const sid = sessionIdRef.current;
@@ -223,6 +234,30 @@ export function RunnerTerminal({
       unlistenExit?.();
     };
   }, [sessionId, onExit]);
+
+  // Activation effect: when this tab moves to the front, fit to the
+  // (possibly newly-laid-out) container, repaint the WebGL canvas with
+  // the current scrollback, and grab focus so keystrokes flow into the
+  // expected PTY. Stacked-but-occluded panes can have stale layout
+  // dimensions, so we always re-fit before refreshing.
+  useEffect(() => {
+    if (!active) return;
+    const t = termRef.current;
+    const fit = fitRef.current;
+    if (!t || !fit) return;
+    try {
+      fit.fit();
+      t.refresh(0, t.rows - 1);
+      t.focus();
+    } catch {
+      // Layout not ready yet — the next focus / resize will drive it.
+    }
+    // Also push the (possibly changed) grid down to the PTY so the
+    // agent renders at full width.
+    void api.session.resize(sessionId, t.cols, t.rows).catch(() => {
+      // session may have exited
+    });
+  }, [active, sessionId]);
 
   return (
     <div className="h-full w-full overflow-hidden">
