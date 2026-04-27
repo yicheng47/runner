@@ -462,8 +462,10 @@ pub async fn mission_start(
     let roster_handles: Vec<String> = roster.iter().map(|m| m.runner.handle.clone()).collect();
     let tauri_emitter: Arc<dyn BusEmitter> = Arc::new(TauriBusEvents(app.clone()));
     let router_emitter: Arc<dyn BusEmitter> = Arc::new(RouterSubscriber(Arc::clone(&router)));
-    let composite: Arc<dyn BusEmitter> =
-        Arc::new(CompositeBusEmitter::new(vec![tauri_emitter, router_emitter]));
+    let composite: Arc<dyn BusEmitter> = Arc::new(CompositeBusEmitter::new(vec![
+        tauri_emitter,
+        router_emitter,
+    ]));
     if let Err(e) = state.buses.mount(
         out.mission.id.clone(),
         &mission_dir,

@@ -80,9 +80,7 @@ pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
     }
 
     out.push_str("== Coordination ==\n");
-    out.push_str(
-        "- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n",
-    );
+    out.push_str("- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n");
     out.push_str(
         "- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n",
     );
@@ -92,7 +90,11 @@ pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
     );
     out.push_str("- Report idle with `runner status idle` so the lead view stays accurate.\n");
     if !input.allowed_signals.is_empty() {
-        let names: Vec<&str> = input.allowed_signals.iter().map(SignalType::as_str).collect();
+        let names: Vec<&str> = input
+            .allowed_signals
+            .iter()
+            .map(SignalType::as_str)
+            .collect();
         out.push_str(&format!("- Allowed signal types: {}.\n", names.join(", ")));
     }
 

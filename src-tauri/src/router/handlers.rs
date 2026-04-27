@@ -110,10 +110,7 @@ pub(super) fn ask_human(router: &Router, event: &Event) {
         .get("choices")
         .cloned()
         .unwrap_or_else(|| serde_json::json!([]));
-    let on_behalf_of = event
-        .payload
-        .get("on_behalf_of")
-        .and_then(|v| v.as_str());
+    let on_behalf_of = event.payload.get("on_behalf_of").and_then(|v| v.as_str());
 
     // Append the `human_question` card first; its id is the canonical
     // `question_id` per arch §5.5.0. The asker is the runner that emitted
@@ -130,11 +127,7 @@ pub(super) fn ask_human(router: &Router, event: &Event) {
 }
 
 pub(super) fn human_response(router: &Router, event: &Event) {
-    let Some(question_id) = event
-        .payload
-        .get("question_id")
-        .and_then(|v| v.as_str())
-    else {
+    let Some(question_id) = event.payload.get("question_id").and_then(|v| v.as_str()) else {
         router.warn("human_response missing payload.question_id");
         return;
     };
@@ -155,18 +148,12 @@ pub(super) fn human_response(router: &Router, event: &Event) {
         .unwrap_or("");
     let text = format!("[human_response] {choice}\n");
     if let Err(e) = router.inject_to_handle(&asker, text.as_bytes()) {
-        router.warn(format!(
-            "human_response injection to @{asker} failed: {e}"
-        ));
+        router.warn(format!("human_response injection to @{asker} failed: {e}"));
     }
 }
 
 pub(super) fn runner_status(router: &Router, event: &Event) {
-    let state = match event
-        .payload
-        .get("state")
-        .and_then(|v| v.as_str())
-    {
+    let state = match event.payload.get("state").and_then(|v| v.as_str()) {
         Some("busy") => RunnerStatus::Busy,
         Some("idle") => RunnerStatus::Idle,
         other => {
@@ -196,9 +183,7 @@ pub(super) fn runner_status(router: &Router, event: &Event) {
             worker = event.from
         );
         if let Err(e) = router.inject_to_handle(&lead_handle, text.as_bytes()) {
-            router.warn(format!(
-                "runner_status idle notice to lead failed: {e}"
-            ));
+            router.warn(format!("runner_status idle notice to lead failed: {e}"));
         }
     }
 }

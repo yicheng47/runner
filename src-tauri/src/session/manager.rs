@@ -183,9 +183,10 @@ impl SessionManager {
         // Append the runtime-specific flag that hands `system_prompt` to the
         // child. Without this the user-authored brief on the runner row is
         // dropped on the floor (arch §4.2 / §4.3).
-        for extra in
-            crate::router::runtime::system_prompt_args(&runner.runtime, runner.system_prompt.as_deref())
-        {
+        for extra in crate::router::runtime::system_prompt_args(
+            &runner.runtime,
+            runner.system_prompt.as_deref(),
+        ) {
             cmd.arg(extra);
         }
 
@@ -381,9 +382,10 @@ impl SessionManager {
         // sessions also receive the runner's `system_prompt`. Direct chats
         // get only the brief — no roster, no goal, no coordination notes —
         // so this is strictly the per-runner default.
-        for extra in
-            crate::router::runtime::system_prompt_args(&runner.runtime, runner.system_prompt.as_deref())
-        {
+        for extra in crate::router::runtime::system_prompt_args(
+            &runner.runtime,
+            runner.system_prompt.as_deref(),
+        ) {
             cmd.arg(extra);
         }
 

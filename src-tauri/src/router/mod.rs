@@ -125,9 +125,7 @@ impl Router {
             .find(|m| m.lead)
             .map(|m| m.runner.clone())
             .ok_or_else(|| {
-                crate::error::Error::msg(format!(
-                    "router mount: crew {crew_id} has no lead runner"
-                ))
+                crate::error::Error::msg(format!("router mount: crew {crew_id} has no lead runner"))
             })?;
         let roster_rows = roster
             .iter()
@@ -192,7 +190,18 @@ impl Router {
     /// initial replay to no-op the bootstrap injection, leaving the lead
     /// without its launch prompt.
     pub fn reconstruct_from_log(&self) -> Result<()> {
-        let entries = self.log.read_from(0)?;
+        // Lossy read so a single malformed NDJSON line — a buggy CLI
+        // release, a partial write the writer recovered from — doesn't
+        // make the whole reopen fail. The bus uses the same forgiveness
+        // (`read_from_lossy` in `event_bus::BusState::tick`); reopen must
+        // tolerate at least the same set of histories the bus does.
+        let (entries, skipped) = self.log.read_from_lossy(0)?;
+        for skip in &skipped {
+            eprintln!(
+                "router[{}]: reconstruct skipping malformed line at offset {} ({})",
+                self.mission_id, skip.offset, skip.error,
+            );
+        }
 
         // Walk once, building a transient ask_human.id → asker map so we
         // can pair the next human_question with the right asker. Once the
@@ -217,10 +226,7 @@ impl Router {
                     ask_human_asker.insert(event.id.clone(), event.from.clone());
                 }
                 "human_question" => {
-                    let triggered_by = event
-                        .payload
-                        .get("triggered_by")
-                        .and_then(|v| v.as_str());
+                    let triggered_by = event.payload.get("triggered_by").and_then(|v| v.as_str());
                     if let Some(ask_id) = triggered_by {
                         if let Some(asker) = ask_human_asker.remove(ask_id) {
                             pending.insert(event.id.clone(), asker);
@@ -228,11 +234,7 @@ impl Router {
                     }
                 }
                 "human_response" => {
-                    if let Some(qid) = event
-                        .payload
-                        .get("question_id")
-                        .and_then(|v| v.as_str())
-                    {
+                    if let Some(qid) = event.payload.get("question_id").and_then(|v| v.as_str()) {
                         pending.remove(qid);
                     }
                 }

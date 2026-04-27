@@ -135,8 +135,10 @@ fn message(from: &str, to: Option<&str>, text: &str) -> EventDraft {
 }
 
 fn read_signals(log: &EventLog) -> Vec<Event> {
-    log.read_from(0)
-        .unwrap()
+    // Lossy so the malformed-line test (which hand-injects a bad NDJSON
+    // line to verify reconstruct's tolerance) can still inspect signals.
+    let (entries, _skipped) = log.read_from_lossy(0).unwrap();
+    entries
         .into_iter()
         .map(|e| e.event)
         .filter(|e| matches!(e.kind, EventKind::Signal))
@@ -334,7 +336,9 @@ fn human_response_routes_back_to_asker() {
 
     let lead_pushes = injector.pushes_for("S-LEAD");
     assert!(
-        lead_pushes.iter().any(|p| p.contains("[human_response] yes")),
+        lead_pushes
+            .iter()
+            .any(|p| p.contains("[human_response] yes")),
         "lead must receive the routed answer; got {lead_pushes:?}",
     );
     // The pending-ask map is consumed; a duplicate response surfaces a
@@ -357,19 +361,18 @@ fn human_response_routes_back_to_asker() {
         })
         .collect();
     assert!(
-        warnings
-            .iter()
-            .any(|w| w.payload["message"].as_str().unwrap().contains("unknown question_id")),
+        warnings.iter().any(|w| w.payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown question_id")),
         "duplicate response must produce mission_warning; got {warnings:?}",
     );
 }
 
 #[test]
 fn human_response_without_matching_question_emits_mission_warning() {
-    let (router, injector, log, _dir) = fixture(
-        vec![crew_runner("lead", true)],
-        &[("lead", "S-LEAD")],
-    );
+    let (router, injector, log, _dir) =
+        fixture(vec![crew_runner("lead", true)], &[("lead", "S-LEAD")]);
     let resp = log
         .append(signal(
             "human",
@@ -521,14 +524,24 @@ fn pending_ask_map_reconstructs_from_log_on_reopen() {
     // log) and the lead is NOT re-injected with anything.
     let card_count_before = read_signals(&log)
         .iter()
-        .filter(|s| s.signal_type.as_ref().map(|t| t.as_str() == "human_question").unwrap_or(false))
+        .filter(|s| {
+            s.signal_type
+                .as_ref()
+                .map(|t| t.as_str() == "human_question")
+                .unwrap_or(false)
+        })
         .count();
     for entry in log.read_from(0).unwrap() {
         router2.handle_event(&entry.event);
     }
     let card_count_after = read_signals(&log)
         .iter()
-        .filter(|s| s.signal_type.as_ref().map(|t| t.as_str() == "human_question").unwrap_or(false))
+        .filter(|s| {
+            s.signal_type
+                .as_ref()
+                .map(|t| t.as_str() == "human_question")
+                .unwrap_or(false)
+        })
         .count();
     assert_eq!(
         card_count_before, card_count_after,
@@ -553,7 +566,9 @@ fn pending_ask_map_reconstructs_from_log_on_reopen() {
 
     let lead_pushes = injector.pushes_for("S-LEAD");
     assert!(
-        lead_pushes.iter().any(|p| p.contains("[human_response] yes")),
+        lead_pushes
+            .iter()
+            .any(|p| p.contains("[human_response] yes")),
         "after reopen + reconstruct, response must route to original asker; got {lead_pushes:?}",
     );
 }
@@ -689,10 +704,8 @@ fn dead_session_for_handler_target_emits_mission_warning() {
     // The pending-ask map persists past a session crash by design — better
     // to surface the missed wake-up than to silently drop it. The router
     // attempts the inject, fails, and writes a mission_warning.
-    let (router, injector, log, _dir) = fixture(
-        vec![crew_runner("lead", true)],
-        &[("lead", "S-LEAD")],
-    );
+    let (router, injector, log, _dir) =
+        fixture(vec![crew_runner("lead", true)], &[("lead", "S-LEAD")]);
     injector.mark_dead("S-LEAD");
     let ev = log
         .append(signal(
@@ -720,11 +733,106 @@ fn dead_session_for_handler_target_emits_mission_warning() {
 }
 
 #[test]
-fn registry_register_get_unregister() {
-    let (router, _i, _l, _d) = fixture(
-        vec![crew_runner("lead", true)],
-        &[("lead", "S-LEAD")],
+fn reconstruct_tolerates_malformed_lines_like_the_bus() {
+    // Regression: the bus uses `read_from_lossy` so a single bad NDJSON
+    // line doesn't poison projection. `reconstruct_from_log` must do the
+    // same — otherwise reopen would fail on a log the bus is otherwise
+    // happily tailing.
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let log = Arc::new(EventLog::open(dir.path()).unwrap());
+
+    // Pre-seed an ask_human, then a hand-written malformed line, then a
+    // matching human_question via the live router. Reconstruct must
+    // recover the pending-ask mapping despite the bad line in between.
+    let ask = log
+        .append(signal(
+            "lead",
+            "ask_human",
+            serde_json::json!({
+                "prompt": "ok?",
+                "choices": ["yes", "no"],
+            }),
+        ))
+        .unwrap();
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("events.ndjson"))
+            .unwrap();
+        f.write_all(b"this is not json\n").unwrap();
+    }
+
+    let roster = vec![crew_runner("lead", true)];
+    // First mount handles the ask live — appends human_question.
+    {
+        let injector = Arc::new(RecordingInjector::default());
+        let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
+        let router = Router::new(
+            "mission-1".into(),
+            "crew-1".into(),
+            "Crew One".into(),
+            &roster,
+            vec![],
+            log.clone(),
+            injector_dyn,
+        )
+        .unwrap();
+        router.register_sessions(&[("lead".into(), "S-LEAD".into())]);
+        router.handle_event(&ask);
+    }
+    let card_id = read_signals(&log)
+        .into_iter()
+        .find(|s| {
+            s.signal_type
+                .as_ref()
+                .map(|t| t.as_str() == "human_question")
+                .unwrap_or(false)
+        })
+        .expect("router must append human_question")
+        .id;
+
+    // Reopen + reconstruct: must not fail despite the malformed middle line.
+    let injector = Arc::new(RecordingInjector::default());
+    let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
+    let router2 = Router::new(
+        "mission-1".into(),
+        "crew-1".into(),
+        "Crew One".into(),
+        &roster,
+        vec![],
+        log.clone(),
+        injector_dyn,
+    )
+    .unwrap();
+    router2.register_sessions(&[("lead".into(), "S-LEAD".into())]);
+    router2
+        .reconstruct_from_log()
+        .expect("reconstruct must tolerate malformed lines");
+
+    // The pending-ask map should still resolve; route a human_response and
+    // assert the answer reaches the lead.
+    let resp = log
+        .append(signal(
+            "human",
+            "human_response",
+            serde_json::json!({ "question_id": card_id, "choice": "yes" }),
+        ))
+        .unwrap();
+    router2.handle_event(&resp);
+    let lead_pushes = injector.pushes_for("S-LEAD");
+    assert!(
+        lead_pushes
+            .iter()
+            .any(|p| p.contains("[human_response] yes")),
+        "reconstruct must have recovered the pending ask; got {lead_pushes:?}",
     );
+}
+
+#[test]
+fn registry_register_get_unregister() {
+    let (router, _i, _l, _d) = fixture(vec![crew_runner("lead", true)], &[("lead", "S-LEAD")]);
     let reg = RouterRegistry::new();
     reg.register("mission-1".into(), router.clone());
     assert!(reg.get("mission-1").is_some());

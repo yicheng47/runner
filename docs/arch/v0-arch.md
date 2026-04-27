@@ -532,11 +532,11 @@ Stdin pushes are deliberately silent: the router writes bytes into the target PT
 ```jsonc
 // When the card is shown:
 {
+  "id": "01HG...",                             // canonical question_id (use this in human_response)
   "kind": "signal",
   "type": "human_question",
   "from": "router",
   "payload": {
-    "question_id": "01HG...",                  // = this event's id; echoed here for convenience
     "triggered_by": <triggering-signal.id>,    // e.g. the changes_requested signal's id
     "prompt": "Reviewer requested changes. Accept or override?",
     "choices": ["accept", "override"],
@@ -550,13 +550,15 @@ Stdin pushes are deliberately silent: the router writes bytes into the target PT
   "type": "human_response",
   "from": "human",
   "payload": {
-    "question_id": <human_question.id>,       // lets rules target a specific card
+    "question_id": <human_question.id>,       // = the card event's `id` field
     "choice": "accept"                         // the clicked value (always one of choices[])
   }
 }
 ```
 
-Causality is carried in-payload rather than on the envelope: `human_question.payload.triggered_by` records which signal opened the card, and `human_response.payload.question_id` records which card the human clicked. The router needs no additional schema fields to match them.
+Causality is carried in-payload rather than on the envelope: `human_question.payload.triggered_by` records which signal opened the card, and `human_response.payload.question_id` records which card the human clicked (set to the `human_question` event's own `id`). The router needs no additional schema fields to match them.
+
+**Implementation note.** `human_question` does *not* echo `question_id` into its own payload. The canonical id is the event's own `id` field, and the parent process can't know that id until after the flock-guarded log append assigns it (pre-allocating would break the cross-process monotonic-ULID invariant in §5.1.1). UI consumers should read `human_question.id` and pass it through as `human_response.payload.question_id`.
 
 If two `ask_human` prompts are ever outstanding at once and we need richer discrimination, v0.x will add event-DAG fields. v0 ships the simple case; concurrent prompts are out of scope.
 
