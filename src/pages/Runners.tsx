@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { listen } from "@tauri-apps/api/event";
+import { MessageSquare } from "lucide-react";
 
 import { api } from "../lib/api";
 import type { RunnerActivityEvent, RunnerWithActivity } from "../lib/types";
@@ -68,7 +69,21 @@ export default function Runners() {
     };
   }, []);
 
-  const onChat = (handle: string) => navigate(`/runners/${handle}`);
+  // The Chat pill on a runner card takes you straight into a PTY — not
+  // a detour through the runner detail page. Re-attach if a live direct
+  // session already exists; otherwise spawn a fresh one and let the
+  // chat page take over.
+  const onChat = (item: RunnerWithActivity) => {
+    if (item.direct_session_id) {
+      navigate(`/runners/${item.handle}/chat`, {
+        state: { sessionId: item.direct_session_id },
+      });
+    } else {
+      navigate(`/runners/${item.handle}/chat`, {
+        state: { runnerId: item.id, cwd: null },
+      });
+    }
+  };
 
   const onDelete = async (id: string, handle: string) => {
     if (
@@ -134,7 +149,7 @@ export default function Runners() {
                   key={r.id}
                   item={r}
                   onOpen={() => navigate(`/runners/${r.handle}`)}
-                  onChat={() => onChat(r.handle)}
+                  onChat={() => onChat(r)}
                   onDelete={() => onDelete(r.id, r.handle)}
                 />
               ))}
@@ -236,10 +251,14 @@ function RunnerCard({
                 e.stopPropagation();
                 onChat();
               }}
-              className="ml-1 inline-flex items-center gap-1 rounded bg-accent/10 px-2 py-0.5 text-[11px] font-semibold text-accent hover:bg-accent/20"
-              title="Open runner detail · Chat now"
+              className="ml-1 inline-flex items-center gap-1.5 text-[11px] font-medium text-accent hover:opacity-80"
+              title={
+                item.direct_session_id
+                  ? "Re-attach to live chat"
+                  : "Spawn a new direct chat"
+              }
             >
-              <span aria-hidden>💬</span>
+              <MessageSquare aria-hidden className="h-3 w-3" />
               <span>Chat</span>
             </button>
           </div>
