@@ -15,7 +15,9 @@ import type {
   CrewListItem,
   CrewMembership,
   CrewRunner,
+  Event,
   Mission,
+  PostHumanSignalInput,
   Runner,
   RunnerActivity,
   RunnerWithActivity,
@@ -76,6 +78,10 @@ export const api = {
     start: (input: StartMissionInput) =>
       invoke<StartMissionOutput>("mission_start", { input }),
     stop: (id: string) => invoke<Mission>("mission_stop", { id }),
+    eventsReplay: (missionId: string) =>
+      invoke<Event[]>("mission_events_replay", { missionId }),
+    postHumanSignal: (input: PostHumanSignalInput) =>
+      invoke<Event>("mission_post_human_signal", { input }),
   },
   session: {
     list: (missionId: string) =>
