@@ -104,10 +104,13 @@ pub fn run() {
             commands::mission::mission_stop,
             commands::mission::mission_list,
             commands::mission::mission_get,
+            commands::mission::mission_events_replay,
+            commands::mission::mission_post_human_signal,
             commands::session::session_list,
             commands::session::session_inject_stdin,
             commands::session::session_kill,
             commands::session::session_resize,
+            commands::session::session_output_snapshot,
             commands::session::session_start_direct,
         ])
         .run(tauri::generate_context!())

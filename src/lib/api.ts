@@ -15,11 +15,14 @@ import type {
   CrewListItem,
   CrewMembership,
   CrewRunner,
+  Event,
   Mission,
+  PostHumanSignalInput,
   Runner,
   RunnerActivity,
   RunnerWithActivity,
   Session,
+  SessionOutputEvent,
   SpawnedSession,
   StartMissionInput,
   StartMissionOutput,
@@ -30,6 +33,7 @@ import type {
 /** Session row joined with the runner's handle for UI labels. */
 export interface SessionRow extends Session {
   handle: string;
+  lead: boolean;
 }
 
 export const api = {
@@ -76,6 +80,10 @@ export const api = {
     start: (input: StartMissionInput) =>
       invoke<StartMissionOutput>("mission_start", { input }),
     stop: (id: string) => invoke<Mission>("mission_stop", { id }),
+    eventsReplay: (missionId: string) =>
+      invoke<Event[]>("mission_events_replay", { missionId }),
+    postHumanSignal: (input: PostHumanSignalInput) =>
+      invoke<Event>("mission_post_human_signal", { input }),
   },
   session: {
     list: (missionId: string) =>
@@ -85,6 +93,8 @@ export const api = {
     kill: (sessionId: string) => invoke<void>("session_kill", { sessionId }),
     resize: (sessionId: string, cols: number, rows: number) =>
       invoke<void>("session_resize", { sessionId, cols, rows }),
+    outputSnapshot: (sessionId: string) =>
+      invoke<SessionOutputEvent[]>("session_output_snapshot", { sessionId }),
     startDirect: (
       runnerId: string,
       cwd: string | null,

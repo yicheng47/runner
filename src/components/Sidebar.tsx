@@ -64,17 +64,15 @@ export function Sidebar() {
   // the backend doesn't expose a "list running sessions" query yet);
   // otherwise fall back to the runner detail page.
   //
-  // If we're already on this chat route, no-op: re-navigating with new
-  // location.state would tear down the chat page's output/exit
-  // listeners (effect deps include state.sessionId) without re-spawning
-  // anything, leaving the pane blank.
   const openSession = useCallback(
     (handle: string) => {
       const target = `/runners/${handle}/chat`;
-      if (location.pathname === target) return;
       const sessionId = getActiveSession(handle);
       if (sessionId) {
-        navigate(target, { state: { sessionId } });
+        navigate(target, {
+          state: { sessionId },
+          replace: location.pathname === target,
+        });
       } else {
         navigate(`/runners/${handle}`);
       }

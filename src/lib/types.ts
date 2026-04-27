@@ -91,6 +91,13 @@ export interface SpawnedSession {
   pid: number | null;
 }
 
+export interface SessionOutputEvent {
+  session_id: string;
+  mission_id: string | null;
+  seq: number;
+  data: string;
+}
+
 export type MissionStatus = "running" | "completed" | "aborted";
 
 export interface Mission {
@@ -193,4 +200,44 @@ export interface StartMissionInput {
 export interface StartMissionOutput {
   mission: Mission;
   goal: string;
+}
+
+// Tauri payload for `event/appended` — the bus emits this on every newly
+// observed envelope, plus once per historical event during initial replay
+// (so the UI can rehydrate without an extra round-trip).
+export interface AppendedEvent {
+  mission_id: string;
+  event: Event;
+}
+
+// `human_said` payload sent from the workspace's MissionInput.
+//   - text: the human's message
+//   - target: handle of the recipient runner; omit for broadcast (router
+//     defaults to the lead per arch §5.5)
+export interface HumanSaidPayload {
+  text: string;
+  target?: string;
+}
+
+// `human_response` payload — the workspace's AskHumanCard emits this when
+// the user picks one of the choices. `question_id` is the appended
+// `human_question` event's id (see arch §5.5.0).
+export interface HumanResponsePayload {
+  question_id: string;
+  choice: string;
+}
+
+// Decoded shape of a `human_question` event's payload — the card the UI
+// renders from the appended signal.
+export interface HumanQuestionPayload {
+  triggered_by: string;
+  prompt: string;
+  choices?: string[];
+  on_behalf_of?: string;
+}
+
+export interface PostHumanSignalInput {
+  mission_id: string;
+  signal_type: "human_said" | "human_response";
+  payload: HumanSaidPayload | HumanResponsePayload;
 }

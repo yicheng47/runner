@@ -360,6 +360,83 @@ fn write_roster_sidecar(mission_dir: &Path, roster: &[crate::model::CrewRunner])
     Ok(())
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct PostHumanSignalInput {
+    pub mission_id: String,
+    /// Signal type — restricted to the human-originated ones the workspace
+    /// UI is allowed to emit. Anything else is rejected.
+    pub signal_type: String,
+    pub payload: serde_json::Value,
+}
+
+/// Replay the full event log for a mission. Used by the workspace UI when
+/// it first mounts (or remounts after navigation): it folds the historical
+/// envelopes into its feed before subscribing to `event/appended` for live
+/// tailing. Returns lossy-decoded events so a single corrupt line can't
+/// freeze the UI; the bus already tolerates the same.
+pub fn read_events(
+    app_data_dir: &Path,
+    conn: &Connection,
+    mission_id: &str,
+) -> Result<Vec<runner_core::model::Event>> {
+    let mission = get(conn, mission_id)?;
+    let mission_dir = event_log::mission_dir(app_data_dir, &mission.crew_id, mission_id);
+    let log = EventLog::open(&mission_dir)?;
+    let (entries, _skipped) = log.read_from_lossy(0)?;
+    Ok(entries.into_iter().map(|e| e.event).collect())
+}
+
+#[tauri::command]
+pub async fn mission_events_replay(
+    state: State<'_, AppState>,
+    mission_id: String,
+) -> Result<Vec<runner_core::model::Event>> {
+    let conn = state.db.get()?;
+    read_events(&state.app_data_dir, &conn, &mission_id)
+}
+
+#[tauri::command]
+pub async fn mission_post_human_signal(
+    state: State<'_, AppState>,
+    input: PostHumanSignalInput,
+) -> Result<runner_core::model::Event> {
+    // Whitelist: only the two signal types the workspace UI is supposed
+    // to emit. The router treats `from = "human"` as authoritative for
+    // these, so a buggy frontend that posted `mission_goal` or `ask_lead`
+    // could trigger handler side-effects from the wrong identity.
+    let allowed = matches!(input.signal_type.as_str(), "human_said" | "human_response");
+    if !allowed {
+        return Err(Error::msg(format!(
+            "signal_type {:?} is not allowed from the workspace UI",
+            input.signal_type
+        )));
+    }
+
+    let mission = {
+        let conn = state.db.get()?;
+        get(&conn, &input.mission_id)?
+    };
+    if !matches!(mission.status, MissionStatus::Running) {
+        return Err(Error::msg(format!(
+            "mission {} is not running (status = {:?}); cannot post signals",
+            mission.id, mission.status
+        )));
+    }
+
+    let mission_dir = event_log::mission_dir(&state.app_data_dir, &mission.crew_id, &mission.id);
+    let log = EventLog::open(&mission_dir)?;
+    let event = log.append(EventDraft {
+        crew_id: mission.crew_id.clone(),
+        mission_id: mission.id.clone(),
+        kind: EventKind::Signal,
+        from: "human".into(),
+        to: None,
+        signal_type: Some(SignalType::new(input.signal_type)),
+        payload: input.payload,
+    })?;
+    Ok(event)
+}
+
 #[tauri::command]
 pub async fn mission_start(
     state: State<'_, AppState>,
@@ -1026,6 +1103,52 @@ mod tests {
             })
             .count();
         assert_eq!(stopped_events, 1, "exactly one terminal event must land");
+    }
+
+    #[test]
+    fn read_events_returns_appended_in_order() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "A", Some("Ship v0"));
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id: crew_id.clone(),
+                title: "m".into(),
+                goal_override: None,
+                cwd: None,
+            },
+        )
+        .unwrap();
+
+        // mission_start + mission_goal — that's all the opening events
+        // plant. Mirrors what the workspace UI sees on first mount.
+        let events = read_events(tmp.path(), &conn, &out.mission.id).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0].signal_type.as_ref().unwrap().as_str(),
+            "mission_start"
+        );
+        assert_eq!(
+            events[1].signal_type.as_ref().unwrap().as_str(),
+            "mission_goal"
+        );
+    }
+
+    #[test]
+    fn read_events_unknown_mission_errors() {
+        let pool = pool();
+        let conn = pool.get().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let err = read_events(tmp.path(), &conn, "01HMISSING").unwrap_err();
+        assert!(
+            format!("{err}").contains("mission not found"),
+            "expected not-found, got {err}"
+        );
     }
 
     #[test]
