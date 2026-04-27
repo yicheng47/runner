@@ -324,6 +324,9 @@ pub async fn mission_start(
     input: StartMissionInput,
 ) -> Result<StartMissionOutput> {
     use crate::event_bus::{BusEmitter, TauriBusEvents};
+    use crate::router::{
+        open_log_for_mission, CompositeBusEmitter, Router, RouterSubscriber, StdinInjector,
+    };
     use crate::session::manager::{SessionEvents, TauriSessionEvents};
     use std::sync::Arc;
 
@@ -341,6 +344,11 @@ pub async fn mission_start(
     //
     // Post-C5.5a the roster lives in `crew_runners`, so we join through it
     // instead of listing global runners.
+    let (crew_name, allowed_signals) = {
+        let conn = state.db.get()?;
+        let crew = crew::get(&conn, &out.mission.crew_id)?;
+        (crew.name, crew.signal_types)
+    };
     let roster = {
         let conn = state.db.get()?;
         crew_runner::list(&conn, &out.mission.crew_id)?
@@ -348,21 +356,71 @@ pub async fn mission_start(
     let events_log_path =
         event_log::events_path(&state.app_data_dir, &out.mission.crew_id, &out.mission.id);
 
+    // Build the router up front so it can subscribe to the bus's initial
+    // replay — that's how the `mission_goal` opening event reaches the
+    // dispatcher and the launch prompt gets composed. Sessions are
+    // registered after the spawn loop succeeds; until then the router has
+    // no PTYs to push into. The injection for `mission_goal` will arrive
+    // *after* `register_sessions` because the bus's consumer thread doesn't
+    // start its initial replay synchronously inside `mount`.
+    let mission_dir =
+        event_log::mission_dir(&state.app_data_dir, &out.mission.crew_id, &out.mission.id);
+    let log_arc = match open_log_for_mission(&mission_dir) {
+        Ok(l) => l,
+        Err(e) => {
+            // Couldn't open the log — roll the mission row back. Bus isn't
+            // mounted yet, no sessions were spawned, nothing to clean up.
+            if let Ok(conn) = state.db.get() {
+                let _ = conn.execute(
+                    "UPDATE missions
+                        SET status = 'aborted', stopped_at = ?1
+                      WHERE id = ?2",
+                    rusqlite::params![Utc::now().to_rfc3339(), out.mission.id],
+                );
+            }
+            return Err(e);
+        }
+    };
+    let injector: Arc<dyn StdinInjector> = Arc::clone(&state.sessions) as Arc<dyn StdinInjector>;
+    let router = match Router::new(
+        out.mission.id.clone(),
+        out.mission.crew_id.clone(),
+        crew_name,
+        &roster,
+        allowed_signals,
+        Arc::clone(&log_arc),
+        injector,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            if let Ok(conn) = state.db.get() {
+                let _ = conn.execute(
+                    "UPDATE missions
+                        SET status = 'aborted', stopped_at = ?1
+                      WHERE id = ?2",
+                    rusqlite::params![Utc::now().to_rfc3339(), out.mission.id],
+                );
+            }
+            return Err(e);
+        }
+    };
+
     // Mount the event-bus watcher *before* spawning sessions. The opening
     // events are already on disk (start() emitted them under the same DB
     // tx), so the bus's initial replay will pick up `mission_start` and
-    // `mission_goal` and surface them to the UI. Mounting before spawn
-    // also means anything a runner writes to the log on startup is
-    // observed without a race against the watcher attaching.
-    let mission_dir =
-        event_log::mission_dir(&state.app_data_dir, &out.mission.crew_id, &out.mission.id);
+    // `mission_goal` and surface them to the UI and the router. Mounting
+    // before spawn also means anything a runner writes to the log on
+    // startup is observed without a race against the watcher attaching.
     let roster_handles: Vec<String> = roster.iter().map(|m| m.runner.handle.clone()).collect();
-    let bus_emitter: Arc<dyn BusEmitter> = Arc::new(TauriBusEvents(app.clone()));
+    let tauri_emitter: Arc<dyn BusEmitter> = Arc::new(TauriBusEvents(app.clone()));
+    let router_emitter: Arc<dyn BusEmitter> = Arc::new(RouterSubscriber(Arc::clone(&router)));
+    let composite: Arc<dyn BusEmitter> =
+        Arc::new(CompositeBusEmitter::new(vec![tauri_emitter, router_emitter]));
     if let Err(e) = state.buses.mount(
         out.mission.id.clone(),
         &mission_dir,
         &roster_handles,
-        bus_emitter,
+        composite,
     ) {
         // Roll back the mission row so the crew isn't stuck behind a
         // phantom `running` if the watcher couldn't attach.
@@ -378,7 +436,8 @@ pub async fn mission_start(
     }
 
     let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app.clone()));
-    for member in roster {
+    let mut spawned_pairs: Vec<(String, String)> = Vec::with_capacity(roster.len());
+    for member in &roster {
         let spawn_res = state.sessions.spawn(
             &out.mission,
             &member.runner,
@@ -387,23 +446,35 @@ pub async fn mission_start(
             state.db.clone(),
             Arc::clone(&emitter),
         );
-        if let Err(e) = spawn_res {
-            // Rollback: kill the sessions that did start, drop the bus,
-            // mark the mission aborted so the crew isn't stuck behind a
-            // phantom `running`, then surface the original spawn error.
-            let _ = state.sessions.kill_all_for_mission(&out.mission.id);
-            state.buses.unmount(&out.mission.id);
-            if let Ok(conn) = state.db.get() {
-                let _ = conn.execute(
-                    "UPDATE missions
-                        SET status = 'aborted', stopped_at = ?1
-                      WHERE id = ?2",
-                    rusqlite::params![Utc::now().to_rfc3339(), out.mission.id],
-                );
+        match spawn_res {
+            Ok(spawned) => {
+                spawned_pairs.push((member.runner.handle.clone(), spawned.id));
             }
-            return Err(e);
+            Err(e) => {
+                // Rollback: kill the sessions that did start, drop the bus,
+                // mark the mission aborted so the crew isn't stuck behind a
+                // phantom `running`, then surface the original spawn error.
+                let _ = state.sessions.kill_all_for_mission(&out.mission.id);
+                state.buses.unmount(&out.mission.id);
+                if let Ok(conn) = state.db.get() {
+                    let _ = conn.execute(
+                        "UPDATE missions
+                            SET status = 'aborted', stopped_at = ?1
+                          WHERE id = ?2",
+                        rusqlite::params![Utc::now().to_rfc3339(), out.mission.id],
+                    );
+                }
+                return Err(e);
+            }
         }
     }
+    // All sessions started — register them with the router so handlers can
+    // resolve handle → session_id. Done after the spawn loop because we
+    // only want a complete map (partial maps would let a stray
+    // `human_response` route to a still-mounted asker whose worker hadn't
+    // booted yet, hiding the actual rollback failure).
+    router.register_sessions(&spawned_pairs);
+    state.routers.register(out.mission.id.clone(), router);
     Ok(out)
 }
 
@@ -420,6 +491,10 @@ pub async fn mission_stop(state: State<'_, AppState>, id: String) -> Result<Miss
     // disk, so the watcher gets one last tick and clients see it before
     // the bus tears down. unmount() is idempotent and never fails.
     state.buses.unmount(&id);
+    // Drop the router after the bus so any final events delivered during
+    // the bus's drain pass still reach a live router. Unregister is a
+    // simple HashMap remove; safe to call even if nothing was registered.
+    state.routers.unregister(&id);
     Ok(mission)
 }
 
