@@ -705,6 +705,8 @@ impl SessionManager {
 
     fn forget(&self, session_id: &str) -> Result<()> {
         self.sessions.lock().unwrap().remove(session_id);
+        self.output_buffers.lock().unwrap().remove(session_id);
+        self.output_seq.lock().unwrap().remove(session_id);
         Ok(())
     }
 
@@ -1242,15 +1244,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
 
-        let snapshot = mgr.output_snapshot(&spawned.id);
         assert!(
-            !snapshot.is_empty(),
-            "session output snapshot must replay output"
-        );
-        assert_eq!(snapshot[0].seq, 1);
-        assert!(
-            snapshot.iter().all(|ev| ev.session_id == spawned.id),
-            "snapshot must only include chunks for the requested session"
+            mgr.output_snapshot(&spawned.id).is_empty(),
+            "terminal output buffer should be cleared after session exit"
         );
 
         // Activity emissions: at least one on spawn (count=1), and one on
@@ -1264,6 +1260,68 @@ mod tests {
         assert_eq!(
             last.active_sessions, 0,
             "after reap, active_sessions for this runner must be 0"
+        );
+    }
+
+    #[test]
+    fn output_snapshot_replays_live_session_and_clears_after_forget() {
+        let pool = pool_with_schema();
+        let now = Utc::now().to_rfc3339();
+        let runner_id = ulid::Ulid::new().to_string();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, role, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'buffered', 'Buffered', 'test', 'shell', '/bin/cat',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+                params![runner_id, now],
+            )
+            .unwrap();
+        }
+
+        let mut runner = runner("/bin/cat", &[]);
+        runner.id = runner_id;
+        runner.handle = "buffered".into();
+
+        let mgr = SessionManager::new();
+        let spawned = mgr
+            .spawn_direct(
+                &runner,
+                Some("/tmp"),
+                None,
+                None,
+                std::path::Path::new("/tmp"),
+                Arc::clone(&pool),
+                capture(),
+            )
+            .unwrap();
+
+        mgr.inject_stdin(&spawned.id, b"hello snapshot\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let snapshot = loop {
+            let snapshot = mgr.output_snapshot(&spawned.id);
+            if !snapshot.is_empty() {
+                break snapshot;
+            }
+            if Instant::now() > deadline {
+                panic!("session output snapshot never captured live output");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+
+        assert_eq!(snapshot[0].seq, 1);
+        assert!(
+            snapshot.iter().all(|ev| ev.session_id == spawned.id),
+            "snapshot must only include chunks for the requested session"
+        );
+
+        mgr.kill(&spawned.id).unwrap();
+        assert!(
+            mgr.output_snapshot(&spawned.id).is_empty(),
+            "forget must drop terminal output buffers"
         );
     }
 }

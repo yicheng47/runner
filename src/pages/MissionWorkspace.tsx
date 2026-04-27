@@ -118,7 +118,8 @@ export default function MissionWorkspace() {
     if (!id) return;
     let unlisten: (() => void) | null = null;
     let cancelled = false;
-    void listen<{ session_id: string }>("session/exit", () => {
+    void listen<{ mission_id: string | null }>("session/exit", (event) => {
+      if (event.payload.mission_id !== id) return;
       void api.session
         .list(id)
         .then((rows) => {
