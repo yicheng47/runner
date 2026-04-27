@@ -25,7 +25,7 @@ type NavItem = {
 const NAV: NavItem[] = [
   { to: "/runners", label: "Runner", enabled: true },
   { to: "/crews", label: "Crew", enabled: true },
-  { to: "/missions", label: "Mission", enabled: false, hint: "Coming with C11" },
+  { to: "/missions", label: "Mission", enabled: true },
 ];
 
 interface ActiveRunner {

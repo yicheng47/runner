@@ -331,6 +331,16 @@ impl Router {
         self.state.lock().unwrap().pending_asks.remove(question_id)
     }
 
+    /// Snapshot of how many `human_question` cards are still waiting for the
+    /// human's choice. The Missions list (C11) reads this to flag rows that
+    /// have a card the user hasn't answered. Stable for unmounted missions
+    /// (router is dropped on `mission_stop`, so the registry returns None
+    /// and callers report zero — completed/aborted missions can't accrue
+    /// new pending asks).
+    pub fn pending_ask_count(&self) -> usize {
+        self.state.lock().unwrap().pending_asks.len()
+    }
+
     pub(crate) fn set_status(&self, handle: String, status: RunnerStatus) {
         self.state.lock().unwrap().status.insert(handle, status);
     }

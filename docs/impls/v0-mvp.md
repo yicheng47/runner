@@ -6,14 +6,16 @@
 
 ## Current status — 2026-04-27
 
-> **2026-04-27 evening update.** C10 (mission workspace UI) merged via PR #20. The `/missions/:id` page subscribes to `event/appended` *before* its initial replay (so events appended in the load window aren't dropped) and dedupes the merged streams on ULID. The center column has a tab strip — Feed (with Slack-style MissionInput dock submitting `human_said` signals) and one tab per runner PTY; tabs are stacked with `display: none` so each xterm's scrollback survives switching. A bounded per-session output snapshot (4096 chunks, in `SessionManager`) plus a new `session_output_snapshot` Tauri command + monotonic `OutputEvent.seq` mean late attachers (workspace tab activation, post-reload chat reattach) get the live screen instead of waiting for the agent to redraw. AskHumanCard renders router-emitted `human_question` events with the `@asker → you` (or `@orig → @asker → you`) attribution chain and posts `human_response` back through `mission_post_human_signal`. Runners rail surfaces session PTY status, latest `runner_status` (busy/idle), and the LEAD badge. RunnerChat was refactored onto the same per-session-pane pattern. macOS dev-window first-click issue fixed via `acceptFirstMouse: true`. Remaining MVP work is C11 (Missions list + Start Mission modal).
+> **2026-04-27 night update.** C11 (Missions list + Start Mission modal) opened as PR #21 — the v0 MVP entrypoint is in place. `/missions` renders Active/Past tabs over `mission_list_summary` (joins each row with crew name + a live `pending_ask_count` from `RouterRegistry`, falling back to a log scan of unmatched `human_question`/`human_response` pairs for unmounted/orphan-running missions). `StartMissionModal` provides the crew picker, title, goal textarea, cwd `Browse…` via `@tauri-apps/plugin-dialog`, and a stubbed Advanced disclosure; clicking **Start** invokes `mission_start` and routes to `/missions/:id`. Sidebar Mission link is enabled. With this merged, every chunk of v0 ships from the UI alone — no DevTools required for the demo path.
+>
+> **2026-04-27 evening update.** C10 (mission workspace UI) merged via PR #20. The `/missions/:id` page subscribes to `event/appended` *before* its initial replay (so events appended in the load window aren't dropped) and dedupes the merged streams on ULID. The center column has a tab strip — Feed (with Slack-style MissionInput dock submitting `human_said` signals) and one tab per runner PTY; tabs are stacked with `display: none` so each xterm's scrollback survives switching. A bounded per-session output snapshot (4096 chunks, in `SessionManager`) plus a new `session_output_snapshot` Tauri command + monotonic `OutputEvent.seq` mean late attachers (workspace tab activation, post-reload chat reattach) get the live screen instead of waiting for the agent to redraw. AskHumanCard renders router-emitted `human_question` events with the `@asker → you` (or `@orig → @asker → you`) attribution chain and posts `human_response` back through `mission_post_human_signal`. Runners rail surfaces session PTY status, latest `runner_status` (busy/idle), and the LEAD badge. RunnerChat was refactored onto the same per-session-pane pattern. macOS dev-window first-click issue fixed via `acceptFirstMouse: true`.
 >
 > **2026-04-27 update.** C8 (signal router v0) and C9 (`runner` CLI binary) are both merged. The router observes the bus, dispatches built-in signals to handlers (bootstrap, ask_lead/human_said relays, ask_human → human_question card, human_response routing, runner_status idle nudges), and reconstructs pending-ask + status state from the log on reopen via a high-water mark. The CLI exposes `signal`, `msg post`, `msg read`, `status`, and `help`; emits `inbox_read` correctly (skipped on `--from` filtered reads to avoid global-watermark corruption); validates against per-crew signal_types and per-mission roster sidecars. The bundled CLI is built by Tauri's `beforeDev`/`beforeBuild` hooks and installed into `$APPDATA/runner/bin/runner` at app startup.
 >
 > **2026-04-26 plan revision.** C8 was reframed from "orchestrator v0" to "signal router v0" — a flat parent-process dispatcher, not a rule engine. The dispatch ledger, replay idempotence, inbox-summary enrichment, and policy loader were all explicitly descoped because the lead runner already owns coordination judgment; C8 only owns the plumbing (bootstrap, cross-process stdin push, UI bridge) the lead can't do from inside a child PTY. See **C8 — Signal router v0** below for the rationale and the descoped list. The cross-cutting prompt/runtime adapter is now part of C8 instead of a separate prerequisite.
 
 
-The persistence, configuration, PTY runtime, event log, event bus, signal router, `runner` CLI, and mission workspace UI are all in place. The remaining MVP work is the Missions list + Start Mission entrypoint (C11). For C10, missions are started via DevTools `invoke('mission_start', …)` — the user-facing button lands with C11.
+Every layer of v0 — persistence, configuration, PTY runtime, event log, event bus, signal router, `runner` CLI, mission workspace UI, and the Start Mission entrypoint — is implemented. The full demo path from §"Definition of done" runs end-to-end without DevTools.
 
 ### Implemented
 
@@ -29,10 +31,11 @@ The persistence, configuration, PTY runtime, event log, event bus, signal router
 | C7 Event bus | #14 | `notify` watcher per live mission, replay-on-mount, messages-only inbox projection, `inbox_read` watermarks, `event/appended`, `inbox/updated`, `watermark/advanced` events. |
 | C8.5 Runner surfaces | #15 | `/runners`, `/runners/:handle`, direct-chat session backend, `runner_list_with_activity`, `runner/activity` live counters. |
 | Rename / namespace cleanup | #16 + follow-up | Project/crate/app namespace is singular `runner`; env vars are `RUNNER_*`; app data is under `$APPDATA/runner`; planned CLI binary is `runner`. SQL table names stay plural where they represent row collections. |
-| Direct-chat frontend hardening | #17 in review | xterm.js direct-chat pane, persistent sidebar SESSION list, PTY resize handshake, base64 raw PTY output for TUI fidelity. Two review follow-ups are open: reload reattach on the chat route itself, and waiting for output/exit listener registration before spawning. |
+| Direct-chat frontend hardening | #17 | xterm.js direct-chat pane, persistent sidebar SESSION list, PTY resize handshake, base64 raw PTY output for TUI fidelity, reload reattach, and listener-before-spawn ordering for direct sessions. |
 | C8 Signal router v0 + runtime adapter | #18 | Flat parent-process dispatcher (`src-tauri/src/router/`): handlers for `mission_goal`, `human_said`, `ask_lead`, `ask_human`, `human_response`, `runner_status`. Pending-ask + status maps reconstruct on reopen via a replay high-water ULID; live tail short-circuits at-or-below the watermark. Runtime adapter wires `runner.system_prompt` into both mission and direct-chat spawn paths (claude-code → `--append-system-prompt`; codex deferred until a verified flag exists). |
 | C9 `runner` CLI binary | #19 | New `cli/` workspace member produces `runner-cli`, installed at app startup as `$APPDATA/runner/bin/runner` (rename on copy). Verbs: `signal`, `msg post`, `msg read`, `status`, `help`. Validates against per-crew `signal_types.json` and per-mission `roster.json` sidecars (frozen at mission_start). `inbox_read` is suppressed on `--from` filtered reads to avoid corrupting the global per-runner watermark. Tauri's `beforeDev`/`beforeBuild` build the CLI alongside the app so the dev install path needs no manual cargo step. |
 | C10 Mission workspace UI | #20 | `/missions/:id` page (`MissionWorkspace.tsx`) with header status pill + Stop, tabbed center column (Feed / per-runner PTY), MissionInput dock for `human_said` signals (default recipient `@<lead>`, broadcast via × icon), AskHumanCard with attribution chain + `human_response` submission, RunnersRail with PTY status + `runner_status` badge + LEAD flag. Backend additions: `mission_events_replay` (lossy log read), `mission_post_human_signal` (human-only allowlist for `human_said` / `human_response`), `session_output_snapshot` (bounded ring buffer per session, replayed on late attach), `OutputEvent.seq` for snapshot-vs-live merge, `SessionRow.lead` denormalized via `LEFT JOIN crew_runners`. RunnerChat refactored onto the same per-session-pane stack so direct chats survive switching. Tauri config now sets `acceptFirstMouse: true` so the dev window's first click reaches UI elements instead of being eaten by the macOS focus transition. |
+| C11 Missions list + Start Mission modal | #21 | `/missions` page (`Missions.tsx`) with Active/Past tabs over `mission_list_summary` (joins each row with crew name + live `pending_ask_count` from `RouterRegistry`, falls back to a log scan of unmatched `human_question`/`human_response` pairs for unmounted or orphan-running missions). Mission rows surface a warn-tinted `N pending` flag, click-through to the workspace. `StartMissionModal.tsx` provides the crew picker (warns when the chosen crew has no runners), title, goal textarea (placeholder defaults from `crew.goal`), cwd input + `Browse…` via `@tauri-apps/plugin-dialog`, and a stubbed Advanced disclosure. Backend: `Router::pending_ask_count()`. Sidebar Mission link enabled. |
 
 ### What runs today
 
@@ -42,12 +45,9 @@ The persistence, configuration, PTY runtime, event log, event bus, signal router
 - **Event transport:** Mission logs are durable NDJSON files at `$APPDATA/runner/crews/{crew_id}/missions/{mission_id}/events.ndjson`; the in-process bus replays and tails them into Tauri events.
 - **Coordination loop:** Spawned mission runners get the composed launch prompt injected into the lead's stdin on `mission_goal`; workers escalate via `ask_lead`; the lead can `ask_human` for HITL cards; `human_response` routes back to the asker; non-lead `runner_status idle` reports nudge the lead.
 - **CLI:** The bundled `runner` binary is dropped into `$APPDATA/runner/bin/` at app startup. Spawned agents can `runner signal`, `runner msg post`, `runner msg read`, `runner status`. Direct-chat sessions (no env vars) no-op cleanly.
-- **Tests:** `pnpm exec tsc --noEmit`, `pnpm run lint`, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` all pass. Backend coverage is 87 Tauri-app tests + 24 CLI tests (11 unit + 13 integration) + 20 runner-core tests.
 
 ### Known gaps in implemented surfaces
 
-- **No Start Mission UI yet.** The workspace at `/missions/:id` renders end-to-end, but until C11 lands missions are started via DevTools `invoke('mission_start', { input: { … } })`.
-- **Per-session output buffer cleanup.** `SessionManager.output_buffers` and `output_seq` retain entries keyed by session id past `forget()`. Each terminated session leaves up to 4096 chunks in memory until the app exits. Bounded but worth dropping inside `forget` in a follow-up.
 - **Production sidecar packaging.** The dev path now installs the bundled CLI into `$APPDATA/runner/bin/` via Tauri's `beforeDev` hook. Production installer builds (`tauri build`) do not yet ship the CLI as a `bundle.externalBin` sidecar — needs a build-step that stages `runner-cli-<target-triple>` for the bundler. v0 ships in dev; this is a release-engineering follow-up that doesn't affect the demo path.
 - **Codex `system_prompt` flag.** The runtime adapter currently emits `--append-system-prompt` only for the `claude-code` runtime; `codex --instructions` was tried first but the installed Codex CLI rejected it. Codex runners spawn without their `system_prompt` until a verified flag is identified.
 
@@ -74,9 +74,9 @@ Product consequences:
 - Orphan runners are intentional. Removing a runner from every crew leaves it available for reuse and direct chat.
 - Cross-crew conflict resolution is deferred. If two live crews reference the same runner config at once, v0 treats those as separate sessions of the same runner.
 
-## Remaining v0 work
+## Implemented v0 chunk reference
 
-The launch/prompt adapter that was previously listed as a separate cross-cutting prerequisite is now folded into C8 — see the "Cross-cutting prerequisite" block under C8.
+All v0 chunks are implemented. This section keeps the original chunk requirements, decisions, settled risks, and manual test plans as the implementation reference.
 
 ### C8 — Signal router v0
 
@@ -89,7 +89,7 @@ The launch/prompt adapter that was previously listed as a separate cross-cutting
 
 That's it. There are no policy rules to evolve — these are a few hardcoded mechanisms. v0.x can revisit policy/LLM-in-the-loop framing if user-defined signal types ever ship; MVP has no place for it.
 
-**Where:** `src-tauri/src/orchestrator/mod.rs` is a stub; rename to `src-tauri/src/router/` with this chunk so the next reader doesn't expect a framework.
+**Where:** implemented in `src-tauri/src/router/`; the old orchestrator stub was replaced so the code does not imply a policy framework.
 
 **Required behavior:**
 - Mount per live mission when `mission_start` succeeds; unmount when `mission_stop` completes or spawn rollback aborts.
@@ -111,8 +111,8 @@ That's it. There are no policy rules to evolve — these are a few hardcoded mec
 - **Rule abstraction / policy loader.** No `Rule` trait, no policy JSON loaded from `crews.orchestrator_policy`. The handlers are a `match signal_type { … }` and that's the whole router.
 
 **Cross-cutting prerequisite — launch/prompt adapter.**
-- `mission_goal`'s injected prompt is `runner.system_prompt + mission goal + roster + coordination instructions + signal allowlist`. There's no composer today.
-- `runner.system_prompt` is also dropped on the floor by `SessionManager::spawn` and `spawn_direct`. C8 must add a runtime adapter (`claude-code` → `--append-system-prompt`, `codex` → its equivalent, fallback → documented behavior) and apply it on both the mission and direct-chat spawn paths.
+- `mission_goal`'s injected prompt is `runner.system_prompt + mission goal + roster + coordination instructions + signal allowlist`, composed in `src-tauri/src/router/prompt.rs`.
+- `runner.system_prompt` is applied by the runtime adapter in `src-tauri/src/router/runtime.rs` on both `SessionManager::spawn` and `spawn_direct`. `claude-code` receives it via `--append-system-prompt`; Codex remains a documented no-op until a verified CLI flag exists.
 - Direct chats receive the runner's default `system_prompt` only; no roster, no goal.
 - Tests assert resolved command/env contains the prompt for claude-code on both paths.
 
@@ -122,7 +122,7 @@ That's it. There are no policy rules to evolve — these are a few hardcoded mec
 
 ### C9 — `runner` CLI binary
 
-**Where:** there is no `cli/` crate in the workspace yet.
+**Where:** implemented as the `cli/` workspace member producing the bundled `runner` binary.
 
 Required behavior:
 - Add a `cli/` workspace member producing the `runner` binary.
@@ -144,7 +144,7 @@ Risks to settle:
 
 ### C10 — Mission workspace UI
 
-**Where:** no `MissionWorkspace.tsx` page or `/missions/:id` route exists yet.
+**Where:** implemented as `src/pages/MissionWorkspace.tsx` on `/missions/:id`.
 
 Required behavior:
 - Add `src/pages/MissionWorkspace.tsx` and route `/missions/:id`.
@@ -164,18 +164,17 @@ Risks to settle:
 
 ### C11 — Missions list + Start Mission modal
 
-**Where:** no `Missions.tsx` page or `StartMissionModal.tsx` exists. The backend commands are already exposed.
+**Where:** implemented as `src/pages/Missions.tsx` and `src/components/StartMissionModal.tsx`; the sidebar Mission link routes to `/missions`.
 
 Required behavior:
 - Add `src/pages/Missions.tsx` with Active/Past tabs, mission rows, status, started/stopped timestamps, crew name, and open/stop actions.
 - Add `StartMissionModal` with crew picker, title, goal textarea, cwd picker, and an Advanced section stub.
 - Start flow: call `mission_start`, then route to `/missions/:id`.
 - Reopen flow: selecting an active mission routes to C10's workspace and reconstructs feed + router state.
-- Pending ask indicator: derive from the router's pending-ask map once C8 exposes it (or, if the router isn't mounted yet for that mission, scan the log for unmatched `ask_human` rows — see the risks block).
+- Pending ask indicator: derive from the router's pending-ask map when mounted, or scan the log for unmatched `human_question` / `human_response` pairs when unmounted.
 
-Risks to settle:
-- The pending-ask flag either reads from the live router's pending-ask map or runs an on-demand log scan for unmatched `ask_human` rows. Live-map read is better for list performance; log scan is acceptable for MVP-sized data and is the only option for missions whose router isn't mounted (e.g., before the user opens the workspace).
-- `/debug` should be removed or hidden behind a dev flag once this lands, because it currently bypasses the intended user flow.
+Settled risks:
+- The pending-ask flag reads from the live router's pending-ask map when available and falls back to an on-demand log scan for unmatched `human_question` / `human_response` pairs. Live-map read is the fast path; log scan keeps orphan-running or unmounted missions accurate.
 
 ## Definition of done (demo path)
 
@@ -337,11 +336,11 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
   - `SessionManager` owns `HashMap<SessionId, Session>`.
   - `spawn(mission, runner)` — uses `portable-pty`, sets env (`RUNNER_CREW_ID`, `RUNNER_MISSION_ID`, `RUNNER_HANDLE`, `RUNNER_EVENT_LOG`, augmented `PATH` that puts the bundled `runner` CLI first).
   - `inject_stdin(session_id, text)` — through a write channel.
-  - `pause(session_id)` (SIGSTOP on Unix), `resume(session_id)` (SIGCONT), `kill(session_id)`.
-- Reader thread per session: stdout/stderr → ring buffer (last N KB) → Tauri event `session/output`.
+  - `resize(session_id, cols, rows)`, `kill(session_id)`, `kill_all_for_mission(mission_id)`, and `kill_all_for_runner(runner_id)`.
+- Reader thread per session: stdout/stderr → bounded output buffer + monotonic `OutputEvent.seq` → Tauri event `session/output`; `session_output_snapshot` replays buffered chunks for late attachers.
 - Hooks into C5 so `mission_start` spawns all sessions and `mission_stop` kills them.
 
-**Tests.** Spawn a `sh`, inject `echo hi`, read `hi` back. Pause/resume changes process state.
+**Tests.** Spawn a `sh`, inject `echo hi`, read `hi` back; direct sessions write `mission_id = NULL`; kill blocks until terminal status; snapshots replay live output and are cleared by `forget()`.
 
 **Out of scope.** xterm.js frontend — that's part of C10.
 
@@ -366,7 +365,7 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
 
 ## C8 — Signal router v0
 
-**Goal.** A flat parent-process dispatcher that wires built-in signal types into stdin pushes, runner availability projection, and a UI-card event. Not a framework — a hardcoded `match` plus the prompt composer it needs for `mission_goal`. See "C8 — Signal router v0" in the **Remaining v0 work** section above for the full reframing rationale and explicit descoping.
+**Goal.** A flat parent-process dispatcher that wires built-in signal types into stdin pushes, runner availability projection, and a UI-card event. Not a framework — a hardcoded `match` plus the prompt composer it needs for `mission_goal`. See "C8 — Signal router v0" in the **Implemented v0 chunk reference** section above for the full reframing rationale and explicit descoping.
 
 **Deliverables.**
 - `src-tauri/src/router/mod.rs` (renamed from the existing `orchestrator/` stub):
@@ -380,11 +379,11 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
   - `human_said` → resolve recipient (`payload.target` or lead), inject `payload.text`.
   - `ask_lead` → render worker's `{question, context}` into a short stdin template, inject to the lead.
   - `ask_human` → append a `human_question` event carrying `on_behalf_of` (if present) and the original `ask_human` id as `triggered_by`. UI renders the card from the appended event in C10.
-  - `human_response` → look up `question_id` in the pending-ask map; inject `payload.text` to the original asker. Unmatched `human_response` logs a warning event, no panic.
+  - `human_response` → look up `question_id` in the pending-ask map; inject `payload.choice` to the original asker. Unmatched `human_response` logs a warning event, no panic.
   - `runner_status` → accept `payload.state = "busy" | "idle"` and optional `payload.note`; update the status map; when a non-lead reports `idle`, inject a short availability update to the lead.
 - `src-tauri/src/router/prompt.rs` — composes `runner.system_prompt + mission goal + roster + coordination instructions + signal allowlist` into the `mission_goal` injection. Pure function over inputs; no I/O; easy to unit-test.
 - Cross-cutting **launch/prompt adapter** (must land in this chunk):
-  - `src-tauri/src/runtime.rs` — adapter trait + per-runtime impls. `claude-code` injects `runner.system_prompt` via `--append-system-prompt`. `codex` ships with a TODO until its CLI flag is verified. Fallback runtimes get a documented no-op + a warning log.
+  - `src-tauri/src/router/runtime.rs` — per-runtime adapter. `claude-code` injects `runner.system_prompt` via `--append-system-prompt`. `codex` is a documented no-op until its CLI flag is verified. Fallback runtimes get a documented no-op.
   - Apply on both `SessionManager::spawn` (mission) and `spawn_direct` (direct chat). Direct chat gets the runner's `system_prompt` only — no roster, no goal.
 
 **Tests.**
@@ -412,16 +411,16 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
 
 **Deliverables.**
 - **Backend.**
-  - `commands/runner.rs::runner_list_with_activity()` — extends the existing `runner_list` to include `running_session_count` (from `sessions WHERE status = 'running'`) and `open_mission_count` (from `crew_runners ⨝ missions WHERE status = 'running'`). The Runners list cards need both counters.
+  - `commands/runner.rs::runner_list_with_activity()` — extends the existing `runner_list` to include `active_sessions`, `active_missions`, and the most recent live `direct_session_id`. The Runners list cards and sidebar SESSION section use those fields to show activity and reattach to live direct chats.
   - `commands/runner.rs::runner_get_by_handle(handle)` — used by `/runners/:handle` so the URL is stable across runner-id rotations.
-  - `commands/session.rs::session_start_direct(runner_id, cwd)` — inserts a `sessions` row with `mission_id = NULL` and the chosen `cwd`, then spawns through the existing `SessionManager::spawn` path. Differences from the mission flavor: no `RUNNER_MISSION_ID`, `RUNNER_EVENT_LOG`, or `RUNNER_CREW_ID` env vars are set, and the runner does not join any event bus or signal router. The `runner` CLI must no-op gracefully when those vars are absent (small change in C9-land — the CLI errors today on `RUNNER_EVENT_LOG`-not-set, which would crash a direct-chat agent the moment it tries to emit an event).
-  - Live activity events: `SessionManager` emits `runner/activity { runner_id, running_sessions, open_missions }` on every spawn, reap, and kill so the Runners list and Runner Detail can update without polling.
+  - `commands/session.rs::session_start_direct(runner_id, cwd)` — inserts a `sessions` row with `mission_id = NULL` and the chosen `cwd`, then spawns through the existing `SessionManager` path. Differences from the mission flavor: no `RUNNER_MISSION_ID`, `RUNNER_EVENT_LOG`, or `RUNNER_CREW_ID` env vars are set, and the runner does not join any event bus or signal router. The `runner` CLI no-ops cleanly when those vars are absent.
+  - Live activity events: `SessionManager` emits `runner/activity { runner_id, handle, active_sessions, active_missions, direct_session_id }` on every spawn, reap, and kill so the Runners list, Runner Detail, and sidebar update without polling.
 - **Frontend.**
   - `src/components/Sidebar.tsx` — flip the placeholder Runner item to an enabled `NavLink to="/runners"`. Order in the design is Runner / Crew / Mission, top to bottom.
   - `src/pages/Runners.tsx` — vertical stack of `RunnerCard`s, header with `+ New runner`, dashed empty-state card. Same visual vocabulary as `Crews.tsx`. Subscribes to `runner/activity` for live counters.
   - `src/components/CreateRunnerModal.tsx` — extracted from `CrewEditor.tsx`'s anonymous "Add Slot" modal so both surfaces reuse one component. The Crew Detail flow keeps adding *existing* runners through Add Slot, plus this same modal as a "create new" affordance.
   - `src/pages/RunnerDetail.tsx` (`/runners/:handle`) — two columns matching `ocAFJ`: left has `Default system prompt` (with the same edit-drawer behavior C3 ships) and `Crews using this runner` (LEAD badge per row, deep-link into Crew Detail); right has `Activity` (counts + clickable list of open sessions) and `Details` (handle, runtime, created, ID). Header shows breadcrumb `Runners › @handle`, role badge, and two actions: `Edit` (opens `RunnerEditDrawer`) and `Chat now`.
-  - **Chat now flow.** Opens a small dialog asking for working directory (defaulting to the runner's own `working_dir` if set), calls `session_start_direct`, then routes to a new pane modeled on the C6 debug page minus the mission/runners-rail concepts. Route shape `/runners/:handle/chat/:sessionId` so multiple direct chats can stay open across runners.
+  - **Chat now flow.** Opens a small dialog asking for working directory (defaulting to the runner's own `working_dir` if set), calls `session_start_direct`, then routes to `/runners/:handle/chat` with the session id in route state. On reload or sidebar click, `direct_session_id` rehydrates the active terminal.
 
 **Tests.**
 - Backend: `runner_list_with_activity` returns zero counters for a brand-new runner; reflects running mission sessions; reflects direct-chat sessions independently. Deleting a mission must leave its session row counted under the runner (per `sessions.mission_id ON DELETE SET NULL`) until the session itself is reaped.
@@ -448,7 +447,8 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
 - Commands:
   - `runner signal <type> [--payload <json>]`
   - `runner msg post <text> [--to <handle>]`
-  - `runner msg read [--since <ts>] [--from <handle>]` — emits `inbox_read` signal with `payload.up_to = max ULID`.
+  - `runner msg read [--since <ulid>] [--from <handle>]` — emits `inbox_read` signal with `payload.up_to = max ULID`, except `--from` filtered reads skip watermark writes so they do not corrupt the global inbox watermark.
+  - `runner status <busy|idle> [--note <text>]`
   - `runner help`.
 - Reuses `event_log` crate from C4 directly (shared crate, not duplicated code).
 

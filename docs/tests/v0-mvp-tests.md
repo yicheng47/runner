@@ -1,544 +1,245 @@
-# v0 MVP — Tests
+# v0 MVP Test Plan
 
-Single source of truth for MVP test coverage. Pairs with `docs/impls/v0-mvp.md` (chunks) and `docs/arch/v0-arch.md` (system contracts). Each section is scoped to the chunk where that tier of test first becomes runnable — earlier chunks can't exercise it yet, later chunks should keep it passing.
+Reviewer-facing test plan for the implemented MVP. The codebase has detailed
+Rust coverage next to the modules it exercises; this document is the practical
+plan for PR review and release readiness.
 
-## Test tiers
+Use two lanes:
 
-| Tier | Tool | Run by | Becomes runnable |
-|---|---|---|---|
-| **Unit** | `cargo test --lib` | CI + dev | C1 |
-| **Integration** | `cargo test --test <name>` (headless, no Tauri) | CI + dev | C6 |
-| **Smoke (UI)** | `pnpm tauri dev` + manual checklist | Human | C3 |
-| **Demo path** | full Definition-of-Done run from `docs/impls/v0-mvp.md` | Human | C11 (gates the `main` merge) |
+- **Agent-run integration/regression checks:** commands Codex can run locally
+  before handing a PR back.
+- **Human smoke checks:** UI and terminal behavior that must be verified in the
+  Tauri app with real PTY sessions.
 
-- **Unit** — pure Rust, SQL constraints, serde roundtrips. No PTY, no Tauri, no filesystem beyond tempdirs.
-- **Integration** — seams: event log + CLI, router + bus, PTY + sessions. Headless, uses `tempfile` for `$APPDATA` isolation.
-- **Smoke (UI)** — a human clicking through the Tauri app after each UI-bearing chunk. Each UI chunk PR must reproduce the matching checklist in its PR description (per `docs/impls/v0-mvp.md` chunking principles); this file is the authoritative version.
-- **Demo path** — the single end-to-end run from `docs/impls/v0-mvp.md` §"Definition of done". Running it successfully gates closure of v0 MVP (declared on the C11 PR description).
+## Agent-run integration/regression checks
 
-### Chunk ↔ tier map
+Run from the repository root.
 
-```
-C1  unit
-C2  + unit (invariant enforcement at the Rust layer)
-C3  + smoke (first UI surface)
-C4  + unit (event log primitives)
-C5  + unit (mission bookkeeping)
-C6  + integration (PTY)
-C7  + unit (notify watcher + projections)
-C8  + unit (router handlers + pending-ask reconstruction)
-C9  + integration (CLI ↔ event log)
-C10 + smoke (workspace) + integration (headless E2E)
-C11 + smoke (entrypoint) + demo path
-```
-
-### Out of scope for v0 testing
-
-- **Windows.** macOS + Linux only for MVP. Skip Windows-specific assertions.
-- **LLM-driven routing.** The router is a hardcoded dispatcher; never assert on "the lead decides to…" beyond what the fixture runner's script does.
-- **UI E2E frameworks** (Playwright / webdriver). Surface is too fluid pre-C11.
-- **Network filesystems** (NFS/SMB/iCloud). Arch §5.1.1 documents this as a hard requirement on local POSIX.
-
-### Running
-
-```
-# Rust — all units + integrations
-cd src-tauri && cargo test
-
-# TypeScript typecheck (no tests yet; v0 doesn't ship a JS test runner)
+```sh
 pnpm exec tsc --noEmit
+pnpm run lint
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
 
-# Dev app for smoke tests
+For focused regressions, use these when the touched area is narrow:
+
+```sh
+# CLI/event-log contract used by spawned agents.
+cargo test -p runner-cli --test roundtrip
+
+# Router, mission lifecycle, and PTY/session behavior.
+cargo test -p runner --lib router::tests
+cargo test -p runner --lib commands::mission::tests
+cargo test -p runner --lib session::manager::tests
+```
+
+What these checks cover:
+
+- TypeScript route/component type safety.
+- ESLint rules for the React surface.
+- Rust formatting, linting, and full workspace regression coverage.
+- CLI sidecar behavior: `runner signal`, `runner msg post`, `runner msg read`,
+  `runner status`, allowlist validation, roster validation, and missing-env
+  handling.
+- Router behavior: mission bootstrap, `ask_lead`, `ask_human`,
+  `human_response`, `human_said`, `runner_status`, warning paths, and
+  reconstruction from the mission log.
+- Mission/session behavior: start/stop, no-runner validation, pending ask
+  counts, PTY spawn/inject/output snapshots, resize, kill, and late attachment.
+
+## Human smoke checks
+
+Start the app:
+
+```sh
 pnpm tauri dev
 ```
 
-### Cleanup between smokes
+Optional clean-state reset on macOS:
 
-Most smoke scenarios accumulate state. Between runs, delete the app-data directory. On macOS: `rm -rf "$HOME/Library/Application Support/com.wycstudios.runner"` (add `-dev` for the dev profile if applicable).
-
----
-
-# Unit tests
-
-Rust-level `#[cfg(test)] mod tests` co-located with the module under test. One-line descriptions below; the tests themselves are authoritative.
-
-## C1 — `src-tauri/src/{db.rs, model.rs}`
-
-Already landed (10 tests):
-
-- `migrations_bootstrap_all_tables` — creates `crews`, `runners`, `missions`, `sessions`.
-- `new_crew_is_seeded_with_default_signal_types` — the eight built-in types land via SQL `DEFAULT`.
-- `one_lead_per_crew_index_rejects_second_lead` — partial unique index.
-- `one_lead_per_crew_allows_leads_across_crews` — the index is crew-scoped.
-- `unique_handle_within_crew` — `UNIQUE (crew_id, handle)`.
-- `json_blob_columns_roundtrip` — `orchestrator_policy`, `signal_types`, `args_json`, `env_json`.
-- `cascade_delete_removes_dependent_rows` — `ON DELETE CASCADE` on runners.
-- `migrations_are_idempotent_on_reopen` — each migration applies exactly once across restarts.
-- `signal_event_roundtrips_as_documented_envelope` — arch §5.2 shape preserved.
-- `message_event_omits_type_when_serialized` — messages have no `type` field.
-
-## C2 — `src-tauri/src/commands/{crew.rs, runner.rs}`
-
-- `first_runner_added_to_crew_is_auto_lead` — invariant from plan.
-- `cannot_set_a_second_lead_directly` — `runner_set_lead` on a non-lead with another lead already present fails cleanly (the DB catches it; Rust wraps the error).
-- `runner_set_lead_reassigns_atomically` — one transaction: old lead unset + new lead set; partial state never observable from a concurrent reader.
-- `deleting_lead_auto_promotes_lowest_position` — promoted runner is the one with the smallest `position`, not the oldest `created_at`.
-- `deleting_last_runner_leaves_empty_crew` — crew row remains, runner table empty for that crew.
-- `runner_reorder_rejects_missing_ids` — if `ordered_ids` drops or duplicates an id, reject without partial writes.
-- `crew_delete_cascades_to_runners` — DB cascade verified via command, not raw SQL.
-- `handle_must_be_lowercase_slug` — validation at the Rust layer before INSERT.
-
-## C4 — `src-tauri/src/event_log/`
-
-- `append_is_atomic_under_concurrent_writers` — N threads each append 1000 events; resulting NDJSON is exactly N × 1000 lines, none malformed.
-- `append_ordering_is_stable` — ULIDs strictly monotonically increase within a single-process run.
-- `ulid_is_collision_safe_within_the_same_millisecond` — generate 10k ULIDs at the same logical `ts`; all unique.
-- `read_from_offset_resumes_exactly_where_append_left_off` — critical for C7's watcher.
-- `parser_roundtrips_all_event_kinds` — `Signal`, `Message` variants both pass through `serde_json` losslessly.
-- `path_helper_respects_appdata_layout` — arch §7.2 layout, including dev suffix.
-
-## C5 — `src-tauri/src/commands/mission.rs`
-
-- `mission_start_on_crewless_crew_errors` — "no runners" error variant, no DB rows created.
-- `mission_start_on_leadless_crew_errors` — enforced in Rust even though C1 auto-leads — defense in depth.
-- `mission_start_writes_two_opening_events` — exactly `mission_start` then `mission_goal`, with ULIDs in that order.
-- `mission_start_exports_signal_types_sidecar` — arch §5.3 Layer 2 — verify the JSON at `$APPDATA/runner/crews/{crew_id}/signal_types.json` matches the crew's current `signal_types`.
-- `mission_stop_appends_mission_stopped_and_marks_row` — row transitions to `completed`/`aborted`; terminal event is the last line.
-- `mission_list_separates_active_and_past` — used by C11's tabs.
-
-## C7 — `src-tauri/src/event_bus/`
-
-- `watcher_detects_append_within_100ms` — `notify` modify event fires, bus parses new lines.
-- `per_runner_inbox_projection_filters_correctly` — `events WHERE to IS NULL OR to = runner.handle`; directed messages to others are excluded.
-- `watermark_advances_only_on_inbox_read` — arbitrary `--since` flags don't move the watermark.
-- `watermark_rebuilds_on_boot_from_log_scan` — cold start with a pre-existing log; watermarks match what the live session would have produced.
-- `malformed_line_is_skipped_with_warning` — the NDJSON file stays parseable; one bad line doesn't poison the bus.
-
-## C8 — `src-tauri/src/router/`
-
-The router is a flat dispatcher, not a rule engine. C8 was reframed in `docs/impls/v0-mvp.md` to drop the dispatch-ledger / replay-idempotence and inbox-summary-enrichment requirements; this section is updated to match. The lead runner owns coordination judgment; the router is the parent-process plumbing that does bootstrap, cross-process stdin push, and the UI bridge.
-
-- Handler-by-handler (each fires once per triggering event under live tail):
-  - `mission_goal → inject_stdin @lead` with the composed launch prompt (`runner.system_prompt + mission goal + roster + coordination instructions + signal allowlist`).
-  - `human_said with payload.target → inject_stdin @target`.
-  - `human_said without target → inject_stdin @lead` (default broadcast recipient).
-  - `ask_lead → inject_stdin @lead` with the worker's `{question, context}` rendered into a stdin template.
-  - `ask_human → emit human_question` event preserving `on_behalf_of` and `triggered_by` (the original `ask_human` id). The card is rendered by the workspace UI (C10) from the appended event, not by the router.
-  - `human_response → inject_stdin to the asker that emitted the matching ask_human` — looked up by `question_id` in the in-memory pending-ask map.
-  - `runner_status idle|busy → update latest runner status`; non-lead `idle` also injects a short availability update to the lead.
-- `human_response_without_matching_question_emits_mission_warning` — appends a `mission_warning` event to the log; must not panic.
-- `messages_do_not_trigger_router_actions` — arch §5.5.0 invariant; only signals invoke handlers.
-- `pending_ask_map_reconstructs_from_log_on_reopen` — append `ask_human`, unmount the router, remount, append `human_response`, assert the right asker's stdin received the answer.
-- `runner_status_map_reconstructs_from_log_on_reopen` — append `runner_status busy`, then `runner_status idle`, remount, assert the latest state is `idle` and the UI projection reflects it.
-
-**Cross-cutting — runtime / prompt adapter (lands in C8):**
-
-- `claude_code_runtime_adds_append_system_prompt` — when `runner.runtime == "claude-code"` and `runner.system_prompt` is set, the resolved command contains `--append-system-prompt <prompt>` on both `SessionManager::spawn` and `spawn_direct`.
-- `direct_chat_does_not_drop_system_prompt` — the runner's default `system_prompt` reaches the child via the runtime adapter even with no mission/roster context.
-- `missing_system_prompt_omits_flag` — runners with no `system_prompt` spawn cleanly with no extra flag.
-
-**Explicitly NOT tested (descoped from the original C8 plan):**
-
-- Dispatch-ledger replay idempotence — the router never re-runs against historical events. Reopen reconstructs only the pending-ask map by replaying `ask_human`/`human_response` rows.
-- Inbox-summary enrichment in injected stdin templates — the lead calls `runner msg read` itself when it wants its inbox; the router does not synthesize summaries or `stdin_injected` watermark events.
-
----
-
-# Integration tests
-
-Live in `src-tauri/tests/`. Headless: no Tauri runtime, no UI. Use `tempfile` for an isolated `$APPDATA`.
-
-## I1 — C6: PTY session runtime
-
-File: `src-tauri/tests/pty_runtime.rs`
-
-### Scenarios
-
-- **I1.1 — Spawn, inject, read.**
-  Spawn a session running `sh`. Inject `echo hi\n`. Assert the output stream contains `hi` within 500ms.
-
-- **I1.2 — Env wiring.**
-  Spawn `sh -c 'env | grep RUNNER_'`. Assert stdout contains the four env vars: `RUNNER_CREW_ID`, `RUNNER_MISSION_ID`, `RUNNER_HANDLE`, `RUNNER_EVENT_LOG`.
-
-- **I1.3 — PATH preserves `runner` CLI first.**
-  Spawn `sh -c 'which runner'`. Assert it resolves to `$APPDATA/runner/bin/runner`, not any system fallback.
-
-- **I1.4 — Pause and resume (Unix).**
-  Spawn `sh -c 'while true; do echo tick; sleep 0.1; done'`. After 3 ticks, `SIGSTOP`. Wait 500ms — no new ticks. `SIGCONT`. Ticks resume. `kill`. Process exits.
-
-- **I1.5 — Ring-buffer scrollback bound.**
-  Produce > N KB of output. Buffer size stays ≤ N KB. The overflow is accessible via `sessions/{session_id}.log` (arch §7.2).
-
-- **I1.6 — Clean shutdown on `mission_stop`.**
-  C5's `mission_stop` kills every session for the mission. Assert each session row transitions to `stopped` and no child processes remain (check via `ps` snapshot).
-
-### Fixture sketch
-
-```rust
-let tmp = tempfile::tempdir()?;
-let pool = db::open_pool(&tmp.path().join("runner.db"))?;
-let mut mgr = SessionManager::new(pool.clone(), tmp.path().to_path_buf());
-let mission = fixtures::mission_with_one_shell_runner(&pool, tmp.path())?;
-mgr.spawn(&mission, &mission.runners[0])?;
-mgr.inject_stdin(&sid, "echo hi\n")?;
-// assert on mgr.output_stream(sid) with a timeout
+```sh
+rm -rf "$HOME/Library/Application Support/com.wycstudios.runner"
+rm -rf "$HOME/Library/Application Support/com.wycstudios.runner.dev"
 ```
 
-## I2 — C9: `runner` CLI ↔ event log roundtrip
-
-File: `cli/tests/roundtrip.rs` (in the `cli/` crate).
-
-### Scenarios
-
-- **I2.1 — `runner signal` appends one line.**
-  Spawn `runner signal mission_goal --payload '{"text":"go"}'` with the env a real session has. Assert the NDJSON file grew by exactly one line, parsable as a v0.2 envelope (arch §5.2), with `from` = `$RUNNER_HANDLE`.
-
-- **I2.2 — `runner signal` rejects unknown types.**
-  With the sidecar at `$APPDATA/runner/crews/{id}/signal_types.json` containing the default eight, run `runner signal not_a_real_type`. Exit code non-zero, stderr mentions the allowlist, no line appended.
-
-- **I2.3 — `runner msg post --to impl` routes.**
-  Assert the envelope has `kind: "message"`, `to: "impl"`, `payload.text` set.
-
-- **I2.4 — `runner msg post --to ghost` rejects unknown handles.**
-  Exit non-zero, stderr mentions the crew roster; no line appended.
-
-- **I2.5 — `runner msg read` emits `inbox_read`.**
-  Pre-populate the log with two directed messages to `impl`. Run `runner msg read`. Assert: stdout contains both messages in ULID order, and a final `signal inbox_read` line was appended with `payload.up_to` = max ULID of the two.
-
-- **I2.6 — `runner status idle` emits `runner_status`.**
-  Run `runner status idle --note "ready for next task"`. Assert the appended signal has `type = "runner_status"`, `from = "$RUNNER_HANDLE"`, and `payload.state = "idle"`.
-
-- **I2.7 — Concurrent writers interleave atomically.**
-  10 shells × 100 invocations each write signals to the same log. Resulting NDJSON: exactly 1000 lines, no partial lines, no interleaved bytes. Every line parses.
-
-- **I2.8 — Missing env vars fail fast.**
-  Unset `RUNNER_EVENT_LOG`; CLI exits non-zero with a pointer at which env var is missing.
-
-### Fixture sketch
-
-```rust
-let tmp = tempfile::tempdir()?;
-let mission_dir = prepare_mission_dir(tmp.path(), "c1", "m1");
-let env = &[
-    ("RUNNER_CREW_ID", "c1"),
-    ("RUNNER_MISSION_ID", "m1"),
-    ("RUNNER_HANDLE", "impl"),
-    ("RUNNER_EVENT_LOG", mission_dir.join("events.ndjson").to_str().unwrap()),
-    ("PATH", &format!("{}:{}", cli_bin_dir.display(), std::env::var("PATH")?)),
-];
-let out = Command::new("sh").args(["-c", "runner signal mission_goal"]).envs(env).output()?;
-assert!(out.status.success());
-// parse the last line of events.ndjson and assert the envelope shape
-```
-
-## I3 — C10: full mission lifecycle without UI
-
-File: `src-tauri/tests/mission_e2e.rs`
-
-This test is the MVP's automated stand-in for the demo path. The UI covers the same ground manually in smoke tests; this one runs in CI.
-
-### Scenario
-
-Start a mission on a two-runner crew (`lead` + `impl`, both `shell` with scripted stdin-reply behavior), drive it through one full lead-mediated HITL round, and assert the exact sequence of events.
-
-Driver pseudocode:
-
-```
-1.  bootstrap pool + create crew {lead, impl}
-2.  mission_start(crew, "E2E", goal = "solve it", cwd = tmp)
-    → events.ndjson now has: mission_start, mission_goal
-3.  router observes mission_goal → inject_stdin @lead with composed launch prompt
-    (no event written — stdin push is not logged)
-4.  driver feeds the `lead` PTY a scripted response: `runner msg post --to impl "go"`
-    → appends: message(from=lead, to=impl, text="go")
-5.  driver feeds the `impl` PTY: `runner msg read` then `runner signal ask_lead …`
-    → appends: inbox_read(up_to=<msg ulid>), ask_lead(from=impl)
-6.  router observes ask_lead → inject_stdin @lead (template renders {question, context}; no inbox summary in MVP)
-7.  driver feeds `lead`: `runner signal ask_human --payload '{"prompt":"…","choices":["yes","no"],"on_behalf_of":"impl"}'`
-    → appends: ask_human(from=lead, payload.on_behalf_of=impl), human_question(from=router, payload.triggered_by=<ask_human.id>, payload.on_behalf_of=impl)
-8.  driver simulates human click: router.handle_human_click(question_id, "yes")
-    → appends: human_response(from=human, payload.question_id=<q.id>, choice=yes)
-    → router injects to the asker (lead) — no synthetic event
-9.  driver feeds `lead`: `runner msg post --to impl "Human approved."`
-    → appends: message(from=lead, to=impl)
-10. driver feeds `impl`: `runner msg read`
-    → appends: inbox_read(up_to=<approved msg ulid>)
-11. driver feeds `impl`: `runner status idle --note "ready for next task"`
-    → appends: runner_status(from=impl, payload.state=idle)
-    → router updates the status map and injects a short availability update to lead — no synthetic event
-12. mission_stop
-    → appends: mission_stopped
-```
-
-Assertions:
-- The ordered sequence of `(kind, type or None, from, to)` tuples matches exactly.
-- The router writes no events for handler invocations — only the `human_question` event for the `ask_human → UI bridge` step. (Stdin pushes for `mission_goal`, `human_said`, `ask_lead`, `human_response`, and `runner_status idle` are silent.)
-- After `mission_stop`, every session row is `stopped` and no child processes remain.
-
-### Crash-replay assertion (same file)
-
-After step 8, **hard-kill** the driver's router and restart it from scratch against the same log:
-- The rebuilt in-memory `pending_ask` map is empty (the question was resolved before the crash).
-- The router does not re-inject historical events (live tail starts from current end of log; replay is only used to reconstruct the `pending_ask` map).
-- A fresh `ask_human` appended after restart routes correctly to the new asker.
-
----
-
-# Smoke (UI, manual)
-
-Each scenario: **Steps** then **Expected**. Before each smoke, delete `$APPDATA/runner/` to start clean.
-
-## C3 — Config UI (Crews, Crew Detail, Add Slot)
-
-### Prereqs & setup
-
-- C1, C2, C3 merged. `pnpm install` run. Clean `$APPDATA/runner/`.
-- `pnpm tauri dev`.
-
-### Scenarios
-
-**S3.1 — Create a crew**
-
-1. On Crews, click **+ New Crew**, name `Demo Crew`, save.
-
-Expected: card appears; clicking it routes to empty Crew Detail with an **Add Slot** button; no LEAD badge (empty crews are valid).
-
-**S3.2 — First runner auto-leads**
-
-1. Add Slot → handle `lead`, runtime `claude-code`, command `claude`. Save.
-
-Expected: runner row at position 0 with `LEAD` badge; no **Set as lead** action on this row.
-
-**S3.3 — Second runner is not lead**
-
-1. Add Slot → `impl` / `shell` / `sh`. Save.
-
-Expected: position 1, no badge, **Set as lead** action visible. Original lead still badged.
-
-**S3.4 — Reassign lead (transactional)**
-
-1. On `impl`, click **Set as lead**.
-
-Expected: only `impl` shows `LEAD` now. Refresh: persists. At no point do two rows show the badge simultaneously (verifies C2's transaction + C1's partial unique index).
-
-**S3.5 — Delete lead auto-promotes**
-
-1. Add a third runner `worker` at position 2.
-2. With `impl` as lead, delete `impl`.
-
-Expected: `lead` (lowest remaining `position` = 0) gains the `LEAD` badge automatically. Crew never has zero leads while runners exist.
-
-**S3.6 — Empty crew is allowed**
-
-1. Delete every runner one by one.
-
-Expected: after each delete, at least one runner holds `LEAD` until the last. After the last: empty crew, no errors, crew row not auto-deleted.
-
-**S3.7 — Handle uniqueness**
-
-1. Try Add Slot twice with the same handle.
-
-Expected: second save errors with a clear message referencing uniqueness; modal stays open with input preserved.
-
-**S3.8 — Drag-reorder preserves lead**
-
-1. Three runners, lead at position 0. Drag lead to position 2.
-
-Expected: positions persist (refresh to confirm); `LEAD` badge still attached to the same runner. `runner_reorder` is called once per drop, not per hover frame.
-
-### Known gaps — do NOT verify in C3
-
-- Per-slot system-prompt override: UI field exists but is a stub until v0.x — typing stores the value but it has no effect at runtime.
-- Standalone Runners list / Runner Detail pages: built in **C8.5**, not C3. Verify under that chunk's manual-test plan.
-- Mission workspace behavior: C10.
-- Start Mission: C11.
-
-## C10 — Mission Workspace
-
-### Prereqs & setup
-
-- C1–C10 merged. `runner` CLI on PATH inside PTYs (C6's env setup).
-- Fixture crew **Smoke Crew** with exactly two runners, both runtime `shell`, command `sh`: `lead` (carries `LEAD`) and `impl`. Using `shell` runners makes behavior deterministic — the smoker types `runner signal …` and `runner msg post …` by hand.
-- `pnpm tauri dev`. Pre-C11, start the mission via DevTools:
-
-```js
-await window.__TAURI__.core.invoke('mission_start', {
-  crewId: '<Smoke Crew id>',
-  title: 'Smoke C10',
-  goalOverride: 'Verify workspace',
-  cwd: null,
-});
-```
-
-### Scenarios
-
-**S10.1 — Workspace renders with both PTYs live**
-
-Expected on first mount:
-- Title shows `Smoke C10`.
-- Event feed shows `mission_start` then `mission_goal` (both from C5).
-- Runners rail shows `lead` (badged) and `impl`, each with a green status dot.
-- Each terminal streams real shell output (`echo hi` only echoes in that pane).
-
-**S10.2 — Lead receives the goal via stdin**
-
-Expected within ~1s of `mission_start`:
-- `lead` terminal shows the composed prompt (template from arch §4: goal + roster + coordination).
-- No extra feed row appears for the stdin push; the feed still shows the original `mission_goal` signal.
-
-**S10.3 — Directed message is pull-based**
-
-1. In `lead` pane: `runner msg post --to impl "Start reading the spec."`
-2. Wait 2s.
+Prepare two crews:
+
+- **Demo crew:** at least two runners, one lead and one worker. Use shell
+  runners for deterministic manual CLI checks; use a real `claude-code` lead
+  for the final demo path.
+- **Empty crew:** no runners, used to verify Start Mission validation.
+
+### 1. Missions entrypoint
+
+1. Open **Missions** from the sidebar.
+2. Confirm Active/Past tabs render and counts update.
+3. Click **Start mission**.
+4. Select the empty crew.
+5. Confirm the modal warns that the crew has no runners and the Start button is
+   disabled.
+
+### 2. Start a mission
+
+1. Open **Start mission** again.
+2. Select the demo crew.
+3. Enter a title, goal, and working directory.
+4. Start the mission.
 
 Expected:
-- A `message` event appears in the feed (`from: "lead"`, `to: "impl"`).
-- `impl` PTY shows nothing yet — messages don't wake recipients (arch §2.7.3, §5.6).
 
-3. In `impl` pane: `runner msg read`.
+- App routes to `/missions/:id`.
+- Header shows the mission status as running.
+- Feed shows opening mission events.
+- Runner rail lists every crew member and marks the lead correctly.
+- A PTY tab exists for each runner.
 
-Expected: the message is returned in stdout; an `inbox_read` signal event appends with `payload.up_to = <that message's ULID>`.
+### 3. Terminal switching and scrollback
 
-**S10.4 — Lead-mediated HITL**
-
-1. `impl`: `runner signal ask_lead --payload '{"question":"A or B?","context":"A fast, B small."}'`
-
-Expected: `ask_lead` event; `lead` PTY receives rendered injection containing the question. No unread-inbox summary is injected in MVP; the lead can call `runner msg read` when it wants inbox context.
-
-2. `lead`: `runner signal ask_human --payload '{"prompt":"Use A?","choices":["yes","no"],"on_behalf_of":"impl"}'`
-
-Expected: card appears in the side panel with attribution chain `*@impl → @lead → you*` (because `on_behalf_of` is set); **yes** / **no** buttons visible.
-
-3. Click **yes**.
-
-Expected: `human_response` signal appended with `payload: { question_id, choice: "yes" }`; `lead` PTY receives the response (lead is the asker of record); card resolves/disappears.
-
-4. `lead`: `runner msg post --to impl "Human approved: use A."`
-5. `impl`: `runner msg read`.
-
-Expected: `impl` sees the forwarded message; a second `inbox_read` appends.
-
-**S10.5 — Broadcast human input lands on lead**
-
-1. Type `Kick off the review.` in MissionInput with default recipient `@lead`. Post.
+1. Open the lead PTY tab.
+2. Type a simple command, for example `echo lead-smoke`.
+3. Switch to the worker PTY tab and type `echo worker-smoke`.
+4. Switch back and forth between Feed, lead, and worker tabs.
+5. Route away from the workspace, then reopen the mission from the Missions
+   list.
 
 Expected:
-- `signal human_said` appended with `payload.text` set and `payload.target` either unset or `"lead"` (per built-in rule).
-- Envelope `to` is **null** (signals carry `to: null` in v0 per arch §5.2; target lives in payload).
-- `lead` PTY receives the text via injection. `impl` does not.
 
-**S10.6 — Directed human input**
+- The visible terminal switches to the selected runner.
+- Output remains attached to the correct runner.
+- Scrollback is preserved while the app process is alive.
+- Reopening the workspace reattaches live sessions and restores the current
+  terminal snapshot.
 
-1. Switch recipient to `@impl`, post `Skip the first step.`.
+### 4. Message and signal loop
 
-Expected: `payload.target: "impl"`; `impl` PTY injected; `lead` PTY silent.
+In the lead PTY:
 
-**S10.7 — Close and reopen**
-
-1. Route back to Missions. Reopen the mission.
-
-Expected:
-- Feed replays every event in order.
-- Sessions reconnect or show a clear "stopped" state consistent with C6's close behavior.
-- Read-watermarks rebuilt from the log; no action double-fires.
-- Any pending `ask_human` cards re-render (none in this scenario).
-- Runner status labels reconstruct from `runner_status` events and current session state.
-
-**S10.8 — Messages/signals split**
-
-Expected: feed visibly segregates `kind: message` rows from `kind: signal`. The signal panel shows runner-emitted signals (`mission_goal`, `human_said`, `ask_lead`, `ask_human`, `human_response`, `runner_status`, `inbox_read`) plus the router's bridged `human_question`. Stdin pushes (the router's reaction to `mission_goal` / `ask_lead` / `human_response` / `runner_status idle`) are not events and don't appear in the feed.
-
-**S10.9 — Worker idle signal informs lead**
-
-1. In `impl` pane: `runner status busy --note "reading the spec"`.
-2. Then: `runner status idle --note "ready for next task"`.
-
-Expected:
-- Feed shows two `runner_status` signals from `impl`.
-- Runners rail updates `impl` from busy to idle.
-- `lead` PTY receives a short availability update when `impl` reports idle. The router does not assign work; the lead decides whether to send the next directed message.
-
-### Known gaps — do NOT verify in C10
-
-- Start Mission button (C11).
-- Concurrent `ask_human` cards — arch §5.5.0 declares concurrent prompts out of scope. Do not open a second card while one is pending.
-- Messages triggering wake-ups. They don't, by design.
-
-### Cleanup
-
-```js
-await window.__TAURI__.core.invoke('mission_stop', { missionId: '<id>' });
+```sh
+runner msg post --to <worker-handle> "start smoke task"
 ```
 
-Optionally delete `$APPDATA/runner/crews/<crew_id>/missions/<mission_id>/` for the next run.
+In the worker PTY:
 
-## C11 — Missions list + Start Mission modal
+```sh
+runner msg read
+runner signal ask_lead --payload '{"question":"Need direction?","context":"smoke"}'
+```
 
-### Prereqs & setup
+Expected:
 
-- C1–C11 merged. Clean `$APPDATA/runner/`.
-- `pnpm tauri dev`.
+- Worker inbox includes the directed message.
+- Feed shows the message and `ask_lead` signal.
+- Lead PTY receives the ask-lead injection.
+- Raw PTY output stays in terminal tabs, not in the event feed.
 
-### Scenarios
+### 5. Human-in-the-loop card
 
-**S11.1 — Missions list with Active / Past tabs**
+In the lead PTY:
 
-Expected on first open: both tabs render; Active empty, Past empty, no errors.
+```sh
+runner signal ask_human --payload '{"prompt":"Use A?","choices":["yes","no"],"on_behalf_of":"<worker-handle>"}'
+```
 
-**S11.2 — Start Mission modal happy path**
+Expected:
 
-1. From Missions (or Home), click **Start Mission**.
-2. Pick Crew `Demo Crew` (from C3 smokes).
-3. Title `S11 first mission`. Goal textarea: `Do the thing.`.
-4. Cwd: leave blank or Browse… to pick a project dir.
-5. Start.
+- Feed renders an ask-human card.
+- The card attribution shows the worker/lead/user chain.
+- Missions list shows a pending count for this mission.
+- Reopening the mission keeps the pending card visible.
 
-Expected: modal closes; route becomes `/missions/<id>`; workspace opens (all C10 behaviors apply).
+Click `yes` on the card.
 
-**S11.3 — Start on empty/leadless crew is blocked**
+Expected:
 
-1. In Crews, create `Empty Crew` with zero runners.
-2. Start Mission → pick `Empty Crew` → Start.
+- Feed appends `human_response`.
+- The card resolves.
+- Pending count clears.
+- The response is injected back to the runner that emitted the matching
+  `ask_human`.
 
-Expected: modal surfaces a clean error ("crew has no runners" or "no lead"); mission row is NOT created; no log directory appears under `$APPDATA/runner/crews/<empty crew id>/missions/`.
+### 6. Human message input
 
-**S11.4 — Active tab highlights pending asks**
+From the Feed tab input:
 
-1. Start a mission from `Demo Crew`. From the `lead` PTY, open an `ask_human` card (as in S10.4). Close the tab without clicking the card.
-2. Return to Missions list.
+1. Send a message with no explicit target.
+2. Send a message targeted to the worker.
+3. Clear the target and send a broadcast if the UI exposes that state.
 
-Expected: the mission row in Active shows a "pending ask" flag (derived from the router's pending-ask map for mounted missions, or a log scan otherwise). Clicking it reopens the workspace with the card still pending.
+Expected:
 
-**S11.5 — Past tab shows stopped missions**
+- Untargeted human input lands on the lead.
+- Targeted human input lands on the selected runner.
+- Feed records `human_said` events without confusing them with PTY output.
 
-1. Stop a mission (via workspace controls or DevTools `mission_stop`).
+### 7. Runner status
 
-Expected: row moves from Active to Past; status reflects terminal state (`completed` / `aborted`); clicking it opens the workspace read-only (or at least with the feed replayed and no live PTYs).
+In the worker PTY:
 
-**S11.6 — Advanced collapse is stubbed**
+```sh
+runner status busy --note "working"
+runner status idle --note "ready"
+```
 
-Expected: clicking **Advanced** expands but any inner controls are inert — the plan calls this out as stubbed. Don't assert on their effect.
+Expected:
 
-### Known gaps — do NOT verify in C11
+- Runner rail updates busy/idle state.
+- Non-lead idle status injects a short availability notice into the lead PTY.
+- Reopening the mission reconstructs latest runner status from the log.
 
-- Mission archive / search / filter — deferred beyond MVP.
-- Any change to C3 (config) or C10 (workspace) surfaces.
+### 8. Stop and reopen
 
----
+1. Click **Stop** in the mission workspace.
+2. Return to Missions.
+3. Open the Past tab.
+4. Reopen the stopped mission.
 
-# Demo path (the Definition of Done)
+Expected:
 
-Verbatim from `docs/impls/v0-mvp.md` §"Definition of done". Run this on the C11 PR — passing it is what closes v0 MVP.
+- Mission leaves Active and appears in Past.
+- Workspace no longer presents the mission as running.
+- Feed replays historical mission events, including the stop event.
+- Inputs that require a running mission are disabled or inert.
 
-From a clean launch of the app:
+### 9. Direct chat regression
 
-1. On Crews, create **Demo Crew**. Add two runners: one `claude-code` `lead` (real LLM agent), one `shell` worker (e.g. `sh`). The lead invariant holds at every step.
-2. Click **Start Mission**, fill goal `Write a README stub for this repo.`, cwd = a scratch dir. Workspace opens with two live PTYs.
-3. Lead receives the goal via stdin, drafts a plan, and posts a directed message to the worker. Worker picks it up on its next `runner msg read`, then emits `runner_status busy` while working and `runner_status idle` when ready for more work. The lead receives the idle update.
-4. Worker emits an `ask_lead` signal; lead decides to escalate via `ask_human`; click **Approve** on the resulting card; lead receives the response and forwards it to the worker via a directed message.
-5. Post a broadcast human signal from the workspace input; it lands on the lead by default (payload omits `target`).
-6. Close the mission tab and reopen from the Missions list; the feed replays and the router's in-memory pending-ask map reconstructs from the log. Watermarks rebuild from `inbox_read` rows (per C7).
+1. Open a runner detail page.
+2. Start a direct chat.
+3. Type a command and confirm output.
+4. Start or open a second direct chat session for another runner.
+5. Switch between sessions from the sidebar SESSION list.
+6. Route away and back, or reload while the app process is still running.
 
-All six steps must succeed in one session without restarting the app. Capture a screen recording and attach it to the squash-merge PR.
+Expected:
 
-Anything beyond this run is explicitly v0.x or later.
+- Switching sessions switches the visible PTY.
+- Each session keeps its own scrollback.
+- Reattach restores the active session terminal snapshot.
+- Direct-chat sessions do not require mission env vars; `runner` CLI commands
+  no-op cleanly when there is no mission bus.
+
+## Final demo path
+
+Run this once before declaring v0 complete:
+
+1. Create a crew with a real lead and worker.
+2. Start a mission from the Missions page without DevTools.
+3. Lead receives the goal, posts work to the worker, and worker reads it.
+4. Worker emits `ask_lead`; lead escalates with `ask_human`; human clicks a
+   choice; the response reaches the asker.
+5. Send a human message from the workspace input and verify it lands on the lead
+   by default.
+6. Close and reopen the mission; feed, pending asks, runner status, and live PTY
+   attachment reconstruct correctly.
+
+## Scope notes
+
+- There is no browser-driven UI E2E suite in v0; UI correctness is covered by
+  the smoke checks above.
+- macOS and Linux are the MVP targets. Windows behavior is out of scope.
+- Production sidecar packaging is not part of the MVP smoke gate; dev mode must
+  build and install the `runner` CLI into `$APPDATA/runner/bin`.
+- Terminal scrollback is an in-process session snapshot, not a durable replay
+  file. Durable mission history lives in `events.ndjson` and is shown in the
+  feed.
