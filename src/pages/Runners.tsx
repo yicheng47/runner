@@ -251,7 +251,7 @@ function RunnerCard({
                 e.stopPropagation();
                 onChat();
               }}
-              className="ml-1 inline-flex items-center gap-1.5 text-[11px] font-medium text-accent hover:opacity-80"
+              className="ml-1 inline-flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent/10 active:bg-accent/20"
               title={
                 item.direct_session_id
                   ? "Re-attach to live chat"
