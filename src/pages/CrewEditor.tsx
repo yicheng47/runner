@@ -1,8 +1,7 @@
 // Crew detail — matches design/runners-design.pen frame `CUKjM`.
 //
 // Layout: top toolbar (back to Crews + inline name field + Save + Start
-// mission) above a two-section body (Purpose, Slots). Start mission is
-// disabled in C3 — it belongs to C11.
+// mission) above a two-section body (Purpose, Slots).
 
 import {
   useCallback,
@@ -12,13 +11,14 @@ import {
   useState,
   type DragEvent,
 } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { MoreHorizontal, SquarePen, Star, Trash2 } from "lucide-react";
 
 import { api } from "../lib/api";
 import type { Crew, CrewRunner } from "../lib/types";
 import { AddSlotModal } from "../components/AddSlotModal";
 import { RunnerEditDrawer } from "../components/RunnerEditDrawer";
+import { StartMissionModal } from "../components/StartMissionModal";
 import { Button } from "../components/ui/Button";
 
 export default function CrewEditor() {
@@ -29,11 +29,13 @@ export default function CrewEditor() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [editing, setEditing] = useState<CrewRunner | null>(null);
   const [nameDraft, setNameDraft] = useState("");
   const [savingName, setSavingName] = useState(false);
   const [reordering, setReordering] = useState(false);
   const reorderInFlight = useRef(false);
+  const navigate = useNavigate();
 
   const refresh = useCallback(async () => {
     if (!crewId) return;
@@ -159,14 +161,32 @@ export default function CrewEditor() {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {nameDirty || savingName ? (
+            <Button
+              onClick={onSaveName}
+              disabled={savingName}
+              title="Save crew name"
+            >
+              {savingName ? "Saving..." : "Save"}
+            </Button>
+          ) : (
+            <span
+              className="inline-flex items-center justify-center rounded border border-line bg-raised px-3 py-1.5 text-sm font-medium text-fg-3"
+              title="Crew name is saved. Slot changes save immediately."
+            >
+              Saved
+            </span>
+          )}
           <Button
-            onClick={onSaveName}
-            disabled={!nameDirty || savingName}
-            title={nameDirty ? "Save crew name" : "No changes"}
+            variant="primary"
+            onClick={() => setStarting(true)}
+            disabled={runners.length === 0}
+            title={
+              runners.length === 0
+                ? "Add at least one runner before starting a mission"
+                : "Start a mission with this crew"
+            }
           >
-            {savingName ? "Saving…" : "Save"}
-          </Button>
-          <Button variant="primary" disabled title="Start Mission arrives in C11">
             Start mission
           </Button>
         </div>
@@ -253,6 +273,16 @@ export default function CrewEditor() {
         onSaved={async () => {
           setEditing(null);
           await refresh();
+        }}
+      />
+
+      <StartMissionModal
+        open={starting}
+        initialCrewId={crewId}
+        onClose={() => setStarting(false)}
+        onStarted={(mission) => {
+          setStarting(false);
+          navigate(`/missions/${mission.id}`);
         }}
       />
     </>

@@ -212,13 +212,18 @@ export function AddSlotModal({
           </div>
         </section>
 
-        <section className="flex flex-col gap-2">
+        <section className="flex flex-col gap-2 opacity-70">
           <div className="flex items-center justify-between gap-3">
-            <span className="text-xs font-semibold text-fg">
-              System prompt override
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-fg">
+                System prompt override
+              </span>
+              <span className="rounded bg-raised px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-fg-3">
+                v0.x
+              </span>
+            </div>
             <span
-              aria-label="System prompt override off"
+              aria-label="System prompt override unavailable"
               className="flex h-[18px] w-8 items-center rounded-full bg-raised p-0.5"
               title="Per-slot prompt overrides land in v0.x"
             >
@@ -226,8 +231,8 @@ export function AddSlotModal({
             </span>
           </div>
           <p className="text-[11px] text-fg-2">
-            Off — uses the runner&apos;s default prompt. Turn on to override
-            for this slot only.
+            Uses the selected runner&apos;s default prompt. Per-slot overrides
+            are not editable in the MVP.
           </p>
         </section>
 
