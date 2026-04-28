@@ -212,7 +212,11 @@ export default function CrewEditor() {
                     back to other slots.
                   </p>
                 </div>
-                <Button variant="primary" onClick={() => setAdding(true)}>
+                <Button
+                  variant="primary"
+                  className="shrink-0 whitespace-nowrap"
+                  onClick={() => setAdding(true)}
+                >
                   + Add slot
                 </Button>
               </div>
