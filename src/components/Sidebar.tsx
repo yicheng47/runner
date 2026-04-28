@@ -1,11 +1,40 @@
-// App sidebar — Carbon & Plasma dark theme. RUNNER nav, search box,
-// ACTIVE section listing currently-running runners. The active list is
-// fed by the same `runner/activity` Tauri events the Runners list uses,
-// projected to "any runner whose active_sessions > 0".
+// App sidebar — Carbon & Plasma dark theme.
+//
+// Three sections, top to bottom:
+//   - WORKSPACE: search (placeholder), runner, crew nav links.
+//   - MISSION:   collapsible header with count + `+` (Start Mission), one row
+//                per running mission. The currently-open mission is highlighted.
+//   - SESSION:   collapsible header with count + `+` (jump to runners list),
+//                search box, one row per live direct-chat. The currently-open
+//                direct chat is highlighted.
+//
+// MISSION pulls from `mission_list_summary` (filtered to status === "running").
+// SESSION continues to consume `runner/activity` events for live direct chats.
+// The two runtime sections refresh independently so a mission_start doesn't
+// blink the direct-chat list and vice versa.
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import {
+  useCallback,
+  useEffect,
+  useState,
+  type ComponentType,
+  type ReactNode,
+} from "react";
+import {
+  NavLink,
+  useLocation,
+  useMatch,
+  useNavigate,
+} from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
+import {
+  ChevronDown,
+  ChevronRight,
+  Plus,
+  Search,
+  Terminal,
+  Users,
+} from "lucide-react";
 
 import { api } from "../lib/api";
 import {
@@ -13,20 +42,13 @@ import {
   getActiveSession,
   setActiveSession,
 } from "../lib/activeSessions";
-import type { RunnerActivityEvent, RunnerWithActivity } from "../lib/types";
-
-type NavItem = {
-  to: string;
-  label: string;
-  enabled: boolean;
-  hint?: string;
-};
-
-const NAV: NavItem[] = [
-  { to: "/runners", label: "Runner", enabled: true },
-  { to: "/crews", label: "Crew", enabled: true },
-  { to: "/missions", label: "Mission", enabled: true },
-];
+import type {
+  AppendedEvent,
+  MissionSummary,
+  RunnerActivityEvent,
+  RunnerWithActivity,
+} from "../lib/types";
+import { StartMissionModal } from "./StartMissionModal";
 
 interface ActiveRunner {
   id: string;
@@ -35,15 +57,16 @@ interface ActiveRunner {
   active_missions: number;
 }
 
-// Resize bounds + persistence, mirroring quill's Sidebar.tsx pattern.
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 480;
 const SIDEBAR_DEFAULT = 240;
-const STORAGE_KEY = "runner.sidebar.width";
+const STORAGE_WIDTH = "runner.sidebar.width";
+const STORAGE_MISSION_OPEN = "runner.sidebar.mission.open";
+const STORAGE_SESSION_OPEN = "runner.sidebar.session.open";
 
 function getStoredWidth(): number {
   if (typeof localStorage === "undefined") return SIDEBAR_DEFAULT;
-  const stored = localStorage.getItem(STORAGE_KEY);
+  const stored = localStorage.getItem(STORAGE_WIDTH);
   if (stored) {
     const n = parseInt(stored, 10);
     if (!Number.isNaN(n) && n >= SIDEBAR_MIN && n <= SIDEBAR_MAX) return n;
@@ -51,77 +74,97 @@ function getStoredWidth(): number {
   return SIDEBAR_DEFAULT;
 }
 
+function getStoredFlag(key: string, fallback: boolean): boolean {
+  if (typeof localStorage === "undefined") return fallback;
+  const stored = localStorage.getItem(key);
+  if (stored === "1") return true;
+  if (stored === "0") return false;
+  return fallback;
+}
+
+function setStoredFlag(key: string, value: boolean): void {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    // ignore quota / disabled-storage errors
+  }
+}
+
 export function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
-  const [search, setSearch] = useState("");
-  const [active, setActive] = useState<ActiveRunner[]>([]);
+
+  // Width + resize state.
   const [width, setWidth] = useState<number>(getStoredWidth);
-  const resizingRef = useRef(false);
 
-  // Click handler for the SESSION list — re-attach to the live PTY if
-  // we know its id (frontend tracks this in lib/activeSessions because
-  // the backend doesn't expose a "list running sessions" query yet);
-  // otherwise fall back to the runner detail page.
-  //
-  const openSession = useCallback(
-    (handle: string) => {
-      const target = `/runners/${handle}/chat`;
-      const sessionId = getActiveSession(handle);
-      if (sessionId) {
-        navigate(target, {
-          state: { sessionId },
-          replace: location.pathname === target,
-        });
-      } else {
-        navigate(`/runners/${handle}`);
+  // Runtime state.
+  const [missions, setMissions] = useState<MissionSummary[]>([]);
+  const [active, setActive] = useState<ActiveRunner[]>([]);
+
+  // Section toggles, persisted so users don't have to re-expand each visit.
+  const [missionsOpen, setMissionsOpen] = useState<boolean>(() =>
+    getStoredFlag(STORAGE_MISSION_OPEN, true),
+  );
+  const [sessionsOpen, setSessionsOpen] = useState<boolean>(() =>
+    getStoredFlag(STORAGE_SESSION_OPEN, true),
+  );
+
+  const [creatingMission, setCreatingMission] = useState(false);
+
+  // Identify the currently-open runtime so we can highlight the matching
+  // sidebar row. `useMatch` returns null when the URL doesn't match.
+  const missionMatch = useMatch("/missions/:id");
+  const currentMissionId = missionMatch?.params.id ?? null;
+  const chatMatch = useMatch("/runners/:handle/chat");
+  const currentChatHandle = chatMatch?.params.handle ?? null;
+
+  const refreshMissions = useCallback(async () => {
+    try {
+      const rows = await api.mission.listSummary();
+      setMissions(rows.filter((m) => m.status === "running"));
+    } catch (e) {
+      // best-effort; the next event/refetch will resolve transient errors
+      console.error("sidebar: refreshMissions failed", e);
+    }
+  }, []);
+
+  // Mission tray: initial load + bus-driven refresh on mission_start /
+  // mission_stopped envelopes. We don't filter by mission_id because the
+  // sidebar must surface every running mission, not just the open one.
+  useEffect(() => {
+    void refreshMissions();
+  }, [refreshMissions]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void listen<AppendedEvent>("event/appended", (msg) => {
+      const t = msg.payload.event.type;
+      if (
+        t === "mission_start" ||
+        t === "mission_stopped" ||
+        t === "ask_human" ||
+        t === "human_question" ||
+        t === "human_response"
+      ) {
+        // ask_human/human_question/human_response refresh the pending-ask
+        // count badge. Cheap query; fires only on these signal types.
+        void refreshMissions();
       }
-    },
-    [navigate, location.pathname],
-  );
+    }).then((fn) => {
+      if (cancelled) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [refreshMissions]);
 
-  const handleResizeStart = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      resizingRef.current = true;
-      const startX = e.clientX;
-      const startWidth = width;
-      const onMouseMove = (ev: MouseEvent) => {
-        const next = Math.min(
-          SIDEBAR_MAX,
-          Math.max(SIDEBAR_MIN, startWidth + ev.clientX - startX),
-        );
-        setWidth(next);
-      };
-      const onMouseUp = () => {
-        resizingRef.current = false;
-        document.removeEventListener("mousemove", onMouseMove);
-        document.removeEventListener("mouseup", onMouseUp);
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-        // Persist the final value. Read from React state via setter to
-        // get the latest committed width without retriggering a render.
-        setWidth((w) => {
-          try {
-            localStorage.setItem(STORAGE_KEY, String(w));
-          } catch {
-            // ignore quota / disabled-storage errors
-          }
-          return w;
-        });
-      };
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-      document.addEventListener("mousemove", onMouseMove);
-      document.addEventListener("mouseup", onMouseUp);
-    },
-    [width],
-  );
-
-  // Seed with the current snapshot, then patch from runner/activity events.
-  // Also rehydrate the activeSessions handle→sessionId map so post-reload
-  // clicks can re-attach to the live PTY instead of falling back to the
-  // runner detail page.
+  // Direct-chat list: same listener pattern the previous Sidebar used.
   useEffect(() => {
     void api.runner.listWithActivity().then((rows: RunnerWithActivity[]) => {
       setActive(
@@ -146,6 +189,7 @@ export function Sidebar() {
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
+    let cancelled = false;
     void listen<RunnerActivityEvent>("runner/activity", (event) => {
       const ev = event.payload;
       if (ev.direct_session_id) {
@@ -167,119 +211,372 @@ export function Sidebar() {
         ].sort((a, b) => a.handle.localeCompare(b.handle));
       });
     }).then((fn) => {
+      if (cancelled) {
+        fn();
+        return;
+      }
       unlisten = fn;
     });
     return () => {
+      cancelled = true;
       unlisten?.();
     };
   }, []);
 
-  const filtered = search.trim()
-    ? active.filter((r) =>
-        r.handle.toLowerCase().includes(search.trim().toLowerCase()),
-      )
-    : active;
+  // Direct-chat list is always shown unfiltered. Filtering / search lives
+  // on the WORKSPACE › search affordance at the top of the sidebar.
+  const filteredDirect = active;
+
+  const openMission = useCallback(
+    (id: string) => {
+      navigate(`/missions/${id}`);
+    },
+    [navigate],
+  );
+
+  const openDirectChat = useCallback(
+    (handle: string) => {
+      const target = `/runners/${handle}/chat`;
+      const sessionId = getActiveSession(handle);
+      if (sessionId) {
+        navigate(target, {
+          state: { sessionId },
+          replace: location.pathname === target,
+        });
+      } else {
+        navigate(`/runners/${handle}`);
+      }
+    },
+    [navigate, location.pathname],
+  );
+
+  // SESSION's `+` button — direct chats are spawned from a runner, so we
+  // route to the runners list and let the user pick. A future v0.x could
+  // open an inline runner-picker popover instead.
+  const handleNewDirectChat = useCallback(() => {
+    navigate("/runners");
+  }, [navigate]);
+
+  const toggleMissions = useCallback(() => {
+    setMissionsOpen((prev) => {
+      setStoredFlag(STORAGE_MISSION_OPEN, !prev);
+      return !prev;
+    });
+  }, []);
+
+  const toggleSessions = useCallback(() => {
+    setSessionsOpen((prev) => {
+      setStoredFlag(STORAGE_SESSION_OPEN, !prev);
+      return !prev;
+    });
+  }, []);
+
+  // Drag-to-resize handle on the right edge — same logic as before.
+  const handleResizeStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = width;
+      const onMouseMove = (ev: MouseEvent) => {
+        const next = Math.min(
+          SIDEBAR_MAX,
+          Math.max(SIDEBAR_MIN, startWidth + ev.clientX - startX),
+        );
+        setWidth(next);
+      };
+      const onMouseUp = () => {
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        setWidth((w) => {
+          try {
+            localStorage.setItem(STORAGE_WIDTH, String(w));
+          } catch {
+            // ignore quota / disabled-storage errors
+          }
+          return w;
+        });
+      };
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    },
+    [width],
+  );
 
   return (
-    <aside
-      style={{ width }}
-      className="relative flex h-full shrink-0 select-none flex-col overflow-hidden border-r border-line bg-raised"
-    >
-      <div data-tauri-drag-region className="h-7" />
+    <>
+      <aside
+        style={{ width }}
+        className="relative flex h-full shrink-0 select-none flex-col overflow-hidden border-r border-line bg-raised"
+      >
+        <div data-tauri-drag-region className="h-7" />
 
-      <div className="flex items-center gap-2 px-5 pb-5 pt-1">
-        <BrandMark />
-        <span className="text-base font-semibold tracking-tight text-fg">
-          Runner
-        </span>
-      </div>
-
-      <SectionHeader>WORKSPACE</SectionHeader>
-      <nav className="flex flex-col gap-0.5 px-3 pb-4">
-        {NAV.map((item) =>
-          item.enabled ? (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) =>
-                `rounded px-2.5 py-1.5 text-sm transition-colors ${
-                  isActive
-                    ? "font-semibold text-fg"
-                    : "text-fg-2 hover:text-fg"
-                }`
-              }
-            >
-              {item.label.toLowerCase()}
-            </NavLink>
-          ) : (
-            <span
-              key={item.to}
-              title={item.hint}
-              aria-disabled="true"
-              className="cursor-not-allowed rounded px-2.5 py-1.5 text-sm text-fg-3"
-            >
-              {item.label.toLowerCase()}
-            </span>
-          ),
-        )}
-      </nav>
-
-      <SectionHeader>SESSION</SectionHeader>
-      <div className="px-3 pb-2">
-        <div className="flex items-center gap-2 rounded border border-line bg-bg px-2.5 py-1.5 text-xs">
-          <span className="text-fg-3" aria-hidden>
-            ⌕
+        <div className="flex items-center gap-2 px-5 pb-5 pt-1">
+          <BrandMark />
+          <span className="text-base font-semibold tracking-tight text-fg">
+            Runner
           </span>
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search…"
-            className="flex-1 bg-transparent text-fg placeholder:text-fg-3 focus:outline-none"
-          />
-          <span className="font-mono text-[10px] text-fg-3">⌘K</span>
         </div>
-      </div>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 pb-4">
-        {filtered.length === 0 ? (
-          <p className="px-2.5 py-1 text-xs text-fg-3">
-            {search.trim() ? "No matches." : "No live sessions."}
-          </p>
-        ) : (
-          filtered.map((r) => (
-            <button
-              key={r.id}
-              type="button"
-              onClick={() => openSession(r.handle)}
-              className="flex w-full cursor-pointer items-center gap-2 rounded border border-line bg-bg px-2.5 py-1.5 text-left text-xs text-fg-2 hover:border-line-strong hover:text-fg"
-              title={`${r.active_sessions} session${r.active_sessions === 1 ? "" : "s"}${
-                r.active_missions > 0
-                  ? ` · ${r.active_missions} mission${r.active_missions === 1 ? "" : "s"}`
-                  : ""
-              }`}
-            >
-              <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
-              <span className="truncate font-mono">@{r.handle} direct</span>
-            </button>
-          ))
-        )}
-      </div>
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-4">
+          <SectionHeader>WORKSPACE</SectionHeader>
+          <nav className="flex flex-col gap-0.5 px-3 pb-1">
+            <DisabledNavRow
+              icon={Search}
+              label="search"
+              hint="Coming soon"
+            />
+            <NavRow icon={Terminal} to="/runners" label="runner" />
+            <NavRow icon={Users} to="/crews" label="crew" />
+          </nav>
 
-      {/* Resize handle — 4px hit area on the right edge, 1px visible
-          accent bar on hover/drag. Mirrors quill's Sidebar pattern. */}
-      <div
-        onMouseDown={handleResizeStart}
-        title="Drag to resize"
-        className="absolute right-0 top-0 z-20 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-accent/40"
+          <div className="h-5" />
+
+          <CollapsibleSectionHeader
+            label="MISSION"
+            count={missions.length}
+            open={missionsOpen}
+            onToggle={toggleMissions}
+            onPlus={() => setCreatingMission(true)}
+            plusTitle="Start mission"
+          />
+          {missionsOpen ? (
+            <div className="flex flex-col gap-0.5 px-3 pt-1">
+              {missions.length === 0 ? (
+                <p className="px-2.5 py-1 text-xs text-fg-3">
+                  No live missions.
+                </p>
+              ) : (
+                missions.map((m) => (
+                  <RuntimeRow
+                    key={m.id}
+                    selected={m.id === currentMissionId}
+                    label={m.title}
+                    onClick={() => openMission(m.id)}
+                    title={`${m.crew_name || ""}${
+                      m.pending_ask_count > 0
+                        ? ` · ${m.pending_ask_count} pending`
+                        : ""
+                    }`}
+                    pendingAsks={m.pending_ask_count}
+                  />
+                ))
+              )}
+            </div>
+          ) : null}
+
+          <div className="h-8" />
+
+          <CollapsibleSectionHeader
+            label="SESSION"
+            count={active.length}
+            open={sessionsOpen}
+            onToggle={toggleSessions}
+            onPlus={handleNewDirectChat}
+            plusTitle="Start a direct chat"
+          />
+          {sessionsOpen ? (
+            <div className="flex flex-col gap-0.5 px-3 pt-1">
+              {filteredDirect.length === 0 ? (
+                <p className="px-2.5 py-1 text-xs text-fg-3">
+                  No live sessions.
+                </p>
+              ) : (
+                filteredDirect.map((r) => (
+                  <RuntimeRow
+                    key={r.id}
+                    selected={r.handle === currentChatHandle}
+                    label={`@${r.handle} direct`}
+                    mono
+                    onClick={() => openDirectChat(r.handle)}
+                    title={`${r.active_sessions} session${
+                      r.active_sessions === 1 ? "" : "s"
+                    }${
+                      r.active_missions > 0
+                        ? ` · ${r.active_missions} mission${
+                            r.active_missions === 1 ? "" : "s"
+                          }`
+                        : ""
+                    }`}
+                  />
+                ))
+              )}
+            </div>
+          ) : null}
+        </div>
+
+        <div
+          onMouseDown={handleResizeStart}
+          title="Drag to resize"
+          className="absolute right-0 top-0 z-20 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-accent/40"
+        />
+      </aside>
+
+      <StartMissionModal
+        open={creatingMission}
+        onClose={() => setCreatingMission(false)}
+        onStarted={(mission) => {
+          setCreatingMission(false);
+          void refreshMissions();
+          navigate(`/missions/${mission.id}`);
+        }}
       />
-    </aside>
+    </>
   );
 }
 
+// ---- nav rows ----------------------------------------------------------
+
+function NavRow({
+  icon: Icon,
+  to,
+  label,
+}: {
+  icon: ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
+  to: string;
+  label: string;
+}) {
+  return (
+    <NavLink
+      to={to}
+      className={({ isActive }) =>
+        `flex items-center gap-2 rounded px-2.5 py-1.5 text-sm transition-colors ${
+          isActive
+            ? "bg-bg font-semibold text-fg"
+            : "text-fg-2 hover:text-fg"
+        }`
+      }
+    >
+      {({ isActive }) => (
+        <>
+          <Icon
+            aria-hidden
+            className={`h-3 w-3 ${isActive ? "text-fg" : "text-fg-2"}`}
+          />
+          <span>{label}</span>
+        </>
+      )}
+    </NavLink>
+  );
+}
+
+function DisabledNavRow({
+  icon: Icon,
+  label,
+  hint,
+}: {
+  icon: ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
+  label: string;
+  hint?: string;
+}) {
+  return (
+    <span
+      title={hint}
+      aria-disabled="true"
+      className="flex cursor-not-allowed items-center gap-2 rounded px-2.5 py-1.5 text-sm text-fg-3"
+    >
+      <Icon aria-hidden className="h-3 w-3 text-fg-3" />
+      <span>{label}</span>
+    </span>
+  );
+}
+
+// ---- collapsible section header ---------------------------------------
+
+function CollapsibleSectionHeader({
+  label,
+  count,
+  open,
+  onToggle,
+  onPlus,
+  plusTitle,
+}: {
+  label: string;
+  count: number;
+  open: boolean;
+  onToggle: () => void;
+  onPlus: () => void;
+  plusTitle: string;
+}) {
+  const Chevron = open ? ChevronDown : ChevronRight;
+  return (
+    <div className="flex items-center justify-between gap-2 px-5 pb-1.5">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3 hover:text-fg-2"
+      >
+        <Chevron aria-hidden className="h-2.5 w-2.5" />
+        <span>{label}</span>
+        {count > 0 ? (
+          <span className="ml-1 rounded-full bg-bg px-1.5 py-px font-mono text-[10px] font-semibold text-fg-3">
+            {count}
+          </span>
+        ) : null}
+      </button>
+      <button
+        type="button"
+        onClick={onPlus}
+        title={plusTitle}
+        aria-label={plusTitle}
+        className="cursor-pointer rounded p-1 text-fg-2 transition-colors hover:bg-bg hover:text-fg"
+      >
+        <Plus aria-hidden className="h-3 w-3" />
+      </button>
+    </div>
+  );
+}
+
+// ---- runtime row (mission or direct-session) --------------------------
+
+function RuntimeRow({
+  selected,
+  label,
+  onClick,
+  title,
+  mono,
+  pendingAsks,
+}: {
+  selected: boolean;
+  label: string;
+  onClick: () => void;
+  title?: string;
+  mono?: boolean;
+  pendingAsks?: number;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={`flex w-full cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-left text-xs transition-colors ${
+        selected
+          ? "border border-line bg-bg text-fg"
+          : "border border-transparent text-fg-2 hover:text-fg"
+      }`}
+    >
+      <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+      <span className={`truncate flex-1 ${mono ? "font-mono" : ""}`}>
+        {label}
+      </span>
+      {pendingAsks && pendingAsks > 0 ? (
+        <span
+          title="Awaiting human input"
+          className="rounded bg-warn/20 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-warn"
+        >
+          {pendingAsks}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+// ---- chrome ------------------------------------------------------------
+
 function BrandMark() {
-  // Three stacked lucide `chevron-right` glyphs — main 14×14 centered,
-  // two 9×9 ghosts at 40% opacity in the upper-left and lower-left.
-  // Mirrors the brand mark in design/runners-design.pen (frame `88D24`).
   return (
     <svg
       width="32"
@@ -288,14 +585,14 @@ function BrandMark() {
       aria-hidden
       className="shrink-0"
     >
-      <Chevron x={3} y={3} size={9} opacity={0.4} />
-      <Chevron x={9} y={9} size={14} opacity={1} />
-      <Chevron x={3} y={20} size={9} opacity={0.4} />
+      <ChevronGlyph x={3} y={3} size={9} opacity={0.4} />
+      <ChevronGlyph x={9} y={9} size={14} opacity={1} />
+      <ChevronGlyph x={3} y={20} size={9} opacity={0.4} />
     </svg>
   );
 }
 
-function Chevron({
+function ChevronGlyph({
   x,
   y,
   size,
@@ -306,8 +603,6 @@ function Chevron({
   size: number;
   opacity: number;
 }) {
-  // Lucide chevron-right path inside a 24×24 viewBox, scaled to `size`
-  // via the inner svg.
   return (
     <svg x={x} y={y} width={size} height={size} viewBox="0 0 24 24">
       <polyline
@@ -323,7 +618,7 @@ function Chevron({
   );
 }
 
-function SectionHeader({ children }: { children: React.ReactNode }) {
+function SectionHeader({ children }: { children: ReactNode }) {
   return (
     <div className="px-5 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
       {children}
