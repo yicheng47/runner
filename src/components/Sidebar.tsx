@@ -114,7 +114,6 @@ export function Sidebar() {
   // sidebar row. `useMatch` returns null when the URL doesn't match.
   const missionMatch = useMatch("/missions/:id");
   const currentMissionId = missionMatch?.params.id ?? null;
-  const missionHistoryMatch = useMatch("/missions");
   const chatMatch = useMatch("/runners/:handle/chat");
   const currentChatHandle = chatMatch?.params.handle ?? null;
 
@@ -361,10 +360,6 @@ export function Sidebar() {
                   />
                 ))
               )}
-              <HistoryRow
-                selected={missionHistoryMatch !== null}
-                onClick={() => navigate("/missions")}
-              />
             </div>
           ) : null}
 
@@ -568,29 +563,6 @@ function RuntimeRow({
           {pendingAsks}
         </span>
       ) : null}
-    </button>
-  );
-}
-
-function HistoryRow({
-  selected,
-  onClick,
-}: {
-  selected: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex w-full cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-left text-xs transition-colors ${
-        selected
-          ? "border border-line bg-bg text-fg"
-          : "border border-transparent text-fg-2 hover:text-fg"
-      }`}
-    >
-      <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-fg-3" />
-      <span className="truncate">mission history</span>
     </button>
   );
 }

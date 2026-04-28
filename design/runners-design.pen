@@ -318,7 +318,13 @@
               "id": "AOx8C",
               "name": "Mission1Active",
               "width": "fill_container",
+              "fill": "#0E0E10",
               "cornerRadius": 6,
+              "stroke": {
+                "align": "inside",
+                "thickness": 1,
+                "fill": "#1F2127"
+              },
               "gap": 8,
               "padding": [
                 8,
@@ -338,7 +344,7 @@
                   "type": "text",
                   "id": "e2HiZR",
                   "name": "m1Title",
-                  "fill": "#9A9BA5",
+                  "fill": "#EDEDF0",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
                   "content": "Create a temp go pr…",
@@ -480,7 +486,13 @@
               "id": "jPKvk",
               "name": "active_sub1",
               "width": "fill_container",
+              "fill": "#16171B",
               "cornerRadius": 6,
+              "stroke": {
+                "align": "inside",
+                "thickness": 1,
+                "fill": "#1F2127"
+              },
               "gap": 8,
               "padding": [
                 8,
@@ -498,7 +510,7 @@
                 {
                   "type": "text",
                   "id": "E6n6K",
-                  "fill": "#9A9BA5",
+                  "fill": "#EDEDF0",
                   "content": "Wire up event bus…",
                   "fontFamily": "Inter",
                   "fontSize": 12,
@@ -2849,7 +2861,13 @@
               "id": "M6ezHJ",
               "name": "Mission1Active",
               "width": "fill_container",
+              "fill": "#0E0E10",
               "cornerRadius": 6,
+              "stroke": {
+                "align": "inside",
+                "thickness": 1,
+                "fill": "#1F2127"
+              },
               "gap": 8,
               "padding": [
                 8,
@@ -2869,7 +2887,7 @@
                   "type": "text",
                   "id": "zxPS4",
                   "name": "m1Title",
-                  "fill": "#9A9BA5",
+                  "fill": "#EDEDF0",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
                   "content": "Create a temp go pr…",
@@ -3011,7 +3029,13 @@
               "id": "dyNCQ",
               "name": "active_sub1",
               "width": "fill_container",
+              "fill": "#16171B",
               "cornerRadius": 6,
+              "stroke": {
+                "align": "inside",
+                "thickness": 1,
+                "fill": "#1F2127"
+              },
               "gap": 8,
               "padding": [
                 8,
@@ -3029,7 +3053,7 @@
                 {
                   "type": "text",
                   "id": "YuQZf",
-                  "fill": "#9A9BA5",
+                  "fill": "#EDEDF0",
                   "content": "Wire up event bus…",
                   "fontFamily": "Inter",
                   "fontSize": 12,
@@ -5697,7 +5721,13 @@
               "id": "amfnY",
               "name": "Mission1Active",
               "width": "fill_container",
+              "fill": "#0E0E10",
               "cornerRadius": 6,
+              "stroke": {
+                "align": "inside",
+                "thickness": 1,
+                "fill": "#1F2127"
+              },
               "gap": 8,
               "padding": [
                 8,
@@ -5717,7 +5747,7 @@
                   "type": "text",
                   "id": "autqH",
                   "name": "m1Title",
-                  "fill": "#9A9BA5",
+                  "fill": "#EDEDF0",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
                   "content": "Create a temp go pr…",
@@ -5859,7 +5889,13 @@
               "id": "vJDFt",
               "name": "active_sub1",
               "width": "fill_container",
+              "fill": "#16171B",
               "cornerRadius": 6,
+              "stroke": {
+                "align": "inside",
+                "thickness": 1,
+                "fill": "#1F2127"
+              },
               "gap": 8,
               "padding": [
                 8,
@@ -5877,7 +5913,7 @@
                 {
                   "type": "text",
                   "id": "KjVrz",
-                  "fill": "#9A9BA5",
+                  "fill": "#EDEDF0",
                   "content": "Wire up event bus…",
                   "fontFamily": "Inter",
                   "fontSize": 12,
@@ -7346,7 +7382,13 @@
               "id": "yKXwU",
               "name": "Mission1Active",
               "width": "fill_container",
+              "fill": "#0E0E10",
               "cornerRadius": 6,
+              "stroke": {
+                "align": "inside",
+                "thickness": 1,
+                "fill": "#1F2127"
+              },
               "gap": 8,
               "padding": [
                 8,
@@ -7366,7 +7408,7 @@
                   "type": "text",
                   "id": "ZI3LZ",
                   "name": "m1Title",
-                  "fill": "#9A9BA5",
+                  "fill": "#EDEDF0",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
                   "content": "Create a temp go pr…",
@@ -7508,7 +7550,13 @@
               "id": "TWkIT",
               "name": "active_sub1",
               "width": "fill_container",
+              "fill": "#16171B",
               "cornerRadius": 6,
+              "stroke": {
+                "align": "inside",
+                "thickness": 1,
+                "fill": "#1F2127"
+              },
               "gap": 8,
               "padding": [
                 8,
@@ -7526,7 +7574,7 @@
                 {
                   "type": "text",
                   "id": "rKDin",
-                  "fill": "#9A9BA5",
+                  "fill": "#EDEDF0",
                   "content": "Wire up event bus…",
                   "fontFamily": "Inter",
                   "fontSize": 12,
@@ -10177,7 +10225,13 @@
               "id": "qgbB2",
               "name": "Mission1Active",
               "width": "fill_container",
+              "fill": "#0E0E10",
               "cornerRadius": 6,
+              "stroke": {
+                "align": "inside",
+                "thickness": 1,
+                "fill": "#1F2127"
+              },
               "gap": 8,
               "padding": [
                 8,
@@ -10197,7 +10251,7 @@
                   "type": "text",
                   "id": "l3aukR",
                   "name": "m1Title",
-                  "fill": "#9A9BA5",
+                  "fill": "#EDEDF0",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
                   "content": "Create a temp go pr…",
@@ -10339,7 +10393,13 @@
               "id": "GdrXo",
               "name": "active_sub1",
               "width": "fill_container",
+              "fill": "#16171B",
               "cornerRadius": 6,
+              "stroke": {
+                "align": "inside",
+                "thickness": 1,
+                "fill": "#1F2127"
+              },
               "gap": 8,
               "padding": [
                 8,
@@ -10357,7 +10417,7 @@
                 {
                   "type": "text",
                   "id": "vMKTh",
-                  "fill": "#9A9BA5",
+                  "fill": "#EDEDF0",
                   "content": "Wire up event bus…",
                   "fontFamily": "Inter",
                   "fontSize": 12,
@@ -10910,7 +10970,13 @@
               "id": "vqNqk",
               "name": "Mission1Active",
               "width": "fill_container",
+              "fill": "#0E0E10",
               "cornerRadius": 6,
+              "stroke": {
+                "align": "inside",
+                "thickness": 1,
+                "fill": "#1F2127"
+              },
               "gap": 8,
               "padding": [
                 8,
@@ -10930,7 +10996,7 @@
                   "type": "text",
                   "id": "R0zdcB",
                   "name": "m1Title",
-                  "fill": "#9A9BA5",
+                  "fill": "#EDEDF0",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
                   "content": "Create a temp go pr…",
@@ -11072,7 +11138,13 @@
               "id": "txrx9",
               "name": "active_sub1",
               "width": "fill_container",
+              "fill": "#16171B",
               "cornerRadius": 6,
+              "stroke": {
+                "align": "inside",
+                "thickness": 1,
+                "fill": "#1F2127"
+              },
               "gap": 8,
               "padding": [
                 8,
@@ -11090,7 +11162,7 @@
                 {
                   "type": "text",
                   "id": "VdbAT",
-                  "fill": "#9A9BA5",
+                  "fill": "#EDEDF0",
                   "content": "Wire up event bus…",
                   "fontFamily": "Inter",
                   "fontSize": 12,
