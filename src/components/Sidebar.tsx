@@ -5,7 +5,7 @@
 //   - MISSION:   collapsible header with count + `+` (Start Mission), one row
 //                per running mission. The currently-open mission is highlighted.
 //   - SESSION:   collapsible header with count + `+` (jump to runners list),
-//                search box, one row per live direct-chat. The currently-open
+//                one row per live direct-chat. The currently-open
 //                direct chat is highlighted.
 //
 // MISSION pulls from `mission_list_summary` (filtered to status === "running").
@@ -39,7 +39,6 @@ import {
 import { api } from "../lib/api";
 import {
   clearActiveSession,
-  getActiveSession,
   setActiveSession,
 } from "../lib/activeSessions";
 import type {
@@ -53,8 +52,8 @@ import { StartMissionModal } from "./StartMissionModal";
 interface ActiveRunner {
   id: string;
   handle: string;
-  active_sessions: number;
   active_missions: number;
+  direct_session_id: string;
 }
 
 const SIDEBAR_MIN = 200;
@@ -115,6 +114,7 @@ export function Sidebar() {
   // sidebar row. `useMatch` returns null when the URL doesn't match.
   const missionMatch = useMatch("/missions/:id");
   const currentMissionId = missionMatch?.params.id ?? null;
+  const missionHistoryMatch = useMatch("/missions");
   const chatMatch = useMatch("/runners/:handle/chat");
   const currentChatHandle = chatMatch?.params.handle ?? null;
 
@@ -169,12 +169,12 @@ export function Sidebar() {
     void api.runner.listWithActivity().then((rows: RunnerWithActivity[]) => {
       setActive(
         rows
-          .filter((r) => r.active_sessions > 0)
+          .filter((r) => r.direct_session_id !== null)
           .map((r) => ({
             id: r.id,
             handle: r.handle,
-            active_sessions: r.active_sessions,
             active_missions: r.active_missions,
+            direct_session_id: r.direct_session_id as string,
           })),
       );
       for (const r of rows) {
@@ -199,14 +199,14 @@ export function Sidebar() {
       }
       setActive((prev) => {
         const without = prev.filter((r) => r.id !== ev.runner_id);
-        if (ev.active_sessions === 0) return without;
+        if (!ev.direct_session_id) return without;
         return [
           ...without,
           {
             id: ev.runner_id,
             handle: ev.handle,
-            active_sessions: ev.active_sessions,
             active_missions: ev.active_missions,
+            direct_session_id: ev.direct_session_id,
           },
         ].sort((a, b) => a.handle.localeCompare(b.handle));
       });
@@ -235,17 +235,13 @@ export function Sidebar() {
   );
 
   const openDirectChat = useCallback(
-    (handle: string) => {
+    (handle: string, sessionId: string) => {
       const target = `/runners/${handle}/chat`;
-      const sessionId = getActiveSession(handle);
-      if (sessionId) {
-        navigate(target, {
-          state: { sessionId },
-          replace: location.pathname === target,
-        });
-      } else {
-        navigate(`/runners/${handle}`);
-      }
+      setActiveSession(handle, sessionId);
+      navigate(target, {
+        state: { sessionId },
+        replace: location.pathname === target,
+      });
     },
     [navigate, location.pathname],
   );
@@ -365,6 +361,10 @@ export function Sidebar() {
                   />
                 ))
               )}
+              <HistoryRow
+                selected={missionHistoryMatch !== null}
+                onClick={() => navigate("/missions")}
+              />
             </div>
           ) : null}
 
@@ -391,10 +391,8 @@ export function Sidebar() {
                     selected={r.handle === currentChatHandle}
                     label={`@${r.handle} direct`}
                     mono
-                    onClick={() => openDirectChat(r.handle)}
-                    title={`${r.active_sessions} session${
-                      r.active_sessions === 1 ? "" : "s"
-                    }${
+                    onClick={() => openDirectChat(r.handle, r.direct_session_id)}
+                    title={`direct chat${
                       r.active_missions > 0
                         ? ` · ${r.active_missions} mission${
                             r.active_missions === 1 ? "" : "s"
@@ -570,6 +568,29 @@ function RuntimeRow({
           {pendingAsks}
         </span>
       ) : null}
+    </button>
+  );
+}
+
+function HistoryRow({
+  selected,
+  onClick,
+}: {
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-left text-xs transition-colors ${
+        selected
+          ? "border border-line bg-bg text-fg"
+          : "border border-transparent text-fg-2 hover:text-fg"
+      }`}
+    >
+      <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-fg-3" />
+      <span className="truncate">mission history</span>
     </button>
   );
 }
