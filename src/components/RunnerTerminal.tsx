@@ -90,6 +90,7 @@ export function RunnerTerminal({
   const sessionIdRef = useRef<string>(sessionId);
   const onExitRef = useRef(onExit);
   const onErrorRef = useRef(onError);
+  const activeRef = useRef(active ?? false);
 
   // Keep the latest sessionId visible to the data/resize callbacks without
   // re-creating the terminal on prop change. The session listener below
@@ -106,6 +107,10 @@ export function RunnerTerminal({
   useEffect(() => {
     onErrorRef.current = onError;
   }, [onError]);
+
+  useEffect(() => {
+    activeRef.current = active ?? false;
+  }, [active]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -129,7 +134,10 @@ export function RunnerTerminal({
     } catch {
       // No WebGL — fall through to canvas. RunnerChat does the same.
     }
-    fit.fit();
+    const initialRect = containerRef.current.getBoundingClientRect();
+    if (initialRect.width > 0 && initialRect.height > 0) {
+      fit.fit();
+    }
     // Don't auto-focus on mount: in the workspace, multiple
     // RunnerTerminals mount at once before any tab is selected, and the
     // last-mounted one would steal focus and shove the page into its
@@ -153,6 +161,9 @@ export function RunnerTerminal({
       });
     };
     const onResize = () => {
+      if (!activeRef.current || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
       try {
         fit.fit();
         pushSize();
@@ -252,20 +263,10 @@ export function RunnerTerminal({
       }
       pendingLive.length = 0;
 
-      // SIGWINCH dance: nudge cols by -1 and back so the agent (claude-code,
-      // codex, etc.) emits a fresh redraw onto our blank grid. Without
-      // this, the pane sits empty until the user types.
-      const t = termRef.current;
-      if (t) {
-        const cols = t.cols;
-        const rows = t.rows;
-        try {
-          await api.session.resize(sessionId, Math.max(2, cols - 1), rows);
-          await api.session.resize(sessionId, cols, rows);
-        } catch {
-          // session may have exited
-        }
-      }
+      // Do not resize here: hidden terminal panes mount before they are
+      // measurable, and sending that hidden geometry to TUIs makes them paint
+      // their startup screen into a tiny grid. The activation effect below
+      // owns the SIGWINCH dance once the pane is visible.
     })();
 
     return () => {
@@ -289,14 +290,21 @@ export function RunnerTerminal({
       if (cancelled) return;
       const t = termRef.current;
       const fit = fitRef.current;
-      if (!t || !fit) return;
+      const node = containerRef.current;
+      if (!t || !fit || !node) return;
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
       try {
         fit.fit();
         t.refresh(0, t.rows - 1);
         t.focus();
-        void api.session.resize(sessionId, t.cols, t.rows).catch(() => {
-          // session may have exited
-        });
+        const cols = t.cols;
+        const rows = t.rows;
+        void api.session.resize(sessionId, Math.max(2, cols - 1), rows)
+          .then(() => api.session.resize(sessionId, cols, rows))
+          .catch(() => {
+            // session may have exited
+          });
       } catch {
         // Layout not ready yet — the next activation / resize will drive it.
       }

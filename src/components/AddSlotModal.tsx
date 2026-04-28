@@ -1,112 +1,118 @@
-// Add a runner slot to a crew (C5.5).
+// Add an existing runner to a crew slot (C5.5 shared-runner model).
 //
-// Two invokes per submit: create the global runner, then join it to the
-// crew. Errors surface a best-effort cleanup — if the runner was created
-// but the add-to-crew step fails, we delete the orphan so the user isn't
-// left with a ghost runner in their global list.
-//
-// `args` is a single shell-style text field split on whitespace
-// client-side; keep the split rule dumb and obvious (no shell quoting)
-// until a user actually needs spaces in an arg. Backend re-validates the
-// handle.
+// Runner creation lives on the top-level Runners page. This modal mirrors
+// design/runners-design.pen node `sYprG`: search existing runners, select
+// one, then add it to the crew. Per-slot prompt overrides are shown as the
+// v0.x placeholder from the design because the schema has no override
+// column yet.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { ChevronDown, X } from "lucide-react";
 
 import { api } from "../lib/api";
-import type { CreateRunnerInput } from "../lib/types";
+import type { RunnerWithActivity } from "../lib/types";
 import { Button } from "./ui/Button";
 import { Modal } from "./ui/Overlay";
-import { Field, Input, Textarea } from "./ui/Field";
-import { RuntimeSelect } from "./ui/RuntimeSelect";
-import { RUNTIME_OPTIONS } from "./ui/runtimes";
-
-const HANDLE_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
 export function AddSlotModal({
   open,
   crewId,
-  isFirstRunner,
+  crewName,
+  currentRunnerIds,
   onClose,
   onCreated,
 }: {
   open: boolean;
   crewId: string;
-  isFirstRunner: boolean;
+  crewName: string;
+  currentRunnerIds: string[];
   onClose: () => void;
   onCreated: () => void | Promise<void>;
 }) {
-  const [handle, setHandle] = useState("");
-  const [displayName, setDisplayName] = useState("");
-  const [role, setRole] = useState("");
-  const [runtime, setRuntime] = useState<string>(RUNTIME_OPTIONS[0].value);
-  const [command, setCommand] = useState(RUNTIME_OPTIONS[0].defaultCommand);
-  const [argsText, setArgsText] = useState("");
-  const [workingDir, setWorkingDir] = useState("");
-  const [systemPrompt, setSystemPrompt] = useState("");
+  const [runners, setRunners] = useState<RunnerWithActivity[]>([]);
+  const [query, setQuery] = useState("");
+  const [selectedRunnerId, setSelectedRunnerId] = useState("");
+  const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
-    if (open) {
-      setHandle("");
-      setDisplayName("");
-      setRole("");
-      setRuntime(RUNTIME_OPTIONS[0].value);
-      setCommand(RUNTIME_OPTIONS[0].defaultCommand);
-      setArgsText("");
-      setWorkingDir("");
-      setSystemPrompt("");
-      setError(null);
-    }
+    if (!open) return;
+    let cancelled = false;
+    setQuery("");
+    setSelectedRunnerId("");
+    setError(null);
+    setSubmitting(false);
+    setLoading(true);
+    void api.runner
+      .listWithActivity()
+      .then((rows) => {
+        if (cancelled) return;
+        setRunners(rows);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [open]);
 
-  const handleError = (() => {
-    if (!handle) return null;
-    if (!HANDLE_RE.test(handle))
-      return "Lowercase letters, digits, '-' or '_'; must start with a letter or digit; up to 32 chars.";
-    return null;
-  })();
+  const currentIds = useMemo(
+    () => new Set(currentRunnerIds),
+    [currentRunnerIds],
+  );
 
-  const canSubmit =
-    handle.length > 0 &&
-    handleError === null &&
-    displayName.trim().length > 0 &&
-    role.trim().length > 0 &&
-    command.trim().length > 0 &&
-    !submitting;
+  const availableRunners = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return runners
+      .filter((r) => !currentIds.has(r.id))
+      .filter((r) => {
+        if (!q) return true;
+        return (
+          r.handle.toLowerCase().includes(q) ||
+          r.display_name.toLowerCase().includes(q) ||
+          r.role.toLowerCase().includes(q) ||
+          r.runtime.toLowerCase().includes(q)
+        );
+      });
+  }, [currentIds, query, runners]);
+
+  useEffect(() => {
+    if (!open) return;
+    setSelectedRunnerId((id) => {
+      if (id && availableRunners.some((r) => r.id === id)) return id;
+      return availableRunners[0]?.id ?? "";
+    });
+  }, [availableRunners, open]);
+
+  const selectedRunner =
+    availableRunners.find((r) => r.id === selectedRunnerId) ?? null;
+  const canSubmit = selectedRunner !== null && !submitting && !loading;
 
   const submit = async () => {
-    if (!canSubmit) return;
+    if (!selectedRunner) return;
     setSubmitting(true);
     setError(null);
-    const input: CreateRunnerInput = {
-      handle,
-      display_name: displayName.trim(),
-      role: role.trim(),
-      runtime,
-      command: command.trim(),
-      args: argsText.trim() ? argsText.trim().split(/\s+/) : [],
-      working_dir: workingDir.trim() || null,
-      system_prompt: systemPrompt.trim() || null,
-    };
-    let createdRunnerId: string | null = null;
     try {
-      const runner = await api.runner.create(input);
-      createdRunnerId = runner.id;
-      await api.crew.addRunner(crewId, runner.id);
+      await api.crew.addRunner(crewId, selectedRunner.id);
       await onCreated();
     } catch (e) {
       setError(String(e));
-      if (createdRunnerId) {
-        try {
-          await api.runner.delete(createdRunnerId);
-        } catch {
-          // best-effort cleanup
-        }
-      }
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const openCreateRunner = () => {
+    onClose();
+    navigate("/runners", { state: { createRunner: true } });
   };
 
   return (
@@ -114,13 +120,22 @@ export function AddSlotModal({
       open={open}
       onClose={submitting ? () => {} : onClose}
       title={
-        <div className="flex flex-col gap-0.5">
-          <span className="text-base font-semibold text-fg">Add slot</span>
-          <span className="text-xs font-normal text-fg-3">
-            {isFirstRunner
-              ? "First slot in the crew — it becomes the LEAD automatically."
-              : "Adds a new runner to this crew."}
-          </span>
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-base font-semibold text-fg">Add slot</span>
+            <span className="text-xs font-normal text-fg-2">
+              crew: {crewName}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-3 transition-colors hover:bg-raised hover:text-fg disabled:pointer-events-none disabled:opacity-50"
+            aria-label="Close add slot"
+          >
+            <X aria-hidden className="h-3.5 w-3.5" />
+          </button>
         </div>
       }
       widthClass="w-full max-w-xl"
@@ -130,7 +145,7 @@ export function AddSlotModal({
             Cancel
           </Button>
           <Button variant="primary" onClick={submit} disabled={!canSubmit}>
-            {submitting ? "Adding…" : "Add slot"}
+            {submitting ? "Adding..." : "Add slot"}
           </Button>
         </>
       }
@@ -142,104 +157,135 @@ export function AddSlotModal({
           void submit();
         }}
       >
-        <Field
-          id="runner-handle"
-          label="Handle"
-          hint="lowercase, immutable"
-          error={handleError}
-        >
-          <div className="flex items-center rounded border border-line-strong bg-bg px-2.5 py-1.5 text-sm focus-within:border-fg-3">
-            <span className="select-none pr-1 font-mono font-semibold text-fg-3">
-              @
-            </span>
+        <section className="flex flex-col gap-1.5">
+          <label
+            htmlFor="add-slot-runner-search"
+            className="text-xs font-semibold text-fg"
+          >
+            Runner
+          </label>
+          <div className="flex items-center gap-2 rounded-md border border-line bg-bg px-3 py-2 text-[13px] focus-within:border-fg-3">
             <input
-              id="runner-handle"
+              id="add-slot-runner-search"
               autoFocus
-              value={handle}
-              placeholder="reviewer"
-              onChange={(e) => setHandle(e.target.value.toLowerCase())}
-              className="flex-1 bg-transparent font-mono text-fg outline-none placeholder:text-fg-3"
+              value={query}
+              placeholder="Search runners..."
+              onChange={(e) => setQuery(e.target.value)}
+              className="min-w-0 flex-1 bg-transparent text-fg outline-none placeholder:text-fg-3"
             />
+            <ChevronDown aria-hidden className="h-3.5 w-3.5 text-fg-3" />
           </div>
-        </Field>
 
-        <div className="grid grid-cols-2 gap-3">
-          <Field id="runner-display-name" label="Display name">
-            <Input
-              id="runner-display-name"
-              value={displayName}
-              placeholder="Implementer"
-              onChange={(e) => setDisplayName(e.target.value)}
-            />
-          </Field>
-          <Field id="runner-role" label="Role">
-            <Input
-              id="runner-role"
-              value={role}
-              placeholder="impl, reviewer, architect"
-              onChange={(e) => setRole(e.target.value)}
-            />
-          </Field>
-        </div>
+          <div className="overflow-hidden rounded-md border border-line bg-panel">
+            <button
+              type="button"
+              onClick={openCreateRunner}
+              className="flex w-full cursor-pointer items-center border-b border-line px-3 py-2.5 text-left text-[13px] font-medium text-accent transition-colors hover:bg-raised"
+            >
+              + Create new runner...
+            </button>
 
-        <Field id="runner-runtime" label="Runtime">
-          <RuntimeSelect
-            id="runner-runtime"
-            value={runtime}
-            onChange={(opt) => {
-              setRuntime(opt.value);
-              setCommand(opt.defaultCommand);
-            }}
-          />
-        </Field>
+            {loading ? (
+              <div className="px-3 py-3 text-xs text-fg-3">
+                Loading runners...
+              </div>
+            ) : availableRunners.length === 0 ? (
+              <div className="px-3 py-3 text-xs text-fg-3">
+                {runners.length === 0
+                  ? "No runners yet. Create one first, then add it here."
+                  : query.trim()
+                    ? "No available runners match this search."
+                    : "Every runner is already in this crew."}
+              </div>
+            ) : (
+              <div className="max-h-56 overflow-y-auto">
+                {availableRunners.map((runner) => (
+                  <RunnerOption
+                    key={runner.id}
+                    runner={runner}
+                    selected={runner.id === selectedRunnerId}
+                    onSelect={() => setSelectedRunnerId(runner.id)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
 
-        <Field id="runner-command" label="Command" hint="the binary to spawn">
-          <Input
-            id="runner-command"
-            value={command}
-            placeholder="claude, codex, sh"
-            onChange={(e) => setCommand(e.target.value)}
-          />
-        </Field>
-
-        <Field id="runner-args" label="Args" hint="whitespace-separated">
-          <Input
-            id="runner-args"
-            value={argsText}
-            placeholder="--dangerously-skip-permissions"
-            onChange={(e) => setArgsText(e.target.value)}
-          />
-        </Field>
-
-        <Field
-          id="runner-working-dir"
-          label="Working directory"
-          hint="optional — defaults to mission cwd"
-        >
-          <Input
-            id="runner-working-dir"
-            value={workingDir}
-            placeholder="/absolute/path"
-            onChange={(e) => setWorkingDir(e.target.value)}
-          />
-        </Field>
-
-        <Field
-          id="runner-system-prompt"
-          label="System prompt"
-          hint="optional"
-        >
-          <Textarea
-            id="runner-system-prompt"
-            rows={4}
-            value={systemPrompt}
-            placeholder="Behavioral instructions for this runner."
-            onChange={(e) => setSystemPrompt(e.target.value)}
-          />
-        </Field>
+        <section className="flex flex-col gap-2 opacity-70">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-fg">
+                System prompt override
+              </span>
+              <span className="rounded bg-raised px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-fg-3">
+                v0.x
+              </span>
+            </div>
+            <span
+              aria-label="System prompt override unavailable"
+              className="flex h-[18px] w-8 items-center rounded-full bg-raised p-0.5"
+              title="Per-slot prompt overrides land in v0.x"
+            >
+              <span className="h-3.5 w-3.5 rounded-full bg-panel" />
+            </span>
+          </div>
+          <p className="text-[11px] text-fg-2">
+            Uses the selected runner&apos;s default prompt. Per-slot overrides
+            are not editable in the MVP.
+          </p>
+        </section>
 
         {error ? <p className="text-xs text-danger">{error}</p> : null}
       </form>
     </Modal>
   );
+}
+
+function RunnerOption({
+  runner,
+  selected,
+  onSelect,
+}: {
+  runner: RunnerWithActivity;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`grid w-full cursor-pointer grid-cols-[minmax(0,160px)_80px_minmax(0,1fr)] items-center gap-3 border-b border-line px-3 py-2.5 text-left last:border-b-0 transition-colors hover:bg-raised ${
+        selected ? "bg-raised" : ""
+      }`}
+    >
+      <span className="truncate font-mono text-[13px] font-semibold text-accent">
+        @{runner.handle}
+      </span>
+      <span className="truncate text-[11px] text-fg-2">{runner.runtime}</span>
+      <span className="truncate text-xs text-fg-2">
+        {crewUsageLabel(runner)} · {activityLabel(runner)}
+      </span>
+    </button>
+  );
+}
+
+function crewUsageLabel(runner: RunnerWithActivity): string {
+  return runner.crew_count === 1
+    ? "in 1 crew"
+    : `in ${runner.crew_count} crews`;
+}
+
+function activityLabel(runner: RunnerWithActivity): string {
+  if (runner.active_sessions > 0) {
+    return runner.active_sessions === 1
+      ? "1 session"
+      : `${runner.active_sessions} sessions`;
+  }
+  if (runner.active_missions > 0) {
+    return runner.active_missions === 1
+      ? "1 mission"
+      : `${runner.active_missions} missions`;
+  }
+  return "idle";
 }

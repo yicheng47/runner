@@ -1,8 +1,7 @@
 // Crew detail — matches design/runners-design.pen frame `CUKjM`.
 //
 // Layout: top toolbar (back to Crews + inline name field + Save + Start
-// mission) above a two-section body (Purpose, Slots). Start mission is
-// disabled in C3 — it belongs to C11.
+// mission) above a two-section body (Purpose, Slots).
 
 import {
   useCallback,
@@ -12,12 +11,14 @@ import {
   useState,
   type DragEvent,
 } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { MoreHorizontal, SquarePen, Star, Trash2 } from "lucide-react";
 
 import { api } from "../lib/api";
 import type { Crew, CrewRunner } from "../lib/types";
 import { AddSlotModal } from "../components/AddSlotModal";
 import { RunnerEditDrawer } from "../components/RunnerEditDrawer";
+import { StartMissionModal } from "../components/StartMissionModal";
 import { Button } from "../components/ui/Button";
 
 export default function CrewEditor() {
@@ -28,11 +29,13 @@ export default function CrewEditor() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [editing, setEditing] = useState<CrewRunner | null>(null);
   const [nameDraft, setNameDraft] = useState("");
   const [savingName, setSavingName] = useState(false);
   const [reordering, setReordering] = useState(false);
   const reorderInFlight = useRef(false);
+  const navigate = useNavigate();
 
   const refresh = useCallback(async () => {
     if (!crewId) return;
@@ -96,6 +99,8 @@ export default function CrewEditor() {
     }
   };
 
+  const currentRunnerIds = useMemo(() => runners.map((r) => r.id), [runners]);
+
   const onCommitReorder = async (newOrder: CrewRunner[]) => {
     if (!crewId) return;
     if (reorderInFlight.current) return;
@@ -156,14 +161,32 @@ export default function CrewEditor() {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {nameDirty || savingName ? (
+            <Button
+              onClick={onSaveName}
+              disabled={savingName}
+              title="Save crew name"
+            >
+              {savingName ? "Saving..." : "Save"}
+            </Button>
+          ) : (
+            <span
+              className="inline-flex items-center justify-center rounded border border-line bg-raised px-3 py-1.5 text-sm font-medium text-fg-3"
+              title="Crew name is saved. Slot changes save immediately."
+            >
+              Saved
+            </span>
+          )}
           <Button
-            onClick={onSaveName}
-            disabled={!nameDirty || savingName}
-            title={nameDirty ? "Save crew name" : "No changes"}
+            variant="primary"
+            onClick={() => setStarting(true)}
+            disabled={runners.length === 0}
+            title={
+              runners.length === 0
+                ? "Add at least one runner before starting a mission"
+                : "Start a mission with this crew"
+            }
           >
-            {savingName ? "Saving…" : "Save"}
-          </Button>
-          <Button variant="primary" disabled title="Start Mission arrives in C11">
             Start mission
           </Button>
         </div>
@@ -209,7 +232,11 @@ export default function CrewEditor() {
                     back to other slots.
                   </p>
                 </div>
-                <Button variant="primary" onClick={() => setAdding(true)}>
+                <Button
+                  variant="primary"
+                  className="shrink-0 whitespace-nowrap"
+                  onClick={() => setAdding(true)}
+                >
                   + Add slot
                 </Button>
               </div>
@@ -230,7 +257,8 @@ export default function CrewEditor() {
       <AddSlotModal
         open={adding}
         crewId={crewId}
-        isFirstRunner={runners.length === 0}
+        crewName={crew?.name ?? nameDraft}
+        currentRunnerIds={currentRunnerIds}
         onClose={() => setAdding(false)}
         onCreated={async () => {
           setAdding(false);
@@ -245,6 +273,16 @@ export default function CrewEditor() {
         onSaved={async () => {
           setEditing(null);
           await refresh();
+        }}
+      />
+
+      <StartMissionModal
+        open={starting}
+        initialCrewId={crewId}
+        onClose={() => setStarting(false)}
+        onStarted={(mission) => {
+          setStarting(false);
+          navigate(`/missions/${mission.id}`);
         }}
       />
     </>
@@ -404,35 +442,125 @@ function RunnerRow({
         ) : null}
       </div>
 
-      <div className="flex shrink-0 items-center gap-3 text-xs opacity-60 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-        {runner.lead ? (
-          <span title="Already the crew's lead" className="text-fg-3">
-            Lead
-          </span>
-        ) : (
+      <SlotActionMenu
+        runner={runner}
+        onSetLead={onSetLead}
+        onEdit={onEdit}
+        onRemove={onRemove}
+      />
+    </li>
+  );
+}
+
+function SlotActionMenu({
+  runner,
+  onSetLead,
+  onEdit,
+  onRemove,
+}: {
+  runner: CrewRunner;
+  onSetLead: () => void;
+  onEdit: () => void;
+  onRemove: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div
+      ref={menuRef}
+      className="relative shrink-0 opacity-70 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
+    >
+      <button
+        type="button"
+        aria-label={`Slot actions for @${runner.handle}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        onMouseDown={(e) => e.stopPropagation()}
+        className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded text-fg-2 transition-colors hover:bg-raised hover:text-fg focus:outline-none focus-visible:bg-raised focus-visible:text-fg"
+        title="Slot actions"
+      >
+        <MoreHorizontal aria-hidden className="h-4 w-4" />
+      </button>
+
+      {open ? (
+        <div
+          role="menu"
+          className="absolute right-0 top-full z-30 mt-2 flex w-52 flex-col gap-px rounded-lg border border-line bg-panel p-1.5 text-[13px] shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
           <button
             type="button"
-            onClick={onSetLead}
-            className="text-fg-2 transition-colors hover:text-fg"
+            role="menuitem"
+            disabled={runner.lead}
+            onClick={() => {
+              if (runner.lead) return;
+              setOpen(false);
+              onSetLead();
+            }}
+            className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-fg transition-colors hover:bg-raised disabled:cursor-default disabled:text-fg-3 disabled:hover:bg-transparent"
           >
-            Set as lead
+            <Star
+              aria-hidden
+              className={`h-3.5 w-3.5 ${
+                runner.lead ? "text-fg-3" : "text-warn"
+              }`}
+            />
+            <span>{runner.lead ? "Current lead" : "Set as lead"}</span>
           </button>
-        )}
-        <button
-          type="button"
-          onClick={onEdit}
-          className="text-accent transition-colors hover:underline"
-        >
-          Prompt
-        </button>
-        <button
-          type="button"
-          onClick={onRemove}
-          className="text-danger transition-colors hover:underline"
-        >
-          Remove
-        </button>
-      </div>
-    </li>
+
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onEdit();
+            }}
+            className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-fg transition-colors hover:bg-raised"
+          >
+            <SquarePen aria-hidden className="h-3.5 w-3.5 text-fg" />
+            <span>Edit prompt</span>
+          </button>
+
+          <div className="px-1 py-1">
+            <div className="h-px bg-line" />
+          </div>
+
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onRemove();
+            }}
+            className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-danger transition-colors hover:bg-raised"
+          >
+            <Trash2 aria-hidden className="h-3.5 w-3.5" />
+            <span>Remove from crew</span>
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }

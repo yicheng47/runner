@@ -11,7 +11,7 @@
 // snapshot covers bytes emitted before a pane first mounts.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 
 import { listen } from "@tauri-apps/api/event";
 
@@ -219,12 +219,6 @@ export default function MissionWorkspace() {
     <div className="flex h-full flex-1 flex-col bg-bg">
       <header className="flex items-start justify-between gap-4 border-b border-line bg-panel px-8 pb-4 pt-9">
         <div className="flex flex-col gap-1 min-w-0">
-          <Link
-            to="/runners"
-            className="text-[12px] text-fg-2 hover:text-fg"
-          >
-            ← Runners
-          </Link>
           <div className="flex items-baseline gap-3 min-w-0">
             <h1 className="truncate text-[15px] font-semibold text-fg">
               {mission?.title ?? "…"}
