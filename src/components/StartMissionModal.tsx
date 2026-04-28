@@ -101,10 +101,10 @@ export function StartMissionModal({
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") setCrewPickerOpen(false);
     };
-    window.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("mousedown", onPointerDown, true);
     window.addEventListener("keydown", onKeyDown);
     return () => {
-      window.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("mousedown", onPointerDown, true);
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [crewPickerOpen]);
