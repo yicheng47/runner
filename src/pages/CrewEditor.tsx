@@ -97,6 +97,8 @@ export default function CrewEditor() {
     }
   };
 
+  const currentRunnerIds = useMemo(() => runners.map((r) => r.id), [runners]);
+
   const onCommitReorder = async (newOrder: CrewRunner[]) => {
     if (!crewId) return;
     if (reorderInFlight.current) return;
@@ -231,7 +233,8 @@ export default function CrewEditor() {
       <AddSlotModal
         open={adding}
         crewId={crewId}
-        isFirstRunner={runners.length === 0}
+        crewName={crew?.name ?? nameDraft}
+        currentRunnerIds={currentRunnerIds}
         onClose={() => setAdding(false)}
         onCreated={async () => {
           setAdding(false);

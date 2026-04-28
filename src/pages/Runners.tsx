@@ -7,7 +7,7 @@
 // the menu until the backend supports it).
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import { listen } from "@tauri-apps/api/event";
 import { MessageSquare } from "lucide-react";
@@ -26,6 +26,7 @@ export default function Runners() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const location = useLocation();
   const navigate = useNavigate();
 
   const refresh = useCallback(async () => {
@@ -44,6 +45,13 @@ export default function Runners() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const state = location.state as { createRunner?: boolean } | null;
+    if (!state?.createRunner) return;
+    setCreating(true);
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location.pathname, location.state, navigate]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;

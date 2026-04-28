@@ -1,8 +1,8 @@
 // Create a runner from the top-level Runners page (C8.5).
 //
-// Distinct from `AddSlotModal` — that one creates a runner *and* adds it
-// to a specific crew in one shot. This surface only owns the runner row;
-// crew membership lives on Crew Detail.
+// Distinct from `AddSlotModal` — that one only selects an existing runner
+// for a crew slot. This surface owns runner creation; crew membership lives
+// on Crew Detail.
 
 import { useEffect, useState } from "react";
 
