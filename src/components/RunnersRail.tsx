@@ -1,7 +1,6 @@
-// Right-hand rail in the mission workspace — one card per runner in the
-// roster, showing PTY status (running / stopped / crashed), last
-// `runner_status` (busy / idle), the LEAD badge, and an "open pty" link
-// that switches the center column to that runner's terminal tab.
+// Right-hand rail in the mission workspace - one tab-like card per runner in
+// the roster, showing PTY status (running / stopped / crashed), last
+// `runner_status` (busy / idle), and the LEAD badge.
 
 import type { SessionRow } from "../lib/api";
 
@@ -50,9 +49,12 @@ export function RunnersRail({
               : ptyStatus;
           const selected = selectedSessionId === s.id;
           return (
-            <div
+            <button
               key={s.id}
-              className={`flex flex-col gap-1.5 rounded-md border bg-bg p-3 transition-colors ${
+              type="button"
+              onClick={() => onOpenPty(s.id)}
+              aria-pressed={selected}
+              className={`flex w-full cursor-pointer flex-col gap-1.5 rounded-md border bg-bg p-3 text-left transition-colors focus:outline-none focus-visible:border-accent focus-visible:ring-1 focus-visible:ring-accent/50 ${
                 selected
                   ? "border-accent/60"
                   : "border-line hover:border-line-strong"
@@ -73,17 +75,9 @@ export function RunnersRail({
                     </span>
                   ) : null}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => onOpenPty(s.id)}
-                  disabled={ptyStatus !== "running"}
-                  className="text-[11px] font-medium text-accent hover:underline disabled:cursor-not-allowed disabled:text-fg-3 disabled:no-underline"
-                >
-                  {selected ? "open" : "open pty"}
-                </button>
               </div>
               <div className="text-[11px] text-fg-2">{subtitle}</div>
-            </div>
+            </button>
           );
         })
       )}
