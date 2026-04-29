@@ -17,7 +17,7 @@
 // `SessionManager::kill_all` at app shutdown (future work; for MVP the
 // child inherits our process group and dies when we exit).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -45,6 +45,9 @@ pub trait SessionEvents: Send + Sync + 'static {
     /// the Runners list can update its "N sessions / M missions" badges
     /// without polling. Default no-op so test fakes don't have to opt in.
     fn runner_activity(&self, _ev: &RunnerActivityEvent) {}
+    /// Non-fatal, user-facing advisory (resume fallback, etc.). Default
+    /// no-op so test fakes don't have to opt in.
+    fn warning(&self, _ev: &WarningEvent) {}
 }
 
 /// Payload for `runner/activity`. Derived from the same query
@@ -80,6 +83,10 @@ impl SessionEvents for TauriSessionEvents {
         use tauri::Emitter;
         let _ = self.0.emit("runner/activity", ev);
     }
+    fn warning(&self, ev: &WarningEvent) {
+        use tauri::Emitter;
+        let _ = self.0.emit("session/warning", ev);
+    }
 }
 
 /// Contents of `session/output` events emitted to the frontend. The raw PTY
@@ -106,6 +113,23 @@ pub struct ExitEvent {
     pub mission_id: Option<String>,
     pub exit_code: Option<i32>,
     pub success: bool,
+}
+
+/// Non-fatal advisory the UI can render as a banner. Emitted on
+/// `session/warning`. Today the only producer is the resume-fallback path:
+/// when the runtime adapter asked the agent CLI to resume a prior
+/// conversation but the child exited fast and unsuccessfully, we treat that
+/// as a resume failure, wipe the bad key, and tell the user the next spawn
+/// will start fresh.
+#[derive(Debug, Clone, Serialize)]
+pub struct WarningEvent {
+    pub session_id: String,
+    pub mission_id: Option<String>,
+    /// Stable string the UI can switch on. Free-form strings are
+    /// intentional — adding cases shouldn't require a frontend rebuild.
+    pub kind: String,
+    /// Human-readable detail. Safe to render verbatim.
+    pub message: String,
 }
 
 /// Row returned to the frontend after a spawn. Subset of the DB `sessions`
@@ -149,6 +173,33 @@ pub struct SessionManager {
     sessions: Mutex<HashMap<String, SessionHandle>>,
     output_buffers: Mutex<HashMap<String, VecDeque<OutputEvent>>>,
     output_seq: Mutex<HashMap<String, u64>>,
+    /// Session ids currently inside `resume()`, between the
+    /// validation read and the live-map insert. A second concurrent
+    /// `resume` call for the same id refuses on insert collision so
+    /// two PTYs can't end up racing against the same row (e.g. fast
+    /// double-click on the Resume button, or two windows both
+    /// driving resume).
+    resuming_claims: Mutex<HashSet<String>>,
+}
+
+/// RAII guard that releases a `resuming_claims` entry on drop. The
+/// entry is inserted at the start of `resume()`; the guard's Drop
+/// removes it on every exit path (Ok, Err, panic), so a failed
+/// resume doesn't leave the session permanently locked out from
+/// future retries.
+struct ResumeClaim {
+    mgr: Arc<SessionManager>,
+    session_id: String,
+}
+
+impl Drop for ResumeClaim {
+    fn drop(&mut self) {
+        self.mgr
+            .resuming_claims
+            .lock()
+            .unwrap()
+            .remove(&self.session_id);
+    }
 }
 
 impl SessionManager {
@@ -157,6 +208,7 @@ impl SessionManager {
             sessions: Mutex::new(HashMap::new()),
             output_buffers: Mutex::new(HashMap::new()),
             output_seq: Mutex::new(HashMap::new()),
+            resuming_claims: Mutex::new(HashSet::new()),
         })
     }
 
@@ -187,8 +239,28 @@ impl SessionManager {
             })
             .map_err(|e| Error::msg(format!("openpty: {e}")))?;
 
+        // Agent-native session resume: this is a *fresh* session row, so
+        // there's no prior key to inherit. The runtime adapter still
+        // self-assigns a UUID for claude-code (`--session-id <uuid>`) so
+        // a future `SessionManager::resume` can hand it back. See
+        // docs/impls/direct-chats.md for why mission spawn no longer
+        // chains across mission_stop/start.
+        let plan = crate::router::runtime::resume_plan(&runner.runtime, None);
+
         let mut cmd = CommandBuilder::new(&runner.command);
+        // codex resume is a subcommand, not a flag — it must precede any
+        // user-supplied args. Other runtimes append their args.
+        if plan.prepend {
+            for extra in &plan.args {
+                cmd.arg(extra);
+            }
+        }
         cmd.args(&runner.args);
+        if !plan.prepend {
+            for extra in &plan.args {
+                cmd.arg(extra);
+            }
+        }
         // Append the runtime-specific flag that hands `system_prompt` to the
         // child. Without this the user-authored brief on the runner row is
         // dropped on the floor (arch §4.2 / §4.3).
@@ -269,9 +341,17 @@ impl SessionManager {
             let conn = pool.get()?;
             conn.execute(
                 "INSERT INTO sessions
-                    (id, mission_id, runner_id, status, pid, started_at)
-                 VALUES (?1, ?2, ?3, 'running', ?4, ?5)",
-                params![session_id, mission.id, runner.id, pid, started_at],
+                    (id, mission_id, runner_id, status, pid, started_at,
+                     agent_session_key)
+                 VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6)",
+                params![
+                    session_id,
+                    mission.id,
+                    runner.id,
+                    pid,
+                    started_at,
+                    plan.assigned_key
+                ],
             )?;
             Ok((reader, writer))
         })();
@@ -320,6 +400,7 @@ impl SessionManager {
             Arc::clone(&pool),
             Arc::clone(&events),
             runner.clone(),
+            plan.resuming,
         );
 
         // Attach the reader handle. We raced to insert-first so the reader
@@ -385,8 +466,27 @@ impl SessionManager {
             .openpty(opened)
             .map_err(|e| Error::msg(format!("openpty: {e}")))?;
 
+        // Agent-native session resume: `spawn_direct` always opens a *new*
+        // chat. To resume a prior chat the caller goes through
+        // `SessionManager::resume(session_id)`, which respawns the PTY
+        // for an existing row instead of creating a new one. Here we
+        // just let the runtime adapter self-assign a fresh
+        // `agent_session_key` (claude-code) or leave it NULL (codex).
+        // See docs/impls/direct-chats.md.
+        let plan = crate::router::runtime::resume_plan(&runner.runtime, None);
+
         let mut cmd = CommandBuilder::new(&runner.command);
+        if plan.prepend {
+            for extra in &plan.args {
+                cmd.arg(extra);
+            }
+        }
         cmd.args(&runner.args);
+        if !plan.prepend {
+            for extra in &plan.args {
+                cmd.arg(extra);
+            }
+        }
         // Apply the same runtime adapter as the mission spawn so direct chat
         // sessions also receive the runner's `system_prompt`. Direct chats
         // get only the brief — no roster, no goal, no coordination notes —
@@ -445,7 +545,8 @@ impl SessionManager {
 
         let pid = child.process_id();
         let session_id = ulid::Ulid::new().to_string();
-        let started_at = Utc::now().to_rfc3339();
+        let started_at_dt = Utc::now();
+        let started_at = started_at_dt.to_rfc3339();
         let setup_res: Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> = (|| {
             let reader = pair
                 .master
@@ -459,9 +560,17 @@ impl SessionManager {
             // mission_id is NULL; cwd lives on the session row.
             conn.execute(
                 "INSERT INTO sessions
-                    (id, mission_id, runner_id, cwd, status, pid, started_at)
-                 VALUES (?1, NULL, ?2, ?3, 'running', ?4, ?5)",
-                params![session_id, runner.id, resolved_cwd, pid, started_at],
+                    (id, mission_id, runner_id, cwd, status, pid, started_at,
+                     agent_session_key)
+                 VALUES (?1, NULL, ?2, ?3, 'running', ?4, ?5, ?6)",
+                params![
+                    session_id,
+                    runner.id,
+                    resolved_cwd,
+                    pid,
+                    started_at,
+                    plan.assigned_key
+                ],
             )?;
             Ok((reader, writer))
         })();
@@ -495,15 +604,327 @@ impl SessionManager {
             Arc::clone(&pool),
             Arc::clone(&events),
             runner.clone(),
+            plan.resuming,
         );
         if let Some(h) = self.sessions.lock().unwrap().get_mut(&session_id) {
             h.reader = Some(reader_handle);
+        }
+
+        // Codex doesn't accept a caller-assigned session id at spawn,
+        // so the runtime adapter leaves `assigned_key = None` for
+        // fresh codex spawns. Kick off a short-lived watcher that
+        // captures codex's auto-generated id from the rollout file
+        // and writes it to `agent_session_key` so the *next* resume
+        // can drive `codex resume <uuid>`.
+        //
+        // When `resolved_cwd` is None the child inherits the parent
+        // process's cwd, which is what codex stamps into the rollout
+        // file's `payload.cwd`. Match the watcher's expected cwd to
+        // the same fallback so chats without an explicit cwd still
+        // become resumable.
+        if runner.runtime == "codex" && plan.assigned_key.is_none() {
+            if let Some(cwd) = capture_cwd(resolved_cwd.clone()) {
+                crate::session::codex_capture::spawn_capture(
+                    session_id.clone(),
+                    cwd,
+                    started_at_dt,
+                    Arc::clone(&pool),
+                );
+            }
         }
 
         emit_runner_activity(&pool, runner, events.as_ref());
 
         Ok(SpawnedSession {
             id: session_id,
+            mission_id: None,
+            runner_id: runner.id.clone(),
+            handle: runner.handle.clone(),
+            pid,
+        })
+    }
+
+    /// Respawn a PTY for an existing direct-chat session row, reusing
+    /// its id and (when present) its `agent_session_key`. The row is
+    /// updated in place: status flips back to running, pid/started_at
+    /// are refreshed, stopped_at clears, and the agent key is rewritten
+    /// (claude-code preserves the prior UUID; codex would persist a
+    /// captured key once the capture path lands).
+    ///
+    /// Refused for:
+    ///   - rows that don't exist
+    ///   - rows already running (caller should attach, not resume)
+    ///   - mission-scoped rows (mission_start owns those — see
+    ///     docs/impls/direct-chats.md for why mission resume is a
+    ///     separate, deferred problem)
+    ///   - archived rows (un-archive first)
+    #[allow(clippy::too_many_arguments)]
+    pub fn resume(
+        self: &Arc<Self>,
+        session_id: &str,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        app_data_dir: &Path,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+    ) -> Result<SpawnedSession> {
+        // Atomically claim this session id for the resume. If another
+        // resume is already in flight (e.g. two fast clicks, two
+        // windows), refuse rather than racing two PTY spawns against
+        // the same row. The claim guard releases on every exit path
+        // via Drop.
+        let _claim = {
+            let mut set = self.resuming_claims.lock().unwrap();
+            if !set.insert(session_id.to_string()) {
+                return Err(Error::msg(format!(
+                    "session {session_id} is already being resumed"
+                )));
+            }
+            ResumeClaim {
+                mgr: Arc::clone(self),
+                session_id: session_id.to_string(),
+            }
+        };
+
+        // Validate the row + collect everything we need under a single
+        // short-lived connection. We deliberately don't hold the conn
+        // across the spawn (which itself grabs a pool slot for the
+        // status update).
+        struct Snapshot {
+            runner_id: String,
+            cwd: Option<String>,
+            agent_session_key: Option<String>,
+        }
+        let snap = {
+            let conn = pool.get()?;
+            let mut stmt = conn.prepare(
+                "SELECT runner_id, mission_id, cwd, status, archived_at,
+                        agent_session_key
+                   FROM sessions WHERE id = ?1",
+            )?;
+            let row = stmt
+                .query_row(params![session_id], |r| {
+                    Ok((
+                        r.get::<_, String>("runner_id")?,
+                        r.get::<_, Option<String>>("mission_id")?,
+                        r.get::<_, Option<String>>("cwd")?,
+                        r.get::<_, String>("status")?,
+                        r.get::<_, Option<String>>("archived_at")?,
+                        r.get::<_, Option<String>>("agent_session_key")?,
+                    ))
+                })
+                .map_err(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => {
+                        Error::msg(format!("session not found: {session_id}"))
+                    }
+                    other => other.into(),
+                })?;
+            let (runner_id, mission_id, cwd, status, archived_at, agent_session_key) = row;
+            if mission_id.is_some() {
+                return Err(Error::msg(
+                    "mission sessions cannot be resumed via session_resume — \
+                     mission_start owns their lifecycle"
+                        .to_string(),
+                ));
+            }
+            if status == "running" {
+                return Err(Error::msg(format!(
+                    "session {session_id} is already running — attach instead"
+                )));
+            }
+            if archived_at.is_some() {
+                return Err(Error::msg(format!(
+                    "session {session_id} is archived — un-archive before resuming"
+                )));
+            }
+            Snapshot {
+                runner_id,
+                cwd,
+                agent_session_key,
+            }
+        };
+
+        // Pull the runner config fresh — the user may have edited it
+        // since the session last ran, and we want the current command /
+        // args / env on respawn.
+        let runner = {
+            let conn = pool.get()?;
+            crate::commands::runner::get(&conn, &snap.runner_id)?
+        };
+
+        let pty_system = portable_pty::native_pty_system();
+        let opened = PtySize {
+            rows: rows.unwrap_or(24),
+            cols: cols.unwrap_or(80),
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        let pair = pty_system
+            .openpty(opened)
+            .map_err(|e| Error::msg(format!("openpty: {e}")))?;
+
+        // Resume plan: hand the prior agent_session_key back to the
+        // runtime adapter so claude-code uses `--resume <uuid>` and
+        // codex (once capture lands) uses `codex resume <uuid>`. If the
+        // row's key is NULL (e.g. shell runtime, or codex pre-capture)
+        // we just respawn fresh — same agent, no conversation state.
+        let plan =
+            crate::router::runtime::resume_plan(&runner.runtime, snap.agent_session_key.as_deref());
+
+        let mut cmd = CommandBuilder::new(&runner.command);
+        if plan.prepend {
+            for extra in &plan.args {
+                cmd.arg(extra);
+            }
+        }
+        cmd.args(&runner.args);
+        if !plan.prepend {
+            for extra in &plan.args {
+                cmd.arg(extra);
+            }
+        }
+        for extra in crate::router::runtime::system_prompt_args(
+            &runner.runtime,
+            runner.system_prompt.as_deref(),
+        ) {
+            cmd.arg(extra);
+        }
+
+        // Working directory: same precedence as `spawn_direct` — the
+        // row's stored cwd (per-chat override the user picked when
+        // starting the chat) wins; otherwise fall back to the
+        // runner's current `working_dir`. NULL on both means inherit
+        // parent's cwd. Without the fallback, sessions originally
+        // spawned with no explicit cwd would land in the dev server's
+        // cwd on every resume, ignoring later edits to the runner.
+        let resolved_cwd: Option<String> = snap.cwd.clone().or_else(|| runner.working_dir.clone());
+        if let Some(wd) = resolved_cwd.as_deref() {
+            cmd.cwd(wd);
+        }
+
+        for (k, v) in &runner.env {
+            cmd.env(k, v);
+        }
+        let bin_dir = app_data_dir.join("bin");
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        let parent_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut new_path = std::ffi::OsString::from(bin_dir.as_os_str());
+        if !parent_path.is_empty() {
+            new_path.push(std::ffi::OsString::from(sep.to_string()));
+            new_path.push(parent_path);
+        }
+        cmd.env("PATH", new_path);
+        cmd.env("RUNNER_HANDLE", &runner.handle);
+        cmd.env("COLUMNS", opened.cols.to_string());
+        cmd.env("LINES", opened.rows.to_string());
+        cmd.env("TERM", "xterm-256color");
+
+        let mut child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| Error::msg(format!("spawn {}: {e}", runner.command)))?;
+        drop(pair.slave);
+
+        let pid = child.process_id();
+        let started_at_dt = Utc::now();
+        let started_at = started_at_dt.to_rfc3339();
+
+        let setup_res: Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> = (|| {
+            let reader = pair
+                .master
+                .try_clone_reader()
+                .map_err(|e| Error::msg(format!("clone reader: {e}")))?;
+            let writer = pair
+                .master
+                .take_writer()
+                .map_err(|e| Error::msg(format!("take writer: {e}")))?;
+            let conn = pool.get()?;
+            // UPDATE in place: same id, same conversation thread,
+            // refreshed runtime metadata. agent_session_key is rewritten
+            // to whatever the adapter chose — claude-code preserves the
+            // prior UUID; codex's adapter only assigns a key when
+            // resuming with a known one (`codex resume <uuid>`). For a
+            // fresh codex spawn (no prior key), assigned_key is None
+            // and the watcher kicked off below captures codex's
+            // auto-generated id post-spawn.
+            conn.execute(
+                "UPDATE sessions
+                    SET status = 'running',
+                        pid = ?2,
+                        started_at = ?3,
+                        stopped_at = NULL,
+                        agent_session_key = COALESCE(?4, agent_session_key)
+                  WHERE id = ?1",
+                params![session_id, pid, started_at, plan.assigned_key],
+            )?;
+            Ok((reader, writer))
+        })();
+        let (reader, writer) = match setup_res {
+            Ok(rw) => rw,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
+        };
+
+        self.sessions.lock().unwrap().insert(
+            session_id.to_string(),
+            SessionHandle {
+                id: session_id.to_string(),
+                mission_id: None,
+                runner_id: runner.id.clone(),
+                master: Some(pair.master),
+                writer: Mutex::new(writer),
+                pid,
+                reader: None,
+            },
+        );
+
+        // Drop the prior session's output buffer just before the
+        // reader thread starts pumping chunks for the new PTY. The
+        // monotonic seq counter is intentionally kept (so the new
+        // chunk seq continues at `last + 1` and the frontend's
+        // seq-merge filter doesn't drop the head of post-resume
+        // output). Purging here — after the spawn + DB UPDATE
+        // succeeded — ensures we don't wipe the buffer on a path
+        // that ends up returning Err.
+        self.purge_output_buffer(session_id);
+
+        let reader_handle = self.start_reader_thread(
+            session_id.to_string(),
+            None,
+            child,
+            reader,
+            Arc::clone(&pool),
+            Arc::clone(&events),
+            runner.clone(),
+            plan.resuming,
+        );
+        if let Some(h) = self.sessions.lock().unwrap().get_mut(session_id) {
+            h.reader = Some(reader_handle);
+        }
+
+        // Same codex post-spawn capture as `spawn_direct`: when we
+        // respawn a codex chat that has no agent_session_key on the
+        // row yet (every prior codex chat, until this lands), the
+        // adapter starts fresh and the watcher writes the new id so
+        // the *next* resume drives `codex resume <uuid>`.
+        if runner.runtime == "codex" && plan.assigned_key.is_none() {
+            if let Some(cwd) = capture_cwd(resolved_cwd.clone()) {
+                crate::session::codex_capture::spawn_capture(
+                    session_id.to_string(),
+                    cwd,
+                    started_at_dt,
+                    Arc::clone(&pool),
+                );
+            }
+        }
+
+        emit_runner_activity(&pool, &runner, events.as_ref());
+
+        Ok(SpawnedSession {
+            id: session_id.to_string(),
             mission_id: None,
             runner_id: runner.id.clone(),
             handle: runner.handle.clone(),
@@ -532,8 +953,10 @@ impl SessionManager {
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
         runner: Runner,
+        resuming: bool,
     ) -> thread::JoinHandle<()> {
         let manager_t: Arc<SessionManager> = Arc::clone(self);
+        let started_at = std::time::Instant::now();
         thread::spawn(move || {
             let exit = drain_pty_and_reap(
                 reader,
@@ -544,17 +967,48 @@ impl SessionManager {
                 events.as_ref(),
             );
             let _ = manager_t.forget(&session_id);
+            // Resume failure heuristic: we asked the agent to resume a
+            // prior conversation, but the child died fast and unhappy.
+            // Either the agent rejected the prior id, or the runtime
+            // doesn't actually have that conversation on disk anymore.
+            // Wipe `agent_session_key` on this row so the next lookup
+            // skips it and the next spawn falls back to a fresh
+            // conversation; surface a banner so the user knows.
+            let resume_failed = resuming
+                && !exit.success
+                && started_at.elapsed() < std::time::Duration::from_secs(3);
             if let Ok(conn) = pool.get() {
-                let _ = conn.execute(
-                    "UPDATE sessions
-                        SET status = ?1, stopped_at = ?2
-                      WHERE id = ?3",
-                    params![
-                        if exit.success { "stopped" } else { "crashed" },
-                        Utc::now().to_rfc3339(),
-                        session_id,
-                    ],
-                );
+                if resume_failed {
+                    let _ = conn.execute(
+                        "UPDATE sessions
+                            SET status = ?1, stopped_at = ?2,
+                                agent_session_key = NULL
+                          WHERE id = ?3",
+                        params!["crashed", Utc::now().to_rfc3339(), session_id],
+                    );
+                } else {
+                    let _ = conn.execute(
+                        "UPDATE sessions
+                            SET status = ?1, stopped_at = ?2
+                          WHERE id = ?3",
+                        params![
+                            if exit.success { "stopped" } else { "crashed" },
+                            Utc::now().to_rfc3339(),
+                            session_id,
+                        ],
+                    );
+                }
+            }
+            if resume_failed {
+                events.warning(&WarningEvent {
+                    session_id: session_id.clone(),
+                    mission_id: mission_id.clone(),
+                    kind: "resume_failed".into(),
+                    message: format!(
+                        "Could not resume the previous {} conversation; the next launch will start fresh.",
+                        runner.runtime
+                    ),
+                });
             }
             // Activity dropped — emit before `exit` so the Runners list
             // sees the new counts before any session_id-keyed UI cleans up.
@@ -704,10 +1158,40 @@ impl SessionManager {
     }
 
     fn forget(&self, session_id: &str) -> Result<()> {
+        // Only the live PTY handle is dropped here. We deliberately keep
+        // `output_buffers` and `output_seq` alive so that:
+        //   - `session_output_snapshot` still returns the dead session's
+        //     scrollback after kill, so navigating off the chat and
+        //     coming back doesn't blank the terminal.
+        //   - When the row is later resumed via `SessionManager::resume`,
+        //     the new PTY's first chunk continues at `seq = last + 1`
+        //     instead of restarting at 1, which the frontend's
+        //     seq-merge filter (`seq <= lastWrittenSeq`) would silently
+        //     drop, losing the entire post-resume head of output.
+        // Use `purge_session_buffers` for explicit cleanup paths
+        // (archive, runner delete).
         self.sessions.lock().unwrap().remove(session_id);
+        Ok(())
+    }
+
+    /// Drop the in-memory output buffer + seq counter for a session.
+    /// Called when the session is genuinely going away (archive, runner
+    /// delete) so the bounded ring buffer doesn't accumulate forever.
+    /// Safe to call on a session that's never written output.
+    pub fn purge_session_buffers(&self, session_id: &str) {
         self.output_buffers.lock().unwrap().remove(session_id);
         self.output_seq.lock().unwrap().remove(session_id);
-        Ok(())
+    }
+
+    /// Drop only the output buffer for a session, keeping the seq
+    /// counter. Used by `resume`: clearing the buffer means the
+    /// post-resume snapshot is fresh (no double banner / stacked
+    /// agent output on remount), while preserving the monotonic seq
+    /// means the new PTY's first chunk is `last + 1` rather than
+    /// `1` — which the frontend's `seq <= lastWrittenSeq` filter
+    /// would otherwise drop.
+    pub fn purge_output_buffer(&self, session_id: &str) {
+        self.output_buffers.lock().unwrap().remove(session_id);
     }
 
     fn record_output(
@@ -744,6 +1228,21 @@ impl SessionManager {
 /// `runner/activity` event. Best-effort: if the DB roundtrip fails we drop
 /// the emission rather than failing the spawn/reap path. Runners list will
 /// reconcile via the next emission or a manual refresh.
+/// Resolve the cwd the codex_capture watcher should match against,
+/// falling back to the parent process's cwd when the spawn didn't
+/// set one (the child inherits parent's cwd, which is what codex
+/// stamps into the rollout's `payload.cwd`).
+fn capture_cwd(explicit: Option<String>) -> Option<String> {
+    if let Some(cwd) = explicit {
+        if !cwd.is_empty() {
+            return Some(cwd);
+        }
+    }
+    std::env::current_dir()
+        .ok()
+        .and_then(|p| p.into_os_string().into_string().ok())
+}
+
 fn emit_runner_activity(pool: &DbPool, runner: &Runner, events: &dyn SessionEvents) {
     let Ok(conn) = pool.get() else { return };
     let active_sessions: i64 = conn
@@ -1244,10 +1743,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
 
-        assert!(
-            mgr.output_snapshot(&spawned.id).is_empty(),
-            "terminal output buffer should be cleared after session exit"
-        );
+        // Buffer survives the PTY exit so a remount of the chat (or
+        // a navigate-away-and-back) can still replay the dead
+        // session's scrollback via `session_output_snapshot`. The
+        // explicit cleanup path is `purge_session_buffers`.
 
         // Activity emissions: at least one on spawn (count=1), and one on
         // reap (count=0). We don't pin exact counts — the spawn-time emit
@@ -1319,9 +1818,252 @@ mod tests {
         );
 
         mgr.kill(&spawned.id).unwrap();
+        // After kill the buffer is intentionally preserved so a
+        // remount can replay the dead session's scrollback. Explicit
+        // cleanup is via `purge_session_buffers`.
+        assert!(
+            !mgr.output_snapshot(&spawned.id).is_empty(),
+            "kill must keep the output buffer for snapshot replay"
+        );
+        mgr.purge_session_buffers(&spawned.id);
         assert!(
             mgr.output_snapshot(&spawned.id).is_empty(),
-            "forget must drop terminal output buffers"
+            "purge_session_buffers must drop the buffer"
         );
+    }
+
+    #[test]
+    fn resume_reuses_row_and_preserves_agent_session_key() {
+        // Multi-chat-per-runner contract: a direct chat IS a sessions
+        // row. spawn_direct creates the row and the agent CLI's UUID
+        // (for claude-code; shell here just exits). After kill, resume
+        // respawns the *same* row — same id, same agent_session_key —
+        // and flips status back to running. See docs/impls/direct-chats.md.
+        let pool = pool_with_schema();
+        let now = Utc::now().to_rfc3339();
+        let runner_id = ulid::Ulid::new().to_string();
+        {
+            let conn = pool.get().unwrap();
+            // Use claude-code runtime so resume_plan self-assigns a
+            // UUID and persists it. We don't actually exec claude here —
+            // the spawn path uses runner.command (set to /bin/sh) so
+            // the test runs without external deps.
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, role, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'resumer', 'R', 'test', 'claude-code', '/bin/sh',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+                params![runner_id, now],
+            )
+            .unwrap();
+        }
+        let mut runner = runner("/bin/sh", &["-c", "echo first"]);
+        runner.id = runner_id.clone();
+        runner.handle = "resumer".into();
+        runner.runtime = "claude-code".into();
+
+        let mgr = SessionManager::new();
+        let spawned = mgr
+            .spawn_direct(
+                &runner,
+                Some("/tmp"),
+                None,
+                None,
+                std::path::Path::new("/tmp"),
+                Arc::clone(&pool),
+                capture(),
+            )
+            .unwrap();
+        let session_id = spawned.id.clone();
+
+        // Wait for the child to exit naturally so the row's status
+        // flips to stopped before we attempt resume.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let conn = pool.get().unwrap();
+            let status: String = conn
+                .query_row(
+                    "SELECT status FROM sessions WHERE id = ?1",
+                    params![&session_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if status != "running" {
+                break;
+            }
+            if Instant::now() > deadline {
+                panic!("first spawn never exited");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        // The claude-code adapter persisted a UUID under
+        // `--session-id`; capture it for the resume comparison.
+        let key_before: Option<String> = {
+            let conn = pool.get().unwrap();
+            conn.query_row(
+                "SELECT agent_session_key FROM sessions WHERE id = ?1",
+                params![&session_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(
+            key_before.is_some(),
+            "claude-code spawn must persist an agent_session_key for later resume"
+        );
+
+        // Resume: same row, same id. Use a runner pointing at a
+        // different cmd to confirm the resume reads the *current*
+        // runner config from the row.
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "UPDATE runners SET command = '/bin/sh',
+                                    args_json = ?2
+                  WHERE id = ?1",
+                params![runner_id, "[\"-c\",\"echo resumed\"]"],
+            )
+            .unwrap();
+        }
+        let resumed = mgr
+            .resume(
+                &session_id,
+                None,
+                None,
+                std::path::Path::new("/tmp"),
+                Arc::clone(&pool),
+                capture(),
+            )
+            .unwrap();
+        assert_eq!(resumed.id, session_id, "resume must reuse the row id");
+
+        // Wait for the resumed child to exit, then assert the key
+        // survived. claude-code's resume_plan re-uses the same UUID, so
+        // the column must be non-null and match the prior value.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let conn = pool.get().unwrap();
+            let status: String = conn
+                .query_row(
+                    "SELECT status FROM sessions WHERE id = ?1",
+                    params![&session_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if status != "running" {
+                break;
+            }
+            if Instant::now() > deadline {
+                panic!("resumed spawn never exited");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let key_after: Option<String> = {
+            let conn = pool.get().unwrap();
+            conn.query_row(
+                "SELECT agent_session_key FROM sessions WHERE id = ?1",
+                params![&session_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            key_after, key_before,
+            "resume must preserve agent_session_key for claude-code"
+        );
+
+        // Only one row survives: resume must not have INSERTed a
+        // duplicate.
+        let count: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE runner_id = ?1",
+                params![runner_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "resume must update in place, not insert");
+    }
+
+    #[test]
+    fn resume_refuses_running_mission_and_archived_rows() {
+        let pool = pool_with_schema();
+        let now = Utc::now().to_rfc3339();
+        let runner_id = ulid::Ulid::new().to_string();
+        let mission_id = ulid::Ulid::new().to_string();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO crews (id, name, created_at, updated_at)
+                 VALUES ('c-resume', 'c', ?1, ?1)",
+                params![now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, role, runtime, command,
+                     created_at, updated_at)
+                 VALUES (?1, 'r', 'R', 'test', 'shell', '/bin/sh', ?2, ?2)",
+                params![runner_id, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO missions
+                    (id, crew_id, title, status, started_at)
+                 VALUES (?1, 'c-resume', 't', 'running', ?2)",
+                params![mission_id, now],
+            )
+            .unwrap();
+            // Mission session.
+            conn.execute(
+                "INSERT INTO sessions
+                    (id, mission_id, runner_id, status, started_at)
+                 VALUES ('mission-sid', ?1, ?2, 'stopped', ?3)",
+                params![mission_id, runner_id, now],
+            )
+            .unwrap();
+            // Already-running direct session.
+            conn.execute(
+                "INSERT INTO sessions
+                    (id, mission_id, runner_id, status, started_at)
+                 VALUES ('running-sid', NULL, ?1, 'running', ?2)",
+                params![runner_id, now],
+            )
+            .unwrap();
+            // Archived direct session.
+            conn.execute(
+                "INSERT INTO sessions
+                    (id, mission_id, runner_id, status, started_at, archived_at)
+                 VALUES ('archived-sid', NULL, ?1, 'stopped', ?2, ?2)",
+                params![runner_id, now],
+            )
+            .unwrap();
+        }
+        let mgr = SessionManager::new();
+        for (sid, needle) in [
+            ("mission-sid", "mission_start"),
+            ("running-sid", "already running"),
+            ("archived-sid", "archived"),
+        ] {
+            let err = mgr
+                .resume(
+                    sid,
+                    None,
+                    None,
+                    std::path::Path::new("/tmp"),
+                    Arc::clone(&pool),
+                    capture(),
+                )
+                .unwrap_err();
+            let msg = format!("{err}");
+            assert!(
+                msg.contains(needle),
+                "resume({sid}) should reject with `{needle}`, got `{msg}`"
+            );
+        }
     }
 }

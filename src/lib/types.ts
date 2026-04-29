@@ -81,6 +81,16 @@ export interface RunnerActivityEvent {
   direct_session_id: string | null;
 }
 
+// Payload for `session/warning` — non-fatal advisory the UI renders as a
+// banner. Today the only producer is the agent-resume fallback path; see
+// migrations/0002_agent_session_key.sql.
+export interface WarningEvent {
+  session_id: string;
+  mission_id: string | null;
+  kind: string;
+  message: string;
+}
+
 // Returned by session_start_direct (and by mission_start's session list).
 // mission_id is null for the direct flavor.
 export interface SpawnedSession {

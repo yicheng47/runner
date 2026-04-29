@@ -29,6 +29,7 @@ r2d2_sqlite = "0.25"
 chrono = { workspace = true }
 thiserror = { workspace = true }
 ulid = { workspace = true }
+uuid = { workspace = true }
 # Regular dep (not dev-only) because the sidecar writer needs
 # NamedTempFile::persist for a Windows-safe atomic replace.
 tempfile = "3"

@@ -43,6 +43,18 @@ interface RunnerTerminalProps {
    *  scrollback survives tab-switching, but only the active one needs to
    *  refresh + claim focus when the user comes back to it. */
   active?: boolean;
+  /** Stop forwarding keystrokes / resize events to the backend.
+   *  Set by the parent when the bound session has exited so stray
+   *  input on the dimmed pane doesn't surface a "session not found"
+   *  error from the now-empty live map. The xterm buffer stays
+   *  visible (and scrollable) — only the input/resize pipes shut
+   *  off. */
+  disabled?: boolean;
+  /** When this number increments, the xterm buffer is reset to a
+   *  blank canvas. Used by the parent before driving a resume so the
+   *  agent's repaint lands on an empty terminal instead of stacking
+   *  on top of the prior session's banner + scrollback. */
+  clearVersion?: number;
 }
 
 const TERMINAL_THEME = {
@@ -83,6 +95,8 @@ export function RunnerTerminal({
   onExit,
   onError,
   active,
+  disabled,
+  clearVersion,
 }: RunnerTerminalProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -91,6 +105,10 @@ export function RunnerTerminal({
   const onExitRef = useRef(onExit);
   const onErrorRef = useRef(onError);
   const activeRef = useRef(active ?? false);
+  // Mirrors the `disabled` prop into a ref so the onData/resize
+  // closures don't capture a stale value across the long-lived
+  // terminal effect.
+  const disabledRef = useRef<boolean>(disabled ?? false);
 
   // Keep the latest sessionId visible to the data/resize callbacks without
   // re-creating the terminal on prop change. The session listener below
@@ -99,6 +117,21 @@ export function RunnerTerminal({
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  useEffect(() => {
+    disabledRef.current = disabled ?? false;
+  }, [disabled]);
+
+  // Parent-driven canvas wipe (used by the resume flow). The first
+  // render's value is the initial — we don't want to reset on mount,
+  // only on subsequent bumps. We achieve that by skipping the very
+  // first effect run via a ref.
+  const lastClearVersionRef = useRef<number | undefined>(clearVersion);
+  useEffect(() => {
+    if (lastClearVersionRef.current === clearVersion) return;
+    lastClearVersionRef.current = clearVersion;
+    termRef.current?.reset();
+  }, [clearVersion]);
 
   useEffect(() => {
     onExitRef.current = onExit;
@@ -146,7 +179,7 @@ export function RunnerTerminal({
 
     const onDataDisposable = term.onData((data) => {
       const sid = sessionIdRef.current;
-      if (!sid) return;
+      if (!sid || disabledRef.current) return;
       void api.session.injectStdin(sid, data).catch((e) => {
         onErrorRef.current?.(String(e));
       });
@@ -155,7 +188,7 @@ export function RunnerTerminal({
     const pushSize = () => {
       const t = termRef.current;
       const sid = sessionIdRef.current;
-      if (!t || !sid) return;
+      if (!t || !sid || disabledRef.current) return;
       void api.session.resize(sid, t.cols, t.rows).catch(() => {
         // session may have exited
       });

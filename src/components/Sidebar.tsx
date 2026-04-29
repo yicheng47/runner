@@ -16,6 +16,7 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type ComponentType,
   type ReactNode,
@@ -28,33 +29,26 @@ import {
 } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import {
+  Archive,
   ChevronDown,
   ChevronRight,
+  MoreHorizontal,
+  Pin,
+  PinOff,
   Plus,
   Search,
+  SquarePen,
   Terminal,
   Users,
 } from "lucide-react";
 
-import { api } from "../lib/api";
+import { api, type DirectSessionEntry } from "../lib/api";
 import {
   clearActiveSession,
   setActiveSession,
 } from "../lib/activeSessions";
-import type {
-  AppendedEvent,
-  MissionSummary,
-  RunnerActivityEvent,
-  RunnerWithActivity,
-} from "../lib/types";
+import type { AppendedEvent, MissionSummary } from "../lib/types";
 import { StartMissionModal } from "./StartMissionModal";
-
-interface ActiveRunner {
-  id: string;
-  handle: string;
-  active_missions: number;
-  direct_session_id: string;
-}
 
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 480;
@@ -98,7 +92,12 @@ export function Sidebar() {
 
   // Runtime state.
   const [missions, setMissions] = useState<MissionSummary[]>([]);
-  const [active, setActive] = useState<ActiveRunner[]>([]);
+  // Flat list of un-archived direct chats. Running ones first, then
+  // stopped/crashed ordered by recency. Refreshed on session/exit and
+  // runner/activity events. See docs/impls/direct-chats.md.
+  const [directSessions, setDirectSessions] = useState<DirectSessionEntry[]>(
+    [],
+  );
 
   // Section toggles, persisted so users don't have to re-expand each visit.
   const [missionsOpen, setMissionsOpen] = useState<boolean>(() =>
@@ -110,12 +109,35 @@ export function Sidebar() {
 
   const [creatingMission, setCreatingMission] = useState(false);
 
+  // Per-row context menu state. The Pencil design (P5CLA inside u6woG)
+  // shows a floating menu with Pin / Rename / Archive next to a session
+  // row. We anchor it by clientX/Y so right-click and ellipsis-button
+  // both work without per-row refs. `null` = closed.
+  const [sessionMenu, setSessionMenu] = useState<{
+    session: DirectSessionEntry;
+    x: number;
+    y: number;
+  } | null>(null);
+  // Inline rename: when set, the row whose id matches renders an input
+  // instead of its label. Submit (Enter) → session_rename + refresh.
+  // Cancel (Escape / blur with no change) → close without write.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+
   // Identify the currently-open runtime so we can highlight the matching
   // sidebar row. `useMatch` returns null when the URL doesn't match.
   const missionMatch = useMatch("/missions/:id");
   const currentMissionId = missionMatch?.params.id ?? null;
   const chatMatch = useMatch("/runners/:handle/chat");
-  const currentChatHandle = chatMatch?.params.handle ?? null;
+  // Which direct-chat session is currently in view. The chat route
+  // uses :handle in the URL but a runner can host multiple chats
+  // (see docs/impls/direct-chats.md), so highlight by session id —
+  // matching on handle alone would light up every row sharing the
+  // same runner. The session id rides on `location.state` from the
+  // navigation that opened the chat.
+  const currentChatSessionId =
+    chatMatch && typeof location.state === "object" && location.state !== null
+      ? ((location.state as { sessionId?: string }).sessionId ?? null)
+      : null;
 
   const refreshMissions = useCallback(async () => {
     try {
@@ -163,68 +185,68 @@ export function Sidebar() {
     };
   }, [refreshMissions]);
 
-  // Direct-chat list: same listener pattern the previous Sidebar used.
-  useEffect(() => {
-    void api.runner.listWithActivity().then((rows: RunnerWithActivity[]) => {
-      setActive(
-        rows
-          .filter((r) => r.direct_session_id !== null)
-          .map((r) => ({
-            id: r.id,
-            handle: r.handle,
-            active_missions: r.active_missions,
-            direct_session_id: r.direct_session_id as string,
-          })),
-      );
+  // Direct-chat tray: pull the flat list of un-archived sessions and
+  // refresh on lifecycle events. The activeSessions registry still
+  // tracks "the currently-running session for this handle" so direct
+  // chats opened by clicking a row find the live session id; we keep
+  // it in sync with the running rows below.
+  const refreshDirectSessions = useCallback(async () => {
+    try {
+      const rows = await api.session.listRecentDirect();
+      setDirectSessions(rows);
+      // Activity registry: handle → live running session id (used by
+      // RunnerChat's no-state attach path). Pick the first running row
+      // per handle; clear handles that no longer have any.
+      const liveByHandle = new Map<string, string>();
       for (const r of rows) {
-        if (r.direct_session_id) {
-          setActiveSession(r.handle, r.direct_session_id);
-        } else {
-          clearActiveSession(r.handle);
+        if (r.status === "running" && !liveByHandle.has(r.handle)) {
+          liveByHandle.set(r.handle, r.session_id);
         }
       }
-    });
+      const seenHandles = new Set(rows.map((r) => r.handle));
+      for (const handle of seenHandles) {
+        const live = liveByHandle.get(handle);
+        if (live) setActiveSession(handle, live);
+        else clearActiveSession(handle);
+      }
+    } catch (e) {
+      console.error("sidebar: refreshDirectSessions failed", e);
+    }
   }, []);
 
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
+    void refreshDirectSessions();
+  }, [refreshDirectSessions]);
+
+  // session/exit fires when a running PTY reaps (live → stopped flip).
+  // runner/activity fires on every spawn/reap and is our cue that a
+  // new direct chat row may have appeared. Both refresh the same list.
+  useEffect(() => {
+    let unlistenExit: (() => void) | null = null;
+    let unlistenActivity: (() => void) | null = null;
     let cancelled = false;
-    void listen<RunnerActivityEvent>("runner/activity", (event) => {
-      const ev = event.payload;
-      if (ev.direct_session_id) {
-        setActiveSession(ev.handle, ev.direct_session_id);
-      } else {
-        clearActiveSession(ev.handle);
-      }
-      setActive((prev) => {
-        const without = prev.filter((r) => r.id !== ev.runner_id);
-        if (!ev.direct_session_id) return without;
-        return [
-          ...without,
-          {
-            id: ev.runner_id,
-            handle: ev.handle,
-            active_missions: ev.active_missions,
-            direct_session_id: ev.direct_session_id,
-          },
-        ].sort((a, b) => a.handle.localeCompare(b.handle));
-      });
-    }).then((fn) => {
+    void Promise.all([
+      listen("session/exit", () => {
+        void refreshDirectSessions();
+      }),
+      listen("runner/activity", () => {
+        void refreshDirectSessions();
+      }),
+    ]).then(([fnExit, fnActivity]) => {
       if (cancelled) {
-        fn();
+        fnExit();
+        fnActivity();
         return;
       }
-      unlisten = fn;
+      unlistenExit = fnExit;
+      unlistenActivity = fnActivity;
     });
     return () => {
       cancelled = true;
-      unlisten?.();
+      unlistenExit?.();
+      unlistenActivity?.();
     };
-  }, []);
-
-  // Direct-chat list is always shown unfiltered. Filtering / search lives
-  // on the WORKSPACE › search affordance at the top of the sidebar.
-  const filteredDirect = active;
+  }, [refreshDirectSessions]);
 
   const openMission = useCallback(
     (id: string) => {
@@ -233,12 +255,88 @@ export function Sidebar() {
     [navigate],
   );
 
+  // Open the per-row context menu (Pin / Rename / Archive) at the
+  // pointer's position. Used by both right-click on the row and click
+  // on the trailing ellipsis button. We clamp to the viewport in the
+  // render path so the menu stays visible near the right edge.
+  const openSessionMenu = useCallback(
+    (session: DirectSessionEntry, anchor: { x: number; y: number }) => {
+      setSessionMenu({ session, x: anchor.x, y: anchor.y });
+    },
+    [],
+  );
+  const closeSessionMenu = useCallback(() => setSessionMenu(null), []);
+
+  const togglePin = useCallback(
+    async (session: DirectSessionEntry) => {
+      try {
+        await api.session.pin(session.session_id, !session.pinned);
+        await refreshDirectSessions();
+      } catch (e) {
+        console.error("sidebar: session_pin failed", e);
+      }
+    },
+    [refreshDirectSessions],
+  );
+
+  const archiveSession = useCallback(
+    async (session: DirectSessionEntry) => {
+      // Backend refuses to archive a running session; kill first if
+      // the user explicitly chose Archive on a live row.
+      try {
+        if (session.status === "running") {
+          await api.session.kill(session.session_id);
+        }
+        await api.session.archive(session.session_id);
+        await refreshDirectSessions();
+      } catch (e) {
+        console.error("sidebar: session_archive failed", e);
+      }
+    },
+    [refreshDirectSessions],
+  );
+
+  const submitRename = useCallback(
+    async (sessionId: string, nextTitle: string | null) => {
+      try {
+        await api.session.rename(sessionId, nextTitle);
+        await refreshDirectSessions();
+      } catch (e) {
+        console.error("sidebar: session_rename failed", e);
+      } finally {
+        setRenamingId(null);
+      }
+    },
+    [refreshDirectSessions],
+  );
+
+  // Click on a SESSION row — always just navigate to the chat. The
+  // chat surface owns the running/stopped UI: a stopped session lands
+  // on a dimmed terminal with a "Session ended" overlay, and the user
+  // explicitly clicks **Resume** there to bring the PTY back. Earlier
+  // we auto-resumed on click, but that conflated "I want to look at
+  // this chat" with "I want to relaunch the agent" — the explicit
+  // Resume affordance avoids accidental respawns.
+  //
+  // We pass `sessionStatus` through navigation state so RunnerChat's
+  // attach path can seed the pane with the row's real status. Without
+  // it, the pane briefly renders as running and xterm can forward a
+  // keystroke to `session_inject_stdin` for a session that's no
+  // longer in the live map → "session not found" banner.
   const openDirectChat = useCallback(
-    (handle: string, sessionId: string) => {
-      const target = `/runners/${handle}/chat`;
-      setActiveSession(handle, sessionId);
+    (entry: DirectSessionEntry) => {
+      const target = `/runners/${entry.handle}/chat`;
+      // Only register a live link for running sessions; a stopped
+      // row's id is no longer attachable to a PTY, so the sidebar
+      // shouldn't claim it as the runner's "active" chat.
+      if (entry.status === "running") {
+        setActiveSession(entry.handle, entry.session_id);
+      }
       navigate(target, {
-        state: { sessionId },
+        state: {
+          sessionId: entry.session_id,
+          sessionStatus: entry.status,
+        },
         replace: location.pathname === target,
       });
     },
@@ -316,89 +414,102 @@ export function Sidebar() {
           </span>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-4">
-          <SectionHeader>WORKSPACE</SectionHeader>
-          <nav className="flex flex-col gap-0.5 px-3 pb-1">
-            <DisabledNavRow
-              icon={Search}
-              label="search"
-              hint="Coming soon"
+        <div className="flex min-h-0 flex-1 flex-col pb-4">
+          {/* WORKSPACE keeps natural height; doesn't compete for the
+              flex-share allotted to MISSION + SESSION. */}
+          <div className="shrink-0">
+            <SectionHeader>WORKSPACE</SectionHeader>
+            <nav className="flex flex-col gap-0.5 px-3 pb-1">
+              <DisabledNavRow
+                icon={Search}
+                label="search"
+                hint="Coming soon"
+              />
+              <NavRow icon={Terminal} to="/runners" label="runner" />
+              <NavRow icon={Users} to="/crews" label="crew" />
+            </nav>
+          </div>
+
+          <div className="h-5 shrink-0" />
+
+          {/* MISSION + SESSION always split the remaining vertical
+              space 1:2 (mission takes 1 share, session takes 2),
+              regardless of expand/collapse state. Collapsing a
+              section just hides its body — the section still claims
+              its share of height so the column rhythm doesn't jump
+              when toggling. Each expanded body scrolls independently
+              so a long SESSION list can't push MISSION off-screen. */}
+          <section className="flex min-h-0 flex-[1] basis-0 flex-col">
+            <CollapsibleSectionHeader
+              label="MISSION"
+              count={missions.length}
+              open={missionsOpen}
+              onToggle={toggleMissions}
+              onPlus={() => setCreatingMission(true)}
+              plusTitle="Start mission"
             />
-            <NavRow icon={Terminal} to="/runners" label="runner" />
-            <NavRow icon={Users} to="/crews" label="crew" />
-          </nav>
+            {missionsOpen ? (
+              <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1">
+                {missions.length === 0 ? (
+                  <p className="px-2.5 py-1 text-xs text-fg-3">
+                    No live missions.
+                  </p>
+                ) : (
+                  missions.map((m) => (
+                    <RuntimeRow
+                      key={m.id}
+                      selected={m.id === currentMissionId}
+                      label={m.title}
+                      onClick={() => openMission(m.id)}
+                      title={`${m.crew_name || ""}${
+                        m.pending_ask_count > 0
+                          ? ` · ${m.pending_ask_count} pending`
+                          : ""
+                      }`}
+                      pendingAsks={m.pending_ask_count}
+                    />
+                  ))
+                )}
+              </div>
+            ) : null}
+          </section>
 
-          <div className="h-5" />
+          <div className="h-8 shrink-0" />
 
-          <CollapsibleSectionHeader
-            label="MISSION"
-            count={missions.length}
-            open={missionsOpen}
-            onToggle={toggleMissions}
-            onPlus={() => setCreatingMission(true)}
-            plusTitle="Start mission"
-          />
-          {missionsOpen ? (
-            <div className="flex flex-col gap-0.5 px-3 pt-1">
-              {missions.length === 0 ? (
-                <p className="px-2.5 py-1 text-xs text-fg-3">
-                  No live missions.
-                </p>
-              ) : (
-                missions.map((m) => (
-                  <RuntimeRow
-                    key={m.id}
-                    selected={m.id === currentMissionId}
-                    label={m.title}
-                    onClick={() => openMission(m.id)}
-                    title={`${m.crew_name || ""}${
-                      m.pending_ask_count > 0
-                        ? ` · ${m.pending_ask_count} pending`
-                        : ""
-                    }`}
-                    pendingAsks={m.pending_ask_count}
-                  />
-                ))
-              )}
-            </div>
-          ) : null}
-
-          <div className="h-8" />
-
-          <CollapsibleSectionHeader
-            label="SESSION"
-            count={active.length}
-            open={sessionsOpen}
-            onToggle={toggleSessions}
-            onPlus={handleNewDirectChat}
-            plusTitle="Start a direct chat"
-          />
-          {sessionsOpen ? (
-            <div className="flex flex-col gap-0.5 px-3 pt-1">
-              {filteredDirect.length === 0 ? (
-                <p className="px-2.5 py-1 text-xs text-fg-3">
-                  No live sessions.
-                </p>
-              ) : (
-                filteredDirect.map((r) => (
-                  <RuntimeRow
-                    key={r.id}
-                    selected={r.handle === currentChatHandle}
-                    label={`@${r.handle} direct`}
-                    mono
-                    onClick={() => openDirectChat(r.handle, r.direct_session_id)}
-                    title={`direct chat${
-                      r.active_missions > 0
-                        ? ` · ${r.active_missions} mission${
-                            r.active_missions === 1 ? "" : "s"
-                          }`
-                        : ""
-                    }`}
-                  />
-                ))
-              )}
-            </div>
-          ) : null}
+          <section className="flex min-h-0 flex-[2] basis-0 flex-col">
+            <CollapsibleSectionHeader
+              label="SESSION"
+              count={directSessions.length}
+              open={sessionsOpen}
+              onToggle={toggleSessions}
+              onPlus={handleNewDirectChat}
+              plusTitle="Start a direct chat"
+            />
+            {sessionsOpen ? (
+              <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1">
+                {directSessions.length === 0 ? (
+                  <p className="px-2.5 py-1 text-xs text-fg-3">
+                    No direct sessions.
+                  </p>
+                ) : (
+                  directSessions.map((s) => (
+                    <SessionRow
+                      key={s.session_id}
+                      session={s}
+                      selected={s.session_id === currentChatSessionId}
+                      renaming={renamingId === s.session_id}
+                      onClick={() => openDirectChat(s)}
+                      onContextMenu={(anchor) => openSessionMenu(s, anchor)}
+                      onRenameSubmit={(nextTitle) =>
+                        void submitRename(s.session_id, nextTitle)
+                      }
+                      onRenameCancel={() => setRenamingId(null)}
+                    />
+                  ))
+                )}
+              </div>
+            ) : null}
+          </section>
         </div>
 
         <div
@@ -417,6 +528,27 @@ export function Sidebar() {
           navigate(`/missions/${mission.id}`);
         }}
       />
+
+      {sessionMenu ? (
+        <SessionContextMenu
+          session={sessionMenu.session}
+          anchorX={sessionMenu.x}
+          anchorY={sessionMenu.y}
+          onClose={closeSessionMenu}
+          onPin={() => {
+            void togglePin(sessionMenu.session);
+            closeSessionMenu();
+          }}
+          onRename={() => {
+            setRenamingId(sessionMenu.session.session_id);
+            closeSessionMenu();
+          }}
+          onArchive={() => {
+            void archiveSession(sessionMenu.session);
+            closeSessionMenu();
+          }}
+        />
+      ) : null}
     </>
   );
 }
@@ -532,6 +664,7 @@ function RuntimeRow({
   title,
   mono,
   pendingAsks,
+  dim,
 }: {
   selected: boolean;
   label: string;
@@ -539,6 +672,10 @@ function RuntimeRow({
   title?: string;
   mono?: boolean;
   pendingAsks?: number;
+  /** True when the row represents a non-running runtime (e.g. a stopped
+   *  direct chat that can be resumed). Mutes the status dot so the user
+   *  can tell which sessions are live at a glance. */
+  dim?: boolean;
 }) {
   return (
     <button
@@ -551,7 +688,11 @@ function RuntimeRow({
           : "border border-transparent text-fg-2 hover:text-fg"
       }`}
     >
-      <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+      <span
+        className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${
+          dim ? "bg-fg-3" : "bg-accent"
+        }`}
+      />
       <span className={`truncate flex-1 ${mono ? "font-mono" : ""}`}>
         {label}
       </span>
@@ -565,6 +706,242 @@ function RuntimeRow({
       ) : null}
     </button>
   );
+}
+
+// SESSION row: thin wrapper around RuntimeRow that adds (a) a trailing
+// ellipsis button to open the per-row context menu, (b) right-click on
+// the whole row as the same affordance, (c) an inline rename input
+// that swaps in for the label while editing, and (d) a pin glyph for
+// pinned rows. Mirrors the Pencil design `P5CLA` inside `u6woG`.
+function SessionRow({
+  session,
+  selected,
+  renaming,
+  onClick,
+  onContextMenu,
+  onRenameSubmit,
+  onRenameCancel,
+}: {
+  session: DirectSessionEntry;
+  selected: boolean;
+  renaming: boolean;
+  onClick: () => void;
+  onContextMenu: (anchor: { x: number; y: number }) => void;
+  onRenameSubmit: (nextTitle: string | null) => void;
+  onRenameCancel: () => void;
+}) {
+  const defaultLabel = `@${session.handle} · ${formatStartedAt(session)}`;
+  const label = session.title ?? defaultLabel;
+  const dim = session.status !== "running";
+  const tooltip = `@${session.handle} · ${session.status}${
+    session.status !== "running" && session.resumable ? " · resumable" : ""
+  }${session.pinned ? " · pinned" : ""}`;
+
+  if (renaming) {
+    // Inline rename input: pre-fills with the current label, submits
+    // on Enter, cancels on Escape or blur. Empty input means clear back
+    // to the auto-derived label.
+    return (
+      <div
+        className="flex items-center gap-2 rounded border border-line bg-bg px-2.5 py-1.5"
+        title={tooltip}
+      >
+        <span
+          className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${
+            dim ? "bg-fg-3" : "bg-accent"
+          }`}
+        />
+        <input
+          autoFocus
+          defaultValue={session.title ?? ""}
+          placeholder={defaultLabel}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              const next = (e.target as HTMLInputElement).value.trim();
+              onRenameSubmit(next.length === 0 ? null : next);
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onRenameCancel();
+            }
+          }}
+          onBlur={(e) => {
+            const next = e.target.value.trim();
+            const prior = session.title ?? "";
+            if (next === prior.trim()) {
+              onRenameCancel();
+            } else {
+              onRenameSubmit(next.length === 0 ? null : next);
+            }
+          }}
+          className="flex-1 truncate bg-transparent font-mono text-xs text-fg outline-none placeholder:text-fg-3"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`group flex w-full items-center gap-2 rounded border px-2.5 py-1.5 text-left text-xs transition-colors ${
+        selected
+          ? "border-line bg-bg text-fg"
+          : "border-transparent text-fg-2 hover:text-fg"
+      }`}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onContextMenu({ x: e.clientX, y: e.clientY });
+      }}
+    >
+      <button
+        type="button"
+        onClick={onClick}
+        title={tooltip}
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2"
+      >
+        <span
+          className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${
+            dim ? "bg-fg-3" : "bg-accent"
+          }`}
+        />
+        {session.pinned ? (
+          <Pin
+            aria-hidden
+            className="h-2.5 w-2.5 shrink-0 -rotate-45 text-fg-3"
+          />
+        ) : null}
+        <span className="truncate font-mono">{label}</span>
+      </button>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onContextMenu({ x: e.clientX, y: e.clientY });
+        }}
+        title="More actions"
+        aria-label="More actions"
+        className="cursor-pointer rounded p-0.5 text-fg-3 opacity-0 transition-opacity hover:bg-raised hover:text-fg group-hover:opacity-100 focus:opacity-100"
+      >
+        <MoreHorizontal aria-hidden className="h-3 w-3" />
+      </button>
+    </div>
+  );
+}
+
+// Floating action menu anchored at (anchorX, anchorY). Mirrors the
+// Pencil design `P5CLA`: 140px wide, 6px padding, 1px gap, lucide
+// icons, dark surface with a subtle drop shadow. Closes on outside
+// click, Escape, or any of its actions firing.
+function SessionContextMenu({
+  session,
+  anchorX,
+  anchorY,
+  onClose,
+  onPin,
+  onRename,
+  onArchive,
+}: {
+  session: DirectSessionEntry;
+  anchorX: number;
+  anchorY: number;
+  onClose: () => void;
+  onPin: () => void;
+  onRename: () => void;
+  onArchive: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ x: anchorX, y: anchorY });
+
+  // Clamp to viewport so the menu doesn't run off the right or bottom
+  // edge. Measure after mount, then translate if needed.
+  useEffect(() => {
+    if (!ref.current) return;
+    const rect = ref.current.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const margin = 4;
+    const x = Math.min(anchorX, vw - rect.width - margin);
+    const y = Math.min(anchorY, vh - rect.height - margin);
+    setPos({ x: Math.max(margin, x), y: Math.max(margin, y) });
+  }, [anchorX, anchorY]);
+
+  // Outside-click + Escape close.
+  useEffect(() => {
+    const onMouseDown = (e: MouseEvent) => {
+      if (!ref.current) return;
+      if (!ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  const isPinned = session.pinned;
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      style={{ position: "fixed", left: pos.x, top: pos.y, width: 140 }}
+      className="z-50 flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
+    >
+      <ContextMenuItem
+        icon={isPinned ? PinOff : Pin}
+        label={isPinned ? "Unpin" : "Pin"}
+        onClick={onPin}
+      />
+      <ContextMenuItem icon={SquarePen} label="Rename" onClick={onRename} />
+      <ContextMenuItem icon={Archive} label="Archive" onClick={onArchive} />
+    </div>
+  );
+}
+
+function ContextMenuItem({
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  icon: ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      className="flex cursor-pointer items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-fg hover:bg-line"
+    >
+      <Icon aria-hidden className="h-3.5 w-3.5 text-fg" />
+      <span>{label}</span>
+    </button>
+  );
+}
+
+// Cheap relative-ish label for sessions that have no user-set title.
+// Prefers the started_at column; falls back to stopped_at if both are
+// set (older rows stay sortable). Months are short to keep the row narrow.
+function formatStartedAt(s: DirectSessionEntry): string {
+  const ts = s.started_at ?? s.stopped_at;
+  if (!ts) return "session";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "session";
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (sameDay) {
+    return d.toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 // ---- chrome ------------------------------------------------------------

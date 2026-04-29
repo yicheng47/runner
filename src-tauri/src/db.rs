@@ -60,7 +60,13 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
     )
 }
 
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_init.sql")),
+    (2, include_str!("../migrations/0002_agent_session_key.sql")),
+    (3, include_str!("../migrations/0003_session_archive.sql")),
+    (4, include_str!("../migrations/0004_session_title.sql")),
+    (5, include_str!("../migrations/0005_session_pin.sql")),
+];
 
 fn run_migrations(conn: &mut Connection) -> Result<()> {
     conn.execute_batch(
@@ -341,6 +347,10 @@ mod tests {
         let applied: i64 = conn
             .query_row("SELECT COUNT(*) FROM _migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(applied, 1, "each migration should apply exactly once");
+        assert_eq!(
+            applied,
+            MIGRATIONS.len() as i64,
+            "each migration should apply exactly once"
+        );
     }
 }

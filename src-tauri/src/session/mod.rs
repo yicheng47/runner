@@ -4,6 +4,7 @@
 // The `manager` submodule owns the per-process PTY machinery. The app wires
 // it into AppState and calls into it from mission/session Tauri commands.
 
+pub mod codex_capture;
 pub mod manager;
 
 pub use manager::SessionManager;

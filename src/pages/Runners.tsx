@@ -83,8 +83,18 @@ export default function Runners() {
   // chat page take over.
   const onChat = (item: RunnerWithActivity) => {
     if (item.direct_session_id) {
+      // `direct_session_id` from runner_activity only ever points at a
+      // currently-running PTY, so seed the chat with sessionStatus
+      // "running". RunnerChat's attach path now defaults missing
+      // sessionStatus to "stopped" (defensive for the sidebar's
+      // arbitrary-row navigation), so without this the terminal would
+      // briefly mount disabled and only flip to running once chatMeta
+      // round-trips — and stay wrong if the metadata fetch fails.
       navigate(`/runners/${item.handle}/chat`, {
-        state: { sessionId: item.direct_session_id },
+        state: {
+          sessionId: item.direct_session_id,
+          sessionStatus: "running",
+        },
       });
     } else {
       navigate(`/runners/${item.handle}/chat`, {
