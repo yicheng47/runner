@@ -6,6 +6,40 @@
 
 ## 2026-04-29
 
+**PR #24 merged — crew slots / runner-as-template.** Crew composition now
+uses `slots` instead of `crew_runners`: one Runner is a reusable config
+template, and one crew can place that template in multiple slots with distinct
+`slot_handle`s. Migration `0006_slots.sql` drops `crew_runners`, drops
+`runners.role`, creates `slots`, and adds `sessions.slot_id`. Mission spawn,
+the router roster, `RUNNER_HANDLE`, `roster.json`, MissionWorkspace tabs, and
+Crew Detail now use `slot_handle` as the in-mission identity. Per-slot role was
+cut from v0; the only per-slot identity in the shipped model is `slot_handle`.
+
+Post-merge follow-ups from review:
+- **Running mission identity snapshot.** `session_list` still resolves
+  mission session labels and lead status from the live `slots` table. If a user
+  edits/removes/reassigns slots while a mission is running, the workspace can
+  relabel or default-target using the new crew state while the router and
+  child PTYs still use the start-time `slot_handle`. Fix by snapshotting
+  `slot_handle`/`lead` onto the session row or by blocking slot mutations for
+  crews with running missions.
+- **Codex resume prompt replay.** Codex has no real system-prompt flag, so
+  fresh Codex sessions receive `runner.system_prompt` as the positional initial
+  prompt. The direct-chat resume path must not append that positional prompt
+  when using `codex resume <uuid>`, or every resume adds the runner brief as a
+  new user turn.
+- **Live activity crew count.** The spawn/reap `runner/activity` emitter still
+  queries the removed `crew_runners` table and falls back to `crew_count = 0`;
+  switch it to `slots` so Runners and Runner Detail do not temporarily show
+  incorrect usage counts after live activity changes.
+- **Runner Detail duplicate slot rows.** `runner_crews_list` is now one row per
+  slot, but Runner Detail keys rows by `crew_id`. Use `slot_id` and show
+  `@slot_handle` so a template used twice in the same crew renders correctly.
+
+Validation for the reviewed PR head passed: `pnpm exec tsc --noEmit`,
+`pnpm run lint`, `cargo test --workspace`, and
+`git diff --check origin/main...HEAD`.
+
 **Post-MVP follow-up planning.** PR #23 kept the runtime sidebar aligned with
 the Pencil design: live runtime entries only, with no "mission history" row
 forced into the MISSION tray. A discoverable home for completed/past work is

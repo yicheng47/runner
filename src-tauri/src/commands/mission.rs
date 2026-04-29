@@ -65,6 +65,7 @@ fn row_to_mission(row: &Row<'_>) -> rusqlite::Result<Mission> {
     let status: String = row.get("status")?;
     let started_at: String = row.get("started_at")?;
     let stopped_at: Option<String> = row.get("stopped_at")?;
+    let pinned_at: Option<String> = row.get("pinned_at")?;
 
     let status = match status.as_str() {
         "running" => MissionStatus::Running,
@@ -93,15 +94,19 @@ fn row_to_mission(row: &Row<'_>) -> rusqlite::Result<Mission> {
         cwd: row.get("cwd")?,
         started_at: parse_ts(started_at)?,
         stopped_at: stopped_at.map(parse_ts).transpose()?,
+        pinned_at: pinned_at.map(parse_ts).transpose()?,
     })
 }
 
 pub fn list(conn: &Connection, crew_id: Option<&str>) -> Result<Vec<Mission>> {
+    // Pinned missions float to the top, then most-recently-started.
+    // Sort key: NULL pinned_at sorts last (DESC), older pinned_at
+    // sorts after newer (last-pinned first feels right for testing).
     let sql = "SELECT id, crew_id, title, status, goal_override, cwd,
-                      started_at, stopped_at
+                      started_at, stopped_at, pinned_at
                  FROM missions
                  WHERE (?1 IS NULL OR crew_id = ?1)
-                 ORDER BY started_at DESC";
+                 ORDER BY pinned_at IS NULL, pinned_at DESC, started_at DESC";
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(params![crew_id], row_to_mission)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -125,7 +130,7 @@ pub struct MissionSummary {
 pub fn get(conn: &Connection, id: &str) -> Result<Mission> {
     conn.query_row(
         "SELECT id, crew_id, title, status, goal_override, cwd,
-                started_at, stopped_at
+                started_at, stopped_at, pinned_at
            FROM missions WHERE id = ?1",
         params![id],
         row_to_mission,
@@ -634,22 +639,200 @@ pub async fn mission_start(
     Ok(out)
 }
 
+/// Re-attach a mission's router + bus after app restart. The mission row
+/// stays `running` across restarts but the in-memory Router/Bus die with
+/// the old process. The frontend calls this on workspace mount; if the
+/// router is already registered (just navigating around in the same
+/// process), it returns the existing mission unchanged. After a real
+/// restart, this rebuilds the Router from the slot roster, registers
+/// the existing slot_handle → session_id mapping (sessions are stopped
+/// but the row ids survive — resume preserves them), reconstructs router
+/// state from the log, and mounts the bus.
+///
+/// PTY children are NOT respawned here — that's an explicit per-slot
+/// `session_resume` call from the frontend, mirroring direct-chat
+/// resume UX.
+#[tauri::command]
+pub async fn mission_attach(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    mission_id: String,
+) -> Result<Mission> {
+    use crate::event_bus::{BusEmitter, TauriBusEvents};
+    use crate::router::{
+        open_log_for_mission, CompositeBusEmitter, Router, RouterSubscriber, StdinInjector,
+    };
+    use std::sync::Arc;
+
+    let mission = {
+        let conn = state.db.get()?;
+        get(&conn, &mission_id)?
+    };
+
+    // Idempotent: if the router is already mounted for this mission,
+    // just return. The frontend calls attach on every workspace mount
+    // (including back-and-forth navigation), so this happens often.
+    if state.routers.get(&mission_id).is_some() {
+        return Ok(mission);
+    }
+
+    // Only running missions get rehydrated. Completed/aborted missions
+    // are read-only — the workspace shows their feed via
+    // mission_events_replay; no live router needed.
+    if !matches!(mission.status, MissionStatus::Running) {
+        return Ok(mission);
+    }
+
+    let (crew_name, allowed_signals) = {
+        let conn = state.db.get()?;
+        let crew = crew::get(&conn, &mission.crew_id)?;
+        (crew.name, crew.signal_types)
+    };
+    let roster = {
+        let conn = state.db.get()?;
+        slot::list(&conn, &mission.crew_id)?
+    };
+
+    // Pull the latest session_id per slot for this mission. Sessions
+    // are stopped post-restart, but the rows persist; resume picks up
+    // the same id. Filter to non-archived rows so a deleted-and-
+    // re-added slot doesn't pull a stale row.
+    let session_pairs: Vec<(String, String)> = {
+        let conn = state.db.get()?;
+        let mut out = Vec::with_capacity(roster.len());
+        for member in &roster {
+            let session_id: Option<String> = conn
+                .query_row(
+                    "SELECT id FROM sessions
+                       WHERE mission_id = ?1 AND slot_id = ?2 AND archived_at IS NULL
+                       ORDER BY started_at DESC
+                       LIMIT 1",
+                    rusqlite::params![mission.id, member.slot.id],
+                    |r| r.get(0),
+                )
+                .ok();
+            if let Some(sid) = session_id {
+                out.push((member.slot.slot_handle.clone(), sid));
+            }
+        }
+        out
+    };
+
+    let mission_dir = event_log::mission_dir(&state.app_data_dir, &mission.crew_id, &mission.id);
+    let log_arc = open_log_for_mission(&mission_dir)?;
+    let injector: Arc<dyn StdinInjector> = Arc::clone(&state.sessions) as Arc<dyn StdinInjector>;
+    let router = Router::new(
+        mission.id.clone(),
+        mission.crew_id.clone(),
+        crew_name,
+        &roster,
+        allowed_signals,
+        Arc::clone(&log_arc),
+        injector,
+    )?;
+    router.register_sessions(&session_pairs);
+
+    // Set the replay watermark so the bus's initial replay doesn't
+    // re-fire `mission_goal` / `human_said` / `ask_lead` — handlers
+    // would re-inject historical stdin into the (about-to-be-resumed)
+    // PTYs. Pending_asks / runner_status also rehydrate here.
+    router.reconstruct_from_log()?;
+
+    let roster_handles: Vec<String> = roster.iter().map(|m| m.slot.slot_handle.clone()).collect();
+    let tauri_emitter: Arc<dyn BusEmitter> = Arc::new(TauriBusEvents(app.clone()));
+    let router_emitter: Arc<dyn BusEmitter> = Arc::new(RouterSubscriber(Arc::clone(&router)));
+    let composite: Arc<dyn BusEmitter> = Arc::new(CompositeBusEmitter::new(vec![
+        tauri_emitter,
+        router_emitter,
+    ]));
+    state.buses.mount(
+        mission.id.clone(),
+        &mission_dir,
+        &roster_handles,
+        composite,
+    )?;
+
+    state.routers.register(mission.id.clone(), router);
+    Ok(mission)
+}
+
+/// Pause a mission by killing every live PTY but leaving the mission
+/// row in `running` state, the router mounted, and the bus mounted.
+/// Pairs with `session_resume` per slot for "Resume all" — the
+/// frontend iterates the session list. No `mission_stopped` event is
+/// written; the audit trail of per-PTY exits already lives in the log
+/// via `session/exit`.
+///
+/// Use this for "I want to stop the agents but might come back later."
+/// For end-of-mission, see `mission_archive`.
 #[tauri::command]
 pub async fn mission_stop(state: State<'_, AppState>, id: String) -> Result<Mission> {
-    // Kill first, then flip the mission row. `kill_all_for_mission` blocks
-    // until every reader thread has joined — which means every child has
-    // been reaped and every `sessions` row has reached a terminal status.
-    // Only then is it honest to call the mission `completed`.
+    state.sessions.kill_all_for_mission(&id)?;
+    let conn = state.db.get()?;
+    get(&conn, &id)
+}
+
+/// Toggle a mission's pin. Pinned missions float to the top of the
+/// sidebar's MISSION list (sort key: `pinned_at IS NULL, pinned_at
+/// DESC, started_at DESC`). Setting `pinned = false` clears the
+/// timestamp.
+#[tauri::command]
+pub async fn mission_pin(
+    state: State<'_, AppState>,
+    id: String,
+    pinned: bool,
+) -> Result<Mission> {
+    let conn = state.db.get()?;
+    let pinned_at: Option<String> = if pinned {
+        Some(now().to_rfc3339())
+    } else {
+        None
+    };
+    let n = conn.execute(
+        "UPDATE missions SET pinned_at = ?1 WHERE id = ?2",
+        params![pinned_at, id],
+    )?;
+    if n != 1 {
+        return Err(Error::msg(format!("mission not found: {id}")));
+    }
+    get(&conn, &id)
+}
+
+/// Rename a mission. Title is trimmed; empty values are rejected so
+/// the sidebar never renders a blank row. The mission's event log is
+/// untouched — the title only ever lived on the row.
+#[tauri::command]
+pub async fn mission_rename(
+    state: State<'_, AppState>,
+    id: String,
+    title: String,
+) -> Result<Mission> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return Err(Error::msg("mission title must not be empty"));
+    }
+    let conn = state.db.get()?;
+    let n = conn.execute(
+        "UPDATE missions SET title = ?1 WHERE id = ?2",
+        params![trimmed, id],
+    )?;
+    if n != 1 {
+        return Err(Error::msg(format!("mission not found: {id}")));
+    }
+    get(&conn, &id)
+}
+
+/// Terminal end-of-mission. Kills every live PTY, writes the
+/// `mission_stopped` event, flips the mission row to `completed`, and
+/// drops the router + bus. Mirrors what `mission_stop` used to do
+/// before the lifecycle split — preserved as a separate command so
+/// the workspace UI can guard it behind an explicit confirm.
+#[tauri::command]
+pub async fn mission_archive(state: State<'_, AppState>, id: String) -> Result<Mission> {
     state.sessions.kill_all_for_mission(&id)?;
     let mut conn = state.db.get()?;
     let mission = stop(&mut conn, &state.app_data_dir, &id)?;
-    // Drop the bus *after* the terminal `mission_stopped` event is on
-    // disk, so the watcher gets one last tick and clients see it before
-    // the bus tears down. unmount() is idempotent and never fails.
     state.buses.unmount(&id);
-    // Drop the router after the bus so any final events delivered during
-    // the bus's drain pass still reach a live router. Unregister is a
-    // simple HashMap remove; safe to call even if nothing was registered.
     state.routers.unregister(&id);
     Ok(mission)
 }

@@ -108,7 +108,25 @@ export const api = {
     get: (id: string) => invoke<Mission>("mission_get", { id }),
     start: (input: StartMissionInput) =>
       invoke<StartMissionOutput>("mission_start", { input }),
+    /** Re-mount router/bus on workspace mount; idempotent. After app restart
+     *  the in-memory router/bus need to be rebuilt from the persisted log
+     *  before stdin pushes can land on resumed slot PTYs. */
+    attach: (missionId: string) =>
+      invoke<Mission>("mission_attach", { missionId }),
+    /** Kill every live PTY in the mission. Mission row stays `running`,
+     *  router/bus stay mounted; pair with per-slot `session_resume` to
+     *  bring the agents back. */
     stop: (id: string) => invoke<Mission>("mission_stop", { id }),
+    /** Terminal end-of-mission. Drops router + bus, flips status to
+     *  `completed`. Cannot be undone. */
+    archive: (id: string) => invoke<Mission>("mission_archive", { id }),
+    /** Toggle a mission's pin. Pinned missions float to the top of
+     *  the sidebar's MISSION list. */
+    pin: (id: string, pinned: boolean) =>
+      invoke<Mission>("mission_pin", { id, pinned }),
+    /** Rename a mission. Title is trimmed and rejected if empty. */
+    rename: (id: string, title: string) =>
+      invoke<Mission>("mission_rename", { id, title }),
     eventsReplay: (missionId: string) =>
       invoke<Event[]>("mission_events_replay", { missionId }),
     postHumanSignal: (input: PostHumanSignalInput) =>

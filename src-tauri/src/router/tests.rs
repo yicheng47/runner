@@ -152,21 +152,58 @@ fn read_signals(log: &EventLog) -> Vec<Event> {
 }
 
 #[test]
-fn messages_do_not_trigger_router_actions() {
-    // Arch §5.5.0: messages flow through the inbox projection only; the
-    // router's dispatcher must early-return on EventKind::Message. A
-    // `mission_warning` from a missing handler would also surface here, so
-    // an empty pushes Vec proves both that the dispatcher matched on kind
-    // and that no handler ran.
+fn directed_message_nudges_target_only() {
+    // Pull-based inbox routing strands the worker without a stdin
+    // poke. A directed message must wake the target with a one-line
+    // notification; the sender must not be echoed back to themselves.
     let (router, injector, log, _dir) = fixture(
         vec![slot_with_runner("lead", true), slot_with_runner("impl", false)],
         &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
     );
-    let bcast = log.append(message("lead", None, "broadcast")).unwrap();
     let direct = log.append(message("lead", Some("impl"), "go")).unwrap();
-    router.handle_event(&bcast);
     router.handle_event(&direct);
-    assert!(injector.all_pushes().is_empty());
+    let impl_pushes = injector.pushes_for("S-IMPL");
+    assert_eq!(impl_pushes.len(), 1);
+    assert!(impl_pushes[0].contains("[inbox]"));
+    assert!(impl_pushes[0].contains("from @lead"));
+    assert!(impl_pushes[0].contains("runner msg read"));
+    // Sender is not nudged.
+    assert!(injector.pushes_for("S-LEAD").is_empty());
+}
+
+#[test]
+fn broadcast_message_nudges_every_slot_except_sender() {
+    let (router, injector, log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+            slot_with_runner("reviewer", false),
+        ],
+        &[
+            ("lead", "S-LEAD"),
+            ("impl", "S-IMPL"),
+            ("reviewer", "S-REV"),
+        ],
+    );
+    let bcast = log.append(message("lead", None, "heads up")).unwrap();
+    router.handle_event(&bcast);
+    assert_eq!(injector.pushes_for("S-IMPL").len(), 1);
+    assert_eq!(injector.pushes_for("S-REV").len(), 1);
+    assert!(injector.pushes_for("S-LEAD").is_empty());
+}
+
+#[test]
+fn message_self_directed_is_not_nudged() {
+    // Edge case: a runner posting `runner msg post --to @self`. We
+    // never echo a message back to its sender — that would create a
+    // tight loop where reading the nudge prompts another post.
+    let (router, injector, log, _dir) =
+        fixture(vec![slot_with_runner("lead", true)], &[("lead", "S-LEAD")]);
+    let ev = log
+        .append(message("lead", Some("lead"), "self"))
+        .unwrap();
+    router.handle_event(&ev);
+    assert!(injector.pushes_for("S-LEAD").is_empty());
 }
 
 #[test]

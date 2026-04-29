@@ -133,6 +133,7 @@ export interface Mission {
   cwd: string | null;
   started_at: Timestamp;
   stopped_at: Timestamp | null;
+  pinned_at: Timestamp | null;
 }
 
 export type SessionStatus = "running" | "stopped" | "crashed";

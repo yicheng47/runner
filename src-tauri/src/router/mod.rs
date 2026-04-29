@@ -280,39 +280,44 @@ impl Router {
     }
 
     /// Single dispatcher entry point. Bus calls this for every appended
-    /// event in arrival order. Messages return early per arch §5.5.0.
-    /// On reopen, events at-or-below the replay high-water mark are
-    /// short-circuited so the bus's initial replay doesn't re-inject
-    /// historical stdin or re-emit cards (arch §5.5: "stdin pushes are
-    /// deliberately silent" + plan's projection-only replay).
+    /// event in arrival order. On reopen, events at-or-below the replay
+    /// high-water mark are short-circuited so the bus's initial replay
+    /// doesn't re-inject historical stdin or re-emit cards (arch §5.5:
+    /// "stdin pushes are deliberately silent" + plan's projection-only
+    /// replay). Messages are nudged-only — the message body lives in
+    /// the inbox projection per arch §5.5.0; the router just wakes the
+    /// recipient with a one-line stdin notification.
     pub fn handle_event(&self, event: &Event) {
-        if !matches!(event.kind, EventKind::Signal) {
-            return;
-        }
-        let Some(signal) = event.signal_type.as_ref() else {
-            return;
-        };
-        // Watermark check before signal-type match: covers every handler
-        // (mission_goal, human_said, ask_lead, ask_human, human_response,
-        // runner_status) in one place. Lex-compare on bytes; ULIDs sort
-        // lex-correct.
+        // Watermark check covers both messages and signals in one place
+        // — replay must not re-nudge inbox recipients with stale "you
+        // have mail" lines they already saw on the original delivery.
         if let Some(w) = self.state.lock().unwrap().replay_high_water.as_deref() {
             if event.id.as_bytes() <= w.as_bytes() {
                 return;
             }
         }
-        match signal.as_str() {
-            "mission_goal" => handlers::mission_goal(self, event),
-            "human_said" => handlers::human_said(self, event),
-            "ask_lead" => handlers::ask_lead(self, event),
-            "ask_human" => handlers::ask_human(self, event),
-            "human_response" => handlers::human_response(self, event),
-            "runner_status" => handlers::runner_status(self, event),
-            // mission_start, mission_stopped, inbox_read, human_question,
-            // mission_warning — observed but not routed here. inbox_read is
-            // owned by the bus's projection layer; mission_warning /
-            // human_question are events the router itself emits.
-            _ => {}
+        match event.kind {
+            EventKind::Message => handlers::message_nudge(self, event),
+            EventKind::Signal => {
+                let Some(signal) = event.signal_type.as_ref() else {
+                    return;
+                };
+                match signal.as_str() {
+                    "mission_goal" => handlers::mission_goal(self, event),
+                    "human_said" => handlers::human_said(self, event),
+                    "ask_lead" => handlers::ask_lead(self, event),
+                    "ask_human" => handlers::ask_human(self, event),
+                    "human_response" => handlers::human_response(self, event),
+                    "runner_status" => handlers::runner_status(self, event),
+                    // mission_start, mission_stopped, inbox_read,
+                    // human_question, mission_warning — observed but
+                    // not routed here. inbox_read is owned by the
+                    // bus's projection layer; mission_warning /
+                    // human_question are events the router itself
+                    // emits.
+                    _ => {}
+                }
+            }
         }
     }
 

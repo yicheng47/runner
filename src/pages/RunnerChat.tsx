@@ -403,7 +403,25 @@ export default function RunnerChat() {
           );
           if (cancelled) {
             startedKeyRef.current = null;
-            void api.session.kill(spawned.id).catch(() => {});
+            // Reap the orphaned PTY child AND archive its session row
+            // so the sidebar doesn't surface a phantom "stopped"
+            // session next to the real one. Without the archive, a
+            // single Chat click leaves two sessions visible in
+            // dev/StrictMode (and in any other path that mounts +
+            // cancels mid-spawn). kill() runs first so the row exists
+            // when archive() flips its archived_at column.
+            void (async () => {
+              try {
+                await api.session.kill(spawned.id);
+              } catch {
+                // best-effort
+              }
+              try {
+                await api.session.archive(spawned.id);
+              } catch {
+                // best-effort
+              }
+            })();
             // The StrictMode remount that ran while this spawn was
             // in flight short-circuited because startedKeyRef still
             // matched. Now that we've reset the ref + reaped the

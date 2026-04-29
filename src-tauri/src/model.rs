@@ -93,6 +93,7 @@ pub struct Mission {
     pub cwd: Option<String>,
     pub started_at: Timestamp,
     pub stopped_at: Option<Timestamp>,
+    pub pinned_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

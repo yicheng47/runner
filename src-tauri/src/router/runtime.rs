@@ -112,7 +112,20 @@ pub fn resume_plan(runtime: &str, prior_key: Option<&str>) -> ResumePlan {
     match runtime {
         "claude-code" => match prior_key {
             Some(k) if is_uuid(k) => ResumePlan {
-                args: vec!["--resume".into(), k.to_string()],
+                // `--session-id <uuid>` instead of `--resume <uuid>` on
+                // purpose: a slot whose first launch sat idle (no user
+                // turn) never persisted a conversation file under
+                // `~/.claude/projects/...`, so `--resume` crashes
+                // claude-code with "session not found" on the first
+                // resume attempt. `--session-id` is the safer pick — it
+                // reattaches if the file exists, and if not it just
+                // starts the conversation under that UUID, leaving the
+                // *next* resume in a normal state. The `resuming` flag
+                // stays true: the runtime adapter doesn't actually
+                // care whether the file exists yet, only whether the
+                // caller intended to continue (which they did — they
+                // clicked Resume).
+                args: vec!["--session-id".into(), k.to_string()],
                 prepend: false,
                 assigned_key: Some(k.to_string()),
                 resuming: true,
@@ -209,12 +222,18 @@ mod tests {
     }
 
     #[test]
-    fn claude_code_resumes_with_prior_uuid() {
+    fn claude_code_resumes_with_prior_uuid_via_session_id() {
+        // Resume reuses the same UUID with `--session-id` (not `--resume`).
+        // `--resume` strict-requires the conversation file to already exist
+        // on disk, which fails for any slot whose first launch sat idle and
+        // never produced a user turn. `--session-id` is tolerant: reattach
+        // if the file exists, otherwise start under that UUID so the next
+        // resume lands in a normal state.
         let prior = uuid::Uuid::new_v4().to_string();
         let plan = resume_plan("claude-code", Some(&prior));
         assert!(plan.resuming);
         assert!(!plan.prepend);
-        assert_eq!(plan.args, vec!["--resume", &prior]);
+        assert_eq!(plan.args, vec!["--session-id", &prior]);
         assert_eq!(plan.assigned_key.as_deref(), Some(prior.as_str()));
     }
 
