@@ -6,6 +6,81 @@
 
 ## 2026-04-29
 
+**Mission lifecycle redesign + workspace polish.** Stop / Resume /
+Archive split: `mission_stop` is now reversible (kills PTYs, mission row
+stays `running`, router/bus stay mounted). New `mission_archive` is the
+destructive end-of-mission path that flips status to `completed`, writes
+the terminal `mission_stopped` event, and unmounts. `mission_attach`
+rebuilds Router + Bus on workspace mount after app restart so resumed
+slot PTYs land on a live router. Per-slot Resume button on each tab,
+top-level Resume button (visible when ≥1 slot is stopped), and a
+client-side iteration over `session_resume`. Also: PTY classification
+fix — user-initiated kills are tracked in a `killed` set so SIGTERM
+maps to `stopped`, not `crashed`.
+
+**Inbox-arrival nudges.** Router now pushes a one-line stdin nudge when
+a directed message lands so workers wake up to call `runner msg read`.
+Broadcasts nudge every slot except the sender; self-targeted messages
+are ignored. Without this, pull-based inbox routing strands the worker
+— they have no clock to poll on.
+
+**Mission session resume + boot rehydration.** Lifted the `mission_id`
+guard in `SessionManager::resume`; mission rows now respawn through the
+same path as direct chats with `RUNNER_HANDLE = slot.slot_handle` and
+the full crew/mission env block. `mission_attach` (idempotent) rebuilds
+the in-memory router + bus from persisted rows after restart and
+registers existing slot_handle → session_id pairs.
+
+**Pin + Rename for missions.** Migration `0007_mission_pin.sql` adds
+`pinned_at`. `mission_pin` and `mission_rename` Tauri commands wire the
+actions. Pinned missions float to the top of the sidebar (sort key:
+`pinned_at IS NULL, pinned_at DESC, started_at DESC`). Inline rename in
+the sidebar; `prompt()` from the topbar kebab.
+
+**Workspace tab strip + collapsible right rail.** Feed tab is permanent;
+PTY tabs open on demand from the right rail (each runner card has a
+terminal-icon button) and close via per-tab `×`. The Runners rail moved
+out of the body row to a top-level sibling so it spans the full
+workspace height with its own header lined up across the topbar
+divider, mirroring `RunnerChat`'s layout. Topbar gained a flag glyph
+(matching the Pencil's `nEpyL`/`Wopzz`), stacked title/subtitle,
+smaller status pill (derived from PTY liveness so a running-but-all-
+stopped mission reads as "stopped"), Stop with icon, and a kebab
+dropdown for Pin / Rename / Archive.
+
+**Sidebar parity with design.** Search input replaced by a click-to-
+callout `search` nav row — the inline input never made sense
+(interaction is open-a-palette, not type-in-place). All five sidebars
+in the Pencil design now share `nav_r` / `nav_c` / `nav_s` naming and
+layout; tab order is `runner → crew → search` everywhere. Right-click
+on a mission row in the sidebar opens the same Pin / Rename / Archive
+popover as the topbar kebab.
+
+**Direct-chat double-spawn fix.** Spawn-mode StrictMode (and any
+mid-spawn cancel) now reaps both the PTY child AND archives the
+orphaned `sessions` row, so a single Chat click no longer leaves two
+visible entries in the sidebar.
+
+**claude-code system prompt delivery.** `--append-system-prompt` /
+`--system-prompt` are SDK-only — the interactive TUI silently drops
+them. New `SessionManager::schedule_first_prompt` injects
+`runner.system_prompt` as the first user turn via stdin ~1.5s after
+spawn. Skipped on resume, on non-claude-code runtimes, and for the
+mission lead (the `mission_goal` handler already injects a richer
+launch prompt that embeds system_prompt). This also fixes the resume
+"Session ID … is already in use" error: claude-code's `--session-id`
+flag is fresh-only, so resume reverts to `--resume <uuid>`. The
+"conversation file never persisted" failure mode `--session-id` was
+introduced to mask is now masked instead by `schedule_first_prompt`,
+which forces claude-code to write the conversation file on first
+spawn.
+
+**Test fixtures.** Default system prompts (`tests/fixtures/system-prompts/{architect,impl,reviewer}.md`)
+and a sample crew (`tests/fixtures/crews/feature-delivery.md`) for
+end-to-end testing.
+
+---
+
 **PR #24 merged — crew slots / runner-as-template.** Crew composition now
 uses `slots` instead of `crew_runners`: one Runner is a reusable config
 template, and one crew can place that template in multiple slots with distinct

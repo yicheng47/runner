@@ -32,6 +32,7 @@ use serde::Serialize;
 use crate::db::DbPool;
 use crate::error::{Error, Result};
 use crate::model::{Mission, Runner};
+use crate::router;
 
 const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
 
@@ -444,6 +445,12 @@ impl SessionManager {
         // succeeded; activity badges will reconcile on the next event.
         emit_runner_activity(&pool, runner, events.as_ref());
 
+        // claude-code's interactive TUI ignores `--append-system-prompt`,
+        // so deliver the runner's brief as a first user turn via stdin.
+        // Skipped for the lead — the mission_goal handler injects a
+        // richer launch prompt that already embeds system_prompt.
+        schedule_first_prompt(self, session_id.clone(), runner, &plan, slot.lead);
+
         Ok(SpawnedSession {
             id: session_id,
             mission_id: Some(mission.id.clone()),
@@ -663,6 +670,11 @@ impl SessionManager {
 
         emit_runner_activity(&pool, runner, events.as_ref());
 
+        // First-turn prompt injection for fresh claude-code direct
+        // chats. Direct chats have no slot/lead concept, so always
+        // treat as non-lead.
+        schedule_first_prompt(self, session_id.clone(), runner, &plan, false);
+
         Ok(SpawnedSession {
             id: session_id,
             mission_id: None,
@@ -785,16 +797,17 @@ impl SessionManager {
             crew_id: String,
             mission_id: String,
             slot_handle: String,
+            lead: bool,
         }
         let mission_ctx: Option<MissionCtx> = match (snap.mission_id.as_deref(), snap.slot_id.as_deref()) {
             (Some(mid), Some(sid)) => {
                 let conn = pool.get()?;
                 let mission = crate::commands::mission::get(&conn, mid)?;
-                let slot_handle: String = conn
+                let (slot_handle, lead): (String, i64) = conn
                     .query_row(
-                        "SELECT slot_handle FROM slots WHERE id = ?1",
+                        "SELECT slot_handle, lead FROM slots WHERE id = ?1",
                         params![sid],
-                        |r| r.get(0),
+                        |r| Ok((r.get(0)?, r.get(1)?)),
                     )
                     .map_err(|e| match e {
                         rusqlite::Error::QueryReturnedNoRows => Error::msg(format!(
@@ -806,6 +819,7 @@ impl SessionManager {
                     crew_id: mission.crew_id,
                     mission_id: mission.id,
                     slot_handle,
+                    lead: lead != 0,
                 })
             }
             _ => None,
@@ -1000,6 +1014,15 @@ impl SessionManager {
         }
 
         emit_runner_activity(&pool, &runner, events.as_ref());
+
+        // claude-code first-turn injection. `plan.resuming` is true on
+        // any resume that has a real prior_key — those skip naturally.
+        // For mission resumes where the slot is the lead, also skip:
+        // the launch prompt's "Your brief" section already embeds
+        // system_prompt, and a redundant first-turn injection would
+        // race the launch prompt.
+        let is_lead_resume = mission_ctx.as_ref().is_some_and(|c| c.lead);
+        schedule_first_prompt(self, session_id.to_string(), &runner, &plan, is_lead_resume);
 
         // Return the slot's in-mission identity for mission rows so the
         // frontend (and the router, which keys on slot_handle) sees the
@@ -1351,6 +1374,61 @@ fn capture_cwd(explicit: Option<String>) -> Option<String> {
     std::env::current_dir()
         .ok()
         .and_then(|p| p.into_os_string().into_string().ok())
+}
+
+/// Deliver `runner.system_prompt` to a freshly-spawned claude-code TUI
+/// by typing it into the agent's stdin as a first user turn. claude-
+/// code's `--append-system-prompt` / `--system-prompt` flags are
+/// SDK-only (they require `-p` / print mode); the interactive TUI
+/// silently drops them. Stdin injection is the only path that lands.
+///
+/// Sleeps a short delay so claude-code's TUI has time to boot and
+/// bind stdin — without it, the input is sometimes echoed before the
+/// editor takes over and gets lost. Skipped on resume (the
+/// conversation already exists), on non-claude-code runtimes (codex
+/// uses positional argv, shell has no prompt concept), and when the
+/// caller flags this slot as the mission lead — the lead's
+/// `mission_goal` handler injects a richer launch prompt with the
+/// system_prompt embedded in its "Your brief" section, so a separate
+/// first-turn injection would race the launch prompt and waste a
+/// turn.
+fn schedule_first_prompt(
+    mgr: &Arc<SessionManager>,
+    session_id: String,
+    runner: &Runner,
+    plan: &router::runtime::ResumePlan,
+    is_lead: bool,
+) {
+    if runner.runtime != "claude-code" {
+        return;
+    }
+    if plan.resuming {
+        return;
+    }
+    if is_lead {
+        return;
+    }
+    let prompt = match runner.system_prompt.as_deref() {
+        Some(p) => {
+            let trimmed = p.trim();
+            if trimmed.is_empty() {
+                return;
+            }
+            trimmed.to_string()
+        }
+        None => return,
+    };
+    let mgr = Arc::clone(mgr);
+    std::thread::spawn(move || {
+        // 1.5s is empirically enough for claude-code's TUI to bind
+        // stdin without making the user feel the lag.
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let mut bytes = prompt.into_bytes();
+        if !bytes.ends_with(b"\n") {
+            bytes.push(b'\n');
+        }
+        let _ = mgr.inject_stdin(&session_id, &bytes);
+    });
 }
 
 fn emit_runner_activity(pool: &DbPool, runner: &Runner, events: &dyn SessionEvents) {
