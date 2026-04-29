@@ -31,7 +31,6 @@ export default function RunnerDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
-  const [chatCwd, setChatCwd] = useState<string>("");
   const [openingChat, setOpeningChat] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -82,9 +81,12 @@ export default function RunnerDetail() {
   const startChat = () => {
     if (!runner || openingChat) return;
     setOpeningChat(true);
-    const cwd = chatCwd.trim() ? chatCwd.trim() : null;
+    // No per-chat cwd override here — the page is read-only outside
+    // edit mode, so the chat inherits the runner's `working_dir`. Per-
+    // chat overrides will surface as an affordance inside the chat
+    // itself in a future change.
     navigate(`/runners/${runner.handle}/chat`, {
-      state: { runnerId: runner.id, cwd },
+      state: { runnerId: runner.id, cwd: null },
     });
   };
 
@@ -202,18 +204,17 @@ export default function RunnerDetail() {
 
                 <Card title="Chat now" subtitle="Spawn a one-on-one PTY. Direct chats don't join any mission's coordination bus.">
                   <div className="flex flex-col gap-2">
-                    <label className="flex flex-col gap-1 text-xs text-fg-2">
-                      Working directory (optional)
-                      <input
-                        value={chatCwd}
-                        onChange={(e) => setChatCwd(e.target.value)}
-                        placeholder={runner.working_dir ?? "/Users/you/projects/foo"}
-                        className="rounded border border-line-strong bg-bg p-1.5 font-mono text-xs text-fg placeholder:text-fg-3 focus:border-fg-3 focus:outline-none"
-                      />
-                    </label>
-                    <p className="text-[11px] text-fg-3">
-                      Defaults to the runner's own working directory if blank.
-                    </p>
+                    <div className="flex flex-col gap-1 text-xs text-fg-2">
+                      <span>Working directory</span>
+                      <div className="rounded border border-line-strong bg-bg p-1.5 font-mono text-xs text-fg-3">
+                        {runner.working_dir ?? "—"}
+                      </div>
+                      <p className="text-[11px] text-fg-3">
+                        Inherits the runner's working directory. Click{" "}
+                        <span className="text-fg-2">Edit</span> to change it,
+                        or override per-chat from the chat itself.
+                      </p>
+                    </div>
                   </div>
                 </Card>
               </div>

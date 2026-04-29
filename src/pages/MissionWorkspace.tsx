@@ -21,6 +21,7 @@ import type {
   Event,
   HumanQuestionPayload,
   Mission,
+  WarningEvent,
 } from "../lib/types";
 import { EventFeed } from "../components/EventFeed";
 import { MissionInput } from "../components/MissionInput";
@@ -33,6 +34,8 @@ export default function MissionWorkspace() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // Resume-fallback banner; non-blocking advisory (see types.ts WarningEvent).
+  const [warning, setWarning] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"feed" | string>("feed"); // string = sessionId
   const seenIdsRef = useRef<Set<string>>(new Set());
@@ -107,6 +110,28 @@ export default function MissionWorkspace() {
       cancelled = true;
       unlisten?.();
       seenIdsRef.current = new Set();
+    };
+  }, [id]);
+
+  // Surface non-fatal session warnings (today: agent-resume fallback).
+  // Filter on mission_id so warnings from other workspaces don't leak.
+  useEffect(() => {
+    if (!id) return;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void listen<WarningEvent>("session/warning", (event) => {
+      if (event.payload.mission_id !== id) return;
+      setWarning(event.payload.message);
+    }).then((fn) => {
+      if (cancelled) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
     };
   }, [id]);
 
@@ -267,6 +292,19 @@ export default function MissionWorkspace() {
       {error ? (
         <div className="mx-8 mt-3 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
           {error}
+        </div>
+      ) : null}
+
+      {warning ? (
+        <div className="mx-8 mt-3 flex items-start justify-between gap-3 rounded border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
+          <span>{warning}</span>
+          <button
+            type="button"
+            onClick={() => setWarning(null)}
+            className="cursor-pointer text-xs text-warn/80 hover:text-warn"
+          >
+            Dismiss
+          </button>
         </div>
       ) : null}
 

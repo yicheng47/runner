@@ -37,6 +37,25 @@ export interface SessionRow extends Session {
   lead: boolean;
 }
 
+/**
+ * Sidebar SESSION row: one entry per un-archived direct session. Multi
+ * chat per runner — see docs/impls/direct-chats.md — so the list is
+ * flat. Stopped/crashed sessions stay listed because they can be
+ * resumed via session_resume (which respawns the same row's PTY).
+ */
+export interface DirectSessionEntry {
+  session_id: string;
+  runner_id: string;
+  handle: string;
+  status: "running" | "stopped" | "crashed";
+  title: string | null;
+  cwd: string | null;
+  started_at: string | null;
+  stopped_at: string | null;
+  resumable: boolean;
+  pinned: boolean;
+}
+
 export const api = {
   crew: {
     list: () => invoke<CrewListItem[]>("crew_list"),
@@ -94,6 +113,24 @@ export const api = {
   session: {
     list: (missionId: string) =>
       invoke<SessionRow[]>("session_list", { missionId }),
+    listRecentDirect: () =>
+      invoke<DirectSessionEntry[]>("session_list_recent_direct"),
+    archive: (sessionId: string) =>
+      invoke<void>("session_archive", { sessionId }),
+    rename: (sessionId: string, title: string | null) =>
+      invoke<void>("session_rename", { sessionId, title }),
+    pin: (sessionId: string, pinned: boolean) =>
+      invoke<void>("session_pin", { sessionId, pinned }),
+    resume: (
+      sessionId: string,
+      cols: number | null,
+      rows: number | null,
+    ) =>
+      invoke<SpawnedSession>("session_resume", {
+        sessionId,
+        cols,
+        rows,
+      }),
     injectStdin: (sessionId: string, text: string) =>
       invoke<void>("session_inject_stdin", { sessionId, text }),
     kill: (sessionId: string) => invoke<void>("session_kill", { sessionId }),

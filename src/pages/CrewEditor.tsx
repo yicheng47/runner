@@ -126,8 +126,11 @@ export default function CrewEditor() {
     return <div className="p-8 text-sm text-danger">Missing crew id.</div>;
   }
 
+  const trimmedNameDraft = nameDraft.trim();
+  const nameChanged = crew !== null && nameDraft !== crew.name;
+  const nameInvalid = crew !== null && trimmedNameDraft.length === 0;
   const nameDirty =
-    crew !== null && nameDraft.trim() !== crew.name && nameDraft.trim().length > 0;
+    crew !== null && trimmedNameDraft !== crew.name && !nameInvalid;
 
   return (
     <>
@@ -161,11 +164,17 @@ export default function CrewEditor() {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {nameDirty || savingName ? (
+          {nameChanged || savingName ? (
             <Button
               onClick={onSaveName}
-              disabled={savingName}
-              title="Save crew name"
+              disabled={savingName || !nameDirty}
+              title={
+                nameInvalid
+                  ? "Crew name cannot be empty"
+                  : nameDirty
+                    ? "Save crew name"
+                    : "No persisted change after trimming"
+              }
             >
               {savingName ? "Saving..." : "Save"}
             </Button>
