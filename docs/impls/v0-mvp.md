@@ -493,19 +493,15 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
 
 ---
 
-## Commit message convention (all chunks)
+## Repository conventions
 
-```
-feat(<area>): <imperative summary>
+Shared development and agent conventions live in the root `AGENTS.md`. This
+implementation document tracks MVP status and historical chunk decisions only;
+do not add repo-wide process rules here unless they are specific to this MVP
+plan.
 
-<body — what changed and why, mentioning the chunk letter>
-
-Part of the v0 MVP umbrella. See docs/impls/v0-mvp.md.
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-```
-
-Areas: `db`, `commands`, `ui`, `event-log`, `session`, `event-bus`, `router`, `cli`, `mission`.
+Historical chunk scopes used in MVP commits: `db`, `commands`, `ui`,
+`event-log`, `session`, `event-bus`, `router`, `cli`, `mission`.
 
 ## Branching
 
