@@ -66,6 +66,8 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (3, include_str!("../migrations/0003_session_archive.sql")),
     (4, include_str!("../migrations/0004_session_title.sql")),
     (5, include_str!("../migrations/0005_session_pin.sql")),
+    (6, include_str!("../migrations/0006_slots.sql")),
+    (7, include_str!("../migrations/0007_mission_pin.sql")),
 ];
 
 fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -115,9 +117,9 @@ mod tests {
     fn insert_runner(conn: &Connection, id: &str, handle: &str) -> rusqlite::Result<usize> {
         conn.execute(
             "INSERT INTO runners (
-                id, handle, display_name, role, runtime, command,
+                id, handle, display_name, runtime, command,
                 created_at, updated_at
-             ) VALUES (?1, ?2, ?3, 'impl', 'shell', 'sh', ?4, ?4)",
+             ) VALUES (?1, ?2, ?3, 'shell', 'sh', ?4, ?4)",
             params![
                 id,
                 handle,
@@ -127,17 +129,28 @@ mod tests {
         )
     }
 
-    fn insert_crew_runner(
+    fn insert_slot(
         conn: &Connection,
+        id: &str,
         crew_id: &str,
         runner_id: &str,
+        slot_handle: &str,
         position: i64,
         lead: i64,
     ) -> rusqlite::Result<usize> {
         conn.execute(
-            "INSERT INTO crew_runners (crew_id, runner_id, position, lead, added_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![crew_id, runner_id, position, lead, "2026-04-22T00:00:00Z"],
+            "INSERT INTO slots
+                (id, crew_id, runner_id, slot_handle, position, lead, added_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id,
+                crew_id,
+                runner_id,
+                slot_handle,
+                position,
+                lead,
+                "2026-04-22T00:00:00Z"
+            ],
         )
     }
 
@@ -149,7 +162,7 @@ mod tests {
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
                  WHERE type = 'table' AND name IN
-                     ('crews','runners','crew_runners','missions','sessions')",
+                     ('crews','runners','slots','missions','sessions')",
                 [],
                 |r| r.get(0),
             )
@@ -177,34 +190,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn one_lead_per_crew_index_rejects_second_lead() {
-        let pool = open_in_memory().unwrap();
-        let conn = pool.get().unwrap();
-        insert_crew(&conn, "c1");
-        insert_runner(&conn, "r1", "alpha").unwrap();
-        insert_runner(&conn, "r2", "beta").unwrap();
-
-        insert_crew_runner(&conn, "c1", "r1", 0, 1).unwrap();
-        let err = insert_crew_runner(&conn, "c1", "r2", 1, 1).unwrap_err();
-        assert_eq!(
-            err.sqlite_error_code(),
-            Some(ErrorCode::ConstraintViolation)
-        );
-    }
-
-    #[test]
-    fn one_lead_per_crew_allows_leads_across_crews() {
-        let pool = open_in_memory().unwrap();
-        let conn = pool.get().unwrap();
-        insert_crew(&conn, "c1");
-        insert_crew(&conn, "c2");
-        insert_runner(&conn, "r1", "alpha").unwrap();
-        insert_runner(&conn, "r2", "beta").unwrap();
-
-        insert_crew_runner(&conn, "c1", "r1", 0, 1).unwrap();
-        insert_crew_runner(&conn, "c2", "r2", 0, 1).unwrap();
-    }
+    // The "at most one lead per crew" invariant moves to the slot
+    // commands; covered by the slot_set_lead test in commands::slot.
+    // The schema no longer has the partial unique index that used to
+    // enforce it.
 
     #[test]
     fn runner_handle_is_globally_unique() {
@@ -226,8 +215,36 @@ mod tests {
         insert_crew(&conn, "c2");
         insert_runner(&conn, "r1", "shared").unwrap();
 
-        insert_crew_runner(&conn, "c1", "r1", 0, 1).unwrap();
-        insert_crew_runner(&conn, "c2", "r1", 0, 1).unwrap();
+        insert_slot(&conn, "s1", "c1", "r1", "alpha-c1", 0, 1).unwrap();
+        insert_slot(&conn, "s2", "c2", "r1", "alpha-c2", 0, 1).unwrap();
+    }
+
+    #[test]
+    fn same_runner_can_fill_multiple_slots_in_one_crew() {
+        // The whole point of the slot redesign: the same runner
+        // template can sit in two slots of the same crew with
+        // different in-crew handles.
+        let pool = open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        insert_crew(&conn, "c1");
+        insert_runner(&conn, "r1", "claude").unwrap();
+        insert_slot(&conn, "s1", "c1", "r1", "architect", 0, 1).unwrap();
+        insert_slot(&conn, "s2", "c1", "r1", "reviewer", 1, 0).unwrap();
+    }
+
+    #[test]
+    fn slot_handle_is_unique_per_crew() {
+        let pool = open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        insert_crew(&conn, "c1");
+        insert_runner(&conn, "r1", "alpha").unwrap();
+        insert_runner(&conn, "r2", "beta").unwrap();
+        insert_slot(&conn, "s1", "c1", "r1", "lead-slot", 0, 1).unwrap();
+        let err = insert_slot(&conn, "s2", "c1", "r2", "lead-slot", 1, 0).unwrap_err();
+        assert_eq!(
+            err.sqlite_error_code(),
+            Some(ErrorCode::ConstraintViolation)
+        );
     }
 
     #[test]
@@ -238,8 +255,8 @@ mod tests {
         insert_runner(&conn, "r1", "alpha").unwrap();
         insert_runner(&conn, "r2", "beta").unwrap();
 
-        insert_crew_runner(&conn, "c1", "r1", 0, 1).unwrap();
-        let err = insert_crew_runner(&conn, "c1", "r2", 0, 0).unwrap_err();
+        insert_slot(&conn, "s1", "c1", "r1", "alpha", 0, 1).unwrap();
+        let err = insert_slot(&conn, "s2", "c1", "r2", "beta", 0, 0).unwrap_err();
         assert_eq!(
             err.sqlite_error_code(),
             Some(ErrorCode::ConstraintViolation)
@@ -264,9 +281,9 @@ mod tests {
         let args = serde_json::json!(["--flag", "--val=1"]);
         conn.execute(
             "INSERT INTO runners (
-                id, handle, display_name, role, runtime, command,
+                id, handle, display_name, runtime, command,
                 args_json, env_json, created_at, updated_at
-             ) VALUES ('r1','impl','Impl','impl','shell','sh',?1,?2,?3,?3)",
+             ) VALUES ('r1','impl','Impl','shell','sh',?1,?2,?3,?3)",
             params![args.to_string(), env.to_string(), "2026-04-22T00:00:00Z"],
         )
         .unwrap();
@@ -305,15 +322,15 @@ mod tests {
     }
 
     #[test]
-    fn deleting_crew_cascades_crew_runner_rows_only() {
-        // C5.5: runners are global — deleting a crew should strip its join
-        // rows but leave the runner itself intact so other crews (or a
-        // direct chat) can keep using it.
+    fn deleting_crew_cascades_slot_rows_only() {
+        // Runners are global templates — deleting a crew should strip
+        // its slots but leave the runner template intact so other
+        // crews (or direct chats) can keep using it.
         let pool = open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         insert_crew(&conn, "c1");
         insert_runner(&conn, "r1", "alpha").unwrap();
-        insert_crew_runner(&conn, "c1", "r1", 0, 1).unwrap();
+        insert_slot(&conn, "s1", "c1", "r1", "alpha", 0, 1).unwrap();
 
         conn.execute("DELETE FROM crews WHERE id = 'c1'", [])
             .unwrap();
@@ -324,13 +341,13 @@ mod tests {
             .unwrap();
         let slot_count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM crew_runners WHERE runner_id = 'r1'",
+                "SELECT COUNT(*) FROM slots WHERE runner_id = 'r1'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(runner_count, 1, "runner row must survive crew delete");
-        assert_eq!(slot_count, 0, "membership row cascades away");
+        assert_eq!(runner_count, 1, "runner template must survive crew delete");
+        assert_eq!(slot_count, 0, "slots cascade with the crew");
     }
 
     #[test]

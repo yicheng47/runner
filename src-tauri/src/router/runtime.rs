@@ -3,8 +3,14 @@
 //
 // Two responsibilities live here:
 //
-//   1. `system_prompt_args` — pass `runner.system_prompt` to the agent CLI
-//      via its native flag (claude-code: `--append-system-prompt`).
+//   1. `system_prompt_args` — hand `runner.system_prompt` to the agent
+//      CLI via its native argv hook, when one exists. claude-code's
+//      `--append-system-prompt` / `--system-prompt` are SDK-only
+//      (require `-p` / print mode); the interactive TUI silently
+//      ignores them. So claude-code returns no argv from this
+//      function — the prompt is delivered via stdin as a first user
+//      turn instead, by `SessionManager::schedule_first_prompt`.
+//      Codex still uses its positional `[PROMPT]` arg.
 //      arch §4.2 / §4.3.
 //
 //   2. `resume_plan` — pass the agent CLI's *own* resumable
@@ -22,26 +28,35 @@
 
 /// Compute the extra args (in declaration order) to append after the
 /// runner's configured `args` so the child receives `system_prompt` via the
-/// runtime's native flag. Returns an empty Vec when no prompt is set or the
-/// runtime is unrecognized — unrecognized runtimes degrade silently rather
-/// than failing the spawn (the user might be prototyping a custom CLI).
+/// runtime's native flag. Returns an empty Vec when no prompt is set or
+/// when the runtime delivers prompts through stdin instead of argv.
 pub fn system_prompt_args(runtime: &str, system_prompt: Option<&str>) -> Vec<String> {
     let prompt = match system_prompt {
         Some(p) if !p.trim().is_empty() => p,
         _ => return Vec::new(),
     };
     match runtime {
-        // claude-code accepts --append-system-prompt <text>; the flag layers
-        // onto its built-in default rather than replacing it, which is what
-        // we want — we're appending the runner's brief, not overwriting.
-        "claude-code" => vec!["--append-system-prompt".into(), prompt.to_string()],
-        // codex / shell / unknown — no flag. We tried `codex --instructions`
-        // first but the installed Codex CLI rejects it ("unexpected argument
-        // --instructions found"). Until a verified prompt mechanism lands
-        // (e.g. a documented flag on a pinned Codex version, or a wrapper
-        // script convention), Codex runners spawn without the brief; the
-        // prompt is still on the runner row and the user can configure
-        // their own wrapper. Tracked for follow-up.
+        // claude-code's --append-system-prompt and --system-prompt
+        // are documented as SDK-only — they require `-p` (print
+        // mode), which is incompatible with our interactive TUI
+        // launches. Passing them in interactive mode is silently
+        // dropped. Workaround: the call site delivers the prompt via
+        // stdin once the TUI is up (see
+        // SessionManager::schedule_first_prompt).
+        "claude-code" => Vec::new(),
+        // codex has no system-prompt flag (we tried `--instructions` and
+        // it's rejected; `~/.codex/config.toml` doesn't expose one
+        // either). Codex's CLI does accept a positional `[PROMPT]` arg
+        // that becomes the first user turn of the session — passing
+        // `system_prompt` there is the closest available hook. The
+        // trade-off is visibility: codex's chat history will show the
+        // prompt as the first user message, not a hidden system
+        // instruction. For *resume* paths we deliberately skip this at
+        // the call site so the prompt isn't replayed onto an existing
+        // conversation — see the spawn glue in
+        // `SessionManager::{spawn,spawn_direct,resume}`.
+        "codex" => vec![prompt.to_string()],
+        // shell / unknown — no prompt mechanism.
         _ => Vec::new(),
     }
 }
@@ -106,6 +121,22 @@ pub fn resume_plan(runtime: &str, prior_key: Option<&str>) -> ResumePlan {
     match runtime {
         "claude-code" => match prior_key {
             Some(k) if is_uuid(k) => ResumePlan {
+                // `--resume <uuid>` is required on resume. We tried
+                // `--session-id <uuid>` previously, but claude-code
+                // refuses to start with a session id it already
+                // recognises as in use ("Session ID … is already in
+                // use") — it treats `--session-id` as fresh-only. The
+                // edge case `--resume` exposes ("session not found"
+                // when the conversation file was never persisted)
+                // is now masked by `schedule_first_prompt`, which
+                // always sends a first user turn to claude-code on
+                // fresh spawn so the conversation file lands on disk
+                // before any future resume tries to load it. If a
+                // resume still fails (e.g. the user killed the app
+                // within ~1.5s of spawn before the first turn went
+                // through), the reader thread's `resume_failed`
+                // heuristic wipes `agent_session_key` and the next
+                // launch starts fresh.
                 args: vec!["--resume".into(), k.to_string()],
                 prepend: false,
                 assigned_key: Some(k.to_string()),
@@ -150,17 +181,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn claude_code_appends_system_prompt() {
+    fn claude_code_returns_no_argv_for_system_prompt() {
+        // claude-code's --append-system-prompt is SDK-only; the
+        // interactive TUI ignores it. The argv path returns empty,
+        // and SessionManager::schedule_first_prompt delivers the
+        // prompt as a first user turn via stdin instead.
         let args = system_prompt_args("claude-code", Some("be helpful"));
-        assert_eq!(args, vec!["--append-system-prompt", "be helpful"]);
+        assert!(args.is_empty());
     }
 
     #[test]
-    fn codex_runtime_omits_flag_until_verified_mechanism() {
-        // The installed `codex` CLI rejects `--instructions`. Until a
-        // documented prompt flag is verified, the codex runtime degrades
-        // to no-flag rather than crashing the spawn.
-        assert!(system_prompt_args("codex", Some("be helpful")).is_empty());
+    fn codex_runtime_passes_prompt_as_positional_argv() {
+        // Codex has no system-prompt flag. The closest mechanism it
+        // ships is a positional `[PROMPT]` arg that seeds the session
+        // with a first user turn. We pass `system_prompt` there so
+        // the agent at least sees the brief, even though the trade-
+        // off is the prompt becoming visible as a user message.
+        let args = system_prompt_args("codex", Some("be helpful"));
+        assert_eq!(args, vec!["be helpful".to_string()]);
+    }
+
+    #[test]
+    fn codex_runtime_omits_argv_when_prompt_is_blank() {
+        assert!(system_prompt_args("codex", None).is_empty());
+        assert!(system_prompt_args("codex", Some("")).is_empty());
+        assert!(system_prompt_args("codex", Some("   ")).is_empty());
     }
 
     #[test]
@@ -194,6 +239,11 @@ mod tests {
 
     #[test]
     fn claude_code_resumes_with_prior_uuid() {
+        // `--resume <uuid>` is the right flag. `--session-id` would
+        // be rejected as "already in use" because claude-code treats
+        // it as fresh-only. `schedule_first_prompt` ensures the
+        // conversation file exists before any resume attempt by
+        // pushing a first user turn on initial spawn.
         let prior = uuid::Uuid::new_v4().to_string();
         let plan = resume_plan("claude-code", Some(&prior));
         assert!(plan.resuming);

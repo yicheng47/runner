@@ -15,7 +15,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { MoreHorizontal, SquarePen, Star, Trash2 } from "lucide-react";
 
 import { api } from "../lib/api";
-import type { Crew, CrewRunner } from "../lib/types";
+import type { Crew, Runner, SlotWithRunner } from "../lib/types";
 import { AddSlotModal } from "../components/AddSlotModal";
 import { RunnerEditDrawer } from "../components/RunnerEditDrawer";
 import { StartMissionModal } from "../components/StartMissionModal";
@@ -24,13 +24,13 @@ import { Button } from "../components/ui/Button";
 export default function CrewEditor() {
   const { crewId } = useParams<{ crewId: string }>();
   const [crew, setCrew] = useState<Crew | null>(null);
-  const [runners, setRunners] = useState<CrewRunner[]>([]);
+  const [slots, setSlots] = useState<SlotWithRunner[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [starting, setStarting] = useState(false);
-  const [editing, setEditing] = useState<CrewRunner | null>(null);
+  const [editing, setEditing] = useState<Runner | null>(null);
   const [nameDraft, setNameDraft] = useState("");
   const [savingName, setSavingName] = useState(false);
   const [reordering, setReordering] = useState(false);
@@ -43,10 +43,10 @@ export default function CrewEditor() {
       setError(null);
       const [c, rs] = await Promise.all([
         api.crew.get(crewId),
-        api.crew.listRunners(crewId),
+        api.slot.list(crewId),
       ]);
       setCrew(c);
-      setRunners(rs);
+      setSlots(rs);
       setNameDraft(c.name);
       setLoaded(true);
     } catch (e) {
@@ -75,44 +75,45 @@ export default function CrewEditor() {
     }
   };
 
-  const onSetLead = async (runnerId: string) => {
-    if (!crewId) return;
+  const onSetLead = async (slotId: string) => {
     try {
-      await api.crew.setLead(crewId, runnerId);
+      await api.slot.setLead(slotId);
       await refresh();
     } catch (e) {
       setError(String(e));
     }
   };
 
-  const onRemoveFromCrew = async (r: CrewRunner) => {
-    if (!crewId) return;
-    const tail = r.lead
-      ? "\nAs the LEAD, leadership will pass to the next runner by position."
+  const onRemoveSlot = async (s: SlotWithRunner) => {
+    const tail = s.lead
+      ? "\nAs the LEAD, leadership will pass to the next slot by position."
       : "";
-    if (!confirm(`Remove @${r.handle} from this crew?${tail}`)) return;
+    if (!confirm(`Remove slot @${s.slot_handle} from this crew?${tail}`)) return;
     try {
-      await api.crew.removeRunner(crewId, r.id);
+      await api.slot.delete(s.id);
       await refresh();
     } catch (e) {
       setError(String(e));
     }
   };
 
-  const currentRunnerIds = useMemo(() => runners.map((r) => r.id), [runners]);
+  const existingSlotHandles = useMemo(
+    () => slots.map((s) => s.slot_handle),
+    [slots],
+  );
 
-  const onCommitReorder = async (newOrder: CrewRunner[]) => {
+  const onCommitReorder = async (newOrder: SlotWithRunner[]) => {
     if (!crewId) return;
     if (reorderInFlight.current) return;
     reorderInFlight.current = true;
     setReordering(true);
-    setRunners(newOrder);
+    setSlots(newOrder);
     try {
-      const updated = await api.crew.reorder(
+      const updated = await api.slot.reorder(
         crewId,
-        newOrder.map((r) => r.id),
+        newOrder.map((s) => s.id),
       );
-      setRunners(updated);
+      setSlots(updated);
     } catch (e) {
       setError(String(e));
       await refresh();
@@ -189,10 +190,10 @@ export default function CrewEditor() {
           <Button
             variant="primary"
             onClick={() => setStarting(true)}
-            disabled={runners.length === 0}
+            disabled={slots.length === 0}
             title={
-              runners.length === 0
-                ? "Add at least one runner before starting a mission"
+              slots.length === 0
+                ? "Add at least one slot before starting a mission"
                 : "Start a mission with this crew"
             }
           >
@@ -250,12 +251,12 @@ export default function CrewEditor() {
                 </Button>
               </div>
 
-              <RunnerList
-                runners={runners}
+              <SlotList
+                slots={slots}
                 reordering={reordering}
                 onSetLead={onSetLead}
-                onEdit={(r) => setEditing(r)}
-                onRemove={onRemoveFromCrew}
+                onEdit={(s) => setEditing(s.runner)}
+                onRemove={onRemoveSlot}
                 onReorder={onCommitReorder}
               />
             </section>
@@ -267,7 +268,7 @@ export default function CrewEditor() {
         open={adding}
         crewId={crewId}
         crewName={crew?.name ?? nameDraft}
-        currentRunnerIds={currentRunnerIds}
+        existingSlotHandles={existingSlotHandles}
         onClose={() => setAdding(false)}
         onCreated={async () => {
           setAdding(false);
@@ -298,47 +299,47 @@ export default function CrewEditor() {
   );
 }
 
-function RunnerList({
-  runners,
+function SlotList({
+  slots,
   reordering,
   onSetLead,
   onEdit,
   onRemove,
   onReorder,
 }: {
-  runners: CrewRunner[];
+  slots: SlotWithRunner[];
   reordering: boolean;
-  onSetLead: (id: string) => void;
-  onEdit: (r: CrewRunner) => void;
-  onRemove: (r: CrewRunner) => void;
-  onReorder: (newOrder: CrewRunner[]) => void;
+  onSetLead: (slotId: string) => void;
+  onEdit: (s: SlotWithRunner) => void;
+  onRemove: (s: SlotWithRunner) => void;
+  onReorder: (newOrder: SlotWithRunner[]) => void;
 }) {
-  if (runners.length === 0) {
+  if (slots.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-line-strong bg-panel/40 px-5 py-8 text-center">
         <p className="text-sm text-fg">No slots yet.</p>
         <p className="mt-1 text-xs text-fg-3">
           Use <span className="font-medium text-fg">+ Add slot</span> above —
-          the first runner auto-assigns as LEAD.
+          the first slot auto-assigns as LEAD.
         </p>
       </div>
     );
   }
   return (
     <ol className="flex flex-col gap-2">
-      {runners.map((r, i) => (
-        <RunnerRow
-          key={r.id}
-          runner={r}
+      {slots.map((s, i) => (
+        <SlotRow
+          key={s.id}
+          slot={s}
           index={i}
-          total={runners.length}
+          total={slots.length}
           dragDisabled={reordering}
-          onSetLead={() => onSetLead(r.id)}
-          onEdit={() => onEdit(r)}
-          onRemove={() => onRemove(r)}
+          onSetLead={() => onSetLead(s.id)}
+          onEdit={() => onEdit(s)}
+          onRemove={() => onRemove(s)}
           onReorderDrop={(fromIndex) => {
             if (fromIndex === i) return;
-            const next = moveItem(runners, fromIndex, i);
+            const next = moveItem(slots, fromIndex, i);
             onReorder(next);
           }}
         />
@@ -354,8 +355,8 @@ function moveItem<T>(arr: T[], from: number, to: number): T[] {
   return copy;
 }
 
-function RunnerRow({
-  runner,
+function SlotRow({
+  slot,
   index,
   total,
   dragDisabled,
@@ -364,7 +365,7 @@ function RunnerRow({
   onRemove,
   onReorderDrop,
 }: {
-  runner: CrewRunner;
+  slot: SlotWithRunner;
   index: number;
   total: number;
   dragDisabled: boolean;
@@ -395,6 +396,7 @@ function RunnerRow({
     if (!Number.isNaN(from)) onReorderDrop(from);
   };
 
+  const runner = slot.runner;
   const summary = useMemo(() => {
     const parts = [runner.command, ...runner.args];
     return parts.filter(Boolean).join(" ");
@@ -425,9 +427,9 @@ function RunnerRow({
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-[13px] font-medium text-fg">
-            @{runner.handle}
+            @{slot.slot_handle}
           </span>
-          {runner.lead ? (
+          {slot.lead ? (
             <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
               Lead
             </span>
@@ -435,9 +437,9 @@ function RunnerRow({
           <span className="rounded bg-raised px-1.5 py-0.5 text-[10px] font-medium text-fg-2">
             {runner.runtime}
           </span>
-          {runner.role ? (
-            <span className="text-xs text-fg-2">{runner.role}</span>
-          ) : null}
+          <span className="font-mono text-[11px] text-fg-3">
+            from @{runner.handle}
+          </span>
         </div>
         {runner.system_prompt ? (
           <div className="mt-1 line-clamp-1 text-xs text-fg-2">
@@ -452,7 +454,7 @@ function RunnerRow({
       </div>
 
       <SlotActionMenu
-        runner={runner}
+        slot={slot}
         onSetLead={onSetLead}
         onEdit={onEdit}
         onRemove={onRemove}
@@ -462,12 +464,12 @@ function RunnerRow({
 }
 
 function SlotActionMenu({
-  runner,
+  slot,
   onSetLead,
   onEdit,
   onRemove,
 }: {
-  runner: CrewRunner;
+  slot: SlotWithRunner;
   onSetLead: () => void;
   onEdit: () => void;
   onRemove: () => void;
@@ -498,7 +500,7 @@ function SlotActionMenu({
     >
       <button
         type="button"
-        aria-label={`Slot actions for @${runner.handle}`}
+        aria-label={`Slot actions for @${slot.slot_handle}`}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={(e) => {
@@ -522,9 +524,9 @@ function SlotActionMenu({
           <button
             type="button"
             role="menuitem"
-            disabled={runner.lead}
+            disabled={slot.lead}
             onClick={() => {
-              if (runner.lead) return;
+              if (slot.lead) return;
               setOpen(false);
               onSetLead();
             }}
@@ -533,10 +535,10 @@ function SlotActionMenu({
             <Star
               aria-hidden
               className={`h-3.5 w-3.5 ${
-                runner.lead ? "text-fg-3" : "text-warn"
+                slot.lead ? "text-fg-3" : "text-warn"
               }`}
             />
-            <span>{runner.lead ? "Current lead" : "Set as lead"}</span>
+            <span>{slot.lead ? "Current lead" : "Set as lead"}</span>
           </button>
 
           <button
@@ -549,7 +551,7 @@ function SlotActionMenu({
             className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-fg transition-colors hover:bg-raised"
           >
             <SquarePen aria-hidden className="h-3.5 w-3.5 text-fg" />
-            <span>Edit prompt</span>
+            <span>Edit runner</span>
           </button>
 
           <div className="px-1 py-1">

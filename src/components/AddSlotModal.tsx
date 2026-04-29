@@ -1,10 +1,7 @@
-// Add an existing runner to a crew slot (C5.5 shared-runner model).
-//
-// Runner creation lives on the top-level Runners page. This modal mirrors
-// design/runners-design.pen node `sYprG`: search existing runners, select
-// one, then add it to the crew. Per-slot prompt overrides are shown as the
-// v0.x placeholder from the design because the schema has no override
-// column yet.
+// Add a slot to a crew. A slot binds a runner template to an in-crew
+// identity (`slot_handle`). The same runner template may fill
+// multiple slots in one crew with different slot_handles — see
+// docs/impls/crew-slots.md.
 
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -14,25 +11,32 @@ import { api } from "../lib/api";
 import type { RunnerWithActivity } from "../lib/types";
 import { Button } from "./ui/Button";
 import { Modal } from "./ui/Overlay";
+import { Field } from "./ui/Field";
+
+const HANDLE_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
 export function AddSlotModal({
   open,
   crewId,
   crewName,
-  currentRunnerIds,
+  existingSlotHandles,
   onClose,
   onCreated,
 }: {
   open: boolean;
   crewId: string;
   crewName: string;
-  currentRunnerIds: string[];
+  /** Slot handles already used in this crew. Drives the auto-suggested
+   *  default and the inline duplicate warning. */
+  existingSlotHandles: string[];
   onClose: () => void;
   onCreated: () => void | Promise<void>;
 }) {
   const [runners, setRunners] = useState<RunnerWithActivity[]>([]);
   const [query, setQuery] = useState("");
   const [selectedRunnerId, setSelectedRunnerId] = useState("");
+  const [slotHandle, setSlotHandle] = useState("");
+  const [slotHandleEdited, setSlotHandleEdited] = useState(false);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,6 +47,8 @@ export function AddSlotModal({
     let cancelled = false;
     setQuery("");
     setSelectedRunnerId("");
+    setSlotHandle("");
+    setSlotHandleEdited(false);
     setError(null);
     setSubmitting(false);
     setLoading(true);
@@ -64,44 +70,82 @@ export function AddSlotModal({
     };
   }, [open]);
 
-  const currentIds = useMemo(
-    () => new Set(currentRunnerIds),
-    [currentRunnerIds],
+  const taken = useMemo(
+    () => new Set(existingSlotHandles),
+    [existingSlotHandles],
   );
 
-  const availableRunners = useMemo(() => {
+  const filteredRunners = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return runners
-      .filter((r) => !currentIds.has(r.id))
-      .filter((r) => {
-        if (!q) return true;
-        return (
-          r.handle.toLowerCase().includes(q) ||
-          r.display_name.toLowerCase().includes(q) ||
-          r.role.toLowerCase().includes(q) ||
-          r.runtime.toLowerCase().includes(q)
-        );
-      });
-  }, [currentIds, query, runners]);
+    if (!q) return runners;
+    return runners.filter(
+      (r) =>
+        r.handle.toLowerCase().includes(q) ||
+        r.display_name.toLowerCase().includes(q) ||
+        r.runtime.toLowerCase().includes(q),
+    );
+  }, [query, runners]);
 
   useEffect(() => {
     if (!open) return;
     setSelectedRunnerId((id) => {
-      if (id && availableRunners.some((r) => r.id === id)) return id;
-      return availableRunners[0]?.id ?? "";
+      if (id && filteredRunners.some((r) => r.id === id)) return id;
+      return filteredRunners[0]?.id ?? "";
     });
-  }, [availableRunners, open]);
+  }, [filteredRunners, open]);
 
   const selectedRunner =
-    availableRunners.find((r) => r.id === selectedRunnerId) ?? null;
-  const canSubmit = selectedRunner !== null && !submitting && !loading;
+    runners.find((r) => r.id === selectedRunnerId) ?? null;
+
+  // Auto-suggest a slot_handle when the user picks a runner. If the
+  // runner's own handle is already taken, append -2/-3 until free.
+  useEffect(() => {
+    if (slotHandleEdited) return;
+    if (!selectedRunner) {
+      setSlotHandle("");
+      return;
+    }
+    const base = selectedRunner.handle;
+    if (!taken.has(base)) {
+      setSlotHandle(base);
+      return;
+    }
+    for (let i = 2; i < 100; i += 1) {
+      const candidate = `${base}-${i}`;
+      if (!taken.has(candidate)) {
+        setSlotHandle(candidate);
+        return;
+      }
+    }
+    setSlotHandle(base);
+  }, [selectedRunner, slotHandleEdited, taken]);
+
+  const slotHandleError = (() => {
+    if (!slotHandle) return null;
+    if (!HANDLE_RE.test(slotHandle))
+      return "Lowercase letters, digits, '-' or '_'; must start with a letter or digit; up to 32 chars.";
+    if (taken.has(slotHandle))
+      return `'${slotHandle}' is already used in this crew.`;
+    return null;
+  })();
+
+  const canSubmit =
+    selectedRunner !== null &&
+    slotHandle.length > 0 &&
+    slotHandleError === null &&
+    !submitting &&
+    !loading;
 
   const submit = async () => {
-    if (!selectedRunner) return;
+    if (!selectedRunner || !canSubmit) return;
     setSubmitting(true);
     setError(null);
     try {
-      await api.crew.addRunner(crewId, selectedRunner.id);
+      await api.slot.create({
+        crew_id: crewId,
+        runner_id: selectedRunner.id,
+        slot_handle: slotHandle,
+      });
       await onCreated();
     } catch (e) {
       setError(String(e));
@@ -189,28 +233,52 @@ export function AddSlotModal({
               <div className="px-3 py-3 text-xs text-fg-3">
                 Loading runners...
               </div>
-            ) : availableRunners.length === 0 ? (
+            ) : filteredRunners.length === 0 ? (
               <div className="px-3 py-3 text-xs text-fg-3">
                 {runners.length === 0
                   ? "No runners yet. Create one first, then add it here."
-                  : query.trim()
-                    ? "No available runners match this search."
-                    : "Every runner is already in this crew."}
+                  : "No runners match this search."}
               </div>
             ) : (
               <div className="max-h-56 overflow-y-auto">
-                {availableRunners.map((runner) => (
+                {filteredRunners.map((runner) => (
                   <RunnerOption
                     key={runner.id}
                     runner={runner}
                     selected={runner.id === selectedRunnerId}
-                    onSelect={() => setSelectedRunnerId(runner.id)}
+                    onSelect={() => {
+                      setSelectedRunnerId(runner.id);
+                      setSlotHandleEdited(false);
+                    }}
                   />
                 ))}
               </div>
             )}
           </div>
         </section>
+
+        <Field
+          id="add-slot-handle"
+          label="Slot handle"
+          hint="in-crew identity used by mission events and stdin routing"
+          error={slotHandleError}
+        >
+          <div className="flex items-center rounded border border-line-strong bg-bg px-2.5 py-1.5 text-sm focus-within:border-fg-3">
+            <span className="select-none pr-1 font-mono font-semibold text-fg-3">
+              @
+            </span>
+            <input
+              id="add-slot-handle"
+              value={slotHandle}
+              placeholder="architect"
+              onChange={(e) => {
+                setSlotHandle(e.target.value.toLowerCase());
+                setSlotHandleEdited(true);
+              }}
+              className="flex-1 bg-transparent font-mono text-fg outline-none placeholder:text-fg-3"
+            />
+          </div>
+        </Field>
 
         <section className="flex flex-col gap-2 opacity-70">
           <div className="flex items-center justify-between gap-3">

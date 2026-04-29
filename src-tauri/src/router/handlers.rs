@@ -1,11 +1,16 @@
 // Hardcoded signal handlers. One function per built-in signal type.
 // Per arch §5.2, signals always carry `to: null`; per-target routing lives
-// in `payload.target` (only `human_said` uses this in v0). Per arch §5.5.0
-// invariant, messages never reach this module — `Router::handle_event`
-// short-circuits non-signal events.
+// in `payload.target` (only `human_said` uses this in v0).
+//
+// Messages also reach this module, but only as stdin nudges: when a
+// directed message lands in a slot's inbox, the router pushes a one-line
+// "[inbox] new message from @X — run `runner msg read`" notification to
+// that slot's PTY so the agent wakes up and pulls. Without this nudge,
+// pull-based inbox routing strands the worker — they have no clock to
+// poll on. Broadcast messages nudge every slot except the sender.
 //
 // Stdin pushes are silent: handlers do NOT write `inject_stdin_*` audit
-// events. The originating signal already records the cause in the log.
+// events. The originating signal/message already records the cause.
 // Only `ask_human` results in a derived event (`human_question`), because
 // that one is consumed by the workspace UI as a card.
 
@@ -27,18 +32,22 @@ pub(super) fn mission_goal(router: &Router, event: &Event) {
         .map(|r| RosterEntry {
             handle: r.handle(),
             display_name: r.display_name(),
-            role: r.role(),
             lead: r.is_lead(),
         })
         .collect();
+    let lead_row = launch.lead();
     let prompt = compose_launch_prompt(&LaunchPromptInput {
-        lead: launch.lead(),
+        lead: super::prompt::LeadView {
+            handle: lead_row.handle(),
+            display_name: lead_row.display_name(),
+            system_prompt: lead_row.system_prompt(),
+        },
         crew_name: launch.crew_name(),
         mission_goal: goal,
         roster: &roster_entries,
         allowed_signals: launch.allowed_signals(),
     });
-    if let Err(e) = router.inject_to_handle(launch.lead().handle.as_str(), prompt.as_bytes()) {
+    if let Err(e) = router.inject_to_handle(lead_row.handle(), prompt.as_bytes()) {
         router.warn(format!("mission_goal injection to lead failed: {e}"));
     }
 }
@@ -149,6 +158,52 @@ pub(super) fn human_response(router: &Router, event: &Event) {
     let text = format!("[human_response] {choice}\n");
     if let Err(e) = router.inject_to_handle(&asker, text.as_bytes()) {
         router.warn(format!("human_response injection to @{asker} failed: {e}"));
+    }
+}
+
+/// Wakes the recipient(s) of a message by pushing a one-line stdin
+/// nudge. The agent reads it in-stream and is expected to call
+/// `runner msg read` to pull the actual message.
+///
+/// Routing rules:
+///   - Directed (`to == Some(handle)`): nudge that handle's session.
+///   - Broadcast (`to == None`): nudge every slot in the roster except
+///     the sender. The sender already knows what they sent; nudging
+///     them creates an echo loop.
+pub(super) fn message_nudge(router: &Router, event: &Event) {
+    let sender = event.from.as_str();
+    if let Some(target) = event.to.as_deref() {
+        if target == sender {
+            return;
+        }
+        let text = format!(
+            "[inbox] new message from @{sender} — run `runner msg read` to view.\n"
+        );
+        if let Err(e) = router.inject_to_handle(target, text.as_bytes()) {
+            router.warn(format!(
+                "message_nudge injection to @{target} failed: {e}"
+            ));
+        }
+        return;
+    }
+
+    // Broadcast: walk the roster, skip the sender, nudge each.
+    let text = format!(
+        "[inbox] new broadcast from @{sender} — run `runner msg read` to view.\n"
+    );
+    let handles: Vec<String> = router
+        .launch()
+        .roster()
+        .iter()
+        .map(|r| r.handle().to_string())
+        .filter(|h| h != sender)
+        .collect();
+    for handle in handles {
+        if let Err(e) = router.inject_to_handle(&handle, text.as_bytes()) {
+            router.warn(format!(
+                "message_nudge broadcast to @{handle} failed: {e}"
+            ));
+        }
     }
 }
 

@@ -3,7 +3,7 @@
 // Tauri auto-converts top-level arg names between camelCase (JS) and
 // snake_case (Rust), so `crewId` here maps to `crew_id` in the Rust
 // handlers. Nested struct fields pass through unchanged — `input` objects
-// match the Rust struct shapes in src-tauri/src/commands/{crew,runner,crew_runner,mission,session}.rs,
+// match the Rust struct shapes in src-tauri/src/commands/{crew,runner,slot,mission,session}.rs,
 // mirrored by src/lib/types.ts.
 
 import { invoke } from "@tauri-apps/api/core";
@@ -11,10 +11,10 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   CreateCrewInput,
   CreateRunnerInput,
+  CreateSlotInput,
   Crew,
   CrewListItem,
   CrewMembership,
-  CrewRunner,
   Event,
   Mission,
   MissionSummary,
@@ -24,11 +24,13 @@ import type {
   RunnerWithActivity,
   Session,
   SessionOutputEvent,
+  SlotWithRunner,
   SpawnedSession,
   StartMissionInput,
   StartMissionOutput,
   UpdateCrewInput,
   UpdateRunnerInput,
+  UpdateSlotInput,
 } from "./types";
 
 /** Session row joined with the runner's handle for UI labels. */
@@ -65,17 +67,19 @@ export const api = {
       invoke<Crew>("crew_update", { id, input }),
     delete: (id: string) => invoke<void>("crew_delete", { id }),
 
-    // Crew membership (the slot operations).
-    listRunners: (crewId: string) =>
-      invoke<CrewRunner[]>("crew_list_runners", { crewId }),
-    addRunner: (crewId: string, runnerId: string) =>
-      invoke<CrewRunner>("crew_add_runner", { crewId, runnerId }),
-    removeRunner: (crewId: string, runnerId: string) =>
-      invoke<void>("crew_remove_runner", { crewId, runnerId }),
-    setLead: (crewId: string, runnerId: string) =>
-      invoke<CrewRunner>("crew_set_lead", { crewId, runnerId }),
-    reorder: (crewId: string, orderedIds: string[]) =>
-      invoke<CrewRunner[]>("crew_reorder", { crewId, orderedIds }),
+  },
+  slot: {
+    list: (crewId: string) =>
+      invoke<SlotWithRunner[]>("slot_list", { crewId }),
+    create: (input: CreateSlotInput) =>
+      invoke<SlotWithRunner>("slot_create", { input }),
+    update: (slotId: string, input: UpdateSlotInput) =>
+      invoke<SlotWithRunner>("slot_update", { slotId, input }),
+    delete: (slotId: string) => invoke<void>("slot_delete", { slotId }),
+    setLead: (slotId: string) =>
+      invoke<SlotWithRunner>("slot_set_lead", { slotId }),
+    reorder: (crewId: string, orderedSlotIds: string[]) =>
+      invoke<SlotWithRunner[]>("slot_reorder", { crewId, orderedSlotIds }),
   },
   runner: {
     list: () => invoke<Runner[]>("runner_list"),
@@ -104,7 +108,25 @@ export const api = {
     get: (id: string) => invoke<Mission>("mission_get", { id }),
     start: (input: StartMissionInput) =>
       invoke<StartMissionOutput>("mission_start", { input }),
+    /** Re-mount router/bus on workspace mount; idempotent. After app restart
+     *  the in-memory router/bus need to be rebuilt from the persisted log
+     *  before stdin pushes can land on resumed slot PTYs. */
+    attach: (missionId: string) =>
+      invoke<Mission>("mission_attach", { missionId }),
+    /** Kill every live PTY in the mission. Mission row stays `running`,
+     *  router/bus stay mounted; pair with per-slot `session_resume` to
+     *  bring the agents back. */
     stop: (id: string) => invoke<Mission>("mission_stop", { id }),
+    /** Terminal end-of-mission. Drops router + bus, flips status to
+     *  `completed`. Cannot be undone. */
+    archive: (id: string) => invoke<Mission>("mission_archive", { id }),
+    /** Toggle a mission's pin. Pinned missions float to the top of
+     *  the sidebar's MISSION list. */
+    pin: (id: string, pinned: boolean) =>
+      invoke<Mission>("mission_pin", { id, pinned }),
+    /** Rename a mission. Title is trimmed and rejected if empty. */
+    rename: (id: string, title: string) =>
+      invoke<Mission>("mission_rename", { id, title }),
     eventsReplay: (missionId: string) =>
       invoke<Event[]>("mission_events_replay", { missionId }),
     postHumanSignal: (input: PostHumanSignalInput) =>

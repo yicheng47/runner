@@ -1,6 +1,10 @@
-// Right-hand rail in the mission workspace - one tab-like card per runner in
-// the roster, showing PTY status (running / stopped / crashed), last
-// `runner_status` (busy / idle), and the LEAD badge.
+// Right-hand rail in the mission workspace - one card per runner in the
+// roster, showing PTY status (running / stopped / crashed), last
+// `runner_status` (busy / idle), and the LEAD badge. Clicking the card
+// (or its dedicated terminal-icon button) opens that slot's PTY as a
+// new tab in the center pane and activates it.
+
+import { Terminal } from "lucide-react";
 
 import type { SessionRow } from "../lib/api";
 
@@ -24,7 +28,7 @@ export function RunnersRail({
   onOpenPty,
 }: RunnersRailProps) {
   return (
-    <aside className="flex w-72 shrink-0 flex-col gap-3 border-l border-line bg-panel p-5">
+    <div className="flex flex-1 min-h-0 flex-col gap-3 overflow-y-auto px-5 pb-5">
       <div className="text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
         Runners
       </div>
@@ -49,12 +53,19 @@ export function RunnersRail({
               : ptyStatus;
           const selected = selectedSessionId === s.id;
           return (
-            <button
+            <div
               key={s.id}
-              type="button"
+              role="button"
+              tabIndex={0}
               onClick={() => onOpenPty(s.id)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onOpenPty(s.id);
+                }
+              }}
               aria-pressed={selected}
-              className={`flex w-full cursor-pointer flex-col gap-1.5 rounded-md border bg-bg p-3 text-left transition-colors focus:outline-none focus-visible:border-accent focus-visible:ring-1 focus-visible:ring-accent/50 ${
+              className={`group flex w-full cursor-pointer flex-col gap-1.5 rounded-md border bg-bg p-3 text-left transition-colors focus:outline-none focus-visible:border-accent focus-visible:ring-1 focus-visible:ring-accent/50 ${
                 selected
                   ? "border-accent/60"
                   : "border-line hover:border-line-strong"
@@ -75,12 +86,24 @@ export function RunnersRail({
                     </span>
                   ) : null}
                 </div>
+                <button
+                  type="button"
+                  aria-label={`Open @${s.handle} pty tab`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenPty(s.id);
+                  }}
+                  className="inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded border border-line text-fg-3 transition-colors hover:border-line-strong hover:text-fg"
+                  title="Open PTY"
+                >
+                  <Terminal aria-hidden className="h-3 w-3" />
+                </button>
               </div>
               <div className="text-[11px] text-fg-2">{subtitle}</div>
-            </button>
+            </div>
           );
         })
       )}
-    </aside>
+    </div>
   );
 }

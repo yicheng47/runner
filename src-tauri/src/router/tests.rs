@@ -14,7 +14,7 @@ use runner_core::model::{Event, EventDraft, EventKind, SignalType};
 
 use super::{Router, RouterRegistry, StdinInjector};
 use crate::error::Result;
-use crate::model::{CrewRunner, Runner};
+use crate::model::{Runner, Slot, SlotWithRunner};
 
 /// Records every `inject` call so handler outputs can be asserted.
 #[derive(Default)]
@@ -70,7 +70,6 @@ fn runner(handle: &str, runtime: &str) -> Runner {
         id: format!("rid-{handle}"),
         handle: handle.into(),
         display_name: handle.to_uppercase(),
-        role: "test".into(),
         runtime: runtime.into(),
         command: "/bin/sh".into(),
         args: vec![],
@@ -82,12 +81,19 @@ fn runner(handle: &str, runtime: &str) -> Runner {
     }
 }
 
-fn crew_runner(handle: &str, lead: bool) -> CrewRunner {
-    CrewRunner {
-        runner: runner(handle, "claude-code"),
-        position: 0,
-        lead,
-        added_at: Utc::now(),
+fn slot_with_runner(handle: &str, lead: bool) -> SlotWithRunner {
+    let runner = runner(handle, "claude-code");
+    SlotWithRunner {
+        slot: Slot {
+            id: format!("slot-{handle}"),
+            crew_id: "crew-1".into(),
+            runner_id: runner.id.clone(),
+            slot_handle: handle.into(),
+            position: 0,
+            lead,
+            added_at: Utc::now(),
+        },
+        runner,
     }
 }
 
@@ -96,7 +102,7 @@ fn crew_runner(handle: &str, lead: bool) -> CrewRunner {
 /// re-opening the file. The dir is returned so tempdir cleanup is delayed
 /// to test-end (otherwise the log path would be invalidated immediately).
 fn fixture(
-    roster: Vec<CrewRunner>,
+    roster: Vec<SlotWithRunner>,
     sessions: &[(&str, &str)],
 ) -> (
     Arc<Router>,
@@ -146,27 +152,64 @@ fn read_signals(log: &EventLog) -> Vec<Event> {
 }
 
 #[test]
-fn messages_do_not_trigger_router_actions() {
-    // Arch §5.5.0: messages flow through the inbox projection only; the
-    // router's dispatcher must early-return on EventKind::Message. A
-    // `mission_warning` from a missing handler would also surface here, so
-    // an empty pushes Vec proves both that the dispatcher matched on kind
-    // and that no handler ran.
+fn directed_message_nudges_target_only() {
+    // Pull-based inbox routing strands the worker without a stdin
+    // poke. A directed message must wake the target with a one-line
+    // notification; the sender must not be echoed back to themselves.
     let (router, injector, log, _dir) = fixture(
-        vec![crew_runner("lead", true), crew_runner("impl", false)],
+        vec![slot_with_runner("lead", true), slot_with_runner("impl", false)],
         &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
     );
-    let bcast = log.append(message("lead", None, "broadcast")).unwrap();
     let direct = log.append(message("lead", Some("impl"), "go")).unwrap();
-    router.handle_event(&bcast);
     router.handle_event(&direct);
-    assert!(injector.all_pushes().is_empty());
+    let impl_pushes = injector.pushes_for("S-IMPL");
+    assert_eq!(impl_pushes.len(), 1);
+    assert!(impl_pushes[0].contains("[inbox]"));
+    assert!(impl_pushes[0].contains("from @lead"));
+    assert!(impl_pushes[0].contains("runner msg read"));
+    // Sender is not nudged.
+    assert!(injector.pushes_for("S-LEAD").is_empty());
+}
+
+#[test]
+fn broadcast_message_nudges_every_slot_except_sender() {
+    let (router, injector, log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+            slot_with_runner("reviewer", false),
+        ],
+        &[
+            ("lead", "S-LEAD"),
+            ("impl", "S-IMPL"),
+            ("reviewer", "S-REV"),
+        ],
+    );
+    let bcast = log.append(message("lead", None, "heads up")).unwrap();
+    router.handle_event(&bcast);
+    assert_eq!(injector.pushes_for("S-IMPL").len(), 1);
+    assert_eq!(injector.pushes_for("S-REV").len(), 1);
+    assert!(injector.pushes_for("S-LEAD").is_empty());
+}
+
+#[test]
+fn message_self_directed_is_not_nudged() {
+    // Edge case: a runner posting `runner msg post --to @self`. We
+    // never echo a message back to its sender — that would create a
+    // tight loop where reading the nudge prompts another post.
+    let (router, injector, log, _dir) =
+        fixture(vec![slot_with_runner("lead", true)], &[("lead", "S-LEAD")]);
+    let ev = log
+        .append(message("lead", Some("lead"), "self"))
+        .unwrap();
+    router.handle_event(&ev);
+    assert!(injector.pushes_for("S-LEAD").is_empty());
 }
 
 #[test]
 fn mission_goal_injects_composed_prompt_to_lead() {
     let (router, injector, log, _dir) = fixture(
-        vec![crew_runner("lead", true), crew_runner("impl", false)],
+        vec![slot_with_runner("lead", true), slot_with_runner("impl", false)],
         &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
     );
     let ev = log
@@ -191,7 +234,7 @@ fn mission_goal_injects_composed_prompt_to_lead() {
 #[test]
 fn human_said_routes_to_target_or_lead() {
     let (router, injector, log, _dir) = fixture(
-        vec![crew_runner("lead", true), crew_runner("impl", false)],
+        vec![slot_with_runner("lead", true), slot_with_runner("impl", false)],
         &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
     );
 
@@ -226,7 +269,7 @@ fn human_said_routes_to_target_or_lead() {
 #[test]
 fn ask_lead_injects_question_and_context_to_lead() {
     let (router, injector, log, _dir) = fixture(
-        vec![crew_runner("lead", true), crew_runner("impl", false)],
+        vec![slot_with_runner("lead", true), slot_with_runner("impl", false)],
         &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
     );
     let ev = log
@@ -251,7 +294,7 @@ fn ask_lead_injects_question_and_context_to_lead() {
 #[test]
 fn ask_human_appends_human_question_card_and_records_pending_ask() {
     let (router, _injector, log, _dir) = fixture(
-        vec![crew_runner("lead", true), crew_runner("impl", false)],
+        vec![slot_with_runner("lead", true), slot_with_runner("impl", false)],
         &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
     );
     let ev = log
@@ -296,7 +339,7 @@ fn ask_human_appends_human_question_card_and_records_pending_ask() {
 #[test]
 fn human_response_routes_back_to_asker() {
     let (router, injector, log, _dir) = fixture(
-        vec![crew_runner("lead", true), crew_runner("impl", false)],
+        vec![slot_with_runner("lead", true), slot_with_runner("impl", false)],
         &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
     );
     let ask = log
@@ -372,7 +415,7 @@ fn human_response_routes_back_to_asker() {
 #[test]
 fn human_response_without_matching_question_emits_mission_warning() {
     let (router, injector, log, _dir) =
-        fixture(vec![crew_runner("lead", true)], &[("lead", "S-LEAD")]);
+        fixture(vec![slot_with_runner("lead", true)], &[("lead", "S-LEAD")]);
     let resp = log
         .append(signal(
             "human",
@@ -398,7 +441,7 @@ fn human_response_without_matching_question_emits_mission_warning() {
 #[test]
 fn runner_status_idle_for_worker_notifies_lead_and_busy_does_not() {
     let (router, injector, log, _dir) = fixture(
-        vec![crew_runner("lead", true), crew_runner("impl", false)],
+        vec![slot_with_runner("lead", true), slot_with_runner("impl", false)],
         &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
     );
 
@@ -451,7 +494,7 @@ fn pending_ask_map_reconstructs_from_log_on_reopen() {
     // original asker — no separate persistence layer.
     let dir = tempfile::tempdir().unwrap();
     let log = Arc::new(EventLog::open(dir.path()).unwrap());
-    let roster = vec![crew_runner("lead", true), crew_runner("impl", false)];
+    let roster = vec![slot_with_runner("lead", true), slot_with_runner("impl", false)];
 
     let ask = log
         .append(signal(
@@ -580,7 +623,7 @@ fn reconstruct_recovers_latest_runner_status_only() {
     // and no historical idle-notice should re-inject into the lead.
     let dir = tempfile::tempdir().unwrap();
     let log = Arc::new(EventLog::open(dir.path()).unwrap());
-    let roster = vec![crew_runner("lead", true), crew_runner("impl", false)];
+    let roster = vec![slot_with_runner("lead", true), slot_with_runner("impl", false)];
 
     log.append(signal(
         "impl",
@@ -657,7 +700,7 @@ fn fresh_mission_start_does_not_call_reconstruct_so_mission_goal_fires() {
     // (what the bus does). The mission_goal handler must fire.
     let dir = tempfile::tempdir().unwrap();
     let log = Arc::new(EventLog::open(dir.path()).unwrap());
-    let roster = vec![crew_runner("lead", true)];
+    let roster = vec![slot_with_runner("lead", true)];
 
     log.append(signal(
         "system",
@@ -705,7 +748,7 @@ fn dead_session_for_handler_target_emits_mission_warning() {
     // to surface the missed wake-up than to silently drop it. The router
     // attempts the inject, fails, and writes a mission_warning.
     let (router, injector, log, _dir) =
-        fixture(vec![crew_runner("lead", true)], &[("lead", "S-LEAD")]);
+        fixture(vec![slot_with_runner("lead", true)], &[("lead", "S-LEAD")]);
     injector.mark_dead("S-LEAD");
     let ev = log
         .append(signal(
@@ -764,7 +807,7 @@ fn reconstruct_tolerates_malformed_lines_like_the_bus() {
         f.write_all(b"this is not json\n").unwrap();
     }
 
-    let roster = vec![crew_runner("lead", true)];
+    let roster = vec![slot_with_runner("lead", true)];
     // First mount handles the ask live — appends human_question.
     {
         let injector = Arc::new(RecordingInjector::default());
@@ -832,7 +875,7 @@ fn reconstruct_tolerates_malformed_lines_like_the_bus() {
 
 #[test]
 fn registry_register_get_unregister() {
-    let (router, _i, _l, _d) = fixture(vec![crew_runner("lead", true)], &[("lead", "S-LEAD")]);
+    let (router, _i, _l, _d) = fixture(vec![slot_with_runner("lead", true)], &[("lead", "S-LEAD")]);
     let reg = RouterRegistry::new();
     reg.register("mission-1".into(), router.clone());
     assert!(reg.get("mission-1").is_some());

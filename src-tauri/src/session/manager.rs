@@ -32,6 +32,7 @@ use serde::Serialize;
 use crate::db::DbPool;
 use crate::error::{Error, Result};
 use crate::model::{Mission, Runner};
+use crate::router;
 
 const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
 
@@ -180,6 +181,15 @@ pub struct SessionManager {
     /// double-click on the Resume button, or two windows both
     /// driving resume).
     resuming_claims: Mutex<HashSet<String>>,
+    /// Session ids the user explicitly killed via `kill()` /
+    /// `kill_all_for_mission()`. The reader thread checks this set
+    /// when the child exits: a session in it ends as `stopped`
+    /// (intentional), not `crashed` (which is reserved for an
+    /// unexpected non-zero exit). Without this distinction, clicking
+    /// Stop in the workspace would mark every slot crashed because
+    /// SIGTERM produces a non-zero exit code. Entries are cleared by
+    /// the reader after the DB row is updated.
+    killed: Mutex<HashSet<String>>,
 }
 
 /// RAII guard that releases a `resuming_claims` entry on drop. The
@@ -206,6 +216,7 @@ impl SessionManager {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             sessions: Mutex::new(HashMap::new()),
+            killed: Mutex::new(HashSet::new()),
             output_buffers: Mutex::new(HashMap::new()),
             output_seq: Mutex::new(HashMap::new()),
             resuming_claims: Mutex::new(HashSet::new()),
@@ -220,10 +231,12 @@ impl SessionManager {
     /// `<app_data_dir>/bin` onto the child's PATH — arch §5.3 Layer 2 and
     /// v0-mvp.md C9 both require the bundled `runner` CLI to win over any
     /// system binary with the same name.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         self: &Arc<Self>,
         mission: &Mission,
         runner: &Runner,
+        slot: &crate::model::Slot,
         app_data_dir: &Path,
         events_log_path: PathBuf,
         pool: Arc<DbPool>,
@@ -264,10 +277,21 @@ impl SessionManager {
         // Append the runtime-specific flag that hands `system_prompt` to the
         // child. Without this the user-authored brief on the runner row is
         // dropped on the floor (arch §4.2 / §4.3).
-        for extra in crate::router::runtime::system_prompt_args(
-            &runner.runtime,
-            runner.system_prompt.as_deref(),
-        ) {
+        //
+        // Codex carve-out: codex's only "system prompt" hook is a
+        // positional `[PROMPT]` argv that becomes the first user turn
+        // of the session (it has no real system-prompt flag). Passing
+        // it on a *resume* spawn would surface the prompt as a fresh
+        // user message against the existing conversation, so we skip
+        // codex's argv when `plan.resuming` is true. claude-code's
+        // `--append-system-prompt` is system-level and safe to re-pass
+        // on resume.
+        let prompt_for_argv = if runner.runtime == "codex" && plan.resuming {
+            None
+        } else {
+            runner.system_prompt.as_deref()
+        };
+        for extra in crate::router::runtime::system_prompt_args(&runner.runtime, prompt_for_argv) {
             cmd.arg(extra);
         }
 
@@ -301,7 +325,11 @@ impl SessionManager {
 
         cmd.env("RUNNER_CREW_ID", &mission.crew_id);
         cmd.env("RUNNER_MISSION_ID", &mission.id);
-        cmd.env("RUNNER_HANDLE", &runner.handle);
+        // RUNNER_HANDLE is the slot's in-mission identity (slot_handle),
+        // not the runner template's handle. The bundled `runner` CLI
+        // stamps this into event envelopes so two slots referencing the
+        // same template appear as distinct senders.
+        cmd.env("RUNNER_HANDLE", &slot.slot_handle);
         cmd.env(
             "RUNNER_EVENT_LOG",
             events_log_path.to_string_lossy().to_string(),
@@ -341,13 +369,14 @@ impl SessionManager {
             let conn = pool.get()?;
             conn.execute(
                 "INSERT INTO sessions
-                    (id, mission_id, runner_id, status, pid, started_at,
+                    (id, mission_id, runner_id, slot_id, status, pid, started_at,
                      agent_session_key)
-                 VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6)",
+                 VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?6, ?7)",
                 params![
                     session_id,
                     mission.id,
                     runner.id,
+                    slot.id,
                     pid,
                     started_at,
                     plan.assigned_key
@@ -415,6 +444,12 @@ impl SessionManager {
         // counter query hits a transient error — the spawn itself
         // succeeded; activity badges will reconcile on the next event.
         emit_runner_activity(&pool, runner, events.as_ref());
+
+        // claude-code's interactive TUI ignores `--append-system-prompt`,
+        // so deliver the runner's brief as a first user turn via stdin.
+        // Skipped for the lead — the mission_goal handler injects a
+        // richer launch prompt that already embeds system_prompt.
+        schedule_first_prompt(self, session_id.clone(), runner, &plan, slot.lead);
 
         Ok(SpawnedSession {
             id: session_id,
@@ -635,6 +670,11 @@ impl SessionManager {
 
         emit_runner_activity(&pool, runner, events.as_ref());
 
+        // First-turn prompt injection for fresh claude-code direct
+        // chats. Direct chats have no slot/lead concept, so always
+        // treat as non-lead.
+        schedule_first_prompt(self, session_id.clone(), runner, &plan, false);
+
         Ok(SpawnedSession {
             id: session_id,
             mission_id: None,
@@ -651,12 +691,18 @@ impl SessionManager {
     /// (claude-code preserves the prior UUID; codex would persist a
     /// captured key once the capture path lands).
     ///
+    /// Works for both direct-chat rows (mission_id IS NULL) and
+    /// mission-scoped rows. For mission rows the env block additionally
+    /// stamps `RUNNER_HANDLE = slot.slot_handle`, `RUNNER_CREW_ID`,
+    /// and `RUNNER_MISSION_ID` so a resumed worker keeps its in-mission
+    /// identity. The mission's Router must already be mounted (via
+    /// `mission_start` originally, or `mission_attach` after restart)
+    /// for stdin pushes to land — resume itself doesn't touch the
+    /// router; the slot_handle → session_id mapping is unchanged.
+    ///
     /// Refused for:
     ///   - rows that don't exist
     ///   - rows already running (caller should attach, not resume)
-    ///   - mission-scoped rows (mission_start owns those — see
-    ///     docs/impls/direct-chats.md for why mission resume is a
-    ///     separate, deferred problem)
     ///   - archived rows (un-archive first)
     #[allow(clippy::too_many_arguments)]
     pub fn resume(
@@ -692,13 +738,15 @@ impl SessionManager {
         // status update).
         struct Snapshot {
             runner_id: String,
+            mission_id: Option<String>,
+            slot_id: Option<String>,
             cwd: Option<String>,
             agent_session_key: Option<String>,
         }
         let snap = {
             let conn = pool.get()?;
             let mut stmt = conn.prepare(
-                "SELECT runner_id, mission_id, cwd, status, archived_at,
+                "SELECT runner_id, mission_id, slot_id, cwd, status, archived_at,
                         agent_session_key
                    FROM sessions WHERE id = ?1",
             )?;
@@ -707,6 +755,7 @@ impl SessionManager {
                     Ok((
                         r.get::<_, String>("runner_id")?,
                         r.get::<_, Option<String>>("mission_id")?,
+                        r.get::<_, Option<String>>("slot_id")?,
                         r.get::<_, Option<String>>("cwd")?,
                         r.get::<_, String>("status")?,
                         r.get::<_, Option<String>>("archived_at")?,
@@ -719,14 +768,7 @@ impl SessionManager {
                     }
                     other => other.into(),
                 })?;
-            let (runner_id, mission_id, cwd, status, archived_at, agent_session_key) = row;
-            if mission_id.is_some() {
-                return Err(Error::msg(
-                    "mission sessions cannot be resumed via session_resume — \
-                     mission_start owns their lifecycle"
-                        .to_string(),
-                ));
-            }
+            let (runner_id, mission_id, slot_id, cwd, status, archived_at, agent_session_key) = row;
             if status == "running" {
                 return Err(Error::msg(format!(
                     "session {session_id} is already running — attach instead"
@@ -739,9 +781,48 @@ impl SessionManager {
             }
             Snapshot {
                 runner_id,
+                mission_id,
+                slot_id,
                 cwd,
                 agent_session_key,
             }
+        };
+
+        // Mission resume: pull the slot + mission so we can stamp the
+        // in-mission env (RUNNER_HANDLE = slot_handle, RUNNER_CREW_ID,
+        // RUNNER_MISSION_ID). Direct-chat rows skip this lookup —
+        // their RUNNER_HANDLE is the runner template's globally-unique
+        // handle, no slot involved.
+        struct MissionCtx {
+            crew_id: String,
+            mission_id: String,
+            slot_handle: String,
+            lead: bool,
+        }
+        let mission_ctx: Option<MissionCtx> = match (snap.mission_id.as_deref(), snap.slot_id.as_deref()) {
+            (Some(mid), Some(sid)) => {
+                let conn = pool.get()?;
+                let mission = crate::commands::mission::get(&conn, mid)?;
+                let (slot_handle, lead): (String, i64) = conn
+                    .query_row(
+                        "SELECT slot_handle, lead FROM slots WHERE id = ?1",
+                        params![sid],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .map_err(|e| match e {
+                        rusqlite::Error::QueryReturnedNoRows => Error::msg(format!(
+                            "slot {sid} referenced by session {session_id} no longer exists"
+                        )),
+                        other => other.into(),
+                    })?;
+                Some(MissionCtx {
+                    crew_id: mission.crew_id,
+                    mission_id: mission.id,
+                    slot_handle,
+                    lead: lead != 0,
+                })
+            }
+            _ => None,
         };
 
         // Pull the runner config fresh — the user may have edited it
@@ -814,7 +895,18 @@ impl SessionManager {
             new_path.push(parent_path);
         }
         cmd.env("PATH", new_path);
-        cmd.env("RUNNER_HANDLE", &runner.handle);
+        // Mission resume stamps the slot's in-mission identity so the
+        // bundled `runner` CLI in this PTY attributes events as the
+        // slot, not the runner template. Direct chat falls through to
+        // the template handle. Crew/mission ids surface for
+        // `runner signal` / `runner msg post` calls inside the PTY.
+        if let Some(ctx) = mission_ctx.as_ref() {
+            cmd.env("RUNNER_CREW_ID", &ctx.crew_id);
+            cmd.env("RUNNER_MISSION_ID", &ctx.mission_id);
+            cmd.env("RUNNER_HANDLE", &ctx.slot_handle);
+        } else {
+            cmd.env("RUNNER_HANDLE", &runner.handle);
+        }
         cmd.env("COLUMNS", opened.cols.to_string());
         cmd.env("LINES", opened.rows.to_string());
         cmd.env("TERM", "xterm-256color");
@@ -872,7 +964,7 @@ impl SessionManager {
             session_id.to_string(),
             SessionHandle {
                 id: session_id.to_string(),
-                mission_id: None,
+                mission_id: snap.mission_id.clone(),
                 runner_id: runner.id.clone(),
                 master: Some(pair.master),
                 writer: Mutex::new(writer),
@@ -893,7 +985,7 @@ impl SessionManager {
 
         let reader_handle = self.start_reader_thread(
             session_id.to_string(),
-            None,
+            snap.mission_id.clone(),
             child,
             reader,
             Arc::clone(&pool),
@@ -923,11 +1015,27 @@ impl SessionManager {
 
         emit_runner_activity(&pool, &runner, events.as_ref());
 
+        // claude-code first-turn injection. `plan.resuming` is true on
+        // any resume that has a real prior_key — those skip naturally.
+        // For mission resumes where the slot is the lead, also skip:
+        // the launch prompt's "Your brief" section already embeds
+        // system_prompt, and a redundant first-turn injection would
+        // race the launch prompt.
+        let is_lead_resume = mission_ctx.as_ref().is_some_and(|c| c.lead);
+        schedule_first_prompt(self, session_id.to_string(), &runner, &plan, is_lead_resume);
+
+        // Return the slot's in-mission identity for mission rows so the
+        // frontend (and the router, which keys on slot_handle) sees the
+        // identity the resumed PTY actually stamps onto its events.
+        let resumed_handle = mission_ctx
+            .as_ref()
+            .map(|c| c.slot_handle.clone())
+            .unwrap_or_else(|| runner.handle.clone());
         Ok(SpawnedSession {
             id: session_id.to_string(),
-            mission_id: None,
+            mission_id: snap.mission_id.clone(),
             runner_id: runner.id.clone(),
-            handle: runner.handle.clone(),
+            handle: resumed_handle,
             pid,
         })
     }
@@ -967,16 +1075,39 @@ impl SessionManager {
                 events.as_ref(),
             );
             let _ = manager_t.forget(&session_id);
+            // Was the user-initiated kill the cause of this exit?
+            // Drain the killed-set entry here so subsequent spawns of
+            // the same id (resume cycles) don't inherit a stale
+            // "intentional" flag.
+            let was_killed = manager_t
+                .killed
+                .lock()
+                .unwrap()
+                .remove(&session_id);
             // Resume failure heuristic: we asked the agent to resume a
             // prior conversation, but the child died fast and unhappy.
             // Either the agent rejected the prior id, or the runtime
             // doesn't actually have that conversation on disk anymore.
             // Wipe `agent_session_key` on this row so the next lookup
             // skips it and the next spawn falls back to a fresh
-            // conversation; surface a banner so the user knows.
+            // conversation; surface a banner so the user knows. An
+            // explicit kill is never a resume failure — the user
+            // pulled the plug on purpose.
             let resume_failed = resuming
                 && !exit.success
+                && !was_killed
                 && started_at.elapsed() < std::time::Duration::from_secs(3);
+            // Status classification:
+            //   - exit.success → `stopped` (clean child exit)
+            //   - was_killed → `stopped` (intentional kill via Stop /
+            //     Archive / mission teardown — SIGTERM is non-zero by
+            //     design but isn't a crash)
+            //   - else → `crashed`
+            let final_status = if exit.success || was_killed {
+                "stopped"
+            } else {
+                "crashed"
+            };
             if let Ok(conn) = pool.get() {
                 if resume_failed {
                     let _ = conn.execute(
@@ -991,11 +1122,7 @@ impl SessionManager {
                         "UPDATE sessions
                             SET status = ?1, stopped_at = ?2
                           WHERE id = ?3",
-                        params![
-                            if exit.success { "stopped" } else { "crashed" },
-                            Utc::now().to_rfc3339(),
-                            session_id,
-                        ],
+                        params![final_status, Utc::now().to_rfc3339(), session_id],
                     );
                 }
             }
@@ -1089,6 +1216,12 @@ impl SessionManager {
                 None => return Ok(()),
             }
         };
+
+        // Mark the kill as intentional so the reader thread classifies
+        // the upcoming non-zero exit as `stopped`, not `crashed`. SIGTERM
+        // typically produces exit code 143; without this flag every
+        // user-initiated stop would surface as a crash in the UI.
+        self.killed.lock().unwrap().insert(session_id.to_string());
 
         // Step 2: hang up the terminal. For most children this alone is
         // enough. We drop before sending signals so the child's next I/O
@@ -1243,6 +1376,61 @@ fn capture_cwd(explicit: Option<String>) -> Option<String> {
         .and_then(|p| p.into_os_string().into_string().ok())
 }
 
+/// Deliver `runner.system_prompt` to a freshly-spawned claude-code TUI
+/// by typing it into the agent's stdin as a first user turn. claude-
+/// code's `--append-system-prompt` / `--system-prompt` flags are
+/// SDK-only (they require `-p` / print mode); the interactive TUI
+/// silently drops them. Stdin injection is the only path that lands.
+///
+/// Sleeps a short delay so claude-code's TUI has time to boot and
+/// bind stdin — without it, the input is sometimes echoed before the
+/// editor takes over and gets lost. Skipped on resume (the
+/// conversation already exists), on non-claude-code runtimes (codex
+/// uses positional argv, shell has no prompt concept), and when the
+/// caller flags this slot as the mission lead — the lead's
+/// `mission_goal` handler injects a richer launch prompt with the
+/// system_prompt embedded in its "Your brief" section, so a separate
+/// first-turn injection would race the launch prompt and waste a
+/// turn.
+fn schedule_first_prompt(
+    mgr: &Arc<SessionManager>,
+    session_id: String,
+    runner: &Runner,
+    plan: &router::runtime::ResumePlan,
+    is_lead: bool,
+) {
+    if runner.runtime != "claude-code" {
+        return;
+    }
+    if plan.resuming {
+        return;
+    }
+    if is_lead {
+        return;
+    }
+    let prompt = match runner.system_prompt.as_deref() {
+        Some(p) => {
+            let trimmed = p.trim();
+            if trimmed.is_empty() {
+                return;
+            }
+            trimmed.to_string()
+        }
+        None => return,
+    };
+    let mgr = Arc::clone(mgr);
+    std::thread::spawn(move || {
+        // 1.5s is empirically enough for claude-code's TUI to bind
+        // stdin without making the user feel the lag.
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let mut bytes = prompt.into_bytes();
+        if !bytes.ends_with(b"\n") {
+            bytes.push(b'\n');
+        }
+        let _ = mgr.inject_stdin(&session_id, &bytes);
+    });
+}
+
 fn emit_runner_activity(pool: &DbPool, runner: &Runner, events: &dyn SessionEvents) {
     let Ok(conn) = pool.get() else { return };
     let active_sessions: i64 = conn
@@ -1365,7 +1553,6 @@ mod tests {
             id: ulid::Ulid::new().to_string(),
             handle: "tester".into(),
             display_name: "Tester".into(),
-            role: "test".into(),
             runtime: "shell".into(),
             command: command.into(),
             args: args.iter().map(|s| s.to_string()).collect(),
@@ -1374,6 +1561,18 @@ mod tests {
             env: HashMap::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+        }
+    }
+
+    fn slot_for(runner: &Runner) -> crate::model::Slot {
+        crate::model::Slot {
+            id: ulid::Ulid::new().to_string(),
+            crew_id: "c".into(),
+            runner_id: runner.id.clone(),
+            slot_handle: runner.handle.clone(),
+            position: 0,
+            lead: true,
+            added_at: Utc::now(),
         }
     }
 
@@ -1387,6 +1586,7 @@ mod tests {
             cwd: None,
             started_at: Utc::now(),
             stopped_at: None,
+            pinned_at: None,
         }
     }
 
@@ -1402,13 +1602,14 @@ mod tests {
         Arc::new(db::open_pool(&path).unwrap())
     }
 
-    fn insert_crew_runner(pool: &DbPool, mission_id: &str, runner_id: &str) {
+    fn insert_crew_runner(pool: &DbPool, mission_id: &str, runner_id: &str) -> String {
         // Satisfy the FKs the `sessions` INSERT needs (crew, global runner,
-        // crew membership, mission). Post-C5.5a, `runners` is global and
-        // membership is on `crew_runners` — keep this helper aligned with
-        // the live schema so spawn tests stay honest.
+        // slot, mission) and return the slot id so the caller can build a
+        // matching `Slot` to hand to `spawn`. Post-crew-slots, membership
+        // lives on `slots` and runners no longer carry `role`.
         let conn = pool.get().unwrap();
         let now = Utc::now().to_rfc3339();
+        let slot_id = ulid::Ulid::new().to_string();
         conn.execute(
             "INSERT INTO crews (id, name, created_at, updated_at)
              VALUES ('c', 'c', ?1, ?1)",
@@ -1417,19 +1618,19 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO runners
-                (id, handle, display_name, role, runtime, command,
+                (id, handle, display_name, runtime, command,
                  args_json, working_dir, system_prompt, env_json,
                  created_at, updated_at)
-             VALUES (?1, 't', 'T', 'test', 'shell', '/bin/sh',
+             VALUES (?1, 't', 'T', 'shell', '/bin/sh',
                      NULL, NULL, NULL, NULL, ?2, ?2)",
             params![runner_id, now],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO crew_runners
-                (crew_id, runner_id, position, lead, added_at)
-             VALUES ('c', ?1, 0, 1, ?2)",
-            params![runner_id, now],
+            "INSERT INTO slots
+                (id, crew_id, runner_id, slot_handle, position, lead, added_at)
+             VALUES (?1, 'c', ?2, 't', 0, 1, ?3)",
+            params![slot_id, runner_id, now],
         )
         .unwrap();
         conn.execute(
@@ -1438,6 +1639,7 @@ mod tests {
             params![mission_id, now],
         )
         .unwrap();
+        slot_id
     }
 
     #[test]
@@ -1469,10 +1671,12 @@ mod tests {
         };
 
         let mgr = SessionManager::new();
+        let slot = slot_for(&runner);
         let spawned = mgr
             .spawn(
                 &mission,
                 &runner,
+                &slot,
                 std::path::Path::new("/tmp"),
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
@@ -1528,10 +1732,12 @@ mod tests {
         };
 
         let mgr = SessionManager::new();
+        let slot = slot_for(&runner);
         let spawned = mgr
             .spawn(
                 &mission,
                 &runner,
+                &slot,
                 std::path::Path::new("/tmp"),
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
@@ -1602,10 +1808,12 @@ mod tests {
             .unwrap();
 
         let mgr = SessionManager::new();
+        let slot = slot_for(&runner);
         let err = mgr
             .spawn(
                 &mission,
                 &runner,
+                &slot,
                 std::path::Path::new("/tmp"),
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
@@ -1645,10 +1853,12 @@ mod tests {
         };
 
         let mgr = SessionManager::new();
+        let slot = slot_for(&runner);
         let spawned = mgr
             .spawn(
                 &mission,
                 &runner,
+                &slot,
                 std::path::Path::new("/tmp"),
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
@@ -1688,10 +1898,10 @@ mod tests {
             let conn = pool.get().unwrap();
             conn.execute(
                 "INSERT INTO runners
-                    (id, handle, display_name, role, runtime, command,
+                    (id, handle, display_name, runtime, command,
                      args_json, working_dir, system_prompt, env_json,
                      created_at, updated_at)
-                 VALUES (?1, 'directrunner', 'D', 'test', 'shell', '/bin/sh',
+                 VALUES (?1, 'directrunner', 'D', 'shell', '/bin/sh',
                          NULL, NULL, NULL, NULL, ?2, ?2)",
                 params![runner_id, now],
             )
@@ -1771,10 +1981,10 @@ mod tests {
             let conn = pool.get().unwrap();
             conn.execute(
                 "INSERT INTO runners
-                    (id, handle, display_name, role, runtime, command,
+                    (id, handle, display_name, runtime, command,
                      args_json, working_dir, system_prompt, env_json,
                      created_at, updated_at)
-                 VALUES (?1, 'buffered', 'Buffered', 'test', 'shell', '/bin/cat',
+                 VALUES (?1, 'buffered', 'Buffered', 'shell', '/bin/cat',
                          NULL, NULL, NULL, NULL, ?2, ?2)",
                 params![runner_id, now],
             )
@@ -1850,10 +2060,10 @@ mod tests {
             // the test runs without external deps.
             conn.execute(
                 "INSERT INTO runners
-                    (id, handle, display_name, role, runtime, command,
+                    (id, handle, display_name, runtime, command,
                      args_json, working_dir, system_prompt, env_json,
                      created_at, updated_at)
-                 VALUES (?1, 'resumer', 'R', 'test', 'claude-code', '/bin/sh',
+                 VALUES (?1, 'resumer', 'R', 'claude-code', '/bin/sh',
                          NULL, NULL, NULL, NULL, ?2, ?2)",
                 params![runner_id, now],
             )
@@ -1990,40 +2200,21 @@ mod tests {
     }
 
     #[test]
-    fn resume_refuses_running_mission_and_archived_rows() {
+    fn resume_refuses_running_and_archived_rows() {
+        // Mission rows are no longer rejected — see
+        // resume_mission_session_stamps_slot_handle_env. This test
+        // covers the gates that remain.
         let pool = pool_with_schema();
         let now = Utc::now().to_rfc3339();
         let runner_id = ulid::Ulid::new().to_string();
-        let mission_id = ulid::Ulid::new().to_string();
         {
             let conn = pool.get().unwrap();
             conn.execute(
-                "INSERT INTO crews (id, name, created_at, updated_at)
-                 VALUES ('c-resume', 'c', ?1, ?1)",
-                params![now],
-            )
-            .unwrap();
-            conn.execute(
                 "INSERT INTO runners
-                    (id, handle, display_name, role, runtime, command,
+                    (id, handle, display_name, runtime, command,
                      created_at, updated_at)
-                 VALUES (?1, 'r', 'R', 'test', 'shell', '/bin/sh', ?2, ?2)",
+                 VALUES (?1, 'r', 'R', 'shell', '/bin/sh', ?2, ?2)",
                 params![runner_id, now],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO missions
-                    (id, crew_id, title, status, started_at)
-                 VALUES (?1, 'c-resume', 't', 'running', ?2)",
-                params![mission_id, now],
-            )
-            .unwrap();
-            // Mission session.
-            conn.execute(
-                "INSERT INTO sessions
-                    (id, mission_id, runner_id, status, started_at)
-                 VALUES ('mission-sid', ?1, ?2, 'stopped', ?3)",
-                params![mission_id, runner_id, now],
             )
             .unwrap();
             // Already-running direct session.
@@ -2045,7 +2236,6 @@ mod tests {
         }
         let mgr = SessionManager::new();
         for (sid, needle) in [
-            ("mission-sid", "mission_start"),
             ("running-sid", "already running"),
             ("archived-sid", "archived"),
         ] {
@@ -2065,5 +2255,112 @@ mod tests {
                 "resume({sid}) should reject with `{needle}`, got `{msg}`"
             );
         }
+    }
+
+    #[test]
+    fn resume_mission_session_stamps_slot_handle_env() {
+        // Mission resume must look up the slot for the session and use
+        // slot.slot_handle as RUNNER_HANDLE, not runner.handle. The
+        // bundled CLI relies on this env var to attribute events to the
+        // in-mission identity. We verify by spawning a shell that
+        // echoes the var, then reading the captured output buffer.
+        let pool = pool_with_schema();
+        let now = Utc::now().to_rfc3339();
+        let runner_id = ulid::Ulid::new().to_string();
+        let mission_id = ulid::Ulid::new().to_string();
+        let slot_id = ulid::Ulid::new().to_string();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO crews (id, name, created_at, updated_at)
+                 VALUES ('c-mr', 'c', ?1, ?1)",
+                params![now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, created_at, updated_at)
+                 VALUES (?1, 'template-handle', 'R', 'shell', '/bin/sh',
+                         '[\"-c\", \"echo HANDLE=$RUNNER_HANDLE && exit\"]',
+                         ?2, ?2)",
+                params![runner_id, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO slots
+                    (id, crew_id, runner_id, slot_handle, position, lead, added_at)
+                 VALUES (?1, 'c-mr', ?2, 'architect-slot', 0, 1, ?3)",
+                params![slot_id, runner_id, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO missions
+                    (id, crew_id, title, status, started_at)
+                 VALUES (?1, 'c-mr', 't', 'running', ?2)",
+                params![mission_id, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions
+                    (id, mission_id, runner_id, slot_id, status, started_at)
+                 VALUES ('mr-sid', ?1, ?2, ?3, 'stopped', ?4)",
+                params![mission_id, runner_id, slot_id, now],
+            )
+            .unwrap();
+        }
+
+        let mgr = SessionManager::new();
+        let spawned = mgr
+            .resume(
+                "mr-sid",
+                None,
+                None,
+                std::path::Path::new("/tmp"),
+                Arc::clone(&pool),
+                capture(),
+            )
+            .unwrap();
+        // Returned identity is the slot's, not the template's.
+        assert_eq!(spawned.handle, "architect-slot");
+        assert_eq!(spawned.mission_id.as_deref(), Some(mission_id.as_str()));
+
+        // Wait for the child to exit so the buffer is fully drained.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status: String = pool
+                .get()
+                .unwrap()
+                .query_row(
+                    "SELECT status FROM sessions WHERE id = 'mr-sid'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if status != "running" {
+                break;
+            }
+            if Instant::now() > deadline {
+                panic!("mission resume never exited");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let snapshot = mgr.output_snapshot("mr-sid");
+        // Output chunks carry base64'd payloads (IPC-friendly). Decode
+        // and concatenate to verify the env-echo landed.
+        use base64::Engine;
+        let combined: String = snapshot
+            .iter()
+            .filter_map(|c| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(&c.data)
+                    .ok()
+            })
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .collect();
+        assert!(
+            combined.contains("HANDLE=architect-slot"),
+            "RUNNER_HANDLE must be the slot_handle, got: {combined:?}"
+        );
     }
 }

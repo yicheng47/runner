@@ -118,6 +118,14 @@ export function Sidebar() {
     x: number;
     y: number;
   } | null>(null);
+  // Mission row context menu — same anchor model as sessionMenu.
+  // Today's actions: Archive (real, calls mission_archive). Pin and
+  // Rename are designed-in slots reserved for follow-ups.
+  const [missionMenu, setMissionMenu] = useState<{
+    mission: MissionSummary;
+    x: number;
+    y: number;
+  } | null>(null);
   // Inline rename: when set, the row whose id matches renders an input
   // instead of its label. Submit (Enter) → session_rename + refresh.
   // Cancel (Escape / blur with no change) → close without write.
@@ -266,6 +274,65 @@ export function Sidebar() {
     [],
   );
   const closeSessionMenu = useCallback(() => setSessionMenu(null), []);
+
+  const openMissionMenu = useCallback(
+    (mission: MissionSummary, anchor: { x: number; y: number }) => {
+      setMissionMenu({ mission, x: anchor.x, y: anchor.y });
+    },
+    [],
+  );
+  const closeMissionMenu = useCallback(() => setMissionMenu(null), []);
+
+  const archiveMission = useCallback(
+    async (mission: MissionSummary) => {
+      try {
+        await api.mission.archive(mission.id);
+        await refreshMissions();
+        // If we just archived the mission the user was viewing,
+        // bounce them off — the workspace will refuse to attach a
+        // completed mission's router and the page will look broken.
+        if (currentMissionId === mission.id) {
+          navigate("/missions");
+        }
+      } catch (e) {
+        console.error("sidebar: mission_archive failed", e);
+      }
+    },
+    [currentMissionId, navigate, refreshMissions],
+  );
+
+  const togglePinMission = useCallback(
+    async (mission: MissionSummary) => {
+      try {
+        await api.mission.pin(mission.id, !mission.pinned_at);
+        await refreshMissions();
+      } catch (e) {
+        console.error("sidebar: mission_pin failed", e);
+      }
+    },
+    [refreshMissions],
+  );
+
+  // Track which mission row (if any) is currently in inline-rename
+  // mode. Same pattern as session renames.
+  const [renamingMissionId, setRenamingMissionId] = useState<string | null>(
+    null,
+  );
+  const submitMissionRename = useCallback(
+    async (id: string, nextTitle: string) => {
+      const trimmed = nextTitle.trim();
+      const original = missions.find((m) => m.id === id)?.title ?? "";
+      setRenamingMissionId(null);
+      if (!trimmed || trimmed === original) return;
+      try {
+        await api.mission.rename(id, trimmed);
+        await refreshMissions();
+      } catch (e) {
+        console.error("sidebar: mission_rename failed", e);
+      }
+    },
+    [missions, refreshMissions],
+  );
 
   const togglePin = useCallback(
     async (session: DirectSessionEntry) => {
@@ -420,13 +487,15 @@ export function Sidebar() {
           <div className="shrink-0">
             <SectionHeader>WORKSPACE</SectionHeader>
             <nav className="flex flex-col gap-0.5 px-3 pb-1">
-              <DisabledNavRow
-                icon={Search}
-                label="search"
-                hint="Coming soon"
-              />
               <NavRow icon={Terminal} to="/runners" label="runner" />
               <NavRow icon={Users} to="/crews" label="crew" />
+              {/* Search opens a command-palette modal — matches design
+                  `Fkoe8`. Default interaction is click-to-callout, not
+                  type-in-place, so this lives as a nav row alongside
+                  runner/crew rather than an inline input. The actual
+                  palette is a follow-up; for now the row stubs the
+                  callout. */}
+              <SearchNavRow />
             </nav>
           </div>
 
@@ -461,12 +530,19 @@ export function Sidebar() {
                       selected={m.id === currentMissionId}
                       label={m.title}
                       onClick={() => openMission(m.id)}
+                      onContextMenu={(anchor) => openMissionMenu(m, anchor)}
                       title={`${m.crew_name || ""}${
                         m.pending_ask_count > 0
                           ? ` · ${m.pending_ask_count} pending`
                           : ""
                       }`}
                       pendingAsks={m.pending_ask_count}
+                      pinned={!!m.pinned_at}
+                      renaming={renamingMissionId === m.id}
+                      onRenameSubmit={(next) =>
+                        void submitMissionRename(m.id, next)
+                      }
+                      onRenameCancel={() => setRenamingMissionId(null)}
                     />
                   ))
                 )}
@@ -549,6 +625,27 @@ export function Sidebar() {
           }}
         />
       ) : null}
+
+      {missionMenu ? (
+        <MissionContextMenu
+          pinned={!!missionMenu.mission.pinned_at}
+          anchorX={missionMenu.x}
+          anchorY={missionMenu.y}
+          onClose={closeMissionMenu}
+          onPin={() => {
+            void togglePinMission(missionMenu.mission);
+            closeMissionMenu();
+          }}
+          onRename={() => {
+            setRenamingMissionId(missionMenu.mission.id);
+            closeMissionMenu();
+          }}
+          onArchive={() => {
+            void archiveMission(missionMenu.mission);
+            closeMissionMenu();
+          }}
+        />
+      ) : null}
     </>
   );
 }
@@ -588,24 +685,23 @@ function NavRow({
   );
 }
 
-function DisabledNavRow({
-  icon: Icon,
-  label,
-  hint,
-}: {
-  icon: ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
-  label: string;
-  hint?: string;
-}) {
+/// Search nav row — visually indistinguishable from runner/crew rows
+/// but opens a command-palette modal instead of routing. Stubbed
+/// today: click triggers a "coming soon" indicator. Wire to the real
+/// palette when it lands.
+function SearchNavRow() {
   return (
-    <span
-      title={hint}
-      aria-disabled="true"
-      className="flex cursor-not-allowed items-center gap-2 rounded px-2.5 py-1.5 text-sm text-fg-3"
+    <button
+      type="button"
+      title="Search — coming soon"
+      onClick={() => {
+        // TODO: open the command-palette modal (Pencil node `Fkoe8`).
+      }}
+      className="flex w-full cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:text-fg"
     >
-      <Icon aria-hidden className="h-3 w-3 text-fg-3" />
-      <span>{label}</span>
-    </span>
+      <Search aria-hidden className="h-3 w-3 text-fg-2" />
+      <span>search</span>
+    </button>
   );
 }
 
@@ -661,14 +757,21 @@ function RuntimeRow({
   selected,
   label,
   onClick,
+  onContextMenu,
   title,
   mono,
   pendingAsks,
   dim,
+  pinned,
+  renaming,
+  onRenameSubmit,
+  onRenameCancel,
 }: {
   selected: boolean;
   label: string;
   onClick: () => void;
+  /** Right-click handler. Anchor the menu at clientX/clientY. */
+  onContextMenu?: (anchor: { x: number; y: number }) => void;
   title?: string;
   mono?: boolean;
   pendingAsks?: number;
@@ -676,11 +779,35 @@ function RuntimeRow({
    *  direct chat that can be resumed). Mutes the status dot so the user
    *  can tell which sessions are live at a glance. */
   dim?: boolean;
+  /** Pinned rows show a Pin icon next to the label. */
+  pinned?: boolean;
+  /** When true, replaces the label with an inline rename input. */
+  renaming?: boolean;
+  onRenameSubmit?: (next: string) => void;
+  onRenameCancel?: () => void;
 }) {
+  if (renaming && onRenameSubmit && onRenameCancel) {
+    return (
+      <RowRenameInput
+        initial={label}
+        mono={mono}
+        onSubmit={onRenameSubmit}
+        onCancel={onRenameCancel}
+      />
+    );
+  }
   return (
     <button
       type="button"
       onClick={onClick}
+      onContextMenu={
+        onContextMenu
+          ? (e) => {
+              e.preventDefault();
+              onContextMenu({ x: e.clientX, y: e.clientY });
+            }
+          : undefined
+      }
       title={title}
       className={`flex w-full cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-left text-xs transition-colors ${
         selected
@@ -696,6 +823,12 @@ function RuntimeRow({
       <span className={`truncate flex-1 ${mono ? "font-mono" : ""}`}>
         {label}
       </span>
+      {pinned ? (
+        <Pin
+          aria-hidden
+          className="h-3 w-3 shrink-0 text-fg-3"
+        />
+      ) : null}
       {pendingAsks && pendingAsks > 0 ? (
         <span
           title="Awaiting human input"
@@ -705,6 +838,51 @@ function RuntimeRow({
         </span>
       ) : null}
     </button>
+  );
+}
+
+function RowRenameInput({
+  initial,
+  mono,
+  onSubmit,
+  onCancel,
+}: {
+  initial: string;
+  mono?: boolean;
+  onSubmit: (next: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(initial);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+  return (
+    <div className="flex w-full items-center gap-2 rounded border border-line bg-bg px-2.5 py-1 text-xs">
+      <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            onSubmit(draft);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+        onBlur={() => {
+          if (draft.trim() === initial.trim()) onCancel();
+          else onSubmit(draft);
+        }}
+        className={`min-w-0 flex-1 bg-transparent text-fg outline-none placeholder:text-fg-3 ${
+          mono ? "font-mono" : ""
+        }`}
+      />
+    </div>
   );
 }
 
@@ -904,21 +1082,101 @@ function ContextMenuItem({
   icon: Icon,
   label,
   onClick,
+  disabled,
+  danger,
 }: {
   icon: ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
   label: string;
   onClick: () => void;
+  disabled?: boolean;
+  danger?: boolean;
 }) {
   return (
     <button
       type="button"
       role="menuitem"
+      disabled={disabled}
       onClick={onClick}
-      className="flex cursor-pointer items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-fg hover:bg-line"
+      className={`flex cursor-pointer items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] hover:bg-line disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent ${
+        danger ? "text-danger" : "text-fg"
+      }`}
     >
-      <Icon aria-hidden className="h-3.5 w-3.5 text-fg" />
+      <Icon
+        aria-hidden
+        className={`h-3.5 w-3.5 ${danger ? "text-danger" : "text-fg"}`}
+      />
       <span>{label}</span>
     </button>
+  );
+}
+
+/// Mission row context menu — Pin, Rename, Archive. Layout matches
+/// Pencil node `EWpGa` in `runners-design.pen`.
+function MissionContextMenu({
+  pinned,
+  anchorX,
+  anchorY,
+  onClose,
+  onPin,
+  onRename,
+  onArchive,
+}: {
+  pinned: boolean;
+  anchorX: number;
+  anchorY: number;
+  onClose: () => void;
+  onPin: () => void;
+  onRename: () => void;
+  onArchive: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ x: anchorX, y: anchorY });
+
+  useEffect(() => {
+    if (!ref.current) return;
+    const rect = ref.current.getBoundingClientRect();
+    const margin = 4;
+    const x = Math.min(anchorX, window.innerWidth - rect.width - margin);
+    const y = Math.min(anchorY, window.innerHeight - rect.height - margin);
+    setPos({ x: Math.max(margin, x), y: Math.max(margin, y) });
+  }, [anchorX, anchorY]);
+
+  useEffect(() => {
+    const onMouseDown = (e: MouseEvent) => {
+      if (!ref.current) return;
+      if (!ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      style={{ position: "fixed", left: pos.x, top: pos.y, width: 160 }}
+      className="z-50 flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
+    >
+      <ContextMenuItem
+        icon={pinned ? PinOff : Pin}
+        label={pinned ? "Unpin" : "Pin"}
+        onClick={onPin}
+      />
+      <ContextMenuItem icon={SquarePen} label="Rename" onClick={onRename} />
+      <ContextMenuItem
+        icon={Archive}
+        label="Archive"
+        onClick={onArchive}
+        danger
+      />
+    </div>
   );
 }
 

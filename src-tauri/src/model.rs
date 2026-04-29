@@ -30,14 +30,17 @@ pub struct Crew {
 }
 
 // Global runner definition. A runner can be referenced by zero or more
-// crews via `crew_runners`; `handle` is globally unique so @impl means
-// the same runner everywhere it appears in the event log.
+// Runner is a config template — the agent CLI's runtime, command,
+// args, env, optional system_prompt, optional working_dir, plus a
+// globally-unique `handle` that names the template. Per-slot identity
+// lives on `Slot` (see docs/impls/crew-slots.md): the same template
+// can sit in multiple slots with distinct slot_handles even within
+// one crew.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Runner {
     pub id: String,
     pub handle: String,
     pub display_name: String,
-    pub role: String,
     pub runtime: String,
     pub command: String,
     pub args: Vec<String>,
@@ -48,27 +51,28 @@ pub struct Runner {
     pub updated_at: Timestamp,
 }
 
-// A runner's membership in a specific crew (one row in `crew_runners`).
-// `position` and `lead` are per-crew: the same runner can sit at
-// position 0 in crew A and position 2 in crew B.
+// One position in a crew. Each slot references a Runner template and
+// carries its own in-crew identity (`slot_handle`). Two slots in the
+// same crew can both reference the same Runner, with different
+// slot_handles.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CrewSlot {
+pub struct Slot {
+    pub id: String,
     pub crew_id: String,
     pub runner_id: String,
+    pub slot_handle: String,
     pub position: i64,
     pub lead: bool,
     pub added_at: Timestamp,
 }
 
-// `Runner` plus the slot it occupies in a specific crew. Returned by
-// `crew_list_runners` so the UI can render a crew's roster in one shot.
+// Slot joined with its Runner template. Returned by `slot_list` so
+// the UI can render a crew's roster in one shot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CrewRunner {
+pub struct SlotWithRunner {
     #[serde(flatten)]
+    pub slot: Slot,
     pub runner: Runner,
-    pub position: i64,
-    pub lead: bool,
-    pub added_at: Timestamp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +93,7 @@ pub struct Mission {
     pub cwd: Option<String>,
     pub started_at: Timestamp,
     pub stopped_at: Option<Timestamp>,
+    pub pinned_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,15 +104,20 @@ pub enum SessionStatus {
     Crashed,
 }
 
-// A PTY run of a runner. `mission_id` is None for "direct chat" sessions
-// that the user opened from the Runners page without starting a mission.
-// `cwd` is carried on the session row so direct sessions have a working
-// directory even without a parent mission to inherit from.
+// A PTY run. `mission_id` is None for "direct chat" sessions that
+// the user opened from the Runners page without starting a mission.
+// `slot_id` is set for mission sessions (it's the slot they
+// instantiate) and None for direct chats. `runner_id` always points
+// at the runner template — for mission sessions it's a denorm of
+// `slots.runner_id`. `cwd` is carried on the session row so direct
+// sessions have a working directory even without a parent mission to
+// inherit from.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
     pub mission_id: Option<String>,
     pub runner_id: String,
+    pub slot_id: Option<String>,
     pub cwd: Option<String>,
     pub status: SessionStatus,
     pub pid: Option<i64>,

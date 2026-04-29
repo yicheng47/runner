@@ -1,22 +1,20 @@
-// Edit an existing runner in place.
+// Edit an existing runner template in place.
 //
-// Handle is intentionally read-only: per arch §2.2 / §5.2 it's the runner's
-// identity in events and policy rules, and renaming would break historical
-// attribution. Matches the UpdateRunnerInput contract in src-tauri.
+// Handle is intentionally read-only: per arch §2.2 it's the template's
+// identity for direct chat / CLI lookups, and renaming would break
+// historical attribution. Matches the UpdateRunnerInput contract in
+// src-tauri/src/commands/runner.rs.
 
 import { useEffect, useState } from "react";
 
 import { api } from "../lib/api";
-import type { CrewRunner, Runner, UpdateRunnerInput } from "../lib/types";
+import type { Runner, UpdateRunnerInput } from "../lib/types";
 import { Button } from "./ui/Button";
 import { Drawer } from "./ui/Overlay";
 import { Field, Input, Textarea } from "./ui/Field";
 import { RuntimeSelect } from "./ui/RuntimeSelect";
 import { RUNTIME_OPTIONS } from "./ui/runtimes";
 
-// Accept either a global Runner (from the Runners page in C5.5b) or a
-// CrewRunner (slot inside a crew) — the extra `lead` / `position` fields
-// on CrewRunner are just rendered as a badge.
 export function RunnerEditDrawer({
   open,
   runner,
@@ -24,12 +22,11 @@ export function RunnerEditDrawer({
   onSaved,
 }: {
   open: boolean;
-  runner: Runner | CrewRunner | null;
+  runner: Runner | null;
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }) {
   const [displayName, setDisplayName] = useState("");
-  const [role, setRole] = useState("");
   const [runtime, setRuntime] = useState<string>(RUNTIME_OPTIONS[0].value);
   const [command, setCommand] = useState("");
   const [argsText, setArgsText] = useState("");
@@ -41,7 +38,6 @@ export function RunnerEditDrawer({
   useEffect(() => {
     if (open && runner) {
       setDisplayName(runner.display_name);
-      setRole(runner.role);
       setRuntime(runner.runtime);
       setCommand(runner.command);
       setArgsText(runner.args.join(" "));
@@ -54,7 +50,6 @@ export function RunnerEditDrawer({
   const canSubmit =
     runner !== null &&
     displayName.trim().length > 0 &&
-    role.trim().length > 0 &&
     command.trim().length > 0 &&
     !submitting;
 
@@ -65,7 +60,6 @@ export function RunnerEditDrawer({
     try {
       const input: UpdateRunnerInput = {
         display_name: displayName.trim(),
-        role: role.trim(),
         runtime,
         command: command.trim(),
         args: argsText.trim() ? argsText.trim().split(/\s+/) : [],
@@ -92,11 +86,6 @@ export function RunnerEditDrawer({
             <span className="rounded bg-raised px-1.5 py-0.5 font-mono text-xs font-normal text-fg-2">
               @{runner.handle}
             </span>
-            {"lead" in runner && runner.lead ? (
-              <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
-                Lead
-              </span>
-            ) : null}
           </span>
         ) : (
           "Edit runner"
@@ -125,14 +114,6 @@ export function RunnerEditDrawer({
             id="edit-display-name"
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
-          />
-        </Field>
-
-        <Field id="edit-role" label="Role">
-          <Input
-            id="edit-role"
-            value={role}
-            onChange={(e) => setRole(e.target.value)}
           />
         </Field>
 

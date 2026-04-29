@@ -8,33 +8,45 @@
 
 For dated implementation history and validation notes, see `docs/dev-log.md`.
 
-Every layer of v0 — persistence, configuration, PTY runtime, event log, event bus, signal router, `runner` CLI, mission workspace UI, and the Start Mission entrypoint — is implemented. The full demo path from §"Definition of done" runs end-to-end without DevTools.
+Every layer of v0 — persistence, configuration, slot-based crew composition,
+PTY runtime, event log, event bus, signal router, `runner` CLI, mission
+workspace UI, and the Start Mission entrypoint — is implemented. The full demo
+path from §"Definition of done" runs end-to-end without DevTools. PR #24 has
+merged the runner-as-template / per-slot identity redesign; current follow-up
+items are tracked in `docs/dev-log.md`.
 
 ### Implemented
 
 | Area | PR | What is live |
 |------|----|--------------|
 | C1 Schema + shared types | #4 | SQLite schema, Rust/TS domain types, default signal-type allowlist seeded per crew. |
-| C2 Config commands | #7 | Global runner CRUD, crew CRUD, crew membership commands, and per-crew lead invariant enforced in Rust plus the `one_lead_per_crew` partial unique index. |
-| C3 Config UI | #9 | Crews page, Crew Detail, Add Slot modal, runner edit drawer. |
+| C2 Config commands | #7 | Global runner CRUD, crew CRUD, and the original crew membership commands. PR #24 supersedes membership storage with `slots` and moves the lead invariant fully into Rust transactions. |
+| C3 Config UI | #9 | Crews page, Crew Detail, Add Slot modal, runner edit drawer; PR #24 updates these surfaces to pick existing runner templates into slots. |
 | C4 Event log | #10 | `runner-core` event-log primitives: `flock`-scoped NDJSON append, monotonic ULIDs with an on-disk floor, crash-tail repair, lossy reads for malformed tails. |
 | C5 Mission lifecycle | #11 | Transactional `mission_start` / `mission_stop`, one-live-mission-per-crew invariant, opening/terminal log events, atomic `signal_types.json` sidecar. |
-| C5.5a Shared runners | #13 | Runners are top-level rows reused through `crew_runners`; `sessions.mission_id` is nullable for direct-chat sessions. |
+| C5.5a Shared runners | #13 | Runners became top-level reusable templates and `sessions.mission_id` became nullable for direct-chat sessions. PR #24 replaces the intermediate `crew_runners` join with `slots`. |
 | C6 PTY runtime | #12 | `portable-pty` session manager, reader threads, stdin injection, kill/reap semantics, all-or-nothing mission spawn rollback, `$APPDATA/runner/bin` on child `PATH`. |
 | C7 Event bus | #14 | `notify` watcher per live mission, replay-on-mount, messages-only inbox projection, `inbox_read` watermarks, `event/appended`, `inbox/updated`, `watermark/advanced` events. |
 | C8.5 Runner surfaces | #15 | `/runners`, `/runners/:handle`, direct-chat session backend, `runner_list_with_activity`, `runner/activity` live counters. |
 | Rename / namespace cleanup | #16 + follow-up | Project/crate/app namespace is singular `runner`; env vars are `RUNNER_*`; app data is under `$APPDATA/runner`; planned CLI binary is `runner`. SQL table names stay plural where they represent row collections. |
 | Direct-chat frontend hardening | #17 | xterm.js direct-chat pane, persistent sidebar SESSION list, PTY resize handshake, base64 raw PTY output for TUI fidelity, reload reattach, and listener-before-spawn ordering for direct sessions. |
-| C8 Signal router v0 + runtime adapter | #18 | Flat parent-process dispatcher (`src-tauri/src/router/`): handlers for `mission_goal`, `human_said`, `ask_lead`, `ask_human`, `human_response`, `runner_status`. Pending-ask + status maps reconstruct on reopen via a replay high-water ULID; live tail short-circuits at-or-below the watermark. Runtime adapter wires `runner.system_prompt` into both mission and direct-chat spawn paths (claude-code → `--append-system-prompt`; codex deferred until a verified flag exists). |
+| C8 Signal router v0 + runtime adapter | #18 | Flat parent-process dispatcher (`src-tauri/src/router/`): handlers for `mission_goal`, `human_said`, `ask_lead`, `ask_human`, `human_response`, `runner_status`. Pending-ask + status maps reconstruct on reopen via a replay high-water ULID; live tail short-circuits at-or-below the watermark. Runtime adapter wires `runner.system_prompt` into both mission and direct-chat spawn paths: `claude-code` uses `--append-system-prompt`; Codex has no verified system flag, so fresh sessions receive it as the positional initial prompt and resume must not replay it. |
 | C9 `runner` CLI binary | #19 | New `cli/` workspace member produces `runner-cli`, installed at app startup as `$APPDATA/runner/bin/runner` (rename on copy). Verbs: `signal`, `msg post`, `msg read`, `status`, `help`. Validates against per-crew `signal_types.json` and per-mission `roster.json` sidecars (frozen at mission_start). `inbox_read` is suppressed on `--from` filtered reads to avoid corrupting the global per-runner watermark. Tauri's `beforeDev`/`beforeBuild` build the CLI alongside the app so the dev install path needs no manual cargo step. |
-| C10 Mission workspace UI | #20 | `/missions/:id` page (`MissionWorkspace.tsx`) with header status pill + Stop, tabbed center column (Feed / per-runner PTY), MissionInput dock for `human_said` signals (default recipient `@<lead>`, broadcast via × icon), AskHumanCard with attribution chain + `human_response` submission, RunnersRail with PTY status + `runner_status` badge + LEAD flag. Backend additions: `mission_events_replay` (lossy log read), `mission_post_human_signal` (human-only allowlist for `human_said` / `human_response`), `session_output_snapshot` (bounded ring buffer per session, replayed on late attach), `OutputEvent.seq` for snapshot-vs-live merge, `SessionRow.lead` denormalized via `LEFT JOIN crew_runners`. RunnerChat refactored onto the same per-session-pane stack so direct chats survive switching. Tauri config now sets `acceptFirstMouse: true` so the dev window's first click reaches UI elements instead of being eaten by the macOS focus transition. |
+| C10 Mission workspace UI | #20 | `/missions/:id` page (`MissionWorkspace.tsx`) with header status pill + Stop, tabbed center column (Feed / per-slot PTY), MissionInput dock for `human_said` signals (default recipient `@<lead>`, broadcast via × icon), AskHumanCard with attribution chain + `human_response` submission, RunnersRail with PTY status + `runner_status` badge + LEAD flag. Backend additions: `mission_events_replay` (lossy log read), `mission_post_human_signal` (human-only allowlist for `human_said` / `human_response`), `session_output_snapshot` (bounded ring buffer per session, replayed on late attach), `OutputEvent.seq` for snapshot-vs-live merge, `SessionRow.lead` denormalized through `slots`. RunnerChat refactored onto the same per-session-pane stack so direct chats survive switching. Tauri config now sets `acceptFirstMouse: true` so the dev window's first click reaches UI elements instead of being eaten by the macOS focus transition. |
+| Crew slots / per-slot identity | #24 | `slots` replaces `crew_runners`; `runners.role` is dropped; mission sessions store `slot_id`; `slot_handle` is the in-mission identity used by `RUNNER_HANDLE`, event senders, router routing, roster sidecars, workspace tabs, and Crew Detail. The same runner template can fill multiple slots in one crew with distinct handles. |
 | C11 Missions list + Start Mission modal | #21 | `/missions` page (`Missions.tsx`) with Active/Past tabs over `mission_list_summary` (joins each row with crew name + live `pending_ask_count` from `RouterRegistry`, falls back to a log scan of unmatched `human_question`/`human_response` pairs for unmounted or orphan-running missions). Mission rows surface a warn-tinted `N pending` flag, click-through to the workspace. `StartMissionModal.tsx` provides the crew picker (warns when the chosen crew has no runners), title, goal textarea (placeholder defaults from `crew.goal`), cwd input + `Browse…` via `@tauri-apps/plugin-dialog`, and a stubbed Advanced disclosure. Backend: `Router::pending_ask_count()`. Sidebar Mission link enabled. |
 
 ### What runs today
 
-- **Crews and runners:** Users can create crews and runners, add runners to crews, reorder slots, set/remove the lead, edit runner fields, and delete crews/runners with cascade/promotion behavior.
+- **Crews and runners:** Users can create crews and runner templates, add a
+  template to one or more crew slots, choose a per-slot `slot_handle`, reorder
+  slots, set/remove the lead, edit runner fields, and delete crews/runners with
+  cascade/promotion behavior.
 - **Direct chat:** Users can open a top-level runner, start a direct PTY session, type through xterm.js, resize the terminal, and stop the session. Direct chats do not join any mission event bus.
-- **Mission start/stop backend:** `mission_start` creates a mission row, writes opening events, mounts the event bus, and spawns one PTY child per crew member. `mission_stop` appends the terminal event, kills/reaps sessions, and unmounts the bus.
+- **Mission start/stop backend:** `mission_start` creates a mission row, writes
+  opening events, mounts the event bus, and spawns one PTY child per crew slot
+  with `RUNNER_HANDLE = slot.slot_handle`. `mission_stop` appends the terminal
+  event, kills/reaps sessions, and unmounts the bus.
 - **Event transport:** Mission logs are durable NDJSON files at `$APPDATA/runner/crews/{crew_id}/missions/{mission_id}/events.ndjson`; the in-process bus replays and tails them into Tauri events.
 - **Coordination loop:** Spawned mission runners get the composed launch prompt injected into the lead's stdin on `mission_goal`; workers escalate via `ask_lead`; the lead can `ask_human` for HITL cards; `human_response` routes back to the asker; non-lead `runner_status idle` reports nudge the lead.
 - **CLI:** The bundled `runner` binary is dropped into `$APPDATA/runner/bin/` at app startup. Spawned agents can `runner signal`, `runner msg post`, `runner msg read`, `runner status`. Direct-chat sessions (no env vars) no-op cleanly.
@@ -42,24 +54,37 @@ Every layer of v0 — persistence, configuration, PTY runtime, event log, event 
 ### Known gaps in implemented surfaces
 
 - **Production sidecar packaging.** The dev path now installs the bundled CLI into `$APPDATA/runner/bin/` via Tauri's `beforeDev` hook. Production installer builds (`tauri build`) do not yet ship the CLI as a `bundle.externalBin` sidecar — needs a build-step that stages `runner-cli-<target-triple>` for the bundler. v0 ships in dev; this is a release-engineering follow-up that doesn't affect the demo path.
-- **Codex `system_prompt` flag.** The runtime adapter currently emits `--append-system-prompt` only for the `claude-code` runtime; `codex --instructions` was tried first but the installed Codex CLI rejected it. Codex runners spawn without their `system_prompt` until a verified flag is identified.
+- **Running mission slot drift.** Mission sessions currently join back to live
+  `slots` for workspace labels and lead flags. If a crew's slots are edited
+  while a mission is running, those labels can drift away from the frozen
+  start-time router/session identity. Snapshot `slot_handle`/`lead` on session
+  rows or block slot mutations for crews with live missions.
+- **Codex prompt semantics.** Codex has no true system-prompt flag in the
+  installed CLI. Fresh Codex sessions receive `runner.system_prompt` as the
+  positional initial prompt. Resume paths must avoid re-sending that positional
+  prompt into an existing conversation.
+- **Post-PR #24 cleanup.** `runner/activity` live emissions need to count
+  `slots` instead of the removed `crew_runners` table, and Runner Detail should
+  key/display per-slot membership rows by `slot_id` / `@slot_handle`.
 
 ### Integrated C5.5 amendment context
 
 C5.5 was originally a standalone amendment after the first config UI shipped. It is now part of the main MVP plan and live schema, but the rationale matters for future work:
 
-1. **Runners are top-level and shared.** A runner is a reusable config row. A crew composes existing runners through `crew_runners`, so one runner can sit in multiple crews.
+1. **Runners are top-level and shared.** A runner is a reusable config row. A
+   crew composes existing runners through `slots`, so one runner can sit in
+   multiple crews and in multiple slots of the same crew.
 2. **Sessions can exist without missions.** `sessions.mission_id` is nullable and direct-chat sessions store their own `cwd`; this powers the Runners page's Chat now flow.
 3. **Runner activity is first-class.** The UI needs per-runner session/mission counters, so the backend exposes `runner_activity`, `runner_list_with_activity`, and live `runner/activity` events.
 
 Schema consequences:
-- `runners` has no `crew_id`, `position`, or `lead`; handles are globally unique.
-- `crew_runners` owns membership, per-crew `position`, and per-crew `lead`.
-- `sessions.mission_id` is nullable with `ON DELETE SET NULL`; direct sessions use `cwd` on the session row.
+- `runners` has no `crew_id`, `position`, `lead`, or `role`; handles are globally unique template names.
+- `slots` owns membership, per-crew `position`, per-crew `lead`, and the per-slot `slot_handle`.
+- `sessions.mission_id` is nullable with `ON DELETE SET NULL`; direct sessions use `cwd` on the session row. Mission sessions also store `slot_id`.
 
 Command consequences:
 - Runner CRUD is global (`runner_create`, `runner_update`, `runner_delete`, `runner_list`, `runner_get`).
-- Crew membership lives in `crew_add_runner`, `crew_remove_runner`, `crew_set_lead`, `crew_reorder`, and `crew_list_runners`.
+- Crew membership lives in `slot_create`, `slot_update`, `slot_delete`, `slot_set_lead`, `slot_reorder`, `slot_list`, and `runner_crews_list`.
 - `session_start_direct` spawns a PTY without `RUNNER_CREW_ID`, `RUNNER_MISSION_ID`, or `RUNNER_EVENT_LOG`.
 
 Product consequences:
@@ -105,9 +130,9 @@ That's it. There are no policy rules to evolve — these are a few hardcoded mec
 
 **Cross-cutting prerequisite — launch/prompt adapter.**
 - `mission_goal`'s injected prompt is `runner.system_prompt + mission goal + roster + coordination instructions + signal allowlist`, composed in `src-tauri/src/router/prompt.rs`.
-- `runner.system_prompt` is applied by the runtime adapter in `src-tauri/src/router/runtime.rs` on both `SessionManager::spawn` and `spawn_direct`. `claude-code` receives it via `--append-system-prompt`; Codex remains a documented no-op until a verified CLI flag exists.
+- `runner.system_prompt` is applied by the runtime adapter in `src-tauri/src/router/runtime.rs` on both `SessionManager::spawn` and `spawn_direct`. `claude-code` receives it via `--append-system-prompt`. Codex has no verified system flag, so fresh sessions receive the prompt as the positional initial prompt; resume paths must not append it to `codex resume <uuid>`.
 - Direct chats receive the runner's default `system_prompt` only; no roster, no goal.
-- Tests assert resolved command/env contains the prompt for claude-code on both paths.
+- Tests assert resolved command/env contains the prompt for claude-code on both paths; Codex needs separate coverage for fresh positional prompt handling and no replay on resume.
 
 **Risks to settle:**
 - Stdin writes are a mutex-protected write path, not a queued command stream. MVP keeps one handler output per triggering event; anything more would need per-session sequencing.
@@ -173,7 +198,11 @@ Settled risks:
 
 From a clean launch of the app, a user can:
 
-1. Create a **Crew** on the Crews page, then add two runners to it (one `claude-code` lead, one `shell` worker) on the **Crew Detail** page. Per C5.5a, runners are top-level config and shared across crews — adding a runner to a crew creates a `crew_runners` membership row, not a new runner. The lead invariant is per-crew (one lead per crew, enforced via partial unique index on `crew_runners`) and is checked end-to-end.
+1. Create a **Crew** on the Crews page, then add two slots to it (one
+   `claude-code` lead slot, one `shell` worker slot) on the **Crew Detail**
+   page. Runners are top-level templates shared across crews; adding a runner
+   to a crew creates a `slots` row with its own `slot_handle`, not a new
+   runner. The lead invariant is per-crew and enforced by the slot commands.
 2. Click **Start Mission**, fill the goal, and see the Mission workspace open with two live PTY sessions.
 3. Watch the lead runner receive the goal via stdin, draft a plan, and post a directed message to the worker; see the worker pick it up on its next `runner msg read`.
 4. See a worker emit an `ask_lead` signal; watch the lead decide to escalate via `ask_human`; click **Approve** on the resulting card; see the lead receive the response and forward it to the worker.
@@ -232,12 +261,12 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
 
 **Deliverables.**
 - `src-tauri/src/db.rs` — connection pool with WAL mode, `rusqlite` migrations runner, bootstrapped at app start.
-- Migration `0001_init.sql` — implements **arch §7.1 verbatim**, including the four tables (`crews`, `runners`, `missions`, `sessions`) and the `one_lead_per_crew` partial unique index. No additions, no renames. The plan used to list the columns inline; that list has been deleted to remove the two-source-of-truth risk the earlier review called out. Implementers copy §7.1 directly into `0001_init.sql`.
+- Migration `0001_init.sql` — implements the original **arch §7.1** schema, including `crews`, `runners`, `missions`, `sessions`, and the first-pass `crew_runners` join with `one_lead_per_crew`. PR #24's `0006_slots.sql` supersedes `crew_runners` with `slots`; the current schema is summarized in the status snapshot above.
 - **Default signal-type allowlist.** Every new crew row is seeded with `signal_types = ["mission_goal", "human_said", "ask_lead", "ask_human", "human_question", "human_response", "runner_status", "inbox_read"]` — the full set of built-in types the MVP needs. Users can extend this list in v0.x; in MVP it is write-only from the DB layer. Without this seeding the CLI will reject the built-in signals at spawn time per arch §5.3 Layer 2.
 - Rust types in `src-tauri/src/model.rs`: `Crew`, `Runner`, `Mission`, `Session`, `Event`, `EventKind`, `SignalType`, serde-derived. Serde field attributes map Rust-idiomatic snake_case (`args`, `env`) to the DB column names (`args_json`, `env_json`) where they differ.
 - TS types in `src/lib/types.ts` hand-synced with Rust (we're not pulling in `ts-rs` yet — too much ceremony for the MVP).
 
-**Tests.** Constraint tests for the partial unique index: inserting two leads in one crew fails; inserting leads across crews succeeds. Round-trip tests for the JSON-blob columns (`orchestrator_policy`, `signal_types`, `env`).
+**Tests.** Original constraint tests covered the first-pass lead invariant and JSON-blob round trips (`orchestrator_policy`, `signal_types`, `env`). Current lead behavior is covered by the slot command tests in C2 / PR #24.
 
 **Out of scope.** No Tauri commands yet — that's C2.
 
@@ -247,20 +276,21 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
 
 **Goal.** Tauri commands for managing crews and (top-level, sharable) runners, with the per-crew lead invariant enforced at the Rust layer in addition to the DB.
 
-**Note (post-C5.5a).** This section was originally written for the per-crew runner model. C5.5a moved runner CRUD onto the global `runners` table and put crew membership on `crew_runners`; the live commands match that shape. The descriptions below reflect what actually shipped.
+**Note (post-PR #24).** This section was originally written for the per-crew runner model, then the C5.5a `crew_runners` join. PR #24 supersedes membership with `slots`. The live commands are slot commands; historical chunk text is kept only to explain the path that got us here.
 
 **Deliverables.**
 - `src-tauri/src/commands/crew.rs` — `crew_list`, `crew_create`, `crew_update`, `crew_delete`.
 - `src-tauri/src/commands/runner.rs` — `runner_list` (global, no crew arg), `runner_get`, `runner_create`, `runner_update`, `runner_delete`, `runner_activity`. Runners exist independently of any crew.
-- `src-tauri/src/commands/crew_runner.rs` — membership commands: `crew_list_runners(crew_id)`, `crew_add_runner(crew_id, runner_id)`, `crew_remove_runner(crew_id, runner_id)`, `crew_set_lead(crew_id, runner_id)`, `crew_reorder(crew_id, ordered_runner_ids)`.
+- `src-tauri/src/commands/slot.rs` — membership commands: `slot_list(crew_id)`, `slot_create(crew_id, runner_id, slot_handle)`, `slot_update(slot_id, slot_handle)`, `slot_delete(slot_id)`, `slot_set_lead(slot_id)`, `slot_reorder(crew_id, ordered_slot_ids)`, plus `runner_crews_list(runner_id)` for Runner Detail.
 - Invariant rules encoded in Rust:
-  - First runner added to a crew is auto-lead (membership-level, not runner-level).
-  - `crew_set_lead` runs in a transaction: unset old lead, set new lead, single commit.
-  - Removing the lead from a crew while other members remain auto-promotes the runner at the lowest `position`.
-  - Removing the last member of a crew is allowed (crew becomes empty, unstartable).
-  - Deleting a runner globally cascades through `crew_runners` (`ON DELETE CASCADE`); deleting a crew cascades through `crew_runners` but **does not** delete the runner row itself.
+  - First slot added to a crew is auto-lead (slot-level, not runner-template-level).
+  - `slot_set_lead` runs in a transaction: unset old lead, set new lead, single commit.
+  - Removing the lead slot while other slots remain auto-promotes the slot at the lowest `position`.
+  - Removing the last slot of a crew is allowed (crew becomes empty, unstartable).
+  - Deleting a runner globally cascades through `slots` (`ON DELETE CASCADE`); deleting a crew cascades through `slots` but **does not** delete the runner row itself.
+  - The same runner template can appear more than once in one crew as long as each slot uses a distinct `slot_handle`.
 
-**Tests.** `cargo test` covers: auto-lead on first membership insert, forbidden second lead per crew, lead auto-promotion on remove, atomic reassign, runner survives crew delete, same runner can join multiple crews and be lead in each independently.
+**Tests.** `cargo test` covers: auto-lead on first slot insert, second slot not auto-lead, duplicate `slot_handle` rejection within one crew, lead auto-promotion on remove, atomic reassign, position repacking, runner survives crew delete, and the same runner template joining multiple crews or multiple slots independently.
 
 **Out of scope.** UI, mission, PTY.
 
@@ -274,12 +304,12 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
 
 **Deliverables.**
 - `src/pages/Crews.tsx` — crew cards (create, list, delete).
-- `src/pages/CrewEditor.tsx` — Crew Detail: ordered runner list within the crew, `LEAD` badge, `Set as lead` action, drag-reorder, delete-runner.
-- `src/components/AddSlotModal.tsx` — modal form: handle, runtime, command/args, cwd, system prompt. First runner in a crew is auto-lead (per C2).
-- `src/components/RunnerEditDrawer.tsx` — slide-over to edit an existing runner's fields in place. Reuses the Runner Detail frame's layout but inside Crew Detail context.
+- `src/pages/CrewEditor.tsx` — Crew Detail: ordered slot list within the crew, `LEAD` badge, `Set as lead` action, drag-reorder, delete slot.
+- `src/components/AddSlotModal.tsx` — modal form for selecting an existing runner template and assigning a per-slot `slot_handle`. First slot in a crew is auto-lead (per C2).
+- `src/components/RunnerEditDrawer.tsx` — slide-over to edit an existing runner template's fields in place. Reuses the Runner Detail frame's layout but inside Crew Detail context.
 - All pages call Tauri commands via a tiny `src/lib/api.ts` wrapper.
 
-**Manual test plan.** Create a crew, add two runners, reassign lead, delete lead, confirm auto-promotion to the next runner by `position`.
+**Manual test plan.** Create a crew, add two slots, reassign lead, delete lead, confirm auto-promotion to the next slot by `position`.
 
 **Out of scope.** Mission workspace, Start Mission modal. The standalone Runners list / Runner Detail pages (frames `2Oecf` and `ocAFJ` in the design) ship in **C8.5**, not C3.
 
@@ -376,7 +406,7 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
   - `runner_status` → accept `payload.state = "busy" | "idle"` and optional `payload.note`; update the status map; when a non-lead reports `idle`, inject a short availability update to the lead.
 - `src-tauri/src/router/prompt.rs` — composes `runner.system_prompt + mission goal + roster + coordination instructions + signal allowlist` into the `mission_goal` injection. Pure function over inputs; no I/O; easy to unit-test.
 - Cross-cutting **launch/prompt adapter** (must land in this chunk):
-  - `src-tauri/src/router/runtime.rs` — per-runtime adapter. `claude-code` injects `runner.system_prompt` via `--append-system-prompt`. `codex` is a documented no-op until its CLI flag is verified. Fallback runtimes get a documented no-op.
+  - `src-tauri/src/router/runtime.rs` — per-runtime adapter. `claude-code` injects `runner.system_prompt` via `--append-system-prompt`. Codex has no verified system flag, so fresh sessions receive the prompt as the positional initial prompt; resume paths must not replay it into `codex resume <uuid>`. Fallback runtimes get a documented no-op.
   - Apply on both `SessionManager::spawn` (mission) and `spawn_direct` (direct chat). Direct chat gets the runner's `system_prompt` only — no roster, no goal.
 
 **Tests.**
@@ -385,7 +415,7 @@ C3 and C4 can run in parallel after C2 lands. C6 and C7 can run in parallel afte
 - Reopen reconstructs the runner-status map from `runner_status` rows; a worker `idle` signal updates the map and reaches the lead.
 - `human_response` without a matching `human_question` emits a `mission_warning`, not a panic.
 - `messages_do_not_trigger_router_actions` — appending an `EventKind::Message` produces no `inject_stdin` call.
-- Runtime adapter resolves `--append-system-prompt` for claude-code on both `spawn` and `spawn_direct`. Missing `system_prompt` is fine (no flag added).
+- Runtime adapter resolves `--append-system-prompt` for claude-code on both `spawn` and `spawn_direct`; Codex fresh-spawn prompt handling and no-replay-on-resume are covered separately. Missing `system_prompt` is fine (no flag or positional prompt added).
 
 **Out of scope.**
 - Dispatch ledger / replay idempotence — descoped, see reframing section.

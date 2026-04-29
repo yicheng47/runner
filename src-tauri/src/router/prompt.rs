@@ -15,20 +15,28 @@
 
 use runner_core::model::SignalType;
 
-use crate::model::Runner;
+/// View of the lead slot the launch prompt needs. `handle` is the
+/// slot's in-crew handle (slot_handle); `display_name` and
+/// `system_prompt` come from the underlying runner template.
+/// Decoupled from `Runner` so the composer doesn't know how the
+/// fields are joined.
+pub struct LeadView<'a> {
+    pub handle: &'a str,
+    pub display_name: &'a str,
+    pub system_prompt: Option<&'a str>,
+}
 
 /// One crewmate in the lead's roster section.
 pub struct RosterEntry<'a> {
     pub handle: &'a str,
     pub display_name: &'a str,
-    pub role: &'a str,
     pub lead: bool,
 }
 
 /// All inputs for the launch prompt. Borrowed so the caller can compose
 /// without copying the runner row.
 pub struct LaunchPromptInput<'a> {
-    pub lead: &'a Runner,
+    pub lead: LeadView<'a>,
     pub crew_name: &'a str,
     pub mission_goal: &'a str,
     pub roster: &'a [RosterEntry<'a>],
@@ -39,12 +47,11 @@ pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
     let mut out = String::new();
 
     out.push_str(&format!(
-        "You are `{}` ({}), lead runner in crew \"{}\".\n",
+        "You are `{}` ({}), lead runner in crew \"{}\".\n\n",
         input.lead.handle, input.lead.display_name, input.crew_name,
     ));
-    out.push_str(&format!("Your role: {}.\n\n", input.lead.role));
 
-    if let Some(brief) = input.lead.system_prompt.as_deref() {
+    if let Some(brief) = input.lead.system_prompt {
         let brief = brief.trim();
         if !brief.is_empty() {
             out.push_str("== Your brief ==\n");
@@ -69,10 +76,9 @@ pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
         out.push_str("== Your crewmates ==\n");
         for r in crewmates {
             out.push_str(&format!(
-                "- `{}` ({}, {}){}\n",
+                "- `{}` ({}){}\n",
                 r.handle,
                 r.display_name,
-                r.role,
                 if r.lead { " — lead" } else { "" },
             ));
         }
@@ -105,32 +111,20 @@ pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
-    use std::collections::HashMap;
 
-    fn runner(handle: &str, system_prompt: Option<&str>) -> Runner {
-        Runner {
-            id: "r".into(),
-            handle: handle.into(),
-            display_name: "Lead".into(),
-            role: "coordinator".into(),
-            runtime: "claude-code".into(),
-            command: "/bin/sh".into(),
-            args: vec![],
-            working_dir: None,
-            system_prompt: system_prompt.map(String::from),
-            env: HashMap::new(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+    fn lead<'a>(handle: &'a str, system_prompt: Option<&'a str>) -> LeadView<'a> {
+        LeadView {
+            handle,
+            display_name: "Lead",
+            system_prompt,
         }
     }
 
     #[test]
     fn includes_brief_when_present_and_omits_when_blank() {
-        let lead = runner("lead", Some("Drive coordination."));
         let allowed = [SignalType::new("mission_goal")];
         let prompt = compose_launch_prompt(&LaunchPromptInput {
-            lead: &lead,
+            lead: lead("lead", Some("Drive coordination.")),
             crew_name: "Alpha",
             mission_goal: "ship v0",
             roster: &[],
@@ -141,9 +135,8 @@ mod tests {
         assert!(prompt.contains("Goal: ship v0"));
         assert!(prompt.contains("Allowed signal types: mission_goal"));
 
-        let lead2 = runner("lead", None);
         let prompt2 = compose_launch_prompt(&LaunchPromptInput {
-            lead: &lead2,
+            lead: lead("lead", None),
             crew_name: "Alpha",
             mission_goal: "ship v0",
             roster: &[],
@@ -154,9 +147,8 @@ mod tests {
 
     #[test]
     fn empty_goal_renders_placeholder() {
-        let lead = runner("lead", None);
         let prompt = compose_launch_prompt(&LaunchPromptInput {
-            lead: &lead,
+            lead: lead("lead", None),
             crew_name: "A",
             mission_goal: "",
             roster: &[],
@@ -167,22 +159,19 @@ mod tests {
 
     #[test]
     fn roster_section_excludes_self_and_lists_crewmates() {
-        let lead = runner("lead", None);
         let prompt = compose_launch_prompt(&LaunchPromptInput {
-            lead: &lead,
+            lead: lead("lead", None),
             crew_name: "A",
             mission_goal: "g",
             roster: &[
                 RosterEntry {
                     handle: "lead",
                     display_name: "Lead",
-                    role: "coord",
                     lead: true,
                 },
                 RosterEntry {
                     handle: "impl",
                     display_name: "Impl",
-                    role: "coding",
                     lead: false,
                 },
             ],

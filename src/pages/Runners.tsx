@@ -282,12 +282,6 @@ function RunnerCard({
           </div>
           <p className="mt-1 line-clamp-2 text-xs text-fg-2">
             {item.display_name}
-            {item.role ? (
-              <>
-                <span className="text-line-strong"> · </span>
-                {item.role}
-              </>
-            ) : null}
           </p>
           <div className="mt-1.5 truncate font-mono text-[11px] text-fg-3">
             $ {item.command}
