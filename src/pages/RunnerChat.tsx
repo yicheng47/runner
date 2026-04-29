@@ -894,15 +894,9 @@ function RunnerSidePanel({
                       {runner.runtime}
                     </span>
                   </div>
-                  {runner.display_name || runner.role ? (
+                  {runner.display_name ? (
                     <p className="text-[12px] text-fg-2">
                       {runner.display_name}
-                      {runner.role ? (
-                        <>
-                          <span className="text-line-strong"> · </span>
-                          {runner.role}
-                        </>
-                      ) : null}
                     </p>
                   ) : null}
                   <div className="h-px w-full bg-line" />

@@ -35,13 +35,19 @@ pub fn system_prompt_args(runtime: &str, system_prompt: Option<&str>) -> Vec<Str
         // onto its built-in default rather than replacing it, which is what
         // we want — we're appending the runner's brief, not overwriting.
         "claude-code" => vec!["--append-system-prompt".into(), prompt.to_string()],
-        // codex / shell / unknown — no flag. We tried `codex --instructions`
-        // first but the installed Codex CLI rejects it ("unexpected argument
-        // --instructions found"). Until a verified prompt mechanism lands
-        // (e.g. a documented flag on a pinned Codex version, or a wrapper
-        // script convention), Codex runners spawn without the brief; the
-        // prompt is still on the runner row and the user can configure
-        // their own wrapper. Tracked for follow-up.
+        // codex has no system-prompt flag (we tried `--instructions` and
+        // it's rejected; `~/.codex/config.toml` doesn't expose one
+        // either). Codex's CLI does accept a positional `[PROMPT]` arg
+        // that becomes the first user turn of the session — passing
+        // `system_prompt` there is the closest available hook. The
+        // trade-off is visibility: codex's chat history will show the
+        // prompt as the first user message, not a hidden system
+        // instruction. For *resume* paths we deliberately skip this at
+        // the call site so the prompt isn't replayed onto an existing
+        // conversation — see the spawn glue in
+        // `SessionManager::{spawn,spawn_direct,resume}`.
+        "codex" => vec![prompt.to_string()],
+        // shell / unknown — no prompt mechanism.
         _ => Vec::new(),
     }
 }
@@ -156,11 +162,21 @@ mod tests {
     }
 
     #[test]
-    fn codex_runtime_omits_flag_until_verified_mechanism() {
-        // The installed `codex` CLI rejects `--instructions`. Until a
-        // documented prompt flag is verified, the codex runtime degrades
-        // to no-flag rather than crashing the spawn.
-        assert!(system_prompt_args("codex", Some("be helpful")).is_empty());
+    fn codex_runtime_passes_prompt_as_positional_argv() {
+        // Codex has no system-prompt flag. The closest mechanism it
+        // ships is a positional `[PROMPT]` arg that seeds the session
+        // with a first user turn. We pass `system_prompt` there so
+        // the agent at least sees the brief, even though the trade-
+        // off is the prompt becoming visible as a user message.
+        let args = system_prompt_args("codex", Some("be helpful"));
+        assert_eq!(args, vec!["be helpful".to_string()]);
+    }
+
+    #[test]
+    fn codex_runtime_omits_argv_when_prompt_is_blank() {
+        assert!(system_prompt_args("codex", None).is_empty());
+        assert!(system_prompt_args("codex", Some("")).is_empty());
+        assert!(system_prompt_args("codex", Some("   ")).is_empty());
     }
 
     #[test]

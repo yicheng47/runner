@@ -12,7 +12,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
 
 import { api } from "../lib/api";
-import type { CrewListItem, CrewRunner, Mission } from "../lib/types";
+import type { CrewListItem, Mission, SlotWithRunner } from "../lib/types";
 import { Button } from "./ui/Button";
 import { Modal } from "./ui/Overlay";
 
@@ -36,7 +36,7 @@ export function StartMissionModal({
   const [crews, setCrews] = useState<CrewListItem[]>([]);
   const [crewId, setCrewId] = useState<string>("");
   const [crewPickerOpen, setCrewPickerOpen] = useState(false);
-  const [crewRunners, setCrewRunners] = useState<CrewRunner[]>([]);
+  const [crewSlots, setCrewSlots] = useState<SlotWithRunner[]>([]);
   const [title, setTitle] = useState("");
   const [goal, setGoal] = useState("");
   const [cwd, setCwd] = useState("");
@@ -57,7 +57,7 @@ export function StartMissionModal({
     setCwd("");
     setAdvancedOpen(false);
     setCrewPickerOpen(false);
-    setCrewRunners([]);
+    setCrewSlots([]);
     void api.crew
       .list()
       .then((rows) => {
@@ -74,14 +74,14 @@ export function StartMissionModal({
 
   useEffect(() => {
     if (!open || !crewId) {
-      setCrewRunners([]);
+      setCrewSlots([]);
       return;
     }
     let cancelled = false;
-    void api.crew
-      .listRunners(crewId)
+    void api.slot
+      .list(crewId)
       .then((rows) => {
-        if (!cancelled) setCrewRunners(rows);
+        if (!cancelled) setCrewSlots(rows);
       })
       .catch((e) => {
         if (!cancelled) setError(String(e));
@@ -115,8 +115,8 @@ export function StartMissionModal({
   );
 
   const launchable = (selectedCrew?.runner_count ?? 0) > 0;
-  const lead = crewRunners.find((r) => r.lead) ?? null;
-  const workers = crewRunners.filter((r) => !r.lead);
+  const lead = crewSlots.find((s) => s.lead) ?? null;
+  const workers = crewSlots.filter((s) => !s.lead);
   const selectedCrewSummary = summarizeCrew(selectedCrew, lead, workers);
 
   const browseCwd = async () => {
@@ -286,7 +286,7 @@ export function StartMissionModal({
           label="Goal"
           subtitle={
             lead
-              ? `Delivered to @${lead.handle} (lead) on mission start.`
+              ? `Delivered to @${lead.slot_handle} (lead) on mission start.`
               : "Delivered to the crew lead on mission start."
           }
         >
@@ -372,20 +372,20 @@ function Field({
 
 function summarizeCrew(
   crew: CrewListItem | null,
-  lead: CrewRunner | null,
-  workers: CrewRunner[],
+  lead: SlotWithRunner | null,
+  workers: SlotWithRunner[],
 ): string {
   if (!crew) return "Create a crew first.";
   if (crew.runner_count === 0) return "No runners in this crew.";
   if (!lead) {
-    return `${crew.runner_count} runner${
+    return `${crew.runner_count} slot${
       crew.runner_count === 1 ? "" : "s"
     }`;
   }
-  if (workers.length === 0) return `lead: @${lead.handle}`;
-  const shownWorkers = workers.slice(0, 3).map((r) => `@${r.handle}`);
+  if (workers.length === 0) return `lead: @${lead.slot_handle}`;
+  const shownWorkers = workers.slice(0, 3).map((s) => `@${s.slot_handle}`);
   const tail = workers.length > 3 ? `, +${workers.length - 3}` : "";
-  return `lead: @${lead.handle} · ${workers.length} worker${
+  return `lead: @${lead.slot_handle} · ${workers.length} worker${
     workers.length === 1 ? "" : "s"
   }: ${shownWorkers.join(", ")}${tail}`;
 }

@@ -23,7 +23,7 @@ use tauri::State;
 use ulid::Ulid as UlidGen;
 
 use crate::{
-    commands::{crew, crew_runner},
+    commands::{crew, slot},
     error::{Error, Result},
     model::{Mission, MissionStatus, Timestamp},
     AppState,
@@ -146,19 +146,19 @@ pub fn start(
 
     // Validate crew exists and is launchable.
     let crew = crew::get(conn, &input.crew_id)?;
-    let roster = crew_runner::list(conn, &input.crew_id)?;
+    let roster = slot::list(conn, &input.crew_id)?;
     if roster.is_empty() {
         return Err(Error::msg(format!(
-            "crew {} has no runners; cannot start mission",
+            "crew {} has no slots; cannot start mission",
             crew.name
         )));
     }
-    // DB enforces `one_lead_per_crew` so at most one member is lead; we
-    // still check at least one carries the flag (defense in depth for any
-    // future path that could leave a crew leaderless).
-    if !roster.iter().any(|m| m.lead) {
+    // The slot commands enforce one-lead-per-crew (clear-others-then-set
+    // inside a transaction). Defense in depth: still check at least one
+    // slot carries the flag in case a path leaves a crew leaderless.
+    if !roster.iter().any(|m| m.slot.lead) {
         return Err(Error::msg(format!(
-            "crew {} has no lead runner; cannot start mission",
+            "crew {} has no lead slot; cannot start mission",
             crew.name
         )));
     }
@@ -213,7 +213,7 @@ pub fn start(
     // roster is frozen here at mission_start: later changes to crew
     // membership do not retroactively invalidate `--to` lookups in this
     // mission's log (per PR #19 reviewer guidance).
-    let roster_for_sidecar = crew_runner::list(&tx, &crew.id)?;
+    let roster_for_sidecar = slot::list(&tx, &crew.id)?;
     write_roster_sidecar(&mission_dir, &roster_for_sidecar)?;
 
     // Effective goal = override || crew default || "".
@@ -348,19 +348,24 @@ fn write_signal_types_sidecar(
 /// Atomic write via `tempfile::NamedTempFile::persist` — same dance as
 /// `write_signal_types_sidecar` — so a crash mid-write can't leave a
 /// half-formed file the CLI would parse-fail on.
-fn write_roster_sidecar(mission_dir: &Path, roster: &[crate::model::CrewRunner]) -> Result<()> {
+fn write_roster_sidecar(mission_dir: &Path, roster: &[crate::model::SlotWithRunner]) -> Result<()> {
     use std::io::Write;
 
     #[derive(serde::Serialize)]
     struct RosterEntry<'a> {
+        // `handle` is the slot's in-crew identity (slot_handle). The
+        // CLI's `runner msg post --to <handle>` looks up against this
+        // sidecar — the runner template's globally-unique `handle`
+        // is irrelevant in mission contexts, where two slots could
+        // share the same template.
         handle: &'a str,
         lead: bool,
     }
     let entries: Vec<RosterEntry> = roster
         .iter()
         .map(|m| RosterEntry {
-            handle: &m.runner.handle,
-            lead: m.lead,
+            handle: &m.slot.slot_handle,
+            lead: m.slot.lead,
         })
         .collect();
 
@@ -470,14 +475,16 @@ pub async fn mission_start(
     };
 
     // Mission row + opening events are durable. Now spawn one PTY per
-    // runner. This loop is **all-or-nothing**: if any spawn fails we kill
-    // the sessions we already created, flip the mission to `aborted`, and
-    // return the error. Without this the caller could see "err" while the
-    // crew still has half a live mission that blocks future starts via
-    // the one-live-mission-per-crew invariant.
+    // slot. This loop is **all-or-nothing**: if any spawn fails we kill
+    // the sessions we already created, flip the mission to `aborted`,
+    // and return the error. Without this the caller could see "err"
+    // while the crew still has half a live mission that blocks future
+    // starts via the one-live-mission-per-crew invariant.
     //
-    // Post-C5.5a the roster lives in `crew_runners`, so we join through it
-    // instead of listing global runners.
+    // The roster lives in `slots`, joined with the runner template
+    // each slot references. Mission spawn iterates per slot — two
+    // slots referencing the same runner template both produce
+    // distinct PTYs identifying as their respective slot_handles.
     let (crew_name, allowed_signals) = {
         let conn = state.db.get()?;
         let crew = crew::get(&conn, &out.mission.crew_id)?;
@@ -485,7 +492,7 @@ pub async fn mission_start(
     };
     let roster = {
         let conn = state.db.get()?;
-        crew_runner::list(&conn, &out.mission.crew_id)?
+        slot::list(&conn, &out.mission.crew_id)?
     };
     let events_log_path =
         event_log::events_path(&state.app_data_dir, &out.mission.crew_id, &out.mission.id);
@@ -555,6 +562,7 @@ pub async fn mission_start(
         let spawn_res = state.sessions.spawn(
             &out.mission,
             &member.runner,
+            &member.slot,
             &state.app_data_dir,
             events_log_path.clone(),
             state.db.clone(),
@@ -562,7 +570,10 @@ pub async fn mission_start(
         );
         match spawn_res {
             Ok(spawned) => {
-                spawned_pairs.push((member.runner.handle.clone(), spawned.id));
+                // Register by slot_handle (the in-mission identity)
+                // — the router routes signals/messages by slot_handle,
+                // not by template handle.
+                spawned_pairs.push((member.slot.slot_handle.clone(), spawned.id));
             }
             Err(e) => {
                 // Rollback: kill the sessions that did start, mark the
@@ -593,7 +604,7 @@ pub async fn mission_start(
     // mission: NO `reconstruct_from_log()` call — setting a watermark
     // over the just-written `mission_goal` would suppress the bootstrap
     // (reviewer's caveat).
-    let roster_handles: Vec<String> = roster.iter().map(|m| m.runner.handle.clone()).collect();
+    let roster_handles: Vec<String> = roster.iter().map(|m| m.slot.slot_handle.clone()).collect();
     let tauri_emitter: Arc<dyn BusEmitter> = Arc::new(TauriBusEvents(app.clone()));
     let router_emitter: Arc<dyn BusEmitter> = Arc::new(RouterSubscriber(Arc::clone(&router)));
     let composite: Arc<dyn BusEmitter> = Arc::new(CompositeBusEmitter::new(vec![
@@ -768,13 +779,14 @@ mod tests {
     }
 
     fn add_runner(conn: &mut Connection, crew_id: &str, handle: &str) {
-        // C5.5: runners are global; membership goes through crew_runners.
+        // Runners are config templates; in-mission identity is on
+        // the slot. Test fixtures use the runner handle as both the
+        // template name and the slot_handle for simplicity.
         let r = runner_cmd::create(
             conn,
             CreateRunnerInput {
                 handle: handle.into(),
                 display_name: handle.into(),
-                role: "test".into(),
                 runtime: "shell".into(),
                 command: "/bin/sh".into(),
                 args: vec![],
@@ -784,7 +796,7 @@ mod tests {
             },
         )
         .unwrap();
-        crew_runner::add_runner(conn, crew_id, &r.id).unwrap();
+        slot::create(conn, crew_id, &r.id, handle).unwrap();
     }
 
     #[test]
@@ -807,8 +819,8 @@ mod tests {
         .unwrap_err();
         let msg = format!("{err}");
         assert!(
-            msg.contains("no runners"),
-            "expected 'no runners' error, got {msg}"
+            msg.contains("no slots"),
+            "expected 'no slots' error, got {msg}"
         );
     }
 

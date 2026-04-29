@@ -62,6 +62,7 @@ fn row_to_session(row: &Row<'_>) -> rusqlite::Result<SessionRow> {
             id: row.get("id")?,
             mission_id: row.get("mission_id")?,
             runner_id: row.get("runner_id")?,
+            slot_id: row.get("slot_id")?,
             cwd: row.get("cwd")?,
             status,
             pid: row.get("pid")?,
@@ -78,22 +79,24 @@ pub async fn session_list(
     state: State<'_, AppState>,
     mission_id: String,
 ) -> Result<Vec<SessionRow>> {
-    // Order by the crew-scoped position of the runner within this mission's
-    // crew, so the UI renders sessions in the same slot order as the Crew
-    // Detail roster. `runners` is globally scoped post-C5.5a so we join
-    // through `missions` + `crew_runners` to get the crew-local position.
+    // Order by the slot-scoped position within this mission's crew so
+    // the UI renders sessions in the same slot order as the Crew
+    // Detail roster. The session's `slot_id` is the direct join key
+    // into `slots`; `handle` is the slot's in-crew handle, and the
+    // template handle is no longer used in mission contexts.
+    // `r.handle` (template) is kept on the row for fallback display
+    // (legacy mission sessions before 0006 have no slot_id).
     let conn = state.db.get()?;
     let mut stmt = conn.prepare(
-        "SELECT s.id, s.mission_id, s.runner_id, s.cwd, s.status, s.pid,
-                s.started_at, s.stopped_at, r.handle,
-                COALESCE(cr.lead, 0) AS lead
+        "SELECT s.id, s.mission_id, s.runner_id, s.slot_id, s.cwd, s.status, s.pid,
+                s.started_at, s.stopped_at,
+                COALESCE(sl.slot_handle, r.handle) AS handle,
+                COALESCE(sl.lead, 0) AS lead
            FROM sessions s
            JOIN runners r ON r.id = s.runner_id
-           JOIN missions m ON m.id = s.mission_id
-           LEFT JOIN crew_runners cr
-                  ON cr.crew_id = m.crew_id AND cr.runner_id = s.runner_id
+           LEFT JOIN slots sl ON sl.id = s.slot_id
           WHERE s.mission_id = ?1
-          ORDER BY cr.position ASC, s.started_at ASC",
+          ORDER BY COALESCE(sl.position, 0) ASC, s.started_at ASC",
     )?;
     let rows = stmt.query_map(params![mission_id], row_to_session)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -437,9 +440,9 @@ mod tests {
         let runner_id = ulid::Ulid::new().to_string();
         conn.execute(
             "INSERT INTO runners
-                (id, handle, display_name, role, runtime, command,
+                (id, handle, display_name, runtime, command,
                  created_at, updated_at)
-             VALUES (?1, 'r', 'R', 'test', 'shell', '/bin/sh', ?2, ?2)",
+             VALUES (?1, 'r', 'R', 'shell', '/bin/sh', ?2, ?2)",
             params![runner_id, now.to_rfc3339()],
         )
         .unwrap();

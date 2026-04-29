@@ -2,7 +2,7 @@
 //
 // A runner is a reusable definition (handle, runtime, command, system
 // prompt, ...) that can be referenced by zero or more crews via the
-// `crew_runners` join table (see commands/crew_runner.rs). The handle is
+// `slots` join table (see commands/slot.rs). The handle is
 // globally unique: @impl means the same runner everywhere it appears in
 // the event log.
 //
@@ -27,7 +27,6 @@ use crate::{
 pub struct CreateRunnerInput {
     pub handle: String,
     pub display_name: String,
-    pub role: String,
     pub runtime: String,
     pub command: String,
     #[serde(default)]
@@ -41,14 +40,15 @@ pub struct CreateRunnerInput {
 }
 
 // `handle` is intentionally excluded from updates: per arch §2.2 and §5.2
-// the handle is the runner's identity in events, CLI addressing, and
-// policy rules. Renaming after creation would break historical event
-// attribution and any persisted policy references. Users who want a
-// different handle delete the runner and create a new one.
+// the handle is the runner template's identity in events, CLI
+// addressing, and policy rules. Renaming after creation would break
+// historical event attribution and any persisted policy references.
+// Users who want a different handle delete the runner and create a
+// new one. (Per-slot in-crew identity lives on `slots.slot_handle`
+// and is renameable.)
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct UpdateRunnerInput {
     pub display_name: Option<String>,
-    pub role: Option<String>,
     pub runtime: Option<String>,
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
@@ -125,7 +125,6 @@ pub(super) fn row_to_runner(row: &Row<'_>) -> rusqlite::Result<Runner> {
         id: row.get("id")?,
         handle: row.get("handle")?,
         display_name: row.get("display_name")?,
-        role: row.get("role")?,
         runtime: row.get("runtime")?,
         command: row.get("command")?,
         args: match args_raw {
@@ -159,7 +158,7 @@ pub(super) fn row_to_runner(row: &Row<'_>) -> rusqlite::Result<Runner> {
     })
 }
 
-pub(super) const SELECT_COLS: &str = "id, handle, display_name, role, runtime, command,
+pub(super) const SELECT_COLS: &str = "id, handle, display_name, runtime, command,
                                        args_json, working_dir, system_prompt, env_json,
                                        created_at, updated_at";
 
@@ -219,15 +218,14 @@ pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
 
     conn.execute(
         "INSERT INTO runners (
-            id, handle, display_name, role, runtime, command,
+            id, handle, display_name, runtime, command,
             args_json, working_dir, system_prompt, env_json,
             created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
         params![
             id,
             input.handle,
             input.display_name,
-            input.role,
             input.runtime,
             input.command,
             args_json,
@@ -249,7 +247,6 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
     }
 
     let display_name = input.display_name.unwrap_or(existing.display_name);
-    let role = input.role.unwrap_or(existing.role);
     let runtime = input.runtime.unwrap_or(existing.runtime);
     let command = input.command.unwrap_or(existing.command);
     let args = input.args.unwrap_or(existing.args);
@@ -264,18 +261,16 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
     conn.execute(
         "UPDATE runners
             SET display_name = ?1,
-                role = ?2,
-                runtime = ?3,
-                command = ?4,
-                args_json = ?5,
-                working_dir = ?6,
-                system_prompt = ?7,
-                env_json = ?8,
-                updated_at = ?9
-          WHERE id = ?10",
+                runtime = ?2,
+                command = ?3,
+                args_json = ?4,
+                working_dir = ?5,
+                system_prompt = ?6,
+                env_json = ?7,
+                updated_at = ?8
+          WHERE id = ?9",
         params![
             display_name,
-            role,
             runtime,
             command,
             args_json,
@@ -289,18 +284,30 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
     get(conn, id)
 }
 
-// Global delete: removes the runner row and lets the `ON DELETE CASCADE`
-// on crew_runners strip every slot the runner occupied. For any crew
-// where the runner was lead, we auto-promote the lowest-position
-// surviving member so that non-empty crews never end up leaderless.
+// Global delete: removes the runner template row and lets the
+// `ON DELETE CASCADE` on `slots` strip every slot that referenced
+// the runner. A single runner template might have been referenced by
+// multiple slots in the same crew (post-slot-redesign), so the
+// cleanup runs per-crew, not per-slot.
+//
+// For any crew where one of the deleted slots was lead, auto-promote
+// the lowest-position surviving slot so non-empty crews never end up
+// leaderless. Then repack positions per-crew so survivors stay dense
+// (0..N-1).
 pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
-    // Every crew the runner currently belongs to, collected BEFORE the
-    // cascade so we still know who needs auto-promotion + position repack.
-    // Lead flag captured inline so we don't need a second query.
+    // Distinct crews that referenced this runner, plus whether ANY of
+    // its slots in that crew was lead (so we know to auto-promote
+    // after the cascade). Collected before the DELETE so we still
+    // have the membership info.
     let affected_crews: Vec<(String, bool)> = {
-        let mut stmt = tx.prepare("SELECT crew_id, lead FROM crew_runners WHERE runner_id = ?1")?;
+        let mut stmt = tx.prepare(
+            "SELECT crew_id, MAX(lead)
+               FROM slots
+              WHERE runner_id = ?1
+              GROUP BY crew_id",
+        )?;
         let rows = stmt.query_map(params![id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0))
         })?;
@@ -311,13 +318,13 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
     if affected != 1 {
         return Err(Error::msg(format!("runner not found: {id}")));
     }
-    // CASCADE fired: all crew_runners rows for this runner are gone.
+    // CASCADE fired: every slot row referencing this runner is gone.
 
-    for (crew_id, was_lead) in affected_crews {
-        if was_lead {
+    for (crew_id, had_lead) in affected_crews {
+        if had_lead {
             let promote: Option<String> = tx
                 .query_row(
-                    "SELECT runner_id FROM crew_runners
+                    "SELECT id FROM slots
                       WHERE crew_id = ?1
                       ORDER BY position ASC LIMIT 1",
                     params![crew_id],
@@ -326,15 +333,15 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
                 .optional()?;
             if let Some(new_lead) = promote {
                 tx.execute(
-                    "UPDATE crew_runners SET lead = 1 WHERE crew_id = ?1 AND runner_id = ?2",
-                    params![crew_id, new_lead],
+                    "UPDATE slots SET lead = 1 WHERE id = ?1",
+                    params![new_lead],
                 )?;
             }
         }
-        // Close the position gap the cascade left for this crew, so
-        // survivors stay dense (0..N-1) and the next `add_runner` lands
-        // at a contiguous position instead of `MAX+1 = old_max + 1`.
-        super::crew_runner::repack_positions(&tx, &crew_id)?;
+        // Close the position gap the cascade left for this crew so
+        // survivors stay dense (0..N-1) and the next `slot::create`
+        // lands at a contiguous position.
+        super::slot::repack_positions(&tx, &crew_id)?;
     }
 
     tx.commit()?;
@@ -364,7 +371,7 @@ pub fn activity(conn: &Connection, runner_id: &str) -> Result<RunnerActivity> {
         |r| r.get(0),
     )?;
     let crew_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM crew_runners WHERE runner_id = ?1",
+        "SELECT COUNT(DISTINCT crew_id) FROM slots WHERE runner_id = ?1",
         params![runner_id],
         |r| r.get(0),
     )?;
@@ -484,7 +491,6 @@ mod tests {
             CreateRunnerInput {
                 handle: handle.into(),
                 display_name: format!("{handle} display"),
-                role: "impl".into(),
                 runtime: "shell".into(),
                 command: "sh".into(),
                 args: vec![],
@@ -502,7 +508,6 @@ mod tests {
         let conn = pool.get().unwrap();
         let r = make(&conn, "alpha");
         assert_eq!(r.handle, "alpha");
-        assert_eq!(r.role, "impl");
     }
 
     #[test]
@@ -527,7 +532,6 @@ mod tests {
             CreateRunnerInput {
                 handle: "shared".into(),
                 display_name: "Dup".into(),
-                role: "impl".into(),
                 runtime: "shell".into(),
                 command: "sh".into(),
                 args: vec![],
@@ -549,16 +553,14 @@ mod tests {
             &conn,
             &r.id,
             UpdateRunnerInput {
-                role: Some("reviewer".into()),
+                display_name: Some("renamed".into()),
                 ..Default::default()
             },
         )
         .unwrap();
-        assert_eq!(updated.role, "reviewer");
-        assert_eq!(
-            updated.display_name, r.display_name,
-            "unchanged field preserved"
-        );
+        assert_eq!(updated.display_name, "renamed");
+        assert_eq!(updated.handle, r.handle, "handle is unaffected by update");
+        assert_eq!(updated.runtime, r.runtime, "unchanged field preserved");
     }
 
     #[test]

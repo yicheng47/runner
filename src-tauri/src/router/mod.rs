@@ -30,7 +30,7 @@ use runner_core::model::{Event, EventKind, SignalType};
 
 use crate::error::Result;
 use crate::event_bus::{AppendedEvent, BusEmitter, InboxUpdate, WatermarkUpdate};
-use crate::model::{CrewRunner, Runner};
+use crate::model::SlotWithRunner;
 use crate::session::manager::SessionManager;
 
 /// What the router uses to push bytes into a child's PTY. The full
@@ -57,17 +57,30 @@ pub enum RunnerStatus {
 /// Inputs to the launch-prompt composer, captured at mount so the
 /// `mission_goal` handler doesn't have to round-trip the DB. The lead row
 /// also doubles as the lead-resolved handle the dispatcher routes to.
+/// Fields are pre-merged from (slot, runner template) so the composer
+/// doesn't need to know about the join shape.
 pub(crate) struct LaunchInputs {
     crew_name: String,
-    lead: Runner,
+    lead: LeadRow,
     roster: Vec<RosterRow>,
     allowed_signals: Vec<SignalType>,
+}
+
+pub(crate) struct LeadRow {
+    /// `slot.slot_handle` — the in-mission identity. The router
+    /// routes by this everywhere; the underlying template handle is
+    /// not used in mission contexts.
+    handle: String,
+    display_name: String,
+    /// `runner.system_prompt` — the brief shown in the lead's launch
+    /// prompt. Comes from the runner template since system_prompt
+    /// isn't yet a per-slot override (deferred).
+    system_prompt: Option<String>,
 }
 
 pub(crate) struct RosterRow {
     handle: String,
     display_name: String,
-    role: String,
     lead: bool,
 }
 
@@ -115,25 +128,28 @@ impl Router {
         mission_id: String,
         crew_id: String,
         crew_name: String,
-        roster: &[CrewRunner],
+        roster: &[SlotWithRunner],
         allowed_signals: Vec<SignalType>,
         log: Arc<EventLog>,
         injector: Arc<dyn StdinInjector>,
     ) -> Result<Arc<Self>> {
         let lead = roster
             .iter()
-            .find(|m| m.lead)
-            .map(|m| m.runner.clone())
+            .find(|m| m.slot.lead)
+            .map(|m| LeadRow {
+                handle: m.slot.slot_handle.clone(),
+                display_name: m.runner.display_name.clone(),
+                system_prompt: m.runner.system_prompt.clone(),
+            })
             .ok_or_else(|| {
-                crate::error::Error::msg(format!("router mount: crew {crew_id} has no lead runner"))
+                crate::error::Error::msg(format!("router mount: crew {crew_id} has no lead slot"))
             })?;
         let roster_rows = roster
             .iter()
             .map(|m| RosterRow {
-                handle: m.runner.handle.clone(),
+                handle: m.slot.slot_handle.clone(),
                 display_name: m.runner.display_name.clone(),
-                role: m.runner.role.clone(),
-                lead: m.lead,
+                lead: m.slot.lead,
             })
             .collect();
 
@@ -421,7 +437,7 @@ impl LaunchInputs {
     pub(crate) fn crew_name(&self) -> &str {
         &self.crew_name
     }
-    pub(crate) fn lead(&self) -> &Runner {
+    pub(crate) fn lead(&self) -> &LeadRow {
         &self.lead
     }
     pub(crate) fn roster(&self) -> &[RosterRow] {
@@ -432,15 +448,24 @@ impl LaunchInputs {
     }
 }
 
-impl RosterRow {
+impl LeadRow {
     pub(crate) fn handle(&self) -> &str {
         &self.handle
     }
     pub(crate) fn display_name(&self) -> &str {
         &self.display_name
     }
-    pub(crate) fn role(&self) -> &str {
-        &self.role
+    pub(crate) fn system_prompt(&self) -> Option<&str> {
+        self.system_prompt.as_deref()
+    }
+}
+
+impl RosterRow {
+    pub(crate) fn handle(&self) -> &str {
+        &self.handle
+    }
+    pub(crate) fn display_name(&self) -> &str {
+        &self.display_name
     }
     pub(crate) fn is_lead(&self) -> bool {
         self.lead

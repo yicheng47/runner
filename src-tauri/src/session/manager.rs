@@ -220,10 +220,12 @@ impl SessionManager {
     /// `<app_data_dir>/bin` onto the child's PATH — arch §5.3 Layer 2 and
     /// v0-mvp.md C9 both require the bundled `runner` CLI to win over any
     /// system binary with the same name.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         self: &Arc<Self>,
         mission: &Mission,
         runner: &Runner,
+        slot: &crate::model::Slot,
         app_data_dir: &Path,
         events_log_path: PathBuf,
         pool: Arc<DbPool>,
@@ -264,10 +266,21 @@ impl SessionManager {
         // Append the runtime-specific flag that hands `system_prompt` to the
         // child. Without this the user-authored brief on the runner row is
         // dropped on the floor (arch §4.2 / §4.3).
-        for extra in crate::router::runtime::system_prompt_args(
-            &runner.runtime,
-            runner.system_prompt.as_deref(),
-        ) {
+        //
+        // Codex carve-out: codex's only "system prompt" hook is a
+        // positional `[PROMPT]` argv that becomes the first user turn
+        // of the session (it has no real system-prompt flag). Passing
+        // it on a *resume* spawn would surface the prompt as a fresh
+        // user message against the existing conversation, so we skip
+        // codex's argv when `plan.resuming` is true. claude-code's
+        // `--append-system-prompt` is system-level and safe to re-pass
+        // on resume.
+        let prompt_for_argv = if runner.runtime == "codex" && plan.resuming {
+            None
+        } else {
+            runner.system_prompt.as_deref()
+        };
+        for extra in crate::router::runtime::system_prompt_args(&runner.runtime, prompt_for_argv) {
             cmd.arg(extra);
         }
 
@@ -301,7 +314,11 @@ impl SessionManager {
 
         cmd.env("RUNNER_CREW_ID", &mission.crew_id);
         cmd.env("RUNNER_MISSION_ID", &mission.id);
-        cmd.env("RUNNER_HANDLE", &runner.handle);
+        // RUNNER_HANDLE is the slot's in-mission identity (slot_handle),
+        // not the runner template's handle. The bundled `runner` CLI
+        // stamps this into event envelopes so two slots referencing the
+        // same template appear as distinct senders.
+        cmd.env("RUNNER_HANDLE", &slot.slot_handle);
         cmd.env(
             "RUNNER_EVENT_LOG",
             events_log_path.to_string_lossy().to_string(),
@@ -341,13 +358,14 @@ impl SessionManager {
             let conn = pool.get()?;
             conn.execute(
                 "INSERT INTO sessions
-                    (id, mission_id, runner_id, status, pid, started_at,
+                    (id, mission_id, runner_id, slot_id, status, pid, started_at,
                      agent_session_key)
-                 VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6)",
+                 VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?6, ?7)",
                 params![
                     session_id,
                     mission.id,
                     runner.id,
+                    slot.id,
                     pid,
                     started_at,
                     plan.assigned_key
@@ -1365,7 +1383,6 @@ mod tests {
             id: ulid::Ulid::new().to_string(),
             handle: "tester".into(),
             display_name: "Tester".into(),
-            role: "test".into(),
             runtime: "shell".into(),
             command: command.into(),
             args: args.iter().map(|s| s.to_string()).collect(),
@@ -1374,6 +1391,18 @@ mod tests {
             env: HashMap::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+        }
+    }
+
+    fn slot_for(runner: &Runner) -> crate::model::Slot {
+        crate::model::Slot {
+            id: ulid::Ulid::new().to_string(),
+            crew_id: "c".into(),
+            runner_id: runner.id.clone(),
+            slot_handle: runner.handle.clone(),
+            position: 0,
+            lead: true,
+            added_at: Utc::now(),
         }
     }
 
@@ -1402,13 +1431,14 @@ mod tests {
         Arc::new(db::open_pool(&path).unwrap())
     }
 
-    fn insert_crew_runner(pool: &DbPool, mission_id: &str, runner_id: &str) {
+    fn insert_crew_runner(pool: &DbPool, mission_id: &str, runner_id: &str) -> String {
         // Satisfy the FKs the `sessions` INSERT needs (crew, global runner,
-        // crew membership, mission). Post-C5.5a, `runners` is global and
-        // membership is on `crew_runners` — keep this helper aligned with
-        // the live schema so spawn tests stay honest.
+        // slot, mission) and return the slot id so the caller can build a
+        // matching `Slot` to hand to `spawn`. Post-crew-slots, membership
+        // lives on `slots` and runners no longer carry `role`.
         let conn = pool.get().unwrap();
         let now = Utc::now().to_rfc3339();
+        let slot_id = ulid::Ulid::new().to_string();
         conn.execute(
             "INSERT INTO crews (id, name, created_at, updated_at)
              VALUES ('c', 'c', ?1, ?1)",
@@ -1417,19 +1447,19 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO runners
-                (id, handle, display_name, role, runtime, command,
+                (id, handle, display_name, runtime, command,
                  args_json, working_dir, system_prompt, env_json,
                  created_at, updated_at)
-             VALUES (?1, 't', 'T', 'test', 'shell', '/bin/sh',
+             VALUES (?1, 't', 'T', 'shell', '/bin/sh',
                      NULL, NULL, NULL, NULL, ?2, ?2)",
             params![runner_id, now],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO crew_runners
-                (crew_id, runner_id, position, lead, added_at)
-             VALUES ('c', ?1, 0, 1, ?2)",
-            params![runner_id, now],
+            "INSERT INTO slots
+                (id, crew_id, runner_id, slot_handle, position, lead, added_at)
+             VALUES (?1, 'c', ?2, 't', 0, 1, ?3)",
+            params![slot_id, runner_id, now],
         )
         .unwrap();
         conn.execute(
@@ -1438,6 +1468,7 @@ mod tests {
             params![mission_id, now],
         )
         .unwrap();
+        slot_id
     }
 
     #[test]
@@ -1469,10 +1500,12 @@ mod tests {
         };
 
         let mgr = SessionManager::new();
+        let slot = slot_for(&runner);
         let spawned = mgr
             .spawn(
                 &mission,
                 &runner,
+                &slot,
                 std::path::Path::new("/tmp"),
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
@@ -1528,10 +1561,12 @@ mod tests {
         };
 
         let mgr = SessionManager::new();
+        let slot = slot_for(&runner);
         let spawned = mgr
             .spawn(
                 &mission,
                 &runner,
+                &slot,
                 std::path::Path::new("/tmp"),
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
@@ -1602,10 +1637,12 @@ mod tests {
             .unwrap();
 
         let mgr = SessionManager::new();
+        let slot = slot_for(&runner);
         let err = mgr
             .spawn(
                 &mission,
                 &runner,
+                &slot,
                 std::path::Path::new("/tmp"),
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
@@ -1645,10 +1682,12 @@ mod tests {
         };
 
         let mgr = SessionManager::new();
+        let slot = slot_for(&runner);
         let spawned = mgr
             .spawn(
                 &mission,
                 &runner,
+                &slot,
                 std::path::Path::new("/tmp"),
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
@@ -1688,10 +1727,10 @@ mod tests {
             let conn = pool.get().unwrap();
             conn.execute(
                 "INSERT INTO runners
-                    (id, handle, display_name, role, runtime, command,
+                    (id, handle, display_name, runtime, command,
                      args_json, working_dir, system_prompt, env_json,
                      created_at, updated_at)
-                 VALUES (?1, 'directrunner', 'D', 'test', 'shell', '/bin/sh',
+                 VALUES (?1, 'directrunner', 'D', 'shell', '/bin/sh',
                          NULL, NULL, NULL, NULL, ?2, ?2)",
                 params![runner_id, now],
             )
@@ -1771,10 +1810,10 @@ mod tests {
             let conn = pool.get().unwrap();
             conn.execute(
                 "INSERT INTO runners
-                    (id, handle, display_name, role, runtime, command,
+                    (id, handle, display_name, runtime, command,
                      args_json, working_dir, system_prompt, env_json,
                      created_at, updated_at)
-                 VALUES (?1, 'buffered', 'Buffered', 'test', 'shell', '/bin/cat',
+                 VALUES (?1, 'buffered', 'Buffered', 'shell', '/bin/cat',
                          NULL, NULL, NULL, NULL, ?2, ?2)",
                 params![runner_id, now],
             )
@@ -1850,10 +1889,10 @@ mod tests {
             // the test runs without external deps.
             conn.execute(
                 "INSERT INTO runners
-                    (id, handle, display_name, role, runtime, command,
+                    (id, handle, display_name, runtime, command,
                      args_json, working_dir, system_prompt, env_json,
                      created_at, updated_at)
-                 VALUES (?1, 'resumer', 'R', 'test', 'claude-code', '/bin/sh',
+                 VALUES (?1, 'resumer', 'R', 'claude-code', '/bin/sh',
                          NULL, NULL, NULL, NULL, ?2, ?2)",
                 params![runner_id, now],
             )
@@ -2005,9 +2044,9 @@ mod tests {
             .unwrap();
             conn.execute(
                 "INSERT INTO runners
-                    (id, handle, display_name, role, runtime, command,
+                    (id, handle, display_name, runtime, command,
                      created_at, updated_at)
-                 VALUES (?1, 'r', 'R', 'test', 'shell', '/bin/sh', ?2, ?2)",
+                 VALUES (?1, 'r', 'R', 'shell', '/bin/sh', ?2, ?2)",
                 params![runner_id, now],
             )
             .unwrap();

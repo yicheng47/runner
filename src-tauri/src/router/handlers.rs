@@ -27,18 +27,22 @@ pub(super) fn mission_goal(router: &Router, event: &Event) {
         .map(|r| RosterEntry {
             handle: r.handle(),
             display_name: r.display_name(),
-            role: r.role(),
             lead: r.is_lead(),
         })
         .collect();
+    let lead_row = launch.lead();
     let prompt = compose_launch_prompt(&LaunchPromptInput {
-        lead: launch.lead(),
+        lead: super::prompt::LeadView {
+            handle: lead_row.handle(),
+            display_name: lead_row.display_name(),
+            system_prompt: lead_row.system_prompt(),
+        },
         crew_name: launch.crew_name(),
         mission_goal: goal,
         roster: &roster_entries,
         allowed_signals: launch.allowed_signals(),
     });
-    if let Err(e) = router.inject_to_handle(launch.lead().handle.as_str(), prompt.as_bytes()) {
+    if let Err(e) = router.inject_to_handle(lead_row.handle(), prompt.as_bytes()) {
         router.warn(format!("mission_goal injection to lead failed: {e}"));
     }
 }

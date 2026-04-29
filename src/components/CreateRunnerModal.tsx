@@ -28,7 +28,6 @@ export function CreateRunnerModal({
 }) {
   const [handle, setHandle] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [role, setRole] = useState("");
   const [runtime, setRuntime] = useState<string>(RUNTIME_OPTIONS[0].value);
   const [command, setCommand] = useState(RUNTIME_OPTIONS[0].defaultCommand);
   const [argsText, setArgsText] = useState("");
@@ -41,7 +40,6 @@ export function CreateRunnerModal({
     if (open) {
       setHandle("");
       setDisplayName("");
-      setRole("");
       setRuntime(RUNTIME_OPTIONS[0].value);
       setCommand(RUNTIME_OPTIONS[0].defaultCommand);
       setArgsText("");
@@ -62,7 +60,6 @@ export function CreateRunnerModal({
     handle.length > 0 &&
     handleError === null &&
     displayName.trim().length > 0 &&
-    role.trim().length > 0 &&
     command.trim().length > 0 &&
     !submitting;
 
@@ -73,7 +70,6 @@ export function CreateRunnerModal({
     const input: CreateRunnerInput = {
       handle,
       display_name: displayName.trim(),
-      role: role.trim(),
       runtime,
       command: command.trim(),
       args: argsText.trim() ? argsText.trim().split(/\s+/) : [],
@@ -142,28 +138,18 @@ export function CreateRunnerModal({
           </div>
         </Field>
 
-        <div className="grid grid-cols-2 gap-3">
-          <Field
+        <Field
+          id="new-runner-display-name"
+          label="Display name"
+          hint="optional, shown in cards alongside the handle"
+        >
+          <Input
             id="new-runner-display-name"
-            label="Display name"
-            hint="optional, shown in cards alongside the handle"
-          >
-            <Input
-              id="new-runner-display-name"
-              value={displayName}
-              placeholder="Architect"
-              onChange={(e) => setDisplayName(e.target.value)}
-            />
-          </Field>
-          <Field id="new-runner-role" label="Role">
-            <Input
-              id="new-runner-role"
-              value={role}
-              placeholder="impl, reviewer, architect"
-              onChange={(e) => setRole(e.target.value)}
-            />
-          </Field>
-        </div>
+            value={displayName}
+            placeholder="Architect"
+            onChange={(e) => setDisplayName(e.target.value)}
+          />
+        </Field>
 
         <Field
           id="new-runner-runtime"

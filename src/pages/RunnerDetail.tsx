@@ -128,16 +128,8 @@ export default function RunnerDetail() {
             </div>
           </header>
 
-          {runner?.display_name || runner?.role ? (
-            <p className="text-sm text-fg-2">
-              {runner.display_name}
-              {runner.role ? (
-                <>
-                  <span className="text-line-strong"> · </span>
-                  {runner.role}
-                </>
-              ) : null}
-            </p>
+          {runner?.display_name ? (
+            <p className="text-sm text-fg-2">{runner.display_name}</p>
           ) : null}
 
           {error ? (

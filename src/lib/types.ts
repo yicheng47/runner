@@ -1,7 +1,9 @@
 // Domain types. Hand-synced with src-tauri/src/model.rs — change one, change the other.
 //
-// C5.5: runners are top-level; crews compose runners via `crew_runners`.
-// Event envelopes (arch §5.2) unchanged.
+// Runners are top-level templates; crews compose them via `slots` (each
+// slot owns its `slot_handle`). The same template can fill multiple
+// slots in one crew with different identities. Event envelopes
+// (arch §5.2) unchanged.
 
 export type Timestamp = string; // RFC3339
 export type Ulid = string;
@@ -19,12 +21,11 @@ export interface Crew {
 }
 
 // Global runner definition. Lead / position are per-crew and live on
-// CrewRunner rows, not here.
+// Slot rows, not here.
 export interface Runner {
   id: string;
   handle: string;
   display_name: string;
-  role: string;
   runtime: string;
   command: string;
   args: string[];
@@ -35,13 +36,23 @@ export interface Runner {
   updated_at: Timestamp;
 }
 
-// A runner's membership in a specific crew. `crew_list_runners` returns
-// these — the runner's fields are flattened alongside `position`, `lead`,
-// `added_at` per `#[serde(flatten)]` on the Rust struct.
-export interface CrewRunner extends Runner {
+// One position in a crew. Each Slot references a Runner template and
+// carries its own in-crew identity (`slot_handle`).
+export interface Slot {
+  id: string;
+  crew_id: string;
+  runner_id: string;
+  slot_handle: string;
   position: number;
   lead: boolean;
   added_at: Timestamp;
+}
+
+// `slot_list` returns Slot joined with its Runner template. The Slot's
+// fields are flattened alongside the runner thanks to `#[serde(flatten)]`
+// on the Rust struct.
+export interface SlotWithRunner extends Slot {
+  runner: Runner;
 }
 
 export interface RunnerActivity {
@@ -61,10 +72,13 @@ export interface RunnerActivity {
 export interface RunnerWithActivity extends Runner, RunnerActivity {}
 
 // Crew membership row from runner_crews_list — used by Runner Detail
-// "Crews using this runner" panel.
+// "Crews using this runner" panel. One row per slot: a runner that fills
+// two slots in the same crew shows up twice.
 export interface CrewMembership {
   crew_id: string;
   crew_name: string;
+  slot_id: string;
+  slot_handle: string;
   lead: boolean;
   position: number;
   added_at: Timestamp;
@@ -152,7 +166,7 @@ export interface Event {
 }
 
 // --- Command inputs ------------------------------------------------------
-// Hand-synced with src-tauri/src/commands/{crew,runner,crew_runner,mission}.rs.
+// Hand-synced with src-tauri/src/commands/{crew,runner,slot,mission}.rs.
 // Fields typed `X | null` on a declared-optional key mirror Rust's
 // `Option<Option<T>>` pattern: omit to keep the existing value, pass null
 // to clear it.
@@ -178,7 +192,6 @@ export interface UpdateCrewInput {
 export interface CreateRunnerInput {
   handle: string;
   display_name: string;
-  role: string;
   runtime: string;
   command: string;
   args?: string[];
@@ -187,17 +200,26 @@ export interface CreateRunnerInput {
   env?: Record<string, string>;
 }
 
-// `handle` is intentionally excluded: it's the runner's identity in events
-// and CLI addressing and must not be renamed after creation.
+// `handle` is intentionally excluded: it's the runner template's identity
+// for direct chat / CLI lookups and must not be renamed after creation.
 export interface UpdateRunnerInput {
   display_name?: string;
-  role?: string;
   runtime?: string;
   command?: string;
   args?: string[];
   working_dir?: string | null;
   system_prompt?: string | null;
   env?: Record<string, string>;
+}
+
+export interface CreateSlotInput {
+  crew_id: string;
+  runner_id: string;
+  slot_handle: string;
+}
+
+export interface UpdateSlotInput {
+  slot_handle?: string;
 }
 
 export interface StartMissionInput {
