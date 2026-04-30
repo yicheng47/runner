@@ -43,6 +43,12 @@
 - Crew list page does not match the Pencil design. Audit against the
   design's crew-list frame and bring layout / cards / empty state into
   parity.
+- Runner template needs a per-runner default **model** + **effort**
+  selection (claude-code: `--model` / thinking effort flag; codex:
+  equivalent). Today every spawn inherits whatever the agent CLI's own
+  default is, so users can't pin a runner to e.g. Opus + xhigh effort.
+  Surface as fields on the runner editor; thread through to argv via
+  `runner.args` or dedicated columns + the runtime adapter.
 
 **Workspace input gating + Mission paused overlay.** When a mission row
 is `running` but every PTY is dead (the derived "stopped" display
