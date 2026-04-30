@@ -32,6 +32,12 @@ export interface Runner {
   working_dir: string | null;
   system_prompt: string | null;
   env: Record<string, string>;
+  /** Pinned model name (e.g. `claude-opus-4-7`). NULL = inherit
+   *  the agent CLI's own default. */
+  model: string | null;
+  /** Thinking-effort hint (e.g. `xhigh`, `high`, `medium`).
+   *  NULL = inherit the agent CLI's own default. */
+  effort: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
@@ -172,8 +178,18 @@ export interface Event {
 // `Option<Option<T>>` pattern: omit to keep the existing value, pass null
 // to clear it.
 
+export interface CrewMemberPreview {
+  slot_handle: string;
+  runner_handle: string;
+  runtime: string;
+  lead: boolean;
+}
+
 export interface CrewListItem extends Crew {
   runner_count: number;
+  /** Slot pill previews shown on the Crews list cards. Empty for
+   *  crews with no slots; ordered by `slot.position`. */
+  members: CrewMemberPreview[];
 }
 
 export interface CreateCrewInput {
@@ -199,6 +215,8 @@ export interface CreateRunnerInput {
   working_dir?: string | null;
   system_prompt?: string | null;
   env?: Record<string, string>;
+  model?: string | null;
+  effort?: string | null;
 }
 
 // `handle` is intentionally excluded: it's the runner template's identity
@@ -211,6 +229,8 @@ export interface UpdateRunnerInput {
   working_dir?: string | null;
   system_prompt?: string | null;
   env?: Record<string, string>;
+  model?: string | null;
+  effort?: string | null;
 }
 
 export interface CreateSlotInput {

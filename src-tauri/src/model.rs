@@ -47,6 +47,18 @@ pub struct Runner {
     pub working_dir: Option<String>,
     pub system_prompt: Option<String>,
     pub env: HashMap<String, String>,
+    /// Optional pinned model name (e.g. `claude-opus-4-7`,
+    /// `gpt-5`). When set, the runtime adapter passes it through as
+    /// the agent CLI's model flag (claude-code: `--model`). NULL =
+    /// inherit the agent's own default. See migration 0008.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Optional thinking-effort hint (e.g. `xhigh`, `high`,
+    /// `medium`). claude-code accepts an effort flag; codex's
+    /// equivalent is wired in the runtime adapter. NULL = inherit
+    /// the agent's own default. See migration 0008.
+    #[serde(default)]
+    pub effort: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }

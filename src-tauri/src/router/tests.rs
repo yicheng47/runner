@@ -76,6 +76,8 @@ fn runner(handle: &str, runtime: &str) -> Runner {
         working_dir: None,
         system_prompt: Some(format!("brief for {handle}")),
         env: HashMap::new(),
+        model: None,
+        effort: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }

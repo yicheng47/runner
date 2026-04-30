@@ -305,6 +305,13 @@ impl SessionManager {
         for extra in crate::router::runtime::system_prompt_args(&runner.runtime, prompt_for_argv) {
             cmd.arg(extra);
         }
+        for extra in crate::router::runtime::model_effort_args(
+            &runner.runtime,
+            runner.model.as_deref(),
+            runner.effort.as_deref(),
+        ) {
+            cmd.arg(extra);
+        }
 
         // Working directory: runner override if set, else mission cwd, else
         // inherit parent's. `CommandBuilder::cwd` requires a concrete path.
@@ -570,6 +577,13 @@ impl SessionManager {
         for extra in crate::router::runtime::system_prompt_args(
             &runner.runtime,
             runner.system_prompt.as_deref(),
+        ) {
+            cmd.arg(extra);
+        }
+        for extra in crate::router::runtime::model_effort_args(
+            &runner.runtime,
+            runner.model.as_deref(),
+            runner.effort.as_deref(),
         ) {
             cmd.arg(extra);
         }
@@ -957,6 +971,13 @@ impl SessionManager {
             runner.system_prompt.as_deref()
         };
         for extra in crate::router::runtime::system_prompt_args(&runner.runtime, prompt_for_argv) {
+            cmd.arg(extra);
+        }
+        for extra in crate::router::runtime::model_effort_args(
+            &runner.runtime,
+            runner.model.as_deref(),
+            runner.effort.as_deref(),
+        ) {
             cmd.arg(extra);
         }
 
@@ -1783,6 +1804,8 @@ mod tests {
             working_dir: None,
             system_prompt: None,
             env: HashMap::new(),
+            model: None,
+            effort: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

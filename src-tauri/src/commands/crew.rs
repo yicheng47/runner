@@ -37,6 +37,20 @@ pub struct CrewListItem {
     #[serde(flatten)]
     pub crew: Crew,
     pub runner_count: i64,
+    /// Member preview for the Crews list cards: one entry per slot,
+    /// in `position` order, carrying just the labels the card pills
+    /// need (`@slot_handle` + `runtime-runner_handle`). Sourced
+    /// inline so the frontend doesn't N+1 `slot_list` for each crew
+    /// on every page load.
+    pub members: Vec<CrewMemberPreview>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrewMemberPreview {
+    pub slot_handle: String,
+    pub runner_handle: String,
+    pub runtime: String,
+    pub lead: bool,
 }
 
 fn new_id() -> String {
@@ -87,13 +101,58 @@ pub fn list(conn: &Connection) -> Result<Vec<CrewListItem>> {
            FROM crews c
          ORDER BY c.created_at ASC",
     )?;
-    let rows = stmt.query_map([], |row| {
-        let crew = row_to_crew(row)?;
-        let runner_count: i64 = row.get("runner_count")?;
-        Ok(CrewListItem { crew, runner_count })
+    let rows: Vec<(Crew, i64)> = stmt
+        .query_map([], |row| {
+            let crew = row_to_crew(row)?;
+            let runner_count: i64 = row.get("runner_count")?;
+            Ok((crew, runner_count))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+
+    // Bulk-fetch slot pills for every crew in a single query so the
+    // Crews page renders without an N+1 lookup. Ordered by
+    // (crew_id, position) so we can group sequentially.
+    let mut members_stmt = conn.prepare(
+        "SELECT s.crew_id, s.slot_handle, s.lead, r.handle AS runner_handle, r.runtime
+           FROM slots s
+           JOIN runners r ON r.id = s.runner_id
+          ORDER BY s.crew_id ASC, s.position ASC",
+    )?;
+    let mut members_by_crew: std::collections::HashMap<String, Vec<CrewMemberPreview>> =
+        std::collections::HashMap::new();
+    let member_rows = members_stmt.query_map([], |row| {
+        let crew_id: String = row.get("crew_id")?;
+        let slot_handle: String = row.get("slot_handle")?;
+        let runner_handle: String = row.get("runner_handle")?;
+        let runtime: String = row.get("runtime")?;
+        let lead: i64 = row.get("lead")?;
+        Ok((
+            crew_id,
+            CrewMemberPreview {
+                slot_handle,
+                runner_handle,
+                runtime,
+                lead: lead != 0,
+            },
+        ))
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+    for entry in member_rows {
+        let (crew_id, member) = entry?;
+        members_by_crew.entry(crew_id).or_default().push(member);
+    }
+
+    Ok(rows
+        .into_iter()
+        .map(|(crew, runner_count)| {
+            let members = members_by_crew.remove(&crew.id).unwrap_or_default();
+            CrewListItem {
+                crew,
+                runner_count,
+                members,
+            }
+        })
+        .collect())
 }
 
 pub fn get(conn: &Connection, id: &str) -> Result<Crew> {

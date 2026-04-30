@@ -37,6 +37,7 @@ import {
   PinOff,
   Plus,
   Search,
+  Settings as SettingsIcon,
   SquarePen,
   Terminal,
   Users,
@@ -49,6 +50,7 @@ import {
 } from "../lib/activeSessions";
 import type { AppendedEvent, MissionSummary } from "../lib/types";
 import { StartMissionModal } from "./StartMissionModal";
+import { SettingsModal } from "./SettingsModal";
 
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 480;
@@ -118,6 +120,8 @@ export function Sidebar() {
     x: number;
     y: number;
   } | null>(null);
+  // Settings modal toggle. Opened from the bottom-pinned Settings row.
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // Mission row context menu — same anchor model as sessionMenu.
   // Today's actions: Archive (real, calls mission_archive). Pin and
   // Rename are designed-in slots reserved for follow-ups.
@@ -586,6 +590,21 @@ export function Sidebar() {
               </div>
             ) : null}
           </section>
+
+          {/* Settings row — pinned at the bottom of the sidebar
+              column. Mirrors Pencil node `IJsUO` (sidebar settings).
+              Opens the SettingsModal as a centered overlay; modal
+              owns its open/close state effects. */}
+          <div className="shrink-0 border-t border-line px-3 pt-2">
+            <button
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+              className="flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-fg-2 transition-colors hover:bg-raised hover:text-fg"
+            >
+              <SettingsIcon aria-hidden className="h-3.5 w-3.5" />
+              <span className="text-[13px]">Settings</span>
+            </button>
+          </div>
         </div>
 
         <div
@@ -594,6 +613,11 @@ export function Sidebar() {
           className="absolute right-0 top-0 z-20 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-accent/40"
         />
       </aside>
+
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
 
       <StartMissionModal
         open={creatingMission}

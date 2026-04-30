@@ -27,6 +27,55 @@
 // related "how do we hand prompts and identity to a real CLI" piece.
 
 /// Compute the extra args (in declaration order) to append after the
+/// runner's configured `args` so the child receives the pinned model
+/// + thinking effort via the runtime's native flags. Returns an empty
+/// Vec when both fields are unset (NULL on the row) or when the
+/// runtime has no equivalent. Mirrors `system_prompt_args` in style:
+/// pure, declaration-order-aware, easy to unit-test.
+///
+/// claude-code maps:
+///   - `model` → `--model <name>` (e.g. `claude-opus-4-7`)
+///   - `effort` → `--thinking-effort <level>` (xhigh / high / medium /
+///     low / off — passed through verbatim; the CLI rejects unknowns
+///     so the row's value is the source of truth)
+///
+/// codex: TBD — codex's effort flag is in flux and `--model` lands as
+/// a config override rather than CLI arg in current builds. Returning
+/// empty is the safe degrade until the codex adapter wires up.
+pub fn model_effort_args(
+    runtime: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Vec<String> {
+    fn trim_some(v: Option<&str>) -> Option<&str> {
+        v.map(str::trim).filter(|s| !s.is_empty())
+    }
+    let model = trim_some(model);
+    let effort = trim_some(effort);
+    if model.is_none() && effort.is_none() {
+        return Vec::new();
+    }
+    match runtime {
+        "claude-code" => {
+            let mut out = Vec::new();
+            if let Some(m) = model {
+                out.push("--model".into());
+                out.push(m.to_string());
+            }
+            if let Some(e) = effort {
+                out.push("--thinking-effort".into());
+                out.push(e.to_string());
+            }
+            out
+        }
+        // codex / shell / unknown: no equivalent flag — degrade
+        // silently so the runner row's preference is recorded but
+        // the spawn doesn't reject on unknown args.
+        _ => Vec::new(),
+    }
+}
+
+/// Compute the extra args (in declaration order) to append after the
 /// runner's configured `args` so the child receives `system_prompt` via the
 /// runtime's native flag. Returns an empty Vec when no prompt is set or
 /// when the runtime delivers prompts through stdin instead of argv.

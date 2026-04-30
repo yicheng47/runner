@@ -534,6 +534,8 @@ mod tests {
                 working_dir: None,
                 system_prompt: None,
                 env: HashMap::new(),
+            model: None,
+            effort: None,
             },
         )
         .unwrap()

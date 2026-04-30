@@ -1220,6 +1220,8 @@ mod tests {
                 working_dir: None,
                 system_prompt: None,
                 env: std::collections::HashMap::new(),
+                model: None,
+                effort: None,
             },
         )
         .unwrap();
