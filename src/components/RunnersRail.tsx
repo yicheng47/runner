@@ -30,10 +30,10 @@ export function RunnersRail({
   return (
     <div className="flex flex-1 min-h-0 flex-col gap-3 overflow-y-auto px-5 pb-5">
       <div className="text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
-        Runners
+        Runner sessions
       </div>
       {sessions.length === 0 ? (
-        <p className="text-xs text-fg-3">No runners spawned.</p>
+        <p className="text-xs text-fg-3">No runner sessions yet.</p>
       ) : (
         sessions.map((s) => {
           const isLead = s.handle === leadHandle;

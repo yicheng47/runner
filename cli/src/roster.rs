@@ -29,11 +29,26 @@ pub fn load(event_log: &Path) -> Option<Vec<RosterEntry>> {
     serde_json::from_slice::<Vec<RosterEntry>>(&bytes).ok()
 }
 
+/// Reserved virtual handle. The human isn't a slot in any crew, but
+/// they ARE a participant in the mission's bus traffic — workers can
+/// post `runner msg post --to human "<reply>"` and the workspace UI
+/// renders it as a `kind:"message"` row in the feed. Without
+/// reserving it here, `--to human` would either be rejected (when a
+/// roster sidecar is present) or silently allowed (sidecar missing)
+/// inconsistently. This makes it a first-class destination.
+pub const HUMAN_HANDLE: &str = "human";
+
 /// Returns true if `handle` is in the roster. Missing-sidecar is
 /// permissive for the same reason as the allowlist (a missing roster
 /// sidecar means something is broken upstream — don't strand the
 /// mission). Stderr warning surfaces the gap.
+///
+/// `HUMAN_HANDLE` always passes regardless of sidecar contents — see
+/// the doc on the constant for the rationale.
 pub fn is_known(event_log: &Path, handle: &str) -> bool {
+    if handle == HUMAN_HANDLE {
+        return true;
+    }
     match load(event_log) {
         Some(list) => list.iter().any(|r| r.handle == handle),
         None => {

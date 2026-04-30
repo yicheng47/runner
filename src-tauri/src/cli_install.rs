@@ -79,6 +79,86 @@ pub fn install_runner_cli(app_data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Drop a per-(mission,slot) `runner` shim into
+/// `$APPDATA/missions/<mission_id>/shims/<handle>/bin/runner` that
+/// hardcodes the slot's `RUNNER_*` env vars and `exec`s the real
+/// bundled CLI. PATH inside the spawned PTY prepends this dir, so
+/// `runner …` resolves to the shim regardless of what shell context
+/// the agent CLI's tool-call subprocess runs under. Without this,
+/// claude-code's Bash tool spawns a non-login shell that doesn't
+/// inherit the PTY's env, and the bundled CLI exits with "missing
+/// required env var".
+///
+/// Each call rewrites the shim atomically (tempfile + rename) so
+/// resume can refresh the values without leaving a half-written
+/// file an agent could crash on. The path is keyed by mission_id +
+/// handle (not session_id) because session_id rotates on every
+/// resume, while the env vars don't — the shim is reusable across
+/// resumes of the same slot.
+pub fn install_session_runner_shim(
+    app_data_dir: &Path,
+    crew_id: &str,
+    mission_id: &str,
+    handle: &str,
+    event_log: &Path,
+    mission_cwd: Option<&str>,
+) -> Result<PathBuf> {
+    let shim_dir = app_data_dir
+        .join("missions")
+        .join(mission_id)
+        .join("shims")
+        .join(handle)
+        .join("bin");
+    std::fs::create_dir_all(&shim_dir)?;
+    let shim_path = shim_dir.join("runner");
+    let real_runner = app_data_dir.join("bin").join(DEST_BIN_NAME);
+
+    let event_log_str = event_log.to_string_lossy();
+    let mut script = String::new();
+    script.push_str("#!/bin/sh\n");
+    script.push_str("# Auto-generated session shim. See cli_install::install_session_runner_shim.\n");
+    script.push_str(&format!("export RUNNER_CREW_ID='{}'\n", sh_escape(crew_id)));
+    script.push_str(&format!(
+        "export RUNNER_MISSION_ID='{}'\n",
+        sh_escape(mission_id)
+    ));
+    script.push_str(&format!("export RUNNER_HANDLE='{}'\n", sh_escape(handle)));
+    script.push_str(&format!(
+        "export RUNNER_EVENT_LOG='{}'\n",
+        sh_escape(&event_log_str)
+    ));
+    if let Some(cwd) = mission_cwd {
+        script.push_str(&format!(
+            "export MISSION_CWD='{}'\n",
+            sh_escape(cwd)
+        ));
+    }
+    script.push_str(&format!(
+        "exec '{}' \"$@\"\n",
+        sh_escape(&real_runner.to_string_lossy())
+    ));
+
+    let tmp = tempfile::NamedTempFile::new_in(&shim_dir)?;
+    std::fs::write(tmp.path(), script.as_bytes())?;
+    tmp.persist(&shim_path)
+        .map_err(|e| Error::Io(e.error))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&shim_path)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&shim_path, perms)?;
+    }
+    Ok(shim_dir)
+}
+
+/// Escape a string for inside single-quoted POSIX shell. Single
+/// quotes can't contain themselves; the canonical workaround is to
+/// close the quote, emit `'\''`, and reopen.
+fn sh_escape(s: &str) -> String {
+    s.replace('\'', "'\\''")
+}
+
 fn locate_source() -> Result<Option<PathBuf>> {
     let exe = std::env::current_exe()?;
     let dir = exe

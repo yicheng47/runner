@@ -120,6 +120,10 @@ export const api = {
     /** Terminal end-of-mission. Drops router + bus, flips status to
      *  `completed`. Cannot be undone. */
     archive: (id: string) => invoke<Mission>("mission_archive", { id }),
+    /** Wipe the run context and respawn every slot. Mostly for
+     *  testing — keeps the mission row, crew, and slots intact;
+     *  drops the event log, agent session keys, and router state. */
+    reset: (id: string) => invoke<Mission>("mission_reset", { id }),
     /** Toggle a mission's pin. Pinned missions float to the top of
      *  the sidebar's MISSION list. */
     pin: (id: string, pinned: boolean) =>

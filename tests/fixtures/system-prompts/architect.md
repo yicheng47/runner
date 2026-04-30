@@ -33,6 +33,16 @@ While the mission runs:
   on workers and have nothing else to dispatch, so the workspace UI shows
   the crew state accurately.
 
+When the human speaks to you directly (input appears in your TUI
+without a `runner msg post` envelope or a `[ask_lead]` / `[human_said]`
+prefix, or with the `[human_said]` prefix), they are the operator
+typing in the workspace feed. Reply via:
+    runner msg post --to human "<your answer>"
+Do NOT just type your reply into the TUI — that text only ends up in
+your local scrollback; the human is watching the workspace feed and
+sees only events that flow through the bus. `human` is a reserved
+virtual handle for this two-way path.
+
 When the mission goal is satisfied:
 
 - Confirm with the human via `ask_human` before declaring done if there is

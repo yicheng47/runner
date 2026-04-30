@@ -4,6 +4,103 @@
 > Keep this file chronological and lightweight. The stable implementation
 > reference lives in `docs/impls/v0-mvp.md`.
 
+## 2026-04-30
+
+**Review-driven fixes (PR #25).**
+- Tests green again. The lead's launch prompt is async in production
+  (`Router::inject_and_submit_delayed` 2.5s) but synchronous under
+  `cfg(test)` via a zeroed `LEAD_LAUNCH_PROMPT_DELAY` constant + an
+  inline branch in `inject_and_submit_delayed` when delay is zero.
+  Production keeps the body+`\r` chord; tests skip the `\r` so push
+  counts match the pre-async assertions. The
+  `claude_code_conversation_exists` fs check short-circuits to `true`
+  under `cfg(test)` so resume tests don't have to fake out
+  `~/.claude/projects/...` fixtures.
+- `mission_reset` is now all-or-nothing. Spawn-loop and bus-mount
+  failures both roll back: kill any live PTYs, stamp `archived_at` on
+  the freshly-inserted session rows, flip the mission to `aborted`.
+  Same shape as `mission_start`'s rollback — no half-reset states.
+- Partial PTY failure no longer pauses the whole mission. Pause
+  overlay + input disable now gate on `!anySessionLive` (zero alive)
+  instead of `!allSessionsLive` (any dead). One worker crashing while
+  the lead is still up keeps human-to-lead messaging working.
+- Codex resume no longer re-replays `runner.system_prompt` as a new
+  positional turn. `SessionManager::resume` now mirrors the spawn
+  guard (`runtime == "codex" && plan.resuming → None`).
+- Live `runner/activity` events use `slots` for `crew_count` instead
+  of the removed `crew_runners` table. Live + cold-path queries
+  (`commands::runner::runner_activity`) now agree.
+
+**Next session — follow-ups.**
+- Rename "direct session" → "chat" everywhere (UI copy, sidebar
+  section header, type names where reasonable). The current term is a
+  carryover from the backend `sessions` table; users read these as
+  "chats" and the mismatch is confusing.
+- Runner Detail's "Chat" button fires two sessions instead of one. Likely
+  a StrictMode / mount-effect double-trigger that slipped past the prior
+  spawn-mode dedupe. Repro: open Runners → click any runner → click Chat
+  once → sidebar shows two new entries.
+- Crew list page does not match the Pencil design. Audit against the
+  design's crew-list frame and bring layout / cards / empty state into
+  parity.
+- Runner template needs a per-runner default **model** + **effort**
+  selection (claude-code: `--model` / thinking effort flag; codex:
+  equivalent). Today every spawn inherits whatever the agent CLI's own
+  default is, so users can't pin a runner to e.g. Opus + xhigh effort.
+  Surface as fields on the runner editor; thread through to argv via
+  `runner.args` or dedicated columns + the runtime adapter.
+
+**Workspace input gating + Mission paused overlay.** When a mission row
+is `running` but every PTY is dead (the derived "stopped" display
+state), the feed input is no longer interactive — replaced by a
+bottom-anchored Resume card that mirrors `SessionEndedOverlay`'s
+inline variant on the slot panes, so feed and PTY tabs share one
+recovery affordance. `SessionEndedOverlay` gained optional
+`title` / `subtitle` / `resumeLabel` overrides so mission-level copy
+("Mission paused") reuses the same visual contract.
+
+**Reset cleanup leaves no ghost sessions.** `mission_reset` already
+stamped `archived_at` on the rows it superseded, but `session_list`
+wasn't filtering on it — the sidebar stacked the old stopped row
+alongside the freshly-spawned one for every slot. Added
+`AND s.archived_at IS NULL` to the query, matching the predicate
+`mission_attach`'s slot lookup already uses.
+
+**Lead launch prompt deferred 2.5s.** The bus's initial replay fires
+`mission_goal` milliseconds after the lead PTY spawns. On a warm app
+(mission_reset, fast mission_start) claude-code's TUI hasn't drawn yet
+and the synchronous bytes get swallowed by the boot / trust-folder
+screen, leaving the lead with no system prompt. New
+`Router::inject_and_submit_delayed` defers the body+`\r` chord by the
+same 2.5s budget `SessionManager::schedule_first_prompt` already uses
+for non-lead workers; the `mission_goal` handler now routes through it.
+
+**Resume: fresh-fallback for missing claude-code conversations.**
+`claude --resume <uuid>` against a missing conversation file leaves
+the TUI half-broken with `No conversation found with session ID`.
+Trips most often when a lead PTY never persisted a turn (reset before
+its first message landed). New
+`router::runtime::claude_code_conversation_exists(cwd, uuid)` checks
+`$HOME/.claude/projects/<encoded-cwd>/<uuid>.jsonl` (encoding maps
+both `/` and `.` to `-` — claude-code's actual scheme — without the
+`.` swap, every cwd containing a dot would spuriously fall back). On
+miss, `SessionManager::resume` swaps `--resume` for `--session-id
+<existing-uuid>`, keeping the row's UUID bound to the new conversation
+via the existing `COALESCE` write.
+
+**Lead recovery prompt on fresh-fallback resume.** `mission_attach`
+sets a watermark that suppresses bus replay of `mission_goal`, so the
+lead would come up with no context after a fresh-fallback. Added
+`Router::fire_lead_launch_prompt` which reads the latest
+`mission_goal` text from the event log, runs the same
+`compose_launch_prompt` builder the bus handler uses, and injects via
+`inject_and_submit_delayed`. `SessionManager::resume` surfaces a
+`fresh_fallback_lead` flag on `SpawnedSession` (serde-skipped — not
+actionable from the UI); the `session_resume` command sees it and
+calls `fire_lead_launch_prompt` after the resume returns. The lead
+gets the rich launch prompt — system_prompt + mission goal + roster +
+crew context — not the worker coordination preamble.
+
 ## 2026-04-29
 
 **Mission lifecycle redesign + workspace polish.** Stop / Resume /

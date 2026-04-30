@@ -143,6 +143,17 @@ pub struct SpawnedSession {
     pub runner_id: String,
     pub handle: String,
     pub pid: Option<u32>,
+    /// True iff this resume detected a missing claude-code
+    /// conversation file for a lead slot and degraded to a fresh
+    /// spawn. Internal signal: `commands::session::session_resume`
+    /// uses it to ask the router to fire the rich launch prompt
+    /// (the bus's `mission_goal` handler can't, since
+    /// `mission_attach`'s watermark suppresses replay on resume).
+    /// Always false on initial spawn / direct chat / non-lead resume
+    /// — kept off the frontend type since it's not actionable from
+    /// the UI.
+    #[serde(skip)]
+    pub fresh_fallback_lead: bool,
 }
 
 struct SessionHandle {
@@ -297,9 +308,16 @@ impl SessionManager {
 
         // Working directory: runner override if set, else mission cwd, else
         // inherit parent's. `CommandBuilder::cwd` requires a concrete path.
-        if let Some(wd) = runner.working_dir.as_deref() {
-            cmd.cwd(wd);
-        } else if let Some(wd) = mission.cwd.as_deref() {
+        // Capture the resolved cwd so we can persist it on the session row
+        // — `resume` reads it back to spawn the same dir on respawn, which
+        // matters for claude-code (its conversation files are keyed under
+        // `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`; resuming with a
+        // different cwd makes `--resume` fail with "No conversation found").
+        let resolved_cwd: Option<String> = runner
+            .working_dir
+            .clone()
+            .or_else(|| mission.cwd.clone());
+        if let Some(wd) = resolved_cwd.as_deref() {
             cmd.cwd(wd);
         }
 
@@ -309,14 +327,35 @@ impl SessionManager {
         for (k, v) in &runner.env {
             cmd.env(k, v);
         }
-        // Prepend the bundled CLI directory to PATH so `runners` on the
-        // child's PATH resolves to our drop (C9 installs it here) before
-        // any system binary with the same name. Inherit the parent PATH
-        // as the tail — if nothing else, agents need `sh`, `git`, `node`.
+        // Per-slot runner shim: hardcodes the RUNNER_* env vars + exec's
+        // the real bundled CLI. claude-code's Bash tool spawns
+        // non-login shells that don't inherit the PTY's env, so a CLI
+        // call like `runner msg post …` would otherwise see the vars
+        // as unset. The shim sits in front of the bundled `runner` on
+        // PATH so `runner` resolves to it regardless of shell context.
+        let shim_dir = crate::cli_install::install_session_runner_shim(
+            app_data_dir,
+            &mission.crew_id,
+            &mission.id,
+            &slot.slot_handle,
+            &events_log_path,
+            mission.cwd.as_deref(),
+        )
+        .ok();
+
+        // Prepend (shim, fallback bundled bin) to PATH so `runner` on the
+        // child's PATH resolves first to our env-baked shim, then to
+        // the raw CLI for verbs (`runner help`) that don't need
+        // env. Inherit the parent PATH as the tail.
         let bin_dir = app_data_dir.join("bin");
         let sep = if cfg!(windows) { ';' } else { ':' };
         let parent_path = std::env::var_os("PATH").unwrap_or_default();
-        let mut new_path = std::ffi::OsString::from(bin_dir.as_os_str());
+        let mut new_path = std::ffi::OsString::new();
+        if let Some(shim) = shim_dir.as_ref() {
+            new_path.push(shim.as_os_str());
+            new_path.push(std::ffi::OsString::from(sep.to_string()));
+        }
+        new_path.push(bin_dir.as_os_str());
         if !parent_path.is_empty() {
             new_path.push(std::ffi::OsString::from(sep.to_string()));
             new_path.push(parent_path);
@@ -369,14 +408,15 @@ impl SessionManager {
             let conn = pool.get()?;
             conn.execute(
                 "INSERT INTO sessions
-                    (id, mission_id, runner_id, slot_id, status, pid, started_at,
+                    (id, mission_id, runner_id, slot_id, cwd, status, pid, started_at,
                      agent_session_key)
-                 VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?6, ?7)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?7, ?8)",
                 params![
                     session_id,
                     mission.id,
                     runner.id,
                     slot.id,
+                    resolved_cwd,
                     pid,
                     started_at,
                     plan.assigned_key
@@ -457,6 +497,7 @@ impl SessionManager {
             runner_id: runner.id.clone(),
             handle: runner.handle.clone(),
             pid,
+            fresh_fallback_lead: false,
         })
     }
 
@@ -681,6 +722,7 @@ impl SessionManager {
             runner_id: runner.id.clone(),
             handle: runner.handle.clone(),
             pid,
+            fresh_fallback_lead: false,
         })
     }
 
@@ -796,6 +838,7 @@ impl SessionManager {
         struct MissionCtx {
             crew_id: String,
             mission_id: String,
+            mission_cwd: Option<String>,
             slot_handle: String,
             lead: bool,
         }
@@ -818,6 +861,7 @@ impl SessionManager {
                 Some(MissionCtx {
                     crew_id: mission.crew_id,
                     mission_id: mission.id,
+                    mission_cwd: mission.cwd,
                     slot_handle,
                     lead: lead != 0,
                 })
@@ -849,8 +893,44 @@ impl SessionManager {
         // codex (once capture lands) uses `codex resume <uuid>`. If the
         // row's key is NULL (e.g. shell runtime, or codex pre-capture)
         // we just respawn fresh — same agent, no conversation state.
+        //
+        // claude-code only: if the conversation file for this
+        // (cwd, uuid) was never persisted (e.g. the lead PTY was
+        // reset before its first turn landed), `--resume <uuid>`
+        // would print "No conversation found …" and leave the TUI
+        // half-broken. Detect the missing file up front and degrade
+        // to a fresh spawn that *keeps* the same uuid via
+        // `--session-id`, so the row's existing key still binds to
+        // the new conversation.
+        let resolved_cwd_for_check: Option<String> =
+            snap.cwd.clone().or_else(|| runner.working_dir.clone());
+        let is_lead_slot = mission_ctx.as_ref().is_some_and(|c| c.lead);
+        let conversation_missing = matches!(
+            (runner.runtime.as_str(), snap.agent_session_key.as_deref()),
+            ("claude-code", Some(key))
+                if !crate::router::runtime::claude_code_conversation_exists(
+                    resolved_cwd_for_check.as_deref(),
+                    key,
+                )
+        );
+        // Lead-only signal back to the caller: when a lead's prior
+        // conversation file is missing, the resume degrades to a
+        // fresh spawn and the bus's mission_goal handler will NOT
+        // fire (mission_attach's watermark suppresses replay), so
+        // the lead would come up with no system context. The caller
+        // in commands/session.rs uses this flag to ask the router
+        // to fire the launch prompt manually after the resume
+        // returns.
+        let fresh_fallback_lead = conversation_missing && is_lead_slot;
+        let effective_prior_key = match (
+            runner.runtime.as_str(),
+            snap.agent_session_key.as_deref(),
+        ) {
+            ("claude-code", Some(_)) if conversation_missing => None,
+            (_, k) => k,
+        };
         let plan =
-            crate::router::runtime::resume_plan(&runner.runtime, snap.agent_session_key.as_deref());
+            crate::router::runtime::resume_plan(&runner.runtime, effective_prior_key);
 
         let mut cmd = CommandBuilder::new(&runner.command);
         if plan.prepend {
@@ -864,10 +944,19 @@ impl SessionManager {
                 cmd.arg(extra);
             }
         }
-        for extra in crate::router::runtime::system_prompt_args(
-            &runner.runtime,
-            runner.system_prompt.as_deref(),
-        ) {
+        // codex on resume: skip the runner's `system_prompt` argv.
+        // codex's positional prompt argument is treated as a NEW user
+        // turn, so re-passing the brief on every resume would replay
+        // it as another message against the existing conversation.
+        // claude-code's `--append-system-prompt` is system-level and
+        // safe to keep on resume (no-op against an existing
+        // conversation in the TUI). Mirrors the spawn() guard above.
+        let prompt_for_argv = if runner.runtime == "codex" && plan.resuming {
+            None
+        } else {
+            runner.system_prompt.as_deref()
+        };
+        for extra in crate::router::runtime::system_prompt_args(&runner.runtime, prompt_for_argv) {
             cmd.arg(extra);
         }
 
@@ -886,10 +975,36 @@ impl SessionManager {
         for (k, v) in &runner.env {
             cmd.env(k, v);
         }
+        // Refresh the per-slot runner shim before computing PATH so it
+        // picks up any post-spawn env changes (mission cwd edited,
+        // etc.) for THIS resume cycle. Direct chats skip — no
+        // mission_ctx, no shim.
+        let shim_dir = mission_ctx.as_ref().and_then(|ctx| {
+            let event_log_path = runner_core::event_log::path::events_path(
+                app_data_dir,
+                &ctx.crew_id,
+                &ctx.mission_id,
+            );
+            crate::cli_install::install_session_runner_shim(
+                app_data_dir,
+                &ctx.crew_id,
+                &ctx.mission_id,
+                &ctx.slot_handle,
+                &event_log_path,
+                ctx.mission_cwd.as_deref(),
+            )
+            .ok()
+        });
+
         let bin_dir = app_data_dir.join("bin");
         let sep = if cfg!(windows) { ';' } else { ':' };
         let parent_path = std::env::var_os("PATH").unwrap_or_default();
-        let mut new_path = std::ffi::OsString::from(bin_dir.as_os_str());
+        let mut new_path = std::ffi::OsString::new();
+        if let Some(shim) = shim_dir.as_ref() {
+            new_path.push(shim.as_os_str());
+            new_path.push(std::ffi::OsString::from(sep.to_string()));
+        }
+        new_path.push(bin_dir.as_os_str());
         if !parent_path.is_empty() {
             new_path.push(std::ffi::OsString::from(sep.to_string()));
             new_path.push(parent_path);
@@ -899,11 +1014,23 @@ impl SessionManager {
         // bundled `runner` CLI in this PTY attributes events as the
         // slot, not the runner template. Direct chat falls through to
         // the template handle. Crew/mission ids surface for
-        // `runner signal` / `runner msg post` calls inside the PTY.
+        // `runner signal` / `runner msg post` calls inside the PTY,
+        // and RUNNER_EVENT_LOG / MISSION_CWD parity the original
+        // mission spawn so the bundled CLI can find the event log
+        // and tools that read $MISSION_CWD keep working post-resume.
         if let Some(ctx) = mission_ctx.as_ref() {
             cmd.env("RUNNER_CREW_ID", &ctx.crew_id);
             cmd.env("RUNNER_MISSION_ID", &ctx.mission_id);
             cmd.env("RUNNER_HANDLE", &ctx.slot_handle);
+            let event_log_path = runner_core::event_log::path::events_path(
+                app_data_dir,
+                &ctx.crew_id,
+                &ctx.mission_id,
+            );
+            cmd.env("RUNNER_EVENT_LOG", event_log_path.to_string_lossy().to_string());
+            if let Some(wd) = ctx.mission_cwd.as_deref() {
+                cmd.env("MISSION_CWD", wd);
+            }
         } else {
             cmd.env("RUNNER_HANDLE", &runner.handle);
         }
@@ -1016,13 +1143,24 @@ impl SessionManager {
         emit_runner_activity(&pool, &runner, events.as_ref());
 
         // claude-code first-turn injection. `plan.resuming` is true on
-        // any resume that has a real prior_key — those skip naturally.
-        // For mission resumes where the slot is the lead, also skip:
-        // the launch prompt's "Your brief" section already embeds
-        // system_prompt, and a redundant first-turn injection would
-        // race the launch prompt.
-        let is_lead_resume = mission_ctx.as_ref().is_some_and(|c| c.lead);
+        // any resume against a real prior_key — those skip naturally
+        // (the agent already has its system context). The lead always
+        // suppresses the worker preamble: when the lead's conversation
+        // file is missing and the resume degrades to a fresh spawn,
+        // the *launch prompt* (composed by the router with crew /
+        // roster / goal context) is the right thing to inject — the
+        // commands::session::session_resume caller fires that path
+        // when it sees `fresh_fallback_lead = true` on the returned
+        // SpawnedSession.
+        let is_lead_resume = is_lead_slot;
         schedule_first_prompt(self, session_id.to_string(), &runner, &plan, is_lead_resume);
+
+        // On a real resume (not a fresh-with-known-uuid spawn), nudge
+        // the agent with "continue" so it picks up where it left off
+        // without the user having to type. Skipped for fresh spawns
+        // — the first-prompt path covers those — and for non-claude-
+        // code runtimes that don't have a real resume semantic.
+        schedule_continue_on_resume(self, session_id.to_string(), &runner, &plan);
 
         // Return the slot's in-mission identity for mission rows so the
         // frontend (and the router, which keys on slot_handle) sees the
@@ -1037,6 +1175,7 @@ impl SessionManager {
             runner_id: runner.id.clone(),
             handle: resumed_handle,
             pid,
+            fresh_fallback_lead,
         })
     }
 
@@ -1384,20 +1523,28 @@ fn capture_cwd(explicit: Option<String>) -> Option<String> {
 ///
 /// Sleeps a short delay so claude-code's TUI has time to boot and
 /// bind stdin — without it, the input is sometimes echoed before the
-/// editor takes over and gets lost. Skipped on resume (the
-/// conversation already exists), on non-claude-code runtimes (codex
-/// uses positional argv, shell has no prompt concept), and when the
-/// caller flags this slot as the mission lead — the lead's
-/// `mission_goal` handler injects a richer launch prompt with the
-/// system_prompt embedded in its "Your brief" section, so a separate
-/// first-turn injection would race the launch prompt and waste a
-/// turn.
+/// editor takes over and gets lost. Skipped on resume against a real
+/// prior conversation (the agent already has its system context) and
+/// on non-claude-code runtimes (codex uses positional argv, shell has
+/// no prompt concept).
+///
+/// `suppress_lead_preamble` is set by the initial mission_start spawn
+/// path: there, the bus's `mission_goal` handler injects a richer
+/// launch prompt with `system_prompt` embedded in its "Your brief"
+/// section, so a separate first-turn injection would race the launch
+/// prompt and waste a turn. On a resume that degrades to a fresh
+/// spawn (claude-code conversation file went missing — see
+/// `claude_code_conversation_exists`) the bus does NOT replay
+/// `mission_goal`, so the lead would otherwise come up with no
+/// system context; the resume path passes `false` here so the
+/// preamble + system_prompt land via this stdin-injection route
+/// instead.
 fn schedule_first_prompt(
     mgr: &Arc<SessionManager>,
     session_id: String,
     runner: &Runner,
     plan: &router::runtime::ResumePlan,
-    is_lead: bool,
+    suppress_lead_preamble: bool,
 ) {
     if runner.runtime != "claude-code" {
         return;
@@ -1405,29 +1552,101 @@ fn schedule_first_prompt(
     if plan.resuming {
         return;
     }
-    if is_lead {
+    if suppress_lead_preamble {
         return;
     }
-    let prompt = match runner.system_prompt.as_deref() {
-        Some(p) => {
-            let trimmed = p.trim();
-            if trimmed.is_empty() {
-                return;
-            }
-            trimmed.to_string()
-        }
-        None => return,
-    };
+    // Compose the worker's first turn: a platform coordination
+    // preamble (bus mechanics, --to human convention, signal verbs)
+    // followed by the user-authored brief on the runner template.
+    // Keeping bus protocol out of the user's system_prompt means
+    // template authors can focus on persona/role; the runtime adds
+    // the "how to talk to the rest of the crew" layer automatically.
+    let user_brief = runner
+        .system_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let mut prompt = String::new();
+    prompt.push_str(WORKER_COORDINATION_PREAMBLE);
+    if let Some(brief) = user_brief {
+        prompt.push_str("\n\n== Your brief ==\n");
+        prompt.push_str(&brief);
+    }
     let mgr = Arc::clone(mgr);
     std::thread::spawn(move || {
-        // 1.5s is empirically enough for claude-code's TUI to bind
-        // stdin without making the user feel the lag.
-        std::thread::sleep(std::time::Duration::from_millis(1500));
-        let mut bytes = prompt.into_bytes();
-        if !bytes.ends_with(b"\n") {
-            bytes.push(b'\n');
-        }
-        let _ = mgr.inject_stdin(&session_id, &bytes);
+        // 2.5s gives claude-code's TUI room to render its welcome
+        // banner, dismiss any "trust this folder" prompt, and bind
+        // its raw-mode keypress reader before our typed text lands.
+        // Anything shorter and the early bytes get swallowed by a
+        // confirmation dialog that's still on screen.
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        // Strip any embedded `\r` so the prompt body is one piece;
+        // embedded `\n`s render as line breaks inside the input
+        // box. The submit byte goes in a separate write below so
+        // claude-code's editor sees it as Enter rather than
+        // appending it to the input buffer (which is what happens
+        // when text + `\r` arrive in the same chunk).
+        let body: String = prompt.chars().filter(|c| *c != '\r').collect();
+        let _ = mgr.inject_stdin(&session_id, body.as_bytes());
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        let _ = mgr.inject_stdin(&session_id, b"\r");
+    });
+}
+
+/// Platform-injected preamble for non-lead worker spawns. Covers the
+/// bus conventions a worker needs to interact with the crew + the
+/// human, leaving the user-authored `system_prompt` free to focus on
+/// persona / role. Sent as the first user turn (before any task
+/// dispatch from the lead) by `schedule_first_prompt`.
+const WORKER_COORDINATION_PREAMBLE: &str = r#"You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew + the human operator via a shared event bus. Use these verbs to participate; do not invent your own conventions.
+
+== Coordination ==
+- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.
+- `runner msg post --to <handle> "<text>"` — direct message to a specific handle. Valid handles: any slot in this crew, plus the reserved virtual handle `human` (the workspace operator).
+- `runner msg post "<text>"` — broadcast to the crew (no `--to`).
+- `runner signal ask_lead --payload '{"question":"…","context":"…"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.
+- `runner status idle` — report you've finished the current task. The lead view uses this to dispatch the next slot.
+
+== Replying to the human ==
+The human is watching the workspace feed, NOT your TUI. When the human speaks to you directly (raw input lands in your TUI, often prefixed with `[human_said]`), reply via:
+    runner msg post --to human "<your reply>"
+Plain TUI output (typing into your editor, printing to stdout) stays in your local scrollback only — it never reaches the human. The `--to human` route is the only way your reply lands in the workspace feed."#;
+
+/// Auto-send "continue" as a first user turn after a successful
+/// resume so the agent picks up where it left off without the user
+/// having to manually nudge it. Only fires when the resume actually
+/// reloaded a prior conversation (`plan.resuming == true` AND we
+/// have an `agent_session_key` to point claude-code at). For
+/// runtimes that don't have a real "resume" semantic (shell, or
+/// codex pre-capture), no-op — there's no conversation thread to
+/// continue.
+///
+/// Same split-injection pattern as `schedule_first_prompt`: body
+/// first, then a separate `\r` after a small delay so claude-code's
+/// editor sees the carriage return as Enter rather than appending
+/// it to the input buffer.
+fn schedule_continue_on_resume(
+    mgr: &Arc<SessionManager>,
+    session_id: String,
+    runner: &Runner,
+    plan: &router::runtime::ResumePlan,
+) {
+    if runner.runtime != "claude-code" {
+        return;
+    }
+    if !plan.resuming {
+        return;
+    }
+    let mgr = Arc::clone(mgr);
+    std::thread::spawn(move || {
+        // Same 2.5s budget as `schedule_first_prompt` — claude-code
+        // shows the prior conversation history first, and we want
+        // the editor bound before typing.
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        let _ = mgr.inject_stdin(&session_id, b"continue");
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        let _ = mgr.inject_stdin(&session_id, b"\r");
     });
 }
 
@@ -1448,9 +1667,14 @@ fn emit_runner_activity(pool: &DbPool, runner: &Runner, events: &dyn SessionEven
             |r| r.get(0),
         )
         .unwrap_or(0);
+    // `crew_runners` was replaced by `slots` in migration 0006 — count
+    // distinct crews this runner is wired into via the slots table.
+    // Mirrors the cold-path query in `commands::runner::runner_activity`
+    // so live `runner/activity` events stay consistent with what the
+    // Runners list shows on a refresh.
     let crew_count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM crew_runners WHERE runner_id = ?1",
+            "SELECT COUNT(DISTINCT crew_id) FROM slots WHERE runner_id = ?1",
             params![runner.id],
             |r| r.get(0),
         )

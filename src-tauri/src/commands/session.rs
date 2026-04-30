@@ -87,6 +87,12 @@ pub async fn session_list(
     // `r.handle` (template) is kept on the row for fallback display
     // (legacy mission sessions before 0006 have no slot_id).
     let conn = state.db.get()?;
+    // archived_at IS NULL filters out the dead session rows that
+    // `mission_reset` (and any future archive path) leaves behind: a
+    // reset wipes the run context and inserts fresh PTY rows for the
+    // same (mission_id, slot_id) pair, so without this filter the
+    // sidebar would stack the old stopped row alongside the new
+    // running one for every slot.
     let mut stmt = conn.prepare(
         "SELECT s.id, s.mission_id, s.runner_id, s.slot_id, s.cwd, s.status, s.pid,
                 s.started_at, s.stopped_at,
@@ -96,6 +102,7 @@ pub async fn session_list(
            JOIN runners r ON r.id = s.runner_id
            LEFT JOIN slots sl ON sl.id = s.slot_id
           WHERE s.mission_id = ?1
+            AND s.archived_at IS NULL
           ORDER BY COALESCE(sl.position, 0) ASC, s.started_at ASC",
     )?;
     let rows = stmt.query_map(params![mission_id], row_to_session)?;
@@ -344,7 +351,7 @@ pub async fn session_resume(
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
     let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app));
-    state
+    let spawned = state
         .sessions
         .resume(
             &session_id,
@@ -354,7 +361,21 @@ pub async fn session_resume(
             state.db.clone(),
             emitter,
         )
-        .map_err(|e| Error::msg(format!("session_resume: {e}")))
+        .map_err(|e| Error::msg(format!("session_resume: {e}")))?;
+    // Fresh-fallback for a lead slot: the prior claude-code conversation
+    // file was missing, so the resume degraded to a `--session-id` fresh
+    // spawn. The bus's mission_goal handler is suppressed on resume by
+    // `mission_attach`'s reconstruction watermark, so without this call
+    // the lead's fresh agent comes up with no system context. Fire the
+    // launch prompt manually through the registered router.
+    if spawned.fresh_fallback_lead {
+        if let Some(mission_id) = spawned.mission_id.as_deref() {
+            if let Some(router) = state.routers.get(mission_id) {
+                router.fire_lead_launch_prompt();
+            }
+        }
+    }
+    Ok(spawned)
 }
 
 /// Spawn a "direct chat" session for a runner — a PTY with no parent

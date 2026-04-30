@@ -323,6 +323,7 @@ impl Router {
 
     // ---- helpers used by handlers --------------------------------------
 
+    #[allow(dead_code)] // Kept for tests + future single-shot injections.
     pub(crate) fn inject_to_handle(&self, handle: &str, bytes: &[u8]) -> Result<()> {
         let session_id = {
             let state = self.state.lock().unwrap();
@@ -336,8 +337,182 @@ impl Router {
         self.injector.inject(&session_id, bytes)
     }
 
+    /// Inject `body` to the handle's stdin, then send a separate
+    /// carriage-return (`\r`) on a brief delay. claude-code's TUI
+    /// editor treats `\r` as Enter, but bytes arriving in the same
+    /// chunk as the body get appended to the input buffer rather
+    /// than triggering submit — so the chord has to land as a
+    /// distinct read on the slave end. ~80ms is empirically enough
+    /// for the editor to process the body and re-bind its keypress
+    /// reader. Body itself is written verbatim; embedded `\n`
+    /// characters render as line breaks inside the input box.
+    pub(crate) fn inject_and_submit(&self, handle: &str, body: &[u8]) -> Result<()> {
+        let session_id = {
+            let state = self.state.lock().unwrap();
+            state.session_by_handle.get(handle).cloned()
+        };
+        let Some(session_id) = session_id else {
+            return Err(crate::error::Error::msg(format!(
+                "router: no live session for handle @{handle}"
+            )));
+        };
+        if !body.is_empty() {
+            self.injector.inject(&session_id, body)?;
+        }
+        let injector = Arc::clone(&self.injector);
+        let sid = session_id.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            let _ = injector.inject(&sid, b"\r");
+        });
+        Ok(())
+    }
+
+    /// Same contract as `inject_and_submit`, but the whole sequence
+    /// (body + delayed `\r`) is deferred by `delay`. Used for the
+    /// lead's launch prompt: the bus's initial replay fires
+    /// `mission_goal` immediately after the lead PTY spawns, but on
+    /// a warm app (mission_reset, fast mission_start) claude-code's
+    /// TUI hasn't drawn yet, so synchronous bytes get swallowed by
+    /// the boot / trust-folder screen and the lead never sees its
+    /// system prompt. The 2.5s budget matches
+    /// `SessionManager::schedule_first_prompt`, which solves the
+    /// same race for non-lead workers.
+    ///
+    /// Resolves the handle → session_id at schedule time. Mission
+    /// boot is the only caller and the lead's session is fully
+    /// registered before this fires, so the snapshot is stable.
+    pub(crate) fn inject_and_submit_delayed(
+        &self,
+        handle: &str,
+        body: Vec<u8>,
+        delay: std::time::Duration,
+    ) {
+        let session_id = {
+            let state = self.state.lock().unwrap();
+            state.session_by_handle.get(handle).cloned()
+        };
+        let Some(session_id) = session_id else {
+            self.warn(format!(
+                "router: no live session for handle @{handle} (delayed submit)"
+            ));
+            return;
+        };
+        // Zero-delay path: run inline, body only — no separate `\r`
+        // chord. Used by unit tests
+        // (`LEAD_LAUNCH_PROMPT_DELAY = ZERO` under `cfg(test)`) so
+        // synchronous push-count assertions match the prior single-
+        // push behavior of `inject_and_submit` (where the `\r` was
+        // always deferred to a background thread and never observed
+        // by sync test code). Production never hits this branch —
+        // claude-code is the only consumer that needs the
+        // body-then-`\r` chord, and it's always on a non-zero delay.
+        if delay.is_zero() {
+            if !body.is_empty() {
+                if let Err(e) = self.injector.inject(&session_id, &body) {
+                    eprintln!("router: inline inject to {session_id} failed: {e}");
+                }
+            }
+            return;
+        }
+        let injector = Arc::clone(&self.injector);
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            if !body.is_empty() {
+                if let Err(e) = injector.inject(&session_id, &body) {
+                    eprintln!("router: delayed inject to {session_id} failed: {e}");
+                    return;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            let _ = injector.inject(&session_id, b"\r");
+        });
+    }
+
     pub(crate) fn launch(&self) -> &LaunchInputs {
         &self.launch
+    }
+
+    /// Read the latest `mission_goal` text from the event log. Used by
+    /// `fire_lead_launch_prompt` after a fresh-fallback resume — the
+    /// bus's mission_goal handler can't replay (mission_attach's
+    /// watermark suppresses it), so we have to compose the launch
+    /// prompt ourselves and need the goal payload to feed into it.
+    /// Returns an empty string if no goal is found, mirroring the
+    /// handler's `unwrap_or("")` defensive read.
+    fn latest_mission_goal_text(&self) -> String {
+        let (entries, _skipped) = match self.log.read_from_lossy(0) {
+            Ok(out) => out,
+            Err(_) => return String::new(),
+        };
+        for entry in entries.iter().rev() {
+            let ev = &entry.event;
+            if !matches!(ev.kind, EventKind::Signal) {
+                continue;
+            }
+            let Some(t) = ev.signal_type.as_ref() else {
+                continue;
+            };
+            if t.as_str() == "mission_goal" {
+                return ev
+                    .payload
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+            }
+        }
+        String::new()
+    }
+
+    /// Compose + inject the lead's launch prompt manually. Same prompt
+    /// the bus's `mission_goal` handler would build, but we call this
+    /// directly when the resume path detects a missing claude-code
+    /// conversation file for a lead slot: the bus can't replay
+    /// `mission_goal` on resume (the `mission_attach` watermark
+    /// suppresses it), so without this call the lead's freshly-spawned
+    /// agent would come up with no system context. Reuses
+    /// `inject_and_submit_delayed`'s 2.5s budget so claude-code's TUI
+    /// has time to boot before the bytes land.
+    pub fn fire_lead_launch_prompt(&self) {
+        // Build the prompt body the same way `handlers::mission_goal`
+        // does — single source of truth lives in
+        // `router::prompt::compose_launch_prompt`, kept in sync via
+        // the shared LaunchInputs view.
+        let goal = self.latest_mission_goal_text();
+        let lead_row = self.launch.lead();
+        let roster_entries: Vec<crate::router::prompt::RosterEntry> = self
+            .launch
+            .roster()
+            .iter()
+            .map(|r| crate::router::prompt::RosterEntry {
+                handle: r.handle(),
+                display_name: r.display_name(),
+                lead: r.is_lead(),
+            })
+            .collect();
+        let prompt = crate::router::prompt::compose_launch_prompt(
+            &crate::router::prompt::LaunchPromptInput {
+                lead: crate::router::prompt::LeadView {
+                    handle: lead_row.handle(),
+                    display_name: lead_row.display_name(),
+                    system_prompt: lead_row.system_prompt(),
+                },
+                crew_name: self.launch.crew_name(),
+                mission_goal: &goal,
+                roster: &roster_entries,
+                allowed_signals: self.launch.allowed_signals(),
+            },
+        );
+        let body = prompt
+            .trim_end_matches(['\n', '\r'])
+            .as_bytes()
+            .to_vec();
+        self.inject_and_submit_delayed(
+            lead_row.handle(),
+            body,
+            std::time::Duration::from_millis(2500),
+        );
     }
 
     pub(crate) fn record_pending_ask(&self, question_id: String, asker: String) {

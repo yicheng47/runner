@@ -4,10 +4,11 @@
 // are pull-based and never trigger router actions.
 //
 // Recipient semantics: default is `@<lead>`. Switching the chip to a
-// non-lead handle scopes `payload.target` to that worker; clearing the
-// chip with the × icon broadcasts (omits payload.target — the router
-// then defaults to the lead anyway, so for v0 the behaviour is the same
-// as the default).
+// non-lead handle scopes `payload.target` to that worker; the router
+// injects into that worker's PTY. Workers reply via
+// `runner msg post --to human "…"` which lands as a `message` event in
+// the feed — the bundled CLI reserves `human` as a virtual roster
+// handle for exactly this two-way path.
 
 import { useEffect, useRef, useState } from "react";
 
@@ -17,8 +18,8 @@ interface MissionInputProps {
   missionId: string;
   /** Stable lead handle — default recipient. */
   leadHandle: string;
-  /** All non-human handles in the roster. The recipient picker offers
-   *  these; the human can also broadcast (clear the chip). */
+  /** All slot handles in the roster. The recipient picker offers
+   *  these alongside the lead. */
   handles: string[];
   /** Set when the mission is no longer running. The input still renders
    *  (so the feed below it stays visible) but submission is disabled. */
@@ -34,15 +35,15 @@ export function MissionInput({
   onError,
 }: MissionInputProps) {
   const [text, setText] = useState("");
-  const [target, setTarget] = useState<string | null>(leadHandle);
+  const [target, setTarget] = useState<string>(leadHandle);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const pickerRef = useRef<HTMLDivElement | null>(null);
 
-  // Sync with new lead if the prop changes (rare — but harmless to keep).
+  // Sync with new lead if the prop changes.
   useEffect(() => {
-    setTarget((cur) => (cur === null ? null : leadHandle));
-  }, [leadHandle]);
+    setTarget((cur) => (handles.includes(cur) ? cur : leadHandle));
+  }, [handles, leadHandle]);
 
   useEffect(() => {
     if (!pickerOpen) return;
@@ -58,11 +59,10 @@ export function MissionInput({
     if (!body || submitting || disabled) return;
     setSubmitting(true);
     try {
-      const payload = target ? { text: body, target } : { text: body };
       await api.mission.postHumanSignal({
         mission_id: missionId,
         signal_type: "human_said",
-        payload,
+        payload: { text: body, target },
       });
       setText("");
     } catch (e) {
@@ -97,28 +97,12 @@ export function MissionInput({
           onClick={() => setPickerOpen((v) => !v)}
           className="inline-flex items-center gap-1.5 rounded border border-line bg-panel px-2.5 py-1 font-mono text-[11px] text-fg hover:border-line-strong"
         >
-          {target ? (
-            <>
-              @{target}
-              {target === leadHandle ? (
-                <span className="text-fg-3">(lead)</span>
-              ) : null}
-            </>
-          ) : (
-            <span className="text-fg-2">broadcast</span>
-          )}
+          @{target}
+          {target === leadHandle ? (
+            <span className="text-fg-3">(lead)</span>
+          ) : null}
           <span className="text-fg-3">▾</span>
         </button>
-        {target ? (
-          <button
-            type="button"
-            onClick={() => setTarget(null)}
-            title="Clear recipient (broadcast)"
-            className="text-fg-3 hover:text-fg"
-          >
-            ×
-          </button>
-        ) : null}
         {pickerOpen ? (
           <div className="relative">
             <div className="absolute left-0 top-1.5 z-20 flex w-44 flex-col overflow-hidden rounded border border-line-strong bg-panel py-1 shadow-xl">
@@ -140,17 +124,6 @@ export function MissionInput({
                   ) : null}
                 </button>
               ))}
-              <div className="border-t border-line my-1" />
-              <button
-                type="button"
-                onClick={() => {
-                  setTarget(null);
-                  setPickerOpen(false);
-                }}
-                className="px-3 py-1.5 text-left text-[11px] text-fg-2 hover:bg-raised"
-              >
-                broadcast
-              </button>
             </div>
           </div>
         ) : null}

@@ -822,6 +822,250 @@ pub async fn mission_rename(
     get(&conn, &id)
 }
 
+/// Reset a mission: wipe the run context (event log, agent session
+/// keys, router state) and respawn every slot fresh against the same
+/// mission row. Mostly for testing — gives you a clean slate without
+/// having to rebuild the crew + start a new mission. Preserves the
+/// mission's id, title, crew, cwd, and goal so links/bookmarks survive.
+#[tauri::command]
+pub async fn mission_reset(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<Mission> {
+    use crate::event_bus::{BusEmitter, TauriBusEvents};
+    use crate::router::{
+        open_log_for_mission, CompositeBusEmitter, Router, RouterSubscriber, StdinInjector,
+    };
+    use crate::session::manager::{SessionEvents, TauriSessionEvents};
+    use std::sync::Arc;
+
+    // 1. Snapshot the mission + crew + roster up front.
+    let mission_snap = {
+        let conn = state.db.get()?;
+        get(&conn, &id)?
+    };
+    let (crew_name, crew_signal_types, crew_goal) = {
+        let conn = state.db.get()?;
+        let crew = crew::get(&conn, &mission_snap.crew_id)?;
+        (crew.name, crew.signal_types, crew.goal)
+    };
+    let roster = {
+        let conn = state.db.get()?;
+        slot::list(&conn, &mission_snap.crew_id)?
+    };
+    if roster.is_empty() {
+        return Err(Error::msg(format!(
+            "crew {crew_name} has no slots; cannot reset mission",
+        )));
+    }
+    if !roster.iter().any(|m| m.slot.lead) {
+        return Err(Error::msg(format!(
+            "crew {crew_name} has no lead slot; cannot reset mission",
+        )));
+    }
+
+    // 2. Tear down the live state. Kill PTYs first (blocks until
+    // reader threads join), then unmount bus + router. Same order as
+    // mission_archive so any final events the bus is draining still
+    // reach a live router.
+    state.sessions.kill_all_for_mission(&id)?;
+    state.buses.unmount(&id);
+    state.routers.unregister(&id);
+
+    // 3. Archive existing session rows for this mission so the sidebar
+    // / list queries don't show ghost rows pointing at PTYs that no
+    // longer exist. Fresh sessions get inserted by the spawn loop
+    // below.
+    {
+        let conn = state.db.get()?;
+        conn.execute(
+            "UPDATE sessions
+                SET archived_at = ?1
+              WHERE mission_id = ?2 AND archived_at IS NULL",
+            params![now().to_rfc3339(), id],
+        )?;
+    }
+
+    // 4. Wipe the event log + per-mission shim dir so the next spawn
+    // starts from a clean slate. signal_types + roster sidecars get
+    // rewritten below from the current crew / roster state.
+    let mission_dir = event_log::mission_dir(&state.app_data_dir, &mission_snap.crew_id, &id);
+    let events_file = event_log::events_path(&state.app_data_dir, &mission_snap.crew_id, &id);
+    if events_file.exists() {
+        std::fs::remove_file(&events_file)?;
+    }
+    // Drop per-(mission,handle) runner shim dirs — they'll be regenerated
+    // by SessionManager::spawn with the freshened env block.
+    let shims_root = state
+        .app_data_dir
+        .join("missions")
+        .join(&id)
+        .join("shims");
+    if shims_root.exists() {
+        let _ = std::fs::remove_dir_all(&shims_root);
+    }
+    std::fs::create_dir_all(&mission_dir)?;
+    write_signal_types_sidecar(&state.app_data_dir, &mission_snap.crew_id, &crew_signal_types)?;
+    write_roster_sidecar(&mission_dir, &roster)?;
+
+    // 5. Update mission row: status back to running, started_at
+    // refreshed (this IS a fresh run), stopped_at cleared. Title /
+    // goal_override / cwd / pinned_at preserved.
+    let started_at_dt = now();
+    {
+        let conn = state.db.get()?;
+        let n = conn.execute(
+            "UPDATE missions
+                SET status = 'running',
+                    started_at = ?1,
+                    stopped_at = NULL
+              WHERE id = ?2",
+            params![started_at_dt.to_rfc3339(), id],
+        )?;
+        if n != 1 {
+            return Err(Error::msg(format!("mission not found: {id}")));
+        }
+    }
+
+    // 6. Re-emit the opening events so router can replay the launch
+    // prompt to the lead. Same shape mission_start writes.
+    let goal_text = mission_snap
+        .goal_override
+        .as_deref()
+        .or(crew_goal.as_deref())
+        .unwrap_or("")
+        .to_string();
+    let log = EventLog::open(&mission_dir)?;
+    log.append(EventDraft {
+        crew_id: mission_snap.crew_id.clone(),
+        mission_id: id.clone(),
+        kind: EventKind::Signal,
+        from: "system".into(),
+        to: None,
+        signal_type: Some(SignalType::new("mission_start")),
+        payload: serde_json::json!({
+            "title": mission_snap.title,
+            "cwd": mission_snap.cwd,
+        }),
+    })?;
+    log.append(EventDraft {
+        crew_id: mission_snap.crew_id.clone(),
+        mission_id: id.clone(),
+        kind: EventKind::Signal,
+        from: "human".into(),
+        to: None,
+        signal_type: Some(SignalType::new("mission_goal")),
+        payload: serde_json::json!({ "text": goal_text }),
+    })?;
+
+    // 7. Build router + spawn fresh PTYs + mount bus. Same ordering
+    // contract as mission_start: spawn first so register_sessions has
+    // the full handle map before the bus's initial replay fires the
+    // router's mission_goal handler.
+    let events_log_path =
+        event_log::events_path(&state.app_data_dir, &mission_snap.crew_id, &id);
+    let log_arc = open_log_for_mission(&mission_dir)?;
+    let injector: Arc<dyn StdinInjector> =
+        Arc::clone(&state.sessions) as Arc<dyn StdinInjector>;
+    let router = Router::new(
+        id.clone(),
+        mission_snap.crew_id.clone(),
+        crew_name,
+        &roster,
+        crew_signal_types,
+        Arc::clone(&log_arc),
+        injector,
+    )?;
+
+    let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app.clone()));
+    let mut spawned_pairs: Vec<(String, String)> = Vec::with_capacity(roster.len());
+    let mission_for_spawn = {
+        let conn = state.db.get()?;
+        get(&conn, &id)?
+    };
+    // All-or-nothing: same contract as `mission_start`. If any slot
+    // fails to spawn, kill the PTYs that did come up, archive the
+    // freshly-inserted session rows, flip the mission back to
+    // `aborted`, and surface the original error. Without rollback the
+    // mission would sit half-reset — old PTYs gone, some new ones
+    // alive, no bus / router mounted, and the mission row stuck in
+    // `running`.
+    for member in &roster {
+        let spawn_res = state.sessions.spawn(
+            &mission_for_spawn,
+            &member.runner,
+            &member.slot,
+            &state.app_data_dir,
+            events_log_path.clone(),
+            state.db.clone(),
+            Arc::clone(&emitter),
+        );
+        match spawn_res {
+            Ok(spawned) => {
+                spawned_pairs.push((member.slot.slot_handle.clone(), spawned.id));
+            }
+            Err(e) => {
+                let _ = state.sessions.kill_all_for_mission(&id);
+                if let Ok(conn) = state.db.get() {
+                    let _ = conn.execute(
+                        "UPDATE sessions
+                            SET archived_at = ?1
+                          WHERE mission_id = ?2 AND archived_at IS NULL",
+                        params![now().to_rfc3339(), id],
+                    );
+                    let _ = conn.execute(
+                        "UPDATE missions
+                            SET status = 'aborted', stopped_at = ?1
+                          WHERE id = ?2",
+                        params![now().to_rfc3339(), id],
+                    );
+                }
+                return Err(e);
+            }
+        }
+    }
+    router.register_sessions(&spawned_pairs);
+
+    let roster_handles: Vec<String> = roster.iter().map(|m| m.slot.slot_handle.clone()).collect();
+    let tauri_emitter: Arc<dyn BusEmitter> = Arc::new(TauriBusEvents(app.clone()));
+    let router_emitter: Arc<dyn BusEmitter> =
+        Arc::new(RouterSubscriber(Arc::clone(&router)));
+    let composite: Arc<dyn BusEmitter> = Arc::new(CompositeBusEmitter::new(vec![
+        tauri_emitter,
+        router_emitter,
+    ]));
+    if let Err(e) = state
+        .buses
+        .mount(id.clone(), &mission_dir, &roster_handles, composite)
+    {
+        // Bus didn't attach — kill the sessions we spawned, archive
+        // their rows, abort the mission. Same shape as the spawn-loop
+        // rollback above; the bus is the last gate before commit so a
+        // failure here would otherwise leave live PTYs with no router
+        // listening.
+        let _ = state.sessions.kill_all_for_mission(&id);
+        if let Ok(conn) = state.db.get() {
+            let _ = conn.execute(
+                "UPDATE sessions
+                    SET archived_at = ?1
+                  WHERE mission_id = ?2 AND archived_at IS NULL",
+                params![now().to_rfc3339(), id],
+            );
+            let _ = conn.execute(
+                "UPDATE missions
+                    SET status = 'aborted', stopped_at = ?1
+                  WHERE id = ?2",
+                params![now().to_rfc3339(), id],
+            );
+        }
+        return Err(e);
+    }
+    state.routers.register(id.clone(), router);
+
+    Ok(mission_for_spawn)
+}
+
 /// Terminal end-of-mission. Kills every live PTY, writes the
 /// `mission_stopped` event, flips the mission row to `completed`, and
 /// drops the router + bus. Mirrors what `mission_stop` used to do
