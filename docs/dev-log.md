@@ -4,6 +4,59 @@
 > Keep this file chronological and lightweight. The stable implementation
 > reference lives in `docs/impls/v0-mvp.md`.
 
+## 2026-04-30
+
+**Workspace input gating + Mission paused overlay.** When a mission row
+is `running` but every PTY is dead (the derived "stopped" display
+state), the feed input is no longer interactive — replaced by a
+bottom-anchored Resume card that mirrors `SessionEndedOverlay`'s
+inline variant on the slot panes, so feed and PTY tabs share one
+recovery affordance. `SessionEndedOverlay` gained optional
+`title` / `subtitle` / `resumeLabel` overrides so mission-level copy
+("Mission paused") reuses the same visual contract.
+
+**Reset cleanup leaves no ghost sessions.** `mission_reset` already
+stamped `archived_at` on the rows it superseded, but `session_list`
+wasn't filtering on it — the sidebar stacked the old stopped row
+alongside the freshly-spawned one for every slot. Added
+`AND s.archived_at IS NULL` to the query, matching the predicate
+`mission_attach`'s slot lookup already uses.
+
+**Lead launch prompt deferred 2.5s.** The bus's initial replay fires
+`mission_goal` milliseconds after the lead PTY spawns. On a warm app
+(mission_reset, fast mission_start) claude-code's TUI hasn't drawn yet
+and the synchronous bytes get swallowed by the boot / trust-folder
+screen, leaving the lead with no system prompt. New
+`Router::inject_and_submit_delayed` defers the body+`\r` chord by the
+same 2.5s budget `SessionManager::schedule_first_prompt` already uses
+for non-lead workers; the `mission_goal` handler now routes through it.
+
+**Resume: fresh-fallback for missing claude-code conversations.**
+`claude --resume <uuid>` against a missing conversation file leaves
+the TUI half-broken with `No conversation found with session ID`.
+Trips most often when a lead PTY never persisted a turn (reset before
+its first message landed). New
+`router::runtime::claude_code_conversation_exists(cwd, uuid)` checks
+`$HOME/.claude/projects/<encoded-cwd>/<uuid>.jsonl` (encoding maps
+both `/` and `.` to `-` — claude-code's actual scheme — without the
+`.` swap, every cwd containing a dot would spuriously fall back). On
+miss, `SessionManager::resume` swaps `--resume` for `--session-id
+<existing-uuid>`, keeping the row's UUID bound to the new conversation
+via the existing `COALESCE` write.
+
+**Lead recovery prompt on fresh-fallback resume.** `mission_attach`
+sets a watermark that suppresses bus replay of `mission_goal`, so the
+lead would come up with no context after a fresh-fallback. Added
+`Router::fire_lead_launch_prompt` which reads the latest
+`mission_goal` text from the event log, runs the same
+`compose_launch_prompt` builder the bus handler uses, and injects via
+`inject_and_submit_delayed`. `SessionManager::resume` surfaces a
+`fresh_fallback_lead` flag on `SpawnedSession` (serde-skipped — not
+actionable from the UI); the `session_resume` command sees it and
+calls `fire_lead_launch_prompt` after the resume returns. The lead
+gets the rich launch prompt — system_prompt + mission goal + roster +
+crew context — not the worker coordination preamble.
+
 ## 2026-04-29
 
 **Mission lifecycle redesign + workspace polish.** Stop / Resume /

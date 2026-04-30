@@ -90,9 +90,12 @@ pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
     out.push_str(
         "- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n",
     );
+    out.push_str(
+        "- Reply to the HUMAN with `runner msg post --to human \"…\"`. The human watches the workspace feed, not your TUI — typing answers into the TUI keeps them in your local scrollback only. `human` is a reserved virtual handle for this two-way path.\n",
+    );
     out.push_str("- Read your inbox with `runner msg read` — it's pull-based.\n");
     out.push_str(
-        "- Escalate to the human with `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n",
+        "- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`. Plain replies should use `runner msg post --to human` instead.\n",
     );
     out.push_str("- Report idle with `runner status idle` so the lead view stays accurate.\n");
     if !input.allowed_signals.is_empty() {

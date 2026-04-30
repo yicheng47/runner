@@ -176,6 +176,46 @@ fn is_uuid(s: &str) -> bool {
     uuid::Uuid::parse_str(s).is_ok()
 }
 
+/// True iff claude-code's conversation file for `(cwd, uuid)` exists on
+/// disk. Used by `SessionManager::resume` to skip `--resume <uuid>` when
+/// the agent never persisted a turn (lead PTYs reset within the
+/// schedule_first_prompt window, fast Stop after spawn) — passing
+/// `--resume` against a missing file makes claude-code print
+/// "No conversation found with session ID …" and leave the TUI sitting
+/// in a half-initialised state. Path scheme:
+/// `$HOME/.claude/projects/<cwd-with-/-as--dashes>/<uuid>.jsonl`. We
+/// resolve `cwd` with the same precedence the spawn used (mission /
+/// runner override) and skip the check when no concrete cwd is known.
+pub fn claude_code_conversation_exists(cwd: Option<&str>, uuid: &str) -> bool {
+    let Some(cwd) = cwd else {
+        // No cwd → claude-code falls back to the parent's, which we
+        // can't reproduce here. Be permissive: let `--resume` try and
+        // surface its own error rather than masking it.
+        return true;
+    };
+    let Some(home) = std::env::var_os("HOME") else {
+        return true;
+    };
+    // claude-code encodes the project dir by replacing both `/` and
+    // `.` with `-`. e.g. `/Users/jason/go/src/github.com/yicheng47`
+    // → `-Users-jason-go-src-github-com-yicheng47`. Confirmed against
+    // `~/.claude/projects/` directory listings. Only swapping `/`
+    // would miss every cwd containing a `.` (most repos), causing
+    // `path.exists()` to return false even when the conversation
+    // file is on disk — every resume would then spuriously fall back
+    // to a fresh spawn.
+    let encoded: String = cwd
+        .chars()
+        .map(|c| if c == '/' || c == '.' { '-' } else { c })
+        .collect();
+    let path = std::path::PathBuf::from(home)
+        .join(".claude")
+        .join("projects")
+        .join(encoded)
+        .join(format!("{uuid}.jsonl"));
+    path.exists()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

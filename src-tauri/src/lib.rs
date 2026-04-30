@@ -105,6 +105,7 @@ pub fn run() {
             commands::mission::mission_attach,
             commands::mission::mission_stop,
             commands::mission::mission_archive,
+            commands::mission::mission_reset,
             commands::mission::mission_pin,
             commands::mission::mission_rename,
             commands::mission::mission_list,

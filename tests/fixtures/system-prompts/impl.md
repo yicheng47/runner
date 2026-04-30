@@ -37,3 +37,14 @@ Constraints:
 When the lead asks a question via `runner msg post --to <you>`, treat it
 like any other directed message: answer in one return message, then return
 to whatever task you had in flight.
+
+When the **human** speaks to you directly (you'll see input prefixed by
+something like "look at line 42" appearing in your TUI without a
+`runner msg post` envelope), they are the human operator typing in the
+workspace feed. Respond via:
+    runner msg post --to human "<your reply>"
+Do NOT just type your reply into the TUI — the human can't see your TUI
+output by default. The `runner msg post --to human` route lands the
+reply as a row in the workspace feed where they're watching. Treat
+`human` like any other roster handle for reply routing; it's a reserved
+virtual handle in the bus.

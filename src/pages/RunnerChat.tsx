@@ -14,17 +14,18 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { listen } from "@tauri-apps/api/event";
 import {
-  Archive,
   Loader2,
   PanelRightClose,
   PanelRightOpen,
-  Play,
-  PowerOff,
   Square,
   Terminal,
 } from "lucide-react";
 
 import { RunnerTerminal } from "../components/RunnerTerminal";
+import {
+  ResumingOverlay,
+  SessionEndedOverlay,
+} from "../components/SessionEndedOverlay";
 import { api, type DirectSessionEntry } from "../lib/api";
 import {
   clearActiveSession,
@@ -770,6 +771,7 @@ export default function RunnerChat() {
             resumable={chatMeta?.resumable ?? true}
             onResume={() => void resumeChat()}
             onArchive={() => void archiveChat()}
+            variant="inline"
           />
         ) : null}
       </div>
@@ -783,80 +785,9 @@ export default function RunnerChat() {
   );
 }
 
-// Centered transitional pill while a resume is in flight. Mirrors
-// Pencil node `GZhHO`: the active xterm has been reset (canvas blank)
-// and this floats in the middle of the now-empty terminal area until
-// chatMeta confirms the row is back to running.
-function ResumingOverlay() {
-  return (
-    <div className="pointer-events-none absolute inset-4 flex items-center justify-center">
-      <div className="pointer-events-auto flex items-center gap-2.5 rounded-full border border-[#1F3D4D] bg-[#0F1E26] px-4 py-2 text-[13px] font-medium text-[#39E5FF] shadow-[0_8px_30px_rgba(0,0,0,0.5)]">
-        <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
-        Resuming…
-      </div>
-    </div>
-  );
-}
-
-// Session-ended overlay matching Pencil node `vS5ce`'s bottom card,
-// promoted to a centered modal-style overlay on top of the dimmed
-// terminal pane. Resume calls session_resume (same row, same agent
-// conversation); Archive calls session_archive and navigates back.
-function SessionEndedOverlay({
-  status,
-  exitCode,
-  resumable,
-  onResume,
-  onArchive,
-}: {
-  status: SessionStatus;
-  exitCode: number | null;
-  resumable: boolean;
-  onResume: () => void;
-  onArchive: () => void;
-}) {
-  // Subtitle wording depends on whether the agent CLI's own session
-  // id is on the row. Without it (shell runtime, codex pre-capture),
-  // Resume spawns a fresh agent without conversation history — don't
-  // promise preservation we can't deliver.
-  const subtitle = !resumable
-    ? "The PTY is closed. Resume to start a fresh agent process — there's no saved conversation to pick up from this row."
-    : status === "crashed"
-      ? `The PTY exited with code ${exitCode ?? "?"}. Resume to start a fresh process — the prior agent conversation is preserved.`
-      : "The PTY is closed, but the conversation is preserved. Resume to pick up where you left off, or archive to remove this chat from the sidebar.";
-  const resumeLabel = resumable ? "Resume chat" : "Restart chat";
-  return (
-    <div className="pointer-events-none absolute inset-4 flex items-end justify-center pb-10">
-      <div className="pointer-events-auto flex w-full max-w-2xl flex-col gap-3.5 rounded-xl border border-line bg-panel p-5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]">
-        <div className="flex items-center gap-2.5">
-          <PowerOff aria-hidden className="h-4 w-4 text-fg-3" />
-          <span className="text-[15px] font-semibold text-fg">
-            Session ended
-          </span>
-        </div>
-        <p className="text-[13px] leading-snug text-fg-2">{subtitle}</p>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onResume}
-            className="flex cursor-pointer items-center gap-2 rounded-md bg-accent px-3.5 py-2 text-[13px] font-semibold text-bg hover:bg-accent/90"
-          >
-            <Play aria-hidden className="h-3.5 w-3.5" />
-            {resumeLabel}
-          </button>
-          <button
-            type="button"
-            onClick={onArchive}
-            className="flex cursor-pointer items-center gap-2 rounded-md border border-line bg-raised px-3.5 py-2 text-[13px] text-fg hover:border-fg-3"
-          >
-            <Archive aria-hidden className="h-3.5 w-3.5 text-fg-2" />
-            Archive
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+// SessionEndedOverlay + ResumingOverlay live in
+// `../components/SessionEndedOverlay` and are shared with
+// MissionWorkspace's slot PTY tabs.
 
 // Right-side panel matching Pencil node `IFS3p` inside `GZhHO`. Spans
 // the full height of the chat surface (the topbar lives in the chat

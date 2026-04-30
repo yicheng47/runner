@@ -13,6 +13,7 @@
 import { useEffect, useRef } from "react";
 
 import { AskHumanCard } from "./AskHumanCard";
+import { MessageBody } from "./MessageBody";
 import type { Event, HumanQuestionPayload } from "../lib/types";
 
 interface EventFeedProps {
@@ -130,7 +131,9 @@ function EventRow({
           <span>·</span>
           <span>{formatTs(event.ts)}</span>
         </div>
-        <div className="text-[13px] leading-relaxed text-fg">{text}</div>
+        <div className="text-[13px] leading-relaxed text-fg">
+          <MessageBody text={text} />
+        </div>
       </div>
     );
   }
@@ -173,12 +176,12 @@ function renderPayload(event: Event): React.ReactNode {
     const text = typeof p.text === "string" ? p.text : "";
     const target = typeof p.target === "string" ? p.target : null;
     return (
-      <>
-        <span className="text-fg">{text || "(no text)"}</span>
+      <div className="text-fg">
+        {text ? <MessageBody text={text} /> : <span>(no text)</span>}
         {target ? (
-          <span className="ml-2 text-fg-3">→ @{target}</span>
+          <div className="mt-1 text-fg-3">→ @{target}</div>
         ) : null}
-      </>
+      </div>
     );
   }
   if (event.type === "ask_lead") {

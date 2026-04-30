@@ -19,6 +19,16 @@ use runner_core::model::Event;
 use super::prompt::{compose_launch_prompt, LaunchPromptInput, RosterEntry};
 use super::{Router, RunnerStatus};
 
+/// Strip any trailing `\n`/`\r` so the body can be handed to
+/// `Router::inject_and_submit` cleanly — the trailing carriage
+/// return arrives as a separate stdin chunk, on a small delay, so
+/// claude-code's TUI sees it as Enter rather than appending it to
+/// the input buffer. Embedded `\n` characters are kept verbatim as
+/// line breaks inside the input box.
+fn submit_body(text: &str) -> Vec<u8> {
+    text.trim_end_matches(['\n', '\r']).as_bytes().to_vec()
+}
+
 pub(super) fn mission_goal(router: &Router, event: &Event) {
     let goal = event
         .payload
@@ -47,9 +57,18 @@ pub(super) fn mission_goal(router: &Router, event: &Event) {
         roster: &roster_entries,
         allowed_signals: launch.allowed_signals(),
     });
-    if let Err(e) = router.inject_to_handle(lead_row.handle(), prompt.as_bytes()) {
-        router.warn(format!("mission_goal injection to lead failed: {e}"));
-    }
+    // Defer the lead's launch prompt by the same 2.5s budget the
+    // worker preamble uses (`SessionManager::schedule_first_prompt`).
+    // The bus's initial replay can fire `mission_goal` milliseconds
+    // after the lead PTY spawns — on a warm app (mission_reset, fast
+    // mission_start) claude-code's TUI hasn't drawn yet and any bytes
+    // we write get swallowed by its boot / trust-folder screen,
+    // leaving the architect with no system prompt.
+    router.inject_and_submit_delayed(
+        lead_row.handle(),
+        submit_body(&prompt),
+        std::time::Duration::from_millis(2500),
+    );
 }
 
 pub(super) fn human_said(router: &Router, event: &Event) {
@@ -65,12 +84,7 @@ pub(super) fn human_said(router: &Router, event: &Event) {
         .map(str::to_string)
         .unwrap_or_else(|| router.lead_handle().to_string());
 
-    // Always end with a newline so the TUI submits the line.
-    let mut bytes = text.to_string();
-    if !bytes.ends_with('\n') {
-        bytes.push('\n');
-    }
-    if let Err(e) = router.inject_to_handle(&target, bytes.as_bytes()) {
+    if let Err(e) = router.inject_and_submit(&target, &submit_body(text)) {
         router.warn(format!(
             "human_said injection to @{target} failed: {e} (text: {text:?})"
         ));
@@ -103,7 +117,7 @@ pub(super) fn ask_lead(router: &Router, event: &Event) {
     }
 
     let lead_handle = router.lead_handle().to_string();
-    if let Err(e) = router.inject_to_handle(&lead_handle, text.as_bytes()) {
+    if let Err(e) = router.inject_and_submit(&lead_handle, &submit_body(&text)) {
         router.warn(format!("ask_lead injection to lead failed: {e}"));
     }
 }
@@ -155,8 +169,8 @@ pub(super) fn human_response(router: &Router, event: &Event) {
         .get("choice")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let text = format!("[human_response] {choice}\n");
-    if let Err(e) = router.inject_to_handle(&asker, text.as_bytes()) {
+    let text = format!("[human_response] {choice}");
+    if let Err(e) = router.inject_and_submit(&asker, &submit_body(&text)) {
         router.warn(format!("human_response injection to @{asker} failed: {e}"));
     }
 }
@@ -176,10 +190,18 @@ pub(super) fn message_nudge(router: &Router, event: &Event) {
         if target == sender {
             return;
         }
+        // `human` is a virtual handle: it identifies the workspace
+        // UI as the message recipient. The workspace renders the
+        // event in the feed via the bus's `event/appended` listener
+        // — there's no PTY to nudge. Skipping here also keeps the
+        // log clean of "no live session for handle @human" warnings.
+        if target == "human" {
+            return;
+        }
         let text = format!(
-            "[inbox] new message from @{sender} — run `runner msg read` to view.\n"
+            "[inbox] new message from @{sender} — run `runner msg read` to view."
         );
-        if let Err(e) = router.inject_to_handle(target, text.as_bytes()) {
+        if let Err(e) = router.inject_and_submit(target, &submit_body(&text)) {
             router.warn(format!(
                 "message_nudge injection to @{target} failed: {e}"
             ));
@@ -189,7 +211,7 @@ pub(super) fn message_nudge(router: &Router, event: &Event) {
 
     // Broadcast: walk the roster, skip the sender, nudge each.
     let text = format!(
-        "[inbox] new broadcast from @{sender} — run `runner msg read` to view.\n"
+        "[inbox] new broadcast from @{sender} — run `runner msg read` to view."
     );
     let handles: Vec<String> = router
         .launch()
@@ -199,7 +221,7 @@ pub(super) fn message_nudge(router: &Router, event: &Event) {
         .filter(|h| h != sender)
         .collect();
     for handle in handles {
-        if let Err(e) = router.inject_to_handle(&handle, text.as_bytes()) {
+        if let Err(e) = router.inject_and_submit(&handle, &submit_body(&text)) {
             router.warn(format!(
                 "message_nudge broadcast to @{handle} failed: {e}"
             ));
@@ -234,10 +256,10 @@ pub(super) fn runner_status(router: &Router, event: &Event) {
             .map(|n| format!(" — {n}"))
             .unwrap_or_default();
         let text = format!(
-            "[runner_status] @{worker} is idle{note}\n",
+            "[runner_status] @{worker} is idle{note}",
             worker = event.from
         );
-        if let Err(e) = router.inject_to_handle(&lead_handle, text.as_bytes()) {
+        if let Err(e) = router.inject_and_submit(&lead_handle, &submit_body(&text)) {
             router.warn(format!("runner_status idle notice to lead failed: {e}"));
         }
     }

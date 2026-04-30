@@ -9,6 +9,7 @@ import { useState } from "react";
 
 import { api } from "../lib/api";
 import type { HumanQuestionPayload } from "../lib/types";
+import { MessageBody } from "./MessageBody";
 
 interface AskHumanCardProps {
   missionId: string;
@@ -81,10 +82,20 @@ export function AskHumanCard({
         </div>
         <span className="text-[11px] text-fg-3">{formatTs(ts)}</span>
       </div>
-      <p className="mt-2 text-[13px] leading-relaxed text-fg">
-        {payload.prompt || "(no prompt)"}
-      </p>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      <div className="mt-2 text-[13px] leading-relaxed text-fg">
+        {payload.prompt ? (
+          <MessageBody text={payload.prompt} />
+        ) : (
+          <span className="text-fg-3">(no prompt)</span>
+        )}
+      </div>
+      {/* Choices stack vertically as full-width buttons. Multi-choice
+          asks (3–4 long options) used to wrap across rows in a tight
+          horizontal flex, hard to scan; vertical full-width matches
+          Pencil node `Z7Dbo` and gives each option its own line.
+          Primary action (first choice) is the green-filled CTA;
+          subsequent options are outlined buttons. */}
+      <div className="mt-3 flex flex-col gap-1.5">
         {choices.map((c, idx) => {
           const isPrimary = idx === 0;
           const isPicked = resolved
@@ -98,14 +109,14 @@ export function AskHumanCard({
               disabled={submitting || resolved}
               className={
                 isPrimary
-                  ? `rounded-md px-3.5 py-1.5 text-[12px] font-semibold transition-colors ${
+                  ? `flex w-full cursor-pointer items-center rounded-md px-3.5 py-2.5 text-left text-[12px] font-semibold transition-all ${
                       isPicked
                         ? "bg-accent text-accent-ink"
-                        : "bg-accent text-accent-ink hover:bg-accent/90"
-                    } disabled:cursor-not-allowed disabled:opacity-60`
-                  : `rounded-md border border-line bg-panel px-3.5 py-1.5 text-[12px] font-medium text-fg transition-colors ${
+                        : "bg-accent text-accent-ink hover:bg-accent/90 hover:shadow-[0_0_0_1px_var(--color-accent)] hover:-translate-y-px"
+                    } disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-none`
+                  : `flex w-full cursor-pointer items-center rounded-md border border-line bg-panel px-3.5 py-2.5 text-left text-[12px] font-medium text-fg transition-all ${
                       isPicked ? "border-accent text-accent" : ""
-                    } hover:border-line-strong disabled:cursor-not-allowed disabled:opacity-60`
+                    } hover:border-fg-3 hover:bg-raised hover:text-fg disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-panel disabled:hover:border-line`
               }
             >
               {c}
@@ -113,7 +124,7 @@ export function AskHumanCard({
           );
         })}
         {resolved ? (
-          <span className="ml-1 text-[11px] text-fg-3">
+          <span className="mt-1 text-[11px] text-fg-3">
             answered: <span className="text-fg-2">{resolvedChoice}</span>
           </span>
         ) : null}

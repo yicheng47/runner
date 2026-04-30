@@ -22,6 +22,7 @@ import {
   PinOff,
   PanelRightClose,
   PanelRightOpen,
+  RotateCcw,
   Square,
   SquarePen,
   Terminal,
@@ -38,8 +39,13 @@ import type {
 } from "../lib/types";
 import { EventFeed } from "../components/EventFeed";
 import { MissionInput } from "../components/MissionInput";
+import { MissionResetConfirm } from "../components/MissionResetConfirm";
 import { RunnersRail } from "../components/RunnersRail";
 import { RunnerTerminal } from "../components/RunnerTerminal";
+import {
+  ResumingOverlay,
+  SessionEndedOverlay,
+} from "../components/SessionEndedOverlay";
 
 export default function MissionWorkspace() {
   const { id } = useParams<{ id: string }>();
@@ -126,6 +132,10 @@ export default function MissionWorkspace() {
         if (cancelled) return;
         setMission(m);
         setSessions(ss);
+        // Auto-open every slot's PTY tab on mount. The user can close
+        // individual tabs via the × on each tab; if they close them
+        // all and re-mount, the mount path opens them again.
+        setOpenTabs(ss.map((s) => s.id));
         ingest(evs);
       } catch (e) {
         if (!cancelled) setError(String(e));
@@ -261,6 +271,43 @@ export default function MissionWorkspace() {
     }
   }, [mission]);
 
+  // Reset = wipe the run, respawn slots, keep the mission row. Used
+  // for testing — you get the same mission back with a clean event
+  // log and fresh PTYs. Confirmed via a modal (`MissionResetConfirm`)
+  // because event-log loss is hard to undo.
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const resetMission = useCallback(async () => {
+    if (!mission) return;
+    try {
+      const next = await api.mission.reset(mission.id);
+      setMission(next);
+      // Refresh sessions + events. The reset path archives the old
+      // session rows and inserts fresh ones, so session_list returns
+      // the new set of running slots. The event log was wiped + has
+      // only the two opening events; eventsReplay picks them up.
+      const [rows, evs] = await Promise.all([
+        api.session.list(mission.id),
+        api.mission.eventsReplay(mission.id),
+      ]);
+      setSessions(rows);
+      // Clear stale events + ingest fresh — bypassing the seenIds
+      // dedup since the new events have new ULIDs we haven't seen.
+      seenIdsRef.current = new Set();
+      setEvents([]);
+      const fresh = evs.filter((e) => {
+        if (seenIdsRef.current.has(e.id)) return false;
+        seenIdsRef.current.add(e.id);
+        return true;
+      });
+      setEvents(fresh);
+      // Fresh slots = open all PTY tabs.
+      setOpenTabs(rows.map((s) => s.id));
+      setResetConfirmOpen(false);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [mission]);
+
   // Resume all = iterate stopped/crashed sessions and respawn each.
   // Hits the same `session_resume` path the per-slot Resume button
   // uses; just saves clicks when every slot needs to come back.
@@ -275,6 +322,14 @@ export default function MissionWorkspace() {
       }
       const rows = await api.session.list(mission.id);
       setSessions(rows);
+      // Mission Resume implies the user wants to see the slots come
+      // back to life. Reopen any tabs they'd previously closed —
+      // resume isn't a useful action if the panes are hidden.
+      setOpenTabs((prev) => {
+        const next = new Set(prev);
+        for (const r of rows) next.add(r.id);
+        return Array.from(next);
+      });
     } catch (e) {
       setError(String(e));
     } finally {
@@ -390,11 +445,21 @@ export default function MissionWorkspace() {
           {mission ? (() => {
             // Display status is derived: a `running` mission with no
             // live PTYs reads as "stopped" so the badge matches the
-            // Resume button next to it. Mission row state
-            // (`mission.status`) is still authoritative for backend
-            // gating; only the visual label is derived.
-            const display: "running" | "stopped" | "archived" | "aborted" =
-              mission.status === "running"
+            // Resume button next to it. While `resumingAll` is in
+            // flight (mission-level Resume button clicked, slots are
+            // being respawned), the pill flips to a cyan "resuming…"
+            // matching Pencil node `a3c7p`'s topbar. Mission row
+            // state is still authoritative for backend gating; only
+            // the visual label is derived.
+            type Display =
+              | "running"
+              | "stopped"
+              | "archived"
+              | "aborted"
+              | "resuming";
+            const display: Display = resumingAll
+              ? "resuming"
+              : mission.status === "running"
                 ? allSessionsLive
                   ? "running"
                   : "stopped"
@@ -402,19 +467,24 @@ export default function MissionWorkspace() {
                   ? "archived"
                   : "aborted";
             // Smaller pill matching design `M5Kohk` — tighter padding,
-            // pure rounded ends, slightly subdued bg tints.
+            // pure rounded ends, slightly subdued bg tints. Cyan
+            // tones for resuming match `Y5e0K5` in `a3c7p`.
             const pillClass =
               display === "running"
                 ? "bg-accent/15 text-accent"
                 : display === "aborted"
                   ? "bg-danger/15 text-danger"
-                  : "bg-raised text-fg-2";
+                  : display === "resuming"
+                    ? "bg-[#0F1E26] text-[#39E5FF]"
+                    : "bg-raised text-fg-2";
             const dotClass =
               display === "running"
                 ? "bg-accent"
                 : display === "aborted"
                   ? "bg-danger"
-                  : "bg-fg-3";
+                  : display === "resuming"
+                    ? "bg-[#39E5FF]"
+                    : "bg-fg-3";
             return (
               <span
                 className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${pillClass}`}
@@ -422,21 +492,20 @@ export default function MissionWorkspace() {
                 <span
                   className={`inline-flex h-1.5 w-1.5 rounded-full ${dotClass}`}
                 />
-                {display}
+                {display === "resuming" ? "resuming…" : display}
               </span>
             );
           })() : null}
-          {mission?.status === "running" ? (
+          {mission?.status === "running" && !resumingAll ? (
             <>
               {anySessionStopped ? (
                 <button
                   type="button"
                   onClick={() => void resumeMission()}
-                  disabled={resumingAll}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-2.5 py-1 text-[11px] font-semibold text-accent hover:border-accent disabled:cursor-default disabled:opacity-60"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-2.5 py-1 text-[11px] font-semibold text-accent hover:border-accent"
                   title="Respawn every stopped slot in this mission"
                 >
-                  {resumingAll ? "Resuming…" : "Resume"}
+                  Resume
                 </button>
               ) : null}
               {allSessionsLive ? (
@@ -462,6 +531,10 @@ export default function MissionWorkspace() {
                 onRename={() => {
                   setKebabOpen(false);
                   void renameMissionPrompt();
+                }}
+                onReset={() => {
+                  setKebabOpen(false);
+                  setResetConfirmOpen(true);
                 }}
                 onArchive={() => {
                   setKebabOpen(false);
@@ -546,9 +619,26 @@ export default function MissionWorkspace() {
                 missionId={mission.id}
                 leadHandle={leadHandle}
                 handles={handles}
-                disabled={mission.status !== "running"}
+                disabled={mission.status !== "running" || !allSessionsLive}
                 onError={setError}
               />
+              {/* When the mission row is still `running` but every PTY
+                  is dead, float a Resume CTA over the (disabled) input
+                  — same `variant="inline"` placement the slot panes
+                  use, so feed + PTY tabs share one recovery anchor. */}
+              {mission.status === "running" &&
+              !allSessionsLive &&
+              !resumingAll ? (
+                <SessionEndedOverlay
+                  status="stopped"
+                  resumable
+                  title="Mission paused"
+                  subtitle="All slots are stopped. Resume to respawn every slot and pick up the conversation — the event log is preserved."
+                  resumeLabel="Resume mission"
+                  onResume={() => void resumeMission()}
+                  variant="inline"
+                />
+              ) : null}
             </Pane>
 
             {openTabs
@@ -559,6 +649,7 @@ export default function MissionWorkspace() {
                   <SlotPtyPane
                     session={s}
                     active={activeTab === s.id}
+                    forcedResuming={resumingAll}
                     onError={setError}
                     onResumed={async () => {
                       const rows = await api.session.list(mission.id);
@@ -611,74 +702,96 @@ export default function MissionWorkspace() {
           </div>
         </div>
       </aside>
+      <MissionResetConfirm
+        open={resetConfirmOpen && mission !== null}
+        missionTitle={mission?.title ?? ""}
+        onClose={() => setResetConfirmOpen(false)}
+        onConfirm={() => void resetMission()}
+      />
     </div>
   );
 }
 
-/// A slot's PTY pane. Running sessions render an xterm; stopped/crashed
-/// rows show a centered Resume button that calls session_resume (the
-/// backend respawns the same row, preserving agent_session_key so the
-/// agent CLI picks up the same conversation thread).
+/// A slot's PTY pane. Three states map to Pencil nodes:
+///
+///   - running: live xterm (no overlay)
+///   - stopped/crashed: dimmed xterm + bottom-dock card (`vS5ce` →
+///     `jMJmx` for the slot variant). User can Resume.
+///   - resuming: blank xterm + centered cyan pill (`GZhHO` →
+///     `a3c7p`). Set either by the per-slot Resume button OR by the
+///     mission-level Resume button (parent passes `forcedResuming`).
+///
+/// Keeping the xterm mounted across states preserves the scrollback,
+/// so a user reading the prior turn before resuming sees no flash.
 function SlotPtyPane({
   session,
   active,
+  forcedResuming,
   onError,
   onResumed,
 }: {
   session: SessionRow;
   active: boolean;
+  /** True when the parent's "Resume mission" button is iterating
+   *  through every slot. Drives the resuming overlay in this pane
+   *  even though the per-slot button wasn't clicked. */
+  forcedResuming?: boolean;
   onError: (e: string) => void;
   onResumed: () => void | Promise<void>;
 }) {
-  const [resuming, setResuming] = useState(false);
-
-  if (session.status === "running") {
-    return (
-      <div className="flex flex-1 min-h-0 p-3">
-        <RunnerTerminal
-          sessionId={session.id}
-          onError={onError}
-          active={active}
-        />
-      </div>
-    );
-  }
+  const [localResuming, setLocalResuming] = useState(false);
+  const resuming = localResuming || !!forcedResuming;
+  const dead = session.status !== "running";
 
   const onResume = async () => {
     if (resuming) return;
-    setResuming(true);
+    setLocalResuming(true);
     try {
       await api.session.resume(session.id, null, null);
       await onResumed();
     } catch (e) {
       onError(String(e));
     } finally {
-      setResuming(false);
+      setLocalResuming(false);
     }
   };
 
-  const stoppedReason =
-    session.status === "crashed"
-      ? "@" + session.handle + " crashed."
-      : "@" + session.handle + " is stopped.";
-
+  // Mission slot pane omits the Archive option — archiving a slot's
+  // session row would orphan the slot in the workspace. Mission-level
+  // archive lives in the topbar kebab. `resumable` defaults to true:
+  // we don't have agent_session_key on the SessionRow, but mission
+  // sessions almost always carry one (claude-code self-assigns a
+  // UUID on every fresh spawn) and the worst case is friendlier
+  // copy than reality.
+  //
+  // Pane opacity:
+  //   - resuming: 0 (canvas wiped, the pill carries the visual)
+  //   - dead but not resuming: 45% (the user can read scrollback)
+  //   - running: 100%
+  const paneOpacity = resuming ? "opacity-0" : dead ? "opacity-45" : "";
   return (
-    <div className="flex flex-1 min-h-0 items-center justify-center p-6">
-      <div className="flex max-w-sm flex-col items-center gap-3 rounded-lg border border-line bg-panel px-6 py-8 text-center">
-        <span className="text-sm font-medium text-fg">{stoppedReason}</span>
-        <span className="text-xs text-fg-3">
-          Resume respawns the same session — claude-code reattaches via
-          its session UUID; codex reuses the captured rollout.
-        </span>
-        <button
-          type="button"
-          onClick={() => void onResume()}
-          disabled={resuming}
-          className="mt-1 inline-flex items-center justify-center rounded border border-line-strong bg-bg px-3 py-1.5 text-sm font-medium text-fg transition-colors hover:bg-raised disabled:cursor-default disabled:opacity-60"
-        >
-          {resuming ? "Resuming…" : "Resume @" + session.handle}
-        </button>
+    <div className="relative flex flex-1 min-h-0 flex-col">
+      <div
+        className={`flex flex-1 min-h-0 p-3 transition-opacity ${paneOpacity}`}
+      >
+        <RunnerTerminal
+          sessionId={session.id}
+          onError={onError}
+          active={active && !dead && !resuming}
+          disabled={dead || resuming}
+        />
       </div>
+      {resuming ? (
+        <ResumingOverlay />
+      ) : dead ? (
+        <SessionEndedOverlay
+          status={session.status}
+          handle={session.handle}
+          resumable={true}
+          onResume={() => void onResume()}
+          variant="inline"
+        />
+      ) : null}
     </div>
   );
 }
@@ -779,6 +892,7 @@ function MissionKebab({
   onClose,
   onPin,
   onRename,
+  onReset,
   onArchive,
 }: {
   pinned: boolean;
@@ -787,6 +901,7 @@ function MissionKebab({
   onClose: () => void;
   onPin: () => void;
   onRename: () => void;
+  onReset: () => void;
   onArchive: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -830,6 +945,7 @@ function MissionKebab({
             onClick={onPin}
           />
           <KebabItem icon={SquarePen} label="Rename" onClick={onRename} />
+          <KebabItem icon={RotateCcw} label="Reset" onClick={onReset} />
           <KebabItem icon={Archive} label="Archive" onClick={onArchive} danger />
         </div>
       ) : null}
