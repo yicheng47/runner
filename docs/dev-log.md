@@ -49,6 +49,12 @@
   default is, so users can't pin a runner to e.g. Opus + xhigh effort.
   Surface as fields on the runner editor; thread through to argv via
   `runner.args` or dedicated columns + the runtime adapter.
+- Settings modal (Pencil nodes `hnxWB` default, `Wx8dI` Updates pane,
+  `Ohaky` About pane, plus the `ydevl` SETTINGS canvas label).
+  Implement the modal shell + sidebar nav + per-pane content matching
+  the design. Wire entry from the app shell (gear / cmd-,) and stub
+  the panes that don't have a backend yet so the UI is in place when
+  individual settings land.
 
 **Workspace input gating + Mission paused overlay.** When a mission row
 is `running` but every PTY is dead (the derived "stopped" display
