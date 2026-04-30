@@ -6,6 +6,19 @@
 
 ## 2026-04-30
 
+**Next session — follow-ups.**
+- Rename "direct session" → "chat" everywhere (UI copy, sidebar
+  section header, type names where reasonable). The current term is a
+  carryover from the backend `sessions` table; users read these as
+  "chats" and the mismatch is confusing.
+- Runner Detail's "Chat" button fires two sessions instead of one. Likely
+  a StrictMode / mount-effect double-trigger that slipped past the prior
+  spawn-mode dedupe. Repro: open Runners → click any runner → click Chat
+  once → sidebar shows two new entries.
+- Crew list page does not match the Pencil design. Audit against the
+  design's crew-list frame and bring layout / cards / empty state into
+  parity.
+
 **Workspace input gating + Mission paused overlay.** When a mission row
 is `running` but every PTY is dead (the derived "stopped" display
 state), the feed input is no longer interactive — replaced by a
