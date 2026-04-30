@@ -554,18 +554,18 @@ export function Sidebar() {
 
           <section className="flex min-h-0 flex-[2] basis-0 flex-col">
             <CollapsibleSectionHeader
-              label="SESSION"
+              label="CHAT"
               count={directSessions.length}
               open={sessionsOpen}
               onToggle={toggleSessions}
               onPlus={handleNewDirectChat}
-              plusTitle="Start a direct chat"
+              plusTitle="Start a chat"
             />
             {sessionsOpen ? (
               <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1">
                 {directSessions.length === 0 ? (
                   <p className="px-2.5 py-1 text-xs text-fg-3">
-                    No direct sessions.
+                    No chats yet.
                   </p>
                 ) : (
                   directSessions.map((s) => (

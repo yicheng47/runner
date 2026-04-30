@@ -373,12 +373,12 @@ export default function RunnerChat() {
     // user back to the sidebar / runner detail to pick one.
     if (!handle) {
       setErr(
-        "Direct chat must be opened from the runner detail page or the sidebar.",
+        "Chat must be opened from the runner detail page or the sidebar.",
       );
       return;
     }
     setErr(
-      "Pick a direct chat from the sidebar, or start a new one from the runner detail page.",
+      "Pick a chat from the sidebar, or start a new one from the runner detail page.",
     );
   }, [attach, handle, state?.sessionId, state?.sessionStatus]);
 
@@ -503,7 +503,7 @@ export default function RunnerChat() {
           : "bg-fg-3";
   const statusLabel = chatState === "resuming" ? "resuming…" : status;
   const titleLabel =
-    chatMeta?.title ?? (handle ? `@${handle}` : "direct chat");
+    chatMeta?.title ?? (handle ? `@${handle}` : "chat");
   const metaParts = [
     runner ? `${runner.runtime}-${runner.handle}` : null,
     chatMeta?.started_at
@@ -527,7 +527,7 @@ export default function RunnerChat() {
                 {titleLabel}
               </span>
               <span className="rounded bg-line-strong px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-fg-2">
-                Direct
+                Chat
               </span>
             </div>
             {metaParts.length > 0 ? (

@@ -94,7 +94,7 @@ export function CreateRunnerModal({
         <div className="flex flex-col gap-0.5">
           <span className="text-base font-semibold text-fg">New runner</span>
           <span className="text-xs font-normal text-fg-3">
-            Reusable across crews and direct chat sessions.
+            Reusable across crews and chats.
           </span>
         </div>
       }

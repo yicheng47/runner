@@ -291,7 +291,7 @@ function RunnerCard({
               title={
                 item.direct_session_id
                   ? "Re-attach to live chat"
-                  : "Spawn a new direct chat"
+                  : "Start a new chat"
               }
             >
               <MessageSquare aria-hidden className="h-3 w-3" />

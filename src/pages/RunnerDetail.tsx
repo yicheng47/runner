@@ -216,7 +216,7 @@ export default function RunnerDetail() {
                   )}
                 </Card>
 
-                <Card title="Chat now" subtitle="Spawn a one-on-one PTY. Direct chats don't join any mission's coordination bus.">
+                <Card title="Chat now" subtitle="Spawn a one-on-one PTY. Chats don't join any mission's coordination bus.">
                   <div className="flex flex-col gap-2">
                     <div className="flex flex-col gap-1 text-xs text-fg-2">
                       <span>Working directory</span>
