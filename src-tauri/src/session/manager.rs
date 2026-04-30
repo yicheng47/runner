@@ -944,10 +944,19 @@ impl SessionManager {
                 cmd.arg(extra);
             }
         }
-        for extra in crate::router::runtime::system_prompt_args(
-            &runner.runtime,
-            runner.system_prompt.as_deref(),
-        ) {
+        // codex on resume: skip the runner's `system_prompt` argv.
+        // codex's positional prompt argument is treated as a NEW user
+        // turn, so re-passing the brief on every resume would replay
+        // it as another message against the existing conversation.
+        // claude-code's `--append-system-prompt` is system-level and
+        // safe to keep on resume (no-op against an existing
+        // conversation in the TUI). Mirrors the spawn() guard above.
+        let prompt_for_argv = if runner.runtime == "codex" && plan.resuming {
+            None
+        } else {
+            runner.system_prompt.as_deref()
+        };
+        for extra in crate::router::runtime::system_prompt_args(&runner.runtime, prompt_for_argv) {
             cmd.arg(extra);
         }
 
@@ -1658,9 +1667,14 @@ fn emit_runner_activity(pool: &DbPool, runner: &Runner, events: &dyn SessionEven
             |r| r.get(0),
         )
         .unwrap_or(0);
+    // `crew_runners` was replaced by `slots` in migration 0006 — count
+    // distinct crews this runner is wired into via the slots table.
+    // Mirrors the cold-path query in `commands::runner::runner_activity`
+    // so live `runner/activity` events stay consistent with what the
+    // Runners list shows on a refresh.
     let crew_count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM crew_runners WHERE runner_id = ?1",
+            "SELECT COUNT(DISTINCT crew_id) FROM slots WHERE runner_id = ?1",
             params![runner.id],
             |r| r.get(0),
         )

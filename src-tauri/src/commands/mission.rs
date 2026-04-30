@@ -984,8 +984,15 @@ pub async fn mission_reset(
         let conn = state.db.get()?;
         get(&conn, &id)?
     };
+    // All-or-nothing: same contract as `mission_start`. If any slot
+    // fails to spawn, kill the PTYs that did come up, archive the
+    // freshly-inserted session rows, flip the mission back to
+    // `aborted`, and surface the original error. Without rollback the
+    // mission would sit half-reset — old PTYs gone, some new ones
+    // alive, no bus / router mounted, and the mission row stuck in
+    // `running`.
     for member in &roster {
-        let spawned = state.sessions.spawn(
+        let spawn_res = state.sessions.spawn(
             &mission_for_spawn,
             &member.runner,
             &member.slot,
@@ -993,8 +1000,30 @@ pub async fn mission_reset(
             events_log_path.clone(),
             state.db.clone(),
             Arc::clone(&emitter),
-        )?;
-        spawned_pairs.push((member.slot.slot_handle.clone(), spawned.id));
+        );
+        match spawn_res {
+            Ok(spawned) => {
+                spawned_pairs.push((member.slot.slot_handle.clone(), spawned.id));
+            }
+            Err(e) => {
+                let _ = state.sessions.kill_all_for_mission(&id);
+                if let Ok(conn) = state.db.get() {
+                    let _ = conn.execute(
+                        "UPDATE sessions
+                            SET archived_at = ?1
+                          WHERE mission_id = ?2 AND archived_at IS NULL",
+                        params![now().to_rfc3339(), id],
+                    );
+                    let _ = conn.execute(
+                        "UPDATE missions
+                            SET status = 'aborted', stopped_at = ?1
+                          WHERE id = ?2",
+                        params![now().to_rfc3339(), id],
+                    );
+                }
+                return Err(e);
+            }
+        }
     }
     router.register_sessions(&spawned_pairs);
 
@@ -1006,7 +1035,32 @@ pub async fn mission_reset(
         tauri_emitter,
         router_emitter,
     ]));
-    state.buses.mount(id.clone(), &mission_dir, &roster_handles, composite)?;
+    if let Err(e) = state
+        .buses
+        .mount(id.clone(), &mission_dir, &roster_handles, composite)
+    {
+        // Bus didn't attach — kill the sessions we spawned, archive
+        // their rows, abort the mission. Same shape as the spawn-loop
+        // rollback above; the bus is the last gate before commit so a
+        // failure here would otherwise leave live PTYs with no router
+        // listening.
+        let _ = state.sessions.kill_all_for_mission(&id);
+        if let Ok(conn) = state.db.get() {
+            let _ = conn.execute(
+                "UPDATE sessions
+                    SET archived_at = ?1
+                  WHERE mission_id = ?2 AND archived_at IS NULL",
+                params![now().to_rfc3339(), id],
+            );
+            let _ = conn.execute(
+                "UPDATE missions
+                    SET status = 'aborted', stopped_at = ?1
+                  WHERE id = ?2",
+                params![now().to_rfc3339(), id],
+            );
+        }
+        return Err(e);
+    }
     state.routers.register(id.clone(), router);
 
     Ok(mission_for_spawn)

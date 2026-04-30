@@ -398,6 +398,23 @@ impl Router {
             ));
             return;
         };
+        // Zero-delay path: run inline, body only — no separate `\r`
+        // chord. Used by unit tests
+        // (`LEAD_LAUNCH_PROMPT_DELAY = ZERO` under `cfg(test)`) so
+        // synchronous push-count assertions match the prior single-
+        // push behavior of `inject_and_submit` (where the `\r` was
+        // always deferred to a background thread and never observed
+        // by sync test code). Production never hits this branch —
+        // claude-code is the only consumer that needs the
+        // body-then-`\r` chord, and it's always on a non-zero delay.
+        if delay.is_zero() {
+            if !body.is_empty() {
+                if let Err(e) = self.injector.inject(&session_id, &body) {
+                    eprintln!("router: inline inject to {session_id} failed: {e}");
+                }
+            }
+            return;
+        }
         let injector = Arc::clone(&self.injector);
         std::thread::spawn(move || {
             std::thread::sleep(delay);

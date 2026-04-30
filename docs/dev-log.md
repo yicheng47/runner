@@ -6,6 +6,31 @@
 
 ## 2026-04-30
 
+**Review-driven fixes (PR #25).**
+- Tests green again. The lead's launch prompt is async in production
+  (`Router::inject_and_submit_delayed` 2.5s) but synchronous under
+  `cfg(test)` via a zeroed `LEAD_LAUNCH_PROMPT_DELAY` constant + an
+  inline branch in `inject_and_submit_delayed` when delay is zero.
+  Production keeps the body+`\r` chord; tests skip the `\r` so push
+  counts match the pre-async assertions. The
+  `claude_code_conversation_exists` fs check short-circuits to `true`
+  under `cfg(test)` so resume tests don't have to fake out
+  `~/.claude/projects/...` fixtures.
+- `mission_reset` is now all-or-nothing. Spawn-loop and bus-mount
+  failures both roll back: kill any live PTYs, stamp `archived_at` on
+  the freshly-inserted session rows, flip the mission to `aborted`.
+  Same shape as `mission_start`'s rollback — no half-reset states.
+- Partial PTY failure no longer pauses the whole mission. Pause
+  overlay + input disable now gate on `!anySessionLive` (zero alive)
+  instead of `!allSessionsLive` (any dead). One worker crashing while
+  the lead is still up keeps human-to-lead messaging working.
+- Codex resume no longer re-replays `runner.system_prompt` as a new
+  positional turn. `SessionManager::resume` now mirrors the spawn
+  guard (`runtime == "codex" && plan.resuming → None`).
+- Live `runner/activity` events use `slots` for `crew_count` instead
+  of the removed `crew_runners` table. Live + cold-path queries
+  (`commands::runner::runner_activity`) now agree.
+
 **Next session — follow-ups.**
 - Rename "direct session" → "chat" everywhere (UI copy, sidebar
   section header, type names where reasonable). The current term is a

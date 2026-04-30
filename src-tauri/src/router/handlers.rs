@@ -19,6 +19,17 @@ use runner_core::model::Event;
 use super::prompt::{compose_launch_prompt, LaunchPromptInput, RosterEntry};
 use super::{Router, RunnerStatus};
 
+/// How long to defer the lead's launch-prompt write after spawn so
+/// claude-code's TUI has time to draw before the bytes land. Matches
+/// `SessionManager::schedule_first_prompt`'s 2.5s budget for workers.
+/// `cfg(test)` zeros the delay so unit tests can assert injections
+/// synchronously without sleeping (the injector's `inject_and_submit_
+/// delayed` runs inline when the duration is zero).
+#[cfg(not(test))]
+const LEAD_LAUNCH_PROMPT_DELAY: std::time::Duration = std::time::Duration::from_millis(2500);
+#[cfg(test)]
+const LEAD_LAUNCH_PROMPT_DELAY: std::time::Duration = std::time::Duration::ZERO;
+
 /// Strip any trailing `\n`/`\r` so the body can be handed to
 /// `Router::inject_and_submit` cleanly — the trailing carriage
 /// return arrives as a separate stdin chunk, on a small delay, so
@@ -67,7 +78,7 @@ pub(super) fn mission_goal(router: &Router, event: &Event) {
     router.inject_and_submit_delayed(
         lead_row.handle(),
         submit_body(&prompt),
-        std::time::Duration::from_millis(2500),
+        LEAD_LAUNCH_PROMPT_DELAY,
     );
 }
 

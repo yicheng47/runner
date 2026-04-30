@@ -341,6 +341,12 @@ export default function MissionWorkspace() {
     sessions.length > 0 && sessions.every((s) => s.status === "running");
   const anySessionStopped =
     sessions.length > 0 && sessions.some((s) => s.status !== "running");
+  // Coordination still works as long as ≥1 slot is alive — the human
+  // can talk to whichever runner is up. Only block input + show the
+  // pause overlay when literally zero PTYs are running. A mid-mission
+  // crash on one worker shouldn't gate human-to-lead messaging.
+  const anySessionLive =
+    sessions.length > 0 && sessions.some((s) => s.status === "running");
 
   // Project ask_human → human_question pairings + human_response
   // resolutions out of the feed. Mirrors the router's reconstruct_from_log
@@ -460,7 +466,7 @@ export default function MissionWorkspace() {
             const display: Display = resumingAll
               ? "resuming"
               : mission.status === "running"
-                ? allSessionsLive
+                ? anySessionLive
                   ? "running"
                   : "stopped"
                 : mission.status === "completed"
@@ -619,15 +625,19 @@ export default function MissionWorkspace() {
                 missionId={mission.id}
                 leadHandle={leadHandle}
                 handles={handles}
-                disabled={mission.status !== "running" || !allSessionsLive}
+                disabled={mission.status !== "running" || !anySessionLive}
                 onError={setError}
               />
-              {/* When the mission row is still `running` but every PTY
-                  is dead, float a Resume CTA over the (disabled) input
-                  — same `variant="inline"` placement the slot panes
-                  use, so feed + PTY tabs share one recovery anchor. */}
+              {/* Pause overlay only when *every* PTY is dead. A
+                  partial crash (one worker stopped, lead still
+                  alive) leaves coordination working — the human can
+                  message the lead and any other live slot — so we
+                  shouldn't gate the feed input. Same
+                  `variant="inline"` placement the slot panes use, so
+                  feed + PTY tabs share one recovery anchor when the
+                  mission really is fully paused. */}
               {mission.status === "running" &&
-              !allSessionsLive &&
+              !anySessionLive &&
               !resumingAll ? (
                 <SessionEndedOverlay
                   status="stopped"
