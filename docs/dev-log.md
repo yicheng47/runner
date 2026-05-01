@@ -4,6 +4,66 @@
 > Keep this file chronological and lightweight. The stable implementation
 > reference lives in `docs/impls/v0-mvp.md`.
 
+## 2026-05-01
+
+**Runner-polish PR (#26).** Closed out the five follow-ups logged on
+2026-04-30 plus a couple of review-driven cleanups:
+
+- **`direct session` → `chat` rename** across user-facing copy
+  (sidebar `SESSION` → `CHAT`, badge, error / fallback strings,
+  CreateRunnerModal subtitle, Runners list tooltip, RunnerChat title)
+  and the matching Pencil text nodes. Backend types untouched.
+- **Chat double-spawn fix.** `RunnerDetail`'s "Chat now" and
+  `Runners`'s "Chat" pill now spawn the session synchronously and
+  navigate to RunnerChat with the resulting `sessionId`.
+  `RunnerChat`'s mount effect runs only the deterministic attach
+  path; the StrictMode-fragile in-effect spawn (and its orphan-reap
+  + respawn-tick workaround) is gone.
+- **Crew list parity.** Cards now match the Pencil design — name +
+  purpose stack on the left, "X runners" + kebab on the right, slot
+  pills (`@slot_handle` + `runtime-runner_handle`, lead chip)
+  below. `crew_list` joins slots+runners in one bulk query so the
+  page renders without an N+1 lookup.
+- **Per-runner model + thinking effort.** Migration 0008 adds
+  nullable `model` / `effort` columns; runtime adapter emits
+  claude-code's `--model` + `--effort` (`low / medium / high /
+  xhigh / max`) and codex's `--model`; codex has no equivalent
+  effort flag today so it's silently ignored. Surfaced in
+  `RunnerEditDrawer`.
+- **Settings modal** (Pencil `hnxWB` / `Wx8dI` / `Ohaky`).
+  Sidebar nav + per-pane content. General now wires Default crew to
+  a real `StyledSelect` backed by `api.crew.list()` and
+  `localStorage`. Updates pane keeps just the version card +
+  "Install updates automatically" toggle (channel dropdown +
+  notify-before-install + auto-start last mission removed). About
+  has version + platform pill, GitHub / Documentation / License
+  rows.
+- **Mission-wide resume + paused overlay.** Removed per-PTY resume
+  on mission slot panes — partial-mission states aren't a valid
+  run, so the slot's SessionEnded card now reads "Slot stopped" and
+  triggers `resumeMission()`. Feed pause overlay fires whenever
+  *any* slot is stopped, with a backdrop tint behind the bottom-
+  anchored card. `resumeMission` catches per-slot errors and
+  refreshes session state in `finally` so partial successes still
+  update the row list / open tabs.
+- **Header reshuffle.** Status pills moved from the right cluster
+  to the left, sitting next to the title in both MissionWorkspace
+  and RunnerChat headers. Mission topbar gains a "Mission" type
+  badge mirroring the chat's "Chat" badge. Mission sidebar rows
+  expose a hover-revealed "..." kebab matching chat rows; the
+  yellow `pending_ask_count` badge dropped (no actionable signal).
+- **Command palette** (Pencil `Fkoe8`). New `CommandPalette`
+  component lists missions / runners / crews in a ⌘K-friendly modal.
+  Pulls the three existing list endpoints on open and substring-
+  filters in memory; ↑/↓ + Enter navigate, Escape + outside-click
+  close. Sidebar's search row + a global `⌘K` listener both open it.
+- **Backend.** `mission_reset` rolled-back like `mission_start`
+  (kill PTYs, archive rows, flip mission to `aborted`) on
+  spawn-loop or bus-mount failure. `session_archive` emits
+  `session/archived` so the sidebar's CHAT list refreshes when the
+  archive comes from RunnerChat's overlay. `runner/activity` emits
+  `crew_count` from `slots` (was the removed `crew_runners`).
+
 ## 2026-04-30
 
 **Review-driven fixes (PR #25).**
