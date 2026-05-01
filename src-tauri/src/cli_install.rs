@@ -116,7 +116,8 @@ pub fn install_session_runner_shim(
     let event_log_str = event_log.to_string_lossy();
     let mut script = String::new();
     script.push_str("#!/bin/sh\n");
-    script.push_str("# Auto-generated session shim. See cli_install::install_session_runner_shim.\n");
+    script
+        .push_str("# Auto-generated session shim. See cli_install::install_session_runner_shim.\n");
     script.push_str(&format!("export RUNNER_CREW_ID='{}'\n", sh_escape(crew_id)));
     script.push_str(&format!(
         "export RUNNER_MISSION_ID='{}'\n",
@@ -128,10 +129,7 @@ pub fn install_session_runner_shim(
         sh_escape(&event_log_str)
     ));
     if let Some(cwd) = mission_cwd {
-        script.push_str(&format!(
-            "export MISSION_CWD='{}'\n",
-            sh_escape(cwd)
-        ));
+        script.push_str(&format!("export MISSION_CWD='{}'\n", sh_escape(cwd)));
     }
     script.push_str(&format!(
         "exec '{}' \"$@\"\n",
@@ -140,8 +138,7 @@ pub fn install_session_runner_shim(
 
     let tmp = tempfile::NamedTempFile::new_in(&shim_dir)?;
     std::fs::write(tmp.path(), script.as_bytes())?;
-    tmp.persist(&shim_path)
-        .map_err(|e| Error::Io(e.error))?;
+    tmp.persist(&shim_path).map_err(|e| Error::Io(e.error))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

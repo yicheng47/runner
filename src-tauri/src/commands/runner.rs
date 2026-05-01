@@ -242,8 +242,16 @@ pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
             input.working_dir,
             input.system_prompt,
             env_json,
-            input.model.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()),
-            input.effort.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()),
+            input
+                .model
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty()),
+            input
+                .effort
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty()),
             ts,
         ],
     )?;
@@ -271,17 +279,29 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
     // as the column being NULL.
     let model = input
         .model
-        .map(|opt| opt.and_then(|s| {
-            let t = s.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
-        }))
+        .map(|opt| {
+            opt.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t)
+                }
+            })
+        })
         .unwrap_or(existing.model);
     let effort = input
         .effort
-        .map(|opt| opt.and_then(|s| {
-            let t = s.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
-        }))
+        .map(|opt| {
+            opt.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t)
+                }
+            })
+        })
         .unwrap_or(existing.effort);
 
     let args_json = serde_json::to_string(&args)?;
@@ -366,10 +386,7 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
                 )
                 .optional()?;
             if let Some(new_lead) = promote {
-                tx.execute(
-                    "UPDATE slots SET lead = 1 WHERE id = ?1",
-                    params![new_lead],
-                )?;
+                tx.execute("UPDATE slots SET lead = 1 WHERE id = ?1", params![new_lead])?;
             }
         }
         // Close the position gap the cascade left for this crew so
@@ -531,8 +548,8 @@ mod tests {
                 working_dir: None,
                 system_prompt: None,
                 env: HashMap::new(),
-            model: None,
-            effort: None,
+                model: None,
+                effort: None,
             },
         )
         .unwrap()
@@ -574,8 +591,8 @@ mod tests {
                 working_dir: None,
                 system_prompt: None,
                 env: HashMap::new(),
-            model: None,
-            effort: None,
+                model: None,
+                effort: None,
             },
         )
         .unwrap_err();

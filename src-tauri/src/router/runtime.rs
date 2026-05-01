@@ -50,11 +50,7 @@
 /// shell / unknown runtimes: no equivalent flags — degrade silently
 /// so the runner row's preference is recorded but the spawn
 /// doesn't reject on unknown args.
-pub fn model_effort_args(
-    runtime: &str,
-    model: Option<&str>,
-    effort: Option<&str>,
-) -> Vec<String> {
+pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str>) -> Vec<String> {
     fn trim_some(v: Option<&str>) -> Option<&str> {
         v.map(str::trim).filter(|s| !s.is_empty())
     }
@@ -268,33 +264,33 @@ pub fn claude_code_conversation_exists(cwd: Option<&str>, uuid: &str) -> bool {
     }
     #[cfg(not(test))]
     {
-    let Some(cwd) = cwd else {
-        // No cwd → claude-code falls back to the parent's, which we
-        // can't reproduce here. Be permissive: let `--resume` try and
-        // surface its own error rather than masking it.
-        return true;
-    };
-    let Some(home) = std::env::var_os("HOME") else {
-        return true;
-    };
-    // claude-code encodes the project dir by replacing both `/` and
-    // `.` with `-`. e.g. `/Users/jason/go/src/github.com/yicheng47`
-    // → `-Users-jason-go-src-github-com-yicheng47`. Confirmed against
-    // `~/.claude/projects/` directory listings. Only swapping `/`
-    // would miss every cwd containing a `.` (most repos), causing
-    // `path.exists()` to return false even when the conversation
-    // file is on disk — every resume would then spuriously fall back
-    // to a fresh spawn.
-    let encoded: String = cwd
-        .chars()
-        .map(|c| if c == '/' || c == '.' { '-' } else { c })
-        .collect();
-    let path = std::path::PathBuf::from(home)
-        .join(".claude")
-        .join("projects")
-        .join(encoded)
-        .join(format!("{uuid}.jsonl"));
-    path.exists()
+        let Some(cwd) = cwd else {
+            // No cwd → claude-code falls back to the parent's, which we
+            // can't reproduce here. Be permissive: let `--resume` try and
+            // surface its own error rather than masking it.
+            return true;
+        };
+        let Some(home) = std::env::var_os("HOME") else {
+            return true;
+        };
+        // claude-code encodes the project dir by replacing both `/` and
+        // `.` with `-`. e.g. `/Users/jason/go/src/github.com/yicheng47`
+        // → `-Users-jason-go-src-github-com-yicheng47`. Confirmed against
+        // `~/.claude/projects/` directory listings. Only swapping `/`
+        // would miss every cwd containing a `.` (most repos), causing
+        // `path.exists()` to return false even when the conversation
+        // file is on disk — every resume would then spuriously fall back
+        // to a fresh spawn.
+        let encoded: String = cwd
+            .chars()
+            .map(|c| if c == '/' || c == '.' { '-' } else { c })
+            .collect();
+        let path = std::path::PathBuf::from(home)
+            .join(".claude")
+            .join("projects")
+            .join(encoded)
+            .join(format!("{uuid}.jsonl"));
+        path.exists()
     }
 }
 

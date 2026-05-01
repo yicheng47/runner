@@ -256,7 +256,11 @@ pub fn create(
 /// Edit a slot's `slot_handle`. Trims and rejects empty values. Slot
 /// id, crew membership, runner template ref, position, and lead flag
 /// are unchanged.
-pub fn update(conn: &mut Connection, slot_id: &str, input: UpdateSlotInput) -> Result<SlotWithRunner> {
+pub fn update(
+    conn: &mut Connection,
+    slot_id: &str,
+    input: UpdateSlotInput,
+) -> Result<SlotWithRunner> {
     let existing = get_slot_internal(conn, slot_id)?;
 
     let slot_handle = match input.slot_handle {
@@ -312,10 +316,7 @@ pub fn delete(conn: &mut Connection, slot_id: &str) -> Result<()> {
             )
             .optional()?;
         if let Some(new_lead) = promote {
-            tx.execute(
-                "UPDATE slots SET lead = 1 WHERE id = ?1",
-                params![new_lead],
-            )?;
+            tx.execute("UPDATE slots SET lead = 1 WHERE id = ?1", params![new_lead])?;
         }
     }
 
@@ -347,10 +348,7 @@ pub fn set_lead(conn: &mut Connection, slot_id: &str) -> Result<SlotWithRunner> 
         "UPDATE slots SET lead = 0 WHERE crew_id = ?1 AND lead = 1",
         params![crew_id],
     )?;
-    let affected = tx.execute(
-        "UPDATE slots SET lead = 1 WHERE id = ?1",
-        params![slot_id],
-    )?;
+    let affected = tx.execute("UPDATE slots SET lead = 1 WHERE id = ?1", params![slot_id])?;
     if affected != 1 {
         return Err(Error::msg(format!("slot not found: {slot_id}")));
     }
@@ -374,7 +372,9 @@ pub fn reorder(
     let mut seen = std::collections::HashSet::new();
     for id in &ordered_slot_ids {
         if !seen.insert(id.clone()) {
-            return Err(Error::msg("slot_reorder: ordered_slot_ids contains duplicates"));
+            return Err(Error::msg(
+                "slot_reorder: ordered_slot_ids contains duplicates",
+            ));
         }
     }
 
@@ -426,10 +426,7 @@ pub fn reorder(
 // ---------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn slot_list(
-    state: State<'_, AppState>,
-    crew_id: String,
-) -> Result<Vec<SlotWithRunner>> {
+pub async fn slot_list(state: State<'_, AppState>, crew_id: String) -> Result<Vec<SlotWithRunner>> {
     let conn = state.db.get()?;
     list(&conn, &crew_id)
 }
@@ -481,10 +478,7 @@ pub async fn slot_delete(state: State<'_, AppState>, slot_id: String) -> Result<
 }
 
 #[tauri::command]
-pub async fn slot_set_lead(
-    state: State<'_, AppState>,
-    slot_id: String,
-) -> Result<SlotWithRunner> {
+pub async fn slot_set_lead(state: State<'_, AppState>, slot_id: String) -> Result<SlotWithRunner> {
     let mut conn = state.db.get()?;
     set_lead(&mut conn, &slot_id)
 }
@@ -534,8 +528,8 @@ mod tests {
                 working_dir: None,
                 system_prompt: None,
                 env: HashMap::new(),
-            model: None,
-            effort: None,
+                model: None,
+                effort: None,
             },
         )
         .unwrap()
@@ -628,8 +622,22 @@ mod tests {
         let roster = list(&conn, &c).unwrap();
         let leads = roster.iter().filter(|m| m.slot.lead).count();
         assert_eq!(leads, 1, "exactly one lead per crew");
-        assert!(!roster.iter().find(|m| m.slot.id == s1.slot.id).unwrap().slot.lead);
-        assert!(roster.iter().find(|m| m.slot.id == s2.slot.id).unwrap().slot.lead);
+        assert!(
+            !roster
+                .iter()
+                .find(|m| m.slot.id == s1.slot.id)
+                .unwrap()
+                .slot
+                .lead
+        );
+        assert!(
+            roster
+                .iter()
+                .find(|m| m.slot.id == s2.slot.id)
+                .unwrap()
+                .slot
+                .lead
+        );
     }
 
     #[test]
@@ -647,7 +655,14 @@ mod tests {
 
         delete(&mut conn, &s3.slot.id).unwrap();
         let roster = list(&conn, &c).unwrap();
-        assert!(roster.iter().find(|m| m.slot.id == s1.slot.id).unwrap().slot.lead);
+        assert!(
+            roster
+                .iter()
+                .find(|m| m.slot.id == s1.slot.id)
+                .unwrap()
+                .slot
+                .lead
+        );
     }
 
     #[test]
@@ -687,7 +702,14 @@ mod tests {
         assert_eq!(roster[2].slot.position, 2);
 
         // s1 was the original lead — position changes, but lead doesn't.
-        assert!(roster.iter().find(|m| m.slot.id == s1.slot.id).unwrap().slot.lead);
+        assert!(
+            roster
+                .iter()
+                .find(|m| m.slot.id == s1.slot.id)
+                .unwrap()
+                .slot
+                .lead
+        );
     }
 
     #[test]

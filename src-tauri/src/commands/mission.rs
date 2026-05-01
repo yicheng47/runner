@@ -745,12 +745,9 @@ pub async fn mission_attach(
         tauri_emitter,
         router_emitter,
     ]));
-    state.buses.mount(
-        mission.id.clone(),
-        &mission_dir,
-        &roster_handles,
-        composite,
-    )?;
+    state
+        .buses
+        .mount(mission.id.clone(), &mission_dir, &roster_handles, composite)?;
 
     state.routers.register(mission.id.clone(), router);
     Ok(mission)
@@ -777,11 +774,7 @@ pub async fn mission_stop(state: State<'_, AppState>, id: String) -> Result<Miss
 /// DESC, started_at DESC`). Setting `pinned = false` clears the
 /// timestamp.
 #[tauri::command]
-pub async fn mission_pin(
-    state: State<'_, AppState>,
-    id: String,
-    pinned: bool,
-) -> Result<Mission> {
+pub async fn mission_pin(state: State<'_, AppState>, id: String, pinned: bool) -> Result<Mission> {
     let conn = state.db.get()?;
     let pinned_at: Option<String> = if pinned {
         Some(now().to_rfc3339())
@@ -897,16 +890,16 @@ pub async fn mission_reset(
     }
     // Drop per-(mission,handle) runner shim dirs — they'll be regenerated
     // by SessionManager::spawn with the freshened env block.
-    let shims_root = state
-        .app_data_dir
-        .join("missions")
-        .join(&id)
-        .join("shims");
+    let shims_root = state.app_data_dir.join("missions").join(&id).join("shims");
     if shims_root.exists() {
         let _ = std::fs::remove_dir_all(&shims_root);
     }
     std::fs::create_dir_all(&mission_dir)?;
-    write_signal_types_sidecar(&state.app_data_dir, &mission_snap.crew_id, &crew_signal_types)?;
+    write_signal_types_sidecar(
+        &state.app_data_dir,
+        &mission_snap.crew_id,
+        &crew_signal_types,
+    )?;
     write_roster_sidecar(&mission_dir, &roster)?;
 
     // 5. Update mission row: status back to running, started_at
@@ -963,11 +956,9 @@ pub async fn mission_reset(
     // contract as mission_start: spawn first so register_sessions has
     // the full handle map before the bus's initial replay fires the
     // router's mission_goal handler.
-    let events_log_path =
-        event_log::events_path(&state.app_data_dir, &mission_snap.crew_id, &id);
+    let events_log_path = event_log::events_path(&state.app_data_dir, &mission_snap.crew_id, &id);
     let log_arc = open_log_for_mission(&mission_dir)?;
-    let injector: Arc<dyn StdinInjector> =
-        Arc::clone(&state.sessions) as Arc<dyn StdinInjector>;
+    let injector: Arc<dyn StdinInjector> = Arc::clone(&state.sessions) as Arc<dyn StdinInjector>;
     let router = Router::new(
         id.clone(),
         mission_snap.crew_id.clone(),
@@ -1029,8 +1020,7 @@ pub async fn mission_reset(
 
     let roster_handles: Vec<String> = roster.iter().map(|m| m.slot.slot_handle.clone()).collect();
     let tauri_emitter: Arc<dyn BusEmitter> = Arc::new(TauriBusEvents(app.clone()));
-    let router_emitter: Arc<dyn BusEmitter> =
-        Arc::new(RouterSubscriber(Arc::clone(&router)));
+    let router_emitter: Arc<dyn BusEmitter> = Arc::new(RouterSubscriber(Arc::clone(&router)));
     let composite: Arc<dyn BusEmitter> = Arc::new(CompositeBusEmitter::new(vec![
         tauri_emitter,
         router_emitter,

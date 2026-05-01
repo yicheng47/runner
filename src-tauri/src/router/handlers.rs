@@ -209,21 +209,15 @@ pub(super) fn message_nudge(router: &Router, event: &Event) {
         if target == "human" {
             return;
         }
-        let text = format!(
-            "[inbox] new message from @{sender} — run `runner msg read` to view."
-        );
+        let text = format!("[inbox] new message from @{sender} — run `runner msg read` to view.");
         if let Err(e) = router.inject_and_submit(target, &submit_body(&text)) {
-            router.warn(format!(
-                "message_nudge injection to @{target} failed: {e}"
-            ));
+            router.warn(format!("message_nudge injection to @{target} failed: {e}"));
         }
         return;
     }
 
     // Broadcast: walk the roster, skip the sender, nudge each.
-    let text = format!(
-        "[inbox] new broadcast from @{sender} — run `runner msg read` to view."
-    );
+    let text = format!("[inbox] new broadcast from @{sender} — run `runner msg read` to view.");
     let handles: Vec<String> = router
         .launch()
         .roster()
@@ -233,9 +227,7 @@ pub(super) fn message_nudge(router: &Router, event: &Event) {
         .collect();
     for handle in handles {
         if let Err(e) = router.inject_and_submit(&handle, &submit_body(&text)) {
-            router.warn(format!(
-                "message_nudge broadcast to @{handle} failed: {e}"
-            ));
+            router.warn(format!("message_nudge broadcast to @{handle} failed: {e}"));
         }
     }
 }

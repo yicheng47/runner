@@ -320,10 +320,8 @@ impl SessionManager {
         // matters for claude-code (its conversation files are keyed under
         // `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`; resuming with a
         // different cwd makes `--resume` fail with "No conversation found").
-        let resolved_cwd: Option<String> = runner
-            .working_dir
-            .clone()
-            .or_else(|| mission.cwd.clone());
+        let resolved_cwd: Option<String> =
+            runner.working_dir.clone().or_else(|| mission.cwd.clone());
         if let Some(wd) = resolved_cwd.as_deref() {
             cmd.cwd(wd);
         }
@@ -856,32 +854,33 @@ impl SessionManager {
             slot_handle: String,
             lead: bool,
         }
-        let mission_ctx: Option<MissionCtx> = match (snap.mission_id.as_deref(), snap.slot_id.as_deref()) {
-            (Some(mid), Some(sid)) => {
-                let conn = pool.get()?;
-                let mission = crate::commands::mission::get(&conn, mid)?;
-                let (slot_handle, lead): (String, i64) = conn
-                    .query_row(
-                        "SELECT slot_handle, lead FROM slots WHERE id = ?1",
-                        params![sid],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
-                    .map_err(|e| match e {
-                        rusqlite::Error::QueryReturnedNoRows => Error::msg(format!(
-                            "slot {sid} referenced by session {session_id} no longer exists"
-                        )),
-                        other => other.into(),
-                    })?;
-                Some(MissionCtx {
-                    crew_id: mission.crew_id,
-                    mission_id: mission.id,
-                    mission_cwd: mission.cwd,
-                    slot_handle,
-                    lead: lead != 0,
-                })
-            }
-            _ => None,
-        };
+        let mission_ctx: Option<MissionCtx> =
+            match (snap.mission_id.as_deref(), snap.slot_id.as_deref()) {
+                (Some(mid), Some(sid)) => {
+                    let conn = pool.get()?;
+                    let mission = crate::commands::mission::get(&conn, mid)?;
+                    let (slot_handle, lead): (String, i64) = conn
+                        .query_row(
+                            "SELECT slot_handle, lead FROM slots WHERE id = ?1",
+                            params![sid],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .map_err(|e| match e {
+                            rusqlite::Error::QueryReturnedNoRows => Error::msg(format!(
+                                "slot {sid} referenced by session {session_id} no longer exists"
+                            )),
+                            other => other.into(),
+                        })?;
+                    Some(MissionCtx {
+                        crew_id: mission.crew_id,
+                        mission_id: mission.id,
+                        mission_cwd: mission.cwd,
+                        slot_handle,
+                        lead: lead != 0,
+                    })
+                }
+                _ => None,
+            };
 
         // Pull the runner config fresh — the user may have edited it
         // since the session last ran, and we want the current command /
@@ -936,15 +935,12 @@ impl SessionManager {
         // to fire the launch prompt manually after the resume
         // returns.
         let fresh_fallback_lead = conversation_missing && is_lead_slot;
-        let effective_prior_key = match (
-            runner.runtime.as_str(),
-            snap.agent_session_key.as_deref(),
-        ) {
+        let effective_prior_key = match (runner.runtime.as_str(), snap.agent_session_key.as_deref())
+        {
             ("claude-code", Some(_)) if conversation_missing => None,
             (_, k) => k,
         };
-        let plan =
-            crate::router::runtime::resume_plan(&runner.runtime, effective_prior_key);
+        let plan = crate::router::runtime::resume_plan(&runner.runtime, effective_prior_key);
 
         let mut cmd = CommandBuilder::new(&runner.command);
         if plan.prepend {
@@ -1048,7 +1044,10 @@ impl SessionManager {
                 &ctx.crew_id,
                 &ctx.mission_id,
             );
-            cmd.env("RUNNER_EVENT_LOG", event_log_path.to_string_lossy().to_string());
+            cmd.env(
+                "RUNNER_EVENT_LOG",
+                event_log_path.to_string_lossy().to_string(),
+            );
             if let Some(wd) = ctx.mission_cwd.as_deref() {
                 cmd.env("MISSION_CWD", wd);
             }
@@ -1239,11 +1238,7 @@ impl SessionManager {
             // Drain the killed-set entry here so subsequent spawns of
             // the same id (resume cycles) don't inherit a stale
             // "intentional" flag.
-            let was_killed = manager_t
-                .killed
-                .lock()
-                .unwrap()
-                .remove(&session_id);
+            let was_killed = manager_t.killed.lock().unwrap().remove(&session_id);
             // Resume failure heuristic: we asked the agent to resume a
             // prior conversation, but the child died fast and unhappy.
             // Either the agent rejected the prior id, or the runtime
@@ -2578,11 +2573,9 @@ mod tests {
             let status: String = pool
                 .get()
                 .unwrap()
-                .query_row(
-                    "SELECT status FROM sessions WHERE id = 'mr-sid'",
-                    [],
-                    |r| r.get(0),
-                )
+                .query_row("SELECT status FROM sessions WHERE id = 'mr-sid'", [], |r| {
+                    r.get(0)
+                })
                 .unwrap();
             if status != "running" {
                 break;
