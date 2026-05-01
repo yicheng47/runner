@@ -185,7 +185,7 @@ export function RunnerEditDrawer({
         <Field
           id="edit-model"
           label="Model"
-          hint="optional · claude-code: e.g. claude-opus-4-7"
+          hint="optional · claude-code / codex: e.g. claude-opus-4-7"
         >
           <Input
             id="edit-model"
@@ -198,7 +198,7 @@ export function RunnerEditDrawer({
         <Field
           id="edit-effort"
           label="Thinking effort"
-          hint="optional · claude-code: xhigh / high / medium / low / off"
+          hint="optional · claude-code: low / medium / high / xhigh / max"
         >
           <Input
             id="edit-effort"

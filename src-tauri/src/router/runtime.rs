@@ -35,13 +35,21 @@
 ///
 /// claude-code maps:
 ///   - `model` → `--model <name>` (e.g. `claude-opus-4-7`)
-///   - `effort` → `--thinking-effort <level>` (xhigh / high / medium /
-///     low / off — passed through verbatim; the CLI rejects unknowns
-///     so the row's value is the source of truth)
+///   - `effort` → `--effort <level>`. Accepted levels per `claude
+///     --help`: `low / medium / high / xhigh / max`. The flag was
+///     `--thinking-effort` in earlier docs but the installed CLI
+///     ships `--effort`; we pass the row's value through verbatim
+///     so the CLI's own validation is the source of truth.
 ///
-/// codex: TBD — codex's effort flag is in flux and `--model` lands as
-/// a config override rather than CLI arg in current builds. Returning
-/// empty is the safe degrade until the codex adapter wires up.
+/// codex maps:
+///   - `model` → `--model <name>`. Verified against
+///     `codex --help`. codex has no equivalent thinking-effort
+///     flag today, so `effort` is silently ignored for codex
+///     runners (the row keeps the preference for when it lands).
+///
+/// shell / unknown runtimes: no equivalent flags — degrade silently
+/// so the runner row's preference is recorded but the spawn
+/// doesn't reject on unknown args.
 pub fn model_effort_args(
     runtime: &str,
     model: Option<&str>,
@@ -63,14 +71,24 @@ pub fn model_effort_args(
                 out.push(m.to_string());
             }
             if let Some(e) = effort {
-                out.push("--thinking-effort".into());
+                out.push("--effort".into());
                 out.push(e.to_string());
             }
             out
         }
-        // codex / shell / unknown: no equivalent flag — degrade
-        // silently so the runner row's preference is recorded but
-        // the spawn doesn't reject on unknown args.
+        "codex" => {
+            // codex accepts `--model <MODEL>` but has no
+            // thinking-effort flag today. Skip effort silently;
+            // the row still persists the preference for when
+            // codex's adapter catches up.
+            let mut out = Vec::new();
+            if let Some(m) = model {
+                out.push("--model".into());
+                out.push(m.to_string());
+            }
+            out
+        }
+        // shell / unknown
         _ => Vec::new(),
     }
 }
