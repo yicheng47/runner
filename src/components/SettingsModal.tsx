@@ -214,10 +214,6 @@ function UpdatesPane() {
     "settings.autoInstallUpdates",
     true,
   );
-  const [notifyBeforeInstall, setNotifyBeforeInstall] = useStoredBool(
-    "settings.notifyBeforeInstall",
-    false,
-  );
   const [version, setVersion] = useState<string>("");
   useEffect(() => {
     void getVersion()
@@ -247,29 +243,17 @@ function UpdatesPane() {
           type="button"
           disabled
           title="Update check stub — backend not wired up yet"
-          className="flex cursor-default items-center gap-1.5 rounded-md border border-line bg-panel px-3.5 py-2 text-[12px] font-medium text-fg-2 disabled:opacity-60"
+          className="flex shrink-0 cursor-default items-center gap-1.5 whitespace-nowrap rounded-md border border-line bg-panel px-3 py-1.5 text-[12px] font-medium text-fg-2 disabled:opacity-60"
         >
           <RefreshCw aria-hidden className="h-3 w-3" />
           Check now
         </button>
       </div>
       <Row
-        label="Update channel"
-        sub="Stable releases only, or opt into pre-release builds. (stub)"
-      >
-        <DisabledDropdown placeholder="Stable" />
-      </Row>
-      <Row
         label="Install updates automatically"
         sub="Download and apply updates in the background. Restart needed to finish."
       >
         <Toggle on={autoInstall} onChange={setAutoInstall} />
-      </Row>
-      <Row
-        label="Notify me before installing"
-        sub="Show a banner before applying an update so you can finish your session."
-      >
-        <Toggle on={notifyBeforeInstall} onChange={setNotifyBeforeInstall} />
       </Row>
     </>
   );

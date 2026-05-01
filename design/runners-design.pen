@@ -1717,6 +1717,37 @@
                                   "letterSpacing": 0.5
                                 }
                               ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "M5Kohk",
+                              "name": "status_badge",
+                              "fill": "#0F2418",
+                              "cornerRadius": 999,
+                              "gap": 6,
+                              "padding": [
+                                4,
+                                8
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "ellipse",
+                                  "id": "vHL8l",
+                                  "fill": "#00FF9C",
+                                  "width": 6,
+                                  "height": 6
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "epDNk",
+                                  "fill": "#00FF9C",
+                                  "content": "running",
+                                  "fontFamily": "Inter",
+                                  "fontSize": 11,
+                                  "fontWeight": "500"
+                                }
+                              ]
                             }
                           ]
                         },
@@ -1785,37 +1816,6 @@
                   "gap": 8,
                   "alignItems": "center",
                   "children": [
-                    {
-                      "type": "frame",
-                      "id": "M5Kohk",
-                      "name": "status_badge",
-                      "fill": "#0F2418",
-                      "cornerRadius": 999,
-                      "gap": 6,
-                      "padding": [
-                        4,
-                        8
-                      ],
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "ellipse",
-                          "id": "vHL8l",
-                          "fill": "#00FF9C",
-                          "width": 6,
-                          "height": 6
-                        },
-                        {
-                          "type": "text",
-                          "id": "epDNk",
-                          "fill": "#00FF9C",
-                          "content": "running",
-                          "fontFamily": "Inter",
-                          "fontSize": 11,
-                          "fontWeight": "500"
-                        }
-                      ]
-                    },
                     {
                       "type": "frame",
                       "id": "U0oWs",
@@ -13393,6 +13393,37 @@
                                       "letterSpacing": 0.5
                                     }
                                   ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "U5leN",
+                                  "name": "status_badge",
+                                  "fill": "#0F2418",
+                                  "cornerRadius": 999,
+                                  "gap": 6,
+                                  "padding": [
+                                    4,
+                                    8
+                                  ],
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "ellipse",
+                                      "id": "aSmSI",
+                                      "fill": "#00FF9C",
+                                      "width": 6,
+                                      "height": 6
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "t2c0Q",
+                                      "fill": "#00FF9C",
+                                      "content": "running",
+                                      "fontFamily": "Inter",
+                                      "fontSize": 11,
+                                      "fontWeight": "500"
+                                    }
+                                  ]
                                 }
                               ]
                             },
@@ -13461,37 +13492,6 @@
                       "gap": 8,
                       "alignItems": "center",
                       "children": [
-                        {
-                          "type": "frame",
-                          "id": "U5leN",
-                          "name": "status_badge",
-                          "fill": "#0F2418",
-                          "cornerRadius": 999,
-                          "gap": 6,
-                          "padding": [
-                            4,
-                            8
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "ellipse",
-                              "id": "aSmSI",
-                              "fill": "#00FF9C",
-                              "width": 6,
-                              "height": 6
-                            },
-                            {
-                              "type": "text",
-                              "id": "t2c0Q",
-                              "fill": "#00FF9C",
-                              "content": "running",
-                              "fontFamily": "Inter",
-                              "fontSize": 11,
-                              "fontWeight": "500"
-                            }
-                          ]
-                        },
                         {
                           "type": "frame",
                           "id": "D1Xf3j",
@@ -14871,6 +14871,37 @@
                                       "letterSpacing": 0.5
                                     }
                                   ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "gKFwt",
+                                  "name": "status_badge",
+                                  "fill": "#1F2127",
+                                  "cornerRadius": 999,
+                                  "gap": 6,
+                                  "padding": [
+                                    4,
+                                    8
+                                  ],
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "ellipse",
+                                      "id": "imFrC",
+                                      "fill": "#5A5C66",
+                                      "width": 6,
+                                      "height": 6
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "SDpi3",
+                                      "fill": "#9A9BA5",
+                                      "content": "stopped",
+                                      "fontFamily": "Inter",
+                                      "fontSize": 11,
+                                      "fontWeight": "500"
+                                    }
+                                  ]
                                 }
                               ]
                             },
@@ -14939,37 +14970,6 @@
                       "gap": 8,
                       "alignItems": "center",
                       "children": [
-                        {
-                          "type": "frame",
-                          "id": "gKFwt",
-                          "name": "status_badge",
-                          "fill": "#1F2127",
-                          "cornerRadius": 999,
-                          "gap": 6,
-                          "padding": [
-                            4,
-                            8
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "ellipse",
-                              "id": "imFrC",
-                              "fill": "#5A5C66",
-                              "width": 6,
-                              "height": 6
-                            },
-                            {
-                              "type": "text",
-                              "id": "SDpi3",
-                              "fill": "#9A9BA5",
-                              "content": "stopped",
-                              "fontFamily": "Inter",
-                              "fontSize": 11,
-                              "fontWeight": "500"
-                            }
-                          ]
-                        },
                         {
                           "type": "frame",
                           "id": "HLXK6",
@@ -16564,6 +16564,37 @@
                                       "letterSpacing": 0.5
                                     }
                                   ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "Y5e0K5",
+                                  "name": "status_badge",
+                                  "fill": "#0F1E26",
+                                  "cornerRadius": 999,
+                                  "gap": 6,
+                                  "padding": [
+                                    4,
+                                    8
+                                  ],
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "ellipse",
+                                      "id": "Ytw1p",
+                                      "fill": "#39E5FF",
+                                      "width": 6,
+                                      "height": 6
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "cRasc",
+                                      "fill": "#39E5FF",
+                                      "content": "resuming…",
+                                      "fontFamily": "Inter",
+                                      "fontSize": 11,
+                                      "fontWeight": "500"
+                                    }
+                                  ]
                                 }
                               ]
                             },
@@ -16632,37 +16663,6 @@
                       "gap": 8,
                       "alignItems": "center",
                       "children": [
-                        {
-                          "type": "frame",
-                          "id": "Y5e0K5",
-                          "name": "status_badge",
-                          "fill": "#0F1E26",
-                          "cornerRadius": 999,
-                          "gap": 6,
-                          "padding": [
-                            4,
-                            8
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "ellipse",
-                              "id": "Ytw1p",
-                              "fill": "#39E5FF",
-                              "width": 6,
-                              "height": 6
-                            },
-                            {
-                              "type": "text",
-                              "id": "cRasc",
-                              "fill": "#39E5FF",
-                              "content": "resuming…",
-                              "fontFamily": "Inter",
-                              "fontSize": 11,
-                              "fontWeight": "500"
-                            }
-                          ]
-                        },
                         {
                           "type": "frame",
                           "id": "wow6B",
@@ -18016,6 +18016,37 @@
                                       "letterSpacing": 0.5
                                     }
                                   ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "rgEvA",
+                                  "name": "status_badge",
+                                  "fill": "#0F2418",
+                                  "cornerRadius": 999,
+                                  "gap": 6,
+                                  "padding": [
+                                    4,
+                                    8
+                                  ],
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "ellipse",
+                                      "id": "n5KHlL",
+                                      "fill": "#00FF9C",
+                                      "width": 6,
+                                      "height": 6
+                                    },
+                                    {
+                                      "type": "text",
+                                      "id": "TaJe6",
+                                      "fill": "#00FF9C",
+                                      "content": "running",
+                                      "fontFamily": "Inter",
+                                      "fontSize": 11,
+                                      "fontWeight": "500"
+                                    }
+                                  ]
                                 }
                               ]
                             },
@@ -18084,37 +18115,6 @@
                       "gap": 8,
                       "alignItems": "center",
                       "children": [
-                        {
-                          "type": "frame",
-                          "id": "rgEvA",
-                          "name": "status_badge",
-                          "fill": "#0F2418",
-                          "cornerRadius": 999,
-                          "gap": 6,
-                          "padding": [
-                            4,
-                            8
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "ellipse",
-                              "id": "n5KHlL",
-                              "fill": "#00FF9C",
-                              "width": 6,
-                              "height": 6
-                            },
-                            {
-                              "type": "text",
-                              "id": "TaJe6",
-                              "fill": "#00FF9C",
-                              "content": "running",
-                              "fontFamily": "Inter",
-                              "fontSize": 11,
-                              "fontWeight": "500"
-                            }
-                          ]
-                        },
                         {
                           "type": "frame",
                           "id": "IEHta",
@@ -19565,6 +19565,37 @@
                                   "letterSpacing": 0.5
                                 }
                               ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "xlHmE",
+                              "name": "status_badge",
+                              "fill": "#1F2127",
+                              "cornerRadius": 999,
+                              "gap": 6,
+                              "padding": [
+                                4,
+                                8
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "ellipse",
+                                  "id": "e8r7pV",
+                                  "fill": "#5A5C66",
+                                  "width": 6,
+                                  "height": 6
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "CVXx6",
+                                  "fill": "#9A9BA5",
+                                  "content": "stopped",
+                                  "fontFamily": "Inter",
+                                  "fontSize": 11,
+                                  "fontWeight": "500"
+                                }
+                              ]
                             }
                           ]
                         },
@@ -19633,37 +19664,6 @@
                   "gap": 8,
                   "alignItems": "center",
                   "children": [
-                    {
-                      "type": "frame",
-                      "id": "xlHmE",
-                      "name": "status_badge",
-                      "fill": "#1F2127",
-                      "cornerRadius": 999,
-                      "gap": 6,
-                      "padding": [
-                        4,
-                        8
-                      ],
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "ellipse",
-                          "id": "e8r7pV",
-                          "fill": "#5A5C66",
-                          "width": 6,
-                          "height": 6
-                        },
-                        {
-                          "type": "text",
-                          "id": "CVXx6",
-                          "fill": "#9A9BA5",
-                          "content": "stopped",
-                          "fontFamily": "Inter",
-                          "fontSize": 11,
-                          "fontWeight": "500"
-                        }
-                      ]
-                    },
                     {
                       "type": "frame",
                       "id": "MDaVx",
@@ -19983,7 +19983,7 @@
                                   "type": "text",
                                   "id": "Z6t4Y",
                                   "fill": "#EDEDF0",
-                                  "content": "Session ended",
+                                  "content": "Slot stopped",
                                   "fontFamily": "Inter",
                                   "fontSize": 15,
                                   "fontWeight": "600"
@@ -19996,7 +19996,7 @@
                               "fill": "#9A9BA5",
                               "textGrowth": "fixed-width",
                               "width": "fill_container",
-                              "content": "@architect's PTY is closed, but the conversation is preserved. Resume to pick up where you left off.",
+                              "content": "This slot's PTY is closed. Resume the mission to respawn every stopped slot — partial-mission states aren't a valid run.",
                               "lineHeight": 1.4,
                               "fontFamily": "Inter",
                               "fontSize": 13,
@@ -20035,48 +20035,10 @@
                                       "type": "text",
                                       "id": "QzWJY",
                                       "fill": "#0E0E10",
-                                      "content": "Resume @architect",
+                                      "content": "Resume mission",
                                       "fontFamily": "Inter",
                                       "fontSize": 13,
                                       "fontWeight": "600"
-                                    }
-                                  ]
-                                },
-                                {
-                                  "type": "frame",
-                                  "id": "LiZzQ",
-                                  "name": "archiveBtn",
-                                  "fill": "#16171B",
-                                  "cornerRadius": 6,
-                                  "stroke": {
-                                    "align": "inside",
-                                    "thickness": 1,
-                                    "fill": "#1F2127"
-                                  },
-                                  "gap": 8,
-                                  "padding": [
-                                    8,
-                                    14
-                                  ],
-                                  "alignItems": "center",
-                                  "children": [
-                                    {
-                                      "type": "icon_font",
-                                      "id": "AI2zO",
-                                      "width": 14,
-                                      "height": 14,
-                                      "iconFontName": "archive",
-                                      "iconFontFamily": "lucide",
-                                      "fill": "#9A9BA5"
-                                    },
-                                    {
-                                      "type": "text",
-                                      "id": "picpI",
-                                      "fill": "#EDEDF0",
-                                      "content": "Archive",
-                                      "fontFamily": "Inter",
-                                      "fontSize": 13,
-                                      "fontWeight": "normal"
                                     }
                                   ]
                                 }
@@ -20998,6 +20960,37 @@
                                   "letterSpacing": 0.5
                                 }
                               ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "NHN7Q",
+                              "name": "status_badge",
+                              "fill": "#0F1E26",
+                              "cornerRadius": 999,
+                              "gap": 6,
+                              "padding": [
+                                4,
+                                8
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "ellipse",
+                                  "id": "Y6NhYc",
+                                  "fill": "#39E5FF",
+                                  "width": 6,
+                                  "height": 6
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "Lawbf",
+                                  "fill": "#39E5FF",
+                                  "content": "resuming…",
+                                  "fontFamily": "Inter",
+                                  "fontSize": 11,
+                                  "fontWeight": "500"
+                                }
+                              ]
                             }
                           ]
                         },
@@ -21066,37 +21059,6 @@
                   "gap": 8,
                   "alignItems": "center",
                   "children": [
-                    {
-                      "type": "frame",
-                      "id": "NHN7Q",
-                      "name": "status_badge",
-                      "fill": "#0F1E26",
-                      "cornerRadius": 999,
-                      "gap": 6,
-                      "padding": [
-                        4,
-                        8
-                      ],
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "ellipse",
-                          "id": "Y6NhYc",
-                          "fill": "#39E5FF",
-                          "width": 6,
-                          "height": 6
-                        },
-                        {
-                          "type": "text",
-                          "id": "Lawbf",
-                          "fill": "#39E5FF",
-                          "content": "resuming…",
-                          "fontFamily": "Inter",
-                          "fontSize": 11,
-                          "fontWeight": "500"
-                        }
-                      ]
-                    },
                     {
                       "type": "frame",
                       "id": "D6RIG",

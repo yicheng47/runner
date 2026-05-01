@@ -529,6 +529,18 @@ export default function RunnerChat() {
               <span className="rounded bg-line-strong px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-fg-2">
                 Chat
               </span>
+              {/* Status pill moved next to the title so it stops
+                  competing with the Stop / Resume control on the
+                  right — the action button already implies the
+                  current state, and a pill at the same edge read
+                  redundant. */}
+              <span
+                className={`flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${statusBadgeClass}`}
+                title={`session ${sessionId ? sessionId.slice(-6) : "—"}`}
+              >
+                <span className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass}`} />
+                {sessionId ? statusLabel : "starting"}
+              </span>
             </div>
             {metaParts.length > 0 ? (
               <div className="flex min-w-0 items-center gap-2 text-[11px] text-fg-2">
@@ -547,13 +559,6 @@ export default function RunnerChat() {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <span
-            className={`flex items-center gap-1.5 rounded-full px-2 py-1 text-[11px] font-medium ${statusBadgeClass}`}
-            title={`session ${sessionId ? sessionId.slice(-6) : "—"}`}
-          >
-            <span className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass}`} />
-            {sessionId ? statusLabel : "starting"}
-          </span>
           {chatState === "resuming" ? (
             <button
               type="button"

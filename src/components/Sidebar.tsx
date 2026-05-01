@@ -236,6 +236,7 @@ export function Sidebar() {
   useEffect(() => {
     let unlistenExit: (() => void) | null = null;
     let unlistenActivity: (() => void) | null = null;
+    let unlistenArchived: (() => void) | null = null;
     let cancelled = false;
     void Promise.all([
       listen("session/exit", () => {
@@ -244,19 +245,30 @@ export function Sidebar() {
       listen("runner/activity", () => {
         void refreshDirectSessions();
       }),
-    ]).then(([fnExit, fnActivity]) => {
+      listen("session/archived", () => {
+        // Fired by `session_archive` after the archived_at flip. Lets
+        // the CHAT list drop the row whenever the user archives from
+        // anywhere (sidebar's own Archive action already refreshes
+        // explicitly, but RunnerChat's SessionEnded overlay relies on
+        // this event since it doesn't own the sidebar's fetch).
+        void refreshDirectSessions();
+      }),
+    ]).then(([fnExit, fnActivity, fnArchived]) => {
       if (cancelled) {
         fnExit();
         fnActivity();
+        fnArchived();
         return;
       }
       unlistenExit = fnExit;
       unlistenActivity = fnActivity;
+      unlistenArchived = fnArchived;
     });
     return () => {
       cancelled = true;
       unlistenExit?.();
       unlistenActivity?.();
+      unlistenArchived?.();
     };
   }, [refreshDirectSessions]);
 
@@ -535,12 +547,7 @@ export function Sidebar() {
                       label={m.title}
                       onClick={() => openMission(m.id)}
                       onContextMenu={(anchor) => openMissionMenu(m, anchor)}
-                      title={`${m.crew_name || ""}${
-                        m.pending_ask_count > 0
-                          ? ` · ${m.pending_ask_count} pending`
-                          : ""
-                      }`}
-                      pendingAsks={m.pending_ask_count}
+                      title={m.crew_name || ""}
                       pinned={!!m.pinned_at}
                       renaming={renamingMissionId === m.id}
                       onRenameSubmit={(next) =>
@@ -784,7 +791,6 @@ function RuntimeRow({
   onContextMenu,
   title,
   mono,
-  pendingAsks,
   dim,
   pinned,
   renaming,
@@ -798,7 +804,6 @@ function RuntimeRow({
   onContextMenu?: (anchor: { x: number; y: number }) => void;
   title?: string;
   mono?: boolean;
-  pendingAsks?: number;
   /** True when the row represents a non-running runtime (e.g. a stopped
    *  direct chat that can be resumed). Mutes the status dot so the user
    *  can tell which sessions are live at a glance. */
@@ -852,14 +857,6 @@ function RuntimeRow({
         </span>
         {pinned ? (
           <Pin aria-hidden className="h-3 w-3 shrink-0 text-fg-3" />
-        ) : null}
-        {pendingAsks && pendingAsks > 0 ? (
-          <span
-            title="Awaiting human input"
-            className="rounded bg-warn/20 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-warn"
-          >
-            {pendingAsks}
-          </span>
         ) : null}
       </button>
       {/* Kebab anchor for the same context menu the row's
