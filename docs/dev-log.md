@@ -6,21 +6,21 @@
 
 ## 2026-05-01 (PM)
 
-**Auto-update wired up.** Following the pattern from Quill: one
-`UpdateProvider` context shared by an `UpdateToast` (top-center pill,
-"Runner vX.Y.Z is available" → opens Settings) and the Settings →
-Updates pane (status-driven row that swaps Check now / Download &
-install / Restart-to-update / progress bar based on the same state).
-The toast's button never downloads; it just routes the user into the
-pane.
+**Auto-update wired up + v0.1.0 retag.** Following the pattern from
+Quill: one `UpdateProvider` context shared by an `UpdateToast`
+(top-center pill, "Runner vX.Y.Z is available" → opens Settings) and
+the Settings → Updates pane (status-driven row that swaps Check now
+/ Download & install / Restart-to-update / progress bar based on the
+same state). The toast's button never downloads; it just routes the
+user into the pane.
 
 - **Backend.** Added `tauri-plugin-updater = "2"` + registered in
   `lib.rs`. `tauri.conf.json` now has `plugins.updater.endpoints`
   pointing at the GitHub Releases `latest.json`,
   `bundle.createUpdaterArtifacts: true`, and a placeholder pubkey
   flagged `REPLACE_WITH_TAURI_SIGNING_PUBLIC_KEY` — the real
-  minisign pubkey from the keypair generated last release needs to
-  land before tagging v0.1.1.
+  minisign pubkey from the keypair generated for the first release
+  needs to land before retagging v0.1.0.
 - **Capability.** `updater:default` added; `process:allow-restart`
   was already there.
 - **Frontend.** New `useUpdateChecker` hook (idle/checking/available
@@ -36,11 +36,10 @@ pane.
   `["dmg", "app"]` and the `build-windows` job removed from
   `release.yml`; the WSL integration we'd want for Windows isn't
   ready and shipping a non-PTY build was misleading.
-- **First reachable version.** Auto-update only kicks in starting
-  with v0.1.1 — v0.1.0 binaries don't have the plugin baked in and
-  v0.1.0's release also lacks `.sig` files (we forgot
-  `createUpdaterArtifacts` last time). v0.1.0 → v0.1.1 is a manual
-  download; from v0.1.1 onward it's in-app.
+- **Migrations squashed.** Pre-release with no production data, so
+  the original 0001..0008 collapsed into one `0001_init.sql`. Dev
+  users with an older DB delete `$APPDATA/runner/runner.db` once
+  to re-init. Future migrations resume from 0002.
 
 ## 2026-05-01
 

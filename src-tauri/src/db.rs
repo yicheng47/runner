@@ -60,9 +60,8 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
     )
 }
 
-// Migrations 0001..0008 were squashed into a single 0001_init.sql
-// ahead of v0.1.1's auto-update pipeline (no production data to
-// preserve yet). Future migrations resume from 0002.
+// Pre-release squash: the original 0001..0008 collapsed into one
+// init file. Future migrations resume from 0002.
 const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_init.sql"))];
 
 fn run_migrations(conn: &mut Connection) -> Result<()> {
