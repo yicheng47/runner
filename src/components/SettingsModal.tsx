@@ -31,6 +31,11 @@ import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { getVersion } from "@tauri-apps/api/app";
 
 import { api } from "../lib/api";
+import {
+  readStoredBool,
+  STORAGE_AUTO_INSTALL_UPDATES,
+  writeStoredBool,
+} from "../lib/settings";
 import { useUpdate } from "../contexts/UpdateContext";
 
 interface SettingsModalProps {
@@ -164,22 +169,14 @@ function PaneHeader({ title, subtitle }: { title: string; subtitle: string }) {
 // persist across reloads, even if no other surface reads the value
 // today.
 function useStoredBool(key: string, initial: boolean): [boolean, (v: boolean) => void] {
-  const [value, setValue] = useState<boolean>(() => {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw == null ? initial : raw === "1";
-    } catch {
-      return initial;
-    }
-  });
+  // Thin wrapper around the shared `lib/settings` helpers so the
+  // modal and any non-React reader (e.g. UpdateContext) can't drift
+  // on encoding. Both sides go through `readStoredBool` /
+  // `writeStoredBool`.
+  const [value, setValue] = useState<boolean>(() => readStoredBool(key, initial));
   const set = (v: boolean) => {
     setValue(v);
-    try {
-      localStorage.setItem(key, v ? "1" : "0");
-    } catch {
-      // best-effort — Safari private mode rejects setItem; the
-      // toggle still works in-session, just won't persist.
-    }
+    writeStoredBool(key, v);
   };
   return [value, set];
 }
@@ -249,7 +246,7 @@ function GeneralPane() {
 
 function UpdatesPane() {
   const [autoInstall, setAutoInstall] = useStoredBool(
-    "settings.autoInstallUpdates",
+    STORAGE_AUTO_INSTALL_UPDATES,
     true,
   );
   const [version, setVersion] = useState<string>("");

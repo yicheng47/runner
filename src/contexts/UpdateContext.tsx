@@ -11,11 +11,13 @@ import {
   type ReactNode,
 } from "react";
 
+import {
+  readStoredBool,
+  STORAGE_AUTO_INSTALL_UPDATES,
+} from "../lib/settings";
 import { useUpdateChecker, type UpdateState } from "../hooks/useUpdateChecker";
 
 const UpdateContext = createContext<UpdateState | null>(null);
-
-const AUTO_INSTALL_KEY = "settings.autoInstallUpdates";
 
 export function UpdateProvider({ children }: { children: ReactNode }) {
   const state = useUpdateChecker();
@@ -32,8 +34,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (checkedRef.current) return;
     checkedRef.current = true;
-    const enabled = localStorage.getItem(AUTO_INSTALL_KEY) !== "false";
-    if (!enabled) return;
+    if (!readStoredBool(STORAGE_AUTO_INSTALL_UPDATES, true)) return;
     const timer = setTimeout(() => {
       void state.checkForUpdate();
     }, 3000);
@@ -50,8 +51,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   // secret. Otherwise the user has to click Download in Settings.
   useEffect(() => {
     if (state.status !== "available") return;
-    const enabled = localStorage.getItem(AUTO_INSTALL_KEY) !== "false";
-    if (!enabled) return;
+    if (!readStoredBool(STORAGE_AUTO_INSTALL_UPDATES, true)) return;
     void state.downloadAndInstall();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.status]);
