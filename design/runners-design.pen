@@ -21869,67 +21869,6 @@
                 },
                 {
                   "type": "frame",
-                  "id": "SqRBj",
-                  "name": "row_autostart",
-                  "width": "fill_container",
-                  "gap": 24,
-                  "justifyContent": "space_between",
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "frame",
-                      "id": "xwuf4",
-                      "width": "fill_container",
-                      "layout": "vertical",
-                      "gap": 2,
-                      "children": [
-                        {
-                          "type": "text",
-                          "id": "BNx7r",
-                          "fill": "#EDEDF0",
-                          "content": "Auto-start last mission",
-                          "fontFamily": "Inter",
-                          "fontSize": 13,
-                          "fontWeight": "500"
-                        },
-                        {
-                          "type": "text",
-                          "id": "xa6bN",
-                          "fill": "#9A9BA5",
-                          "textGrowth": "fixed-width",
-                          "width": "fill_container",
-                          "content": "Resume the most recent mission when the app launches.",
-                          "fontFamily": "Inter",
-                          "fontSize": 11,
-                          "fontWeight": "normal"
-                        }
-                      ]
-                    },
-                    {
-                      "type": "frame",
-                      "id": "h0n2L",
-                      "name": "toggle_on",
-                      "width": 32,
-                      "height": 18,
-                      "fill": "#0F2418",
-                      "cornerRadius": 999,
-                      "padding": 2,
-                      "justifyContent": "end",
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "ellipse",
-                          "id": "iDzar",
-                          "fill": "#00FF9C",
-                          "width": 14,
-                          "height": 14
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
-                  "type": "frame",
                   "id": "foyS8",
                   "name": "row_default_crew",
                   "width": "fill_container",
@@ -22037,7 +21976,7 @@
                           "fill": "#9A9BA5",
                           "textGrowth": "fixed-width",
                           "width": "fill_container",
-                          "content": "Cwd new runner sessions inherit unless overridden.",
+                          "content": "Cwd new chats inherit unless overridden.",
                           "fontFamily": "Inter",
                           "fontSize": 11,
                           "fontWeight": "normal"
