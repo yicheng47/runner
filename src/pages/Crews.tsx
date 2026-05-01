@@ -3,7 +3,7 @@
 // Vertical stack of dark crew cards. Empty state uses the shared
 // EmptyStateCard so all three list pages stay visually consistent.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { api } from "../lib/api";
@@ -138,6 +138,11 @@ function UsersIcon() {
   );
 }
 
+// Crew card matches Pencil node `7js5x`: rounded card, padding 20,
+// gap 12, vertical layout. Header row stacks name (16/600) over
+// purpose (12/normal) on the left; right side shows "X runners" +
+// kebab. Below the header, member pills (rounded full, raised fill)
+// list each slot with `@slot_handle` + `runtime-runner_handle`.
 function CrewCard({
   item,
   onOpen,
@@ -147,6 +152,18 @@ function CrewCard({
   onOpen: () => void;
   onDelete: () => void;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    window.addEventListener("mousedown", onDoc);
+    return () => window.removeEventListener("mousedown", onDoc);
+  }, [menuOpen]);
+
   return (
     <div
       role="button"
@@ -158,47 +175,118 @@ function CrewCard({
           onOpen();
         }
       }}
-      className="group flex cursor-pointer flex-col gap-2 rounded-lg border border-line bg-panel p-4 transition-colors hover:border-line-strong focus:outline-none focus-visible:border-fg-3"
+      className="group flex cursor-pointer flex-col gap-3 rounded-lg border border-line bg-panel p-5 transition-colors hover:border-line-strong focus:outline-none focus-visible:border-fg-3"
     >
       <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-base font-semibold text-fg">
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <div className="truncate text-[16px] font-semibold text-fg">
             {item.name}
           </div>
           {item.purpose ? (
-            <div className="mt-0.5 line-clamp-2 text-xs text-fg-2">
+            <div className="line-clamp-2 text-[12px] text-fg-2">
               {item.purpose}
             </div>
           ) : (
-            <div className="mt-0.5 text-xs italic text-fg-3">
-              No purpose set
-            </div>
+            <div className="text-[12px] italic text-fg-3">No purpose set</div>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-3 text-xs text-fg-2">
+        <div className="flex shrink-0 items-center gap-2 text-[12px] text-fg-2">
           <span>
             {item.runner_count === 1
               ? "1 runner"
               : `${item.runner_count} runners`}
           </span>
-          <span className="text-accent transition-colors hover:underline">
-            Edit
-          </span>
-          <button
-            type="button"
-            aria-label={`Delete crew ${item.name}`}
-            title="Delete crew"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete();
-            }}
-            className="rounded px-1 py-0.5 text-fg-3 opacity-60 transition-colors hover:bg-danger/10 hover:text-danger focus-visible:opacity-100 group-hover:opacity-100"
-          >
-            Delete
-          </button>
+          <div ref={menuRef} className="relative">
+            <button
+              type="button"
+              aria-label={`Crew ${item.name} actions`}
+              title="Actions"
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen((v) => !v);
+              }}
+              className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-fg-3 hover:bg-raised hover:text-fg"
+            >
+              <EllipsisIcon />
+            </button>
+            {menuOpen ? (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="absolute right-0 top-full z-10 mt-1 flex min-w-[140px] flex-col gap-1 rounded-md border border-line bg-panel p-1 shadow-[0_8px_24px_rgba(0,0,0,0.5)]"
+              >
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenuOpen(false);
+                    onOpen();
+                  }}
+                  className="cursor-pointer rounded px-2 py-1.5 text-left text-[13px] text-fg hover:bg-raised"
+                >
+                  Open
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenuOpen(false);
+                    onDelete();
+                  }}
+                  className="cursor-pointer rounded px-2 py-1.5 text-left text-[13px] text-danger hover:bg-danger/10"
+                >
+                  Delete
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
+      {item.members.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {item.members.map((m) => (
+            <div
+              key={m.slot_handle}
+              className="flex items-center gap-1.5 rounded-full bg-raised px-2.5 py-1.5 text-[12px]"
+              title={m.lead ? "lead slot" : undefined}
+            >
+              <span className="font-mono font-medium text-fg">
+                @{m.slot_handle}
+              </span>
+              <span className="text-[11px] text-fg-2">
+                {m.runtime}-{m.runner_handle}
+              </span>
+              {m.lead ? (
+                <span className="rounded bg-accent/15 px-1 text-[9px] font-bold uppercase tracking-wide text-accent">
+                  lead
+                </span>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="text-[12px] italic text-fg-3">No slots yet.</div>
+      )}
     </div>
+  );
+}
+
+function EllipsisIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="19" cy="12" r="1" />
+      <circle cx="5" cy="12" r="1" />
+    </svg>
   );
 }
 

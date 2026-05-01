@@ -315,24 +315,41 @@ export default function MissionWorkspace() {
   const resumeMission = useCallback(async () => {
     if (!mission) return;
     setResumingAll(true);
+    let firstErr: string | null = null;
     try {
+      // Best-effort over every stopped slot. Don't bail on the first
+      // failure — earlier slots may have already resumed, and the
+      // user wants the UI to reflect whatever actually came up.
+      // Errors are collected and surfaced after the refresh.
       for (const s of sessions) {
         if (s.status === "running") continue;
-        await api.session.resume(s.id, null, null);
+        try {
+          await api.session.resume(s.id, null, null);
+        } catch (e) {
+          if (firstErr == null) firstErr = String(e);
+        }
       }
-      const rows = await api.session.list(mission.id);
-      setSessions(rows);
-      // Mission Resume implies the user wants to see the slots come
-      // back to life. Reopen any tabs they'd previously closed —
-      // resume isn't a useful action if the panes are hidden.
-      setOpenTabs((prev) => {
-        const next = new Set(prev);
-        for (const r of rows) next.add(r.id);
-        return Array.from(next);
-      });
-    } catch (e) {
-      setError(String(e));
     } finally {
+      // Refresh in finally so a partial failure (one slot resumed,
+      // a later one threw) still updates the row list + opens tabs
+      // for the slots that did come back. Without this the UI stays
+      // stuck reading "paused" while the resumed PTYs are live.
+      try {
+        const rows = await api.session.list(mission.id);
+        setSessions(rows);
+        // Mission Resume implies the user wants to see the slots
+        // come back to life. Reopen any tabs they'd previously
+        // closed — resume isn't a useful action if the panes are
+        // hidden.
+        setOpenTabs((prev) => {
+          const next = new Set(prev);
+          for (const r of rows) next.add(r.id);
+          return Array.from(next);
+        });
+      } catch (e) {
+        if (firstErr == null) firstErr = String(e);
+      }
+      if (firstErr != null) setError(firstErr);
       setResumingAll(false);
     }
   }, [mission, sessions]);
@@ -438,9 +455,65 @@ export default function MissionWorkspace() {
             <Flag aria-hidden className="h-[18px] w-[18px]" />
           </div>
           <div className="flex min-w-0 flex-col gap-0.5">
-            <h1 className="truncate text-[14px] font-semibold leading-tight text-fg">
-              {mission?.title ?? "…"}
-            </h1>
+            <div className="flex items-center gap-2">
+              <h1 className="truncate text-[14px] font-semibold leading-tight text-fg">
+                {mission?.title ?? "…"}
+              </h1>
+              {/* Type badge mirrors RunnerChat's "Chat" pill so the
+                  workspace surfaces consistently signal what kind of
+                  thing this is, not just its status. */}
+              <span className="rounded bg-line-strong px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-fg-2">
+                Mission
+              </span>
+              {/* Status pill moved to the left so it sits next to
+                  the title instead of competing visually with the
+                  Resume / Stop / kebab cluster on the right — the
+                  action buttons already imply the current state,
+                  and a pill at the same edge read redundant. */}
+              {mission ? (() => {
+                type Display =
+                  | "running"
+                  | "stopped"
+                  | "archived"
+                  | "aborted"
+                  | "resuming";
+                const display: Display = resumingAll
+                  ? "resuming"
+                  : mission.status === "running"
+                    ? anySessionLive
+                      ? "running"
+                      : "stopped"
+                    : mission.status === "completed"
+                      ? "archived"
+                      : "aborted";
+                const pillClass =
+                  display === "running"
+                    ? "bg-accent/15 text-accent"
+                    : display === "aborted"
+                      ? "bg-danger/15 text-danger"
+                      : display === "resuming"
+                        ? "bg-[#0F1E26] text-[#39E5FF]"
+                        : "bg-raised text-fg-2";
+                const dotClass =
+                  display === "running"
+                    ? "bg-accent"
+                    : display === "aborted"
+                      ? "bg-danger"
+                      : display === "resuming"
+                        ? "bg-[#39E5FF]"
+                        : "bg-fg-3";
+                return (
+                  <span
+                    className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${pillClass}`}
+                  >
+                    <span
+                      className={`inline-flex h-1.5 w-1.5 rounded-full ${dotClass}`}
+                    />
+                    {display === "resuming" ? "resuming…" : display}
+                  </span>
+                );
+              })() : null}
+            </div>
             <span className="truncate text-[11px] leading-tight text-fg-3">
               {sessions.length} runner{sessions.length === 1 ? "" : "s"}
               {startedAt ? ` · started ${startedAt}` : ""}
@@ -448,60 +521,6 @@ export default function MissionWorkspace() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {mission ? (() => {
-            // Display status is derived: a `running` mission with no
-            // live PTYs reads as "stopped" so the badge matches the
-            // Resume button next to it. While `resumingAll` is in
-            // flight (mission-level Resume button clicked, slots are
-            // being respawned), the pill flips to a cyan "resuming…"
-            // matching Pencil node `a3c7p`'s topbar. Mission row
-            // state is still authoritative for backend gating; only
-            // the visual label is derived.
-            type Display =
-              | "running"
-              | "stopped"
-              | "archived"
-              | "aborted"
-              | "resuming";
-            const display: Display = resumingAll
-              ? "resuming"
-              : mission.status === "running"
-                ? anySessionLive
-                  ? "running"
-                  : "stopped"
-                : mission.status === "completed"
-                  ? "archived"
-                  : "aborted";
-            // Smaller pill matching design `M5Kohk` — tighter padding,
-            // pure rounded ends, slightly subdued bg tints. Cyan
-            // tones for resuming match `Y5e0K5` in `a3c7p`.
-            const pillClass =
-              display === "running"
-                ? "bg-accent/15 text-accent"
-                : display === "aborted"
-                  ? "bg-danger/15 text-danger"
-                  : display === "resuming"
-                    ? "bg-[#0F1E26] text-[#39E5FF]"
-                    : "bg-raised text-fg-2";
-            const dotClass =
-              display === "running"
-                ? "bg-accent"
-                : display === "aborted"
-                  ? "bg-danger"
-                  : display === "resuming"
-                    ? "bg-[#39E5FF]"
-                    : "bg-fg-3";
-            return (
-              <span
-                className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${pillClass}`}
-              >
-                <span
-                  className={`inline-flex h-1.5 w-1.5 rounded-full ${dotClass}`}
-                />
-                {display === "resuming" ? "resuming…" : display}
-              </span>
-            );
-          })() : null}
           {mission?.status === "running" && !resumingAll ? (
             <>
               {anySessionStopped ? (
@@ -625,29 +644,40 @@ export default function MissionWorkspace() {
                 missionId={mission.id}
                 leadHandle={leadHandle}
                 handles={handles}
-                disabled={mission.status !== "running" || !anySessionLive}
+                disabled={mission.status !== "running" || !allSessionsLive}
                 onError={setError}
               />
-              {/* Pause overlay only when *every* PTY is dead. A
-                  partial crash (one worker stopped, lead still
-                  alive) leaves coordination working — the human can
-                  message the lead and any other live slot — so we
-                  shouldn't gate the feed input. Same
-                  `variant="inline"` placement the slot panes use, so
-                  feed + PTY tabs share one recovery anchor when the
-                  mission really is fully paused. */}
+              {/* Pause overlay fires whenever *any* slot is stopped.
+                  Per the "no single-slot resume" rule, a partial-
+                  mission state (one worker crashed, lead still up)
+                  isn't a valid run. Full-pane backdrop + centered
+                  card so the feed reads as paused at a glance —
+                  the inline variant the slot panes use sits over
+                  the input and was easy to miss when the feed
+                  scrolled. */}
               {mission.status === "running" &&
-              !anySessionLive &&
+              !allSessionsLive &&
               !resumingAll ? (
-                <SessionEndedOverlay
-                  status="stopped"
-                  resumable
-                  title="Mission paused"
-                  subtitle="All slots are stopped. Resume to respawn every slot and pick up the conversation — the event log is preserved."
-                  resumeLabel="Resume mission"
-                  onResume={() => void resumeMission()}
-                  variant="inline"
-                />
+                <>
+                  {/* Backdrop only — sits behind the inline-variant
+                      card so the feed dims and reads as paused
+                      without moving the card off its original
+                      bottom anchor. */}
+                  <div className="pointer-events-none absolute inset-0 z-0 bg-bg/70 backdrop-blur-sm" />
+                  <SessionEndedOverlay
+                    status="stopped"
+                    resumable
+                    title="Mission paused"
+                    subtitle={
+                      anySessionLive
+                        ? "One or more slots stopped. Resume the mission to respawn every stopped slot — partial-mission states aren't a valid run."
+                        : "All slots are stopped. Resume to respawn every slot and pick up the conversation — the event log is preserved."
+                    }
+                    resumeLabel="Resume mission"
+                    onResume={() => void resumeMission()}
+                    variant="inline"
+                  />
+                </>
               ) : null}
             </Pane>
 
@@ -661,10 +691,7 @@ export default function MissionWorkspace() {
                     active={activeTab === s.id}
                     forcedResuming={resumingAll}
                     onError={setError}
-                    onResumed={async () => {
-                      const rows = await api.session.list(mission.id);
-                      setSessions(rows);
-                    }}
+                    onResumeMission={() => void resumeMission()}
                   />
                 </Pane>
               ))}
@@ -738,33 +765,22 @@ function SlotPtyPane({
   active,
   forcedResuming,
   onError,
-  onResumed,
+  onResumeMission,
 }: {
   session: SessionRow;
   active: boolean;
   /** True when the parent's "Resume mission" button is iterating
-   *  through every slot. Drives the resuming overlay in this pane
-   *  even though the per-slot button wasn't clicked. */
+   *  through every slot. Drives the resuming overlay in this pane. */
   forcedResuming?: boolean;
   onError: (e: string) => void;
-  onResumed: () => void | Promise<void>;
+  /** Mission-wide resume callback. The slot pane's overlay no longer
+   *  resumes a single PTY in isolation — a partial mission state
+   *  isn't a valid run, so any "Resume" affordance respawns every
+   *  stopped slot via the parent. */
+  onResumeMission: () => void | Promise<void>;
 }) {
-  const [localResuming, setLocalResuming] = useState(false);
-  const resuming = localResuming || !!forcedResuming;
+  const resuming = !!forcedResuming;
   const dead = session.status !== "running";
-
-  const onResume = async () => {
-    if (resuming) return;
-    setLocalResuming(true);
-    try {
-      await api.session.resume(session.id, null, null);
-      await onResumed();
-    } catch (e) {
-      onError(String(e));
-    } finally {
-      setLocalResuming(false);
-    }
-  };
 
   // Mission slot pane omits the Archive option — archiving a slot's
   // session row would orphan the slot in the workspace. Mission-level
@@ -796,9 +812,13 @@ function SlotPtyPane({
       ) : dead ? (
         <SessionEndedOverlay
           status={session.status}
-          handle={session.handle}
-          resumable={true}
-          onResume={() => void onResume()}
+          resumable
+          title="Slot stopped"
+          subtitle="This slot's PTY is closed. Resume the mission to respawn every stopped slot — partial-mission states aren't a valid run."
+          resumeLabel="Resume mission"
+          onResume={() => {
+            void onResumeMission();
+          }}
           variant="inline"
         />
       ) : null}

@@ -32,6 +32,8 @@ export function RunnerEditDrawer({
   const [argsText, setArgsText] = useState("");
   const [workingDir, setWorkingDir] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,6 +45,8 @@ export function RunnerEditDrawer({
       setArgsText(runner.args.join(" "));
       setWorkingDir(runner.working_dir ?? "");
       setSystemPrompt(runner.system_prompt ?? "");
+      setModel(runner.model ?? "");
+      setEffort(runner.effort ?? "");
       setError(null);
     }
   }, [open, runner]);
@@ -65,6 +69,8 @@ export function RunnerEditDrawer({
         args: argsText.trim() ? argsText.trim().split(/\s+/) : [],
         working_dir: workingDir.trim() || null,
         system_prompt: systemPrompt.trim() || null,
+        model: model.trim() || null,
+        effort: effort.trim() || null,
       };
       await api.runner.update(runner.id, input);
       await onSaved();
@@ -168,6 +174,37 @@ export function RunnerEditDrawer({
             rows={6}
             value={systemPrompt}
             onChange={(e) => setSystemPrompt(e.target.value)}
+          />
+        </Field>
+
+        {/* Model + effort: claude-code-only today (codex's adapter
+            degrades silently). Empty = inherit the agent CLI's
+            default. Hint copy is intentionally permissive — the row
+            stores whatever the user types so we don't have to keep
+            an enum in sync with model rotations. */}
+        <Field
+          id="edit-model"
+          label="Model"
+          hint="optional · claude-code / codex: e.g. claude-opus-4-7"
+        >
+          <Input
+            id="edit-model"
+            value={model}
+            placeholder="claude-opus-4-7"
+            onChange={(e) => setModel(e.target.value)}
+          />
+        </Field>
+
+        <Field
+          id="edit-effort"
+          label="Thinking effort"
+          hint="optional · claude-code: low / medium / high / xhigh / max"
+        >
+          <Input
+            id="edit-effort"
+            value={effort}
+            placeholder="xhigh"
+            onChange={(e) => setEffort(e.target.value)}
           />
         </Field>
 

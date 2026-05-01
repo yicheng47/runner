@@ -504,10 +504,7 @@ impl Router {
                 allowed_signals: self.launch.allowed_signals(),
             },
         );
-        let body = prompt
-            .trim_end_matches(['\n', '\r'])
-            .as_bytes()
-            .to_vec();
+        let body = prompt.trim_end_matches(['\n', '\r']).as_bytes().to_vec();
         self.inject_and_submit_delayed(
             lead_row.handle(),
             body,

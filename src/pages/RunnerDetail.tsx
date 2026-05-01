@@ -78,16 +78,36 @@ export default function RunnerDetail() {
     };
   }, [runner?.id]);
 
-  const startChat = () => {
+  const startChat = async () => {
     if (!runner || openingChat) return;
     setOpeningChat(true);
-    // No per-chat cwd override here — the page is read-only outside
-    // edit mode, so the chat inherits the runner's `working_dir`. Per-
-    // chat overrides will surface as an affordance inside the chat
-    // itself in a future change.
-    navigate(`/runners/${runner.handle}/chat`, {
-      state: { runnerId: runner.id, cwd: null },
-    });
+    // Spawn the PTY from the originating button rather than letting
+    // RunnerChat's mount effect do it. RunnerChat ran the spawn from
+    // a useEffect with a complex StrictMode-double-mount workaround
+    // (orphan reap + respawn tick); the workaround left a window
+    // where two visible sessions could appear for a single click.
+    // Doing the spawn here makes the click-to-spawn a single
+    // deterministic call, and RunnerChat only ever runs the attach
+    // path. No per-chat cwd override on this surface — the chat
+    // inherits the runner's `working_dir`; an in-chat affordance can
+    // expose per-chat cwd later.
+    try {
+      const spawned = await api.session.startDirect(
+        runner.id,
+        null,
+        null,
+        null,
+      );
+      navigate(`/runners/${runner.handle}/chat`, {
+        state: {
+          sessionId: spawned.id,
+          sessionStatus: "running",
+        },
+      });
+    } catch (e) {
+      setError(String(e));
+      setOpeningChat(false);
+    }
   };
 
   return (
@@ -119,7 +139,9 @@ export default function RunnerDetail() {
               </Button>
               <Button
                 variant="primary"
-                onClick={() => void startChat()}
+                onClick={() => {
+                  void startChat();
+                }}
                 disabled={!runner || openingChat}
                 title="Start a one-on-one PTY with this runner"
               >
@@ -194,7 +216,7 @@ export default function RunnerDetail() {
                   )}
                 </Card>
 
-                <Card title="Chat now" subtitle="Spawn a one-on-one PTY. Direct chats don't join any mission's coordination bus.">
+                <Card title="Chat now" subtitle="Spawn a one-on-one PTY. Chats don't join any mission's coordination bus.">
                   <div className="flex flex-col gap-2">
                     <div className="flex flex-col gap-1 text-xs text-fg-2">
                       <span>Working directory</span>

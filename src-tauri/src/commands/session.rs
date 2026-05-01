@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use rusqlite::{params, Row};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, State};
 
 use crate::{
     commands::runner,
@@ -254,8 +254,18 @@ pub async fn session_list_recent_direct(
 /// Soft-delete a session: hides it from the SESSION sidebar tray. The row
 /// stays in the table so a future Archived workspace surface can still
 /// surface it. Running sessions cannot be archived — kill them first.
+///
+/// Emits a `session/archived` Tauri event after the row flips so the
+/// sidebar's CHAT list can refresh — without it, archiving from the
+/// chat page (RunnerChat's SessionEnded overlay) would archive the
+/// row but leave the sidebar stale until something else triggered a
+/// refresh.
 #[tauri::command]
-pub async fn session_archive(state: State<'_, AppState>, session_id: String) -> Result<()> {
+pub async fn session_archive(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<()> {
     let conn = state.db.get()?;
     let now = chrono::Utc::now().to_rfc3339();
     let updated = conn.execute(
@@ -275,6 +285,10 @@ pub async fn session_archive(state: State<'_, AppState>, session_id: String) -> 
     // and replayed; archive is the explicit "I'm done with this chat"
     // signal, so we let the buffer go.
     state.sessions.purge_session_buffers(&session_id);
+    let _ = app.emit(
+        "session/archived",
+        serde_json::json!({ "session_id": session_id }),
+    );
     Ok(())
 }
 

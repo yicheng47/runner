@@ -37,6 +37,7 @@ import {
   PinOff,
   Plus,
   Search,
+  Settings as SettingsIcon,
   SquarePen,
   Terminal,
   Users,
@@ -49,6 +50,8 @@ import {
 } from "../lib/activeSessions";
 import type { AppendedEvent, MissionSummary } from "../lib/types";
 import { StartMissionModal } from "./StartMissionModal";
+import { SettingsModal } from "./SettingsModal";
+import { CommandPalette } from "./CommandPalette";
 
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 480;
@@ -118,6 +121,11 @@ export function Sidebar() {
     x: number;
     y: number;
   } | null>(null);
+  // Settings modal toggle. Opened from the bottom-pinned Settings row.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Command palette toggle. Opened from the search nav row OR the
+  // global ⌘K / Ctrl+K shortcut. Mirrors Pencil node `Fkoe8`.
+  const [paletteOpen, setPaletteOpen] = useState(false);
   // Mission row context menu — same anchor model as sessionMenu.
   // Today's actions: Archive (real, calls mission_archive). Pin and
   // Rename are designed-in slots reserved for follow-ups.
@@ -163,6 +171,23 @@ export function Sidebar() {
   useEffect(() => {
     void refreshMissions();
   }, [refreshMissions]);
+
+  // ⌘K / Ctrl+K opens the command palette from anywhere in the app.
+  // Skip when the user is editing inside an <input> or <textarea>
+  // so the shortcut doesn't hijack normal text input.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "k" && e.key !== "K") return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+      e.preventDefault();
+      setPaletteOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -232,6 +257,7 @@ export function Sidebar() {
   useEffect(() => {
     let unlistenExit: (() => void) | null = null;
     let unlistenActivity: (() => void) | null = null;
+    let unlistenArchived: (() => void) | null = null;
     let cancelled = false;
     void Promise.all([
       listen("session/exit", () => {
@@ -240,19 +266,30 @@ export function Sidebar() {
       listen("runner/activity", () => {
         void refreshDirectSessions();
       }),
-    ]).then(([fnExit, fnActivity]) => {
+      listen("session/archived", () => {
+        // Fired by `session_archive` after the archived_at flip. Lets
+        // the CHAT list drop the row whenever the user archives from
+        // anywhere (sidebar's own Archive action already refreshes
+        // explicitly, but RunnerChat's SessionEnded overlay relies on
+        // this event since it doesn't own the sidebar's fetch).
+        void refreshDirectSessions();
+      }),
+    ]).then(([fnExit, fnActivity, fnArchived]) => {
       if (cancelled) {
         fnExit();
         fnActivity();
+        fnArchived();
         return;
       }
       unlistenExit = fnExit;
       unlistenActivity = fnActivity;
+      unlistenArchived = fnArchived;
     });
     return () => {
       cancelled = true;
       unlistenExit?.();
       unlistenActivity?.();
+      unlistenArchived?.();
     };
   }, [refreshDirectSessions]);
 
@@ -495,7 +532,7 @@ export function Sidebar() {
                   runner/crew rather than an inline input. The actual
                   palette is a follow-up; for now the row stubs the
                   callout. */}
-              <SearchNavRow />
+              <SearchNavRow onOpen={() => setPaletteOpen(true)} />
             </nav>
           </div>
 
@@ -531,12 +568,7 @@ export function Sidebar() {
                       label={m.title}
                       onClick={() => openMission(m.id)}
                       onContextMenu={(anchor) => openMissionMenu(m, anchor)}
-                      title={`${m.crew_name || ""}${
-                        m.pending_ask_count > 0
-                          ? ` · ${m.pending_ask_count} pending`
-                          : ""
-                      }`}
-                      pendingAsks={m.pending_ask_count}
+                      title={m.crew_name || ""}
                       pinned={!!m.pinned_at}
                       renaming={renamingMissionId === m.id}
                       onRenameSubmit={(next) =>
@@ -554,18 +586,18 @@ export function Sidebar() {
 
           <section className="flex min-h-0 flex-[2] basis-0 flex-col">
             <CollapsibleSectionHeader
-              label="SESSION"
+              label="CHAT"
               count={directSessions.length}
               open={sessionsOpen}
               onToggle={toggleSessions}
               onPlus={handleNewDirectChat}
-              plusTitle="Start a direct chat"
+              plusTitle="Start a chat"
             />
             {sessionsOpen ? (
               <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1">
                 {directSessions.length === 0 ? (
                   <p className="px-2.5 py-1 text-xs text-fg-3">
-                    No direct sessions.
+                    No chats yet.
                   </p>
                 ) : (
                   directSessions.map((s) => (
@@ -586,6 +618,21 @@ export function Sidebar() {
               </div>
             ) : null}
           </section>
+
+          {/* Settings row — pinned at the bottom of the sidebar
+              column. Mirrors Pencil node `IJsUO` (sidebar settings).
+              Opens the SettingsModal as a centered overlay; modal
+              owns its open/close state effects. */}
+          <div className="shrink-0 border-t border-line px-3 pt-2">
+            <button
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+              className="flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-fg-2 transition-colors hover:bg-raised hover:text-fg"
+            >
+              <SettingsIcon aria-hidden className="h-3.5 w-3.5" />
+              <span className="text-[13px]">Settings</span>
+            </button>
+          </div>
         </div>
 
         <div
@@ -594,6 +641,16 @@ export function Sidebar() {
           className="absolute right-0 top-0 z-20 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-accent/40"
         />
       </aside>
+
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+      />
 
       <StartMissionModal
         open={creatingMission}
@@ -686,21 +743,20 @@ function NavRow({
 }
 
 /// Search nav row — visually indistinguishable from runner/crew rows
-/// but opens a command-palette modal instead of routing. Stubbed
-/// today: click triggers a "coming soon" indicator. Wire to the real
-/// palette when it lands.
-function SearchNavRow() {
+/// but opens the CommandPalette modal instead of routing.
+function SearchNavRow({ onOpen }: { onOpen: () => void }) {
   return (
     <button
       type="button"
-      title="Search — coming soon"
-      onClick={() => {
-        // TODO: open the command-palette modal (Pencil node `Fkoe8`).
-      }}
-      className="flex w-full cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:text-fg"
+      title="Search (⌘K)"
+      onClick={onOpen}
+      className="flex w-full cursor-pointer items-center justify-between gap-2 rounded px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:text-fg"
     >
-      <Search aria-hidden className="h-3 w-3 text-fg-2" />
-      <span>search</span>
+      <span className="flex items-center gap-2">
+        <Search aria-hidden className="h-3 w-3 text-fg-2" />
+        <span>search</span>
+      </span>
+      <span className="font-mono text-[10px] text-fg-3">⌘K</span>
     </button>
   );
 }
@@ -760,7 +816,6 @@ function RuntimeRow({
   onContextMenu,
   title,
   mono,
-  pendingAsks,
   dim,
   pinned,
   renaming,
@@ -774,7 +829,6 @@ function RuntimeRow({
   onContextMenu?: (anchor: { x: number; y: number }) => void;
   title?: string;
   mono?: boolean;
-  pendingAsks?: number;
   /** True when the row represents a non-running runtime (e.g. a stopped
    *  direct chat that can be resumed). Mutes the status dot so the user
    *  can tell which sessions are live at a glance. */
@@ -797,9 +851,7 @@ function RuntimeRow({
     );
   }
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <div
       onContextMenu={
         onContextMenu
           ? (e) => {
@@ -808,36 +860,49 @@ function RuntimeRow({
             }
           : undefined
       }
-      title={title}
-      className={`flex w-full cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-left text-xs transition-colors ${
+      className={`group flex w-full items-center gap-2 rounded border px-2.5 py-1.5 text-left text-xs transition-colors ${
         selected
-          ? "border border-line bg-bg text-fg"
-          : "border border-transparent text-fg-2 hover:text-fg"
+          ? "border-line bg-bg text-fg"
+          : "border-transparent text-fg-2 hover:text-fg"
       }`}
     >
-      <span
-        className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${
-          dim ? "bg-fg-3" : "bg-accent"
-        }`}
-      />
-      <span className={`truncate flex-1 ${mono ? "font-mono" : ""}`}>
-        {label}
-      </span>
-      {pinned ? (
-        <Pin
-          aria-hidden
-          className="h-3 w-3 shrink-0 text-fg-3"
-        />
-      ) : null}
-      {pendingAsks && pendingAsks > 0 ? (
+      <button
+        type="button"
+        onClick={onClick}
+        title={title}
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+      >
         <span
-          title="Awaiting human input"
-          className="rounded bg-warn/20 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-warn"
-        >
-          {pendingAsks}
+          className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${
+            dim ? "bg-fg-3" : "bg-accent"
+          }`}
+        />
+        <span className={`truncate flex-1 ${mono ? "font-mono" : ""}`}>
+          {label}
         </span>
+        {pinned ? (
+          <Pin aria-hidden className="h-3 w-3 shrink-0 text-fg-3" />
+        ) : null}
+      </button>
+      {/* Kebab anchor for the same context menu the row's
+          right-click triggers. Mirrors SessionRow's affordance so
+          mission rows get a discoverable "..." button on hover —
+          right-click alone isn't an obvious entry point. */}
+      {onContextMenu ? (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onContextMenu({ x: e.clientX, y: e.clientY });
+          }}
+          title="More actions"
+          aria-label="More actions"
+          className="cursor-pointer rounded p-0.5 text-fg-3 opacity-0 transition-opacity hover:bg-raised hover:text-fg group-hover:opacity-100 focus:opacity-100"
+        >
+          <MoreHorizontal aria-hidden className="h-3 w-3" />
+        </button>
       ) : null}
-    </button>
+    </div>
   );
 }
 

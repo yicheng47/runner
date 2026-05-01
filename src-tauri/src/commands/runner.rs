@@ -37,6 +37,10 @@ pub struct CreateRunnerInput {
     pub system_prompt: Option<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 // `handle` is intentionally excluded from updates: per arch §2.2 and §5.2
@@ -55,6 +59,8 @@ pub struct UpdateRunnerInput {
     pub working_dir: Option<Option<String>>,
     pub system_prompt: Option<Option<String>>,
     pub env: Option<HashMap<String, String>>,
+    pub model: Option<Option<String>>,
+    pub effort: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -149,6 +155,8 @@ pub(super) fn row_to_runner(row: &Row<'_>) -> rusqlite::Result<Runner> {
             })?,
             None => HashMap::new(),
         },
+        model: row.get("model")?,
+        effort: row.get("effort")?,
         created_at: created_at.parse().map_err(|e: chrono::ParseError| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
         })?,
@@ -160,6 +168,7 @@ pub(super) fn row_to_runner(row: &Row<'_>) -> rusqlite::Result<Runner> {
 
 pub(super) const SELECT_COLS: &str = "id, handle, display_name, runtime, command,
                                        args_json, working_dir, system_prompt, env_json,
+                                       model, effort,
                                        created_at, updated_at";
 
 pub fn list(conn: &Connection) -> Result<Vec<Runner>> {
@@ -220,8 +229,9 @@ pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
         "INSERT INTO runners (
             id, handle, display_name, runtime, command,
             args_json, working_dir, system_prompt, env_json,
+            model, effort,
             created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
         params![
             id,
             input.handle,
@@ -232,6 +242,16 @@ pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
             input.working_dir,
             input.system_prompt,
             env_json,
+            input
+                .model
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty()),
+            input
+                .effort
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty()),
             ts,
         ],
     )?;
@@ -253,6 +273,36 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
     let working_dir = input.working_dir.unwrap_or(existing.working_dir);
     let system_prompt = input.system_prompt.unwrap_or(existing.system_prompt);
     let env = input.env.unwrap_or(existing.env);
+    // Trim + collapse blank strings to NULL: the editor's text inputs
+    // produce `Some("")` when the user clears the field, and we want
+    // that to read as "inherit the agent's default" — same semantic
+    // as the column being NULL.
+    let model = input
+        .model
+        .map(|opt| {
+            opt.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t)
+                }
+            })
+        })
+        .unwrap_or(existing.model);
+    let effort = input
+        .effort
+        .map(|opt| {
+            opt.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t)
+                }
+            })
+        })
+        .unwrap_or(existing.effort);
 
     let args_json = serde_json::to_string(&args)?;
     let env_json = serde_json::to_string(&env)?;
@@ -267,8 +317,10 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
                 working_dir = ?5,
                 system_prompt = ?6,
                 env_json = ?7,
-                updated_at = ?8
-          WHERE id = ?9",
+                model = ?8,
+                effort = ?9,
+                updated_at = ?10
+          WHERE id = ?11",
         params![
             display_name,
             runtime,
@@ -277,6 +329,8 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
             working_dir,
             system_prompt,
             env_json,
+            model,
+            effort,
             ts,
             id,
         ],
@@ -332,10 +386,7 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
                 )
                 .optional()?;
             if let Some(new_lead) = promote {
-                tx.execute(
-                    "UPDATE slots SET lead = 1 WHERE id = ?1",
-                    params![new_lead],
-                )?;
+                tx.execute("UPDATE slots SET lead = 1 WHERE id = ?1", params![new_lead])?;
             }
         }
         // Close the position gap the cascade left for this crew so
@@ -497,6 +548,8 @@ mod tests {
                 working_dir: None,
                 system_prompt: None,
                 env: HashMap::new(),
+                model: None,
+                effort: None,
             },
         )
         .unwrap()
@@ -538,6 +591,8 @@ mod tests {
                 working_dir: None,
                 system_prompt: None,
                 env: HashMap::new(),
+                model: None,
+                effort: None,
             },
         )
         .unwrap_err();

@@ -27,6 +27,69 @@
 // related "how do we hand prompts and identity to a real CLI" piece.
 
 /// Compute the extra args (in declaration order) to append after the
+/// runner's configured `args` so the child receives the pinned model
+/// and thinking effort via the runtime's native flags. Returns an
+/// empty Vec when both fields are unset (NULL on the row) or when
+/// the runtime has no equivalent. Mirrors `system_prompt_args` in
+/// style: pure, declaration-order-aware, easy to unit-test.
+///
+/// claude-code maps:
+///   - `model` → `--model <name>` (e.g. `claude-opus-4-7`)
+///   - `effort` → `--effort <level>`. Accepted levels per `claude
+///     --help`: `low / medium / high / xhigh / max`. The flag was
+///     `--thinking-effort` in earlier docs but the installed CLI
+///     ships `--effort`; we pass the row's value through verbatim
+///     so the CLI's own validation is the source of truth.
+///
+/// codex maps:
+///   - `model` → `--model <name>`. Verified against
+///     `codex --help`. codex has no equivalent thinking-effort
+///     flag today, so `effort` is silently ignored for codex
+///     runners (the row keeps the preference for when it lands).
+///
+/// shell / unknown runtimes: no equivalent flags — degrade silently
+/// so the runner row's preference is recorded but the spawn
+/// doesn't reject on unknown args.
+pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str>) -> Vec<String> {
+    fn trim_some(v: Option<&str>) -> Option<&str> {
+        v.map(str::trim).filter(|s| !s.is_empty())
+    }
+    let model = trim_some(model);
+    let effort = trim_some(effort);
+    if model.is_none() && effort.is_none() {
+        return Vec::new();
+    }
+    match runtime {
+        "claude-code" => {
+            let mut out = Vec::new();
+            if let Some(m) = model {
+                out.push("--model".into());
+                out.push(m.to_string());
+            }
+            if let Some(e) = effort {
+                out.push("--effort".into());
+                out.push(e.to_string());
+            }
+            out
+        }
+        "codex" => {
+            // codex accepts `--model <MODEL>` but has no
+            // thinking-effort flag today. Skip effort silently;
+            // the row still persists the preference for when
+            // codex's adapter catches up.
+            let mut out = Vec::new();
+            if let Some(m) = model {
+                out.push("--model".into());
+                out.push(m.to_string());
+            }
+            out
+        }
+        // shell / unknown
+        _ => Vec::new(),
+    }
+}
+
+/// Compute the extra args (in declaration order) to append after the
 /// runner's configured `args` so the child receives `system_prompt` via the
 /// runtime's native flag. Returns an empty Vec when no prompt is set or
 /// when the runtime delivers prompts through stdin instead of argv.
@@ -197,37 +260,37 @@ pub fn claude_code_conversation_exists(cwd: Option<&str>, uuid: &str) -> bool {
     #[cfg(test)]
     {
         let _ = (cwd, uuid);
-        return true;
+        true
     }
     #[cfg(not(test))]
     {
-    let Some(cwd) = cwd else {
-        // No cwd → claude-code falls back to the parent's, which we
-        // can't reproduce here. Be permissive: let `--resume` try and
-        // surface its own error rather than masking it.
-        return true;
-    };
-    let Some(home) = std::env::var_os("HOME") else {
-        return true;
-    };
-    // claude-code encodes the project dir by replacing both `/` and
-    // `.` with `-`. e.g. `/Users/jason/go/src/github.com/yicheng47`
-    // → `-Users-jason-go-src-github-com-yicheng47`. Confirmed against
-    // `~/.claude/projects/` directory listings. Only swapping `/`
-    // would miss every cwd containing a `.` (most repos), causing
-    // `path.exists()` to return false even when the conversation
-    // file is on disk — every resume would then spuriously fall back
-    // to a fresh spawn.
-    let encoded: String = cwd
-        .chars()
-        .map(|c| if c == '/' || c == '.' { '-' } else { c })
-        .collect();
-    let path = std::path::PathBuf::from(home)
-        .join(".claude")
-        .join("projects")
-        .join(encoded)
-        .join(format!("{uuid}.jsonl"));
-    path.exists()
+        let Some(cwd) = cwd else {
+            // No cwd → claude-code falls back to the parent's, which we
+            // can't reproduce here. Be permissive: let `--resume` try and
+            // surface its own error rather than masking it.
+            return true;
+        };
+        let Some(home) = std::env::var_os("HOME") else {
+            return true;
+        };
+        // claude-code encodes the project dir by replacing both `/` and
+        // `.` with `-`. e.g. `/Users/jason/go/src/github.com/yicheng47`
+        // → `-Users-jason-go-src-github-com-yicheng47`. Confirmed against
+        // `~/.claude/projects/` directory listings. Only swapping `/`
+        // would miss every cwd containing a `.` (most repos), causing
+        // `path.exists()` to return false even when the conversation
+        // file is on disk — every resume would then spuriously fall back
+        // to a fresh spawn.
+        let encoded: String = cwd
+            .chars()
+            .map(|c| if c == '/' || c == '.' { '-' } else { c })
+            .collect();
+        let path = std::path::PathBuf::from(home)
+            .join(".claude")
+            .join("projects")
+            .join(encoded)
+            .join(format!("{uuid}.jsonl"));
+        path.exists()
     }
 }
 

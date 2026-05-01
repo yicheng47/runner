@@ -79,9 +79,15 @@ export default function Runners() {
 
   // The Chat pill on a runner card takes you straight into a PTY — not
   // a detour through the runner detail page. Re-attach if a live direct
-  // session already exists; otherwise spawn a fresh one and let the
-  // chat page take over.
-  const onChat = (item: RunnerWithActivity) => {
+  // session already exists; otherwise spawn a fresh one *here* (not in
+  // RunnerChat's mount effect) so the click-to-spawn is a single
+  // deterministic call. The mount-effect spawn path tripped a
+  // StrictMode double-mount race that left two visible sessions per
+  // click; spawning here and navigating with a real sessionId keeps
+  // RunnerChat on the deterministic attach path.
+  const [chatPending, setChatPending] = useState<string | null>(null);
+  const onChat = async (item: RunnerWithActivity) => {
+    if (chatPending) return;
     if (item.direct_session_id) {
       // `direct_session_id` from runner_activity only ever points at a
       // currently-running PTY, so seed the chat with sessionStatus
@@ -96,10 +102,18 @@ export default function Runners() {
           sessionStatus: "running",
         },
       });
-    } else {
+      return;
+    }
+    setChatPending(item.id);
+    try {
+      const spawned = await api.session.startDirect(item.id, null, null, null);
       navigate(`/runners/${item.handle}/chat`, {
-        state: { runnerId: item.id, cwd: null },
+        state: { sessionId: spawned.id, sessionStatus: "running" },
       });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setChatPending(null);
     }
   };
 
@@ -167,7 +181,8 @@ export default function Runners() {
                   key={r.id}
                   item={r}
                   onOpen={() => navigate(`/runners/${r.handle}`)}
-                  onChat={() => onChat(r)}
+                  onChat={() => void onChat(r)}
+                  chatPending={chatPending === r.id}
                   onDelete={() => onDelete(r.id, r.handle)}
                 />
               ))}
@@ -214,11 +229,13 @@ function RunnerCard({
   item,
   onOpen,
   onChat,
+  chatPending,
   onDelete,
 }: {
   item: RunnerWithActivity;
   onOpen: () => void;
   onChat: () => void;
+  chatPending: boolean;
   onDelete: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -267,17 +284,18 @@ function RunnerCard({
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                onChat();
+                if (!chatPending) onChat();
               }}
-              className="ml-1 inline-flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent/10 active:bg-accent/20"
+              disabled={chatPending}
+              className="ml-1 inline-flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent/10 active:bg-accent/20 disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
               title={
                 item.direct_session_id
                   ? "Re-attach to live chat"
-                  : "Spawn a new direct chat"
+                  : "Start a new chat"
               }
             >
               <MessageSquare aria-hidden className="h-3 w-3" />
-              <span>Chat</span>
+              <span>{chatPending ? "Starting…" : "Chat"}</span>
             </button>
           </div>
           <p className="mt-1 line-clamp-2 text-xs text-fg-2">

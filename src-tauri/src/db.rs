@@ -68,6 +68,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (5, include_str!("../migrations/0005_session_pin.sql")),
     (6, include_str!("../migrations/0006_slots.sql")),
     (7, include_str!("../migrations/0007_mission_pin.sql")),
+    (
+        8,
+        include_str!("../migrations/0008_runner_model_effort.sql"),
+    ),
 ];
 
 fn run_migrations(conn: &mut Connection) -> Result<()> {

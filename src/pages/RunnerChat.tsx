@@ -40,22 +40,17 @@ interface ExitEvent {
   success: boolean;
 }
 
-// Two ways to land on the chat pane:
-//   - "spawn" mode: come from the runner detail's `Chat now` button.
-//     Carry `runnerId` (+ optional cwd) and let RunnerChat call
-//     session_start_direct on mount.
-//   - "attach" mode: come from the sidebar's SESSION list, which
-//     already knows about a live session for this runner. Carry
-//     `sessionId` and skip the spawn — re-subscribe to the existing
-//     session's output stream instead.
+// Always lands here in "attach" mode: the originating button
+// (RunnerDetail "Chat now", Runners list "Chat" pill, sidebar
+// SESSION list) spawns or looks up the session synchronously and
+// navigates with the resulting `sessionId`. Removing in-effect
+// spawning was the cleanest fix for the StrictMode double-mount
+// race that left two visible sessions per click.
 interface RunnerChatLocationState {
-  runnerId?: string;
-  cwd?: string | null;
   sessionId?: string;
-  /** When the sidebar navigates to an existing chat row, it passes
-   *  the row's real status so we don't briefly seed the pane as
-   *  running and let xterm forward keystrokes to a session that's
-   *  no longer in the live map. */
+  /** Real status of the session row at navigation time so we don't
+   *  briefly seed the pane as running and let xterm forward
+   *  keystrokes to a session that's no longer in the live map. */
   sessionStatus?: SessionStatus;
 }
 
@@ -111,14 +106,6 @@ export default function RunnerChat() {
       // ignore quota / disabled-storage errors
     }
   }, [panelOpen]);
-
-  // Bumped after a StrictMode-cancelled spawn finishes its orphan
-  // cleanup so the spawn effect re-runs and the remount that bailed
-  // (because startedKeyRef was already set at the time) gets a
-  // chance to spawn a visible session. Without this, the second
-  // mount returns early before the first mount's async cleanup
-  // resets startedKeyRef and the chat is stuck on "Starting…".
-  const [respawnTick, setRespawnTick] = useState<number>(0);
 
   // Set by `End chat` so the exit handler can distinguish a user-
   // initiated kill (we want it to read as "stopped") from an actual
@@ -356,117 +343,44 @@ export default function RunnerChat() {
     };
   }, []);
 
-  // Attach or spawn for the current route request. Each session gets its own
-  // mounted RunnerTerminal pane, so switching between direct chats preserves
-  // xterm's real in-memory screen and scrollback instead of trying to replay
-  // raw PTY bytes into a shared terminal.
+  // Attach for the current route request. Each session gets its own
+  // mounted RunnerTerminal pane, so switching between direct chats
+  // preserves xterm's real in-memory screen and scrollback instead of
+  // trying to replay raw PTY bytes into a shared terminal.
   //
-  // StrictMode note: this effect runs mount → cleanup → mount in dev. The
-  // spawn await straddles that cleanup, so the *first* mount's spawn
-  // would resolve under `cancelled = true` and never attach, leaking the
-  // live PTY and leaving the page on "Starting…" until a navigation
-  // remounted the component. We handle that by reaping the orphan and
-  // releasing `startedKeyRef` so the StrictMode remount does a clean
-  // spawn that produces the visible session.
+  // Spawn-mode used to live here: a `state.runnerId` would trigger
+  // `api.session.startDirect` from this useEffect, which in StrictMode
+  // dev (mount → cleanup → mount) raced its own cleanup and left two
+  // visible sessions per click. The originating buttons (RunnerDetail
+  // "Chat now", Runners list "Chat" pill) now spawn synchronously and
+  // navigate here with the resulting `sessionId`, so this effect only
+  // ever runs the deterministic attach path.
   useEffect(() => {
-    let cancelled = false;
+    const requestKey = [handle ?? "", state?.sessionId ?? ""].join(" ");
+    if (startedKeyRef.current === requestKey) return;
+    startedKeyRef.current = requestKey;
+    setSessionId(null);
+    setErr(null);
 
-    void (async () => {
-      const requestKey = [
-        handle ?? "",
-        state?.sessionId ?? "",
-        state?.runnerId ?? "",
-        state?.cwd ?? "",
-      ].join("\u0000");
-      if (startedKeyRef.current === requestKey) return;
-      startedKeyRef.current = requestKey;
-      setSessionId(null);
-      setErr(null);
+    if (state?.sessionId && handle) {
+      attach(state.sessionId, handle, state.sessionStatus ?? "stopped");
+      return;
+    }
 
-      // Attach mode — caller already knows the session id (sidebar
-      // re-entry). Sidebar passes the row's real status so we don't
-      // seed the pane as running and let xterm forward keystrokes to
-      // a non-live session before chatMeta can correct it.
-      if (state?.sessionId && handle) {
-        attach(state.sessionId, handle, state.sessionStatus ?? "stopped");
-        return;
-      }
-
-      // Spawn mode — first entry from the runner detail page.
-      if (state?.runnerId && handle) {
-        const runnerId = state.runnerId;
-        try {
-          const spawned = await api.session.startDirect(
-            runnerId,
-            state.cwd ?? null,
-            null,
-            null,
-          );
-          if (cancelled) {
-            startedKeyRef.current = null;
-            // Reap the orphaned PTY child AND archive its session row
-            // so the sidebar doesn't surface a phantom "stopped"
-            // session next to the real one. Without the archive, a
-            // single Chat click leaves two sessions visible in
-            // dev/StrictMode (and in any other path that mounts +
-            // cancels mid-spawn). kill() runs first so the row exists
-            // when archive() flips its archived_at column.
-            void (async () => {
-              try {
-                await api.session.kill(spawned.id);
-              } catch {
-                // best-effort
-              }
-              try {
-                await api.session.archive(spawned.id);
-              } catch {
-                // best-effort
-              }
-            })();
-            // The StrictMode remount that ran while this spawn was
-            // in flight short-circuited because startedKeyRef still
-            // matched. Now that we've reset the ref + reaped the
-            // orphan, bump a state tick to re-run the effect so the
-            // (still-mounted) component spawns a visible session.
-            setRespawnTick((t) => t + 1);
-            return;
-          }
-          attach(spawned.id, handle);
-        } catch (e) {
-          if (!cancelled) setErr(String(e));
-        }
-        return;
-      }
-
-      // No location.state — typical after a window reload while on the
-      // chat route. With multi-chat per runner the URL alone no longer
-      // identifies which conversation to attach to, so we direct the
-      // user back to the sidebar / runner detail to pick one. The
-      // running-session fallback the previous code did doesn't fit
-      // anymore because there can be more than one.
-      if (!handle) {
-        setErr(
-          "Direct chat must be opened from the runner detail page or the sidebar.",
-        );
-        return;
-      }
+    // No location.state — typical after a window reload while on the
+    // chat route. With multi-chat per runner the URL alone no longer
+    // identifies which conversation to attach to, so we direct the
+    // user back to the sidebar / runner detail to pick one.
+    if (!handle) {
       setErr(
-        "Pick a direct chat from the sidebar, or start a new one from the runner detail page.",
+        "Chat must be opened from the runner detail page or the sidebar.",
       );
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    attach,
-    handle,
-    state?.runnerId,
-    state?.cwd,
-    state?.sessionId,
-    state?.sessionStatus,
-    respawnTick,
-  ]);
+      return;
+    }
+    setErr(
+      "Pick a chat from the sidebar, or start a new one from the runner detail page.",
+    );
+  }, [attach, handle, state?.sessionId, state?.sessionStatus]);
 
   async function endChat() {
     if (!sessionId || !handle) return;
@@ -589,7 +503,7 @@ export default function RunnerChat() {
           : "bg-fg-3";
   const statusLabel = chatState === "resuming" ? "resuming…" : status;
   const titleLabel =
-    chatMeta?.title ?? (handle ? `@${handle}` : "direct chat");
+    chatMeta?.title ?? (handle ? `@${handle}` : "chat");
   const metaParts = [
     runner ? `${runner.runtime}-${runner.handle}` : null,
     chatMeta?.started_at
@@ -613,7 +527,19 @@ export default function RunnerChat() {
                 {titleLabel}
               </span>
               <span className="rounded bg-line-strong px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-fg-2">
-                Direct
+                Chat
+              </span>
+              {/* Status pill moved next to the title so it stops
+                  competing with the Stop / Resume control on the
+                  right — the action button already implies the
+                  current state, and a pill at the same edge read
+                  redundant. */}
+              <span
+                className={`flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${statusBadgeClass}`}
+                title={`session ${sessionId ? sessionId.slice(-6) : "—"}`}
+              >
+                <span className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass}`} />
+                {sessionId ? statusLabel : "starting"}
               </span>
             </div>
             {metaParts.length > 0 ? (
@@ -633,13 +559,6 @@ export default function RunnerChat() {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <span
-            className={`flex items-center gap-1.5 rounded-full px-2 py-1 text-[11px] font-medium ${statusBadgeClass}`}
-            title={`session ${sessionId ? sessionId.slice(-6) : "—"}`}
-          >
-            <span className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass}`} />
-            {sessionId ? statusLabel : "starting"}
-          </span>
           {chatState === "resuming" ? (
             <button
               type="button"
