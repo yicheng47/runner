@@ -26,9 +26,18 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/yicheng47/runner/releases/latest/download/latest.json"
+      ],
+      "pubkey": "REPLACE_WITH_TAURI_SIGNING_PUBLIC_KEY"
+    }
+  },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "app", "nsis"],
+    "createUpdaterArtifacts": true,
+    "targets": ["dmg", "app"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

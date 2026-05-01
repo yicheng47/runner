@@ -16,6 +16,7 @@
     "fs:allow-appdata-read",
     "fs:allow-appdata-write",
     "process:allow-restart",
-    "shell:default"
+    "shell:default",
+    "updater:default"
   ]
 }

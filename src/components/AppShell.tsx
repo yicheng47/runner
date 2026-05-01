@@ -7,15 +7,24 @@
 // (e.g., the activity event from `session_start_direct` triggered on
 // the chat page's mount) gets lost, leaving the SESSION list stale.
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Outlet } from "react-router-dom";
 
 import { Sidebar } from "./Sidebar";
+import { UpdateToast } from "./UpdateToast";
 
 export function AppShell({ children }: { children?: ReactNode }) {
+  // Settings modal state hoisted here so both the Sidebar's bottom
+  // Settings row and the UpdateToast's "Update" button can open it.
+  // Toast → settings → download mirrors Quill's flow: the toast just
+  // routes the user, the actual download/install lives in the pane.
+  const [settingsOpen, setSettingsOpen] = useState(false);
   return (
     <div className="flex h-screen overflow-hidden bg-bg text-fg">
-      <Sidebar />
+      <Sidebar
+        settingsOpen={settingsOpen}
+        onSettingsOpenChange={setSettingsOpen}
+      />
       <main className="relative flex flex-1 flex-col overflow-hidden">
         <div
           data-tauri-drag-region
@@ -23,6 +32,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
         />
         {children ?? <Outlet />}
       </main>
+      <UpdateToast onOpenSettings={() => setSettingsOpen(true)} />
     </div>
   );
 }

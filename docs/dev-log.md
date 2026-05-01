@@ -4,6 +4,44 @@
 > Keep this file chronological and lightweight. The stable implementation
 > reference lives in `docs/impls/v0-mvp.md`.
 
+## 2026-05-01 (PM)
+
+**Auto-update wired up.** Following the pattern from Quill: one
+`UpdateProvider` context shared by an `UpdateToast` (top-center pill,
+"Runner vX.Y.Z is available" → opens Settings) and the Settings →
+Updates pane (status-driven row that swaps Check now / Download &
+install / Restart-to-update / progress bar based on the same state).
+The toast's button never downloads; it just routes the user into the
+pane.
+
+- **Backend.** Added `tauri-plugin-updater = "2"` + registered in
+  `lib.rs`. `tauri.conf.json` now has `plugins.updater.endpoints`
+  pointing at the GitHub Releases `latest.json`,
+  `bundle.createUpdaterArtifacts: true`, and a placeholder pubkey
+  flagged `REPLACE_WITH_TAURI_SIGNING_PUBLIC_KEY` — the real
+  minisign pubkey from the keypair generated last release needs to
+  land before tagging v0.1.1.
+- **Capability.** `updater:default` added; `process:allow-restart`
+  was already there.
+- **Frontend.** New `useUpdateChecker` hook (idle/checking/available
+  /downloading/ready/error) and `UpdateContext` provider that
+  auto-checks ~3s after mount when the auto-install toggle is on,
+  then auto-advances to download. Toggle off → user has to click
+  "Download & install" manually from Settings. `UpdatesPane`
+  rewired to consume the context; the version card now shows one
+  status-driven action and an inline progress bar during download.
+  `UpdateToast` mounted in `AppShell`; settings-open state lifted
+  from `Sidebar` to `AppShell` so the toast can open it.
+- **Windows dropped from release.** `targets` reduced to
+  `["dmg", "app"]` and the `build-windows` job removed from
+  `release.yml`; the WSL integration we'd want for Windows isn't
+  ready and shipping a non-PTY build was misleading.
+- **First reachable version.** Auto-update only kicks in starting
+  with v0.1.1 — v0.1.0 binaries don't have the plugin baked in and
+  v0.1.0's release also lacks `.sig` files (we forgot
+  `createUpdaterArtifacts` last time). v0.1.0 → v0.1.1 is a manual
+  download; from v0.1.1 onward it's in-app.
+
 ## 2026-05-01
 
 **Runner-polish PR (#26).** Closed out the five follow-ups logged on
