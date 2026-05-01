@@ -315,24 +315,41 @@ export default function MissionWorkspace() {
   const resumeMission = useCallback(async () => {
     if (!mission) return;
     setResumingAll(true);
+    let firstErr: string | null = null;
     try {
+      // Best-effort over every stopped slot. Don't bail on the first
+      // failure — earlier slots may have already resumed, and the
+      // user wants the UI to reflect whatever actually came up.
+      // Errors are collected and surfaced after the refresh.
       for (const s of sessions) {
         if (s.status === "running") continue;
-        await api.session.resume(s.id, null, null);
+        try {
+          await api.session.resume(s.id, null, null);
+        } catch (e) {
+          if (firstErr == null) firstErr = String(e);
+        }
       }
-      const rows = await api.session.list(mission.id);
-      setSessions(rows);
-      // Mission Resume implies the user wants to see the slots come
-      // back to life. Reopen any tabs they'd previously closed —
-      // resume isn't a useful action if the panes are hidden.
-      setOpenTabs((prev) => {
-        const next = new Set(prev);
-        for (const r of rows) next.add(r.id);
-        return Array.from(next);
-      });
-    } catch (e) {
-      setError(String(e));
     } finally {
+      // Refresh in finally so a partial failure (one slot resumed,
+      // a later one threw) still updates the row list + opens tabs
+      // for the slots that did come back. Without this the UI stays
+      // stuck reading "paused" while the resumed PTYs are live.
+      try {
+        const rows = await api.session.list(mission.id);
+        setSessions(rows);
+        // Mission Resume implies the user wants to see the slots
+        // come back to life. Reopen any tabs they'd previously
+        // closed — resume isn't a useful action if the panes are
+        // hidden.
+        setOpenTabs((prev) => {
+          const next = new Set(prev);
+          for (const r of rows) next.add(r.id);
+          return Array.from(next);
+        });
+      } catch (e) {
+        if (firstErr == null) firstErr = String(e);
+      }
+      if (firstErr != null) setError(firstErr);
       setResumingAll(false);
     }
   }, [mission, sessions]);
