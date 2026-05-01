@@ -1683,11 +1683,11 @@ fn emit_runner_activity(pool: &DbPool, runner: &Runner, events: &dyn SessionEven
             |r| r.get(0),
         )
         .unwrap_or(0);
-    // `crew_runners` was replaced by `slots` in migration 0006 — count
-    // distinct crews this runner is wired into via the slots table.
-    // Mirrors the cold-path query in `commands::runner::runner_activity`
-    // so live `runner/activity` events stay consistent with what the
-    // Runners list shows on a refresh.
+    // Count distinct crews this runner is wired into via the slots
+    // table. Mirrors the cold-path query in
+    // `commands::runner::runner_activity` so live `runner/activity`
+    // events stay consistent with what the Runners list shows on a
+    // refresh.
     let crew_count: i64 = conn
         .query_row(
             "SELECT COUNT(DISTINCT crew_id) FROM slots WHERE runner_id = ?1",
