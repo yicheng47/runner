@@ -28,10 +28,10 @@
 
 /// Compute the extra args (in declaration order) to append after the
 /// runner's configured `args` so the child receives the pinned model
-/// + thinking effort via the runtime's native flags. Returns an empty
-/// Vec when both fields are unset (NULL on the row) or when the
-/// runtime has no equivalent. Mirrors `system_prompt_args` in style:
-/// pure, declaration-order-aware, easy to unit-test.
+/// and thinking effort via the runtime's native flags. Returns an
+/// empty Vec when both fields are unset (NULL on the row) or when
+/// the runtime has no equivalent. Mirrors `system_prompt_args` in
+/// style: pure, declaration-order-aware, easy to unit-test.
 ///
 /// claude-code maps:
 ///   - `model` → `--model <name>` (e.g. `claude-opus-4-7`)
@@ -260,7 +260,7 @@ pub fn claude_code_conversation_exists(cwd: Option<&str>, uuid: &str) -> bool {
     #[cfg(test)]
     {
         let _ = (cwd, uuid);
-        return true;
+        true
     }
     #[cfg(not(test))]
     {
