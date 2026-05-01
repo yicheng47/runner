@@ -821,9 +821,7 @@ function RuntimeRow({
     );
   }
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <div
       onContextMenu={
         onContextMenu
           ? (e) => {
@@ -832,36 +830,57 @@ function RuntimeRow({
             }
           : undefined
       }
-      title={title}
-      className={`flex w-full cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-left text-xs transition-colors ${
+      className={`group flex w-full items-center gap-2 rounded border px-2.5 py-1.5 text-left text-xs transition-colors ${
         selected
-          ? "border border-line bg-bg text-fg"
-          : "border border-transparent text-fg-2 hover:text-fg"
+          ? "border-line bg-bg text-fg"
+          : "border-transparent text-fg-2 hover:text-fg"
       }`}
     >
-      <span
-        className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${
-          dim ? "bg-fg-3" : "bg-accent"
-        }`}
-      />
-      <span className={`truncate flex-1 ${mono ? "font-mono" : ""}`}>
-        {label}
-      </span>
-      {pinned ? (
-        <Pin
-          aria-hidden
-          className="h-3 w-3 shrink-0 text-fg-3"
-        />
-      ) : null}
-      {pendingAsks && pendingAsks > 0 ? (
+      <button
+        type="button"
+        onClick={onClick}
+        title={title}
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+      >
         <span
-          title="Awaiting human input"
-          className="rounded bg-warn/20 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-warn"
-        >
-          {pendingAsks}
+          className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${
+            dim ? "bg-fg-3" : "bg-accent"
+          }`}
+        />
+        <span className={`truncate flex-1 ${mono ? "font-mono" : ""}`}>
+          {label}
         </span>
+        {pinned ? (
+          <Pin aria-hidden className="h-3 w-3 shrink-0 text-fg-3" />
+        ) : null}
+        {pendingAsks && pendingAsks > 0 ? (
+          <span
+            title="Awaiting human input"
+            className="rounded bg-warn/20 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-warn"
+          >
+            {pendingAsks}
+          </span>
+        ) : null}
+      </button>
+      {/* Kebab anchor for the same context menu the row's
+          right-click triggers. Mirrors SessionRow's affordance so
+          mission rows get a discoverable "..." button on hover —
+          right-click alone isn't an obvious entry point. */}
+      {onContextMenu ? (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onContextMenu({ x: e.clientX, y: e.clientY });
+          }}
+          title="More actions"
+          aria-label="More actions"
+          className="cursor-pointer rounded p-0.5 text-fg-3 opacity-0 transition-opacity hover:bg-raised hover:text-fg group-hover:opacity-100 focus:opacity-100"
+        >
+          <MoreHorizontal aria-hidden className="h-3 w-3" />
+        </button>
       ) : null}
-    </button>
+    </div>
   );
 }
 
