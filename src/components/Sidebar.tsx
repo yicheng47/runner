@@ -51,6 +51,7 @@ import {
 import type { AppendedEvent, MissionSummary } from "../lib/types";
 import { StartMissionModal } from "./StartMissionModal";
 import { SettingsModal } from "./SettingsModal";
+import { CommandPalette } from "./CommandPalette";
 
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 480;
@@ -122,6 +123,9 @@ export function Sidebar() {
   } | null>(null);
   // Settings modal toggle. Opened from the bottom-pinned Settings row.
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Command palette toggle. Opened from the search nav row OR the
+  // global ⌘K / Ctrl+K shortcut. Mirrors Pencil node `Fkoe8`.
+  const [paletteOpen, setPaletteOpen] = useState(false);
   // Mission row context menu — same anchor model as sessionMenu.
   // Today's actions: Archive (real, calls mission_archive). Pin and
   // Rename are designed-in slots reserved for follow-ups.
@@ -167,6 +171,23 @@ export function Sidebar() {
   useEffect(() => {
     void refreshMissions();
   }, [refreshMissions]);
+
+  // ⌘K / Ctrl+K opens the command palette from anywhere in the app.
+  // Skip when the user is editing inside an <input> or <textarea>
+  // so the shortcut doesn't hijack normal text input.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "k" && e.key !== "K") return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+      e.preventDefault();
+      setPaletteOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -511,7 +532,7 @@ export function Sidebar() {
                   runner/crew rather than an inline input. The actual
                   palette is a follow-up; for now the row stubs the
                   callout. */}
-              <SearchNavRow />
+              <SearchNavRow onOpen={() => setPaletteOpen(true)} />
             </nav>
           </div>
 
@@ -626,6 +647,11 @@ export function Sidebar() {
         onClose={() => setSettingsOpen(false)}
       />
 
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+      />
+
       <StartMissionModal
         open={creatingMission}
         onClose={() => setCreatingMission(false)}
@@ -717,21 +743,20 @@ function NavRow({
 }
 
 /// Search nav row — visually indistinguishable from runner/crew rows
-/// but opens a command-palette modal instead of routing. Stubbed
-/// today: click triggers a "coming soon" indicator. Wire to the real
-/// palette when it lands.
-function SearchNavRow() {
+/// but opens the CommandPalette modal instead of routing.
+function SearchNavRow({ onOpen }: { onOpen: () => void }) {
   return (
     <button
       type="button"
-      title="Search — coming soon"
-      onClick={() => {
-        // TODO: open the command-palette modal (Pencil node `Fkoe8`).
-      }}
-      className="flex w-full cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:text-fg"
+      title="Search (⌘K)"
+      onClick={onOpen}
+      className="flex w-full cursor-pointer items-center justify-between gap-2 rounded px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:text-fg"
     >
-      <Search aria-hidden className="h-3 w-3 text-fg-2" />
-      <span>search</span>
+      <span className="flex items-center gap-2">
+        <Search aria-hidden className="h-3 w-3 text-fg-2" />
+        <span>search</span>
+      </span>
+      <span className="font-mono text-[10px] text-fg-3">⌘K</span>
     </button>
   );
 }
