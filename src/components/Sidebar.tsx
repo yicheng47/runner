@@ -86,7 +86,16 @@ function setStoredFlag(key: string, value: boolean): void {
   }
 }
 
-export function Sidebar() {
+interface SidebarProps {
+  // Settings open state lives in AppShell so the UpdateToast can also
+  // open it (toast → settings → download flow). Passing the open
+  // state down keeps the SettingsModal mounted here while letting
+  // outsiders trigger it.
+  settingsOpen: boolean;
+  onSettingsOpenChange: (open: boolean) => void;
+}
+
+export function Sidebar({ settingsOpen, onSettingsOpenChange }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -121,8 +130,10 @@ export function Sidebar() {
     x: number;
     y: number;
   } | null>(null);
-  // Settings modal toggle. Opened from the bottom-pinned Settings row.
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Settings modal toggle. State now lives in AppShell so external
+  // surfaces (e.g. UpdateToast) can also open it; we just mirror the
+  // prop through a stable setter.
+  const setSettingsOpen = onSettingsOpenChange;
   // Command palette toggle. Opened from the search nav row OR the
   // global ⌘K / Ctrl+K shortcut. Mirrors Pencil node `Fkoe8`.
   const [paletteOpen, setPaletteOpen] = useState(false);

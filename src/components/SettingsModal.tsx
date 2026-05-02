@@ -19,7 +19,9 @@ import {
   Download,
   ExternalLink,
   Info,
+  Loader2,
   RefreshCw,
+  RotateCcw,
   Scale,
   Settings as SettingsIcon,
   X,
@@ -29,6 +31,12 @@ import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { getVersion } from "@tauri-apps/api/app";
 
 import { api } from "../lib/api";
+import {
+  readStoredBool,
+  STORAGE_AUTO_INSTALL_UPDATES,
+  writeStoredBool,
+} from "../lib/settings";
+import { useUpdate } from "../contexts/UpdateContext";
 
 interface SettingsModalProps {
   open: boolean;
@@ -161,22 +169,14 @@ function PaneHeader({ title, subtitle }: { title: string; subtitle: string }) {
 // persist across reloads, even if no other surface reads the value
 // today.
 function useStoredBool(key: string, initial: boolean): [boolean, (v: boolean) => void] {
-  const [value, setValue] = useState<boolean>(() => {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw == null ? initial : raw === "1";
-    } catch {
-      return initial;
-    }
-  });
+  // Thin wrapper around the shared `lib/settings` helpers so the
+  // modal and any non-React reader (e.g. UpdateContext) can't drift
+  // on encoding. Both sides go through `readStoredBool` /
+  // `writeStoredBool`.
+  const [value, setValue] = useState<boolean>(() => readStoredBool(key, initial));
   const set = (v: boolean) => {
     setValue(v);
-    try {
-      localStorage.setItem(key, v ? "1" : "0");
-    } catch {
-      // best-effort — Safari private mode rejects setItem; the
-      // toggle still works in-session, just won't persist.
-    }
+    writeStoredBool(key, v);
   };
   return [value, set];
 }
@@ -246,44 +246,82 @@ function GeneralPane() {
 
 function UpdatesPane() {
   const [autoInstall, setAutoInstall] = useStoredBool(
-    "settings.autoInstallUpdates",
+    STORAGE_AUTO_INSTALL_UPDATES,
     true,
   );
   const [version, setVersion] = useState<string>("");
+  const {
+    status,
+    update,
+    progress,
+    error,
+    checkForUpdate,
+    downloadAndInstall,
+    restart,
+  } = useUpdate();
   useEffect(() => {
     void getVersion()
       .then((v) => setVersion(v))
       .catch(() => setVersion(""));
   }, []);
+  // Status-driven copy + action — mirrors the design's three active
+  // panes (`pYv9W` available, `u4odWB` downloading, `KVWlJ` ready).
+  // The same row swaps into each state so users always see ONE
+  // current action.
+  const sub = (() => {
+    switch (status) {
+      case "checking":
+        return "Checking for updates…";
+      case "available":
+        return update?.version
+          ? `v${update.version} is available.`
+          : "An update is available.";
+      case "downloading":
+        return `Downloading update… ${progress}%`;
+      case "ready":
+        return "Update ready — restart to apply.";
+      case "error":
+        return error ? `Couldn't check: ${error}` : "Couldn't check for updates.";
+      default:
+        return "You're up to date.";
+    }
+  })();
+  const subTone =
+    status === "available" || status === "ready"
+      ? "text-accent"
+      : "text-fg-2";
   return (
     <>
       <PaneHeader
         title="Updates"
         subtitle="Stay current with the latest version."
       />
-      {/* Version card */}
+      {/* Version card — same shell, different right-hand action per state. */}
       <div className="flex items-center justify-between gap-4 rounded-lg border border-line bg-bg p-3.5">
-        <div className="flex flex-col gap-0.5">
+        <div className="flex min-w-0 flex-col gap-0.5">
           <div className="flex items-center gap-2">
             <span className="text-[13px] font-semibold text-fg">Runner</span>
             <span className="rounded bg-raised px-1.5 py-0.5 font-mono text-[10px] text-fg-2">
               v{version || "0.0.0"}
             </span>
           </div>
-          <span className="text-[11px] text-fg-2">
-            Auto-update isn't wired up yet — version check is informational.
-          </span>
+          <span className={`truncate text-[11px] ${subTone}`}>{sub}</span>
         </div>
-        <button
-          type="button"
-          disabled
-          title="Update check stub — backend not wired up yet"
-          className="flex shrink-0 cursor-default items-center gap-1.5 whitespace-nowrap rounded-md border border-line bg-panel px-3 py-1.5 text-[12px] font-medium text-fg-2 disabled:opacity-60"
-        >
-          <RefreshCw aria-hidden className="h-3 w-3" />
-          Check now
-        </button>
+        <UpdatesAction
+          status={status}
+          onCheck={() => void checkForUpdate()}
+          onDownload={() => void downloadAndInstall()}
+          onRestart={() => void restart()}
+        />
       </div>
+      {status === "downloading" ? (
+        <div className="-mt-2 h-[3px] w-full overflow-hidden rounded-full bg-raised">
+          <div
+            className="h-full rounded-full bg-accent transition-[width] duration-200"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      ) : null}
       <Row
         label="Install updates automatically"
         sub="Download and apply updates in the background. Restart needed to finish."
@@ -291,6 +329,73 @@ function UpdatesPane() {
         <Toggle on={autoInstall} onChange={setAutoInstall} />
       </Row>
     </>
+  );
+}
+
+function UpdatesAction({
+  status,
+  onCheck,
+  onDownload,
+  onRestart,
+}: {
+  status: ReturnType<typeof useUpdate>["status"];
+  onCheck: () => void;
+  onDownload: () => void;
+  onRestart: () => void;
+}) {
+  // No button slot during download — the inline progress bar is the
+  // affordance. Cancel isn't supported by the plugin (no abort
+  // handle), so we don't pretend to offer one.
+  if (status === "checking") {
+    return (
+      <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-line bg-panel px-3 py-1.5 text-[12px] font-medium text-fg-2">
+        <Loader2 aria-hidden className="h-3 w-3 animate-spin" />
+        Checking…
+      </div>
+    );
+  }
+  if (status === "available") {
+    return (
+      <button
+        type="button"
+        onClick={onDownload}
+        className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md bg-accent px-3 py-1.5 text-[12px] font-semibold text-bg transition-colors hover:bg-accent/90"
+      >
+        <Download aria-hidden className="h-3 w-3" />
+        Download &amp; install
+      </button>
+    );
+  }
+  if (status === "downloading") {
+    return (
+      <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-line bg-panel px-3 py-1.5 text-[12px] font-medium text-fg-2">
+        <Loader2 aria-hidden className="h-3 w-3 animate-spin" />
+        Installing
+      </div>
+    );
+  }
+  if (status === "ready") {
+    return (
+      <button
+        type="button"
+        onClick={onRestart}
+        className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md bg-accent px-3 py-1.5 text-[12px] font-semibold text-bg transition-colors hover:bg-accent/90"
+      >
+        <RotateCcw aria-hidden className="h-3 w-3" />
+        Restart to update
+      </button>
+    );
+  }
+  // idle / error → manual re-check
+  return (
+    <button
+      type="button"
+      onClick={onCheck}
+      className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-line bg-panel px-3 py-1.5 text-[12px] font-medium text-fg-2 transition-colors hover:border-line-strong hover:text-fg"
+    >
+      <RefreshCw aria-hidden className="h-3 w-3" />
+      Check now
+    </button>
   );
 }
 

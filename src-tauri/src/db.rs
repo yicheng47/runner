@@ -60,19 +60,9 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
     )
 }
 
-const MIGRATIONS: &[(i64, &str)] = &[
-    (1, include_str!("../migrations/0001_init.sql")),
-    (2, include_str!("../migrations/0002_agent_session_key.sql")),
-    (3, include_str!("../migrations/0003_session_archive.sql")),
-    (4, include_str!("../migrations/0004_session_title.sql")),
-    (5, include_str!("../migrations/0005_session_pin.sql")),
-    (6, include_str!("../migrations/0006_slots.sql")),
-    (7, include_str!("../migrations/0007_mission_pin.sql")),
-    (
-        8,
-        include_str!("../migrations/0008_runner_model_effort.sql"),
-    ),
-];
+// Pre-release squash: the original 0001..0008 collapsed into one
+// init file. Future migrations resume from 0002.
+const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_init.sql"))];
 
 fn run_migrations(conn: &mut Connection) -> Result<()> {
     conn.execute_batch(
