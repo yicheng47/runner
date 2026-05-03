@@ -70,15 +70,56 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_init.sql"))];
 
 // Default-data seed: ships the Build squad starter crew on first launch.
-// Runs unconditionally on every prod startup; idempotent via per-row
-// `WHERE NOT EXISTS` guards inside the SQL itself, and the crew-level
-// guard skips the seed entirely once the user has any crew of their own.
-// Tests skip this so command tests can assume an empty starting state.
+//
+// Runs at most once per database. The marker
+// `_app_state.default_crew_seeded` records that the seed step has been
+// considered for this DB so we don't recreate Build squad if the user
+// later deletes everything ("first launch" must mean *first* launch,
+// not "any future launch where you happen to have zero crews").
+//
+// Even on first launch we only apply the SQL when the DB has zero
+// crews AND zero runners. If the user has *any* prior data — e.g.
+// they ran the build-squad.seed.sh fixture against this DB before
+// opening the app — we skip cleanly and still set the marker. This
+// avoids the partial-crew failure mode where a colliding runner
+// handle would leave Build squad missing its lead, while the start-
+// mission UI still treated it as launchable.
+//
+// Tests skip this entire path so command tests can assume an empty
+// starting state.
 const DEFAULT_SEED_SQL: &str = include_str!("../migrations/0002_default_crew.sql");
 
+const SEED_MARKER_KEY: &str = "default_crew_seeded";
+
 fn seed_defaults(conn: &mut Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS _app_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+         )",
+    )?;
+    let already_seeded: bool = conn
+        .query_row(
+            "SELECT 1 FROM _app_state WHERE key = ?1",
+            params![SEED_MARKER_KEY],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+    if already_seeded {
+        return Ok(());
+    }
+
+    let crew_count: i64 = conn.query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))?;
+    let runner_count: i64 = conn.query_row("SELECT COUNT(*) FROM runners", [], |r| r.get(0))?;
+
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    tx.execute_batch(DEFAULT_SEED_SQL)?;
+    if crew_count == 0 && runner_count == 0 {
+        tx.execute_batch(DEFAULT_SEED_SQL)?;
+    }
+    tx.execute(
+        "INSERT INTO _app_state (key, value) VALUES (?1, ?2)",
+        params![SEED_MARKER_KEY, chrono::Utc::now().to_rfc3339()],
+    )?;
     tx.commit()?;
     Ok(())
 }
@@ -394,8 +435,6 @@ mod tests {
 
     #[test]
     fn seed_defaults_skips_when_user_has_a_crew() {
-        // Existing users (non-empty crews) shouldn't get a surprise
-        // Build squad row added on the next launch.
         let pool = open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
         insert_crew(&conn, "user-c1");
@@ -405,16 +444,66 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))
             .unwrap();
         assert_eq!(crew_count, 1, "should not seed when crews already exist");
+    }
+
+    #[test]
+    fn seed_defaults_skips_when_user_has_a_runner_but_no_crew() {
+        // The partial-crew failure mode: a user manually created an
+        // `architect` runner template (or ran the seed.sh fixture
+        // directly into this DB), then opened the app for the first
+        // time. Pre-fix, the migration inserted the Build squad crew
+        // and inserted only impl + reviewer runners (architect skipped
+        // by the per-handle NOT EXISTS guard), then the slot insert
+        // for the architect slot couldn't find our runner ID and
+        // skipped — leaving Build squad with two slots and no lead.
+        // The start-mission UI treated that as launchable, then the
+        // backend rejected it. Now the whole seed bails, marker is
+        // still set, and we never produce a partial crew.
+        let pool = open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        insert_runner(&conn, "user-r1", "architect").unwrap();
+        seed_defaults(&mut conn).unwrap();
+
+        let crew_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))
+            .unwrap();
         let runner_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM runners", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(runner_count, 0, "runners gated on the crew row existing");
+        assert_eq!(crew_count, 0, "should not create Build squad");
+        assert_eq!(runner_count, 1, "user's runner stays untouched");
+    }
+
+    #[test]
+    fn seed_defaults_marker_prevents_reseed_after_user_deletes_everything() {
+        // First launch: empty DB → seed runs and marker is recorded.
+        let pool = open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        seed_defaults(&mut conn).unwrap();
+
+        // User wipes the seeded data — slots cascade with the crew,
+        // runners are global templates so we delete them explicitly.
+        conn.execute("DELETE FROM crews", []).unwrap();
+        conn.execute("DELETE FROM runners", []).unwrap();
+        let crew_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(crew_count, 0);
+
+        // Next launch: seed sees the marker and skips, even though
+        // the DB looks "empty" again.
+        seed_defaults(&mut conn).unwrap();
+        let crew_count_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            crew_count_after, 0,
+            "marker must prevent reseeding after deletion"
+        );
     }
 
     #[test]
     fn seed_defaults_is_idempotent_across_reseeds() {
-        // Calling seed_defaults twice on the same pool (mirrors a user
-        // reopening the app) must not double-insert.
         let pool = open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
         seed_defaults(&mut conn).unwrap();

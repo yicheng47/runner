@@ -1,13 +1,18 @@
--- Migration 0002: ship a default Build squad crew (architect / impl / reviewer)
--- so first-launch users have a working starter setup. Skips itself if the user
--- already has any crews — keeps existing installs untouched.
+-- Seed: ship a default Build squad crew (architect / impl / reviewer)
+-- so first-launch users have a working starter setup.
+--
+-- Gating lives in db::seed_defaults — this script is only ever applied
+-- when (a) we have never seeded this DB before, and (b) the DB has zero
+-- crews AND zero runners. Plain INSERTs are intentional; do not add
+-- `WHERE NOT EXISTS` guards here, since the Rust caller already
+-- guarantees a clean target.
 --
 -- The same crew shape is mirrored in tests/fixtures/crews/build-squad.seed.sh
 -- (which reads from tests/fixtures/system-prompts/*.md). Edits to the prompts
 -- below must also be applied to those .md files, or vice versa.
 
 INSERT INTO crews (id, name, purpose, goal, orchestrator_policy, signal_types, created_at, updated_at)
-SELECT
+VALUES (
   '01K000DEFAULT000BUILDSQUAD01',
   'Build squad',
   'Plan, build, and review a single feature end-to-end. Architect dispatches, implementer ships, reviewer gates merge.',
@@ -16,10 +21,10 @@ SELECT
   '["mission_goal","human_said","ask_lead","ask_human","human_question","human_response","runner_status","inbox_read"]',
   '2026-05-03T00:00:00Z',
   '2026-05-03T00:00:00Z'
-WHERE NOT EXISTS (SELECT 1 FROM crews);
+);
 
 INSERT INTO runners (id, handle, display_name, runtime, command, args_json, working_dir, system_prompt, env_json, model, effort, created_at, updated_at)
-SELECT
+VALUES (
   '01K000DEFAULT000RUNNERARCH01',
   'architect',
   'Architect',
@@ -86,12 +91,10 @@ Talking to the human:
   'high',
   '2026-05-03T00:00:00Z',
   '2026-05-03T00:00:00Z'
-WHERE EXISTS (SELECT 1 FROM crews WHERE id = '01K000DEFAULT000BUILDSQUAD01')
-  AND NOT EXISTS (SELECT 1 FROM runners WHERE id = '01K000DEFAULT000RUNNERARCH01')
-  AND NOT EXISTS (SELECT 1 FROM runners WHERE handle = 'architect');
+);
 
 INSERT INTO runners (id, handle, display_name, runtime, command, args_json, working_dir, system_prompt, env_json, model, effort, created_at, updated_at)
-SELECT
+VALUES (
   '01K000DEFAULT000RUNNERIMPL01',
   'impl',
   'Implementation',
@@ -151,12 +154,10 @@ Talking to the human:
   'medium',
   '2026-05-03T00:00:00Z',
   '2026-05-03T00:00:00Z'
-WHERE EXISTS (SELECT 1 FROM crews WHERE id = '01K000DEFAULT000BUILDSQUAD01')
-  AND NOT EXISTS (SELECT 1 FROM runners WHERE id = '01K000DEFAULT000RUNNERIMPL01')
-  AND NOT EXISTS (SELECT 1 FROM runners WHERE handle = 'impl');
+);
 
 INSERT INTO runners (id, handle, display_name, runtime, command, args_json, working_dir, system_prompt, env_json, model, effort, created_at, updated_at)
-SELECT
+VALUES (
   '01K000DEFAULT000RUNNERREVW01',
   'reviewer',
   'Reviewer',
@@ -224,24 +225,13 @@ Talking to the human:
   'medium',
   '2026-05-03T00:00:00Z',
   '2026-05-03T00:00:00Z'
-WHERE EXISTS (SELECT 1 FROM crews WHERE id = '01K000DEFAULT000BUILDSQUAD01')
-  AND NOT EXISTS (SELECT 1 FROM runners WHERE id = '01K000DEFAULT000RUNNERREVW01')
-  AND NOT EXISTS (SELECT 1 FROM runners WHERE handle = 'reviewer');
+);
 
 INSERT INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-SELECT '01K000DEFAULT000SLOTARCH0001', '01K000DEFAULT000BUILDSQUAD01', '01K000DEFAULT000RUNNERARCH01', 'architect', 0, 1, '2026-05-03T00:00:00Z'
-WHERE EXISTS (SELECT 1 FROM crews   WHERE id = '01K000DEFAULT000BUILDSQUAD01')
-  AND EXISTS (SELECT 1 FROM runners WHERE id = '01K000DEFAULT000RUNNERARCH01')
-  AND NOT EXISTS (SELECT 1 FROM slots WHERE id = '01K000DEFAULT000SLOTARCH0001');
+VALUES ('01K000DEFAULT000SLOTARCH0001', '01K000DEFAULT000BUILDSQUAD01', '01K000DEFAULT000RUNNERARCH01', 'architect', 0, 1, '2026-05-03T00:00:00Z');
 
 INSERT INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-SELECT '01K000DEFAULT000SLOTIMPL0001', '01K000DEFAULT000BUILDSQUAD01', '01K000DEFAULT000RUNNERIMPL01', 'impl', 1, 0, '2026-05-03T00:00:00Z'
-WHERE EXISTS (SELECT 1 FROM crews   WHERE id = '01K000DEFAULT000BUILDSQUAD01')
-  AND EXISTS (SELECT 1 FROM runners WHERE id = '01K000DEFAULT000RUNNERIMPL01')
-  AND NOT EXISTS (SELECT 1 FROM slots WHERE id = '01K000DEFAULT000SLOTIMPL0001');
+VALUES ('01K000DEFAULT000SLOTIMPL0001', '01K000DEFAULT000BUILDSQUAD01', '01K000DEFAULT000RUNNERIMPL01', 'impl', 1, 0, '2026-05-03T00:00:00Z');
 
 INSERT INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-SELECT '01K000DEFAULT000SLOTREVW0001', '01K000DEFAULT000BUILDSQUAD01', '01K000DEFAULT000RUNNERREVW01', 'reviewer', 2, 0, '2026-05-03T00:00:00Z'
-WHERE EXISTS (SELECT 1 FROM crews   WHERE id = '01K000DEFAULT000BUILDSQUAD01')
-  AND EXISTS (SELECT 1 FROM runners WHERE id = '01K000DEFAULT000RUNNERREVW01')
-  AND NOT EXISTS (SELECT 1 FROM slots WHERE id = '01K000DEFAULT000SLOTREVW0001');
+VALUES ('01K000DEFAULT000SLOTREVW0001', '01K000DEFAULT000BUILDSQUAD01', '01K000DEFAULT000RUNNERREVW01', 'reviewer', 2, 0, '2026-05-03T00:00:00Z');
