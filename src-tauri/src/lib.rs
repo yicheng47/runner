@@ -41,7 +41,23 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            let app_data_dir = app.path().app_data_dir()?;
+            // Dev builds write to a sibling `<identifier>-dev` directory so
+            // local testing can't trample a packaged install's database,
+            // event logs, or bundled CLI. `cfg!(debug_assertions)` is true
+            // for `tauri dev` and false for release bundles, which matches
+            // how Quill separates dev vs prod data.
+            let app_data_dir = {
+                let base = app.path().app_data_dir()?;
+                if cfg!(debug_assertions) {
+                    let dev_name = match base.file_name().and_then(|s| s.to_str()) {
+                        Some(name) => format!("{name}-dev"),
+                        None => "runner-dev".to_string(),
+                    };
+                    base.with_file_name(dev_name)
+                } else {
+                    base
+                }
+            };
             std::fs::create_dir_all(&app_data_dir)?;
             let db_path = app_data_dir.join("runner.db");
             let pool = Arc::new(db::open_pool(&db_path)?);

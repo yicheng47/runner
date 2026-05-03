@@ -57,11 +57,12 @@ Start the app:
 pnpm tauri dev
 ```
 
-Optional clean-state reset on macOS:
+Optional clean-state reset on macOS. `pnpm tauri dev` writes to the
+`-dev` sibling directory so a packaged install's data isn't touched —
+only wipe the dev dir:
 
 ```sh
-rm -rf "$HOME/Library/Application Support/com.wycstudios.runner"
-rm -rf "$HOME/Library/Application Support/com.wycstudios.runner.dev"
+rm -rf "$HOME/Library/Application Support/com.wycstudios.runner-dev"
 ```
 
 Prepare two crews:
