@@ -10,3 +10,5 @@ links to its tracking issue.
 
 - [01 — Archived tab](./01-archived-tab.md) — view and unarchive
   missions and chats that fell off the active sidebar.
+- [02 — Collapsable sidebar](./02-collapsable-sidebar.md) — toggle
+  between the full sidebar and a narrow icon rail.
