@@ -24012,10 +24012,10 @@
                         {
                           "type": "text",
                           "id": "M9HaRG",
-                          "fill": "#9A9BA5",
+                          "fill": "#00FF9C",
                           "textGrowth": "fixed-width",
                           "width": "fill_container",
-                          "content": "You're up to date — last checked 12 minutes ago.",
+                          "content": "v0.1.1 is available — released 2 hours ago.",
                           "fontFamily": "Inter",
                           "fontSize": 11,
                           "fontWeight": "normal"
@@ -24026,12 +24026,12 @@
                       "type": "frame",
                       "id": "Z7PvVt",
                       "name": "checkBtn",
-                      "fill": "#16171B",
+                      "fill": "#00FF9C",
                       "cornerRadius": 6,
                       "stroke": {
                         "align": "inside",
                         "thickness": 1,
-                        "fill": "#1F2127"
+                        "fill": "#00FF9C"
                       },
                       "gap": 6,
                       "padding": [
@@ -24045,15 +24045,15 @@
                           "id": "XYBKa",
                           "width": 12,
                           "height": 12,
-                          "iconFontName": "refresh-cw",
+                          "iconFontName": "download",
                           "iconFontFamily": "lucide",
-                          "fill": "#EDEDF0"
+                          "fill": "#0E0E10"
                         },
                         {
                           "type": "text",
                           "id": "I0tPVd",
-                          "fill": "#EDEDF0",
-                          "content": "Check now",
+                          "fill": "#0E0E10",
+                          "content": "Download & install",
                           "fontFamily": "Inter",
                           "fontSize": 12,
                           "fontWeight": "500"
@@ -24504,10 +24504,10 @@
                         {
                           "type": "text",
                           "id": "ybcAp",
-                          "fill": "#9A9BA5",
+                          "fill": "#EDEDF0",
                           "textGrowth": "fixed-width",
                           "width": "fill_container",
-                          "content": "You're up to date — last checked 12 minutes ago.",
+                          "content": "Downloading update… 47%",
                           "fontFamily": "Inter",
                           "fontSize": 11,
                           "fontWeight": "normal"
@@ -24537,15 +24537,15 @@
                           "id": "BOfdM",
                           "width": 12,
                           "height": 12,
-                          "iconFontName": "refresh-cw",
+                          "iconFontName": "loader",
                           "iconFontFamily": "lucide",
-                          "fill": "#EDEDF0"
+                          "fill": "#9A9BA5"
                         },
                         {
                           "type": "text",
                           "id": "C1feD",
                           "fill": "#EDEDF0",
-                          "content": "Check now",
+                          "content": "Cancel",
                           "fontFamily": "Inter",
                           "fontSize": 12,
                           "fontWeight": "500"
@@ -24996,10 +24996,10 @@
                         {
                           "type": "text",
                           "id": "p9Zwyj",
-                          "fill": "#9A9BA5",
+                          "fill": "#00FF9C",
                           "textGrowth": "fixed-width",
                           "width": "fill_container",
-                          "content": "You're up to date — last checked 12 minutes ago.",
+                          "content": "Update ready — restart to apply",
                           "fontFamily": "Inter",
                           "fontSize": 11,
                           "fontWeight": "normal"
@@ -25010,12 +25010,12 @@
                       "type": "frame",
                       "id": "G1ZJk",
                       "name": "checkBtn",
-                      "fill": "#16171B",
+                      "fill": "#00FF9C",
                       "cornerRadius": 6,
                       "stroke": {
                         "align": "inside",
                         "thickness": 1,
-                        "fill": "#1F2127"
+                        "fill": "#00FF9C"
                       },
                       "gap": 6,
                       "padding": [
@@ -25029,15 +25029,15 @@
                           "id": "xgpMK",
                           "width": 12,
                           "height": 12,
-                          "iconFontName": "refresh-cw",
+                          "iconFontName": "rotate-ccw",
                           "iconFontFamily": "lucide",
-                          "fill": "#EDEDF0"
+                          "fill": "#0E0E10"
                         },
                         {
                           "type": "text",
                           "id": "dw7v9",
-                          "fill": "#EDEDF0",
-                          "content": "Check now",
+                          "fill": "#0E0E10",
+                          "content": "Restart to update",
                           "fontFamily": "Inter",
                           "fontSize": 12,
                           "fontWeight": "500"
