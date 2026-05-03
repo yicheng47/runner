@@ -2,18 +2,18 @@
 
 > Umbrella plan for the first end-to-end vertical slice of Runner. Twelve ordered chunks (C1–C11 plus the C5.5a amendment), each its own PR merged directly into `main`. The original umbrella-branch model was dropped after C8.5 — see `## Branching` at the bottom for the rationale.
 >
-> Companion to `docs/arch/v0-arch.md` (architecture), `docs/arch/v0-prd.md` (scope), and `docs/dev-log.md` (dated implementation log). This file is the stable MVP implementation reference.
+> Companion to `docs/arch/v0-arch.md` (architecture), `docs/arch/v0-prd.md` (scope), and `docs/journals/v0-mvp.md` (dated implementation log). This file is the stable MVP implementation reference.
 
 ## Status snapshot
 
-For dated implementation history and validation notes, see `docs/dev-log.md`.
+For dated implementation history and validation notes, see `docs/journals/v0-mvp.md`.
 
 Every layer of v0 — persistence, configuration, slot-based crew composition,
 PTY runtime, event log, event bus, signal router, `runner` CLI, mission
 workspace UI, and the Start Mission entrypoint — is implemented. The full demo
 path from §"Definition of done" runs end-to-end without DevTools. PR #24 has
 merged the runner-as-template / per-slot identity redesign; current follow-up
-items are tracked in `docs/dev-log.md`.
+items are tracked in `docs/journals/v0-mvp.md`.
 
 ### Implemented
 
