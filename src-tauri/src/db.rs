@@ -36,19 +36,24 @@ pub fn default_signal_types_json() -> String {
 
 pub fn open_pool(db_path: &Path) -> Result<DbPool> {
     let manager = SqliteConnectionManager::file(db_path).with_init(init_connection);
-    build_pool(manager, 8)
+    build_pool(manager, 8, true)
 }
 
 #[cfg(test)]
 pub fn open_in_memory() -> Result<DbPool> {
+    // Tests get schema only — the default-crew seed would pollute the
+    // empty starting state most command tests assume.
     let manager = SqliteConnectionManager::memory().with_init(init_connection);
-    build_pool(manager, 1)
+    build_pool(manager, 1, false)
 }
 
-fn build_pool(manager: SqliteConnectionManager, max_size: u32) -> Result<DbPool> {
+fn build_pool(manager: SqliteConnectionManager, max_size: u32, seed: bool) -> Result<DbPool> {
     let pool = Pool::builder().max_size(max_size).build(manager)?;
     let mut conn = pool.get()?;
     run_migrations(&mut conn)?;
+    if seed {
+        seed_defaults(&mut conn)?;
+    }
     Ok(pool)
 }
 
@@ -61,8 +66,22 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 }
 
 // Pre-release squash: the original 0001..0008 collapsed into one
-// init file. Future migrations resume from 0002.
+// init file. Future schema migrations resume from 0002.
 const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_init.sql"))];
+
+// Default-data seed: ships the Build squad starter crew on first launch.
+// Runs unconditionally on every prod startup; idempotent via per-row
+// `WHERE NOT EXISTS` guards inside the SQL itself, and the crew-level
+// guard skips the seed entirely once the user has any crew of their own.
+// Tests skip this so command tests can assume an empty starting state.
+const DEFAULT_SEED_SQL: &str = include_str!("../migrations/0002_default_crew.sql");
+
+fn seed_defaults(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute_batch(DEFAULT_SEED_SQL)?;
+    tx.commit()?;
+    Ok(())
+}
 
 fn run_migrations(conn: &mut Connection) -> Result<()> {
     conn.execute_batch(
@@ -277,7 +296,7 @@ mod tests {
             "INSERT INTO runners (
                 id, handle, display_name, runtime, command,
                 args_json, env_json, created_at, updated_at
-             ) VALUES ('r1','impl','Impl','shell','sh',?1,?2,?3,?3)",
+             ) VALUES ('r1','test-impl','Impl','shell','sh',?1,?2,?3,?3)",
             params![args.to_string(), env.to_string(), "2026-04-22T00:00:00Z"],
         )
         .unwrap();
@@ -342,6 +361,73 @@ mod tests {
             .unwrap();
         assert_eq!(runner_count, 1, "runner template must survive crew delete");
         assert_eq!(slot_count, 0, "slots cascade with the crew");
+    }
+
+    #[test]
+    fn seed_defaults_inserts_build_squad_on_empty_db() {
+        let pool = open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        seed_defaults(&mut conn).unwrap();
+
+        let crew_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))
+            .unwrap();
+        let runner_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM runners", [], |r| r.get(0))
+            .unwrap();
+        let slot_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM slots", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(crew_count, 1);
+        assert_eq!(runner_count, 3);
+        assert_eq!(slot_count, 3);
+
+        let lead_handle: String = conn
+            .query_row(
+                "SELECT slot_handle FROM slots WHERE lead = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(lead_handle, "architect");
+    }
+
+    #[test]
+    fn seed_defaults_skips_when_user_has_a_crew() {
+        // Existing users (non-empty crews) shouldn't get a surprise
+        // Build squad row added on the next launch.
+        let pool = open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        insert_crew(&conn, "user-c1");
+        seed_defaults(&mut conn).unwrap();
+
+        let crew_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(crew_count, 1, "should not seed when crews already exist");
+        let runner_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM runners", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(runner_count, 0, "runners gated on the crew row existing");
+    }
+
+    #[test]
+    fn seed_defaults_is_idempotent_across_reseeds() {
+        // Calling seed_defaults twice on the same pool (mirrors a user
+        // reopening the app) must not double-insert.
+        let pool = open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        seed_defaults(&mut conn).unwrap();
+        seed_defaults(&mut conn).unwrap();
+
+        let runner_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM runners", [], |r| r.get(0))
+            .unwrap();
+        let slot_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM slots", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(runner_count, 3);
+        assert_eq!(slot_count, 3);
     }
 
     #[test]

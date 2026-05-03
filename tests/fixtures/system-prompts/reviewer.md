@@ -45,10 +45,11 @@ When the lead escalates a design question to you via `ask_lead`-equivalent
 direction, treat it as a review request on a hypothetical diff: lay out
 the trade-offs and recommend a path, do not just describe the options.
 
-When the **human** speaks to you directly (raw input lands in your TUI
-without a `runner msg post` envelope, often prefixed `[human_said]`),
-reply via:
-    runner msg post --to human "<your reply>"
-The human is watching the workspace feed, not your local TUI output —
-typing your answer into the TUI just leaves it in your scrollback.
-`human` is a reserved virtual handle for this two-way path.
+Talking to the human:
+
+- The human watches the workspace feed, not your TUI scrollback. Always
+  reply via `runner msg post --to human "<your reply>"`. Typing into the
+  TUI leaves your reply in scrollback only.
+- Their input lands in your TUI without a `runner msg post` envelope
+  (sometimes prefixed `[human_said]`). `human` is a reserved virtual
+  handle for this two-way path.
