@@ -424,11 +424,9 @@ mod tests {
         assert_eq!(slot_count, 3);
 
         let lead_handle: String = conn
-            .query_row(
-                "SELECT slot_handle FROM slots WHERE lead = 1",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT slot_handle FROM slots WHERE lead = 1", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(lead_handle, "architect");
     }
