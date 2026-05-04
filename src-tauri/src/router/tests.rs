@@ -933,7 +933,11 @@ fn directed_wake_synthesizes_busy_and_idle_clears_it() {
     // and a synthetic runner_status busy event lands in the log.
     let direct = log.append(message("lead", Some("impl"), "go")).unwrap();
     router.handle_event(&direct);
-    assert_eq!(busy_for_impl(&log), 1, "wake nudge must append one busy event");
+    assert_eq!(
+        busy_for_impl(&log),
+        1,
+        "wake nudge must append one busy event"
+    );
     assert!(matches!(
         router.state.lock().unwrap().status.get("impl"),
         Some(super::RunnerStatus::Busy),
