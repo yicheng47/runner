@@ -12,3 +12,5 @@ links to its tracking issue.
   missions and chats that fell off the active sidebar.
 - [02 — Collapsable sidebar](./02-collapsable-sidebar.md) — toggle
   between the full sidebar and a narrow icon rail.
+- [03 — MCP server](./03-mcp-server.md) — expose Runner's CRUD surface
+  over HTTP MCP so external Claude Code / Codex can configure the app.
