@@ -21,6 +21,7 @@ export default function App() {
             <Route path="/runners/:handle" element={<RunnerDetail />} />
             <Route path="/runners/:handle/chat" element={<RunnerChat />} />
             <Route path="/missions/:id" element={<MissionWorkspace />} />
+            <Route path="*" element={<Navigate to="/runners" replace />} />
           </Route>
         </Routes>
       </BrowserRouter>

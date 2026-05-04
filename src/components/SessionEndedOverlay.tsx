@@ -136,3 +136,27 @@ export function ResumingOverlay() {
     </div>
   );
 }
+
+/// Centered amber pill shown while an archive RPC is in flight.
+/// Mirrors Pencil nodes `q3X0Ck` (mission workspace) and `FpUkw`
+/// (runner chat). Geometry matches the resuming pill but the palette
+/// signals a destructive transition. Pass `withScrim` for the chat
+/// variant — the chat body dims behind the pill so the terminal
+/// stays faintly visible.
+export function ArchivingOverlay({ withScrim = false }: { withScrim?: boolean }) {
+  return (
+    <>
+      {withScrim ? (
+        <div className="pointer-events-none absolute inset-0 bg-[#0E0E10F2]" />
+      ) : null}
+      <div className="pointer-events-none absolute inset-4 flex items-center justify-center">
+        <div
+          className="pointer-events-auto flex h-[30px] items-center gap-2 rounded-[15px] border border-[#FFB02055] bg-[#FFB02022] px-3 font-mono text-[13px] font-semibold tracking-[0.5px] text-[#FFB020]"
+        >
+          <span className="h-2 w-2 animate-pulse rounded-[4px] bg-[#FFB020]" />
+          Archiving…
+        </div>
+      </div>
+    </>
+  );
+}
