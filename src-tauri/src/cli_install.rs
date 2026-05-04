@@ -11,12 +11,14 @@
 //
 // Source resolution. In dev (`cargo run`), the CLI lives next to the
 // Tauri exe under `target/{debug,release}/runner-cli`. In production,
-// the Tauri bundler is expected to ship the same artifact alongside
-// the app's main executable. Production-bundle wiring (tauri.conf.json
-// `bundle.externalBin` declaration + a beforeBuildCommand step that
-// stages the binary at the target-triple-suffixed path the bundler
-// expects) is tracked as a follow-up; the dev path is what the v0
-// demo runs.
+// the Tauri bundler ships the same artifact alongside the app's main
+// executable via `bundle.externalBin: ["binaries/runner-cli"]` in
+// `tauri.conf.json` — `scripts/stage-runner-cli.mjs` (run from
+// `tauri:before:build`) cross-builds the CLI for the active triple
+// and stages it at `src-tauri/binaries/runner-cli-<triple>` where the
+// bundler picks it up and drops it into `Runner.app/Contents/MacOS/
+// runner-cli`. Either path leaves a `runner-cli` sibling next to
+// `current_exe`, which is what `locate_source` looks for.
 //
 // Skip-if-current optimization. Compare (size, mtime) — if the source
 // file's mtime is `<=` the destination's AND sizes match, skip the

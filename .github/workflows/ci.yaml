@@ -44,6 +44,18 @@ jobs:
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev
+      # Tauri's build script validates that every `bundle.externalBin`
+      # entry exists for the active target on every cargo build,
+      # including clippy / check / test. CI doesn't bundle, but it does
+      # build the runner crate, so we stage a placeholder file at the
+      # path the externalBin declaration resolves to. The release
+      # workflow stages a real binary via `scripts/stage-runner-cli.mjs`.
+      - name: Stage runner-cli placeholder for externalBin existence check
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          mkdir -p src-tauri/binaries
+          touch "src-tauri/binaries/runner-cli-${triple}"
+          chmod +x "src-tauri/binaries/runner-cli-${triple}"
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo check --workspace

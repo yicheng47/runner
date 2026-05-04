@@ -27,3 +27,7 @@ dist-ssr
 src-tauri/target
 /target
 .claude/scheduled_tasks.lock
+
+# Tauri externalBin staging — populated by scripts/stage-runner-cli.mjs
+# at build time, never committed.
+src-tauri/binaries/

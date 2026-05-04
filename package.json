@@ -15,7 +15,7 @@
     "package": "tauri build",
     "lint": "eslint src/",
     "tauri:before:dev": "cargo build -p runner-cli && npm run dev",
-    "tauri:before:build": "cargo build -p runner-cli --release && npm run build"
+    "tauri:before:build": "node scripts/stage-runner-cli.mjs && npm run build"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.1",
