@@ -88,7 +88,7 @@ Talking to the human:
   handle for this two-way path.',
   NULL,
   'claude-opus-4-7',
-  'high',
+  'xhigh',
   '2026-05-03T00:00:00Z',
   '2026-05-03T00:00:00Z'
 );
@@ -150,8 +150,8 @@ Talking to the human:
   (sometimes prefixed `[human_said]`). `human` is a reserved virtual
   handle for this two-way path.',
   NULL,
-  'claude-sonnet-4-6',
-  'medium',
+  'claude-opus-4-7',
+  'xhigh',
   '2026-05-03T00:00:00Z',
   '2026-05-03T00:00:00Z'
 );
@@ -221,8 +221,8 @@ Talking to the human:
   (sometimes prefixed `[human_said]`). `human` is a reserved virtual
   handle for this two-way path.',
   NULL,
-  'claude-sonnet-4-6',
-  'medium',
+  'claude-opus-4-7',
+  'xhigh',
   '2026-05-03T00:00:00Z',
   '2026-05-03T00:00:00Z'
 );

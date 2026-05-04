@@ -92,7 +92,7 @@ VALUES (
   '$ARCHITECT_PROMPT',
   NULL,
   'claude-opus-4-7',
-  'high',
+  'xhigh',
   '$NOW',
   '$NOW'
 );
@@ -108,8 +108,8 @@ VALUES (
   NULL,
   '$IMPL_PROMPT',
   NULL,
-  'claude-sonnet-4-6',
-  'medium',
+  'claude-opus-4-7',
+  'xhigh',
   '$NOW',
   '$NOW'
 );
@@ -125,8 +125,8 @@ VALUES (
   NULL,
   '$REVIEWER_PROMPT',
   NULL,
-  'claude-sonnet-4-6',
-  'medium',
+  'claude-opus-4-7',
+  'xhigh',
   '$NOW',
   '$NOW'
 );
