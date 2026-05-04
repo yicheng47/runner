@@ -337,6 +337,45 @@ impl Router {
         self.injector.inject(&session_id, bytes)
     }
 
+    /// Mark a runner as busy when the router is about to wake them via
+    /// stdin injection (issue #32). Appends a synthetic `runner_status`
+    /// busy event with `from = handle` so the workspace rail projection
+    /// (MissionWorkspace.tsx:397-411) keys the badge against the
+    /// recipient, and updates router state so back-to-back nudges within
+    /// the same task don't churn the log. Skips for the virtual `human`
+    /// handle and skips if the recipient is already marked busy.
+    ///
+    /// Centralized here so the policy applies uniformly to every wake
+    /// source: directed/broadcast `message_nudge`, `ask_lead` relay,
+    /// `human_said`, `human_response`, the lead's `mission_goal`
+    /// bootstrap, and the `runner_status idle` notice to the lead.
+    fn synthesize_wake_busy(&self, handle: &str) {
+        if handle == "human" {
+            return;
+        }
+        {
+            let state = self.state.lock().unwrap();
+            if matches!(state.status.get(handle), Some(RunnerStatus::Busy)) {
+                return;
+            }
+        }
+        let draft = runner_core::model::EventDraft::signal(
+            self.crew_id.clone(),
+            self.mission_id.clone(),
+            handle,
+            SignalType::new("runner_status"),
+            serde_json::json!({ "state": "busy" }),
+        );
+        if let Err(e) = self.log.append(draft) {
+            eprintln!(
+                "router[{}]: failed to append synthetic runner_status busy for @{handle}: {e}",
+                self.mission_id,
+            );
+            return;
+        }
+        self.set_status(handle.to_string(), RunnerStatus::Busy);
+    }
+
     /// Inject `body` to the handle's stdin, then send a separate
     /// carriage-return (`\r`) on a brief delay. claude-code's TUI
     /// editor treats `\r` as Enter, but bytes arriving in the same
@@ -356,6 +395,7 @@ impl Router {
                 "router: no live session for handle @{handle}"
             )));
         };
+        self.synthesize_wake_busy(handle);
         if !body.is_empty() {
             self.injector.inject(&session_id, body)?;
         }
@@ -398,6 +438,7 @@ impl Router {
             ));
             return;
         };
+        self.synthesize_wake_busy(handle);
         // Zero-delay path: run inline, body only — no separate `\r`
         // chord. Used by unit tests
         // (`LEAD_LAUNCH_PROMPT_DELAY = ZERO` under `cfg(test)`) so
