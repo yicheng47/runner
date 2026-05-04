@@ -933,7 +933,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            r.args.iter().filter(|a| a.as_str() == "--ask-for-approval").count(),
+            r.args
+                .iter()
+                .filter(|a| a.as_str() == "--ask-for-approval")
+                .count(),
             1,
             "re-toggling on must not duplicate flags: {:?}",
             r.args,
@@ -961,7 +964,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(r.args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(r
+            .args
+            .contains(&"--dangerously-skip-permissions".to_string()));
 
         let r = update(
             &conn,
@@ -1027,7 +1032,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(r.args, before, "args must be untouched when no toggle is sent");
+        assert_eq!(
+            r.args, before,
+            "args must be untouched when no toggle is sent"
+        );
         assert_eq!(r.display_name, "renamed");
     }
 
@@ -1055,7 +1063,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(r.args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(r
+            .args
+            .contains(&"--dangerously-skip-permissions".to_string()));
 
         // Switch to codex with toggle still on. Old flag must be
         // stripped, new (codex) flags must be applied.
@@ -1071,7 +1081,8 @@ mod tests {
         )
         .unwrap();
         assert!(
-            !r.args.contains(&"--dangerously-skip-permissions".to_string()),
+            !r.args
+                .contains(&"--dangerously-skip-permissions".to_string()),
             "claude-code's flag must be stripped on runtime switch: {:?}",
             r.args,
         );
