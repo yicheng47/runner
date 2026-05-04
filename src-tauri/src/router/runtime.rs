@@ -94,10 +94,7 @@ pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str
                 // Lowercase: codex's TOML enum is case-sensitive
                 // (rejects "High" with "unknown variant").
                 out.push("-c".into());
-                out.push(format!(
-                    "model_reasoning_effort={}",
-                    e.to_ascii_lowercase()
-                ));
+                out.push(format!("model_reasoning_effort={}", e.to_ascii_lowercase()));
             }
             out
         }
