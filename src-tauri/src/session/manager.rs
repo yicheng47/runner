@@ -326,30 +326,19 @@ impl SessionManager {
                 cmd.arg(extra);
             }
         }
-        // Append the runtime-specific flag that hands `system_prompt` to the
-        // child. Without this the user-authored brief on the runner row is
-        // dropped on the floor (arch §4.2 / §4.3).
-        //
-        // Codex carve-out: codex's only "system prompt" hook is a
-        // positional `[PROMPT]` argv that becomes the first user turn
-        // of the session (it has no real system-prompt flag). Passing
-        // it on a *resume* spawn would surface the prompt as a fresh
-        // user message against the existing conversation, so we skip
-        // codex's argv when `plan.resuming` is true. claude-code's
-        // `--append-system-prompt` is system-level and safe to re-pass
-        // on resume.
-        let prompt_for_argv = if runner.runtime == "codex" && plan.resuming {
-            None
-        } else {
-            runner.system_prompt.as_deref()
-        };
-        for extra in crate::router::runtime::system_prompt_args(&runner.runtime, prompt_for_argv) {
-            cmd.arg(extra);
-        }
-        for extra in crate::router::runtime::model_effort_args(
+        // Append the runtime-specific trailing args: model/effort flags
+        // followed by the `system_prompt` argv. Without this the
+        // user-authored brief on the runner row is dropped on the floor
+        // (arch §4.2 / §4.3). Codex requires flags before the positional
+        // `[PROMPT]`; the helper enforces that ordering and the codex
+        // carve-out that drops the prompt argv on resume so it isn't
+        // replayed as a fresh user turn against an existing conversation.
+        for extra in crate::router::runtime::trailing_runtime_args(
             &runner.runtime,
+            plan.resuming,
             runner.model.as_deref(),
             runner.effort.as_deref(),
+            runner.system_prompt.as_deref(),
         ) {
             cmd.arg(extra);
         }
@@ -606,17 +595,15 @@ impl SessionManager {
         // Apply the same runtime adapter as the mission spawn so direct chat
         // sessions also receive the runner's `system_prompt`. Direct chats
         // get only the brief — no roster, no goal, no coordination notes —
-        // so this is strictly the per-runner default.
-        for extra in crate::router::runtime::system_prompt_args(
+        // so this is strictly the per-runner default. `plan.resuming` is
+        // always false here (spawn_direct opens a new chat); pass it
+        // through anyway for parity with the other spawn sites.
+        for extra in crate::router::runtime::trailing_runtime_args(
             &runner.runtime,
-            runner.system_prompt.as_deref(),
-        ) {
-            cmd.arg(extra);
-        }
-        for extra in crate::router::runtime::model_effort_args(
-            &runner.runtime,
+            plan.resuming,
             runner.model.as_deref(),
             runner.effort.as_deref(),
+            runner.system_prompt.as_deref(),
         ) {
             cmd.arg(extra);
         }
@@ -988,25 +975,17 @@ impl SessionManager {
                 cmd.arg(extra);
             }
         }
-        // codex on resume: skip the runner's `system_prompt` argv.
-        // codex's positional prompt argument is treated as a NEW user
-        // turn, so re-passing the brief on every resume would replay
-        // it as another message against the existing conversation.
-        // claude-code's `--append-system-prompt` is system-level and
-        // safe to keep on resume (no-op against an existing
-        // conversation in the TUI). Mirrors the spawn() guard above.
-        let prompt_for_argv = if runner.runtime == "codex" && plan.resuming {
-            None
-        } else {
-            runner.system_prompt.as_deref()
-        };
-        for extra in crate::router::runtime::system_prompt_args(&runner.runtime, prompt_for_argv) {
-            cmd.arg(extra);
-        }
-        for extra in crate::router::runtime::model_effort_args(
+        // codex on resume: the helper drops the `system_prompt` argv when
+        // `plan.resuming` is true so codex's positional `[PROMPT]` isn't
+        // replayed as a fresh user turn against the existing conversation.
+        // claude-code is unaffected (its `system_prompt_args` is empty
+        // and its prompt is delivered via stdin instead).
+        for extra in crate::router::runtime::trailing_runtime_args(
             &runner.runtime,
+            plan.resuming,
             runner.model.as_deref(),
             runner.effort.as_deref(),
+            runner.system_prompt.as_deref(),
         ) {
             cmd.arg(extra);
         }
