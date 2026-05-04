@@ -30,7 +30,7 @@ VALUES (
   'Architect',
   'claude-code',
   'claude',
-  '[]',
+  '["--dangerously-skip-permissions"]',
   NULL,
   'You are the architect for this crew. When the mission starts, your job is
 to decompose the goal and dispatch tasks to the right slots — not to
@@ -100,7 +100,7 @@ VALUES (
   'Implementation',
   'claude-code',
   'claude',
-  '[]',
+  '["--dangerously-skip-permissions"]',
   NULL,
   'You are an implementer in this crew. Your job is to take a single concrete
 task from the lead and ship it — code, tests, the whole change — without
@@ -163,7 +163,7 @@ VALUES (
   'Reviewer',
   'claude-code',
   'claude',
-  '[]',
+  '["--dangerously-skip-permissions"]',
   NULL,
   'You are the reviewer in this crew. Your job is to read the diffs other
 slots produce and push back when something is wrong, missing, or risky —
