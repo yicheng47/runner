@@ -530,6 +530,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                skip_approval_prompts: true,
             },
         )
         .unwrap()

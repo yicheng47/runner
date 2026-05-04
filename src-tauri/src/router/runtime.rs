@@ -10,7 +10,10 @@
 //      ignores them. So claude-code returns no argv from this
 //      function — the prompt is delivered via stdin as a first user
 //      turn instead, by `SessionManager::schedule_first_prompt`.
-//      Codex still uses its positional `[PROMPT]` arg.
+//      Codex follows the same stdin path: a startup permission /
+//      approval dialog can swallow or misorder the positional
+//      `[PROMPT]` argv, so codex also returns empty here and the
+//      brief lands via stdin once the TUI has settled.
 //      arch §4.2 / §4.3.
 //
 //   2. `resume_plan` — pass the agent CLI's *own* resumable
@@ -103,6 +106,174 @@ pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str
     }
 }
 
+/// Canonical argv that puts the runtime's interactive TUI into a
+/// "skip approval prompts" mode — used by `commands::runner::create`
+/// (and `update`) to apply the runner-edit-form's "Skip approval
+/// prompts" toggle as concrete flags on the runner row's `args`
+/// column at *create* time, not at spawn time. Storing the flags on
+/// the row keeps existing runners stable if our recommended default
+/// ever shifts.
+///
+/// Returns an empty Vec for runtimes with no equivalent (shell /
+/// unknown), which the caller treats as "toggle does not apply" — the
+/// form hides the toggle row in those cases (see
+/// `RUNTIME_OPTIONS` / `RunnerEditDrawer.tsx`).
+///
+/// claude-code → `--dangerously-skip-permissions` (the SDK & TUI flag,
+/// already baked into the seeded Build squad runners — see
+/// migrations/0002_default_crew.sql).
+///
+/// codex → `--ask-for-approval never --sandbox workspace-write` (codex
+/// 0.x's two-axis approval model: ask cadence + filesystem
+/// sandbox). `workspace-write` keeps writes scoped to the runner's
+/// cwd while removing the per-action prompt; pairing them is what
+/// lets a crew worker run unattended.
+pub fn bypass_permission_args(runtime: &str) -> Vec<String> {
+    match runtime {
+        "claude-code" => vec!["--dangerously-skip-permissions".into()],
+        "codex" => vec![
+            "--ask-for-approval".into(),
+            "never".into(),
+            "--sandbox".into(),
+            "workspace-write".into(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// Strip every prior occurrence of the runtime's bypass-permission
+/// flags (and their values, where applicable) from `args`, preserving
+/// order of the surviving args. Used by `commands::runner::create`
+/// and `update` so toggling the form's "Skip approval prompts"
+/// switch round-trips without leaving duplicate or orphan flags.
+///
+/// Match shape per runtime:
+///   - codex: `--ask-for-approval <value>` and `--sandbox <value>`
+///     (the next token is consumed as the value, regardless of what
+///     it is — toggling the switch is opinionated about owning these
+///     flags). `--flag=value` form is also stripped.
+///   - claude-code: `--dangerously-skip-permissions` (standalone).
+pub fn strip_bypass_flags(runtime: &str, args: &[String]) -> Vec<String> {
+    // (flag_name, takes_value)
+    let keys: &[(&str, bool)] = match runtime {
+        "codex" => &[("--ask-for-approval", true), ("--sandbox", true)],
+        "claude-code" => &[("--dangerously-skip-permissions", false)],
+        _ => &[],
+    };
+    if keys.is_empty() {
+        return args.to_vec();
+    }
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        // Exact-match `--flag` form. For takes_value flags we also
+        // skip the next token if present (it's the value).
+        if let Some(&(_, takes_value)) = keys.iter().find(|(name, _)| name == arg) {
+            i += if takes_value && i + 1 < args.len() {
+                2
+            } else {
+                1
+            };
+            continue;
+        }
+        // `--flag=value` form: strip the whole token in one go.
+        if keys
+            .iter()
+            .any(|(name, takes_value)| *takes_value && arg.starts_with(&format!("{name}=")))
+        {
+            i += 1;
+            continue;
+        }
+        out.push(arg.clone());
+        i += 1;
+    }
+    out
+}
+
+/// Compose the runner row's stored `args` from the user-provided
+/// `args` and the runner-edit-form's "Skip approval prompts" toggle.
+/// Strips any prior occurrence of the runtime's bypass flags, then
+/// appends the canonical pair if the toggle is on. No-op for
+/// runtimes without a bypass concept (shell / unknown).
+pub fn apply_bypass_permissions(runtime: &str, args: &[String], skip: bool) -> Vec<String> {
+    let mut out = strip_bypass_flags(runtime, args);
+    if skip {
+        out.extend(bypass_permission_args(runtime));
+    }
+    out
+}
+
+/// Frontend-mirror helper: inspect a runner's stored `args` and
+/// decide whether the "Skip approval prompts" toggle on the
+/// runner-edit form should render as on. True iff every canonical
+/// (flag, expected_value) pair for the runtime is present in `args`,
+/// in either separated form (`--flag value`) or equals form
+/// (`--flag=value`); claude-code's `--dangerously-skip-permissions`
+/// is a value-less flag, just check presence.
+///
+/// Conflicting values (e.g. `--ask-for-approval=on-failure` for
+/// codex) read as toggle-off, since the user clearly didn't choose
+/// the "skip" semantic. Mirrors `inferSkipApprovalPrompts` in
+/// `src/components/ui/runtimes.ts` — the frontend hand-port is
+/// constrained by this function's tests.
+///
+/// `#[allow(dead_code)]` because the only direct consumer is the
+/// test suite: the function exists to *pin the algorithm* the
+/// frontend hand-ports, not to be called from Rust spawn paths
+/// (those use `apply_bypass_permissions` for write-side flag
+/// management). Keep it `pub` so it's discoverable from a
+/// `runtime::` module search.
+#[allow(dead_code)]
+pub fn infer_skip_approval_prompts(runtime: &str, args: &[String]) -> bool {
+    // (flag, Some(expected_value)) pairs for codex; (flag, None) for
+    // claude-code's value-less flag. Hand-synced with
+    // `bypass_permission_args` and the frontend's
+    // `BYPASS_FLAGS_BY_RUNTIME`.
+    let pairs: &[(&str, Option<&str>)] = match runtime {
+        "claude-code" => &[("--dangerously-skip-permissions", None)],
+        "codex" => &[
+            ("--ask-for-approval", Some("never")),
+            ("--sandbox", Some("workspace-write")),
+        ],
+        _ => &[],
+    };
+    if pairs.is_empty() {
+        return false;
+    }
+    pairs
+        .iter()
+        .all(|&(flag, expected)| flag_value_matches(args, flag, expected))
+}
+
+/// `--flag <expected>` (separated) OR `--flag=<expected>` (equals)
+/// for value-bearing flags; bare-token presence for value-less
+/// flags. A wrong value at one site doesn't invalidate a later
+/// canonical site (we keep scanning), so duplicate entries with
+/// mixed values resolve toward "match found".
+///
+/// Helper for `infer_skip_approval_prompts`; same dead-code caveat.
+#[allow(dead_code)]
+fn flag_value_matches(args: &[String], flag: &str, expected: Option<&str>) -> bool {
+    let Some(expected) = expected else {
+        return args.iter().any(|a| a == flag);
+    };
+    let equals_token = format!("{flag}={expected}");
+    for (i, arg) in args.iter().enumerate() {
+        if arg == &equals_token {
+            return true;
+        }
+        if arg == flag {
+            if let Some(next) = args.get(i + 1) {
+                if next == expected {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Compute the extra args (in declaration order) to append after the
 /// runner's configured `args` so the child receives `system_prompt` via the
 /// runtime's native flag. Returns an empty Vec when no prompt is set or
@@ -112,6 +283,7 @@ pub fn system_prompt_args(runtime: &str, system_prompt: Option<&str>) -> Vec<Str
         Some(p) if !p.trim().is_empty() => p,
         _ => return Vec::new(),
     };
+    let _ = prompt;
     match runtime {
         // claude-code's --append-system-prompt and --system-prompt
         // are documented as SDK-only — they require `-p` (print
@@ -123,36 +295,35 @@ pub fn system_prompt_args(runtime: &str, system_prompt: Option<&str>) -> Vec<Str
         "claude-code" => Vec::new(),
         // codex has no system-prompt flag (we tried `--instructions` and
         // it's rejected; `~/.codex/config.toml` doesn't expose one
-        // either). Codex's CLI does accept a positional `[PROMPT]` arg
-        // that becomes the first user turn of the session — passing
-        // `system_prompt` there is the closest available hook. The
-        // trade-off is visibility: codex's chat history will show the
-        // prompt as the first user message, not a hidden system
-        // instruction. For *resume* paths we deliberately skip this at
-        // the call site so the prompt isn't replayed onto an existing
-        // conversation — see the spawn glue in
-        // `SessionManager::{spawn,spawn_direct,resume}`.
-        "codex" => vec![prompt.to_string()],
+        // either). Codex's positional `[PROMPT]` argv was the closest
+        // available hook, but it loses races with codex's startup
+        // permission / approval dialog: when the TUI shows that
+        // dialog before hitting its main loop, the positional prompt
+        // is swallowed, replayed stale, or misordered. So we fall
+        // through to the same stdin-injection path claude-code uses —
+        // see `SessionManager::schedule_first_prompt`, which waits
+        // for the TUI to settle and then types the brief + Enter.
+        "codex" => Vec::new(),
         // shell / unknown — no prompt mechanism.
         _ => Vec::new(),
     }
 }
 
-/// Compose the runtime-specific trailing args (model/effort flags + the
+/// Compose the runtime-specific trailing args (model/effort flags + any
 /// `system_prompt` argv) in the order the runtime's CLI expects.
 ///
-/// Codex's clap parser requires every flag to appear *before* the positional
-/// `[PROMPT]` argument; passing `--model` (or `-c …`) after the prompt
-/// either gets swallowed into the prompt or errors out (issue #41). So
-/// model/effort flags MUST come before the prompt argv. claude-code's
-/// `system_prompt_args` returns empty (its prompt is delivered via stdin),
-/// so the same ordering is a no-op there. Centralising the splice keeps
-/// `spawn`, `spawn_direct`, and `resume` from drifting.
+/// Both supported runtimes now deliver the system prompt via stdin
+/// (`SessionManager::schedule_first_prompt`) so `system_prompt_args`
+/// returns empty for both — the helper still composes via that path so
+/// a future runtime that wants positional argv can opt back in without
+/// rewriting the call sites. Centralising the splice keeps `spawn`,
+/// `spawn_direct`, and `resume` from drifting.
 ///
-/// `plan_resuming` carries the codex-specific guard from `resume_plan`: on
-/// a codex resume we deliberately drop the `system_prompt` argv so the
-/// brief isn't replayed as a fresh user turn against an existing
-/// conversation. Mirrors the prior behavior at all three spawn sites.
+/// `plan_resuming` is retained for symmetry with the resume guard in
+/// `resume_plan`: callers that add a positional argv via
+/// `system_prompt_args` should not replay it onto an existing
+/// conversation. With both supported runtimes returning empty argv it
+/// is a no-op today, but kept so the contract stays self-describing.
 pub fn trailing_runtime_args(
     runtime: &str,
     plan_resuming: bool,
@@ -161,11 +332,7 @@ pub fn trailing_runtime_args(
     system_prompt: Option<&str>,
 ) -> Vec<String> {
     let mut out = model_effort_args(runtime, model, effort);
-    let prompt_for_argv = if runtime == "codex" && plan_resuming {
-        None
-    } else {
-        system_prompt
-    };
+    let prompt_for_argv = if plan_resuming { None } else { system_prompt };
     out.extend(system_prompt_args(runtime, prompt_for_argv));
     out
 }
@@ -355,14 +522,19 @@ mod tests {
     }
 
     #[test]
-    fn codex_runtime_passes_prompt_as_positional_argv() {
-        // Codex has no system-prompt flag. The closest mechanism it
-        // ships is a positional `[PROMPT]` arg that seeds the session
-        // with a first user turn. We pass `system_prompt` there so
-        // the agent at least sees the brief, even though the trade-
-        // off is the prompt becoming visible as a user message.
+    fn codex_runtime_returns_no_argv_for_system_prompt() {
+        // Codex's positional `[PROMPT]` argv races codex's startup
+        // permission / approval dialog (the prompt gets swallowed,
+        // replayed stale, or misordered when the TUI shows the dialog
+        // before hitting its main loop). The brief is now delivered via
+        // stdin once the TUI has settled — see
+        // `SessionManager::schedule_first_prompt` — so the argv path
+        // returns empty for codex too.
         let args = system_prompt_args("codex", Some("be helpful"));
-        assert_eq!(args, vec!["be helpful".to_string()]);
+        assert!(
+            args.is_empty(),
+            "codex system_prompt is delivered via stdin, not positional argv: {args:?}",
+        );
     }
 
     #[test]
@@ -529,62 +701,272 @@ mod tests {
     }
 
     #[test]
-    fn codex_trailing_args_put_flags_before_positional_prompt() {
-        // Regression test for issue #41 (argv ordering bug). Codex's
-        // clap parser requires every flag to appear *before* the
-        // positional `[PROMPT]` arg. Prior to the fix the prompt argv
-        // was spliced ahead of `--model` / `-c …`, which either
-        // swallowed the flags into the prompt text or hard-errored.
-        let args = trailing_runtime_args(
-            "codex",
-            false,
-            Some("gpt-5-codex"),
-            Some("high"),
-            Some("be helpful"),
+    fn codex_trailing_args_omit_positional_prompt() {
+        // Codex's positional `[PROMPT]` argv races codex's startup
+        // permission / approval dialog, so we deliver the brief via
+        // stdin instead (see `SessionManager::schedule_first_prompt`).
+        // The trailing args MUST NOT include the brief as positional
+        // argv on either fresh or resume spawns. Model/effort flags
+        // still ride along so the runner row's pinned settings reach
+        // the spawned CLI.
+        for plan_resuming in [false, true] {
+            let args = trailing_runtime_args(
+                "codex",
+                plan_resuming,
+                Some("gpt-5-codex"),
+                Some("high"),
+                Some("be helpful"),
+            );
+            assert!(
+                !args.iter().any(|a| a == "be helpful"),
+                "codex trailing args must not contain the brief as positional argv \
+                 (plan_resuming={plan_resuming}): {args:?}",
+            );
+            assert!(
+                args.windows(2)
+                    .any(|w| w[0] == "--model" && w[1] == "gpt-5-codex"),
+                "expected --model flag to survive (plan_resuming={plan_resuming}): {args:?}",
+            );
+            assert!(
+                args.windows(2)
+                    .any(|w| w[0] == "-c" && w[1] == "model_reasoning_effort=high"),
+                "expected reasoning-effort override to survive \
+                 (plan_resuming={plan_resuming}): {args:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn bypass_permission_args_per_runtime() {
+        assert_eq!(
+            bypass_permission_args("claude-code"),
+            vec!["--dangerously-skip-permissions".to_string()],
         );
-        let prompt_pos = args
-            .iter()
-            .position(|a| a == "be helpful")
-            .expect("prompt argv present");
-        let model_pos = args
-            .iter()
-            .position(|a| a == "--model")
-            .expect("--model flag present");
-        let effort_pos = args
-            .iter()
-            .position(|a| a == "model_reasoning_effort=high")
-            .expect("reasoning-effort override emitted");
-        assert!(
-            model_pos < prompt_pos,
-            "--model must precede the positional prompt: {args:?}",
+        assert_eq!(
+            bypass_permission_args("codex"),
+            vec![
+                "--ask-for-approval".to_string(),
+                "never".to_string(),
+                "--sandbox".to_string(),
+                "workspace-write".to_string(),
+            ],
         );
-        assert!(
-            effort_pos < prompt_pos,
-            "reasoning-effort override must precede the positional prompt: {args:?}",
+        assert!(bypass_permission_args("shell").is_empty());
+        assert!(bypass_permission_args("aider-future").is_empty());
+    }
+
+    #[test]
+    fn apply_bypass_permissions_appends_codex_canonical_pair() {
+        let user = vec!["--debug".to_string(), "-v".to_string()];
+        let out = apply_bypass_permissions("codex", &user, true);
+        assert_eq!(
+            out,
+            vec![
+                "--debug".to_string(),
+                "-v".to_string(),
+                "--ask-for-approval".to_string(),
+                "never".to_string(),
+                "--sandbox".to_string(),
+                "workspace-write".to_string(),
+            ],
+            "user-provided args come first; canonical bypass pair appended",
         );
     }
 
     #[test]
-    fn codex_trailing_args_drop_prompt_on_resume() {
-        // On a codex resume the positional `[PROMPT]` would otherwise
-        // be replayed as a fresh user turn against the existing
-        // conversation. The helper drops the prompt argv when
-        // plan_resuming=true, but keeps the model/effort flags so the
-        // resumed session still honors the runner row's pinned
-        // settings.
-        let args = trailing_runtime_args(
-            "codex",
-            true,
-            Some("gpt-5-codex"),
-            Some("high"),
-            Some("be helpful"),
+    fn apply_bypass_permissions_dedupes_existing_codex_flags() {
+        // Toggling on with stale/conflicting bypass flags already in
+        // args must replace them with the canonical pair, not stack
+        // duplicates. Covers both `--flag value` and `--flag=value`
+        // shapes plus an unrelated user arg in the middle.
+        let user = vec![
+            "--ask-for-approval".to_string(),
+            "untrusted".to_string(),
+            "--debug".to_string(),
+            "--sandbox=read-only".to_string(),
+        ];
+        let out = apply_bypass_permissions("codex", &user, true);
+        assert_eq!(
+            out,
+            vec![
+                "--debug".to_string(),
+                "--ask-for-approval".to_string(),
+                "never".to_string(),
+                "--sandbox".to_string(),
+                "workspace-write".to_string(),
+            ],
         );
-        assert!(
-            !args.iter().any(|a| a == "be helpful"),
-            "prompt argv must be dropped on codex resume: {args:?}",
+    }
+
+    #[test]
+    fn apply_bypass_permissions_off_strips_codex_flags() {
+        let user = vec![
+            "--debug".to_string(),
+            "--ask-for-approval".to_string(),
+            "never".to_string(),
+            "--sandbox".to_string(),
+            "workspace-write".to_string(),
+        ];
+        let out = apply_bypass_permissions("codex", &user, false);
+        assert_eq!(out, vec!["--debug".to_string()]);
+    }
+
+    #[test]
+    fn apply_bypass_permissions_appends_claude_code_flag() {
+        let user = vec!["--mcp-debug".to_string()];
+        let out = apply_bypass_permissions("claude-code", &user, true);
+        assert_eq!(
+            out,
+            vec![
+                "--mcp-debug".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+            ],
         );
-        assert!(args.iter().any(|a| a == "--model"));
-        assert!(args.iter().any(|a| a == "model_reasoning_effort=high"));
+    }
+
+    #[test]
+    fn apply_bypass_permissions_dedupes_claude_code_flag() {
+        let user = vec![
+            "--dangerously-skip-permissions".to_string(),
+            "--mcp-debug".to_string(),
+        ];
+        let out = apply_bypass_permissions("claude-code", &user, true);
+        // Single occurrence, appended at the end after the strip pass.
+        assert_eq!(
+            out,
+            vec![
+                "--mcp-debug".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+            ],
+        );
+    }
+
+    #[test]
+    fn apply_bypass_permissions_off_strips_claude_code_flag() {
+        let user = vec![
+            "--dangerously-skip-permissions".to_string(),
+            "--mcp-debug".to_string(),
+        ];
+        let out = apply_bypass_permissions("claude-code", &user, false);
+        assert_eq!(out, vec!["--mcp-debug".to_string()]);
+    }
+
+    #[test]
+    fn apply_bypass_permissions_no_op_for_unsupported_runtime() {
+        let user = vec!["--whatever".to_string()];
+        // toggle on or off — shell has no bypass concept, args pass
+        // through unchanged.
+        for skip in [true, false] {
+            assert_eq!(
+                apply_bypass_permissions("shell", &user, skip),
+                user,
+                "shell must be a no-op (skip={skip})",
+            );
+        }
+    }
+
+    #[test]
+    fn infer_skip_approval_codex_separated_form() {
+        // Bare-token / separated form: `--flag value`.
+        let args = vec![
+            "--ask-for-approval".to_string(),
+            "never".to_string(),
+            "--sandbox".to_string(),
+            "workspace-write".to_string(),
+        ];
+        assert!(infer_skip_approval_prompts("codex", &args));
+    }
+
+    #[test]
+    fn infer_skip_approval_codex_equals_form() {
+        // Equals form — the bug the reviewer reproduced. The frontend
+        // used to return false here; this case locks in the fix.
+        let args = vec![
+            "--ask-for-approval=never".to_string(),
+            "--sandbox=workspace-write".to_string(),
+        ];
+        assert!(infer_skip_approval_prompts("codex", &args));
+    }
+
+    #[test]
+    fn infer_skip_approval_codex_mixed_forms() {
+        let args = vec![
+            "--debug".to_string(),
+            "--ask-for-approval".to_string(),
+            "never".to_string(),
+            "--sandbox=workspace-write".to_string(),
+        ];
+        assert!(infer_skip_approval_prompts("codex", &args));
+    }
+
+    #[test]
+    fn infer_skip_approval_codex_missing_one_flag_false() {
+        let args = vec![
+            // --sandbox is present, --ask-for-approval is not.
+            "--sandbox=workspace-write".to_string(),
+        ];
+        assert!(!infer_skip_approval_prompts("codex", &args));
+    }
+
+    #[test]
+    fn infer_skip_approval_codex_conflicting_value_false() {
+        // Reviewer's reproducer focus: a non-canonical value on one
+        // of the two flags must read as toggle-off so we don't
+        // accidentally tell the user "bypass is on" when it isn't.
+        let args = vec![
+            "--ask-for-approval=on-failure".to_string(),
+            "--sandbox=workspace-write".to_string(),
+        ];
+        assert!(!infer_skip_approval_prompts("codex", &args));
+
+        // Same in separated form.
+        let args = vec![
+            "--ask-for-approval".to_string(),
+            "on-failure".to_string(),
+            "--sandbox".to_string(),
+            "workspace-write".to_string(),
+        ];
+        assert!(!infer_skip_approval_prompts("codex", &args));
+    }
+
+    #[test]
+    fn infer_skip_approval_codex_dangling_flag_false() {
+        // `--ask-for-approval` with no value following — toggle is
+        // not in a confirmed-on state.
+        let args = vec![
+            "--ask-for-approval".to_string(),
+            "--sandbox=workspace-write".to_string(),
+        ];
+        assert!(!infer_skip_approval_prompts("codex", &args));
+    }
+
+    #[test]
+    fn infer_skip_approval_claude_code_present() {
+        let args = vec!["--dangerously-skip-permissions".to_string()];
+        assert!(infer_skip_approval_prompts("claude-code", &args));
+    }
+
+    #[test]
+    fn infer_skip_approval_claude_code_absent() {
+        let args = vec!["--mcp-debug".to_string()];
+        assert!(!infer_skip_approval_prompts("claude-code", &args));
+    }
+
+    #[test]
+    fn infer_skip_approval_unsupported_runtime_false() {
+        let args = vec!["--whatever".to_string()];
+        assert!(!infer_skip_approval_prompts("shell", &args));
+        assert!(!infer_skip_approval_prompts("aider-future", &args));
+    }
+
+    #[test]
+    fn strip_bypass_flags_handles_dangling_value() {
+        // If `--ask-for-approval` is the last token (no value follows
+        // — the user mid-typed), strip just the flag and don't panic
+        // on the missing pair.
+        let user = vec!["--debug".to_string(), "--ask-for-approval".to_string()];
+        let out = strip_bypass_flags("codex", &user);
+        assert_eq!(out, vec!["--debug".to_string()]);
     }
 
     #[test]

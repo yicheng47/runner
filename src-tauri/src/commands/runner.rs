@@ -41,6 +41,25 @@ pub struct CreateRunnerInput {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// Whether to apply the runtime's "skip approval prompts" flags
+    /// (claude-code: `--dangerously-skip-permissions`; codex:
+    /// `--ask-for-approval never --sandbox workspace-write`) on the
+    /// stored args column. Defaults to `true` — runner's premise is
+    /// that the user already trusts the crew they configured, so
+    /// click-through-every-permission inside the embedded TUI is
+    /// unhelpful by default. Hidden in the form for runtimes without
+    /// a bypass concept (shell / unknown). See
+    /// `router::runtime::apply_bypass_permissions`.
+    #[serde(default = "default_skip_approval_prompts")]
+    pub skip_approval_prompts: bool,
+}
+
+/// Default-on for the form's "Skip approval prompts" toggle: matches
+/// the seed runners' baked-in flags and keeps API-only callers
+/// (CLI / test fixtures) on the same default the form ships. Pulled
+/// out so serde's `#[serde(default = "...")]` can name it.
+fn default_skip_approval_prompts() -> bool {
+    true
 }
 
 // `handle` is intentionally excluded from updates: per arch §2.2 and §5.2
@@ -61,6 +80,14 @@ pub struct UpdateRunnerInput {
     pub env: Option<HashMap<String, String>>,
     pub model: Option<Option<String>>,
     pub effort: Option<Option<String>>,
+    /// Form's "Skip approval prompts" toggle. `Some(true)` ensures
+    /// the runtime's bypass flags are present in the stored args
+    /// (replacing any prior occurrence so duplicates can't accumulate).
+    /// `Some(false)` strips them. `None` preserves the args as-is —
+    /// callers that don't surface the toggle (CLI patches, programmatic
+    /// updates) shouldn't have to reason about it. See
+    /// `router::runtime::apply_bypass_permissions`.
+    pub skip_approval_prompts: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -222,7 +249,18 @@ pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
 
     let id = new_id();
     let ts = now().to_rfc3339();
-    let args_json = serde_json::to_string(&input.args)?;
+    // Apply the form's "Skip approval prompts" toggle to the args
+    // column at create time so the canonical bypass flags (or their
+    // absence) are persisted on the row, not derived at spawn time.
+    // See `router::runtime::apply_bypass_permissions`. No-op for
+    // runtimes without a bypass concept (the helper returns input
+    // unchanged for shell/unknown).
+    let args = crate::router::runtime::apply_bypass_permissions(
+        &input.runtime,
+        &input.args,
+        input.skip_approval_prompts,
+    );
+    let args_json = serde_json::to_string(&args)?;
     let env_json = serde_json::to_string(&input.env)?;
 
     conn.execute(
@@ -267,9 +305,33 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
     }
 
     let display_name = input.display_name.unwrap_or(existing.display_name);
+    // Snapshot the prior runtime *before* unwrap_or moves it, so
+    // we can strip the old runtime's bypass flags when the patch
+    // changes runtime alongside the toggle.
+    let prior_runtime = existing.runtime.clone();
     let runtime = input.runtime.unwrap_or(existing.runtime);
     let command = input.command.unwrap_or(existing.command);
-    let args = input.args.unwrap_or(existing.args);
+    // Compose the new args from the user-provided list (or the
+    // existing one when the patch omits `args`) and the form's
+    // "Skip approval prompts" toggle. `None` toggle = leave args
+    // alone so non-form callers don't have to think about bypass
+    // flags. When the toggle is provided AND the runtime is being
+    // changed in the same patch, we also strip the *prior* runtime's
+    // bypass flags so a switch doesn't leave orphans (the toggle
+    // owns these flags per-runtime). See
+    // `router::runtime::apply_bypass_permissions`.
+    let args = match input.skip_approval_prompts {
+        Some(skip) => {
+            let base = input.args.unwrap_or(existing.args);
+            let cleared = if prior_runtime != runtime {
+                crate::router::runtime::strip_bypass_flags(&prior_runtime, &base)
+            } else {
+                base
+            };
+            crate::router::runtime::apply_bypass_permissions(&runtime, &cleared, skip)
+        }
+        None => input.args.unwrap_or(existing.args),
+    };
     let working_dir = input.working_dir.unwrap_or(existing.working_dir);
     let system_prompt = input.system_prompt.unwrap_or(existing.system_prompt);
     let env = input.env.unwrap_or(existing.env);
@@ -550,6 +612,10 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                // Default-on per the form, but a no-op for shell — the
+                // runtime adapter has no bypass concept here, so existing
+                // tests that expect `args == []` keep passing.
+                skip_approval_prompts: true,
             },
         )
         .unwrap()
@@ -593,6 +659,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                skip_approval_prompts: true,
             },
         )
         .unwrap_err();
@@ -651,6 +718,368 @@ mod tests {
         assert!(validate_handle("lead!").is_err());
         assert!(validate_handle("-lead").is_err());
         assert!(validate_handle(&"x".repeat(33)).is_err());
+    }
+
+    #[test]
+    fn create_applies_codex_bypass_flags_by_default() {
+        // Form's "Skip approval prompts" toggle defaults to on.
+        // For codex, that means the canonical
+        // `--ask-for-approval never --sandbox workspace-write` pair
+        // lands on the `args` column at create time — keeping the
+        // runner template stable if the recommended default ever
+        // shifts (per #45 task 2).
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let r = create(
+            &conn,
+            CreateRunnerInput {
+                handle: "codex-tester".into(),
+                display_name: "C".into(),
+                runtime: "codex".into(),
+                command: "codex".into(),
+                args: vec!["--debug".into()],
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                skip_approval_prompts: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            r.args,
+            vec![
+                "--debug".to_string(),
+                "--ask-for-approval".to_string(),
+                "never".to_string(),
+                "--sandbox".to_string(),
+                "workspace-write".to_string(),
+            ],
+        );
+    }
+
+    #[test]
+    fn create_applies_claude_code_bypass_flag_by_default() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let r = create(
+            &conn,
+            CreateRunnerInput {
+                handle: "claude-tester".into(),
+                display_name: "Claude".into(),
+                runtime: "claude-code".into(),
+                command: "claude".into(),
+                args: vec![],
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                skip_approval_prompts: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(r.args, vec!["--dangerously-skip-permissions".to_string()]);
+    }
+
+    #[test]
+    fn create_omits_bypass_flags_when_toggle_off() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let r = create(
+            &conn,
+            CreateRunnerInput {
+                handle: "paranoid".into(),
+                display_name: "P".into(),
+                runtime: "codex".into(),
+                command: "codex".into(),
+                args: vec!["--debug".into()],
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                skip_approval_prompts: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(r.args, vec!["--debug".to_string()]);
+    }
+
+    #[test]
+    fn create_does_not_duplicate_existing_bypass_flags() {
+        // CLI / API users who pass the flags themselves AND leave the
+        // toggle on shouldn't end up with two copies on the row.
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let r = create(
+            &conn,
+            CreateRunnerInput {
+                handle: "explicit".into(),
+                display_name: "E".into(),
+                runtime: "claude-code".into(),
+                command: "claude".into(),
+                args: vec!["--dangerously-skip-permissions".into()],
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                skip_approval_prompts: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(r.args, vec!["--dangerously-skip-permissions".to_string()]);
+    }
+
+    #[test]
+    fn create_no_op_for_runtime_without_bypass_concept() {
+        // shell has no bypass flags. Toggle on is a no-op — the args
+        // column matches what the caller passed verbatim.
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let r = create(
+            &conn,
+            CreateRunnerInput {
+                handle: "shell-tester".into(),
+                display_name: "Sh".into(),
+                runtime: "shell".into(),
+                command: "/bin/sh".into(),
+                args: vec!["-c".into(), "echo hi".into()],
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                skip_approval_prompts: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(r.args, vec!["-c".to_string(), "echo hi".to_string()]);
+    }
+
+    #[test]
+    fn update_skip_approval_toggle_round_trips_for_codex() {
+        // Off → strips both halves of the codex bypass pair without
+        // touching the unrelated user arg. On → re-adds them.
+        // No duplicates accumulate across multiple round-trips.
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let r = create(
+            &conn,
+            CreateRunnerInput {
+                handle: "codex-rt".into(),
+                display_name: "C".into(),
+                runtime: "codex".into(),
+                command: "codex".into(),
+                args: vec!["--debug".into()],
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                skip_approval_prompts: true,
+            },
+        )
+        .unwrap();
+        assert!(r.args.contains(&"--ask-for-approval".to_string()));
+
+        // Toggle off.
+        let r = update(
+            &conn,
+            &r.id,
+            UpdateRunnerInput {
+                skip_approval_prompts: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            r.args,
+            vec!["--debug".to_string()],
+            "toggle off must strip both --ask-for-approval and --sandbox cleanly",
+        );
+
+        // Toggle back on.
+        let r = update(
+            &conn,
+            &r.id,
+            UpdateRunnerInput {
+                skip_approval_prompts: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            r.args,
+            vec![
+                "--debug".to_string(),
+                "--ask-for-approval".to_string(),
+                "never".to_string(),
+                "--sandbox".to_string(),
+                "workspace-write".to_string(),
+            ],
+        );
+
+        // Re-toggling on a second time must not double up.
+        let r = update(
+            &conn,
+            &r.id,
+            UpdateRunnerInput {
+                skip_approval_prompts: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            r.args.iter().filter(|a| a.as_str() == "--ask-for-approval").count(),
+            1,
+            "re-toggling on must not duplicate flags: {:?}",
+            r.args,
+        );
+    }
+
+    #[test]
+    fn update_skip_approval_toggle_round_trips_for_claude_code() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let r = create(
+            &conn,
+            CreateRunnerInput {
+                handle: "claude-rt".into(),
+                display_name: "C".into(),
+                runtime: "claude-code".into(),
+                command: "claude".into(),
+                args: vec!["--mcp-debug".into()],
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                skip_approval_prompts: true,
+            },
+        )
+        .unwrap();
+        assert!(r.args.contains(&"--dangerously-skip-permissions".to_string()));
+
+        let r = update(
+            &conn,
+            &r.id,
+            UpdateRunnerInput {
+                skip_approval_prompts: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.args, vec!["--mcp-debug".to_string()]);
+
+        let r = update(
+            &conn,
+            &r.id,
+            UpdateRunnerInput {
+                skip_approval_prompts: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            r.args,
+            vec![
+                "--mcp-debug".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+            ],
+        );
+    }
+
+    #[test]
+    fn update_without_toggle_field_preserves_args_verbatim() {
+        // Programmatic patches that don't surface the toggle (e.g. a
+        // CLI patch that only updates `display_name`) must not
+        // accidentally rewrite the args column. `None` toggle = no-op.
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let r = create(
+            &conn,
+            CreateRunnerInput {
+                handle: "preserve".into(),
+                display_name: "P".into(),
+                runtime: "codex".into(),
+                command: "codex".into(),
+                args: vec!["--debug".into()],
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                skip_approval_prompts: true,
+            },
+        )
+        .unwrap();
+        let before = r.args.clone();
+
+        let r = update(
+            &conn,
+            &r.id,
+            UpdateRunnerInput {
+                display_name: Some("renamed".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.args, before, "args must be untouched when no toggle is sent");
+        assert_eq!(r.display_name, "renamed");
+    }
+
+    #[test]
+    fn update_runtime_switch_strips_prior_bypass_flags() {
+        // Switching runtime alongside the toggle must also clean up
+        // the old runtime's bypass flags so they don't survive as
+        // orphans on the new runtime.
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let r = create(
+            &conn,
+            CreateRunnerInput {
+                handle: "switcher".into(),
+                display_name: "S".into(),
+                runtime: "claude-code".into(),
+                command: "claude".into(),
+                args: vec![],
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                skip_approval_prompts: true,
+            },
+        )
+        .unwrap();
+        assert!(r.args.contains(&"--dangerously-skip-permissions".to_string()));
+
+        // Switch to codex with toggle still on. Old flag must be
+        // stripped, new (codex) flags must be applied.
+        let r = update(
+            &conn,
+            &r.id,
+            UpdateRunnerInput {
+                runtime: Some("codex".into()),
+                command: Some("codex".into()),
+                skip_approval_prompts: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            !r.args.contains(&"--dangerously-skip-permissions".to_string()),
+            "claude-code's flag must be stripped on runtime switch: {:?}",
+            r.args,
+        );
+        assert!(
+            r.args.contains(&"--ask-for-approval".to_string()),
+            "codex bypass pair must be applied on runtime switch: {:?}",
+            r.args,
+        );
     }
 
     #[test]
