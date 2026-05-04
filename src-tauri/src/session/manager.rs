@@ -414,6 +414,8 @@ impl SessionManager {
         if let Some(wd) = mission.cwd.as_deref() {
             cmd.env("MISSION_CWD", wd);
         }
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
 
         let mut child = pair
             .slave
@@ -653,6 +655,7 @@ impl SessionManager {
         cmd.env("COLUMNS", opened.cols.to_string());
         cmd.env("LINES", opened.rows.to_string());
         cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
         // Deliberately NOT setting RUNNER_CREW_ID, RUNNER_MISSION_ID,
         // RUNNER_EVENT_LOG, MISSION_CWD — direct chats are off-bus.
 
@@ -1077,6 +1080,7 @@ impl SessionManager {
         cmd.env("COLUMNS", opened.cols.to_string());
         cmd.env("LINES", opened.rows.to_string());
         cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
 
         let mut child = pair
             .slave
