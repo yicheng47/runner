@@ -42,10 +42,21 @@
 ///     so the CLI's own validation is the source of truth.
 ///
 /// codex maps:
-///   - `model` → `--model <name>`. Verified against
-///     `codex --help`. codex has no equivalent thinking-effort
-///     flag today, so `effort` is silently ignored for codex
-///     runners (the row keeps the preference for when it lands).
+///   - `model` → `--model <name>`. Verified against `codex --help`.
+///   - `effort` → `-c model_reasoning_effort=<level>`. Codex has no
+///     dedicated `--reasoning-effort` flag, but its `-c key=value`
+///     config-override flag (verified against `codex --help` on the
+///     installed CLI) accepts the same `model_reasoning_effort` key
+///     used in `~/.codex/config.toml`. The value is parsed as TOML
+///     with a raw-string fallback, so passing the level unquoted is
+///     fine. The level is lowercased before being formatted in:
+///     codex's TOML enum is case-sensitive and rejects e.g. `High`
+///     with `unknown variant 'High', expected one of 'none',
+///     'minimal', 'low', 'medium', 'high', 'xhigh'`, but rows often
+///     store the level title-cased ("High"). claude-code's
+///     `--effort` is *not* case-sensitive (accepts `High`), so the
+///     claude-code branch deliberately forwards the value verbatim
+///     to avoid a regression on already-shipped behavior.
 ///
 /// shell / unknown runtimes: no equivalent flags — degrade silently
 /// so the runner row's preference is recorded but the spawn
@@ -73,14 +84,17 @@ pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str
             out
         }
         "codex" => {
-            // codex accepts `--model <MODEL>` but has no
-            // thinking-effort flag today. Skip effort silently;
-            // the row still persists the preference for when
-            // codex's adapter catches up.
             let mut out = Vec::new();
             if let Some(m) = model {
                 out.push("--model".into());
                 out.push(m.to_string());
+            }
+            if let Some(e) = effort {
+                // No dedicated flag; reuse the config-override path.
+                // Lowercase: codex's TOML enum is case-sensitive
+                // (rejects "High" with "unknown variant").
+                out.push("-c".into());
+                out.push(format!("model_reasoning_effort={}", e.to_ascii_lowercase()));
             }
             out
         }
@@ -122,6 +136,38 @@ pub fn system_prompt_args(runtime: &str, system_prompt: Option<&str>) -> Vec<Str
         // shell / unknown — no prompt mechanism.
         _ => Vec::new(),
     }
+}
+
+/// Compose the runtime-specific trailing args (model/effort flags + the
+/// `system_prompt` argv) in the order the runtime's CLI expects.
+///
+/// Codex's clap parser requires every flag to appear *before* the positional
+/// `[PROMPT]` argument; passing `--model` (or `-c …`) after the prompt
+/// either gets swallowed into the prompt or errors out (issue #41). So
+/// model/effort flags MUST come before the prompt argv. claude-code's
+/// `system_prompt_args` returns empty (its prompt is delivered via stdin),
+/// so the same ordering is a no-op there. Centralising the splice keeps
+/// `spawn`, `spawn_direct`, and `resume` from drifting.
+///
+/// `plan_resuming` carries the codex-specific guard from `resume_plan`: on
+/// a codex resume we deliberately drop the `system_prompt` argv so the
+/// brief isn't replayed as a fresh user turn against an existing
+/// conversation. Mirrors the prior behavior at all three spawn sites.
+pub fn trailing_runtime_args(
+    runtime: &str,
+    plan_resuming: bool,
+    model: Option<&str>,
+    effort: Option<&str>,
+    system_prompt: Option<&str>,
+) -> Vec<String> {
+    let mut out = model_effort_args(runtime, model, effort);
+    let prompt_for_argv = if runtime == "codex" && plan_resuming {
+        None
+    } else {
+        system_prompt
+    };
+    out.extend(system_prompt_args(runtime, prompt_for_argv));
+    out
 }
 
 /// Output of `resume_plan` — the args to layer onto the spawn command plus
@@ -402,5 +448,173 @@ mod tests {
         assert!(plan.args.is_empty());
         assert!(plan.assigned_key.is_none());
         assert!(!plan.resuming);
+    }
+
+    #[test]
+    fn claude_code_emits_model_and_effort_flags() {
+        let args = model_effort_args("claude-code", Some("claude-opus-4-7"), Some("xhigh"));
+        assert_eq!(
+            args,
+            vec![
+                "--model".to_string(),
+                "claude-opus-4-7".to_string(),
+                "--effort".to_string(),
+                "xhigh".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_emits_model_and_reasoning_effort_override() {
+        // Issue #41: codex was silently dropping `effort`. Codex has no
+        // dedicated reasoning-effort flag; the canonical wiring is via
+        // its `-c key=value` config-override flag using the same
+        // `model_reasoning_effort` key as `~/.codex/config.toml`.
+        let args = model_effort_args("codex", Some("gpt-5-codex"), Some("high"));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--model" && w[1] == "gpt-5-codex"),
+            "expected --model flag, got: {args:?}",
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-c" && w[1] == "model_reasoning_effort=high"),
+            "expected `-c model_reasoning_effort=high`, got: {args:?}",
+        );
+    }
+
+    #[test]
+    fn codex_emits_only_model_when_effort_unset() {
+        let args = model_effort_args("codex", Some("gpt-5-codex"), None);
+        assert_eq!(args, vec!["--model".to_string(), "gpt-5-codex".to_string()]);
+    }
+
+    #[test]
+    fn codex_lowercases_effort_for_case_sensitive_toml_enum() {
+        // Codex's `model_reasoning_effort` is a case-sensitive TOML
+        // enum and rejects "High" with `unknown variant 'High',
+        // expected one of 'none', 'minimal', 'low', 'medium', 'high',
+        // 'xhigh'`. Rows often store the level title-cased ("High"),
+        // so the codex branch normalises before forwarding.
+        let args = model_effort_args("codex", Some("gpt-5-codex"), Some("High"));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-c" && w[1] == "model_reasoning_effort=high"),
+            "expected lowercased effort override, got: {args:?}",
+        );
+    }
+
+    #[test]
+    fn codex_lowercases_mixed_case_effort() {
+        let args = model_effort_args("codex", None, Some("XHIGH"));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-c" && w[1] == "model_reasoning_effort=xhigh"),
+            "expected lowercased effort override, got: {args:?}",
+        );
+    }
+
+    #[test]
+    fn claude_code_forwards_effort_verbatim() {
+        // Asymmetric on purpose: claude-code's `--effort` is case-
+        // insensitive (accepts `High`), so we forward the row's
+        // value verbatim rather than risk regressing already-shipped
+        // behavior. Only the codex branch normalises.
+        let args = model_effort_args("claude-code", None, Some("High"));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--effort" && w[1] == "High"),
+            "expected verbatim effort for claude-code, got: {args:?}",
+        );
+    }
+
+    #[test]
+    fn codex_trailing_args_put_flags_before_positional_prompt() {
+        // Regression test for issue #41 (argv ordering bug). Codex's
+        // clap parser requires every flag to appear *before* the
+        // positional `[PROMPT]` arg. Prior to the fix the prompt argv
+        // was spliced ahead of `--model` / `-c …`, which either
+        // swallowed the flags into the prompt text or hard-errored.
+        let args = trailing_runtime_args(
+            "codex",
+            false,
+            Some("gpt-5-codex"),
+            Some("high"),
+            Some("be helpful"),
+        );
+        let prompt_pos = args
+            .iter()
+            .position(|a| a == "be helpful")
+            .expect("prompt argv present");
+        let model_pos = args
+            .iter()
+            .position(|a| a == "--model")
+            .expect("--model flag present");
+        let effort_pos = args
+            .iter()
+            .position(|a| a == "model_reasoning_effort=high")
+            .expect("reasoning-effort override emitted");
+        assert!(
+            model_pos < prompt_pos,
+            "--model must precede the positional prompt: {args:?}",
+        );
+        assert!(
+            effort_pos < prompt_pos,
+            "reasoning-effort override must precede the positional prompt: {args:?}",
+        );
+    }
+
+    #[test]
+    fn codex_trailing_args_drop_prompt_on_resume() {
+        // On a codex resume the positional `[PROMPT]` would otherwise
+        // be replayed as a fresh user turn against the existing
+        // conversation. The helper drops the prompt argv when
+        // plan_resuming=true, but keeps the model/effort flags so the
+        // resumed session still honors the runner row's pinned
+        // settings.
+        let args = trailing_runtime_args(
+            "codex",
+            true,
+            Some("gpt-5-codex"),
+            Some("high"),
+            Some("be helpful"),
+        );
+        assert!(
+            !args.iter().any(|a| a == "be helpful"),
+            "prompt argv must be dropped on codex resume: {args:?}",
+        );
+        assert!(args.iter().any(|a| a == "--model"));
+        assert!(args.iter().any(|a| a == "model_reasoning_effort=high"));
+    }
+
+    #[test]
+    fn claude_code_trailing_args_unaffected_by_resume_flag() {
+        // claude-code's system_prompt_args is empty (prompt is
+        // delivered via stdin). `plan_resuming` should have no effect
+        // on the assembled args.
+        let fresh = trailing_runtime_args(
+            "claude-code",
+            false,
+            Some("claude-opus-4-7"),
+            Some("xhigh"),
+            Some("be helpful"),
+        );
+        let resuming = trailing_runtime_args(
+            "claude-code",
+            true,
+            Some("claude-opus-4-7"),
+            Some("xhigh"),
+            Some("be helpful"),
+        );
+        assert_eq!(fresh, resuming);
+        assert_eq!(
+            fresh,
+            vec![
+                "--model".to_string(),
+                "claude-opus-4-7".to_string(),
+                "--effort".to_string(),
+                "xhigh".to_string(),
+            ]
+        );
     }
 }
