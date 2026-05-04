@@ -901,6 +901,151 @@ fn reconstruct_tolerates_malformed_lines_like_the_bus() {
 }
 
 #[test]
+fn directed_wake_synthesizes_busy_and_idle_clears_it() {
+    // Issue #32: the rail badge stayed `idle` because nothing flipped
+    // a worker to `busy` on dispatch — only the worker's own end-of-task
+    // `idle` was emitted. The router now synthesizes `runner_status busy`
+    // (with `from = recipient`) for any wake nudge, and the existing
+    // worker-emitted `idle` clears it.
+    let (router, _injector, log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+
+    let busy_for_impl = |log: &EventLog| -> usize {
+        read_signals(log)
+            .into_iter()
+            .filter(|s| {
+                s.signal_type
+                    .as_ref()
+                    .map(|t| t.as_str() == "runner_status")
+                    .unwrap_or(false)
+                    && s.from == "impl"
+                    && s.payload.get("state").and_then(|v| v.as_str()) == Some("busy")
+            })
+            .count()
+    };
+
+    // (a) directed `runner msg post --to impl` → recipient flips to busy
+    // and a synthetic runner_status busy event lands in the log.
+    let direct = log.append(message("lead", Some("impl"), "go")).unwrap();
+    router.handle_event(&direct);
+    assert_eq!(
+        busy_for_impl(&log),
+        1,
+        "wake nudge must append one busy event"
+    );
+    assert!(matches!(
+        router.state.lock().unwrap().status.get("impl"),
+        Some(super::RunnerStatus::Busy),
+    ));
+
+    // A second directed wake while still busy must not churn another
+    // busy event into the log — the dedupe guard suppresses it.
+    let direct_again = log
+        .append(message("lead", Some("impl"), "still going"))
+        .unwrap();
+    router.handle_event(&direct_again);
+    assert_eq!(
+        busy_for_impl(&log),
+        1,
+        "back-to-back wake while busy must not append a second busy event",
+    );
+
+    // (b) worker emits runner_status idle → state flips back to Idle.
+    let idle = log
+        .append(signal(
+            "impl",
+            "runner_status",
+            serde_json::json!({ "state": "idle" }),
+        ))
+        .unwrap();
+    router.handle_event(&idle);
+    assert!(matches!(
+        router.state.lock().unwrap().status.get("impl"),
+        Some(super::RunnerStatus::Idle),
+    ));
+
+    // (c) follow-up directed message → flips back to busy. This is the
+    // exact regression issue #32 calls out.
+    let direct_followup = log.append(message("lead", Some("impl"), "next")).unwrap();
+    router.handle_event(&direct_followup);
+    assert_eq!(
+        busy_for_impl(&log),
+        2,
+        "wake after idle must re-synthesize busy",
+    );
+    assert!(matches!(
+        router.state.lock().unwrap().status.get("impl"),
+        Some(super::RunnerStatus::Busy),
+    ));
+}
+
+#[test]
+fn synthetic_busy_replays_through_existing_runner_status_projection() {
+    // The reconstruct_from_log path at router/mod.rs handles
+    // runner_status events generically — synthetic ones written by
+    // inject_and_submit must replay correctly without any special
+    // handling. This pins that contract: a busy event from a prior
+    // session is recovered into router state on reopen.
+    let dir = tempfile::tempdir().unwrap();
+    let log = Arc::new(EventLog::open(dir.path()).unwrap());
+    let roster = vec![
+        slot_with_runner("lead", true),
+        slot_with_runner("impl", false),
+    ];
+
+    // First mount: drive a directed message to synthesize busy.
+    {
+        let injector = Arc::new(RecordingInjector::default());
+        let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
+        let router = Router::new(
+            "mission-1".into(),
+            "crew-1".into(),
+            "Crew One".into(),
+            &roster,
+            vec![],
+            log.clone(),
+            injector_dyn,
+        )
+        .unwrap();
+        router.register_sessions(&[
+            ("lead".into(), "S-LEAD".into()),
+            ("impl".into(), "S-IMPL".into()),
+        ]);
+        let direct = log.append(message("lead", Some("impl"), "go")).unwrap();
+        router.handle_event(&direct);
+    }
+
+    // Reopen + reconstruct.
+    let injector = Arc::new(RecordingInjector::default());
+    let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
+    let router2 = Router::new(
+        "mission-1".into(),
+        "crew-1".into(),
+        "Crew One".into(),
+        &roster,
+        vec![],
+        log.clone(),
+        injector_dyn,
+    )
+    .unwrap();
+    router2.register_sessions(&[
+        ("lead".into(), "S-LEAD".into()),
+        ("impl".into(), "S-IMPL".into()),
+    ]);
+    router2.reconstruct_from_log().unwrap();
+
+    assert!(matches!(
+        router2.state.lock().unwrap().status.get("impl"),
+        Some(super::RunnerStatus::Busy),
+    ));
+}
+
+#[test]
 fn registry_register_get_unregister() {
     let (router, _i, _l, _d) = fixture(vec![slot_with_runner("lead", true)], &[("lead", "S-LEAD")]);
     let reg = RouterRegistry::new();
