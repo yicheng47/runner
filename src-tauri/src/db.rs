@@ -66,8 +66,16 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 }
 
 // Pre-release squash: the original 0001..0008 collapsed into one
-// init file. Future schema migrations resume from 0002.
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_init.sql"))];
+// init file. Future schema migrations resume from 0002 (the seed
+// file at 0002 is data-only and lives outside MIGRATIONS).
+//
+// 0003: persona-only rewrite of the seeded Build squad system_prompts
+// (#51). UPDATE-only on the seed's fixed IDs, so renamed / deleted
+// runners on existing installs are unaffected.
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_init.sql")),
+    (3, include_str!("../migrations/0003_persona_only_seeds.sql")),
+];
 
 // Default-data seed: ships the Build squad starter crew on first launch.
 //
@@ -429,6 +437,232 @@ mod tests {
             })
             .unwrap();
         assert_eq!(lead_handle, "architect");
+    }
+
+    /// Verbatim copy of the pre-#51 architect `system_prompt`
+    /// (from `c8e2e6f:src-tauri/migrations/0002_default_crew.sql`)
+    /// — the SQL string literal there had every `'` doubled to
+    /// `''`; here it's a Rust string so we use the literal `'`.
+    /// 0003's WHERE clause pins on this exact text so users who
+    /// edited the row in place are not wiped on upgrade. If the
+    /// migration's WHERE pin ever drifts from this constant the
+    /// `migration_0003_rewrites_pristine_old_seed` test goes red.
+    const PRE_51_ARCHITECT_SEED: &str =
+        "You are the architect for this crew. When the mission starts, your job is
+to decompose the goal and dispatch tasks to the right slots — not to
+implement the work yourself.
+
+On `mission_goal`:
+
+1. Read the goal carefully. If it is ambiguous or missing context you need
+   to plan, escalate with:
+       runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"…\",\"…\"]}'
+   Do not start dispatching until the goal is workable.
+2. Break the goal into 2–5 well-scoped tasks. Each task names exactly one
+   target slot, the deliverable, the file paths or interfaces in scope,
+   and the acceptance criteria (tests to add, behavior to verify).
+3. Send each task as a directed message:
+       runner msg post --to <slot_handle> \"<task>\"
+   Do not broadcast tasks. Broadcasts (omit --to) are reserved for
+   crew-wide updates (\"I will pause dispatch for 5 minutes\",
+   \"@reviewer is now the gate before merge\").
+4. Keep an inline task ledger so you can track which slot is working what
+   and what they have reported back.
+
+While the mission runs:
+
+- Read your inbox with `runner msg read` — pull-based, only shows unread.
+- When a worker reports completion, audit the diff against the goal and
+  your acceptance criteria. If something is missing, send a follow-up to
+  the same slot — do not silently move on.
+- If two slots disagree on an interface, decide. Workers escalate via
+  `ask_lead`; the buck stops with you. State the decision and reasoning
+  in one message and direct it back.
+- Status discipline: report `runner status idle` whenever you are waiting
+  on workers and have nothing else to dispatch.
+
+When the mission goal is satisfied:
+
+- If there is any ambiguity, confirm with `ask_human` before declaring
+  done. Otherwise post a final summary as a broadcast naming what shipped
+  and what was deferred.
+
+Constraints:
+
+- You write plans, not code. If you find yourself opening a file to edit,
+  stop and dispatch instead.
+- Stay within the goal. Out-of-scope cleanup is a follow-up mission, not
+  a silent expansion of the current one.
+
+Talking to the human:
+
+- The human watches the workspace feed, not your TUI scrollback. Always
+  reply via `runner msg post --to human \"<your reply>\"`. Typing into the
+  TUI leaves your reply in scrollback only.
+- Their input lands in your TUI without a `runner msg post` envelope
+  (sometimes prefixed `[human_said]`). `human` is a reserved virtual
+  handle for this two-way path.";
+
+    /// New post-#51 architect persona (mirrors
+    /// tests/fixtures/system-prompts/architect.md, sans the trailing
+    /// newline that the .md file ends with). Dropping the trailing
+    /// newline matches the SQL literal's body.
+    fn new_architect_persona() -> String {
+        let md = include_str!("../../tests/fixtures/system-prompts/architect.md");
+        md.trim_end_matches('\n').to_string()
+    }
+
+    /// Run only migration 0003's UPDATE statements directly,
+    /// bypassing `run_migrations`' `_migrations`-version gate. Used
+    /// by the preserve / rewrite tests so they can pre-insert a
+    /// runner row in whatever shape they want and then exercise the
+    /// migration on it.
+    fn apply_0003(conn: &Connection) {
+        conn.execute_batch(include_str!("../migrations/0003_persona_only_seeds.sql"))
+            .unwrap();
+    }
+
+    #[test]
+    fn migration_0003_preserves_customized_system_prompts() {
+        // Reviewer-codex flagged this on #51: 0003 must NOT clobber a
+        // user who edited their seeded architect/impl/reviewer row in
+        // place (same id, customized prompt). The WHERE pin on the
+        // pre-#51 seed text is what makes the migration idempotent
+        // for customized rows — verify it stays.
+        let pool = open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let custom = "My customized architect prompt — please do not overwrite.";
+        conn.execute(
+            "INSERT INTO runners
+                (id, handle, display_name, runtime, command, system_prompt,
+                 created_at, updated_at)
+             VALUES ('01K000DEFAULT000RUNNERARCH01', 'architect', 'Custom A',
+                     'claude-code', 'claude', ?1,
+                     '2026-04-01T00:00:00Z', '2026-04-01T00:00:00Z')",
+            params![custom],
+        )
+        .unwrap();
+        apply_0003(&conn);
+        let preserved: String = conn
+            .query_row(
+                "SELECT system_prompt FROM runners
+                  WHERE id = '01K000DEFAULT000RUNNERARCH01'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            preserved, custom,
+            "0003 must preserve a customized architect system_prompt",
+        );
+    }
+
+    #[test]
+    fn migration_0003_rewrites_pristine_old_seed() {
+        // Sanity check the WHERE pin isn't so strict it never matches
+        // anything: a row carrying the EXACT pre-#51 architect seed
+        // (an unedited install) must get rewritten to the new
+        // persona text. Mirrors what shipping users on v0.1.x will
+        // actually see when 0003 runs.
+        let pool = open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                (id, handle, display_name, runtime, command, system_prompt,
+                 created_at, updated_at)
+             VALUES ('01K000DEFAULT000RUNNERARCH01', 'architect', 'Architect',
+                     'claude-code', 'claude', ?1,
+                     '2026-05-03T00:00:00Z', '2026-05-03T00:00:00Z')",
+            params![PRE_51_ARCHITECT_SEED],
+        )
+        .unwrap();
+        apply_0003(&conn);
+        let rewritten: String = conn
+            .query_row(
+                "SELECT system_prompt FROM runners
+                  WHERE id = '01K000DEFAULT000RUNNERARCH01'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            rewritten,
+            new_architect_persona(),
+            "0003 must rewrite the pristine pre-#51 architect seed to the new persona",
+        );
+    }
+
+    #[test]
+    fn seeded_personas_contain_no_bus_verbs() {
+        // Regression guard for #51: the seed system_prompts must be
+        // persona-only — the bus contract (runner msg post / runner
+        // msg read / ask_lead, plus @<handle> framing) is now the
+        // job of WORKER_COORDINATION_PREAMBLE in
+        // session::manager::schedule_mission_first_prompt. If a
+        // future drift adds bus verbs back into the seed prompts,
+        // direct chats would surface verbs that don't work
+        // (RUNNER_CREW_ID / RUNNER_MISSION_ID / RUNNER_EVENT_LOG are
+        // unset off-bus, the bundled `runner` CLI is not on PATH).
+        //
+        // The check runs against the .md fixtures rather than
+        // DEFAULT_SEED_SQL directly because the migration also
+        // contains operational strings (the crew row's
+        // `signal_types` JSON catalog naming `ask_lead` etc.) that
+        // are NOT persona content. We then assert each .md content
+        // appears verbatim inside DEFAULT_SEED_SQL so the migration's
+        // persona blocks stay pinned to the (already-scrubbed)
+        // fixtures.
+        let banned_substrings = [
+            "runner msg post",
+            "runner msg read",
+            "runner status idle",
+            "ask_lead",
+            "ask_human",
+        ];
+        let architect_md = include_str!("../../tests/fixtures/system-prompts/architect.md");
+        let impl_md = include_str!("../../tests/fixtures/system-prompts/impl.md");
+        let reviewer_md = include_str!("../../tests/fixtures/system-prompts/reviewer.md");
+        for (name, md) in [
+            ("architect.md", architect_md),
+            ("impl.md", impl_md),
+            ("reviewer.md", reviewer_md),
+        ] {
+            for needle in banned_substrings {
+                assert!(
+                    !md.contains(needle),
+                    "{name} must not contain bus verb {needle:?}",
+                );
+            }
+            // @-handle pattern: @<ASCII-alpha-start>. Persona content
+            // currently uses no @-symbol; a single bare scan
+            // (no regex dep) catches any future drift loudly.
+            let bytes = md.as_bytes();
+            for i in 0..bytes.len().saturating_sub(1) {
+                if bytes[i] == b'@' && bytes[i + 1].is_ascii_alphabetic() {
+                    let snippet_end = (i + 24).min(bytes.len());
+                    let snippet = String::from_utf8_lossy(&bytes[i..snippet_end]);
+                    panic!("{name} must not contain @-handle framing (found near {snippet:?})");
+                }
+            }
+        }
+        // Pin migration persona blocks to the fixtures: the .md
+        // content (sans trailing newline) must appear inside the
+        // 0002 seed SQL verbatim. Apostrophes in the .md are
+        // doubled in the SQL string literal, so we match against
+        // the SQL-escaped form.
+        for (name, md) in [
+            ("architect.md", architect_md),
+            ("impl.md", impl_md),
+            ("reviewer.md", reviewer_md),
+        ] {
+            let trimmed = md.trim_end_matches('\n');
+            let sql_escaped = trimmed.replace('\'', "''");
+            assert!(
+                DEFAULT_SEED_SQL.contains(&sql_escaped),
+                "0002 seed must contain the persona block from {name} verbatim \
+                 (sans the trailing newline, with apostrophes SQL-escaped)",
+            );
+        }
     }
 
     #[test]

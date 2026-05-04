@@ -249,14 +249,20 @@ impl SessionManager {
     /// shim before any system-installed `runner` binary; `shell` comes
     /// before the inherited launchd PATH because launchd's PATH on macOS
     /// is the stripped default we're trying to extend.
-    fn compose_path(&self, shim_dir: Option<&Path>, bin_dir: &Path) -> std::ffi::OsString {
+    fn compose_path(&self, shim_dir: Option<&Path>, bin_dir: Option<&Path>) -> std::ffi::OsString {
         let sep: &str = if cfg!(windows) { ";" } else { ":" };
         let parent_path = std::env::var_os("PATH").unwrap_or_default();
         let mut parts: Vec<std::ffi::OsString> = Vec::with_capacity(4);
         if let Some(shim) = shim_dir {
             parts.push(shim.as_os_str().into());
         }
-        parts.push(bin_dir.as_os_str().into());
+        // `bin_dir = None` is the direct-chat path: the bundled `runner`
+        // CLI is intentionally excluded from PATH so the agent can't
+        // call bus verbs against an empty event log. Mission spawns
+        // always pass `Some(bin_dir)`.
+        if let Some(bin) = bin_dir {
+            parts.push(bin.as_os_str().into());
+        }
         if let Some(sp) = self.shell_path.as_deref() {
             if !sp.is_empty() {
                 parts.push(std::ffi::OsString::from(sp));
@@ -386,7 +392,7 @@ impl SessionManager {
         // agent CLIs that aren't on launchd's default PATH; the
         // inherited PATH is the tail.
         let bin_dir = app_data_dir.join("bin");
-        let new_path = self.compose_path(shim_dir.as_deref(), &bin_dir);
+        let new_path = self.compose_path(shim_dir.as_deref(), Some(&bin_dir));
         cmd.env("PATH", new_path);
 
         cmd.env("RUNNER_CREW_ID", &mission.crew_id);
@@ -521,7 +527,7 @@ impl SessionManager {
         // `router::runtime::system_prompt_args`. Skipped for the lead
         // — the `mission_goal` handler injects a richer launch prompt
         // that already embeds system_prompt.
-        schedule_first_prompt(self, session_id.clone(), runner, &plan, slot.lead);
+        schedule_mission_first_prompt(self, session_id.clone(), runner, &plan, slot.lead);
 
         Ok(SpawnedSession {
             id: session_id,
@@ -540,9 +546,12 @@ impl SessionManager {
     ///
     /// Differences vs. the mission-flavored `spawn`:
     ///   - No `RUNNER_MISSION_ID`, `RUNNER_EVENT_LOG`, or
-    ///     `RUNNER_CREW_ID` env vars. The runner's CLI is on PATH, but
-    ///     anything it tries to do that needs those vars no-ops or errors
-    ///     gracefully — direct chats are not on any coordination bus.
+    ///     `RUNNER_CREW_ID` env vars. The bundled `runner` CLI is also
+    ///     deliberately NOT on PATH for direct chats: `runner msg post`,
+    ///     `runner status idle`, etc. would have no event log to write
+    ///     to and no crew/mission to attribute against, so removing the
+    ///     shim avoids tempting the agent to call verbs that fail
+    ///     silently. Direct chats are off-bus.
     ///   - `cwd` lives on the session row directly, since there's no
     ///     mission to inherit it from.
     ///   - The session does not show up in `kill_all_for_mission` for any
@@ -625,14 +634,17 @@ impl SessionManager {
         for (k, v) in &runner.env {
             cmd.env(k, v);
         }
-        // PATH gets the bundled CLI prepended (so the runner can call
-        // `runner --help` interactively) and the captured login-shell
-        // PATH merged in (so a GUI-launched app can still find
-        // `claude` / `codex` / mise shims that live outside launchd's
-        // stripped default PATH). No per-slot shim for direct chats —
-        // there's no mission bus to stamp.
-        let bin_dir = app_data_dir.join("bin");
-        let new_path = self.compose_path(None, &bin_dir);
+        // PATH for direct chat: the captured login-shell PATH only.
+        // The bundled `runner` CLI is intentionally NOT prepended —
+        // direct chats are off-bus (no `RUNNER_CREW_ID` /
+        // `RUNNER_MISSION_ID` / `RUNNER_EVENT_LOG`), so verbs like
+        // `runner msg post` would have no event log to write to and
+        // no crew/mission to attribute against. Excluding the shim
+        // keeps the agent from being tempted to call bus verbs that
+        // would silently no-op or fail. Mission spawn keeps the
+        // bundled CLI on PATH (see `spawn`).
+        let _ = app_data_dir;
+        let new_path = self.compose_path(None, None);
         cmd.env("PATH", new_path);
         cmd.env("RUNNER_HANDLE", &runner.handle);
         // Pass the spawn-time grid via COLUMNS/LINES too. portable-pty
@@ -748,9 +760,10 @@ impl SessionManager {
         emit_runner_activity(&pool, runner, events.as_ref());
 
         // First-turn prompt injection for fresh claude-code / codex
-        // direct chats. Direct chats have no slot/lead concept, so
-        // always treat as non-lead.
-        schedule_first_prompt(self, session_id.clone(), runner, &plan, false);
+        // direct chats. Direct chats are off-bus, so we send only the
+        // persona (runner.system_prompt) — NO bus-contract preamble.
+        // See `schedule_direct_first_prompt` for the rationale.
+        schedule_direct_first_prompt(self, session_id.clone(), runner, &plan);
 
         Ok(SpawnedSession {
             id: session_id,
@@ -1030,8 +1043,12 @@ impl SessionManager {
             .ok()
         });
 
-        let bin_dir = app_data_dir.join("bin");
-        let new_path = self.compose_path(shim_dir.as_deref(), &bin_dir);
+        // Direct-chat resume keeps the bundled `runner` CLI off PATH —
+        // same off-bus rationale as `spawn_direct`. Mission resume
+        // re-prepends `<app_data_dir>/bin` so `runner` verbs in the
+        // PTY behave the same as the original mission spawn.
+        let bin_dir = mission_ctx.as_ref().map(|_| app_data_dir.join("bin"));
+        let new_path = self.compose_path(shim_dir.as_deref(), bin_dir.as_deref());
         cmd.env("PATH", new_path);
         // Mission resume stamps the slot's in-mission identity so the
         // bundled `runner` CLI in this PTY attributes events as the
@@ -1172,16 +1189,29 @@ impl SessionManager {
         // First-turn injection for fresh claude-code / codex spawns.
         // `plan.resuming` is true on any resume against a real
         // prior_key — those skip naturally (the agent already has its
-        // system context). The lead always suppresses the worker
-        // preamble: when the lead's conversation file is missing and
-        // the resume degrades to a fresh spawn, the *launch prompt*
-        // (composed by the router with crew / roster / goal context)
-        // is the right thing to inject — the
-        // commands::session::session_resume caller fires that path
-        // when it sees `fresh_fallback_lead = true` on the returned
-        // SpawnedSession.
-        let is_lead_resume = is_lead_slot;
-        schedule_first_prompt(self, session_id.to_string(), &runner, &plan, is_lead_resume);
+        // system context). For mission resume, the lead always
+        // suppresses the worker preamble: when the lead's
+        // conversation file is missing and the resume degrades to a
+        // fresh spawn, the *launch prompt* (composed by the router
+        // with crew / roster / goal context) is the right thing to
+        // inject — the commands::session::session_resume caller fires
+        // that path when it sees `fresh_fallback_lead = true` on the
+        // returned SpawnedSession. For direct-chat resume there's no
+        // slot/lead concept, and the off-bus persona-only injection
+        // (`schedule_direct_first_prompt`) is the right shape if the
+        // resume happens to degrade to fresh.
+        if mission_ctx.is_some() {
+            let is_lead_resume = is_lead_slot;
+            schedule_mission_first_prompt(
+                self,
+                session_id.to_string(),
+                &runner,
+                &plan,
+                is_lead_resume,
+            );
+        } else {
+            schedule_direct_first_prompt(self, session_id.to_string(), &runner, &plan);
+        }
 
         // On a real resume (not a fresh-with-known-uuid spawn), nudge
         // the agent with "continue" so it picks up where it left off
@@ -1553,33 +1583,30 @@ const FIRST_PROMPT_DELAY: std::time::Duration = std::time::Duration::from_millis
 #[cfg(test)]
 const FIRST_PROMPT_DELAY: std::time::Duration = std::time::Duration::ZERO;
 
-/// Deliver `runner.system_prompt` to a freshly-spawned agent TUI by
-/// typing it into the agent's stdin as a first user turn. Used for
-/// claude-code (whose `--append-system-prompt` / `--system-prompt`
-/// flags are SDK-only and silently dropped by the interactive TUI)
-/// and for codex (whose positional `[PROMPT]` argv loses races with
-/// codex's startup permission / approval dialog — see the codex
-/// branch in `router::runtime::system_prompt_args`). Stdin injection
-/// is the only delivery path that survives both cases.
+/// Mission-flavored first-turn injection. Composes the platform
+/// coordination preamble (bus mechanics, --to human convention,
+/// signal verbs) followed by the user-authored brief on the runner
+/// template. Keeping bus protocol out of the user's system_prompt
+/// means template authors can focus on persona/role; the runtime
+/// adds the "how to talk to the rest of the crew" layer
+/// automatically.
 ///
-/// Sleeps a short delay so the TUI has time to boot and bind stdin —
-/// without it the input is sometimes echoed before the editor takes
-/// over and gets lost. Skipped on resume against a real prior
-/// conversation (the agent already has its system context) and on
-/// runtimes that have no concept of a first-turn prompt (shell).
-///
-/// `suppress_lead_preamble` is set by the initial mission_start spawn
-/// path: there, the bus's `mission_goal` handler injects a richer
-/// launch prompt with `system_prompt` embedded in its "Your brief"
-/// section, so a separate first-turn injection would race the launch
-/// prompt and waste a turn. On a resume that degrades to a fresh
-/// spawn (claude-code conversation file went missing — see
+/// `suppress_lead_preamble` is set by the initial mission_start
+/// spawn path: there, the bus's `mission_goal` handler injects a
+/// richer launch prompt with `system_prompt` embedded in its "Your
+/// brief" section, so a separate first-turn injection would race the
+/// launch prompt and waste a turn. On a resume that degrades to a
+/// fresh spawn (claude-code conversation file went missing — see
 /// `claude_code_conversation_exists`) the bus does NOT replay
 /// `mission_goal`, so the lead would otherwise come up with no
 /// system context; the resume path passes `false` here so the
 /// preamble + system_prompt land via this stdin-injection route
 /// instead.
-fn schedule_first_prompt(
+///
+/// Skipped on resume against a real prior conversation (the agent
+/// already has its system context) and on runtimes that have no
+/// concept of a first-turn prompt (shell).
+fn schedule_mission_first_prompt(
     mgr: &Arc<SessionManager>,
     session_id: String,
     runner: &Runner,
@@ -1595,12 +1622,6 @@ fn schedule_first_prompt(
     if suppress_lead_preamble {
         return;
     }
-    // Compose the worker's first turn: a platform coordination
-    // preamble (bus mechanics, --to human convention, signal verbs)
-    // followed by the user-authored brief on the runner template.
-    // Keeping bus protocol out of the user's system_prompt means
-    // template authors can focus on persona/role; the runtime adds
-    // the "how to talk to the rest of the crew" layer automatically.
     let user_brief = runner
         .system_prompt
         .as_deref()
@@ -1613,12 +1634,57 @@ fn schedule_first_prompt(
         prompt.push_str("\n\n== Your brief ==\n");
         prompt.push_str(&brief);
     }
-    // Strip any embedded `\r` so the prompt body is one piece;
-    // embedded `\n`s render as line breaks inside the input box.
-    // The submit byte goes in a separate write below so the TUI
-    // sees it as Enter rather than appending it to the input
-    // buffer (which is what happens when text + `\r` arrive in
-    // the same chunk).
+    inject_first_turn(mgr, session_id, prompt);
+}
+
+/// Direct-chat-flavored first-turn injection: types just
+/// `runner.system_prompt` (the persona) into stdin, with NO
+/// `WORKER_COORDINATION_PREAMBLE` wrapper. Direct chats are off-bus —
+/// `runner msg post`, `runner status idle`, etc. wouldn't resolve to
+/// anything useful here (no `RUNNER_CREW_ID` / `RUNNER_MISSION_ID`
+/// set, the bundled CLI is not even on PATH). Adding the preamble
+/// would tell the agent to use verbs that don't exist in this
+/// context, which is worse than no instructions at all.
+///
+/// If `runner.system_prompt` is empty / None, no injection happens —
+/// claude-code direct chat then boots vanilla, which is the
+/// honest fallback for that edge case.
+///
+/// Skipped on resume (the agent already has its prior conversation)
+/// and on runtimes without a first-turn-prompt concept (shell).
+fn schedule_direct_first_prompt(
+    mgr: &Arc<SessionManager>,
+    session_id: String,
+    runner: &Runner,
+    plan: &router::runtime::ResumePlan,
+) {
+    if runner.runtime != "claude-code" && runner.runtime != "codex" {
+        return;
+    }
+    if plan.resuming {
+        return;
+    }
+    let Some(persona) = runner
+        .system_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+    else {
+        return;
+    };
+    inject_first_turn(mgr, session_id, persona);
+}
+
+/// Shared mechanics for typing a first user turn into the PTY.
+/// Strips any embedded `\r` so the prompt body is one piece;
+/// embedded `\n`s render as line breaks inside the input box. The
+/// submit byte goes in a separate write so the TUI sees it as Enter
+/// rather than appending it to the input buffer (which is what
+/// happens when text + `\r` arrive in the same chunk). Production
+/// runs on a 2.5s settle thread; `cfg(test)` zeros the delay and
+/// runs inline so unit tests can assert synchronously.
+fn inject_first_turn(mgr: &Arc<SessionManager>, session_id: String, prompt: String) {
     let body: String = prompt.chars().filter(|c| *c != '\r').collect();
     let delay = FIRST_PROMPT_DELAY;
     if delay.is_zero() {
@@ -1929,7 +1995,7 @@ mod tests {
         let bin = std::path::PathBuf::from("/app/bin");
         let shim = std::path::PathBuf::from("/app/shim/m1/s1");
 
-        let p = with_shell.compose_path(Some(&shim), &bin);
+        let p = with_shell.compose_path(Some(&shim), Some(&bin));
         assert_eq!(
             p.to_string_lossy(),
             "/app/shim/m1/s1:/app/bin:/opt/homebrew/bin:/Users/x/.npm-global/bin:/usr/bin:/bin"
@@ -1937,20 +2003,32 @@ mod tests {
 
         // No shim, no shell PATH — only bin + parent.
         let bare = SessionManager::new(None);
-        let p = bare.compose_path(None, &bin);
+        let p = bare.compose_path(None, Some(&bin));
         assert_eq!(p.to_string_lossy(), "/app/bin:/usr/bin:/bin");
 
         // Empty shell PATH is treated as None (no doubled separator).
         let empty_shell = SessionManager::new(Some(String::new()));
-        let p = empty_shell.compose_path(None, &bin);
+        let p = empty_shell.compose_path(None, Some(&bin));
         assert_eq!(p.to_string_lossy(), "/app/bin:/usr/bin:/bin");
 
         // Empty parent PATH (unset) — no trailing separator.
         std::env::remove_var("PATH");
-        let p = with_shell.compose_path(None, &bin);
+        let p = with_shell.compose_path(None, Some(&bin));
         assert_eq!(
             p.to_string_lossy(),
             "/app/bin:/opt/homebrew/bin:/Users/x/.npm-global/bin"
+        );
+
+        // Direct-chat path: `bin_dir = None` skips the bundled CLI
+        // entirely. The bundled `runner` shim is intentionally not on
+        // PATH for direct chat (#51) — assertion mirrors the
+        // production caller in `spawn_direct`.
+        std::env::set_var("PATH", "/usr/bin:/bin");
+        let p = with_shell.compose_path(None, None);
+        assert_eq!(
+            p.to_string_lossy(),
+            "/opt/homebrew/bin:/Users/x/.npm-global/bin:/usr/bin:/bin",
+            "direct-chat PATH must not contain the bundled bin_dir"
         );
 
         match prior {
@@ -2094,19 +2172,55 @@ mod tests {
         assert!(format!("{err}").contains("session not found"));
     }
 
+    /// Drain the bounded output buffer until either `predicate` returns
+    /// true on the merged decoded text or the deadline elapses.
+    /// Returns the merged text seen at the point of break, plus the
+    /// boolean predicate result. Used by direct-chat / mission first-
+    /// turn injection tests that need to wait on `/bin/cat` echoing
+    /// the typed bytes back through the PTY.
+    fn await_pty_output<F>(
+        mgr: &Arc<SessionManager>,
+        session_id: &str,
+        predicate: F,
+        timeout: Duration,
+    ) -> (String, bool)
+    where
+        F: Fn(&str) -> bool,
+    {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let snapshot = mgr.output_snapshot(session_id);
+            let merged: String = snapshot
+                .iter()
+                .filter_map(|ev| {
+                    BASE64
+                        .decode(ev.data.as_bytes())
+                        .ok()
+                        .and_then(|b| String::from_utf8(b).ok())
+                })
+                .collect();
+            if predicate(&merged) {
+                return (merged, true);
+            }
+            if Instant::now() > deadline {
+                return (merged, false);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     #[test]
-    fn codex_fresh_spawn_injects_brief_via_stdin() {
-        // Codex used to receive `runner.system_prompt` as a positional
-        // `[PROMPT]` argv, but that delivery races codex's startup
-        // permission / approval dialog. The fix mirrors claude-code:
-        // `schedule_first_prompt` types the brief into the PTY's
-        // stdin once the TUI has settled. Spawn `/bin/cat` (echoes
-        // stdin back to stdout) with codex runtime and a non-empty
-        // system_prompt — `FIRST_PROMPT_DELAY` is zero under
-        // `cfg(test)` so injection runs inline — then assert the
-        // brief shows up in the captured output buffer. The
-        // worker-coordination preamble lands first; we look for the
-        // brief substring as the load-bearing assertion.
+    fn codex_direct_chat_injects_persona_without_preamble() {
+        // Direct chats are off-bus: the bundled `runner` CLI is not on
+        // PATH (#51) and there's no crew/mission to coordinate over,
+        // so the WORKER_COORDINATION_PREAMBLE would advertise verbs
+        // that don't work. Direct chat sends ONLY the persona
+        // (runner.system_prompt) into stdin.
+        //
+        // Assert (a) the persona token DOES appear in the captured
+        // output (echoed back by /bin/cat) and (b) a distinctive
+        // substring of WORKER_COORDINATION_PREAMBLE does NOT —
+        // regression guard for the bug in #51.
         let pool = pool_with_schema();
         let now = Utc::now().to_rfc3339();
         let runner_id = ulid::Ulid::new().to_string();
@@ -2127,7 +2241,7 @@ mod tests {
         runner.id = runner_id.clone();
         runner.handle = "codex-tester".into();
         runner.runtime = "codex".into();
-        runner.system_prompt = Some("CODEX_BRIEF_TOKEN".into());
+        runner.system_prompt = Some("CODEX_PERSONA_TOKEN".into());
 
         let mgr = SessionManager::new(None);
         let spawned = mgr
@@ -2142,34 +2256,185 @@ mod tests {
             )
             .unwrap();
 
-        // Poll the bounded output buffer until /bin/cat has echoed
-        // the injected brief back through the PTY. 5s deadline is the
-        // same budget the other inject-stdin tests in this module
-        // use; in practice the round-trip lands in <100ms.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let saw_brief = loop {
-            let snapshot = mgr.output_snapshot(&spawned.id);
-            let merged: String = snapshot
-                .iter()
-                .filter_map(|ev| {
-                    BASE64
-                        .decode(ev.data.as_bytes())
-                        .ok()
-                        .and_then(|b| String::from_utf8(b).ok())
-                })
-                .collect();
-            if merged.contains("CODEX_BRIEF_TOKEN") {
-                break true;
-            }
-            if Instant::now() > deadline {
-                break false;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
+        let (merged, saw_persona) = await_pty_output(
+            &mgr,
+            &spawned.id,
+            |text| text.contains("CODEX_PERSONA_TOKEN"),
+            Duration::from_secs(5),
+        );
         mgr.kill(&spawned.id).unwrap();
         assert!(
-            saw_brief,
-            "codex fresh spawn must deliver the system_prompt via stdin (output never contained the brief)"
+            saw_persona,
+            "codex direct chat must inject the persona via stdin: {merged:?}",
+        );
+        // Distinctive opening of the preamble — picked because no
+        // persona prompt would naturally contain the literal "in a
+        // crew coordinated by the bundled" substring.
+        assert!(
+            !merged.contains("in a crew coordinated by the bundled"),
+            "direct chat must NOT inject WORKER_COORDINATION_PREAMBLE: {merged:?}",
+        );
+    }
+
+    #[test]
+    fn claude_code_direct_chat_injects_persona_without_preamble() {
+        // Same shape as the codex test, but with claude-code runtime
+        // — claude-code's `--append-system-prompt` is SDK-only
+        // (silently dropped by the interactive TUI), so stdin is the
+        // only persona-delivery path.
+        //
+        // claude-code's `resume_plan` self-assigns `--session-id <uuid>`
+        // for fresh spawns, which gets appended to the spawn argv. We
+        // wrap with `/bin/sh -c 'cat'` so those extras land as the
+        // shell's positional params (consumed by `sh`, not passed to
+        // `cat`) and don't make the test child error out.
+        let pool = pool_with_schema();
+        let now = Utc::now().to_rfc3339();
+        let runner_id = ulid::Ulid::new().to_string();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'cc-tester', 'CC', 'claude-code', '/bin/sh',
+                         ?3, NULL, NULL, NULL, ?2, ?2)",
+                params![runner_id, now, r#"["-c","cat"]"#],
+            )
+            .unwrap();
+        }
+        let mut runner = runner("/bin/sh", &["-c", "cat"]);
+        runner.id = runner_id.clone();
+        runner.handle = "cc-tester".into();
+        runner.runtime = "claude-code".into();
+        runner.system_prompt = Some("CC_PERSONA_TOKEN".into());
+
+        let mgr = SessionManager::new(None);
+        let spawned = mgr
+            .spawn_direct(
+                &runner,
+                Some("/tmp"),
+                None,
+                None,
+                std::path::Path::new("/tmp"),
+                Arc::clone(&pool),
+                capture(),
+            )
+            .unwrap();
+
+        let (merged, saw_persona) = await_pty_output(
+            &mgr,
+            &spawned.id,
+            |text| text.contains("CC_PERSONA_TOKEN"),
+            Duration::from_secs(5),
+        );
+        mgr.kill(&spawned.id).unwrap();
+        assert!(
+            saw_persona,
+            "claude-code direct chat must inject the persona via stdin: {merged:?}",
+        );
+        assert!(
+            !merged.contains("in a crew coordinated by the bundled"),
+            "direct chat must NOT inject WORKER_COORDINATION_PREAMBLE: {merged:?}",
+        );
+    }
+
+    #[test]
+    fn mission_spawn_injects_preamble_for_non_lead_worker() {
+        // Regression guard for #45 after the schedule_first_prompt
+        // split. Mission spawn (non-lead worker) must STILL get the
+        // bus-contract WORKER_COORDINATION_PREAMBLE typed into stdin
+        // ahead of the user-authored brief, since workers are
+        // expected to call `runner msg post`, `runner status idle`,
+        // etc. Mirrors the direct-chat tests but spawns through the
+        // mission-flavored `spawn` path with a non-lead slot.
+        //
+        // Wrapped in `/bin/sh -c 'cat'` so claude-code's self-assigned
+        // `--session-id <uuid>` fresh-spawn args don't crash the test
+        // child (cat would reject the unknown flag); the shell
+        // swallows them as positional params.
+        let pool = pool_with_schema();
+        let mission = mission();
+        let mut runner = runner("/bin/sh", &["-c", "cat"]);
+        runner.runtime = "claude-code".into();
+        runner.handle = "worker-tester".into();
+        runner.system_prompt = Some("WORKER_PERSONA_TOKEN".into());
+
+        let slot_id = insert_crew_runner(&pool, &mission.id, &runner.id);
+        // Override the inserted slot row to non-lead so
+        // schedule_mission_first_prompt actually fires (lead path is
+        // suppressed because the launch prompt is dispatched separately
+        // by the bus's mission_goal handler).
+        {
+            let conn = pool.get().unwrap();
+            conn.execute("UPDATE slots SET lead = 0 WHERE id = ?1", params![slot_id])
+                .unwrap();
+            // Mirror runner row updates so spawn() reads the test's
+            // runtime / handle / system_prompt / args.
+            conn.execute(
+                "UPDATE runners
+                    SET runtime = ?2, handle = ?3, system_prompt = ?4,
+                        command = ?5, args_json = ?6
+                  WHERE id = ?1",
+                params![
+                    runner.id,
+                    runner.runtime,
+                    runner.handle,
+                    runner.system_prompt,
+                    runner.command,
+                    r#"["-c","cat"]"#,
+                ],
+            )
+            .unwrap();
+        }
+        let fresh_mission_id = {
+            let conn = pool.get().unwrap();
+            conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
+                .unwrap()
+        };
+        let mission = Mission {
+            id: fresh_mission_id,
+            ..mission
+        };
+        let mut slot = slot_for(&runner);
+        slot.id = slot_id;
+        slot.lead = false;
+
+        let mgr = SessionManager::new(None);
+        let spawned = mgr
+            .spawn(
+                &mission,
+                &runner,
+                &slot,
+                std::path::Path::new("/tmp"),
+                PathBuf::from("/dev/null"),
+                Arc::clone(&pool),
+                capture(),
+            )
+            .unwrap();
+
+        // Wait for BOTH halves before killing — the preamble lands
+        // first (it's typed first), and the brief follows. Killing
+        // the PTY between the two breaks cat's read loop and the
+        // brief never makes it back through the master. The shorter
+        // PERSONA_TOK sentinel reliably lands in a single chunk
+        // even though the full WORKER_PERSONA_TOKEN can split
+        // across kernel-echo / cat-read boundaries.
+        let (merged, saw_both) = await_pty_output(
+            &mgr,
+            &spawned.id,
+            |text| {
+                text.contains("in a crew coordinated by the bundled")
+                    && text.contains("PERSONA_TOK")
+            },
+            Duration::from_secs(5),
+        );
+        mgr.kill(&spawned.id).unwrap();
+        assert!(
+            saw_both,
+            "mission spawn must inject WORKER_COORDINATION_PREAMBLE + the user-authored brief \
+             for a non-lead worker: {merged:?}",
         );
     }
 
