@@ -6,6 +6,7 @@ mod event_bus;
 mod model;
 mod router;
 mod session;
+mod shell_path;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -88,10 +89,19 @@ pub fn run() {
                 eprintln!("runner: failed to install bundled CLI: {e}");
             }
 
+            // Resolve the user's login-shell PATH once at startup so
+            // child PTYs can find tools that live outside launchd's
+            // stripped default PATH (Homebrew, mise/asdf/fnm, npm-global,
+            // etc.). Best-effort: a failure or timeout just leaves
+            // shell_path = None and we fall back to the inherited
+            // launchd PATH. See `shell_path` module docs for the
+            // launchd-strips-PATH problem this fixes.
+            let shell_path = shell_path::resolve_login_shell_path();
+
             app.manage(AppState {
                 db: pool,
                 app_data_dir,
-                sessions: session::SessionManager::new(),
+                sessions: session::SessionManager::new(shell_path),
                 buses: event_bus::BusRegistry::new(),
                 routers: router::RouterRegistry::new(),
             });

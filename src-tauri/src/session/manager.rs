@@ -201,6 +201,13 @@ pub struct SessionManager {
     /// SIGTERM produces a non-zero exit code. Entries are cleared by
     /// the reader after the DB row is updated.
     killed: Mutex<HashSet<String>>,
+    /// User's login-shell PATH, captured once at app start by
+    /// `shell_path::resolve_login_shell_path`. None when the resolve
+    /// failed/timed out, when running on Windows, or in tests.
+    /// Merged into every child PTY's PATH so GUI-launched apps can
+    /// find tools (claude, codex, mise, etc.) that aren't on
+    /// launchd's stripped default PATH.
+    shell_path: Option<String>,
 }
 
 /// RAII guard that releases a `resuming_claims` entry on drop. The
@@ -224,14 +231,48 @@ impl Drop for ResumeClaim {
 }
 
 impl SessionManager {
-    pub fn new() -> Arc<Self> {
+    pub fn new(shell_path: Option<String>) -> Arc<Self> {
         Arc::new(Self {
             sessions: Mutex::new(HashMap::new()),
             killed: Mutex::new(HashSet::new()),
             output_buffers: Mutex::new(HashMap::new()),
             output_seq: Mutex::new(HashMap::new()),
             resuming_claims: Mutex::new(HashSet::new()),
+            shell_path,
         })
+    }
+
+    /// Compose a child PTY's PATH from the bundled-bin dir, an optional
+    /// per-slot shim dir, the captured login-shell PATH, and the
+    /// inherited (launchd-default) PATH. Order: shim ► bin ► shell ► parent.
+    /// `shim` and `bin` come first so our `runner` resolves to the env-baked
+    /// shim before any system-installed `runner` binary; `shell` comes
+    /// before the inherited launchd PATH because launchd's PATH on macOS
+    /// is the stripped default we're trying to extend.
+    fn compose_path(&self, shim_dir: Option<&Path>, bin_dir: &Path) -> std::ffi::OsString {
+        let sep: &str = if cfg!(windows) { ";" } else { ":" };
+        let parent_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut parts: Vec<std::ffi::OsString> = Vec::with_capacity(4);
+        if let Some(shim) = shim_dir {
+            parts.push(shim.as_os_str().into());
+        }
+        parts.push(bin_dir.as_os_str().into());
+        if let Some(sp) = self.shell_path.as_deref() {
+            if !sp.is_empty() {
+                parts.push(std::ffi::OsString::from(sp));
+            }
+        }
+        if !parent_path.is_empty() {
+            parts.push(parent_path);
+        }
+        let mut new_path = std::ffi::OsString::new();
+        for (i, p) in parts.iter().enumerate() {
+            if i > 0 {
+                new_path.push(sep);
+            }
+            new_path.push(p);
+        }
+        new_path
     }
 
     /// Spawn one PTY child for `runner` as part of `mission`. Persists a
@@ -351,20 +392,12 @@ impl SessionManager {
         // Prepend (shim, fallback bundled bin) to PATH so `runner` on the
         // child's PATH resolves first to our env-baked shim, then to
         // the raw CLI for verbs (`runner help`) that don't need
-        // env. Inherit the parent PATH as the tail.
+        // env. The captured login-shell PATH (Homebrew, mise, etc.)
+        // is merged in next so GUI-launched apps can find third-party
+        // agent CLIs that aren't on launchd's default PATH; the
+        // inherited PATH is the tail.
         let bin_dir = app_data_dir.join("bin");
-        let sep = if cfg!(windows) { ';' } else { ':' };
-        let parent_path = std::env::var_os("PATH").unwrap_or_default();
-        let mut new_path = std::ffi::OsString::new();
-        if let Some(shim) = shim_dir.as_ref() {
-            new_path.push(shim.as_os_str());
-            new_path.push(std::ffi::OsString::from(sep.to_string()));
-        }
-        new_path.push(bin_dir.as_os_str());
-        if !parent_path.is_empty() {
-            new_path.push(std::ffi::OsString::from(sep.to_string()));
-            new_path.push(parent_path);
-        }
+        let new_path = self.compose_path(shim_dir.as_deref(), &bin_dir);
         cmd.env("PATH", new_path);
 
         cmd.env("RUNNER_CREW_ID", &mission.crew_id);
@@ -600,16 +633,14 @@ impl SessionManager {
         for (k, v) in &runner.env {
             cmd.env(k, v);
         }
-        // PATH still gets the bundled CLI prepended — the runner might
-        // call `runner --help` interactively; let it find the binary.
+        // PATH gets the bundled CLI prepended (so the runner can call
+        // `runner --help` interactively) and the captured login-shell
+        // PATH merged in (so a GUI-launched app can still find
+        // `claude` / `codex` / mise shims that live outside launchd's
+        // stripped default PATH). No per-slot shim for direct chats —
+        // there's no mission bus to stamp.
         let bin_dir = app_data_dir.join("bin");
-        let sep = if cfg!(windows) { ';' } else { ':' };
-        let parent_path = std::env::var_os("PATH").unwrap_or_default();
-        let mut new_path = std::ffi::OsString::from(bin_dir.as_os_str());
-        if !parent_path.is_empty() {
-            new_path.push(std::ffi::OsString::from(sep.to_string()));
-            new_path.push(parent_path);
-        }
+        let new_path = self.compose_path(None, &bin_dir);
         cmd.env("PATH", new_path);
         cmd.env("RUNNER_HANDLE", &runner.handle);
         // Pass the spawn-time grid via COLUMNS/LINES too. portable-pty
@@ -1014,18 +1045,7 @@ impl SessionManager {
         });
 
         let bin_dir = app_data_dir.join("bin");
-        let sep = if cfg!(windows) { ';' } else { ':' };
-        let parent_path = std::env::var_os("PATH").unwrap_or_default();
-        let mut new_path = std::ffi::OsString::new();
-        if let Some(shim) = shim_dir.as_ref() {
-            new_path.push(shim.as_os_str());
-            new_path.push(std::ffi::OsString::from(sep.to_string()));
-        }
-        new_path.push(bin_dir.as_os_str());
-        if !parent_path.is_empty() {
-            new_path.push(std::ffi::OsString::from(sep.to_string()));
-            new_path.push(parent_path);
-        }
+        let new_path = self.compose_path(shim_dir.as_deref(), &bin_dir);
         cmd.env("PATH", new_path);
         // Mission resume stamps the slot's in-mission identity so the
         // bundled `runner` CLI in this PTY attributes events as the
@@ -1885,6 +1905,52 @@ mod tests {
     }
 
     #[test]
+    fn compose_path_orders_segments_and_skips_empties() {
+        // shim ► bin ► shell ► parent — and any None / empty segment
+        // is skipped without leaving stray separators. The shell PATH
+        // segment is the v0.1.x fix for GUI-launched apps not seeing
+        // Homebrew/mise/etc.
+        let prior = std::env::var_os("PATH");
+        // Deterministic parent for the duration of the test.
+        std::env::set_var("PATH", "/usr/bin:/bin");
+
+        let with_shell = SessionManager::new(Some(
+            "/opt/homebrew/bin:/Users/x/.npm-global/bin".to_string(),
+        ));
+        let bin = std::path::PathBuf::from("/app/bin");
+        let shim = std::path::PathBuf::from("/app/shim/m1/s1");
+
+        let p = with_shell.compose_path(Some(&shim), &bin);
+        assert_eq!(
+            p.to_string_lossy(),
+            "/app/shim/m1/s1:/app/bin:/opt/homebrew/bin:/Users/x/.npm-global/bin:/usr/bin:/bin"
+        );
+
+        // No shim, no shell PATH — only bin + parent.
+        let bare = SessionManager::new(None);
+        let p = bare.compose_path(None, &bin);
+        assert_eq!(p.to_string_lossy(), "/app/bin:/usr/bin:/bin");
+
+        // Empty shell PATH is treated as None (no doubled separator).
+        let empty_shell = SessionManager::new(Some(String::new()));
+        let p = empty_shell.compose_path(None, &bin);
+        assert_eq!(p.to_string_lossy(), "/app/bin:/usr/bin:/bin");
+
+        // Empty parent PATH (unset) — no trailing separator.
+        std::env::remove_var("PATH");
+        let p = with_shell.compose_path(None, &bin);
+        assert_eq!(
+            p.to_string_lossy(),
+            "/app/bin:/opt/homebrew/bin:/Users/x/.npm-global/bin"
+        );
+
+        match prior {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+
+    #[test]
     fn spawn_echo_roundtrip() {
         // Spawn `sh -c "echo hi && exit"`; assert the exit event fires with
         // success=true. We skip output inspection because the Tauri mock app
@@ -1912,7 +1978,7 @@ mod tests {
             ..mission
         };
 
-        let mgr = SessionManager::new();
+        let mgr = SessionManager::new(None);
         let slot = slot_for(&runner);
         let spawned = mgr
             .spawn(
@@ -1973,7 +2039,7 @@ mod tests {
             ..mission
         };
 
-        let mgr = SessionManager::new();
+        let mgr = SessionManager::new(None);
         let slot = slot_for(&runner);
         let spawned = mgr
             .spawn(
@@ -2014,7 +2080,7 @@ mod tests {
 
     #[test]
     fn inject_stdin_on_unknown_session_errors_cleanly() {
-        let mgr = SessionManager::new();
+        let mgr = SessionManager::new(None);
         let err = mgr.inject_stdin("nope", b"x").unwrap_err();
         assert!(format!("{err}").contains("session not found"));
     }
@@ -2049,7 +2115,7 @@ mod tests {
             .execute("DROP TABLE sessions", [])
             .unwrap();
 
-        let mgr = SessionManager::new();
+        let mgr = SessionManager::new(None);
         let slot = slot_for(&runner);
         let err = mgr
             .spawn(
@@ -2094,7 +2160,7 @@ mod tests {
             ..mission
         };
 
-        let mgr = SessionManager::new();
+        let mgr = SessionManager::new(None);
         let slot = slot_for(&runner);
         let spawned = mgr
             .spawn(
@@ -2155,7 +2221,7 @@ mod tests {
         runner.handle = "directrunner".into();
 
         let cap = capture();
-        let mgr = SessionManager::new();
+        let mgr = SessionManager::new(None);
         let spawned = mgr
             .spawn_direct(
                 &runner,
@@ -2237,7 +2303,7 @@ mod tests {
         runner.id = runner_id;
         runner.handle = "buffered".into();
 
-        let mgr = SessionManager::new();
+        let mgr = SessionManager::new(None);
         let spawned = mgr
             .spawn_direct(
                 &runner,
@@ -2316,7 +2382,7 @@ mod tests {
         runner.handle = "resumer".into();
         runner.runtime = "claude-code".into();
 
-        let mgr = SessionManager::new();
+        let mgr = SessionManager::new(None);
         let spawned = mgr
             .spawn_direct(
                 &runner,
@@ -2476,7 +2542,7 @@ mod tests {
             )
             .unwrap();
         }
-        let mgr = SessionManager::new();
+        let mgr = SessionManager::new(None);
         for (sid, needle) in [
             ("running-sid", "already running"),
             ("archived-sid", "archived"),
@@ -2552,7 +2618,7 @@ mod tests {
             .unwrap();
         }
 
-        let mgr = SessionManager::new();
+        let mgr = SessionManager::new(None);
         let spawned = mgr
             .resume(
                 "mr-sid",
