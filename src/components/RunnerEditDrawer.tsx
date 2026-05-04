@@ -13,7 +13,12 @@ import { Button } from "./ui/Button";
 import { Drawer } from "./ui/Overlay";
 import { Field, Input, Textarea } from "./ui/Field";
 import { RuntimeSelect } from "./ui/RuntimeSelect";
-import { RUNTIME_OPTIONS } from "./ui/runtimes";
+import {
+  RUNTIME_OPTIONS,
+  inferSkipApprovalPrompts,
+  runtimeSupportsBypassToggle,
+} from "./ui/runtimes";
+import { Toggle } from "./ui/Toggle";
 
 export function RunnerEditDrawer({
   open,
@@ -34,6 +39,15 @@ export function RunnerEditDrawer({
   const [systemPrompt, setSystemPrompt] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
+  // "Skip approval prompts" toggle — initial state derived from
+  // whether the row's stored args already contain the runtime's
+  // bypass flags. The form's args input is intentionally
+  // toggle-aware: the field shows ALL args (including the bypass
+  // pair when the toggle is on) so users see what gets persisted.
+  // Toggling here updates the args text inline so the visible state
+  // matches what we'd submit, and the backend strips/re-applies
+  // canonically on save (see commands::runner::update).
+  const [skipApprovalPrompts, setSkipApprovalPrompts] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -47,6 +61,9 @@ export function RunnerEditDrawer({
       setSystemPrompt(runner.system_prompt ?? "");
       setModel(runner.model ?? "");
       setEffort(runner.effort ?? "");
+      setSkipApprovalPrompts(
+        inferSkipApprovalPrompts(runner.runtime, runner.args),
+      );
       setError(null);
     }
   }, [open, runner]);
@@ -71,6 +88,14 @@ export function RunnerEditDrawer({
         system_prompt: systemPrompt.trim() || null,
         model: model.trim() || null,
         effort: effort.trim() || null,
+        // Send the toggle state only for runtimes that support it —
+        // otherwise the backend's bypass-flag helper is a no-op
+        // anyway, but keeping the field undefined for shell/unknown
+        // makes the contract explicit (`None` toggle on the Rust
+        // side preserves args verbatim).
+        ...(runtimeSupportsBypassToggle(runtime)
+          ? { skip_approval_prompts: skipApprovalPrompts }
+          : {}),
       };
       await api.runner.update(runner.id, input);
       await onSaved();
@@ -151,6 +176,27 @@ export function RunnerEditDrawer({
             onChange={(e) => setArgsText(e.target.value)}
           />
         </Field>
+
+        {runtimeSupportsBypassToggle(runtime) ? (
+          <div className="flex items-start justify-between gap-6">
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span className="text-[13px] font-medium text-fg">
+                Skip approval prompts
+              </span>
+              <span className="text-[11px] text-fg-2">
+                Skip approval prompts inside the TUI — recommended for crew
+                workflows
+              </span>
+            </div>
+            <div className="shrink-0 pt-0.5">
+              <Toggle
+                ariaLabel="Skip approval prompts"
+                on={skipApprovalPrompts}
+                onChange={setSkipApprovalPrompts}
+              />
+            </div>
+          </div>
+        ) : null}
 
         <Field
           id="edit-working-dir"

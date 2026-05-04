@@ -514,10 +514,13 @@ impl SessionManager {
         // succeeded; activity badges will reconcile on the next event.
         emit_runner_activity(&pool, runner, events.as_ref());
 
+        // Deliver the runner's brief as a first user turn via stdin.
         // claude-code's interactive TUI ignores `--append-system-prompt`,
-        // so deliver the runner's brief as a first user turn via stdin.
-        // Skipped for the lead — the mission_goal handler injects a
-        // richer launch prompt that already embeds system_prompt.
+        // and codex's positional `[PROMPT]` argv loses races with its
+        // startup permission / approval dialog — see
+        // `router::runtime::system_prompt_args`. Skipped for the lead
+        // — the `mission_goal` handler injects a richer launch prompt
+        // that already embeds system_prompt.
         schedule_first_prompt(self, session_id.clone(), runner, &plan, slot.lead);
 
         Ok(SpawnedSession {
@@ -744,9 +747,9 @@ impl SessionManager {
 
         emit_runner_activity(&pool, runner, events.as_ref());
 
-        // First-turn prompt injection for fresh claude-code direct
-        // chats. Direct chats have no slot/lead concept, so always
-        // treat as non-lead.
+        // First-turn prompt injection for fresh claude-code / codex
+        // direct chats. Direct chats have no slot/lead concept, so
+        // always treat as non-lead.
         schedule_first_prompt(self, session_id.clone(), runner, &plan, false);
 
         Ok(SpawnedSession {
@@ -975,11 +978,12 @@ impl SessionManager {
                 cmd.arg(extra);
             }
         }
-        // codex on resume: the helper drops the `system_prompt` argv when
-        // `plan.resuming` is true so codex's positional `[PROMPT]` isn't
-        // replayed as a fresh user turn against the existing conversation.
-        // claude-code is unaffected (its `system_prompt_args` is empty
-        // and its prompt is delivered via stdin instead).
+        // Both supported runtimes deliver the system prompt via stdin
+        // (`schedule_first_prompt`), so `system_prompt_args` is empty
+        // for both and the helper's `plan_resuming` carve-out is a
+        // no-op today — kept on the call so the contract stays
+        // self-describing for any future runtime that opts back into
+        // positional argv.
         for extra in crate::router::runtime::trailing_runtime_args(
             &runner.runtime,
             plan.resuming,
@@ -1165,13 +1169,14 @@ impl SessionManager {
 
         emit_runner_activity(&pool, &runner, events.as_ref());
 
-        // claude-code first-turn injection. `plan.resuming` is true on
-        // any resume against a real prior_key — those skip naturally
-        // (the agent already has its system context). The lead always
-        // suppresses the worker preamble: when the lead's conversation
-        // file is missing and the resume degrades to a fresh spawn,
-        // the *launch prompt* (composed by the router with crew /
-        // roster / goal context) is the right thing to inject — the
+        // First-turn injection for fresh claude-code / codex spawns.
+        // `plan.resuming` is true on any resume against a real
+        // prior_key — those skip naturally (the agent already has its
+        // system context). The lead always suppresses the worker
+        // preamble: when the lead's conversation file is missing and
+        // the resume degrades to a fresh spawn, the *launch prompt*
+        // (composed by the router with crew / roster / goal context)
+        // is the right thing to inject — the
         // commands::session::session_resume caller fires that path
         // when it sees `fresh_fallback_lead = true` on the returned
         // SpawnedSession.
@@ -1534,18 +1539,34 @@ fn capture_cwd(explicit: Option<String>) -> Option<String> {
         .and_then(|p| p.into_os_string().into_string().ok())
 }
 
-/// Deliver `runner.system_prompt` to a freshly-spawned claude-code TUI
-/// by typing it into the agent's stdin as a first user turn. claude-
-/// code's `--append-system-prompt` / `--system-prompt` flags are
-/// SDK-only (they require `-p` / print mode); the interactive TUI
-/// silently drops them. Stdin injection is the only path that lands.
+/// How long to wait after spawn before typing the worker's first
+/// user turn into the PTY. claude-code and codex both need their TUIs
+/// to render the welcome banner, dismiss any "trust this folder" /
+/// approval dialog, and bind their raw-mode keypress reader before
+/// typed bytes land — anything shorter and the early bytes get
+/// swallowed by a dialog still on screen. `cfg(test)` zeros it so unit
+/// tests don't have to sleep multiple seconds (we run inline at the
+/// call site when zero). Mirrors `LEAD_LAUNCH_PROMPT_DELAY` in
+/// `router/handlers.rs` since they solve the same race.
+#[cfg(not(test))]
+const FIRST_PROMPT_DELAY: std::time::Duration = std::time::Duration::from_millis(2500);
+#[cfg(test)]
+const FIRST_PROMPT_DELAY: std::time::Duration = std::time::Duration::ZERO;
+
+/// Deliver `runner.system_prompt` to a freshly-spawned agent TUI by
+/// typing it into the agent's stdin as a first user turn. Used for
+/// claude-code (whose `--append-system-prompt` / `--system-prompt`
+/// flags are SDK-only and silently dropped by the interactive TUI)
+/// and for codex (whose positional `[PROMPT]` argv loses races with
+/// codex's startup permission / approval dialog — see the codex
+/// branch in `router::runtime::system_prompt_args`). Stdin injection
+/// is the only delivery path that survives both cases.
 ///
-/// Sleeps a short delay so claude-code's TUI has time to boot and
-/// bind stdin — without it, the input is sometimes echoed before the
-/// editor takes over and gets lost. Skipped on resume against a real
-/// prior conversation (the agent already has its system context) and
-/// on non-claude-code runtimes (codex uses positional argv, shell has
-/// no prompt concept).
+/// Sleeps a short delay so the TUI has time to boot and bind stdin —
+/// without it the input is sometimes echoed before the editor takes
+/// over and gets lost. Skipped on resume against a real prior
+/// conversation (the agent already has its system context) and on
+/// runtimes that have no concept of a first-turn prompt (shell).
 ///
 /// `suppress_lead_preamble` is set by the initial mission_start spawn
 /// path: there, the bus's `mission_goal` handler injects a richer
@@ -1565,7 +1586,7 @@ fn schedule_first_prompt(
     plan: &router::runtime::ResumePlan,
     suppress_lead_preamble: bool,
 ) {
-    if runner.runtime != "claude-code" {
+    if runner.runtime != "claude-code" && runner.runtime != "codex" {
         return;
     }
     if plan.resuming {
@@ -1592,21 +1613,26 @@ fn schedule_first_prompt(
         prompt.push_str("\n\n== Your brief ==\n");
         prompt.push_str(&brief);
     }
+    // Strip any embedded `\r` so the prompt body is one piece;
+    // embedded `\n`s render as line breaks inside the input box.
+    // The submit byte goes in a separate write below so the TUI
+    // sees it as Enter rather than appending it to the input
+    // buffer (which is what happens when text + `\r` arrive in
+    // the same chunk).
+    let body: String = prompt.chars().filter(|c| *c != '\r').collect();
+    let delay = FIRST_PROMPT_DELAY;
+    if delay.is_zero() {
+        // Inline path used by unit tests (`FIRST_PROMPT_DELAY = ZERO`
+        // under `cfg(test)`) so synchronous output assertions can
+        // observe the injection without waiting on a background
+        // thread. Production never hits this branch.
+        let _ = mgr.inject_stdin(&session_id, body.as_bytes());
+        let _ = mgr.inject_stdin(&session_id, b"\r");
+        return;
+    }
     let mgr = Arc::clone(mgr);
     std::thread::spawn(move || {
-        // 2.5s gives claude-code's TUI room to render its welcome
-        // banner, dismiss any "trust this folder" prompt, and bind
-        // its raw-mode keypress reader before our typed text lands.
-        // Anything shorter and the early bytes get swallowed by a
-        // confirmation dialog that's still on screen.
-        std::thread::sleep(std::time::Duration::from_millis(2500));
-        // Strip any embedded `\r` so the prompt body is one piece;
-        // embedded `\n`s render as line breaks inside the input
-        // box. The submit byte goes in a separate write below so
-        // claude-code's editor sees it as Enter rather than
-        // appending it to the input buffer (which is what happens
-        // when text + `\r` arrive in the same chunk).
-        let body: String = prompt.chars().filter(|c| *c != '\r').collect();
+        std::thread::sleep(delay);
         let _ = mgr.inject_stdin(&session_id, body.as_bytes());
         std::thread::sleep(std::time::Duration::from_millis(80));
         let _ = mgr.inject_stdin(&session_id, b"\r");
@@ -2066,6 +2092,165 @@ mod tests {
         let mgr = SessionManager::new(None);
         let err = mgr.inject_stdin("nope", b"x").unwrap_err();
         assert!(format!("{err}").contains("session not found"));
+    }
+
+    #[test]
+    fn codex_fresh_spawn_injects_brief_via_stdin() {
+        // Codex used to receive `runner.system_prompt` as a positional
+        // `[PROMPT]` argv, but that delivery races codex's startup
+        // permission / approval dialog. The fix mirrors claude-code:
+        // `schedule_first_prompt` types the brief into the PTY's
+        // stdin once the TUI has settled. Spawn `/bin/cat` (echoes
+        // stdin back to stdout) with codex runtime and a non-empty
+        // system_prompt — `FIRST_PROMPT_DELAY` is zero under
+        // `cfg(test)` so injection runs inline — then assert the
+        // brief shows up in the captured output buffer. The
+        // worker-coordination preamble lands first; we look for the
+        // brief substring as the load-bearing assertion.
+        let pool = pool_with_schema();
+        let now = Utc::now().to_rfc3339();
+        let runner_id = ulid::Ulid::new().to_string();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'codex-tester', 'CT', 'codex', '/bin/cat',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+                params![runner_id, now],
+            )
+            .unwrap();
+        }
+        let mut runner = runner("/bin/cat", &[]);
+        runner.id = runner_id.clone();
+        runner.handle = "codex-tester".into();
+        runner.runtime = "codex".into();
+        runner.system_prompt = Some("CODEX_BRIEF_TOKEN".into());
+
+        let mgr = SessionManager::new(None);
+        let spawned = mgr
+            .spawn_direct(
+                &runner,
+                Some("/tmp"),
+                None,
+                None,
+                std::path::Path::new("/tmp"),
+                Arc::clone(&pool),
+                capture(),
+            )
+            .unwrap();
+
+        // Poll the bounded output buffer until /bin/cat has echoed
+        // the injected brief back through the PTY. 5s deadline is the
+        // same budget the other inject-stdin tests in this module
+        // use; in practice the round-trip lands in <100ms.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let saw_brief = loop {
+            let snapshot = mgr.output_snapshot(&spawned.id);
+            let merged: String = snapshot
+                .iter()
+                .filter_map(|ev| {
+                    BASE64
+                        .decode(ev.data.as_bytes())
+                        .ok()
+                        .and_then(|b| String::from_utf8(b).ok())
+                })
+                .collect();
+            if merged.contains("CODEX_BRIEF_TOKEN") {
+                break true;
+            }
+            if Instant::now() > deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        mgr.kill(&spawned.id).unwrap();
+        assert!(
+            saw_brief,
+            "codex fresh spawn must deliver the system_prompt via stdin (output never contained the brief)"
+        );
+    }
+
+    #[test]
+    fn codex_resume_skips_first_prompt_injection() {
+        // On a codex resume the agent already has its system context
+        // — replaying the brief would either be a no-op (codex
+        // resume doesn't replay first turns) or, worse, push a fresh
+        // user turn against the existing conversation. Verify the
+        // resume path leaves stdin untouched: spawn /bin/cat with
+        // codex runtime + a populated `agent_session_key` (so
+        // `resume_plan` chooses the resuming branch), wait briefly,
+        // and assert no echo arrived. Pairs with
+        // `codex_fresh_spawn_injects_brief_via_stdin` — same setup,
+        // opposite expectation, locking in the resume guard.
+        let pool = pool_with_schema();
+        let now = Utc::now().to_rfc3339();
+        let runner_id = ulid::Ulid::new().to_string();
+        let session_id = ulid::Ulid::new().to_string();
+        let prior_key = uuid::Uuid::new_v4().to_string();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'codex-resumer', 'CR', 'codex', '/bin/cat',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+                params![runner_id, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions
+                    (id, mission_id, runner_id, cwd, status, started_at,
+                     agent_session_key)
+                 VALUES (?1, NULL, ?2, '/tmp', 'stopped', ?3, ?4)",
+                params![session_id, runner_id, now, prior_key],
+            )
+            .unwrap();
+        }
+        // Update the in-memory runner row to mirror the DB so resume()
+        // reads what we just inserted.
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "UPDATE runners SET system_prompt = ?2 WHERE id = ?1",
+                params![runner_id, "CODEX_BRIEF_TOKEN_RESUME"],
+            )
+            .unwrap();
+        }
+
+        let mgr = SessionManager::new(None);
+        let resumed = mgr
+            .resume(
+                &session_id,
+                None,
+                None,
+                std::path::Path::new("/tmp"),
+                Arc::clone(&pool),
+                capture(),
+            )
+            .unwrap();
+
+        // Give the (would-be) injection thread a chance to fire.
+        std::thread::sleep(Duration::from_millis(100));
+        let snapshot = mgr.output_snapshot(&resumed.id);
+        let merged: String = snapshot
+            .iter()
+            .filter_map(|ev| {
+                BASE64
+                    .decode(ev.data.as_bytes())
+                    .ok()
+                    .and_then(|b| String::from_utf8(b).ok())
+            })
+            .collect();
+        mgr.kill(&resumed.id).unwrap();
+        assert!(
+            !merged.contains("CODEX_BRIEF_TOKEN_RESUME"),
+            "codex resume must NOT replay the brief over stdin: {merged:?}"
+        );
     }
 
     #[test]

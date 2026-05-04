@@ -217,6 +217,11 @@ export interface CreateRunnerInput {
   env?: Record<string, string>;
   model?: string | null;
   effort?: string | null;
+  /** Form's "Skip approval prompts" toggle — defaults to true on the
+   *  backend when omitted. The runner-edit-form sends this explicitly
+   *  for codex / claude-code; for runtimes without a bypass concept
+   *  (shell / unknown) the toggle is hidden and this is a no-op. */
+  skip_approval_prompts?: boolean;
 }
 
 // `handle` is intentionally excluded: it's the runner template's identity
@@ -231,6 +236,11 @@ export interface UpdateRunnerInput {
   env?: Record<string, string>;
   model?: string | null;
   effort?: string | null;
+  /** `true` ensures the runtime's bypass-permission flags are present
+   *  on the stored args; `false` strips them. Omit (or `undefined`)
+   *  to leave args alone — non-form callers shouldn't have to think
+   *  about bypass flags. */
+  skip_approval_prompts?: boolean;
 }
 
 export interface CreateSlotInput {

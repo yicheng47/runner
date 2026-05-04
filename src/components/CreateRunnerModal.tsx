@@ -12,7 +12,8 @@ import { Button } from "./ui/Button";
 import { Modal } from "./ui/Overlay";
 import { Field, Input, Textarea } from "./ui/Field";
 import { RuntimeSelect } from "./ui/RuntimeSelect";
-import { RUNTIME_OPTIONS } from "./ui/runtimes";
+import { RUNTIME_OPTIONS, runtimeSupportsBypassToggle } from "./ui/runtimes";
+import { Toggle } from "./ui/Toggle";
 
 // Mirrors src-tauri/src/commands/runner.rs::validate_handle.
 const HANDLE_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
@@ -33,6 +34,11 @@ export function CreateRunnerModal({
   const [argsText, setArgsText] = useState("");
   const [workingDir, setWorkingDir] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
+  // "Skip approval prompts" toggle — defaults checked. The backend
+  // applies the runtime's bypass flags to the stored args column at
+  // create time (see commands::runner::create), so the user never
+  // has to type the flags themselves.
+  const [skipApprovalPrompts, setSkipApprovalPrompts] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,6 +51,7 @@ export function CreateRunnerModal({
       setArgsText("");
       setWorkingDir("");
       setSystemPrompt("");
+      setSkipApprovalPrompts(true);
       setError(null);
     }
   }, [open]);
@@ -75,6 +82,7 @@ export function CreateRunnerModal({
       args: argsText.trim() ? argsText.trim().split(/\s+/) : [],
       working_dir: workingDir.trim() || null,
       system_prompt: systemPrompt.trim() || null,
+      skip_approval_prompts: skipApprovalPrompts,
     };
     try {
       const runner = await api.runner.create(input);
@@ -183,10 +191,31 @@ export function CreateRunnerModal({
           <Input
             id="new-runner-args"
             value={argsText}
-            placeholder="--dangerously-skip-permissions"
+            placeholder="--mcp-debug"
             onChange={(e) => setArgsText(e.target.value)}
           />
         </Field>
+
+        {runtimeSupportsBypassToggle(runtime) ? (
+          <div className="flex items-start justify-between gap-6">
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span className="text-[13px] font-medium text-fg">
+                Skip approval prompts
+              </span>
+              <span className="text-[11px] text-fg-2">
+                Skip approval prompts inside the TUI — recommended for crew
+                workflows
+              </span>
+            </div>
+            <div className="shrink-0 pt-0.5">
+              <Toggle
+                ariaLabel="Skip approval prompts"
+                on={skipApprovalPrompts}
+                onChange={setSkipApprovalPrompts}
+              />
+            </div>
+          </div>
+        ) : null}
 
         <Field
           id="new-runner-working-dir"
