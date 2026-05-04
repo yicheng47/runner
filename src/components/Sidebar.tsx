@@ -48,6 +48,12 @@ import {
   clearActiveSession,
   setActiveSession,
 } from "../lib/activeSessions";
+import {
+  markArchivingMission,
+  markArchivingSession,
+  unmarkArchivingMission,
+  unmarkArchivingSession,
+} from "../lib/archivingState";
 import type { AppendedEvent, MissionSummary } from "../lib/types";
 import { StartMissionModal } from "./StartMissionModal";
 import { SettingsModal } from "./SettingsModal";
@@ -333,6 +339,7 @@ export function Sidebar({ settingsOpen, onSettingsOpenChange }: SidebarProps) {
 
   const archiveMission = useCallback(
     async (mission: MissionSummary) => {
+      markArchivingMission(mission.id);
       try {
         await api.mission.archive(mission.id);
         await refreshMissions();
@@ -340,10 +347,16 @@ export function Sidebar({ settingsOpen, onSettingsOpenChange }: SidebarProps) {
         // bounce them off — the workspace will refuse to attach a
         // completed mission's router and the page will look broken.
         if (currentMissionId === mission.id) {
-          navigate("/missions");
+          navigate("/runners");
         }
       } catch (e) {
         console.error("sidebar: mission_archive failed", e);
+      } finally {
+        // Defer unmark past the navigate commit so the still-mounted
+        // workspace doesn't briefly re-render with archivingMission=
+        // false while React 18 batches the sync emit with the route
+        // change. See archiveSession below for the full rationale.
+        setTimeout(() => unmarkArchivingMission(mission.id), 0);
       }
     },
     [currentMissionId, navigate, refreshMissions],
@@ -396,6 +409,10 @@ export function Sidebar({ settingsOpen, onSettingsOpenChange }: SidebarProps) {
 
   const archiveSession = useCallback(
     async (session: DirectSessionEntry) => {
+      // Mark before the kill so the pill appears immediately on click —
+      // session_kill awaits a 200ms grace + reader join in the backend
+      // and the user shouldn't see a frozen UI in the meantime.
+      markArchivingSession(session.session_id);
       // Backend refuses to archive a running session; kill first if
       // the user explicitly chose Archive on a live row.
       try {
@@ -404,11 +421,26 @@ export function Sidebar({ settingsOpen, onSettingsOpenChange }: SidebarProps) {
         }
         await api.session.archive(session.session_id);
         await refreshDirectSessions();
+        if (currentChatSessionId === session.session_id) {
+          clearActiveSession(session.handle);
+          navigate(`/runners/${session.handle}`);
+        }
       } catch (e) {
         console.error("sidebar: session_archive failed", e);
+      } finally {
+        // Defer unmark past the navigate commit so RunnerChat doesn't
+        // briefly re-render with archiving=false while still mounted.
+        // React 18 batches the sync emit (useSyncExternalStore) with
+        // the route change, so without the defer the chat lands one
+        // render with chatState="stopped" + archiving=false → its
+        // overlay branch falls through to SessionEndedOverlay,
+        // flashing the "Resume @handle" popup before the unmount.
+        // Same shape applies to archiveMission above and archiveChat
+        // in RunnerChat — keep all three defers in sync.
+        setTimeout(() => unmarkArchivingSession(session.session_id), 0);
       }
     },
-    [refreshDirectSessions],
+    [currentChatSessionId, navigate, refreshDirectSessions],
   );
 
   const submitRename = useCallback(

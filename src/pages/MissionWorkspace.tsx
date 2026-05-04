@@ -43,9 +43,15 @@ import { MissionResetConfirm } from "../components/MissionResetConfirm";
 import { RunnersRail } from "../components/RunnersRail";
 import { RunnerTerminal } from "../components/RunnerTerminal";
 import {
+  ArchivingOverlay,
   ResumingOverlay,
   SessionEndedOverlay,
 } from "../components/SessionEndedOverlay";
+import {
+  markArchivingMission,
+  unmarkArchivingMission,
+  useArchivingMission,
+} from "../lib/archivingState";
 
 export default function MissionWorkspace() {
   const { id } = useParams<{ id: string }>();
@@ -261,6 +267,7 @@ export default function MissionWorkspace() {
   const archiveMission = useCallback(async () => {
     if (!mission) return;
     if (!confirm("Archive this mission? This ends it permanently — sessions cannot be resumed afterward.")) return;
+    markArchivingMission(mission.id);
     try {
       const next = await api.mission.archive(mission.id);
       setMission(next);
@@ -268,6 +275,8 @@ export default function MissionWorkspace() {
       setSessions(rows);
     } catch (e) {
       setError(String(e));
+    } finally {
+      unmarkArchivingMission(mission.id);
     }
   }, [mission]);
 
@@ -353,6 +362,8 @@ export default function MissionWorkspace() {
       setResumingAll(false);
     }
   }, [mission, sessions]);
+
+  const archivingMission = useArchivingMission(mission?.id);
 
   const allSessionsLive =
     sessions.length > 0 && sessions.every((s) => s.status === "running");
@@ -689,12 +700,19 @@ export default function MissionWorkspace() {
                   <SlotPtyPane
                     session={s}
                     active={activeTab === s.id}
-                    forcedResuming={resumingAll}
+                    forcedResuming={resumingAll && !archivingMission}
                     onError={setError}
                     onResumeMission={() => void resumeMission()}
                   />
                 </Pane>
               ))}
+            {/* Centered amber pill while a mission archive is in
+                flight — fired from either the sidebar kebab or this
+                workspace's own kebab. Strictly mutually exclusive
+                with the resuming-all overlay (slot panes gate
+                forcedResuming on !archivingMission), matching the
+                explicit if/else-if branching RunnerChat uses. */}
+            {archivingMission ? <ArchivingOverlay /> : null}
           </div>
         </div>
       )}

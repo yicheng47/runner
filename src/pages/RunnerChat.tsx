@@ -23,6 +23,7 @@ import {
 
 import { RunnerTerminal } from "../components/RunnerTerminal";
 import {
+  ArchivingOverlay,
   ResumingOverlay,
   SessionEndedOverlay,
 } from "../components/SessionEndedOverlay";
@@ -31,6 +32,11 @@ import {
   clearActiveSession,
   setActiveSession,
 } from "../lib/activeSessions";
+import {
+  markArchivingSession,
+  unmarkArchivingSession,
+  useArchivingSession,
+} from "../lib/archivingState";
 import type { Runner, SessionStatus, WarningEvent } from "../lib/types";
 
 interface ExitEvent {
@@ -87,6 +93,11 @@ export default function RunnerChat() {
   // header "Resuming…" affordance, and the centered Resuming pill
   // overlay on the cleared terminal canvas.
   const [resuming, setResuming] = useState<boolean>(false);
+  // True while either this chat's own archiveChat or the sidebar's
+  // session-archive flow has marked this session id as archiving.
+  // Drives the centered amber pill + scrim over the chat body so the
+  // backend's session_kill grace + archive RPC don't read as a hang.
+  const archiving = useArchivingSession(sessionId);
   // Bumped before each resume to tell RunnerTerminal to reset its
   // xterm canvas so the agent's repaint lands on a blank terminal
   // instead of stacking on top of the prior session's banner.
@@ -460,12 +471,17 @@ export default function RunnerChat() {
     if (!sessionId || !handle) return;
     const targetId = sessionId;
     const targetHandle = handle;
+    markArchivingSession(targetId);
     try {
       await api.session.archive(targetId);
       clearActiveSession(targetHandle);
       navigate(`/runners/${targetHandle}`);
     } catch (e) {
       setErr(String(e));
+    } finally {
+      // Same defer as Sidebar.archiveSession — see that finally for
+      // the full rationale on the React-18 batched-emit race.
+      setTimeout(() => unmarkArchivingSession(targetId), 0);
     }
   }
 
@@ -673,7 +689,12 @@ export default function RunnerChat() {
             );
           })
         )}
-        {chatState === "resuming" ? (
+        {archiving ? (
+          // Archiving wins over the resume + ended overlays — the
+          // session is on its way out, so reading "Resuming…" or
+          // "Session ended" mid-flight would be misleading.
+          <ArchivingOverlay withScrim />
+        ) : chatState === "resuming" ? (
           <ResumingOverlay />
         ) : activeSession && chatState !== "running" ? (
           <SessionEndedOverlay
