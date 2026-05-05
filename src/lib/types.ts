@@ -206,6 +206,23 @@ export interface UpdateCrewInput {
   signal_types?: SignalType[];
 }
 
+/// Permission mode the runner-edit form's dropdown writes onto the
+/// runner row's `args` column at create / update time. Mirrors
+/// `router::runtime::PermissionMode` (Rust). Snake-case because
+/// that's what serde's `rename_all = "snake_case"` produces on the
+/// wire.
+///
+/// The mode space is per-runtime: claude-code surfaces all four
+/// (`default`, `accept_edits`, `auto`, `bypass`); codex surfaces
+/// three (`default`, `auto`, `bypass` — codex has no edits-only
+/// middle on the wire, so `accept_edits` is treated as `default`
+/// there).
+export type PermissionMode =
+  | "default"
+  | "accept_edits"
+  | "auto"
+  | "bypass";
+
 export interface CreateRunnerInput {
   handle: string;
   display_name: string;
@@ -217,11 +234,11 @@ export interface CreateRunnerInput {
   env?: Record<string, string>;
   model?: string | null;
   effort?: string | null;
-  /** Form's "Skip approval prompts" toggle — defaults to true on the
-   *  backend when omitted. The runner-edit-form sends this explicitly
-   *  for codex / claude-code; for runtimes without a bypass concept
-   *  (shell / unknown) the toggle is hidden and this is a no-op. */
-  skip_approval_prompts?: boolean;
+  /** Form's "Permission mode" dropdown. Defaults to `"accept_edits"`
+   *  on the backend when omitted. Hidden in the form for runtimes
+   *  without a permission concept (shell / unknown); this is a no-op
+   *  in that case. */
+  permission_mode?: PermissionMode;
 }
 
 // `handle` is intentionally excluded: it's the runner template's identity
@@ -236,11 +253,11 @@ export interface UpdateRunnerInput {
   env?: Record<string, string>;
   model?: string | null;
   effort?: string | null;
-  /** `true` ensures the runtime's bypass-permission flags are present
-   *  on the stored args; `false` strips them. Omit (or `undefined`)
-   *  to leave args alone — non-form callers shouldn't have to think
-   *  about bypass flags. */
-  skip_approval_prompts?: boolean;
+  /** Rewrites the runtime's permission-mode flags on the stored args
+   *  (replacing any prior occurrence so duplicates can't accumulate).
+   *  Omit (or `undefined`) to leave args alone — non-form callers
+   *  shouldn't have to think about permission flags. */
+  permission_mode?: PermissionMode;
 }
 
 export interface CreateSlotInput {

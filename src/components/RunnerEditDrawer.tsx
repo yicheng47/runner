@@ -8,18 +8,23 @@
 import { useEffect, useState } from "react";
 
 import { api } from "../lib/api";
-import type { Runner, UpdateRunnerInput } from "../lib/types";
+import type {
+  PermissionMode,
+  Runner,
+  UpdateRunnerInput,
+} from "../lib/types";
 import { Button } from "./ui/Button";
 import { Drawer } from "./ui/Overlay";
 import { Field, Input, Textarea } from "./ui/Field";
 import { RuntimeSelect } from "./ui/RuntimeSelect";
+import { StyledSelect } from "./ui/StyledSelect";
 import {
+  PERMISSION_MODES_BY_RUNTIME,
   RUNTIME_OPTIONS,
-  inferSkipApprovalPrompts,
-  runtimeSupportsBypassToggle,
-  stripBypassFlags,
+  inferPermissionMode,
+  runtimeSupportsPermissionMode,
+  stripPermissionFlags,
 } from "./ui/runtimes";
-import { Toggle } from "./ui/Toggle";
 
 export function RunnerEditDrawer({
   open,
@@ -40,14 +45,16 @@ export function RunnerEditDrawer({
   const [systemPrompt, setSystemPrompt] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
-  // "Skip approval prompts" toggle — initial state derived from
-  // whether the row's stored args already contain the runtime's
-  // bypass flags. The toggle OWNS those flags: the visible Args
-  // field strips them on display so the user sees only their extra
-  // flags, and the backend re-applies the canonical pair on save
-  // (see `commands::runner::update` →
-  // `router::runtime::apply_bypass_permissions`).
-  const [skipApprovalPrompts, setSkipApprovalPrompts] = useState(true);
+  // "Permission mode" dropdown — initial state inferred from the
+  // row's stored args. The dropdown OWNS the permission flags: the
+  // visible Args field strips them on display so the user sees only
+  // their extra flags, and the backend re-applies the canonical pair
+  // on save (see `commands::runner::update` →
+  // `router::runtime::apply_permission_mode`). Defaults to
+  // `accept_edits` to match the seed and the backend's
+  // `default_permission_mode()`.
+  const [permissionMode, setPermissionMode] =
+    useState<PermissionMode>("accept_edits");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,14 +63,12 @@ export function RunnerEditDrawer({
       setDisplayName(runner.display_name);
       setRuntime(runner.runtime);
       setCommand(runner.command);
-      setArgsText(stripBypassFlags(runner.runtime, runner.args).join(" "));
+      setArgsText(stripPermissionFlags(runner.runtime, runner.args).join(" "));
       setWorkingDir(runner.working_dir ?? "");
       setSystemPrompt(runner.system_prompt ?? "");
       setModel(runner.model ?? "");
       setEffort(runner.effort ?? "");
-      setSkipApprovalPrompts(
-        inferSkipApprovalPrompts(runner.runtime, runner.args),
-      );
+      setPermissionMode(inferPermissionMode(runner.runtime, runner.args));
       setError(null);
     }
   }, [open, runner]);
@@ -88,13 +93,13 @@ export function RunnerEditDrawer({
         system_prompt: systemPrompt.trim() || null,
         model: model.trim() || null,
         effort: effort.trim() || null,
-        // Send the toggle state only for runtimes that support it —
-        // otherwise the backend's bypass-flag helper is a no-op
+        // Send the mode only for runtimes that support it —
+        // otherwise the backend's permission-flag helper is a no-op
         // anyway, but keeping the field undefined for shell/unknown
-        // makes the contract explicit (`None` toggle on the Rust
-        // side preserves args verbatim).
-        ...(runtimeSupportsBypassToggle(runtime)
-          ? { skip_approval_prompts: skipApprovalPrompts }
+        // makes the contract explicit (`None` mode on the Rust side
+        // preserves args verbatim).
+        ...(runtimeSupportsPermissionMode(runtime)
+          ? { permission_mode: permissionMode }
           : {}),
       };
       await api.runner.update(runner.id, input);
@@ -182,26 +187,43 @@ export function RunnerEditDrawer({
           />
         </Field>
 
-        {runtimeSupportsBypassToggle(runtime) ? (
-          <div className="flex items-start justify-between gap-6">
-            <div className="flex min-w-0 flex-col gap-0.5">
-              <span className="text-[13px] font-medium text-fg">
-                Skip approval prompts
-              </span>
-              <span className="text-[11px] text-fg-2">
-                Skip approval prompts inside the TUI — recommended for crew
-                workflows
-              </span>
+        {runtimeSupportsPermissionMode(runtime) ? (() => {
+          const modeOptions = PERMISSION_MODES_BY_RUNTIME[runtime] ?? [];
+          // Mode space is per-runtime: a mode that's valid for the
+          // prior runtime might not exist for the new one (e.g.
+          // codex has no `accept_edits`). Coerce to `default` when
+          // the picked mode isn't in the new runtime's list so the
+          // dropdown doesn't render an empty trigger.
+          const safeValue = modeOptions.some((o) => o.value === permissionMode)
+            ? permissionMode
+            : "default";
+          const current = modeOptions.find((o) => o.value === safeValue);
+          return (
+            <div className="flex items-start justify-between gap-6">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-[13px] font-medium text-fg">
+                  Permission mode
+                </span>
+                <span className="text-[11px] text-fg-2">
+                  {current?.description}
+                </span>
+              </div>
+              <div className="shrink-0 pt-0.5">
+                <StyledSelect
+                  className="min-w-[180px]"
+                  value={safeValue}
+                  options={modeOptions.map((o) => ({
+                    value: o.value,
+                    label: o.label,
+                    description: o.description,
+                    danger: o.danger,
+                  }))}
+                  onChange={(v) => setPermissionMode(v as PermissionMode)}
+                />
+              </div>
             </div>
-            <div className="shrink-0 pt-0.5">
-              <Toggle
-                ariaLabel="Skip approval prompts"
-                on={skipApprovalPrompts}
-                onChange={setSkipApprovalPrompts}
-              />
-            </div>
-          </div>
-        ) : null}
+          );
+        })() : null}
 
         <Field
           id="edit-working-dir"

@@ -106,32 +106,86 @@ pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str
     }
 }
 
-/// Canonical argv that puts the runtime's interactive TUI into a
-/// "skip approval prompts" mode — used by `commands::runner::create`
-/// (and `update`) to apply the runner-edit-form's "Skip approval
-/// prompts" toggle as concrete flags on the runner row's `args`
-/// column at *create* time, not at spawn time. Storing the flags on
-/// the row keeps existing runners stable if our recommended default
-/// ever shifts.
+/// Permission mode the runner-edit form's dropdown writes onto the
+/// runner row's `args` column. The mode space is per-runtime: each
+/// runtime exposes only the modes it natively supports.
 ///
-/// Returns an empty Vec for runtimes with no equivalent (shell /
-/// unknown), which the caller treats as "toggle does not apply" — the
-/// form hides the toggle row in those cases (see
-/// `RUNTIME_OPTIONS` / `RunnerEditDrawer.tsx`).
+/// claude-code (4 modes — `--permission-mode <value>`):
+/// - **Default** — no flag. Reads only auto-approve; everything else
+///   prompts.
+/// - **AcceptEdits** — `--permission-mode acceptEdits`. Auto-accepts
+///   file edits and common filesystem commands (`mkdir`, `touch`,
+///   `mv`, `cp`, etc.). Available on every plan.
+/// - **Auto** — `--permission-mode auto`. The "real" auto with a
+///   server-side classifier blocking irreversible / destructive /
+///   external actions. Requires Max / Team / Enterprise / API plan
+///   AND a supported model (Opus 4.7 on Max; Sonnet 4.6 / Opus 4.6 /
+///   Opus 4.7 on Team / Enterprise / API). NOT available on Pro,
+///   Bedrock, Vertex, or Foundry. See
+///   <https://code.claude.com/docs/en/permission-modes#eliminate-prompts-with-auto-mode>.
+/// - **Bypass** — `--permission-mode bypassPermissions`. Skip every
+///   check. Triggers claude-code's one-time consent dialog the first
+///   time per user account, which is why it's NOT the recommended
+///   default.
 ///
-/// claude-code → `--dangerously-skip-permissions` (the SDK & TUI flag,
-/// already baked into the seeded Build squad runners — see
-/// migrations/0002_default_crew.sql).
-///
-/// codex → `--ask-for-approval never --sandbox workspace-write` (codex
-/// 0.x's two-axis approval model: ask cadence + filesystem
-/// sandbox). `workspace-write` keeps writes scoped to the runner's
-/// cwd while removing the per-action prompt; pairing them is what
-/// lets a crew worker run unattended.
-pub fn bypass_permission_args(runtime: &str) -> Vec<String> {
-    match runtime {
-        "claude-code" => vec!["--dangerously-skip-permissions".into()],
-        "codex" => vec![
+/// codex (3 modes — codex doesn't have a separate "accept edits"
+/// middle ground, so AcceptEdits is treated as Default for this
+/// runtime):
+/// - **Default** — no flag. Codex's built-in default approval
+///   cadence (`untrusted`).
+/// - **Auto** — `--ask-for-approval on-request --sandbox
+///   workspace-write`. The model decides when to ask the user for
+///   approval; otherwise auto-runs in the workspace. (Codex's
+///   `on-failure` value is deprecated per `codex --help` and not
+///   exposed here.)
+/// - **Bypass** — `--ask-for-approval never --sandbox
+///   workspace-write`. Never ask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionMode {
+    Default,
+    AcceptEdits,
+    Auto,
+    Bypass,
+}
+
+/// Canonical argv for the runtime's permission mode. Returns an
+/// empty Vec for runtimes with no equivalent (shell / unknown), for
+/// `Default` (which is the natural "no flag" state), and for modes
+/// the runtime doesn't natively support (e.g. AcceptEdits on codex —
+/// codex's wire protocol has no edits-only middle ground). Used by
+/// `commands::runner::create` / `update` to write the chosen mode
+/// onto the row's `args` column at *create* time, not at spawn time
+/// — so an existing row stays stable even if the form's recommended
+/// default shifts.
+pub fn permission_mode_args(runtime: &str, mode: PermissionMode) -> Vec<String> {
+    match (runtime, mode) {
+        (_, PermissionMode::Default) => Vec::new(),
+        // claude-code: `--permission-mode <value>` for every
+        // non-Default mode. The flag value differs from the enum
+        // variant casing (acceptEdits, bypassPermissions) because
+        // that's what claude-code's CLI accepts.
+        ("claude-code", PermissionMode::AcceptEdits) => {
+            vec!["--permission-mode".into(), "acceptEdits".into()]
+        }
+        ("claude-code", PermissionMode::Auto) => {
+            vec!["--permission-mode".into(), "auto".into()]
+        }
+        ("claude-code", PermissionMode::Bypass) => {
+            vec!["--permission-mode".into(), "bypassPermissions".into()]
+        }
+        // codex: `--ask-for-approval <cadence> --sandbox
+        // workspace-write` pair for both Auto and Bypass. AcceptEdits
+        // returns empty (codex has no equivalent) so a user who
+        // somehow lands AcceptEdits on a codex row reads as Default.
+        ("codex", PermissionMode::AcceptEdits) => Vec::new(),
+        ("codex", PermissionMode::Auto) => vec![
+            "--ask-for-approval".into(),
+            "on-request".into(),
+            "--sandbox".into(),
+            "workspace-write".into(),
+        ],
+        ("codex", PermissionMode::Bypass) => vec![
             "--ask-for-approval".into(),
             "never".into(),
             "--sandbox".into(),
@@ -141,23 +195,29 @@ pub fn bypass_permission_args(runtime: &str) -> Vec<String> {
     }
 }
 
-/// Strip every prior occurrence of the runtime's bypass-permission
+/// Strip every prior occurrence of the runtime's permission-mode
 /// flags (and their values, where applicable) from `args`, preserving
 /// order of the surviving args. Used by `commands::runner::create`
-/// and `update` so toggling the form's "Skip approval prompts"
-/// switch round-trips without leaving duplicate or orphan flags.
+/// and `update` so cycling the dropdown round-trips without leaving
+/// duplicate or orphan flags.
 ///
 /// Match shape per runtime:
 ///   - codex: `--ask-for-approval <value>` and `--sandbox <value>`
 ///     (the next token is consumed as the value, regardless of what
-///     it is — toggling the switch is opinionated about owning these
+///     it is — the dropdown is opinionated about owning these
 ///     flags). `--flag=value` form is also stripped.
-///   - claude-code: `--dangerously-skip-permissions` (standalone).
-pub fn strip_bypass_flags(runtime: &str, args: &[String]) -> Vec<String> {
+///   - claude-code: `--permission-mode <value>` (value-bearing) and
+///     `--dangerously-skip-permissions` (standalone, kept in the
+///     strip set so legacy rows that still carry the deprecated flag
+///     get cleaned up the next time the user touches their row).
+pub fn strip_permission_flags(runtime: &str, args: &[String]) -> Vec<String> {
     // (flag_name, takes_value)
     let keys: &[(&str, bool)] = match runtime {
         "codex" => &[("--ask-for-approval", true), ("--sandbox", true)],
-        "claude-code" => &[("--dangerously-skip-permissions", false)],
+        "claude-code" => &[
+            ("--dangerously-skip-permissions", false),
+            ("--permission-mode", true),
+        ],
         _ => &[],
     };
     if keys.is_empty() {
@@ -192,52 +252,65 @@ pub fn strip_bypass_flags(runtime: &str, args: &[String]) -> Vec<String> {
 }
 
 /// Compose the runner row's stored `args` from the user-provided
-/// `args` and the runner-edit-form's "Skip approval prompts" toggle.
-/// Strips any prior occurrence of the runtime's bypass flags, then
-/// appends the canonical pair if the toggle is on. No-op for
-/// runtimes without a bypass concept (shell / unknown).
-pub fn apply_bypass_permissions(runtime: &str, args: &[String], skip: bool) -> Vec<String> {
-    let mut out = strip_bypass_flags(runtime, args);
-    if skip {
-        out.extend(bypass_permission_args(runtime));
-    }
+/// `args` and the runner-edit-form's "Permission mode" segmented
+/// control. Strips any prior occurrence of the runtime's permission
+/// flags, then appends the canonical args for the chosen mode. No-op
+/// for runtimes without a permission concept (shell / unknown).
+pub fn apply_permission_mode(runtime: &str, args: &[String], mode: PermissionMode) -> Vec<String> {
+    let mut out = strip_permission_flags(runtime, args);
+    out.extend(permission_mode_args(runtime, mode));
     out
 }
 
 /// Frontend-mirror helper: inspect a runner's stored `args` and
-/// decide whether the "Skip approval prompts" toggle on the
-/// runner-edit form should render as on. True iff every canonical
-/// (flag, expected_value) pair for the runtime is present in `args`,
-/// in either separated form (`--flag value`) or equals form
-/// (`--flag=value`); claude-code's `--dangerously-skip-permissions`
-/// is a value-less flag, just check presence.
+/// decide which option of the runner-edit form's "Permission mode"
+/// dropdown should render as selected. Probe order is most-aggressive
+/// first: `Bypass` → `Auto` → `AcceptEdits` → `Default`. A row
+/// carrying flags for multiple modes resolves to the most-aggressive
+/// one because that's what claude-code / codex would actually honor
+/// at spawn time (the strip-and-replace round-trip on save will then
+/// converge to a single canonical pair).
 ///
-/// Conflicting values (e.g. `--ask-for-approval=on-failure` for
-/// codex) read as toggle-off, since the user clearly didn't choose
-/// the "skip" semantic. Mirrors `inferSkipApprovalPrompts` in
-/// `src/components/ui/runtimes.ts` — the frontend hand-port is
-/// constrained by this function's tests.
+/// Conflicting / partial / unrecognized values fall through to
+/// `Default` — the user clearly didn't pick the stricter mode and
+/// we don't want a row's UI to misrepresent its stored args.
+///
+/// Mirrors `inferPermissionMode` in `src/components/ui/runtimes.ts`
+/// — the frontend hand-port is constrained by this function's tests.
 ///
 /// `#[allow(dead_code)]` because the only direct consumer is the
 /// test suite: the function exists to *pin the algorithm* the
 /// frontend hand-ports, not to be called from Rust spawn paths
-/// (those use `apply_bypass_permissions` for write-side flag
+/// (those use `apply_permission_mode` for write-side flag
 /// management). Keep it `pub` so it's discoverable from a
 /// `runtime::` module search.
 #[allow(dead_code)]
-pub fn infer_skip_approval_prompts(runtime: &str, args: &[String]) -> bool {
-    // (flag, Some(expected_value)) pairs for codex; (flag, None) for
-    // claude-code's value-less flag. Hand-synced with
-    // `bypass_permission_args` and the frontend's
-    // `BYPASS_FLAGS_BY_RUNTIME`.
-    let pairs: &[(&str, Option<&str>)] = match runtime {
-        "claude-code" => &[("--dangerously-skip-permissions", None)],
-        "codex" => &[
-            ("--ask-for-approval", Some("never")),
-            ("--sandbox", Some("workspace-write")),
-        ],
-        _ => &[],
-    };
+pub fn infer_permission_mode(runtime: &str, args: &[String]) -> PermissionMode {
+    if mode_pair_matches(runtime, args, PermissionMode::Bypass) {
+        return PermissionMode::Bypass;
+    }
+    if mode_pair_matches(runtime, args, PermissionMode::Auto) {
+        return PermissionMode::Auto;
+    }
+    if mode_pair_matches(runtime, args, PermissionMode::AcceptEdits) {
+        return PermissionMode::AcceptEdits;
+    }
+    PermissionMode::Default
+}
+
+#[allow(dead_code)]
+fn mode_pair_matches(runtime: &str, args: &[String], mode: PermissionMode) -> bool {
+    // Legacy shape: pre-rename claude-code rows used a standalone
+    // `--dangerously-skip-permissions` flag for Bypass. Read it as
+    // Bypass so the dropdown loads the right initial value. Strip
+    // helper still cleans it up on save.
+    if runtime == "claude-code"
+        && mode == PermissionMode::Bypass
+        && legacy_bypass_present(runtime, args)
+    {
+        return true;
+    }
+    let pairs = mode_match_pairs(runtime, mode);
     if pairs.is_empty() {
         return false;
     }
@@ -246,13 +319,62 @@ pub fn infer_skip_approval_prompts(runtime: &str, args: &[String]) -> bool {
         .all(|&(flag, expected)| flag_value_matches(args, flag, expected))
 }
 
+/// (flag, Some(expected_value)) pairs we use to *recognize* a mode
+/// in a stored args list. Hand-synced with `permission_mode_args`.
+/// `Default` has no pairs — its "match" is "no other mode's pair
+/// fully matched." Modes a runtime doesn't natively support (e.g.
+/// AcceptEdits on codex) return empty pairs, so they never match
+/// for that runtime.
+///
+/// Includes a legacy-shape entry for claude-code's Bypass: rows
+/// created before this PR carried the standalone
+/// `--dangerously-skip-permissions` flag, which we still recognize
+/// (and the strip helper still removes) so existing installs read
+/// the right mode in their UI.
+#[allow(dead_code)]
+fn mode_match_pairs(
+    runtime: &str,
+    mode: PermissionMode,
+) -> &'static [(&'static str, Option<&'static str>)] {
+    match (runtime, mode) {
+        ("claude-code", PermissionMode::AcceptEdits) => {
+            &[("--permission-mode", Some("acceptEdits"))]
+        }
+        ("claude-code", PermissionMode::Auto) => &[("--permission-mode", Some("auto"))],
+        ("claude-code", PermissionMode::Bypass) => {
+            &[("--permission-mode", Some("bypassPermissions"))]
+        }
+        ("codex", PermissionMode::Auto) => &[
+            ("--ask-for-approval", Some("on-request")),
+            ("--sandbox", Some("workspace-write")),
+        ],
+        ("codex", PermissionMode::Bypass) => &[
+            ("--ask-for-approval", Some("never")),
+            ("--sandbox", Some("workspace-write")),
+        ],
+        _ => &[],
+    }
+}
+
+/// Legacy-shape recognizer: claude-code rows created before the
+/// rename to `--permission-mode bypassPermissions` carried a
+/// standalone `--dangerously-skip-permissions` flag. The strip
+/// helper drops both (so a save converges to the new flag) but
+/// `infer_permission_mode` also needs to read the legacy flag as
+/// `Bypass` for the dropdown's initial value. Layered as a check
+/// inside `mode_pair_matches` for `claude-code` + `Bypass` only.
+#[allow(dead_code)]
+fn legacy_bypass_present(runtime: &str, args: &[String]) -> bool {
+    runtime == "claude-code" && args.iter().any(|a| a == "--dangerously-skip-permissions")
+}
+
 /// `--flag <expected>` (separated) OR `--flag=<expected>` (equals)
 /// for value-bearing flags; bare-token presence for value-less
 /// flags. A wrong value at one site doesn't invalidate a later
 /// canonical site (we keep scanning), so duplicate entries with
 /// mixed values resolve toward "match found".
 ///
-/// Helper for `infer_skip_approval_prompts`; same dead-code caveat.
+/// Helper for `infer_permission_mode`; same dead-code caveat.
 #[allow(dead_code)]
 fn flag_value_matches(args: &[String], flag: &str, expected: Option<&str>) -> bool {
     let Some(expected) = expected else {
@@ -737,13 +859,42 @@ mod tests {
     }
 
     #[test]
-    fn bypass_permission_args_per_runtime() {
+    fn permission_mode_args_per_runtime() {
+        // Default → no flags for any runtime / any mode.
+        assert!(permission_mode_args("claude-code", PermissionMode::Default).is_empty());
+        assert!(permission_mode_args("codex", PermissionMode::Default).is_empty());
+        // claude-code: AcceptEdits / Auto / Bypass each emit
+        // `--permission-mode <value>` with a runtime-specific value.
         assert_eq!(
-            bypass_permission_args("claude-code"),
-            vec!["--dangerously-skip-permissions".to_string()],
+            permission_mode_args("claude-code", PermissionMode::AcceptEdits),
+            vec!["--permission-mode".to_string(), "acceptEdits".to_string()],
         );
         assert_eq!(
-            bypass_permission_args("codex"),
+            permission_mode_args("claude-code", PermissionMode::Auto),
+            vec!["--permission-mode".to_string(), "auto".to_string()],
+        );
+        assert_eq!(
+            permission_mode_args("claude-code", PermissionMode::Bypass),
+            vec![
+                "--permission-mode".to_string(),
+                "bypassPermissions".to_string(),
+            ],
+        );
+        // codex: AcceptEdits has no equivalent (returns empty);
+        // Auto uses on-request (on-failure is deprecated per
+        // `codex --help`); Bypass uses never.
+        assert!(permission_mode_args("codex", PermissionMode::AcceptEdits).is_empty());
+        assert_eq!(
+            permission_mode_args("codex", PermissionMode::Auto),
+            vec![
+                "--ask-for-approval".to_string(),
+                "on-request".to_string(),
+                "--sandbox".to_string(),
+                "workspace-write".to_string(),
+            ],
+        );
+        assert_eq!(
+            permission_mode_args("codex", PermissionMode::Bypass),
             vec![
                 "--ask-for-approval".to_string(),
                 "never".to_string(),
@@ -751,41 +902,40 @@ mod tests {
                 "workspace-write".to_string(),
             ],
         );
-        assert!(bypass_permission_args("shell").is_empty());
-        assert!(bypass_permission_args("aider-future").is_empty());
+        // Unknown runtime → empty for every mode.
+        for mode in [
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Auto,
+            PermissionMode::Bypass,
+        ] {
+            assert!(permission_mode_args("shell", mode).is_empty());
+            assert!(permission_mode_args("aider-future", mode).is_empty());
+        }
     }
 
     #[test]
-    fn apply_bypass_permissions_appends_codex_canonical_pair() {
+    fn apply_permission_mode_codex_appends_auto_pair() {
         let user = vec!["--debug".to_string(), "-v".to_string()];
-        let out = apply_bypass_permissions("codex", &user, true);
+        let out = apply_permission_mode("codex", &user, PermissionMode::Auto);
         assert_eq!(
             out,
             vec![
                 "--debug".to_string(),
                 "-v".to_string(),
                 "--ask-for-approval".to_string(),
-                "never".to_string(),
+                "on-request".to_string(),
                 "--sandbox".to_string(),
                 "workspace-write".to_string(),
             ],
-            "user-provided args come first; canonical bypass pair appended",
+            "user-provided args come first; canonical auto pair appended",
         );
     }
 
     #[test]
-    fn apply_bypass_permissions_dedupes_existing_codex_flags() {
-        // Toggling on with stale/conflicting bypass flags already in
-        // args must replace them with the canonical pair, not stack
-        // duplicates. Covers both `--flag value` and `--flag=value`
-        // shapes plus an unrelated user arg in the middle.
-        let user = vec![
-            "--ask-for-approval".to_string(),
-            "untrusted".to_string(),
-            "--debug".to_string(),
-            "--sandbox=read-only".to_string(),
-        ];
-        let out = apply_bypass_permissions("codex", &user, true);
+    fn apply_permission_mode_codex_appends_bypass_pair() {
+        let user = vec!["--debug".to_string()];
+        let out = apply_permission_mode("codex", &user, PermissionMode::Bypass);
         assert_eq!(
             out,
             vec![
@@ -799,7 +949,53 @@ mod tests {
     }
 
     #[test]
-    fn apply_bypass_permissions_off_strips_codex_flags() {
+    fn apply_permission_mode_codex_accept_edits_is_no_op() {
+        // Codex has no edits-only middle; AcceptEdits maps to the
+        // empty arg list, so applying it strips any pre-existing
+        // permission flags but doesn't write codex's pair.
+        let user = vec![
+            "--debug".to_string(),
+            "--ask-for-approval".to_string(),
+            "on-request".to_string(),
+            "--sandbox".to_string(),
+            "workspace-write".to_string(),
+        ];
+        let out = apply_permission_mode("codex", &user, PermissionMode::AcceptEdits);
+        assert_eq!(
+            out,
+            vec!["--debug".to_string()],
+            "AcceptEdits on codex strips permission flags and adds none",
+        );
+    }
+
+    #[test]
+    fn apply_permission_mode_codex_dedupes_existing_flags() {
+        // Cycling between modes with stale/conflicting flags already
+        // in args must replace them with the canonical pair, not
+        // stack duplicates. Covers both `--flag value` and
+        // `--flag=value` shapes plus an unrelated user arg in the
+        // middle.
+        let user = vec![
+            "--ask-for-approval".to_string(),
+            "untrusted".to_string(),
+            "--debug".to_string(),
+            "--sandbox=read-only".to_string(),
+        ];
+        let out = apply_permission_mode("codex", &user, PermissionMode::Bypass);
+        assert_eq!(
+            out,
+            vec![
+                "--debug".to_string(),
+                "--ask-for-approval".to_string(),
+                "never".to_string(),
+                "--sandbox".to_string(),
+                "workspace-write".to_string(),
+            ],
+        );
+    }
+
+    #[test]
+    fn apply_permission_mode_codex_default_strips_all_flags() {
         let user = vec![
             "--debug".to_string(),
             "--ask-for-approval".to_string(),
@@ -807,165 +1003,278 @@ mod tests {
             "--sandbox".to_string(),
             "workspace-write".to_string(),
         ];
-        let out = apply_bypass_permissions("codex", &user, false);
+        let out = apply_permission_mode("codex", &user, PermissionMode::Default);
         assert_eq!(out, vec!["--debug".to_string()]);
     }
 
     #[test]
-    fn apply_bypass_permissions_appends_claude_code_flag() {
-        let user = vec!["--mcp-debug".to_string()];
-        let out = apply_bypass_permissions("claude-code", &user, true);
+    fn apply_permission_mode_claude_code_each_mode() {
+        for (mode, expected_extra) in [
+            (
+                PermissionMode::AcceptEdits,
+                vec!["--permission-mode".to_string(), "acceptEdits".to_string()],
+            ),
+            (
+                PermissionMode::Auto,
+                vec!["--permission-mode".to_string(), "auto".to_string()],
+            ),
+            (
+                PermissionMode::Bypass,
+                vec![
+                    "--permission-mode".to_string(),
+                    "bypassPermissions".to_string(),
+                ],
+            ),
+        ] {
+            let user = vec!["--mcp-debug".to_string()];
+            let out = apply_permission_mode("claude-code", &user, mode);
+            let mut want = vec!["--mcp-debug".to_string()];
+            want.extend(expected_extra);
+            assert_eq!(out, want, "mode={mode:?}");
+        }
+    }
+
+    #[test]
+    fn apply_permission_mode_claude_code_cycles_cleanly() {
+        // AcceptEdits → Auto → Bypass → Default with a custom flag
+        // in the middle. Each transition must end with the canonical
+        // args for the chosen mode, never an accumulation.
+        let mut args = vec!["--mcp-debug".to_string()];
+        args = apply_permission_mode("claude-code", &args, PermissionMode::AcceptEdits);
+        assert_eq!(
+            args,
+            vec![
+                "--mcp-debug".to_string(),
+                "--permission-mode".to_string(),
+                "acceptEdits".to_string(),
+            ],
+        );
+        args = apply_permission_mode("claude-code", &args, PermissionMode::Auto);
+        assert_eq!(
+            args,
+            vec![
+                "--mcp-debug".to_string(),
+                "--permission-mode".to_string(),
+                "auto".to_string(),
+            ],
+            "cycling to Auto must replace the prior --permission-mode value, not stack",
+        );
+        args = apply_permission_mode("claude-code", &args, PermissionMode::Bypass);
+        assert_eq!(
+            args,
+            vec![
+                "--mcp-debug".to_string(),
+                "--permission-mode".to_string(),
+                "bypassPermissions".to_string(),
+            ],
+        );
+        args = apply_permission_mode("claude-code", &args, PermissionMode::Default);
+        assert_eq!(args, vec!["--mcp-debug".to_string()]);
+    }
+
+    #[test]
+    fn apply_permission_mode_claude_code_strips_legacy_dangerous_flag() {
+        // Pre-rename rows carried `--dangerously-skip-permissions`
+        // for the Bypass state. The strip helper must drop it on
+        // any mode change so the row converges to the new
+        // `--permission-mode <value>` shape rather than carrying
+        // both side-by-side.
+        let user = vec![
+            "--mcp-debug".to_string(),
+            "--dangerously-skip-permissions".to_string(),
+        ];
+        let out = apply_permission_mode("claude-code", &user, PermissionMode::Bypass);
         assert_eq!(
             out,
             vec![
                 "--mcp-debug".to_string(),
-                "--dangerously-skip-permissions".to_string(),
+                "--permission-mode".to_string(),
+                "bypassPermissions".to_string(),
             ],
+            "legacy flag stripped; canonical --permission-mode bypassPermissions added",
         );
     }
 
     #[test]
-    fn apply_bypass_permissions_dedupes_claude_code_flag() {
-        let user = vec![
-            "--dangerously-skip-permissions".to_string(),
-            "--mcp-debug".to_string(),
-        ];
-        let out = apply_bypass_permissions("claude-code", &user, true);
-        // Single occurrence, appended at the end after the strip pass.
-        assert_eq!(
-            out,
-            vec![
-                "--mcp-debug".to_string(),
-                "--dangerously-skip-permissions".to_string(),
-            ],
-        );
-    }
-
-    #[test]
-    fn apply_bypass_permissions_off_strips_claude_code_flag() {
-        let user = vec![
-            "--dangerously-skip-permissions".to_string(),
-            "--mcp-debug".to_string(),
-        ];
-        let out = apply_bypass_permissions("claude-code", &user, false);
-        assert_eq!(out, vec!["--mcp-debug".to_string()]);
-    }
-
-    #[test]
-    fn apply_bypass_permissions_no_op_for_unsupported_runtime() {
+    fn apply_permission_mode_no_op_for_unsupported_runtime() {
         let user = vec!["--whatever".to_string()];
-        // toggle on or off — shell has no bypass concept, args pass
-        // through unchanged.
-        for skip in [true, false] {
+        for mode in [
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Auto,
+            PermissionMode::Bypass,
+        ] {
             assert_eq!(
-                apply_bypass_permissions("shell", &user, skip),
+                apply_permission_mode("shell", &user, mode),
                 user,
-                "shell must be a no-op (skip={skip})",
+                "shell must be a no-op (mode={mode:?})",
             );
         }
     }
 
     #[test]
-    fn infer_skip_approval_codex_separated_form() {
-        // Bare-token / separated form: `--flag value`.
+    fn infer_permission_mode_codex_separated_form() {
         let args = vec![
             "--ask-for-approval".to_string(),
             "never".to_string(),
             "--sandbox".to_string(),
             "workspace-write".to_string(),
         ];
-        assert!(infer_skip_approval_prompts("codex", &args));
+        assert_eq!(
+            infer_permission_mode("codex", &args),
+            PermissionMode::Bypass,
+        );
     }
 
     #[test]
-    fn infer_skip_approval_codex_equals_form() {
-        // Equals form — the bug the reviewer reproduced. The frontend
-        // used to return false here; this case locks in the fix.
+    fn infer_permission_mode_codex_equals_form() {
+        // Equals-form must match too — same bug coverage as the
+        // pre-rewrite test that locked in the frontend hand-port.
         let args = vec![
             "--ask-for-approval=never".to_string(),
             "--sandbox=workspace-write".to_string(),
         ];
-        assert!(infer_skip_approval_prompts("codex", &args));
+        assert_eq!(
+            infer_permission_mode("codex", &args),
+            PermissionMode::Bypass,
+        );
     }
 
     #[test]
-    fn infer_skip_approval_codex_mixed_forms() {
+    fn infer_permission_mode_codex_auto_pair() {
         let args = vec![
-            "--debug".to_string(),
             "--ask-for-approval".to_string(),
-            "never".to_string(),
+            "on-request".to_string(),
             "--sandbox=workspace-write".to_string(),
         ];
-        assert!(infer_skip_approval_prompts("codex", &args));
+        assert_eq!(infer_permission_mode("codex", &args), PermissionMode::Auto);
     }
 
     #[test]
-    fn infer_skip_approval_codex_missing_one_flag_false() {
-        let args = vec![
-            // --sandbox is present, --ask-for-approval is not.
-            "--sandbox=workspace-write".to_string(),
-        ];
-        assert!(!infer_skip_approval_prompts("codex", &args));
+    fn infer_permission_mode_codex_partial_match_falls_back_to_default() {
+        // --sandbox is present, --ask-for-approval is not. Neither
+        // pair fully matches → default.
+        let args = vec!["--sandbox=workspace-write".to_string()];
+        assert_eq!(
+            infer_permission_mode("codex", &args),
+            PermissionMode::Default,
+        );
     }
 
     #[test]
-    fn infer_skip_approval_codex_conflicting_value_false() {
-        // Reviewer's reproducer focus: a non-canonical value on one
-        // of the two flags must read as toggle-off so we don't
-        // accidentally tell the user "bypass is on" when it isn't.
+    fn infer_permission_mode_codex_deprecated_value_falls_back_to_default() {
+        // `on-failure` is deprecated per `codex --help` and not
+        // exposed in the dropdown. A row carrying it (e.g. created
+        // by an older Runner build) reads as Default — neither
+        // Auto nor Bypass match — so the dropdown lands on Default
+        // and a save converges the row to one of the new canonical
+        // shapes.
         let args = vec![
             "--ask-for-approval=on-failure".to_string(),
             "--sandbox=workspace-write".to_string(),
         ];
-        assert!(!infer_skip_approval_prompts("codex", &args));
-
-        // Same in separated form.
-        let args = vec![
-            "--ask-for-approval".to_string(),
-            "on-failure".to_string(),
-            "--sandbox".to_string(),
-            "workspace-write".to_string(),
-        ];
-        assert!(!infer_skip_approval_prompts("codex", &args));
+        assert_eq!(
+            infer_permission_mode("codex", &args),
+            PermissionMode::Default,
+        );
     }
 
     #[test]
-    fn infer_skip_approval_codex_dangling_flag_false() {
-        // `--ask-for-approval` with no value following — toggle is
-        // not in a confirmed-on state.
-        let args = vec![
-            "--ask-for-approval".to_string(),
-            "--sandbox=workspace-write".to_string(),
-        ];
-        assert!(!infer_skip_approval_prompts("codex", &args));
+    fn infer_permission_mode_claude_code_each_state() {
+        assert_eq!(
+            infer_permission_mode("claude-code", &["--mcp-debug".into()]),
+            PermissionMode::Default,
+        );
+        assert_eq!(
+            infer_permission_mode(
+                "claude-code",
+                &["--permission-mode".into(), "acceptEdits".into()],
+            ),
+            PermissionMode::AcceptEdits,
+        );
+        assert_eq!(
+            infer_permission_mode("claude-code", &["--permission-mode=acceptEdits".into()]),
+            PermissionMode::AcceptEdits,
+        );
+        assert_eq!(
+            infer_permission_mode("claude-code", &["--permission-mode".into(), "auto".into()],),
+            PermissionMode::Auto,
+        );
+        assert_eq!(
+            infer_permission_mode(
+                "claude-code",
+                &["--permission-mode".into(), "bypassPermissions".into()],
+            ),
+            PermissionMode::Bypass,
+        );
     }
 
     #[test]
-    fn infer_skip_approval_claude_code_present() {
+    fn infer_permission_mode_claude_code_legacy_dangerous_flag_reads_as_bypass() {
+        // Pre-rename rows used `--dangerously-skip-permissions` for
+        // Bypass. The dropdown must still load Bypass for those rows
+        // so a save converges them to `--permission-mode
+        // bypassPermissions`.
         let args = vec!["--dangerously-skip-permissions".to_string()];
-        assert!(infer_skip_approval_prompts("claude-code", &args));
+        assert_eq!(
+            infer_permission_mode("claude-code", &args),
+            PermissionMode::Bypass,
+        );
     }
 
     #[test]
-    fn infer_skip_approval_claude_code_absent() {
-        let args = vec!["--mcp-debug".to_string()];
-        assert!(!infer_skip_approval_prompts("claude-code", &args));
+    fn infer_permission_mode_claude_code_bypass_wins_over_accept_edits() {
+        // A row carrying both `--permission-mode acceptEdits` AND
+        // the legacy `--dangerously-skip-permissions` flag resolves
+        // to Bypass — bypass is strictly more aggressive, and the
+        // strip-and-replace round-trip on save converges the row to
+        // a single canonical pair.
+        let args = vec![
+            "--permission-mode".to_string(),
+            "acceptEdits".to_string(),
+            "--dangerously-skip-permissions".to_string(),
+        ];
+        assert_eq!(
+            infer_permission_mode("claude-code", &args),
+            PermissionMode::Bypass,
+        );
     }
 
     #[test]
-    fn infer_skip_approval_unsupported_runtime_false() {
+    fn infer_permission_mode_unsupported_runtime_default() {
         let args = vec!["--whatever".to_string()];
-        assert!(!infer_skip_approval_prompts("shell", &args));
-        assert!(!infer_skip_approval_prompts("aider-future", &args));
+        assert_eq!(
+            infer_permission_mode("shell", &args),
+            PermissionMode::Default,
+        );
+        assert_eq!(
+            infer_permission_mode("aider-future", &args),
+            PermissionMode::Default,
+        );
     }
 
     #[test]
-    fn strip_bypass_flags_handles_dangling_value() {
+    fn strip_permission_flags_handles_dangling_value() {
         // If `--ask-for-approval` is the last token (no value follows
         // — the user mid-typed), strip just the flag and don't panic
         // on the missing pair.
         let user = vec!["--debug".to_string(), "--ask-for-approval".to_string()];
-        let out = strip_bypass_flags("codex", &user);
+        let out = strip_permission_flags("codex", &user);
+        assert_eq!(out, vec!["--debug".to_string()]);
+    }
+
+    #[test]
+    fn strip_permission_flags_drops_claude_code_permission_mode() {
+        // Cycling through modes shouldn't leave orphan
+        // `--permission-mode acceptEdits` when the user picks Bypass
+        // or Default afterward.
+        let user = vec![
+            "--permission-mode".to_string(),
+            "acceptEdits".to_string(),
+            "--debug".to_string(),
+            "--dangerously-skip-permissions".to_string(),
+        ];
+        let out = strip_permission_flags("claude-code", &user);
         assert_eq!(out, vec!["--debug".to_string()]);
     }
 
