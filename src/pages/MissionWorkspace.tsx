@@ -11,7 +11,7 @@
 // snapshot covers bytes emitted before a pane first mounts.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -55,6 +55,7 @@ import {
 
 export default function MissionWorkspace() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [mission, setMission] = useState<Mission | null>(null);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
@@ -263,22 +264,25 @@ export default function MissionWorkspace() {
 
   // Archive = end of mission. Status flips to `completed`, router/bus
   // unmount, no further sessions can spawn against this mission.
-  // Destructive: confirm before firing.
+  // Mirrors `Sidebar.archiveMission`: no confirm dialog (the kebab
+  // affordance is intentional + the action surfaces the danger
+  // styling), bounce off the workspace once archived (the page would
+  // refuse to attach a completed mission's router and look broken),
+  // and defer the unmark past the navigate commit so the still-
+  // mounted workspace doesn't briefly re-render with archivingMission
+  // false while React 18 batches the sync emit with the route change.
   const archiveMission = useCallback(async () => {
     if (!mission) return;
-    if (!confirm("Archive this mission? This ends it permanently — sessions cannot be resumed afterward.")) return;
     markArchivingMission(mission.id);
     try {
-      const next = await api.mission.archive(mission.id);
-      setMission(next);
-      const rows = await api.session.list(mission.id);
-      setSessions(rows);
+      await api.mission.archive(mission.id);
+      navigate("/runners");
     } catch (e) {
       setError(String(e));
     } finally {
-      unmarkArchivingMission(mission.id);
+      setTimeout(() => unmarkArchivingMission(mission.id), 0);
     }
-  }, [mission]);
+  }, [mission, navigate]);
 
   // Reset = wipe the run, respawn slots, keep the mission row. Used
   // for testing — you get the same mission back with a clean event
