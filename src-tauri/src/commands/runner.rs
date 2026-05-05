@@ -41,25 +41,30 @@ pub struct CreateRunnerInput {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
-    /// Whether to apply the runtime's "skip approval prompts" flags
-    /// (claude-code: `--dangerously-skip-permissions`; codex:
-    /// `--ask-for-approval never --sandbox workspace-write`) on the
-    /// stored args column. Defaults to `true` — runner's premise is
-    /// that the user already trusts the crew they configured, so
-    /// click-through-every-permission inside the embedded TUI is
-    /// unhelpful by default. Hidden in the form for runtimes without
-    /// a bypass concept (shell / unknown). See
-    /// `router::runtime::apply_bypass_permissions`.
-    #[serde(default = "default_skip_approval_prompts")]
-    pub skip_approval_prompts: bool,
+    /// Permission mode the runner-edit form's dropdown chose. Mapped
+    /// to concrete flags on the row's `args` column at create time
+    /// via `router::runtime::apply_permission_mode`. Defaults to
+    /// `AcceptEdits`:
+    /// - claude-code → `--permission-mode acceptEdits`. Works on
+    ///   every plan and avoids the consent dialog.
+    /// - codex → no flag (codex has no edits-only middle on the
+    ///   wire; `AcceptEdits` is treated as `Default` there).
+    ///
+    /// `Auto` is opt-in for claude-code because the real `auto`
+    /// mode is plan/model-gated (Max/Team/Enterprise/API + a
+    /// supported model). `Bypass` is opt-in because claude-code
+    /// shows a one-time consent dialog the first time per user
+    /// account. Hidden in the form for runtimes without a
+    /// permission concept (shell / unknown).
+    #[serde(default = "default_permission_mode")]
+    pub permission_mode: crate::router::runtime::PermissionMode,
 }
 
-/// Default-on for the form's "Skip approval prompts" toggle: matches
-/// the seed runners' baked-in flags and keeps API-only callers
-/// (CLI / test fixtures) on the same default the form ships. Pulled
-/// out so serde's `#[serde(default = "...")]` can name it.
-fn default_skip_approval_prompts() -> bool {
-    true
+/// Default permission mode for new runners — `AcceptEdits`. Matches
+/// the frontend's dropdown default and the seed's runner args.
+/// Pulled out so serde's `#[serde(default = "...")]` can name it.
+fn default_permission_mode() -> crate::router::runtime::PermissionMode {
+    crate::router::runtime::PermissionMode::AcceptEdits
 }
 
 // `handle` is intentionally excluded from updates: per arch §2.2 and §5.2
@@ -80,14 +85,14 @@ pub struct UpdateRunnerInput {
     pub env: Option<HashMap<String, String>>,
     pub model: Option<Option<String>>,
     pub effort: Option<Option<String>>,
-    /// Form's "Skip approval prompts" toggle. `Some(true)` ensures
-    /// the runtime's bypass flags are present in the stored args
-    /// (replacing any prior occurrence so duplicates can't accumulate).
-    /// `Some(false)` strips them. `None` preserves the args as-is —
-    /// callers that don't surface the toggle (CLI patches, programmatic
+    /// Form's "Permission mode" segmented control. `Some(mode)`
+    /// rewrites the runtime's permission flags to the canonical args
+    /// for that mode (replacing any prior occurrence so duplicates
+    /// can't accumulate). `None` preserves the args as-is — callers
+    /// that don't surface the control (CLI patches, programmatic
     /// updates) shouldn't have to reason about it. See
-    /// `router::runtime::apply_bypass_permissions`.
-    pub skip_approval_prompts: Option<bool>,
+    /// `router::runtime::apply_permission_mode`.
+    pub permission_mode: Option<crate::router::runtime::PermissionMode>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -249,16 +254,16 @@ pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
 
     let id = new_id();
     let ts = now().to_rfc3339();
-    // Apply the form's "Skip approval prompts" toggle to the args
-    // column at create time so the canonical bypass flags (or their
-    // absence) are persisted on the row, not derived at spawn time.
-    // See `router::runtime::apply_bypass_permissions`. No-op for
-    // runtimes without a bypass concept (the helper returns input
+    // Apply the form's "Permission mode" segmented control to the
+    // args column at create time so the canonical mode flags are
+    // persisted on the row, not derived at spawn time. See
+    // `router::runtime::apply_permission_mode`. No-op for runtimes
+    // without a permission concept (the helper returns input
     // unchanged for shell/unknown).
-    let args = crate::router::runtime::apply_bypass_permissions(
+    let args = crate::router::runtime::apply_permission_mode(
         &input.runtime,
         &input.args,
-        input.skip_approval_prompts,
+        input.permission_mode,
     );
     let args_json = serde_json::to_string(&args)?;
     let env_json = serde_json::to_string(&input.env)?;
@@ -313,22 +318,22 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
     let command = input.command.unwrap_or(existing.command);
     // Compose the new args from the user-provided list (or the
     // existing one when the patch omits `args`) and the form's
-    // "Skip approval prompts" toggle. `None` toggle = leave args
-    // alone so non-form callers don't have to think about bypass
-    // flags. When the toggle is provided AND the runtime is being
-    // changed in the same patch, we also strip the *prior* runtime's
-    // bypass flags so a switch doesn't leave orphans (the toggle
-    // owns these flags per-runtime). See
-    // `router::runtime::apply_bypass_permissions`.
-    let args = match input.skip_approval_prompts {
-        Some(skip) => {
+    // "Permission mode" segmented control. `None` mode = leave args
+    // alone so non-form callers don't have to think about
+    // permission flags. When the mode is provided AND the runtime
+    // is being changed in the same patch, we also strip the *prior*
+    // runtime's permission flags so a switch doesn't leave orphans
+    // (the control owns these flags per-runtime). See
+    // `router::runtime::apply_permission_mode`.
+    let args = match input.permission_mode {
+        Some(mode) => {
             let base = input.args.unwrap_or(existing.args);
             let cleared = if prior_runtime != runtime {
-                crate::router::runtime::strip_bypass_flags(&prior_runtime, &base)
+                crate::router::runtime::strip_permission_flags(&prior_runtime, &base)
             } else {
                 base
             };
-            crate::router::runtime::apply_bypass_permissions(&runtime, &cleared, skip)
+            crate::router::runtime::apply_permission_mode(&runtime, &cleared, mode)
         }
         None => input.args.unwrap_or(existing.args),
     };
@@ -593,6 +598,7 @@ pub async fn runner_activity(state: State<'_, AppState>, id: String) -> Result<R
 mod tests {
     use super::*;
     use crate::db;
+    use crate::router::runtime::PermissionMode;
 
     fn ctx() -> db::DbPool {
         db::open_in_memory().unwrap()
@@ -612,10 +618,10 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
-                // Default-on per the form, but a no-op for shell — the
-                // runtime adapter has no bypass concept here, so existing
-                // tests that expect `args == []` keep passing.
-                skip_approval_prompts: true,
+                // Auto is the form default, but a no-op for shell — the
+                // runtime adapter has no permission concept here, so
+                // existing tests that expect `args == []` keep passing.
+                permission_mode: PermissionMode::Auto,
             },
         )
         .unwrap()
@@ -659,7 +665,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
-                skip_approval_prompts: true,
+                permission_mode: PermissionMode::Auto,
             },
         )
         .unwrap_err();
@@ -743,7 +749,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
-                skip_approval_prompts: true,
+                permission_mode: PermissionMode::Bypass,
             },
         )
         .unwrap();
@@ -776,11 +782,17 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
-                skip_approval_prompts: true,
+                permission_mode: PermissionMode::Bypass,
             },
         )
         .unwrap();
-        assert_eq!(r.args, vec!["--dangerously-skip-permissions".to_string()]);
+        assert_eq!(
+            r.args,
+            vec![
+                "--permission-mode".to_string(),
+                "bypassPermissions".to_string(),
+            ],
+        );
     }
 
     #[test]
@@ -800,7 +812,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
-                skip_approval_prompts: false,
+                permission_mode: PermissionMode::Default,
             },
         )
         .unwrap();
@@ -809,8 +821,13 @@ mod tests {
 
     #[test]
     fn create_does_not_duplicate_existing_bypass_flags() {
-        // CLI / API users who pass the flags themselves AND leave the
-        // toggle on shouldn't end up with two copies on the row.
+        // CLI / API users who pass a permission flag themselves AND
+        // pick a permission_mode shouldn't end up with both shapes on
+        // the row. The strip-and-replace round-trip drops the
+        // user-supplied flag (including the legacy
+        // `--dangerously-skip-permissions` shape) and writes the
+        // canonical `--permission-mode <value>` form for the chosen
+        // mode.
         let pool = ctx();
         let conn = pool.get().unwrap();
         let r = create(
@@ -826,11 +843,18 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
-                skip_approval_prompts: true,
+                permission_mode: PermissionMode::Bypass,
             },
         )
         .unwrap();
-        assert_eq!(r.args, vec!["--dangerously-skip-permissions".to_string()]);
+        assert_eq!(
+            r.args,
+            vec![
+                "--permission-mode".to_string(),
+                "bypassPermissions".to_string(),
+            ],
+            "legacy flag stripped; canonical --permission-mode shape written",
+        );
     }
 
     #[test]
@@ -852,7 +876,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
-                skip_approval_prompts: true,
+                permission_mode: PermissionMode::Auto,
             },
         )
         .unwrap();
@@ -879,18 +903,19 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
-                skip_approval_prompts: true,
+                permission_mode: PermissionMode::Bypass,
             },
         )
         .unwrap();
         assert!(r.args.contains(&"--ask-for-approval".to_string()));
 
-        // Toggle off.
+        // Cycle to Default — strips both halves of the codex pair
+        // without touching the unrelated user arg.
         let r = update(
             &conn,
             &r.id,
             UpdateRunnerInput {
-                skip_approval_prompts: Some(false),
+                permission_mode: Some(PermissionMode::Default),
                 ..Default::default()
             },
         )
@@ -898,15 +923,15 @@ mod tests {
         assert_eq!(
             r.args,
             vec!["--debug".to_string()],
-            "toggle off must strip both --ask-for-approval and --sandbox cleanly",
+            "Default mode must strip both --ask-for-approval and --sandbox cleanly",
         );
 
-        // Toggle back on.
+        // Cycle back to Bypass.
         let r = update(
             &conn,
             &r.id,
             UpdateRunnerInput {
-                skip_approval_prompts: Some(true),
+                permission_mode: Some(PermissionMode::Bypass),
                 ..Default::default()
             },
         )
@@ -922,12 +947,12 @@ mod tests {
             ],
         );
 
-        // Re-toggling on a second time must not double up.
+        // Re-applying Bypass a second time must not double up.
         let r = update(
             &conn,
             &r.id,
             UpdateRunnerInput {
-                skip_approval_prompts: Some(true),
+                permission_mode: Some(PermissionMode::Bypass),
                 ..Default::default()
             },
         )
@@ -938,7 +963,7 @@ mod tests {
                 .filter(|a| a.as_str() == "--ask-for-approval")
                 .count(),
             1,
-            "re-toggling on must not duplicate flags: {:?}",
+            "re-applying Bypass must not duplicate flags: {:?}",
             r.args,
         );
     }
@@ -960,19 +985,24 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
-                skip_approval_prompts: true,
+                permission_mode: PermissionMode::Bypass,
             },
         )
         .unwrap();
-        assert!(r
-            .args
-            .contains(&"--dangerously-skip-permissions".to_string()));
+        assert_eq!(
+            r.args,
+            vec![
+                "--mcp-debug".to_string(),
+                "--permission-mode".to_string(),
+                "bypassPermissions".to_string(),
+            ],
+        );
 
         let r = update(
             &conn,
             &r.id,
             UpdateRunnerInput {
-                skip_approval_prompts: Some(false),
+                permission_mode: Some(PermissionMode::Default),
                 ..Default::default()
             },
         )
@@ -983,7 +1013,7 @@ mod tests {
             &conn,
             &r.id,
             UpdateRunnerInput {
-                skip_approval_prompts: Some(true),
+                permission_mode: Some(PermissionMode::Bypass),
                 ..Default::default()
             },
         )
@@ -992,7 +1022,8 @@ mod tests {
             r.args,
             vec![
                 "--mcp-debug".to_string(),
-                "--dangerously-skip-permissions".to_string(),
+                "--permission-mode".to_string(),
+                "bypassPermissions".to_string(),
             ],
         );
     }
@@ -1017,7 +1048,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
-                skip_approval_prompts: true,
+                permission_mode: PermissionMode::Bypass,
             },
         )
         .unwrap();
@@ -1059,30 +1090,34 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
-                skip_approval_prompts: true,
+                permission_mode: PermissionMode::Bypass,
             },
         )
         .unwrap();
-        assert!(r
-            .args
-            .contains(&"--dangerously-skip-permissions".to_string()));
+        assert_eq!(
+            r.args,
+            vec![
+                "--permission-mode".to_string(),
+                "bypassPermissions".to_string(),
+            ],
+        );
 
-        // Switch to codex with toggle still on. Old flag must be
-        // stripped, new (codex) flags must be applied.
+        // Switch to codex with the same mode. Old (claude-code)
+        // flag pair must be stripped, new (codex) flag pair must be
+        // applied.
         let r = update(
             &conn,
             &r.id,
             UpdateRunnerInput {
                 runtime: Some("codex".into()),
                 command: Some("codex".into()),
-                skip_approval_prompts: Some(true),
+                permission_mode: Some(PermissionMode::Bypass),
                 ..Default::default()
             },
         )
         .unwrap();
         assert!(
-            !r.args
-                .contains(&"--dangerously-skip-permissions".to_string()),
+            !r.args.contains(&"--permission-mode".to_string()),
             "claude-code's flag must be stripped on runtime switch: {:?}",
             r.args,
         );

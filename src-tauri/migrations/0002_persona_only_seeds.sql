@@ -1,4 +1,4 @@
--- Migration 0003: rewrite the seeded Build squad system_prompts to be
+-- Migration 0002: rewrite the seeded Build squad system_prompts to be
 -- persona-only. Strips bus mechanics (`runner msg post`, `ask_lead`,
 -- @<handle> framing, lead/crewmate copy) so direct-chat sessions
 -- against these runners boot with just the role identity. The
@@ -6,11 +6,19 @@
 -- (added in #45) and is injected by `SessionManager::schedule_first_prompt`
 -- only on mission spawns — direct chat suppresses it (#51).
 --
--- Existing v0.1.x installs already ran `seed_defaults` against the
--- prior 0002, so the persona-only rewrite there only takes effect on
--- truly fresh DBs. This migration keys on the seed's fixed runner
--- IDs (matching tests/fixtures/crews/build-squad.seed.sh) so it
--- updates the seeded rows in place.
+-- This migration was originally numbered 0003 — pre-rename the slot
+-- at 0002 was a SQL seed file (`0002_default_crew.sql`) that has
+-- since been replaced by `db::seed_default_crew` in Rust, freeing
+-- the slot. Existing v0.1.x installs that already applied this
+-- migration as version 3 will not re-apply it (the migration
+-- runner's MAX(version) gate handles that). Fresh installs run it
+-- as version 2; the UPDATE is a no-op because the seed already
+-- writes the post-#51 persona text directly.
+--
+-- This migration keys on the seed's fixed runner IDs (matching
+-- tests/fixtures/crews/build-squad.seed.sh and `seed_default_crew`'s
+-- `SEED_*_RUNNER_ID` constants) so it updates the seeded rows in
+-- place.
 --
 -- Each UPDATE additionally pins on the pre-#51 seed text via
 -- `system_prompt = '<old seed>'`. If a user has edited the seeded

@@ -7,13 +7,21 @@
 import { useEffect, useState } from "react";
 
 import { api } from "../lib/api";
-import type { CreateRunnerInput, Runner } from "../lib/types";
+import type {
+  CreateRunnerInput,
+  PermissionMode,
+  Runner,
+} from "../lib/types";
 import { Button } from "./ui/Button";
 import { Modal } from "./ui/Overlay";
 import { Field, Input, Textarea } from "./ui/Field";
 import { RuntimeSelect } from "./ui/RuntimeSelect";
-import { RUNTIME_OPTIONS, runtimeSupportsBypassToggle } from "./ui/runtimes";
-import { Toggle } from "./ui/Toggle";
+import { StyledSelect } from "./ui/StyledSelect";
+import {
+  PERMISSION_MODES_BY_RUNTIME,
+  RUNTIME_OPTIONS,
+  runtimeSupportsPermissionMode,
+} from "./ui/runtimes";
 
 // Mirrors src-tauri/src/commands/runner.rs::validate_handle.
 const HANDLE_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
@@ -34,11 +42,14 @@ export function CreateRunnerModal({
   const [argsText, setArgsText] = useState("");
   const [workingDir, setWorkingDir] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
-  // "Skip approval prompts" toggle — defaults checked. The backend
-  // applies the runtime's bypass flags to the stored args column at
-  // create time (see commands::runner::create), so the user never
+  // "Permission mode" dropdown — defaults to AcceptEdits, matching
+  // the backend's `default_permission_mode()` and the seed's args.
+  // The backend writes the runtime's canonical mode flags onto the
+  // stored args column at create time (see commands::runner::create
+  // → router::runtime::apply_permission_mode), so the user never
   // has to type the flags themselves.
-  const [skipApprovalPrompts, setSkipApprovalPrompts] = useState(true);
+  const [permissionMode, setPermissionMode] =
+    useState<PermissionMode>("accept_edits");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,7 +62,7 @@ export function CreateRunnerModal({
       setArgsText("");
       setWorkingDir("");
       setSystemPrompt("");
-      setSkipApprovalPrompts(true);
+      setPermissionMode("accept_edits");
       setError(null);
     }
   }, [open]);
@@ -82,7 +93,12 @@ export function CreateRunnerModal({
       args: argsText.trim() ? argsText.trim().split(/\s+/) : [],
       working_dir: workingDir.trim() || null,
       system_prompt: systemPrompt.trim() || null,
-      skip_approval_prompts: skipApprovalPrompts,
+      // Send the mode only for runtimes that support it — keeps the
+      // contract explicit for shell / unknown (where the backend
+      // helper is a no-op anyway).
+      ...(runtimeSupportsPermissionMode(runtime)
+        ? { permission_mode: permissionMode }
+        : {}),
     };
     try {
       const runner = await api.runner.create(input);
@@ -200,26 +216,42 @@ export function CreateRunnerModal({
           />
         </Field>
 
-        {runtimeSupportsBypassToggle(runtime) ? (
-          <div className="flex items-start justify-between gap-6">
-            <div className="flex min-w-0 flex-col gap-0.5">
-              <span className="text-[13px] font-medium text-fg">
-                Skip approval prompts
-              </span>
-              <span className="text-[11px] text-fg-2">
-                Skip approval prompts inside the TUI — recommended for crew
-                workflows
-              </span>
+        {runtimeSupportsPermissionMode(runtime) ? (() => {
+          const modeOptions = PERMISSION_MODES_BY_RUNTIME[runtime] ?? [];
+          // Mode space is per-runtime: a mode picked under one runtime
+          // might not exist under another (e.g. codex has no
+          // `accept_edits`). Coerce to `default` when the picked mode
+          // isn't in the new runtime's list.
+          const safeValue = modeOptions.some((o) => o.value === permissionMode)
+            ? permissionMode
+            : "default";
+          const current = modeOptions.find((o) => o.value === safeValue);
+          return (
+            <div className="flex items-start justify-between gap-6">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-[13px] font-medium text-fg">
+                  Permission mode
+                </span>
+                <span className="text-[11px] text-fg-2">
+                  {current?.description}
+                </span>
+              </div>
+              <div className="shrink-0 pt-0.5">
+                <StyledSelect
+                  className="min-w-[180px]"
+                  value={safeValue}
+                  options={modeOptions.map((o) => ({
+                    value: o.value,
+                    label: o.label,
+                    description: o.description,
+                    danger: o.danger,
+                  }))}
+                  onChange={(v) => setPermissionMode(v as PermissionMode)}
+                />
+              </div>
             </div>
-            <div className="shrink-0 pt-0.5">
-              <Toggle
-                ariaLabel="Skip approval prompts"
-                on={skipApprovalPrompts}
-                onChange={setSkipApprovalPrompts}
-              />
-            </div>
-          </div>
-        ) : null}
+          );
+        })() : null}
 
         <Field
           id="new-runner-working-dir"

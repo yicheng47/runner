@@ -66,15 +66,16 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 }
 
 // Pre-release squash: the original 0001..0008 collapsed into one
-// init file. Future schema migrations resume from 0002 (the seed
-// file at 0002 is data-only and lives outside MIGRATIONS).
+// init file. Real schema migrations resume from 0002.
 //
-// 0003: persona-only rewrite of the seeded Build squad system_prompts
+// 0002: persona-only rewrite of the seeded Build squad system_prompts
 // (#51). UPDATE-only on the seed's fixed IDs, so renamed / deleted
-// runners on existing installs are unaffected.
+// runners on existing installs are unaffected. (Was 0003 pre-rename
+// — the freed 0002 slot used to hold the default-crew SQL seed,
+// which now lives in `seed_default_crew` below.)
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
-    (3, include_str!("../migrations/0003_persona_only_seeds.sql")),
+    (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
 ];
 
 // Default-data seed: ships the Build squad starter crew on first launch.
@@ -85,7 +86,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
 // later deletes everything ("first launch" must mean *first* launch,
 // not "any future launch where you happen to have zero crews").
 //
-// Even on first launch we only apply the SQL when the DB has zero
+// Even on first launch we only apply the seed when the DB has zero
 // crews AND zero runners. If the user has *any* prior data — e.g.
 // they ran the build-squad.seed.sh fixture against this DB before
 // opening the app — we skip cleanly and still set the marker. This
@@ -95,9 +96,36 @@ const MIGRATIONS: &[(i64, &str)] = &[
 //
 // Tests skip this entire path so command tests can assume an empty
 // starting state.
-const DEFAULT_SEED_SQL: &str = include_str!("../migrations/0002_default_crew.sql");
 
 const SEED_MARKER_KEY: &str = "default_crew_seeded";
+
+// Pinned IDs for the seeded rows. These are referenced by
+// `0002_persona_only_seeds.sql`'s WHERE clauses, so they must match
+// the values that migration's UPDATEs key on.
+const SEED_CREW_ID: &str = "01K000DEFAULT000BUILDSQUAD01";
+const SEED_ARCHITECT_RUNNER_ID: &str = "01K000DEFAULT000RUNNERARCH01";
+const SEED_IMPL_RUNNER_ID: &str = "01K000DEFAULT000RUNNERIMPL01";
+const SEED_REVIEWER_RUNNER_ID: &str = "01K000DEFAULT000RUNNERREVW01";
+const SEED_TIMESTAMP: &str = "2026-05-03T00:00:00Z";
+
+// Auto permission mode args — `claude --permission-mode acceptEdits`.
+// Auto-approves edits but still asks for blast-radius operations
+// (shell commands outside the workspace, network calls). Crucially
+// does NOT trigger claude-code's one-time bypass-permissions consent
+// dialog, which used to break first-mission injection. Users can
+// flip individual runners to Bypass via the runner-edit form's
+// segmented control if they want the more aggressive default.
+const SEED_RUNNER_ARGS_JSON: &str = r#"["--permission-mode","acceptEdits"]"#;
+
+// Persona-only system prompts shared with `tests/fixtures/system-prompts/*.md`.
+// Keeping a single source of truth means the migration 0002 UPDATE
+// pin (which targets the *pre*-rewrite text) and the seed (which
+// writes the *current* text) can never disagree about what the
+// "current" persona looks like.
+const SEED_ARCHITECT_PROMPT: &str =
+    include_str!("../../tests/fixtures/system-prompts/architect.md");
+const SEED_IMPL_PROMPT: &str = include_str!("../../tests/fixtures/system-prompts/impl.md");
+const SEED_REVIEWER_PROMPT: &str = include_str!("../../tests/fixtures/system-prompts/reviewer.md");
 
 fn seed_defaults(conn: &mut Connection) -> Result<()> {
     conn.execute_batch(
@@ -122,13 +150,141 @@ fn seed_defaults(conn: &mut Connection) -> Result<()> {
 
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     if crew_count == 0 && runner_count == 0 {
-        tx.execute_batch(DEFAULT_SEED_SQL)?;
+        seed_default_crew(&tx)?;
     }
     tx.execute(
         "INSERT INTO _app_state (key, value) VALUES (?1, ?2)",
         params![SEED_MARKER_KEY, chrono::Utc::now().to_rfc3339()],
     )?;
     tx.commit()?;
+    Ok(())
+}
+
+/// Insert the Build squad crew, three runners (architect / impl /
+/// reviewer), and three slots inside the caller's transaction.
+/// Replaces the legacy `0002_default_crew.sql` seed file: the same
+/// shape, but written in Rust so the column layout is owned by the
+/// same code that handles user-driven runner creates and so
+/// permission-mode args flow through as a single string constant
+/// (`SEED_RUNNER_ARGS_JSON`) instead of a hand-encoded JSON literal
+/// scattered across three INSERT statements.
+fn seed_default_crew(tx: &rusqlite::Transaction) -> Result<()> {
+    tx.execute(
+        "INSERT INTO crews (id, name, purpose, goal, signal_types, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+        params![
+            SEED_CREW_ID,
+            "Build squad",
+            "Plan, build, and review a single feature end-to-end. \
+             Architect dispatches, implementer ships, reviewer gates merge.",
+            "Definition of done = code merged behind a green test suite and a clean \
+             review pass, with a one-paragraph human-readable summary posted as a \
+             broadcast.",
+            default_signal_types_json(),
+            SEED_TIMESTAMP,
+        ],
+    )?;
+
+    insert_seed_runner(
+        tx,
+        SEED_ARCHITECT_RUNNER_ID,
+        "architect",
+        "Architect",
+        SEED_ARCHITECT_PROMPT,
+    )?;
+    insert_seed_runner(
+        tx,
+        SEED_IMPL_RUNNER_ID,
+        "impl",
+        "Implementation",
+        SEED_IMPL_PROMPT,
+    )?;
+    insert_seed_runner(
+        tx,
+        SEED_REVIEWER_RUNNER_ID,
+        "reviewer",
+        "Reviewer",
+        SEED_REVIEWER_PROMPT,
+    )?;
+
+    insert_seed_slot(
+        tx,
+        "01K000DEFAULT000SLOTARCH0001",
+        SEED_ARCHITECT_RUNNER_ID,
+        "architect",
+        0,
+        true,
+    )?;
+    insert_seed_slot(
+        tx,
+        "01K000DEFAULT000SLOTIMPL0001",
+        SEED_IMPL_RUNNER_ID,
+        "impl",
+        1,
+        false,
+    )?;
+    insert_seed_slot(
+        tx,
+        "01K000DEFAULT000SLOTREVW0001",
+        SEED_REVIEWER_RUNNER_ID,
+        "reviewer",
+        2,
+        false,
+    )?;
+
+    Ok(())
+}
+
+fn insert_seed_runner(
+    tx: &rusqlite::Transaction,
+    id: &str,
+    handle: &str,
+    display_name: &str,
+    prompt: &str,
+) -> Result<()> {
+    // Strip the trailing newline the .md fixtures end with so the
+    // stored prompt reads like a single paragraph stack — the same
+    // shape the legacy SQL seed produced.
+    let prompt = prompt.trim_end_matches('\n');
+    tx.execute(
+        "INSERT INTO runners (
+            id, handle, display_name, runtime, command, args_json,
+            system_prompt, model, effort, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, 'claude-code', 'claude', ?4, ?5,
+                   'claude-opus-4-7', 'xhigh', ?6, ?6)",
+        params![
+            id,
+            handle,
+            display_name,
+            SEED_RUNNER_ARGS_JSON,
+            prompt,
+            SEED_TIMESTAMP,
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_seed_slot(
+    tx: &rusqlite::Transaction,
+    id: &str,
+    runner_id: &str,
+    slot_handle: &str,
+    position: i64,
+    lead: bool,
+) -> Result<()> {
+    tx.execute(
+        "INSERT INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            id,
+            SEED_CREW_ID,
+            runner_id,
+            slot_handle,
+            position,
+            lead as i64,
+            SEED_TIMESTAMP,
+        ],
+    )?;
     Ok(())
 }
 
@@ -440,13 +596,16 @@ mod tests {
     }
 
     /// Verbatim copy of the pre-#51 architect `system_prompt`
-    /// (from `c8e2e6f:src-tauri/migrations/0002_default_crew.sql`)
-    /// — the SQL string literal there had every `'` doubled to
-    /// `''`; here it's a Rust string so we use the literal `'`.
-    /// 0003's WHERE clause pins on this exact text so users who
-    /// edited the row in place are not wiped on upgrade. If the
-    /// migration's WHERE pin ever drifts from this constant the
-    /// `migration_0003_rewrites_pristine_old_seed` test goes red.
+    /// (from `c8e2e6f:src-tauri/migrations/0002_default_crew.sql`,
+    /// before that file was deleted in favor of the Rust
+    /// `seed_default_crew`) — the original SQL string literal had
+    /// every `'` doubled to `''`; here it's a Rust string so we use
+    /// the literal `'`. The persona migration's WHERE clause pins on
+    /// this exact text so users who edited the row in place are not
+    /// wiped on upgrade. If the migration's WHERE pin ever drifts
+    /// from this constant the
+    /// `migration_0002_persona_rewrites_pristine_old_seed` test goes
+    /// red.
     const PRE_51_ARCHITECT_SEED: &str =
         "You are the architect for this crew. When the mission starts, your job is
 to decompose the goal and dispatch tasks to the right slots — not to
@@ -512,23 +671,23 @@ Talking to the human:
         md.trim_end_matches('\n').to_string()
     }
 
-    /// Run only migration 0003's UPDATE statements directly,
+    /// Run only migration 0002's UPDATE statements directly,
     /// bypassing `run_migrations`' `_migrations`-version gate. Used
     /// by the preserve / rewrite tests so they can pre-insert a
     /// runner row in whatever shape they want and then exercise the
     /// migration on it.
-    fn apply_0003(conn: &Connection) {
-        conn.execute_batch(include_str!("../migrations/0003_persona_only_seeds.sql"))
+    fn apply_0002_persona_rewrite(conn: &Connection) {
+        conn.execute_batch(include_str!("../migrations/0002_persona_only_seeds.sql"))
             .unwrap();
     }
 
     #[test]
-    fn migration_0003_preserves_customized_system_prompts() {
-        // Reviewer-codex flagged this on #51: 0003 must NOT clobber a
-        // user who edited their seeded architect/impl/reviewer row in
-        // place (same id, customized prompt). The WHERE pin on the
-        // pre-#51 seed text is what makes the migration idempotent
-        // for customized rows — verify it stays.
+    fn migration_0002_persona_preserves_customized_system_prompts() {
+        // Reviewer-codex flagged this on #51: the persona migration
+        // must NOT clobber a user who edited their seeded
+        // architect/impl/reviewer row in place (same id, customized
+        // prompt). The WHERE pin on the pre-#51 seed text is what
+        // makes the migration idempotent for customized rows.
         let pool = open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         let custom = "My customized architect prompt — please do not overwrite.";
@@ -542,7 +701,7 @@ Talking to the human:
             params![custom],
         )
         .unwrap();
-        apply_0003(&conn);
+        apply_0002_persona_rewrite(&conn);
         let preserved: String = conn
             .query_row(
                 "SELECT system_prompt FROM runners
@@ -553,17 +712,17 @@ Talking to the human:
             .unwrap();
         assert_eq!(
             preserved, custom,
-            "0003 must preserve a customized architect system_prompt",
+            "persona migration must preserve a customized architect system_prompt",
         );
     }
 
     #[test]
-    fn migration_0003_rewrites_pristine_old_seed() {
+    fn migration_0002_persona_rewrites_pristine_old_seed() {
         // Sanity check the WHERE pin isn't so strict it never matches
         // anything: a row carrying the EXACT pre-#51 architect seed
         // (an unedited install) must get rewritten to the new
         // persona text. Mirrors what shipping users on v0.1.x will
-        // actually see when 0003 runs.
+        // actually see when the persona migration runs.
         let pool = open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         conn.execute(
@@ -576,7 +735,7 @@ Talking to the human:
             params![PRE_51_ARCHITECT_SEED],
         )
         .unwrap();
-        apply_0003(&conn);
+        apply_0002_persona_rewrite(&conn);
         let rewritten: String = conn
             .query_row(
                 "SELECT system_prompt FROM runners
@@ -588,7 +747,7 @@ Talking to the human:
         assert_eq!(
             rewritten,
             new_architect_persona(),
-            "0003 must rewrite the pristine pre-#51 architect seed to the new persona",
+            "persona migration must rewrite the pristine pre-#51 architect seed to the new persona",
         );
     }
 
@@ -604,14 +763,10 @@ Talking to the human:
         // (RUNNER_CREW_ID / RUNNER_MISSION_ID / RUNNER_EVENT_LOG are
         // unset off-bus, the bundled `runner` CLI is not on PATH).
         //
-        // The check runs against the .md fixtures rather than
-        // DEFAULT_SEED_SQL directly because the migration also
-        // contains operational strings (the crew row's
-        // `signal_types` JSON catalog naming `ask_lead` etc.) that
-        // are NOT persona content. We then assert each .md content
-        // appears verbatim inside DEFAULT_SEED_SQL so the migration's
-        // persona blocks stay pinned to the (already-scrubbed)
-        // fixtures.
+        // Post-renumber the seed lives in `seed_default_crew` (Rust)
+        // and reads the .md files via `include_str!` — so checking
+        // the .md fixtures is checking the seed, no separate SQL
+        // pin needed.
         let banned_substrings = [
             "runner msg post",
             "runner msg read",
@@ -619,13 +774,10 @@ Talking to the human:
             "ask_lead",
             "ask_human",
         ];
-        let architect_md = include_str!("../../tests/fixtures/system-prompts/architect.md");
-        let impl_md = include_str!("../../tests/fixtures/system-prompts/impl.md");
-        let reviewer_md = include_str!("../../tests/fixtures/system-prompts/reviewer.md");
         for (name, md) in [
-            ("architect.md", architect_md),
-            ("impl.md", impl_md),
-            ("reviewer.md", reviewer_md),
+            ("architect.md", SEED_ARCHITECT_PROMPT),
+            ("impl.md", SEED_IMPL_PROMPT),
+            ("reviewer.md", SEED_REVIEWER_PROMPT),
         ] {
             for needle in banned_substrings {
                 assert!(
@@ -644,24 +796,6 @@ Talking to the human:
                     panic!("{name} must not contain @-handle framing (found near {snippet:?})");
                 }
             }
-        }
-        // Pin migration persona blocks to the fixtures: the .md
-        // content (sans trailing newline) must appear inside the
-        // 0002 seed SQL verbatim. Apostrophes in the .md are
-        // doubled in the SQL string literal, so we match against
-        // the SQL-escaped form.
-        for (name, md) in [
-            ("architect.md", architect_md),
-            ("impl.md", impl_md),
-            ("reviewer.md", reviewer_md),
-        ] {
-            let trimmed = md.trim_end_matches('\n');
-            let sql_escaped = trimmed.replace('\'', "''");
-            assert!(
-                DEFAULT_SEED_SQL.contains(&sql_escaped),
-                "0002 seed must contain the persona block from {name} verbatim \
-                 (sans the trailing newline, with apostrophes SQL-escaped)",
-            );
         }
     }
 
