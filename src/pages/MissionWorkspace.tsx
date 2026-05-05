@@ -672,7 +672,8 @@ export default function MissionWorkspace() {
                   scrolled. */}
               {mission.status === "running" &&
               !allSessionsLive &&
-              !resumingAll ? (
+              !resumingAll &&
+              !archivingMission ? (
                 <>
                   {/* Backdrop only — sits behind the inline-variant
                       card so the feed dims and reads as paused
