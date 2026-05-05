@@ -534,14 +534,17 @@ export default function RunnerChat() {
       <div className="flex min-w-0 flex-1 flex-col">
       <header className="flex items-center justify-between gap-4 border-b border-line bg-panel px-6 pb-3.5 pt-9">
         <div className="flex min-w-0 items-center gap-3.5">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-bg">
-            <Terminal aria-hidden className="h-[18px] w-[18px] text-accent" />
+          {/* Avatar styling mirrors the mission header
+              (`MissionWorkspace`) — text-accent on the container so
+              the icon inherits, 36×36 rounded square. */}
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-bg text-accent">
+            <Terminal aria-hidden className="h-[18px] w-[18px]" />
           </div>
-          <div className="flex min-w-0 flex-col gap-[3px]">
-            <div className="flex items-center gap-2.5">
-              <span className="truncate font-mono text-[15px] font-semibold text-fg">
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <div className="flex items-center gap-2">
+              <h1 className="truncate text-[14px] font-semibold leading-tight text-fg">
                 {titleLabel}
-              </span>
+              </h1>
               <span className="rounded bg-line-strong px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-fg-2">
                 Chat
               </span>
@@ -551,15 +554,15 @@ export default function RunnerChat() {
                   current state, and a pill at the same edge read
                   redundant. */}
               <span
-                className={`flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${statusBadgeClass}`}
+                className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${statusBadgeClass}`}
                 title={`session ${sessionId ? sessionId.slice(-6) : "—"}`}
               >
-                <span className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass}`} />
+                <span className={`inline-flex h-1.5 w-1.5 rounded-full ${statusDotClass}`} />
                 {sessionId ? statusLabel : "starting"}
               </span>
             </div>
             {metaParts.length > 0 ? (
-              <div className="flex min-w-0 items-center gap-2 text-[11px] text-fg-2">
+              <div className="flex min-w-0 items-center gap-2 text-[11px] leading-tight text-fg-3">
                 {metaParts.map((part, i) => (
                   <span
                     key={i}
