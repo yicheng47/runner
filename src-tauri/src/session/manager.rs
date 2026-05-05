@@ -1574,18 +1574,15 @@ fn capture_cwd(explicit: Option<String>) -> Option<String> {
 /// to render the welcome banner, dismiss any "trust this folder" /
 /// approval dialog, and bind their raw-mode keypress reader before
 /// typed bytes land — anything shorter and the early bytes get
-/// swallowed by a dialog still on screen. Calibrated against #50's
-/// PTY probe research: claude-code on a trusted folder is ready at
-/// ~250ms after spawn (2x safety margin); codex queues input from
-/// spawn time so the wait is irrelevant for that runtime. The
-/// startup-dialog case is now handled by the bypass-permission
-/// default (#45), not by stretching this timer.
-/// `cfg(test)` zeros it so unit tests don't have to sleep multiple
-/// seconds (we run inline at the call site when zero). Mirrors
-/// `LEAD_LAUNCH_PROMPT_DELAY` in `router/handlers.rs` since they
-/// solve the same race.
+/// swallowed by a dialog still on screen. 500ms wasn't enough in
+/// practice (the worker came up without its preamble on warm
+/// boots), so we hold the 2.5s budget pending a real
+/// readback-verification fix (#50). `cfg(test)` zeros it so unit
+/// tests don't have to sleep multiple seconds (we run inline at the
+/// call site when zero). Mirrors `LEAD_LAUNCH_PROMPT_DELAY` in
+/// `router/handlers.rs` since they solve the same race.
 #[cfg(not(test))]
-const FIRST_PROMPT_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+const FIRST_PROMPT_DELAY: std::time::Duration = std::time::Duration::from_millis(2500);
 #[cfg(test)]
 const FIRST_PROMPT_DELAY: std::time::Duration = std::time::Duration::ZERO;
 
@@ -1688,7 +1685,7 @@ fn schedule_direct_first_prompt(
 /// submit byte goes in a separate write so the TUI sees it as Enter
 /// rather than appending it to the input buffer (which is what
 /// happens when text + `\r` arrive in the same chunk). Production
-/// runs on a 500ms settle thread; `cfg(test)` zeros the delay and
+/// runs on a 2.5s settle thread; `cfg(test)` zeros the delay and
 /// runs inline so unit tests can assert synchronously.
 fn inject_first_turn(mgr: &Arc<SessionManager>, session_id: String, prompt: String) {
     let body: String = prompt.chars().filter(|c| *c != '\r').collect();
@@ -1757,10 +1754,10 @@ fn schedule_continue_on_resume(
     }
     let mgr = Arc::clone(mgr);
     std::thread::spawn(move || {
-        // Same 500ms budget as `FIRST_PROMPT_DELAY` — claude-code
+        // Same 2.5s budget as `FIRST_PROMPT_DELAY` — claude-code
         // shows the prior conversation history first, and we want
         // the editor bound before typing.
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_millis(2500));
         let _ = mgr.inject_stdin(&session_id, b"continue");
         std::thread::sleep(std::time::Duration::from_millis(80));
         let _ = mgr.inject_stdin(&session_id, b"\r");

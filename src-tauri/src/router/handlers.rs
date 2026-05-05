@@ -22,15 +22,14 @@ use super::{Router, RunnerStatus};
 /// How long to defer the lead's launch-prompt write after spawn so
 /// claude-code's TUI has time to draw before the bytes land. Matches
 /// `SessionManager::FIRST_PROMPT_DELAY` for workers — same race in
-/// two places. Calibrated against #50's PTY probe research:
-/// claude-code on a trusted folder is ready to receive input at
-/// ~250ms after spawn (2x safety margin here); codex queues input
-/// from spawn time so the wait is irrelevant for that runtime.
+/// two places. 500ms wasn't enough in practice (the lead came up
+/// without its system prompt on warm boots), so we hold the
+/// 2500ms budget pending a real readback-verification fix (#50).
 /// `cfg(test)` zeros the delay so unit tests can assert injections
 /// synchronously without sleeping (the injector's `inject_and_submit_
 /// delayed` runs inline when the duration is zero).
 #[cfg(not(test))]
-const LEAD_LAUNCH_PROMPT_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+const LEAD_LAUNCH_PROMPT_DELAY: std::time::Duration = std::time::Duration::from_millis(2500);
 #[cfg(test)]
 const LEAD_LAUNCH_PROMPT_DELAY: std::time::Duration = std::time::Duration::ZERO;
 
@@ -72,7 +71,7 @@ pub(super) fn mission_goal(router: &Router, event: &Event) {
         roster: &roster_entries,
         allowed_signals: launch.allowed_signals(),
     });
-    // Defer the lead's launch prompt by the same 500ms budget the
+    // Defer the lead's launch prompt by the same 2.5s budget the
     // worker preamble uses (`SessionManager::FIRST_PROMPT_DELAY`).
     // The bus's initial replay can fire `mission_goal` milliseconds
     // after the lead PTY spawns — on a warm app (mission_reset, fast
