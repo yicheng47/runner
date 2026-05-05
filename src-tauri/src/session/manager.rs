@@ -2038,6 +2038,167 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_missions_on_same_crew_keep_session_state_isolated() {
+        // Per #55 the per-crew "at most one live mission" guard was
+        // lifted. The contract that makes that safe is mission-id
+        // namespacing: `sessions.mission_id` is a foreign key,
+        // `kill_all_for_mission` filters on `mission_id`, the runner
+        // CLI shim path is keyed by mission_id, etc. This test pins
+        // the session-isolation half of that contract: spawn one
+        // session per mission against the same crew + same runner
+        // template, assert both alive concurrently, then assert
+        // `kill_all_for_mission(A)` reaps A's session and leaves B's
+        // alone.
+        let pool = pool_with_schema();
+        let runner_id = ulid::Ulid::new().to_string();
+        let crew_id = "c-concurrent".to_string();
+        let slot_id = ulid::Ulid::new().to_string();
+        let mission_a = ulid::Ulid::new().to_string();
+        let mission_b = ulid::Ulid::new().to_string();
+        let now = Utc::now().to_rfc3339();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO crews (id, name, created_at, updated_at)
+                 VALUES (?1, 'c', ?2, ?2)",
+                params![crew_id, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'concurrent', 'C', 'shell', '/bin/cat',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+                params![runner_id, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO slots
+                    (id, crew_id, runner_id, slot_handle, position, lead, added_at)
+                 VALUES (?1, ?2, ?3, 'concurrent', 0, 1, ?4)",
+                params![slot_id, crew_id, runner_id, now],
+            )
+            .unwrap();
+            for mid in [&mission_a, &mission_b] {
+                conn.execute(
+                    "INSERT INTO missions (id, crew_id, title, status, started_at)
+                     VALUES (?1, ?2, 't', 'running', ?3)",
+                    params![mid, crew_id, now],
+                )
+                .unwrap();
+            }
+        }
+
+        let mut runner = runner("/bin/cat", &[]);
+        runner.id = runner_id.clone();
+        runner.handle = "concurrent".into();
+        let mut slot = slot_for(&runner);
+        slot.id = slot_id.clone();
+        slot.crew_id = crew_id.clone();
+
+        let mission_row_a = Mission {
+            id: mission_a.clone(),
+            crew_id: crew_id.clone(),
+            ..mission()
+        };
+        let mission_row_b = Mission {
+            id: mission_b.clone(),
+            crew_id: crew_id.clone(),
+            ..mission()
+        };
+
+        let mgr = SessionManager::new(None);
+        let spawned_a = mgr
+            .spawn(
+                &mission_row_a,
+                &runner,
+                &slot,
+                std::path::Path::new("/tmp"),
+                PathBuf::from("/dev/null"),
+                Arc::clone(&pool),
+                capture(),
+            )
+            .unwrap();
+        let spawned_b = mgr
+            .spawn(
+                &mission_row_b,
+                &runner,
+                &slot,
+                std::path::Path::new("/tmp"),
+                PathBuf::from("/dev/null"),
+                Arc::clone(&pool),
+                capture(),
+            )
+            .unwrap();
+        assert_ne!(
+            spawned_a.id, spawned_b.id,
+            "two missions on the same crew must produce distinct session ids",
+        );
+
+        // Both sessions live in the SessionManager's map at this point
+        // — /bin/cat reads stdin until EOF, so neither has exited yet.
+        {
+            let sessions = mgr.sessions.lock().unwrap();
+            assert!(
+                sessions.contains_key(&spawned_a.id),
+                "session A must be live"
+            );
+            assert!(
+                sessions.contains_key(&spawned_b.id),
+                "session B must be live"
+            );
+        }
+
+        // Reap mission A's sessions only. The filter on mission_id must
+        // leave B untouched.
+        mgr.kill_all_for_mission(&mission_a).unwrap();
+
+        // After kill_all_for_mission, A's reader thread joins via
+        // SessionManager::kill (which awaits the join), so A's row is
+        // already terminal in the DB. B is still running.
+        let status_a: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM sessions WHERE id = ?1",
+                params![spawned_a.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_ne!(status_a, "running", "mission A's session must be reaped");
+
+        {
+            let sessions = mgr.sessions.lock().unwrap();
+            assert!(
+                !sessions.contains_key(&spawned_a.id),
+                "mission A's session must be removed from the live map",
+            );
+            assert!(
+                sessions.contains_key(&spawned_b.id),
+                "mission B's session must survive kill_all_for_mission(A)",
+            );
+        }
+        let status_b: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM sessions WHERE id = ?1",
+                params![spawned_b.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status_b, "running",
+            "mission B's session row must still be running",
+        );
+
+        // Cleanup so the test's PTY child doesn't outlive the test.
+        mgr.kill(&spawned_b.id).unwrap();
+    }
+
+    #[test]
     fn spawn_echo_roundtrip() {
         // Spawn `sh -c "echo hi && exit"`; assert the exit event fires with
         // success=true. We skip output inspection because the Tauri mock app

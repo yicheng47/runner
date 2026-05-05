@@ -237,4 +237,72 @@ mod tests {
         // Second copy: dest now matches by size+mtime, should skip.
         assert!(up_to_date(&source, &dest).unwrap());
     }
+
+    #[test]
+    fn shim_dir_includes_mission_id_so_concurrent_missions_dont_collide() {
+        // Regression guard for #55: when the per-crew "at most one live
+        // mission" cap was lifted, two missions on the same crew can
+        // run side by side. They share `crew_id` and (when the same
+        // slot template is on both rosters) `slot_handle`, so the
+        // shim's path key MUST also include `mission_id` to keep the
+        // two RUNNER_* env exports separate. Two installs differing
+        // only in `mission_id` must produce different dirs and
+        // different baked env values.
+        let app_data = tempfile::tempdir().unwrap();
+        let event_log_a = app_data.path().join("missions/m-a/events.jsonl");
+        let event_log_b = app_data.path().join("missions/m-b/events.jsonl");
+        // The shim writer needs the source bin (for the `exec` line).
+        // Stage a fake bundled CLI so the install has something to
+        // point at — content is irrelevant; the shim just embeds the
+        // path.
+        let bin_dir = app_data.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(bin_dir.join(DEST_BIN_NAME), "#!/bin/sh\nexit 0\n").unwrap();
+
+        let dir_a = install_session_runner_shim(
+            app_data.path(),
+            "crew-1",
+            "m-a",
+            "architect",
+            &event_log_a,
+            None,
+        )
+        .unwrap();
+        let dir_b = install_session_runner_shim(
+            app_data.path(),
+            "crew-1",
+            "m-b",
+            "architect",
+            &event_log_b,
+            None,
+        )
+        .unwrap();
+
+        assert_ne!(
+            dir_a, dir_b,
+            "shim dirs for two missions on the same crew + slot must differ",
+        );
+        assert!(
+            dir_a.to_string_lossy().contains("/m-a/"),
+            "dir_a must include mission_id m-a: {dir_a:?}",
+        );
+        assert!(
+            dir_b.to_string_lossy().contains("/m-b/"),
+            "dir_b must include mission_id m-b: {dir_b:?}",
+        );
+
+        // The baked RUNNER_MISSION_ID export must match the dir's
+        // mission_id, not leak across — without this guarantee a slot
+        // running in mission m-a could attribute events to m-b.
+        let script_a = std::fs::read_to_string(dir_a.join("runner")).unwrap();
+        let script_b = std::fs::read_to_string(dir_b.join("runner")).unwrap();
+        assert!(
+            script_a.contains("export RUNNER_MISSION_ID='m-a'"),
+            "shim_a must export the m-a mission id: {script_a}",
+        );
+        assert!(
+            script_b.contains("export RUNNER_MISSION_ID='m-b'"),
+            "shim_b must export the m-b mission id: {script_b}",
+        );
+    }
 }
