@@ -98,3 +98,52 @@ export function inferSkipApprovalPrompts(
     flagValueMatches(args, flag, expected),
   );
 }
+
+// Match shape per runtime: (flag_name, takes_value).
+//   - codex: `--ask-for-approval <value>` and `--sandbox <value>` —
+//     the next token is consumed as the value (and `--flag=value`
+//     is stripped as a single token).
+//   - claude-code: `--dangerously-skip-permissions` (value-less).
+// Mirror of `router::runtime::strip_bypass_flags`.
+const BYPASS_STRIP_KEYS_BY_RUNTIME: Record<
+  string,
+  ReadonlyArray<readonly [string, boolean]>
+> = {
+  "claude-code": [["--dangerously-skip-permissions", false]],
+  codex: [
+    ["--ask-for-approval", true],
+    ["--sandbox", true],
+  ],
+};
+
+/// Strip the runtime's bypass-permission flags from `args`. Used by
+/// the runner Create / Edit forms so the visible Args field shows
+/// only the user's extra flags — the "Skip approval prompts" toggle
+/// owns the bypass pair, and the backend re-adds the canonical
+/// flags at save time via `apply_bypass_permissions`.
+///
+/// Mirror of `router::runtime::strip_bypass_flags` (Rust).
+export function stripBypassFlags(runtime: string, args: string[]): string[] {
+  const keys = BYPASS_STRIP_KEYS_BY_RUNTIME[runtime];
+  if (!keys || keys.length === 0) return args.slice();
+  const out: string[] = [];
+  let i = 0;
+  while (i < args.length) {
+    const arg = args[i];
+    const exact = keys.find(([name]) => name === arg);
+    if (exact) {
+      // For takes_value flags, also skip the next token (its value).
+      i += exact[1] && i + 1 < args.length ? 2 : 1;
+      continue;
+    }
+    if (
+      keys.some(([name, takesValue]) => takesValue && arg.startsWith(`${name}=`))
+    ) {
+      i += 1;
+      continue;
+    }
+    out.push(arg);
+    i += 1;
+  }
+  return out;
+}

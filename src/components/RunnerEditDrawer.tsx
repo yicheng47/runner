@@ -17,6 +17,7 @@ import {
   RUNTIME_OPTIONS,
   inferSkipApprovalPrompts,
   runtimeSupportsBypassToggle,
+  stripBypassFlags,
 } from "./ui/runtimes";
 import { Toggle } from "./ui/Toggle";
 
@@ -41,12 +42,11 @@ export function RunnerEditDrawer({
   const [effort, setEffort] = useState("");
   // "Skip approval prompts" toggle — initial state derived from
   // whether the row's stored args already contain the runtime's
-  // bypass flags. The form's args input is intentionally
-  // toggle-aware: the field shows ALL args (including the bypass
-  // pair when the toggle is on) so users see what gets persisted.
-  // Toggling here updates the args text inline so the visible state
-  // matches what we'd submit, and the backend strips/re-applies
-  // canonically on save (see commands::runner::update).
+  // bypass flags. The toggle OWNS those flags: the visible Args
+  // field strips them on display so the user sees only their extra
+  // flags, and the backend re-applies the canonical pair on save
+  // (see `commands::runner::update` →
+  // `router::runtime::apply_bypass_permissions`).
   const [skipApprovalPrompts, setSkipApprovalPrompts] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,7 +56,7 @@ export function RunnerEditDrawer({
       setDisplayName(runner.display_name);
       setRuntime(runner.runtime);
       setCommand(runner.command);
-      setArgsText(runner.args.join(" "));
+      setArgsText(stripBypassFlags(runner.runtime, runner.args).join(" "));
       setWorkingDir(runner.working_dir ?? "");
       setSystemPrompt(runner.system_prompt ?? "");
       setModel(runner.model ?? "");
@@ -169,10 +169,15 @@ export function RunnerEditDrawer({
           />
         </Field>
 
-        <Field id="edit-args" label="Args" hint="whitespace-separated">
+        <Field
+          id="edit-args"
+          label="Args"
+          hint="extra flags · whitespace-separated"
+        >
           <Input
             id="edit-args"
             value={argsText}
+            placeholder="--mcp-debug"
             onChange={(e) => setArgsText(e.target.value)}
           />
         </Field>

@@ -187,7 +187,11 @@ export function CreateRunnerModal({
           />
         </Field>
 
-        <Field id="new-runner-args" label="Args" hint="whitespace-separated">
+        <Field
+          id="new-runner-args"
+          label="Args"
+          hint="extra flags · whitespace-separated"
+        >
           <Input
             id="new-runner-args"
             value={argsText}
