@@ -14,3 +14,6 @@ links to its tracking issue.
   between the full sidebar and a narrow icon rail.
 - [03 — MCP server](./03-mcp-server.md) — expose Runner's CRUD surface
   over HTTP MCP so external Claude Code / Codex can configure the app.
+- [04 — New-messages pill](./04-new-messages-pill.md) — floating pill in
+  the workspace feed that tells the user new events arrived while they
+  were scrolled up; click to jump to bottom.
