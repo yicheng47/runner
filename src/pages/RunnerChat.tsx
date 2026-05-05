@@ -14,10 +14,16 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { listen } from "@tauri-apps/api/event";
 import {
+  Archive,
   Loader2,
+  MoreHorizontal,
   PanelRightClose,
   PanelRightOpen,
+  Pin,
+  PinOff,
+  Play,
   Square,
+  SquarePen,
   Terminal,
 } from "lucide-react";
 
@@ -462,17 +468,62 @@ export default function RunnerChat() {
     }
   }
 
+  // Topbar kebab open/close. Mirrors `MissionKebab` in
+  // `MissionWorkspace`; the design's `session_ctx_menu` (Pin /
+  // Rename / Archive) is the single shape both surfaces converge on.
+  const [kebabOpen, setKebabOpen] = useState(false);
+
+  const togglePin = useCallback(async () => {
+    if (!sessionId || !chatMeta) return;
+    try {
+      await api.session.pin(sessionId, !chatMeta.pinned);
+      await refreshChatMeta();
+    } catch (e) {
+      setErr(String(e));
+    }
+  }, [sessionId, chatMeta, refreshChatMeta]);
+
+  // Topbar rename uses `window.prompt()` for the same reason the
+  // mission topbar does — keeps the header layout fixed and avoids
+  // fiddly focus management around a button-edge input. The sidebar
+  // still owns the inline-rename affordance for power users.
+  const renameChatPrompt = useCallback(async () => {
+    if (!sessionId) return;
+    const current = chatMeta?.title ?? (handle ? `@${handle}` : "");
+    const next = window.prompt("Rename chat", current);
+    if (next === null) return; // cancelled
+    const trimmed = next.trim();
+    if (!trimmed || trimmed === current) return;
+    try {
+      await api.session.rename(sessionId, trimmed);
+      await refreshChatMeta();
+    } catch (e) {
+      setErr(String(e));
+    }
+  }, [sessionId, chatMeta, handle, refreshChatMeta]);
+
   // Archive: hide this chat from the sidebar's SESSION tray. The row
   // stays in the DB so a future Archived workspace surface can list
   // it, but it's gone from the live tray. We navigate back to the
   // runner detail since this chat surface no longer maps to anything
-  // discoverable.
+  // discoverable. Mirrors `Sidebar.archiveSession`: the backend
+  // refuses to archive a running row (`commands::session::session_archive`
+  // → "kill before archiving"), so kill first when the row is live.
   async function archiveChat() {
     if (!sessionId || !handle) return;
     const targetId = sessionId;
     const targetHandle = handle;
+    const wasRunning = chatMeta?.status === "running";
     markArchivingSession(targetId);
     try {
+      if (wasRunning) {
+        // Mark the kill as user-initiated so the exit handler reads it
+        // as "stopped" rather than "crashed" (matches endChat's
+        // pattern). Without this the sidebar would briefly show a
+        // crashed row before the archive RPC removes it.
+        killedSessionsRef.current.add(targetId);
+        await api.session.kill(targetId);
+      }
       await api.session.archive(targetId);
       clearActiveSession(targetHandle);
       navigate(`/runners/${targetHandle}`);
@@ -534,11 +585,17 @@ export default function RunnerChat() {
       <div className="flex min-w-0 flex-1 flex-col">
       <header className="flex items-center justify-between gap-4 border-b border-line bg-panel px-6 pb-3.5 pt-9">
         <div className="flex min-w-0 items-center gap-3.5">
+          {/* Avatar — Pencil node `dnPId`. 36×36 with `bg`, `border-line`
+              stroke; the terminal glyph carries the accent fill. */}
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-bg">
             <Terminal aria-hidden className="h-[18px] w-[18px] text-accent" />
           </div>
           <div className="flex min-w-0 flex-col gap-[3px]">
             <div className="flex items-center gap-2.5">
+              {/* Title — JetBrains Mono 15/600 per node `U9Fx8f`.
+                  Falls back to `@handle` when the row has no custom
+                  title; both render in mono since either way it's an
+                  identifier-shaped string. */}
               <span className="truncate font-mono text-[15px] font-semibold text-fg">
                 {titleLabel}
               </span>
@@ -595,7 +652,24 @@ export default function RunnerChat() {
               <Square aria-hidden className="h-3 w-3 text-danger" />
               Stop
             </button>
+          ) : sessionId && (chatMeta?.resumable ?? true) ? (
+            // Stopped/crashed with a resumable row → Resume, matching
+            // Pencil node `HLXK6` in `vS5ce`. Same action the inline
+            // SessionEndedOverlay card fires; mirroring it in the
+            // topbar lets the user recover without scrolling to the
+            // bottom of the feed. `chatMeta?.resumable` falls back to
+            // true while the row is still loading so we don't briefly
+            // misrender as "Back to runner."
+            <button
+              onClick={() => void resumeChat()}
+              className="flex cursor-pointer items-center gap-1.5 rounded border border-[#1F4D33] bg-[#0F2418] px-2.5 py-1.5 text-xs font-medium text-accent hover:border-accent"
+            >
+              <Play aria-hidden className="h-3 w-3" />
+              Resume
+            </button>
           ) : (
+            // Last-resort fallback: no session yet, or the row is
+            // genuinely non-resumable (no agent_session_key on file).
             <button
               onClick={() => navigate(`/runners/${handle}`)}
               className="cursor-pointer rounded border border-line bg-raised px-2.5 py-1.5 text-xs text-fg hover:border-fg-3"
@@ -603,6 +677,31 @@ export default function RunnerChat() {
               Back to runner
             </button>
           )}
+          {/* Topbar overflow menu — Pin / Rename / Archive, matching
+              the design's `session_ctx_menu` (`P5CLA` / `L31Zb`) and
+              the mission topbar's `MissionKebab`. Only meaningful
+              once the chat row exists in the DB (sessionId + meta
+              loaded). */}
+          {sessionId && chatMeta ? (
+            <ChatKebab
+              pinned={chatMeta.pinned}
+              open={kebabOpen}
+              onToggle={() => setKebabOpen((v) => !v)}
+              onClose={() => setKebabOpen(false)}
+              onPin={() => {
+                setKebabOpen(false);
+                void togglePin();
+              }}
+              onRename={() => {
+                setKebabOpen(false);
+                void renameChatPrompt();
+              }}
+              onArchive={() => {
+                setKebabOpen(false);
+                void archiveChat();
+              }}
+            />
+          ) : null}
           {/* Panel-toggle button — only rendered in the topbar when
               the side panel is collapsed (matches Pencil node `QfoJJ`).
               When the panel is open, the toggle lives inside the
@@ -824,6 +923,105 @@ function RunnerSidePanel({
         </div>
       </div>
     </aside>
+  );
+}
+
+/// Topbar overflow menu for a direct chat. Pin / Rename / Archive —
+/// same shape as `MissionKebab` and the design's `session_ctx_menu`
+/// (Pencil node `P5CLA` in `u6woG`, `L31Zb` in `vS5ce`). Reset is
+/// mission-only (a chat has no slots to respawn) so it's omitted
+/// here.
+function ChatKebab({
+  pinned,
+  open,
+  onToggle,
+  onClose,
+  onPin,
+  onRename,
+  onArchive,
+}: {
+  pinned: boolean;
+  open: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  onPin: () => void;
+  onRename: () => void;
+  onArchive: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (!ref.current) return;
+      if (!ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, onClose]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        aria-label="Chat actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={onToggle}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-fg-2 transition-colors hover:border-line hover:bg-raised hover:text-fg"
+      >
+        <MoreHorizontal aria-hidden className="h-4 w-4" />
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          className="absolute right-0 top-full z-50 mt-1.5 flex w-40 flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
+        >
+          <KebabItem
+            icon={pinned ? PinOff : Pin}
+            label={pinned ? "Unpin" : "Pin"}
+            onClick={onPin}
+          />
+          <KebabItem icon={SquarePen} label="Rename" onClick={onRename} />
+          <KebabItem icon={Archive} label="Archive" onClick={onArchive} danger />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function KebabItem({
+  icon: Icon,
+  label,
+  onClick,
+  disabled,
+  danger,
+}: {
+  icon: typeof Archive;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      disabled={disabled}
+      onClick={onClick}
+      className={`flex cursor-pointer items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] hover:bg-line disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent ${
+        danger ? "text-danger" : "text-fg"
+      }`}
+    >
+      <Icon aria-hidden className={`h-3.5 w-3.5 ${danger ? "text-danger" : "text-fg"}`} />
+      <span>{label}</span>
+    </button>
   );
 }
 

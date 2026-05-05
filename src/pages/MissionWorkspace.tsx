@@ -672,7 +672,8 @@ export default function MissionWorkspace() {
                   scrolled. */}
               {mission.status === "running" &&
               !allSessionsLive &&
-              !resumingAll ? (
+              !resumingAll &&
+              !archivingMission ? (
                 <>
                   {/* Backdrop only — sits behind the inline-variant
                       card so the feed dims and reads as paused
@@ -710,13 +711,16 @@ export default function MissionWorkspace() {
                   />
                 </Pane>
               ))}
-            {/* Centered amber pill while a mission archive is in
-                flight — fired from either the sidebar kebab or this
-                workspace's own kebab. Strictly mutually exclusive
-                with the resuming-all overlay (slot panes gate
-                forcedResuming on !archivingMission), matching the
-                explicit if/else-if branching RunnerChat uses. */}
-            {archivingMission ? <ArchivingOverlay /> : null}
+            {/* Centered amber pill + scrim while a mission archive
+                is in flight — fired from either the sidebar kebab
+                or this workspace's own kebab. Scrim matches the
+                RunnerChat archive flow so the destructive
+                transition is unambiguous; without it the pill
+                flashes briefly over a still-live-looking feed and
+                is easy to miss. Strictly mutually exclusive with
+                the resuming-all overlay (slot panes gate
+                forcedResuming on !archivingMission). */}
+            {archivingMission ? <ArchivingOverlay withScrim /> : null}
           </div>
         </div>
       )}

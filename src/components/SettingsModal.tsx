@@ -6,9 +6,9 @@
 // settings store yet, but the surfaces are in place so individual
 // settings can land without UI churn. The "Default crew" /
 // "Default working directory" pickers and update-channel /
-// auto-install controls are stubbed (writes hit localStorage but no
-// other surface reads them) — flagged with a "stub" hint so the
-// follow-up that wires them up is obvious.
+// auto-install controls write to localStorage but no other surface
+// reads them yet — the consumer wiring (StartMissionModal,
+// RunnerChat cwd inheritance) is the obvious follow-up.
 //
 // Entry point: AppShell mounts a button (`Settings` link in the
 // sidebar) that toggles `open`.
@@ -27,6 +27,7 @@ import {
   X,
 } from "lucide-react";
 
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { getVersion } from "@tauri-apps/api/app";
 
@@ -193,6 +194,20 @@ function GeneralPane() {
       return "";
     }
   });
+  // Default working directory. localStorage-backed for symmetry with
+  // Default crew above; consumer wiring (RunnerChat / mission-start
+  // cwd inheritance) is a follow-up. Picked via Tauri's dialog
+  // plugin (open({ directory: true })) so the value is always an
+  // absolute path the OS confirmed exists.
+  const [defaultWorkingDir, setDefaultWorkingDirState] = useState<string>(
+    () => {
+      try {
+        return localStorage.getItem("settings.defaultWorkingDir") ?? "";
+      } catch {
+        return "";
+      }
+    },
+  );
   useEffect(() => {
     let cancelled = false;
     void api.crew
@@ -218,6 +233,15 @@ function GeneralPane() {
       // best-effort
     }
   };
+  const setDefaultWorkingDir = (path: string) => {
+    setDefaultWorkingDirState(path);
+    try {
+      if (path) localStorage.setItem("settings.defaultWorkingDir", path);
+      else localStorage.removeItem("settings.defaultWorkingDir");
+    } catch {
+      // best-effort
+    }
+  };
   return (
     <>
       <PaneHeader title="General" subtitle="Defaults and startup behavior." />
@@ -236,9 +260,12 @@ function GeneralPane() {
       </Row>
       <Row
         label="Default working directory"
-        sub="Cwd new chats inherit unless overridden. (stub — no backend yet)"
+        sub="Cwd new chats inherit unless overridden."
       >
-        <DisabledDropdown placeholder="~/" mono />
+        <FolderPicker
+          value={defaultWorkingDir}
+          onChange={setDefaultWorkingDir}
+        />
       </Row>
     </>
   );
@@ -529,21 +556,61 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
   );
 }
 
-function DisabledDropdown({
-  placeholder,
-  mono = false,
+// Folder-picker button. Opens Tauri's native directory dialog;
+// commits the chosen absolute path to the parent. The X clears the
+// stored value back to empty so the row reads as "no default."
+function FolderPicker({
+  value,
+  onChange,
 }: {
-  placeholder: string;
-  mono?: boolean;
+  value: string;
+  onChange: (path: string) => void;
 }) {
+  const [picking, setPicking] = useState(false);
+  const choose = async () => {
+    if (picking) return;
+    setPicking(true);
+    try {
+      const result = await openDialog({
+        directory: true,
+        multiple: false,
+        defaultPath: value || undefined,
+      });
+      // The plugin returns string | string[] | null. We requested a
+      // single directory so anything other than a non-empty string
+      // means the user cancelled or the platform misbehaved.
+      if (typeof result === "string" && result) {
+        onChange(result);
+      }
+    } catch {
+      // best-effort — the dialog plugin can throw on backend mis-
+      // configuration; cancel is silent rather than a stack trace.
+    } finally {
+      setPicking(false);
+    }
+  };
   return (
-    <div
-      className={`flex cursor-not-allowed items-center gap-1.5 rounded-md border border-line bg-bg px-3 py-2 text-[12px] text-fg-3 ${
-        mono ? "font-mono" : ""
-      }`}
-      title="Stub — backend not wired up yet"
-    >
-      {placeholder}
+    <div className="flex items-center gap-1.5">
+      <button
+        type="button"
+        onClick={() => void choose()}
+        disabled={picking}
+        title={value || "Pick a folder"}
+        className="flex max-w-[200px] cursor-pointer items-center gap-2 rounded-md border border-line bg-bg px-3 py-2 text-[12px] text-fg transition-colors hover:border-line-strong focus:border-fg-3 focus:outline-none disabled:opacity-60"
+      >
+        <span className="truncate font-mono">{value || "~/"}</span>
+      </button>
+      {value ? (
+        <button
+          type="button"
+          onClick={() => onChange("")}
+          aria-label="Clear default working directory"
+          title="Clear"
+          className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-fg-3 hover:bg-raised hover:text-fg"
+        >
+          <X aria-hidden className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
     </div>
   );
 }

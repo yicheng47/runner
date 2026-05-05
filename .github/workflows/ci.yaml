@@ -35,15 +35,17 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       # Tauri 2 on Linux needs webkit2gtk and friends even for `cargo check`
-      # because tauri-runtime-wry links against them.
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev
+      # because tauri-runtime-wry links against them. The `cache-apt-pkgs`
+      # action caches the resolved .deb tree in GitHub's actions cache,
+      # which cuts the install step from ~45s (apt mirror download +
+      # dpkg) to ~3s (untar from cache) on every subsequent run. Bump
+      # the `version` key to invalidate the cache when the package
+      # list below changes.
+      - name: Install system dependencies (cached)
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+          version: 1.0
       # Tauri's build script validates that every `bundle.externalBin`
       # entry exists for the active target on every cargo build,
       # including clippy / check / test. CI doesn't bundle, but it does

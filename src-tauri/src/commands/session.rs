@@ -296,9 +296,15 @@ pub async fn session_archive(
 /// `None` (or an all-whitespace string, treated as None) to revert to
 /// the auto-derived label (`@handle · <time>`). Trims surrounding
 /// whitespace before persisting.
+///
+/// Emits a `session/updated` Tauri event after the row flips so the
+/// sidebar's CHAT list can refresh — without it, renaming from the
+/// chat-page kebab would update the row but leave the sidebar's
+/// title stale until some other refresh trigger fires.
 #[tauri::command]
 pub async fn session_rename(
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
     session_id: String,
     title: Option<String>,
 ) -> Result<()> {
@@ -318,6 +324,10 @@ pub async fn session_rename(
     if updated == 0 {
         return Err(Error::msg(format!("session not found: {session_id}")));
     }
+    let _ = app.emit(
+        "session/updated",
+        serde_json::json!({ "session_id": session_id }),
+    );
     Ok(())
 }
 
@@ -325,9 +335,14 @@ pub async fn session_rename(
 /// Pinned sessions sort above running sessions in
 /// `session_list_recent_direct` regardless of last activity. Setting
 /// `pinned = false` clears `pinned_at`.
+///
+/// Emits a `session/updated` Tauri event after the row flips so the
+/// sidebar's CHAT list can refresh — same rationale as
+/// `session_rename` above.
 #[tauri::command]
 pub async fn session_pin(
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
     session_id: String,
     pinned: bool,
 ) -> Result<()> {
@@ -347,6 +362,10 @@ pub async fn session_pin(
     if updated == 0 {
         return Err(Error::msg(format!("session not found: {session_id}")));
     }
+    let _ = app.emit(
+        "session/updated",
+        serde_json::json!({ "session_id": session_id }),
+    );
     Ok(())
 }
 
