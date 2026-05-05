@@ -21,7 +21,10 @@ use super::{Router, RunnerStatus};
 
 /// How long to defer the lead's launch-prompt write after spawn so
 /// claude-code's TUI has time to draw before the bytes land. Matches
-/// `SessionManager::schedule_first_prompt`'s 2.5s budget for workers.
+/// `SessionManager::FIRST_PROMPT_DELAY` for workers — same race in
+/// two places. 500ms wasn't enough in practice (the lead came up
+/// without its system prompt on warm boots), so we hold the
+/// 2500ms budget pending a real readback-verification fix (#50).
 /// `cfg(test)` zeros the delay so unit tests can assert injections
 /// synchronously without sleeping (the injector's `inject_and_submit_
 /// delayed` runs inline when the duration is zero).
@@ -69,7 +72,7 @@ pub(super) fn mission_goal(router: &Router, event: &Event) {
         allowed_signals: launch.allowed_signals(),
     });
     // Defer the lead's launch prompt by the same 2.5s budget the
-    // worker preamble uses (`SessionManager::schedule_first_prompt`).
+    // worker preamble uses (`SessionManager::FIRST_PROMPT_DELAY`).
     // The bus's initial replay can fire `mission_goal` milliseconds
     // after the lead PTY spawns — on a warm app (mission_reset, fast
     // mission_start) claude-code's TUI hasn't drawn yet and any bytes

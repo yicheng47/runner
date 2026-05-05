@@ -1574,7 +1574,10 @@ fn capture_cwd(explicit: Option<String>) -> Option<String> {
 /// to render the welcome banner, dismiss any "trust this folder" /
 /// approval dialog, and bind their raw-mode keypress reader before
 /// typed bytes land — anything shorter and the early bytes get
-/// swallowed by a dialog still on screen. `cfg(test)` zeros it so unit
+/// swallowed by a dialog still on screen. 500ms wasn't enough in
+/// practice (the worker came up without its preamble on warm
+/// boots), so we hold the 2.5s budget pending a real
+/// readback-verification fix (#50). `cfg(test)` zeros it so unit
 /// tests don't have to sleep multiple seconds (we run inline at the
 /// call site when zero). Mirrors `LEAD_LAUNCH_PROMPT_DELAY` in
 /// `router/handlers.rs` since they solve the same race.
@@ -1751,7 +1754,7 @@ fn schedule_continue_on_resume(
     }
     let mgr = Arc::clone(mgr);
     std::thread::spawn(move || {
-        // Same 2.5s budget as `schedule_first_prompt` — claude-code
+        // Same 2.5s budget as `FIRST_PROMPT_DELAY` — claude-code
         // shows the prior conversation history first, and we want
         // the editor bound before typing.
         std::thread::sleep(std::time::Duration::from_millis(2500));

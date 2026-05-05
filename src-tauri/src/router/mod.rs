@@ -416,7 +416,7 @@ impl Router {
     /// TUI hasn't drawn yet, so synchronous bytes get swallowed by
     /// the boot / trust-folder screen and the lead never sees its
     /// system prompt. The 2.5s budget matches
-    /// `SessionManager::schedule_first_prompt`, which solves the
+    /// `SessionManager::FIRST_PROMPT_DELAY`, which solves the
     /// same race for non-lead workers.
     ///
     /// Resolves the handle → session_id at schedule time. Mission
