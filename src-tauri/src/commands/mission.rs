@@ -174,22 +174,16 @@ pub fn start(
     // finding #1). The sole piece of state that can linger on failure is
     // an empty mission directory — harmless because the ULID is never
     // reused, and the next `mission_start` gets a fresh ID + dir.
+    //
+    // Per #55 the crew-level "at most one live mission" guard was lifted
+    // — the constraint was conservative, not load-bearing. Per-mission
+    // state is fully namespaced: `sessions.mission_id` is a foreign key,
+    // `kill_all_for_mission` is mission-scoped, the runner-CLI shim path
+    // includes mission_id (`$APPDATA/missions/<mission_id>/shims/...`),
+    // the roster sidecar is per-mission, and the router boots fresh per
+    // mission. The shared crew row's `signal_types` allowlist is
+    // immutable mid-mission and safe to reuse.
     let tx = conn.transaction()?;
-
-    // Arch §2.5: a crew can have at most one live mission at a time
-    // (review finding #2). Enforce here inside the tx to avoid a
-    // race between the check and the insert.
-    let running_count: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM missions WHERE crew_id = ?1 AND status = 'running'",
-        params![crew.id],
-        |row| row.get(0),
-    )?;
-    if running_count > 0 {
-        return Err(Error::msg(format!(
-            "crew {} already has a live mission; stop it before starting another",
-            crew.name
-        )));
-    }
 
     let id = new_id();
     let started_at = now();
@@ -1475,14 +1469,19 @@ mod tests {
     }
 
     #[test]
-    fn start_rejects_second_live_mission_on_same_crew() {
+    fn concurrent_missions_on_same_crew_are_allowed() {
+        // Per #55 the "at most one live mission per crew" guard was
+        // lifted: per-mission state (sessions, kill_all_for_mission,
+        // shim path, roster sidecar, router) is fully namespaced by
+        // mission_id, so a second mission_start on the same crew
+        // produces a distinct live mission rather than rejecting.
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
         add_runner(&mut conn, &crew_id, "lead");
         let tmp = tempfile::tempdir().unwrap();
 
-        start(
+        let first = start(
             &mut conn,
             tmp.path(),
             StartMissionInput {
@@ -1494,21 +1493,49 @@ mod tests {
         )
         .unwrap();
 
-        let err = start(
+        let second = start(
             &mut conn,
             tmp.path(),
             StartMissionInput {
-                crew_id,
+                crew_id: crew_id.clone(),
                 title: "second".into(),
                 goal_override: Some("go".into()),
                 cwd: None,
             },
         )
-        .unwrap_err();
-        assert!(
-            format!("{err}").contains("already has a live mission"),
-            "expected one-live-mission error, got {err}"
+        .unwrap();
+
+        assert_ne!(
+            first.mission.id, second.mission.id,
+            "second mission must get a distinct id",
         );
+
+        // Both rows must show status='running' and reference the same
+        // crew. Order by started_at so the assertion doesn't depend on
+        // ULID stamping order.
+        let mut rows: Vec<(String, String, String)> = conn
+            .prepare(
+                "SELECT id, status, crew_id FROM missions
+                  WHERE crew_id = ?1
+                  ORDER BY started_at ASC",
+            )
+            .unwrap()
+            .query_map(params![crew_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(rows.len(), 2, "two mission rows expected: {rows:?}");
+        for (_, status, row_crew) in &rows {
+            assert_eq!(status, "running");
+            assert_eq!(row_crew, &crew_id);
+        }
     }
 
     #[test]

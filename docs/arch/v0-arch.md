@@ -141,7 +141,7 @@ Lifecycle:
 
 This framing matters: when we say "the coordination bus is mission-scoped" or "the fact whiteboard is mission-scoped," we're saying the same thing as "sessions are mission-scoped." They all share one lifecycle because they all belong to the same container.
 
-v0 constraint: a crew can have at most one live mission at a time. A crew can have many historical missions.
+v0: concurrent missions on the same crew are allowed — a crew is a reusable template, and per-mission state (sessions, the coordination bus, the runner-CLI shim path, the roster sidecar) is fully namespaced by `mission_id`. Per-crew throttle / rate-limit is a future consideration.
 
 ### 2.6 Session — *one runner's PTY process*
 
@@ -281,7 +281,7 @@ user clicks End Mission  (or all sessions have exited)
 
 ### 3.3 v0 constraint
 
-One live mission per crew. Starting a new one while one is live is blocked in the UI. (v1: relax to concurrent missions.)
+Concurrent missions on the same crew are allowed. Each mission gets its own session set, coordination bus, event log, and runner-CLI shim path; the crew row's `signal_types` allowlist is shared but immutable mid-mission. Per-crew throttle / rate-limit is a future consideration.
 
 ## 4. PTY runner sessions
 
@@ -773,14 +773,13 @@ Tauri main thread
   └── Webview process (React + xterm.js)
 ```
 
-For v0 scale (one live mission, ≤ ~10 sessions): fine.
+For v0 scale (a handful of concurrent missions, ≤ ~10 sessions in total): fine.
 
 ## 9. Out of scope for v0
 
 - Threads (v0.x)
 - Facts / shared whiteboard (v0.x)
 - Mentions, reactions (v1)
-- Concurrent live missions per crew
 - Cross-mission memory
 - Remote runners / SSH
 - Sandboxing beyond the child's own permissions

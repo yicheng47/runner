@@ -45,7 +45,6 @@ All four are described in `v0-arch.md` §2.7 with milestone tags, so the vision 
 
 ### Other non-goals for v0
 
-- Multiple concurrent missions per crew
 - Cross-mission memory
 - Session replay, session history browsing
 - LLM-based signal routing
@@ -99,7 +98,7 @@ If v0 doesn't ship this flow working end-to-end, it hasn't shipped.
 ### 6.3 Missions (a crew's runtime activations)
 - One-click **Start Mission** on a crew. Creates a new mission row, spawns a session per runner, opens the mission control screen.
 - **End Mission** stops all sessions and marks status `completed` (or `aborted` if stopped mid-flight).
-- v0: one live mission per crew. Starting a new mission requires ending the current one.
+- v0: concurrent missions on the same crew are allowed; each gets its own session set, coordination bus, and event log. Per-crew throttle is a future consideration.
 - A mission has: `id`, `crew_id`, `status` (running/completed/aborted), `goal_override` (optional per-mission brief overlay), `started_at`, `stopped_at`.
 - Crew page shows mission history: list of past missions with start time, duration, outcome summary.
 
