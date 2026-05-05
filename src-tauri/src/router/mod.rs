@@ -415,8 +415,8 @@ impl Router {
     /// a warm app (mission_reset, fast mission_start) claude-code's
     /// TUI hasn't drawn yet, so synchronous bytes get swallowed by
     /// the boot / trust-folder screen and the lead never sees its
-    /// system prompt. The 2.5s budget matches
-    /// `SessionManager::schedule_first_prompt`, which solves the
+    /// system prompt. The 500ms budget matches
+    /// `SessionManager::FIRST_PROMPT_DELAY`, which solves the
     /// same race for non-lead workers.
     ///
     /// Resolves the handle → session_id at schedule time. Mission
@@ -513,7 +513,7 @@ impl Router {
     /// `mission_goal` on resume (the `mission_attach` watermark
     /// suppresses it), so without this call the lead's freshly-spawned
     /// agent would come up with no system context. Reuses
-    /// `inject_and_submit_delayed`'s 2.5s budget so claude-code's TUI
+    /// `inject_and_submit_delayed`'s 500ms budget so claude-code's TUI
     /// has time to boot before the bytes land.
     pub fn fire_lead_launch_prompt(&self) {
         // Build the prompt body the same way `handlers::mission_goal`
@@ -549,7 +549,7 @@ impl Router {
         self.inject_and_submit_delayed(
             lead_row.handle(),
             body,
-            std::time::Duration::from_millis(2500),
+            std::time::Duration::from_millis(500),
         );
     }
 
