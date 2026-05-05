@@ -275,6 +275,7 @@ export function Sidebar({ settingsOpen, onSettingsOpenChange }: SidebarProps) {
     let unlistenExit: (() => void) | null = null;
     let unlistenActivity: (() => void) | null = null;
     let unlistenArchived: (() => void) | null = null;
+    let unlistenUpdated: (() => void) | null = null;
     let cancelled = false;
     void Promise.all([
       listen("session/exit", () => {
@@ -291,22 +292,33 @@ export function Sidebar({ settingsOpen, onSettingsOpenChange }: SidebarProps) {
         // this event since it doesn't own the sidebar's fetch).
         void refreshDirectSessions();
       }),
-    ]).then(([fnExit, fnActivity, fnArchived]) => {
+      listen("session/updated", () => {
+        // Fired by `session_pin` and `session_rename` after the row
+        // flips. Lets the CHAT list pick up pin/title changes that
+        // came from the chat-page kebab — without this the sidebar
+        // would show stale state until something else triggered a
+        // refresh.
+        void refreshDirectSessions();
+      }),
+    ]).then(([fnExit, fnActivity, fnArchived, fnUpdated]) => {
       if (cancelled) {
         fnExit();
         fnActivity();
         fnArchived();
+        fnUpdated();
         return;
       }
       unlistenExit = fnExit;
       unlistenActivity = fnActivity;
       unlistenArchived = fnArchived;
+      unlistenUpdated = fnUpdated;
     });
     return () => {
       cancelled = true;
       unlistenExit?.();
       unlistenActivity?.();
       unlistenArchived?.();
+      unlistenUpdated?.();
     };
   }, [refreshDirectSessions]);
 

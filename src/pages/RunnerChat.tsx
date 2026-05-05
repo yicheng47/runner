@@ -506,13 +506,24 @@ export default function RunnerChat() {
   // stays in the DB so a future Archived workspace surface can list
   // it, but it's gone from the live tray. We navigate back to the
   // runner detail since this chat surface no longer maps to anything
-  // discoverable.
+  // discoverable. Mirrors `Sidebar.archiveSession`: the backend
+  // refuses to archive a running row (`commands::session::session_archive`
+  // → "kill before archiving"), so kill first when the row is live.
   async function archiveChat() {
     if (!sessionId || !handle) return;
     const targetId = sessionId;
     const targetHandle = handle;
+    const wasRunning = chatMeta?.status === "running";
     markArchivingSession(targetId);
     try {
+      if (wasRunning) {
+        // Mark the kill as user-initiated so the exit handler reads it
+        // as "stopped" rather than "crashed" (matches endChat's
+        // pattern). Without this the sidebar would briefly show a
+        // crashed row before the archive RPC removes it.
+        killedSessionsRef.current.add(targetId);
+        await api.session.kill(targetId);
+      }
       await api.session.archive(targetId);
       clearActiveSession(targetHandle);
       navigate(`/runners/${targetHandle}`);
