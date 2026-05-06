@@ -185,6 +185,66 @@ export function RunnerTerminal({
       });
     });
 
+    // Shift+Enter → ESC+CR so claude-code/codex insert a newline in their
+    // input frame instead of submitting. Plain Enter falls through to the
+    // default \r emission via onData above.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown") return true;
+      if (
+        e.key === "Enter" &&
+        e.shiftKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.metaKey
+      ) {
+        const sid = sessionIdRef.current;
+        if (sid && !disabledRef.current) {
+          void api.session.injectStdin(sid, "\x1b\r").catch((err) => {
+            onErrorRef.current?.(String(err));
+          });
+        }
+        return false;
+      }
+      return true;
+    });
+
+    // Image paste support. claude-code and codex already know how to
+    // attach a clipboard image when they see Ctrl+V (\x16) on stdin —
+    // they shell out to `pbpaste -Prefer png` (or the platform
+    // equivalent) and read the OS clipboard themselves. The bug surface
+    // is that on macOS the user instinctively presses Cmd+V, which the
+    // WebView intercepts as a *text* paste; xterm.js's default handler
+    // then drops the image and pastes whatever placeholder text rep the
+    // OS attached, so the keystroke that would have triggered the CLI's
+    // clipboard read never reaches the PTY.
+    //
+    // Fix: when the paste event carries an image, swallow xterm.js's
+    // text-paste handler and inject \x16 instead. The agent CLI takes
+    // it from there. Pure-text pastes fall through to xterm.js's
+    // default behavior unchanged.
+    const onPaste = (e: ClipboardEvent) => {
+      const sid = sessionIdRef.current;
+      if (!sid || disabledRef.current) return;
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      let hasImage = false;
+      for (let i = 0; i < items.length; i += 1) {
+        const it = items[i];
+        if (it.kind === "file" && it.type.startsWith("image/")) {
+          hasImage = true;
+          break;
+        }
+      }
+      if (!hasImage) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      void api.session.injectStdin(sid, "\x16").catch((err) => {
+        onErrorRef.current?.(String(err));
+      });
+    };
+    const textarea = term.textarea;
+    textarea?.addEventListener("paste", onPaste, { capture: true });
+
     const pushSize = () => {
       const t = termRef.current;
       const sid = sessionIdRef.current;
@@ -228,6 +288,7 @@ export function RunnerTerminal({
       window.removeEventListener("resize", onResize);
       window.removeEventListener("focus", refreshTerm);
       document.removeEventListener("visibilitychange", onVisibility);
+      textarea?.removeEventListener("paste", onPaste, { capture: true });
       onDataDisposable.dispose();
       term.dispose();
       termRef.current = null;
