@@ -51,7 +51,9 @@ Introduce a tmux-backed runtime inside the backend session layer:
 1. Add tmux discovery and clear dependency errors.
 2. Create one tmux session per Runner session row.
 3. Store tmux identifiers on the session entity.
-4. Stream output by polling/capturing tmux pane deltas.
+4. Stream live output via `tmux pipe-pane` (raw byte stream into a
+   per-session FIFO that the runtime forwards as `session_output`).
+   Use `capture-pane` only for one-shot scrollback replay on attach.
 5. Send input via tmux paste-buffer / send-keys.
 6. Reattach after app restart by reading stored tmux identifiers and checking
    whether the tmux pane still exists.
@@ -96,10 +98,13 @@ quietly assumes them.
   chunks split mid-UTF-8-codepoint (wezterm#6769) and the parser
   surface is non-trivial — defer to a later iteration.
 
-Net of the above: v1 is **polling `capture-pane` +
-`load-buffer`/`paste-buffer`/`send-keys` over a private tmux socket**,
-with `remain-on-exit on` + `window-size manual` + `history-limit` set
-once at server start.
+Net of the above: v1 is **`pipe-pane` for live byte streaming +
+`capture-pane` for attach replay + `load-buffer`/`paste-buffer
+-r`/`send-keys` for input, all over a private tmux socket loaded
+from a generated Runner config file** (so server-wide options can't
+get lost between transient `set-option` invocations). `remain-on-exit
+on` + `window-size manual` + `history-limit 50000` live in that
+config.
 
 ---
 
@@ -151,38 +156,70 @@ This is independent of runner command PATH resolution. Even if the app launched
 with a stripped PATH, Homebrew tmux should still be found through the fallback
 locations.
 
-### Use a private tmux server (`-L runner -f /dev/null`)
+### Use a private tmux server (`-L runner -f <runner.conf>`)
 
 Every tmux invocation must include both `-L runner` (or `-L
-$RUNNER_TMUX_LABEL` for tests/dev) **and** `-f /dev/null`. This:
+$RUNNER_TMUX_LABEL` for tests/dev) **and** `-f <runner.conf>`, where
+`<runner.conf>` is a Runner-managed tmux config file written to the
+app data dir (e.g. `~/Library/Application
+Support/com.wycstudios.runner/tmux.conf` on macOS,
+`$XDG_DATA_HOME/com.wycstudios.runner/tmux.conf` on Linux).
 
-- Resolves to a separate socket at `/tmp/tmux-<UID>/runner` with the
-  inherited 0700 dir perms — we don't share state with the user's
-  default `tmux ls` server. Avoids cs#277 (env-var inheritance from a
-  pre-existing user tmux server) by construction.
-- `-f /dev/null` skips loading `~/.tmux.conf`. `-L` only isolates the
-  *socket*; the server still reads the user's config by default,
+Why both:
+
+- **`-L runner`** resolves to a separate socket at
+  `/tmp/tmux-<UID>/runner` with the inherited 0700 dir perms — we
+  don't share state with the user's default `tmux ls` server. Avoids
+  cs#277 (env-var inheritance from a pre-existing user tmux server)
+  by construction.
+- **`-f <runner.conf>`** replaces `~/.tmux.conf`. `-L` only isolates
+  the *socket*; the server still reads the user's config by default,
   which can rebind keys, set `default-shell`, alias `paste-buffer`,
-  override `history-limit`, etc. Skipping it keeps Runner's behavior
-  deterministic regardless of what the user has in their dotfiles.
-  (We can swap `/dev/null` for a generated `~/Library/Application
-  Support/runner/tmux.conf` later if we ever need to ship our own
-  config; for v1 the server-level `set-option`s in Step 5 cover
-  everything we need.)
-- Lets us own server-wide options (`history-limit`, `default-size`,
-  `window-size`, `remain-on-exit`) without polluting the user's tmux
-  config.
-- Makes "kill all Runner sessions" a single `tmux -L runner -f
-  /dev/null kill-server`, which we want for diagnostics and the dev
-  "wipe state" flow.
+  override `history-limit`, etc. We need a config we control.
+- Use a **real config file**, not `-f /dev/null`. With a stand-alone
+  empty config, the server-wide options have to be applied via
+  separate `tmux set-option -g …` invocations — but with default
+  `exit-empty on` and no sessions yet, the server can exit between
+  the `set-option` command and the first `new-session`, throwing the
+  options away. This bites `history-limit` particularly hard because
+  it must be set **before** the first pane is created. Loading the
+  options from `-f <runner.conf>` makes them apply at every server
+  start, no race window.
 
-Prefer `-L runner` over `-S /path/to/sock` because tmux already places
-`-L` sockets under the per-UID dir with the right perms; rolling a
-custom path means hand-managing the parent directory mode.
+The config we generate (one-shot on first use, idempotent
+overwrite-if-stale on subsequent starts):
+
+```text
+# Runner-managed tmux config — do not hand-edit; rewritten on app start.
+set-option -s exit-empty off
+set-option -g history-limit 50000
+set-option -g window-size manual
+set-option -g default-size 120x32
+set-option -g remain-on-exit on
+set-option -g status off
+```
+
+`exit-empty off` keeps the server alive between sessions — useful so
+that "the user closed the chat tab, then immediately opened a new
+one" doesn't churn through a server start/stop cycle, and so the
+server stays around for app-restart reattach.
+
+Other benefits of this socket+config layout:
+
+- We own server-wide options without polluting the user's tmux
+  config.
+- "Kill all Runner sessions" is a single `tmux -L runner -f
+  <runner.conf> kill-server` for diagnostics and the dev "wipe
+  state" flow.
+
+Prefer `-L runner` over `-S /path/to/sock` because tmux already
+places `-L` sockets under the per-UID dir with the right perms;
+rolling a custom path means hand-managing the parent directory mode.
 
 Wrap this in a single helper: `fn tmux_cmd() -> Command` returning a
-`Command::new("tmux").args(["-L", "runner", "-f", "/dev/null"])` so
-the global flags can never be forgotten at a call site.
+`Command::new("tmux").args(["-L", "runner", "-f", &config_path])` so
+the global flags can never be forgotten at a call site. Tests can
+inject a tempfile path via the same helper.
 
 ### Windows fallback
 
@@ -289,39 +326,35 @@ For each Runner session:
 - pane: first pane in the session
 - working directory: mission/direct-chat working directory
 
-### Server-level options (set once on first use)
+### Server-level options (loaded from config, not runtime-set)
 
-Apply these against the private socket the first time the runtime
-starts a session, before any pane exists:
+Server-wide options live in the generated `runner.conf` (Step 2);
+they are **not** applied via runtime `set-option` calls. Doing it at
+runtime is fragile: with default `exit-empty on` and no sessions yet,
+the server can exit between the `set-option` invocation and the next
+`new-session`, throwing the option away. `history-limit` is the
+worst offender because it must be set before the first pane is
+created — existing panes keep their old limit.
 
-```text
-tmux -L runner set-option -g history-limit 50000
-tmux -L runner set-option -g window-size manual
-tmux -L runner set-option -g default-size 120x32
-tmux -L runner set-option -g remain-on-exit on
-tmux -L runner set-option -g status off
-```
+For reference, the config contains:
 
-Rationale:
+| Option | Value | Why |
+|---|---|---|
+| `exit-empty` (server) | `off` | Keep the server alive between sessions for snappy reattach. |
+| `history-limit` | `50000` | 25× default 2000; long agent runs scroll back fine. |
+| `window-size` | `manual` | No client is ever attached; without `manual`, tmux fights our `resize-window` calls (tmux#1367, tmux#2671). |
+| `default-size` | `120x32` | Initial pane size before the first `resize-window`. |
+| `remain-on-exit` | `on` | Required to read `pane_dead_status` after the agent exits (tmux#2552). |
+| `status` | `off` | Cosmetic; no client renders it, and turning it off avoids tmux burning a row on resize calc. |
 
-- `history-limit 50000` — 25× the default 2000 so users can scroll
-  back through long agent runs. Must be set **before** the pane is
-  created; existing panes keep their old limit.
-- `window-size manual` + `default-size 120x32` — required because no
-  tmux client is ever attached to our server; without `manual`, tmux
-  falls back to `default-size` at attach time and fights our
-  `resize-window` calls (tmux#1367, tmux#2671).
-- `remain-on-exit on` — required to read `pane_dead_status` after the
-  agent exits (tmux#2552). Without this, a dead pane disappears
-  before we can capture exit code or final scrollback.
-- `status off` — pure cosmetic; no client is attached so the status
-  bar is invisible anyway, but turning it off avoids tmux burning a
-  row on resize calculations.
+If we ever need a per-session-window override (e.g. a slot that
+shouldn't persist on exit), use `set-option -w -t=<target>` — the
+server-loaded global is the default; per-window flips override.
 
 ### Spawn shape
 
 ```text
-tmux -L runner -f /dev/null new-session -d -P -F '#{pane_id}' \
+tmux -L runner -f <runner.conf> new-session -d -P -F '#{pane_id}' \
     -s runner-<session_id> -n main -c <cwd> -- '<shell-quoted-launch-script>'
 ```
 
@@ -394,33 +427,47 @@ PTY, in order, exactly once. That's `pipe-pane`.
 ### Live stream via `pipe-pane`
 
 ```text
-tmux -L runner -f /dev/null pipe-pane -t=<pane_id> -O \
-    'cat >> /path/to/per-session/runtime-dir/output.fifo'
+tmux -L runner -f <runner.conf> pipe-pane -O -o -t=<pane_id> \
+    'cat >> '"'"'/path/to/per-session/runtime-dir/output.fifo'"'"
 ```
 
-- `-O` (open) starts piping; calling without `-O` toggles, which is
-  fragile — always use `-O` and call `pipe-pane -t=<pane>` (no
-  command) explicitly to stop.
-- The shell command's stdin is whatever the pane writes to its PTY,
-  byte-for-byte. We get exactly the bytes xterm.js needs.
-- Use a **named FIFO under the per-session runtime dir**
-  (`mkfifo`) rather than a regular file: regular files grow
-  unbounded; the FIFO blocks the writer until our reader is
-  attached, which is exactly the backpressure semantics we want.
-  Open the FIFO non-blocking on the reader side and `tokio::spawn`
-  a forwarder task that emits `session_output` chunks.
+Flag semantics (often misremembered):
+
+- **`-O`** = pipe pane **output** to the shell command's stdin (i.e.
+  what the agent wrote to its PTY). Pair with `-I` if we ever want
+  to feed input back through the same channel — we don't; input
+  goes through `paste-buffer`/`send-keys` (Step 7).
+- **`-o`** (lowercase) = "only open if no pipe is currently open" —
+  guards against accidental toggle-off when the runtime calls
+  `pipe-pane` more than once for the same pane (e.g. after a
+  reattach). Use it always; never rely on default toggle semantics.
+- Stop a pipe explicitly with `tmux pipe-pane -t=<pane_id>` (no
+  command, no flags) when shutting down a session.
+
+Other notes:
+
+- The shell command's stdin is the pane's raw PTY output,
+  byte-for-byte. That's exactly what xterm.js needs.
+- The trailing positional is a **shell-command string**, not argv
+  (same shape as `new-session`'s last arg) — single-quote the FIFO
+  path explicitly when generating the command. The double-quote /
+  single-quote dance above (`'"'"'…'"'"'`) is one safe way; in Rust
+  use a small `shell_quote_single` helper and concatenate.
+- Use a **named FIFO under the per-session runtime dir** (`mkfifo`)
+  rather than a regular file: regular files grow unbounded; the
+  FIFO blocks the writer until a reader is attached, which is
+  exactly the backpressure semantics we want.
+- `pipe-pane` survives client detach (we never attach) and
+  persists across `capture-pane` calls.
 - Alternative if FIFOs become a portability headache on Linux
   containers: pipe to a Unix-domain socket we accept on, or open a
   control-mode child (deferred — see below). For v1, FIFO under
   the per-session dir.
-- `pipe-pane` survives detach/reattach of clients (we never have
-  one) and persists across capture-pane calls. Stop it with `tmux
-  pipe-pane -t=<pane_id>` (no command).
 
 ### One-shot scrollback on attach
 
 ```text
-tmux -L runner -f /dev/null capture-pane -p -e -S - -E - -t=<pane_id>
+tmux -L runner -f <runner.conf> capture-pane -p -e -S - -E - -t=<pane_id>
 ```
 
 Flag meanings:
@@ -443,15 +490,31 @@ stream". Use a separate `session_replay` Tauri event, or a
 output event. This also handles the "switch tabs and the terminal
 re-mounts" case cleanly.
 
-Order on attach:
+Order on attach (must not change — opening a FIFO writer blocks
+until a reader is attached):
 
-1. `pipe-pane -O 'cat > fifo'` to start capturing live bytes.
-2. `capture-pane -p -e -S - -E -` for the replay snapshot.
-3. Emit `session_replay`.
-4. Start the forwarder task that drains the FIFO into
+1. `mkfifo` the per-session FIFO if it doesn't already exist.
+2. **Open the FIFO reader-side first** in the runtime, non-blocking
+   (`OpenOptions::new().read(true).custom_flags(O_NONBLOCK).open(…)`,
+   then unset `O_NONBLOCK` once open if you want blocking reads
+   afterwards — or stay non-blocking and `tokio::spawn` an async
+   forwarder). Reading-side open does **not** block on POSIX even
+   without `O_NONBLOCK` if there's no writer, but the writer side
+   does block until we open for read.
+3. `pipe-pane -O -o 'cat >> fifo'` to start the writer. tmux's
+   `cat >>` will not block now because step 2 has the FIFO open
+   for read.
+4. `capture-pane -p -e -S - -E -` for the replay snapshot.
+5. Emit `session_replay`.
+6. Start the forwarder task that drains the reader-side FD into
    `session_output`.
 
-There is a tiny window between (2) and (4) where bytes the agent
+If we get the order wrong (call `pipe-pane` before the reader is
+open), `cat` blocks on the open and the agent's output piles up in
+its PTY buffer; once that fills (16–64 KB on macOS/Linux), the
+agent's `write()` blocks too and the whole pane wedges.
+
+There is a tiny window between (4) and (6) where bytes the agent
 writes are pipe-pane'd into the FIFO but the replay snapshot
 doesn't yet include them. xterm.js will replay the snapshot, then
 get those bytes as live appends — net effect is they appear twice
@@ -504,8 +567,8 @@ Use tmux APIs instead of writing to a frontend-owned PTY writer.
   agent recognizes it as a paste rather than typed input):
 
   ```text
-  printf %s "$payload" | tmux -L runner -f /dev/null load-buffer -b runner-<id> -
-  tmux -L runner -f /dev/null paste-buffer -p -r -d -b runner-<id> -t=<pane_id>
+  printf %s "$payload" | tmux -L runner -f <runner.conf> load-buffer -b runner-<id> -
+  tmux -L runner -f <runner.conf> paste-buffer -p -r -d -b runner-<id> -t=<pane_id>
   ```
 
   - `-p` wraps the payload in `\e[200~ … \e[201~` so claude-code /
@@ -583,8 +646,8 @@ On app startup or session list:
 - If a session row has `runtime = 'tmux'`, check whether its pane still exists:
 
 ```text
-tmux -L runner -f /dev/null has-session -t=runner-<session_id>
-tmux -L runner -f /dev/null list-panes -s -t=runner-<session_id> \
+tmux -L runner -f <runner.conf> has-session -t=runner-<session_id>
+tmux -L runner -f <runner.conf> list-panes -s -t=runner-<session_id> \
     -F '#{pane_id} #{pane_dead} #{pane_dead_status} #{pane_pid} #{pane_current_command}'
 ```
 
