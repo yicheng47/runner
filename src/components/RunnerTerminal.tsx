@@ -198,7 +198,7 @@ export function RunnerTerminal({
         !e.metaKey
       ) {
         const sid = sessionIdRef.current;
-        if (sid) {
+        if (sid && !disabledRef.current) {
           void api.session.injectStdin(sid, "\x1b\r").catch((err) => {
             onErrorRef.current?.(String(err));
           });
@@ -224,7 +224,7 @@ export function RunnerTerminal({
     // default behavior unchanged.
     const onPaste = (e: ClipboardEvent) => {
       const sid = sessionIdRef.current;
-      if (!sid) return;
+      if (!sid || disabledRef.current) return;
       const items = e.clipboardData?.items;
       if (!items) return;
       let hasImage = false;
