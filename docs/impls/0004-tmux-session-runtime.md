@@ -426,8 +426,14 @@ PTY, in order, exactly once. That's `pipe-pane`.
 
 ### Live stream via `pipe-pane`
 
+Two-step install, always:
+
 ```text
-tmux -L runner -f <runner.conf> pipe-pane -O -o -t=<pane_id> \
+# 1. Close any existing pipe on this pane (no-op if none):
+tmux -L runner -f <runner.conf> pipe-pane -t=<pane_id>
+
+# 2. Install the new pipe (output direction only):
+tmux -L runner -f <runner.conf> pipe-pane -O -t=<pane_id> \
     'cat >> '"'"'/path/to/per-session/runtime-dir/output.fifo'"'"
 ```
 
@@ -437,10 +443,17 @@ Flag semantics (often misremembered):
   what the agent wrote to its PTY). Pair with `-I` if we ever want
   to feed input back through the same channel — we don't; input
   goes through `paste-buffer`/`send-keys` (Step 7).
-- **`-o`** (lowercase) = "only open if no pipe is currently open" —
-  guards against accidental toggle-off when the runtime calls
-  `pipe-pane` more than once for the same pane (e.g. after a
-  reattach). Use it always; never rely on default toggle semantics.
+- **Don't use `-o`.** `-o` (lowercase) = "only open if no pipe is
+  currently open." It looks like a safety flag but is the wrong
+  primitive for reattach: if a stale pipe from a previous Runner
+  process is still registered against this pane (the Runner
+  process crashed/restarted but tmux kept running because of
+  `exit-empty off`), `-o` will *refuse* to install our new pipe
+  and live output keeps going to a dead FIFO. Instead, always do
+  the explicit close above first, then install without `-o`. tmux
+  itself closes any existing pipe before attaching a new
+  `pipe-pane` command, so the close is belt-and-suspenders for
+  the case where we want to stop output entirely (no replacement).
 - Stop a pipe explicitly with `tmux pipe-pane -t=<pane_id>` (no
   command, no flags) when shutting down a session.
 
@@ -535,9 +548,13 @@ So:
    FD into an in-memory buffer (e.g. `tokio::sync::mpsc` of byte
    chunks). The buffer accumulates everything the pane writes from
    this point forward.
-4. `pipe-pane -O -o 'cat >> fifo'` to start the writer. The writer-
-   side open returns immediately because step 2 has the FIFO open
-   for read; the forwarder is already pulling bytes through.
+4. Close any stale pipe on this pane: `pipe-pane -t=<pane_id>` (no
+   command). No-op for a fresh spawn; required for reattach where
+   a prior Runner process may have registered a pipe to a now-dead
+   FIFO. Then install the new writer: `pipe-pane -O -t=<pane_id>
+   'cat >> fifo'` (no `-o`). The writer-side open returns
+   immediately because step 2 has the FIFO open for read; the
+   forwarder is already pulling bytes through.
 5. `capture-pane -p -e -S - -E -` for the replay snapshot (with
    alternate-screen handling — see below).
 6. Emit `session_replay` with the snapshot.
@@ -680,6 +697,46 @@ System prompt delivery order, unchanged:
 - `src-tauri/src/commands/session.rs`
 - `src-tauri/src/commands/mission.rs`
 
+### App-start config reconciliation
+
+`-f <runner.conf>` is read **only when the tmux server starts**. With
+`exit-empty off` keeping the server alive across Runner restarts, an
+upgraded app finds an old server still running with the previous
+config's options. New options in the shipped config (e.g. a bumped
+`history-limit`, an added option) are not applied until the server
+restarts — which we don't want, because that would tear down all
+running panes.
+
+On every app start, after writing the latest config to disk and
+before spawning new panes:
+
+```text
+# Stamp the current config version into a server-scoped option:
+tmux -L runner -f <runner.conf> set-option -g @runner_config_version "<sha>"
+
+# If has-session shows the server was already running (pre-upgrade),
+# reload the config explicitly:
+tmux -L runner -f <runner.conf> source-file '<runner.conf>'
+```
+
+`source-file` re-runs the `set-option`s in the config against the
+already-running server, so the running panes get the new values
+where applicable (history-limit per-pane is sticky for existing
+panes — only new panes pick up the new value, which is acceptable).
+
+The stamped `@runner_config_version` (a hash of the config contents
+or the app version string) lets a future Runner cheaply check
+"already reconciled?" before doing the source-file dance:
+
+```text
+tmux -L runner -f <runner.conf> show-options -g -v @runner_config_version
+```
+
+If the value matches our expected hash, skip `source-file`. If it
+differs (or is missing), reload and re-stamp.
+
+### Session reconciliation
+
 On app startup or session list:
 
 - If a session row has `runtime = 'tmux'`, check whether its pane still exists:
@@ -772,21 +829,41 @@ Unit tests:
   - inserts `--` before any user-derived payload
   - rejects/escapes a payload ending in `;`
 
-Integration tests, gated behind local tmux availability:
+Integration tests, gated behind local tmux availability. **Each test
+process must use both an isolated socket label and an isolated
+config file**, mirroring production. Without `-f <temp.conf>`, tests
+load `~/.tmux.conf` and the assertions that depend on
+`remain-on-exit on` (most notably the `pane_dead_status` exit-code
+test) become non-deterministic against developer machines.
 
-- spawn a session running a simple shell command on a private socket
-  (`-L runner-test-<pid>`) so the test never touches the user's tmux
-  server
-- capture initial and later output
-- send input via `paste-buffer -p` and observe the output (round-trip
-  multi-line UTF-8 with embedded `;`, `\n`, and a trailing newline
-  that must not be auto-translated to CR)
-- re-create `SessionManager` and attach to the same tmux session
-- stop a session and reconcile status: assert `pane_dead = 1` and
+- Test fixture: `tempfile`-backed `runner-test-<pid>.conf` containing
+  the same options as the production config (`exit-empty off`,
+  `remain-on-exit on`, etc.). Wire it into `tmux_cmd()` via a
+  `(label, config_path)` constructor parameter so test code uses the
+  exact same helper as production.
+- Spawn a session running a simple shell command on a private socket
+  (`-L runner-test-<pid>`) **with `-f <temp.conf>`** so the test
+  neither touches the user's tmux server nor inherits their tmux
+  config.
+- Capture initial and later output via `pipe-pane`/`capture-pane`
+  exactly as production does.
+- Send input via `paste-buffer -p -r -d` and observe the output
+  (round-trip multi-line UTF-8 with embedded `;`, `\n`, and a
+  trailing newline that must stay literal — `-r` keeps LF→LF and
+  the trailing `Enter` submits separately).
+- Re-create `SessionManager` and attach to the same tmux session;
+  assert pipe-pane reattach works (close stale pipe → install new
+  pipe without `-o` → fresh FIFO).
+- Stop a session and reconcile status: assert `pane_dead = 1` and
   `pane_dead_status` matches the child's exit code (requires
-  `remain-on-exit on`)
-- post-test cleanup: `tmux -L runner-test-<pid> kill-server` so the
-  CI runner doesn't accumulate tmux daemons
+  `remain-on-exit on` — and it's now in the test config).
+- Config reconciliation: start a session, externally rewrite the
+  config (bump a stamped `@runner_config_version`), call the
+  reconciler, assert `source-file` was issued and the new option
+  visible via `show-options -g -v`.
+- Post-test cleanup: `tmux -L runner-test-<pid> -f <temp.conf>
+  kill-server` so the CI runner doesn't accumulate tmux daemons or
+  config tempfiles.
 
 Manual smoke:
 
