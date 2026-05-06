@@ -185,6 +185,29 @@ export function RunnerTerminal({
       });
     });
 
+    // Shift+Enter → ESC+CR so claude-code/codex insert a newline in their
+    // input frame instead of submitting. Plain Enter falls through to the
+    // default \r emission via onData above.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown") return true;
+      if (
+        e.key === "Enter" &&
+        e.shiftKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.metaKey
+      ) {
+        const sid = sessionIdRef.current;
+        if (sid) {
+          void api.session.injectStdin(sid, "\x1b\r").catch((err) => {
+            onErrorRef.current?.(String(err));
+          });
+        }
+        return false;
+      }
+      return true;
+    });
+
     const pushSize = () => {
       const t = termRef.current;
       const sid = sessionIdRef.current;
