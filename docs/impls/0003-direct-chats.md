@@ -5,7 +5,7 @@
 > persists across app restarts and can be resumed later". Multi-chat per
 > runner falls out for free.
 >
-> Companion to `docs/impls/v0-mvp.md` (the umbrella plan) and
+> Companion to `docs/impls/0001-v0-mvp.md` (the umbrella plan) and
 > `docs/arch/v0-arch.md`. Lives in its own file because (a) it changes the
 > direct-chat lifecycle model, not just the UI, and (b) parts of it
 > supersede `lookup_prior_agent_session_key` from the resume work that
@@ -245,7 +245,7 @@ coupled and not worth splitting across PRs.
 - **Rename UI.** Schema column ships now; affordance ships later.
 - **Archived workspace surface.** The destination for archived
   sessions and (eventually) archived missions. See
-  `docs/impls/v0-mvp.md` "Out of scope for MVP".
+  `docs/impls/0001-v0-mvp.md` "Out of scope for MVP".
 - **Per-runner grouping in the sidebar.** Started flat; if the tray
   gets noisy with many chats per runner, can collapse later. Don't
   preempt.

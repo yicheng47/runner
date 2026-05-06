@@ -41,7 +41,7 @@ export interface SessionRow extends Session {
 
 /**
  * Sidebar SESSION row: one entry per un-archived direct session. Multi
- * chat per runner — see docs/impls/direct-chats.md — so the list is
+ * chat per runner — see docs/impls/0003-direct-chats.md — so the list is
  * flat. Stopped/crashed sessions stay listed because they can be
  * resumed via session_resume (which respawns the same row's PTY).
  */

@@ -1,7 +1,7 @@
 // Add a slot to a crew. A slot binds a runner template to an in-crew
 // identity (`slot_handle`). The same runner template may fill
 // multiple slots in one crew with different slot_handles — see
-// docs/impls/crew-slots.md.
+// docs/impls/0002-crew-slots.md.
 
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";

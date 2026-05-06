@@ -4,8 +4,8 @@
 > multiple slots that all reference the same Runner template, each with its
 > own slot_handle and (in a follow-up) optional system-prompt override.
 >
-> Companion to `docs/impls/v0-mvp.md` (umbrella plan), `docs/arch/v0-arch.md`,
-> and `docs/impls/direct-chats.md`. Lives in its own file because the
+> Companion to `docs/impls/0001-v0-mvp.md` (umbrella plan), `docs/arch/v0-arch.md`,
+> and `docs/impls/0003-direct-chats.md`. Lives in its own file because the
 > change reaches schema, mission lifecycle, router prompt composition, the
 > bundled CLI's identity env, and most of the crew-facing UI.
 >
@@ -324,7 +324,7 @@ Each step lands as its own commit on the same PR.
 - **Display affordance for "this Runner is used in N slots across M
   crews".** Useful info on the Runner detail page. Drop-in once the
   slot list query exists.
-- **Mission-session resume.** Listed in `direct-chats.md` as deferred.
+- **Mission-session resume.** Listed in `0003-direct-chats.md` as deferred.
   Slot identity makes this cleaner — `agent_session_key` is per slot
   (not per runner) — so when we ship mission resume, the lookup is
   unambiguous.

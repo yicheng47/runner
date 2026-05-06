@@ -287,7 +287,7 @@ impl SessionManager {
     ///
     /// `app_data_dir` is the root of `$APPDATA/runner/` so we can prepend
     /// `<app_data_dir>/bin` onto the child's PATH — arch §5.3 Layer 2 and
-    /// v0-mvp.md C9 both require the bundled `runner` CLI to win over any
+    /// 0001-v0-mvp.md C9 both require the bundled `runner` CLI to win over any
     /// system binary with the same name.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
@@ -314,7 +314,7 @@ impl SessionManager {
         // there's no prior key to inherit. The runtime adapter still
         // self-assigns a UUID for claude-code (`--session-id <uuid>`) so
         // a future `SessionManager::resume` can hand it back. See
-        // docs/impls/direct-chats.md for why mission spawn no longer
+        // docs/impls/0003-direct-chats.md for why mission spawn no longer
         // chains across mission_stop/start.
         let plan = crate::router::runtime::resume_plan(&runner.runtime, None);
 
@@ -589,7 +589,7 @@ impl SessionManager {
         // for an existing row instead of creating a new one. Here we
         // just let the runtime adapter self-assign a fresh
         // `agent_session_key` (claude-code) or leave it NULL (codex).
-        // See docs/impls/direct-chats.md.
+        // See docs/impls/0003-direct-chats.md.
         let plan = crate::router::runtime::resume_plan(&runner.runtime, None);
 
         let mut cmd = CommandBuilder::new(&runner.command);
@@ -2953,7 +2953,7 @@ mod tests {
         // row. spawn_direct creates the row and the agent CLI's UUID
         // (for claude-code; shell here just exits). After kill, resume
         // respawns the *same* row — same id, same agent_session_key —
-        // and flips status back to running. See docs/impls/direct-chats.md.
+        // and flips status back to running. See docs/impls/0003-direct-chats.md.
         let pool = pool_with_schema();
         let now = Utc::now().to_rfc3339();
         let runner_id = ulid::Ulid::new().to_string();

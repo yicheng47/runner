@@ -4,7 +4,7 @@ Spawn a runner. Create your crew. Ship the feature.
 
 Runner is a local desktop app for assembling a crew of CLI coding agents — Claude Code, Codex, and friends — giving each runner a role and a brief, and coordinating their work from one window.
 
-> Status: pre-alpha. Crew + runner config, mission start/stop, event-log tailing, the signal router, the bundled `runner` CLI, and PTY-backed mission workspaces run end-to-end on macOS / Linux. See `docs/impls/v0-mvp.md` for the current plan and status.
+> Status: pre-alpha. Crew + runner config, mission start/stop, event-log tailing, the signal router, the bundled `runner` CLI, and PTY-backed mission workspaces run end-to-end on macOS / Linux. See `docs/impls/0001-v0-mvp.md` for the current plan and status.
 
 ## What it does
 
