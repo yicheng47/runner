@@ -384,7 +384,7 @@ Persist the returned `pane_id`. Pane ids (e.g. `%3`) survive index
 reshuffles; never persist `:0.0`-style indexes.
 
 Before creating a new tmux session, check whether `runner-<session_id>`
-already exists (`tmux -L runner has-session -t=runner-<session_id>`).
+already exists (`tmux -L runner -f <runner.conf> has-session -t=runner-<session_id>`).
 If it exists and the DB says the session is running, reattach instead
 of spawning a duplicate. If it exists and the DB says stopped, kill
 the stale session before respawning.
@@ -394,7 +394,7 @@ the stale session before respawning.
 Frontend resize events translate to:
 
 ```text
-tmux -L runner resize-window -t=runner-<session_id>:main -x <cols> -y <rows>
+tmux -L runner -f <runner.conf> resize-window -t=runner-<session_id>:main -x <cols> -y <rows>
 ```
 
 Because `window-size manual` is set at the server level, this is the
@@ -466,17 +466,35 @@ Other notes:
 
 ### One-shot scrollback on attach
 
+claude-code and codex are TUIs that switch into the **alternate
+screen** (`\e[?1049h`) when running. tmux's main-screen scrollback
+(`-S -`) is what was on screen *before* the TUI took over; the
+alternate screen has no scrollback at all. So the right capture
+shape depends on which screen the pane is currently displaying.
+
+Query that first:
+
 ```text
-tmux -L runner -f <runner.conf> capture-pane -p -e -S - -E - -t=<pane_id>
+tmux -L runner -f <runner.conf> display-message -p -t=<pane_id> '#{alternate_on}'
 ```
+
+Then capture conditionally:
+
+| `alternate_on` | Capture command | What we get |
+|---|---|---|
+| `0` (main screen) | `capture-pane -p -e -S - -E - -t=<pane_id>` | Full main-screen scrollback up to `history-limit`. |
+| `1` (alternate screen) | `capture-pane -p -e -t=<pane_id>` | Just the current alternate-screen visible region (no `-S/-E` because alternate has no history). For belt-and-suspenders, capture both: run the main-screen variant first as historical context, emit it as one `session_replay`, then capture the alternate-screen visible region and emit it as a second `session_replay` chunk so xterm.js renders the TUI on top. |
 
 Flag meanings:
 
 - `-p` print to stdout (versus `-b` to a tmux buffer).
 - `-e` preserve SGR/ANSI escape sequences. **Required** for xterm.js
   to render colors and cursor movement.
-- `-S - -E -` full available scrollback (bounded by
-  `history-limit`).
+- `-S - -E -` full available scrollback. Bounded by `history-limit`.
+  Only meaningful on the main screen.
+- `-a` exists for "capture the *other* (currently inactive) screen";
+  we don't need it — we always capture the active screen, which is
+  the default behavior of `capture-pane`.
 - **No `-J`**. `-J` joins wrapped lines into a single physical line
   with trailing spaces — useful for archival, breaks xterm.js's own
   reflow on resize. Use `-J` only for the "export transcript"
@@ -490,37 +508,57 @@ stream". Use a separate `session_replay` Tauri event, or a
 output event. This also handles the "switch tabs and the terminal
 re-mounts" case cleanly.
 
-Order on attach (must not change — opening a FIFO writer blocks
-until a reader is attached):
+Order on attach. Two FIFO open semantics drive this; getting either
+backwards wedges the pane:
+
+- `open(O_RDONLY)` on a FIFO **blocks** until a writer is attached,
+  unless `O_NONBLOCK` is set. (POSIX `fifo(7)`.)
+- `open(O_WRONLY)` on a FIFO **always blocks** until a reader is
+  attached (`O_NONBLOCK` causes ENXIO instead of blocking — also not
+  what we want).
+- A small Linux-specific shortcut: `open(O_RDWR)` on a FIFO never
+  blocks. Don't rely on this on macOS — POSIX leaves it undefined.
+
+So:
 
 1. `mkfifo` the per-session FIFO if it doesn't already exist.
-2. **Open the FIFO reader-side first** in the runtime, non-blocking
-   (`OpenOptions::new().read(true).custom_flags(O_NONBLOCK).open(…)`,
-   then unset `O_NONBLOCK` once open if you want blocking reads
-   afterwards — or stay non-blocking and `tokio::spawn` an async
-   forwarder). Reading-side open does **not** block on POSIX even
-   without `O_NONBLOCK` if there's no writer, but the writer side
-   does block until we open for read.
-3. `pipe-pane -O -o 'cat >> fifo'` to start the writer. tmux's
-   `cat >>` will not block now because step 2 has the FIFO open
-   for read.
-4. `capture-pane -p -e -S - -E -` for the replay snapshot.
-5. Emit `session_replay`.
-6. Start the forwarder task that drains the reader-side FD into
-   `session_output`.
+2. **Open the FIFO reader-side first** in the runtime, with
+   `O_NONBLOCK` set
+   (`OpenOptions::new().read(true).custom_flags(O_NONBLOCK).open(…)`).
+   Without `O_NONBLOCK`, this open blocks until tmux runs `cat` —
+   but tmux can't be told to run `cat` until after we've registered
+   the pipe, so we'd deadlock. With `O_NONBLOCK` the open returns
+   immediately; subsequent reads return `EAGAIN` until data lands.
+   Pair with `tokio::io::unix::AsyncFd` (or `tokio::fs::File` on a
+   `dup`'d fd with `O_NONBLOCK` cleared) for the async read path.
+3. **Start the forwarder task immediately**, draining the reader-side
+   FD into an in-memory buffer (e.g. `tokio::sync::mpsc` of byte
+   chunks). The buffer accumulates everything the pane writes from
+   this point forward.
+4. `pipe-pane -O -o 'cat >> fifo'` to start the writer. The writer-
+   side open returns immediately because step 2 has the FIFO open
+   for read; the forwarder is already pulling bytes through.
+5. `capture-pane -p -e -S - -E -` for the replay snapshot (with
+   alternate-screen handling — see below).
+6. Emit `session_replay` with the snapshot.
+7. **Switch the forwarder from "buffer" to "emit"**: drain the
+   buffered chunks as `session_output` events in order, then keep
+   emitting future chunks live.
 
-If we get the order wrong (call `pipe-pane` before the reader is
-open), `cat` blocks on the open and the agent's output piles up in
-its PTY buffer; once that fills (16–64 KB on macOS/Linux), the
-agent's `write()` blocks too and the whole pane wedges.
+Why steps 3 and 7 are split: if the forwarder doesn't start until
+*after* `session_replay` is emitted (the previous version of this
+plan), the FIFO can fill during a slow `capture-pane`, blocking
+`cat`'s `write()`, which back-pressures into the pane PTY buffer
+(macOS/Linux: 16–64 KB), and once that fills the agent's `write()`
+blocks and the pane wedges. Always be draining; choose what to do
+with the bytes (buffer vs. emit) at a layer above the read.
 
-There is a tiny window between (4) and (6) where bytes the agent
-writes are pipe-pane'd into the FIFO but the replay snapshot
-doesn't yet include them. xterm.js will replay the snapshot, then
-get those bytes as live appends — net effect is they appear twice
-(once at end of snapshot, once as fresh output). Acceptable for v1
-(rare, and it's just a few ms of duplicate cells); revisit if it's
-visible.
+There is still a tiny window between (5) and (7) where bytes the
+agent writes are both in the replay snapshot and in the buffered
+chunks — they appear twice. Acceptable for v1 (rare, a few ms of
+duplicate cells); the upgrade is to mark a "buffer cursor" at step
+4 and only flush bytes accumulated *after* the snapshot's terminal
+state. Revisit if visible.
 
 This must preserve the user-visible scrollback across:
 
@@ -533,7 +571,7 @@ This must preserve the user-visible scrollback across:
 ### Why not control mode (`tmux -CC`) yet
 
 Control mode would replace the FIFO+pipe-pane plumbing with a
-single long-lived `tmux -L runner -CC new-session …` child emitting
+single long-lived `tmux -L runner -f <runner.conf> -CC new-session …` child emitting
 `%output`, `%window-renamed`, `%exit`, etc. Tempting. Skipping it
 for v1 because:
 
@@ -589,9 +627,9 @@ Use tmux APIs instead of writing to a frontend-owned PTY writer.
 - **Enter / control keys** (single keystrokes, no paste markers):
 
   ```text
-  tmux -L runner send-keys -t=<pane_id> Enter
-  tmux -L runner send-keys -t=<pane_id> C-c
-  tmux -L runner send-keys -t=<pane_id> -- Up
+  tmux -L runner -f <runner.conf> send-keys -t=<pane_id> Enter
+  tmux -L runner -f <runner.conf> send-keys -t=<pane_id> C-c
+  tmux -L runner -f <runner.conf> send-keys -t=<pane_id> -- Up
   ```
 
 - **Literal byte stream** (terminal app input from xterm.js, e.g. raw
@@ -599,7 +637,7 @@ Use tmux APIs instead of writing to a frontend-owned PTY writer.
   view):
 
   ```text
-  tmux -L runner send-keys -t=<pane_id> -l -- <payload>
+  tmux -L runner -f <runner.conf> send-keys -t=<pane_id> -l -- <payload>
   ```
 
   - `-l` disables key-name lookup so the payload is delivered as
@@ -611,7 +649,8 @@ Use tmux APIs instead of writing to a frontend-owned PTY writer.
 ### Quoting / injection
 
 Never go through `sh -c` for tmux invocations. Always
-`Command::new("tmux").arg("-L").arg("runner").arg("send-keys")…`
+`tmux_cmd().arg("send-keys")…` (where `tmux_cmd()` already binds
+`-L runner -f <runner.conf>`)
 with one arg per token. User-controlled strings (prompts, env values)
 go either over stdin (`load-buffer -`) or after `--` on the argv —
 never interpolated into a shell string. Validate session/window/buffer
