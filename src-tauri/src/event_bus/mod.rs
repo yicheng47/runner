@@ -32,7 +32,7 @@
 //     watermark advance is just `len - read_idx` — no log rescans.
 //
 //   - Watermarks come exclusively from `inbox_read` signals (per arch §5.3 and
-//     v0-mvp.md C7), never inferred from `--since` or wall time. The signal's
+//     0001-v0-mvp.md C7), never inferred from `--since` or wall time. The signal's
 //     `from` identifies which runner is reading; `payload.up_to` is the ULID
 //     they claim to have read through.
 

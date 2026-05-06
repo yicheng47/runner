@@ -2,7 +2,7 @@
 //
 // `crews.signal_types` is seeded by SQL DEFAULT (see migrations/0001_init.sql),
 // so crew_create leaves that column unset and lets the DB populate it. See
-// docs/impls/v0-mvp.md §C2 and docs/arch/v0-arch.md §5.3 Layer 2.
+// docs/impls/0001-v0-mvp.md §C2 and docs/arch/v0-arch.md §5.3 Layer 2.
 
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Row};

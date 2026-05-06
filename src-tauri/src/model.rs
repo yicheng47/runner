@@ -33,7 +33,7 @@ pub struct Crew {
 // Runner is a config template — the agent CLI's runtime, command,
 // args, env, optional system_prompt, optional working_dir, plus a
 // globally-unique `handle` that names the template. Per-slot identity
-// lives on `Slot` (see docs/impls/crew-slots.md): the same template
+// lives on `Slot` (see docs/impls/0002-crew-slots.md): the same template
 // can sit in multiple slots with distinct slot_handles even within
 // one crew.
 #[derive(Debug, Clone, Serialize, Deserialize)]

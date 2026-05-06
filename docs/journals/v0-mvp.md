@@ -2,7 +2,7 @@
 
 > Dated implementation notes and validation follow-ups for the v0 MVP.
 > Keep this file chronological and lightweight. The stable implementation
-> reference lives in `docs/impls/v0-mvp.md`.
+> reference lives in `docs/impls/0001-v0-mvp.md`.
 
 ## 2026-05-01 (PM)
 
@@ -328,7 +328,7 @@ resume the prior Codex/Claude Code conversation when available; mission PTYs
 should be able to resume each runner's stored native id after app restart. If
 the native id is missing or resume fails, fall back to fresh spawn and surface
 a clear warning. The detailed direct-chat lifecycle plan now lives in
-`docs/impls/direct-chats.md`.
+`docs/impls/0003-direct-chats.md`.
 
 ## 2026-04-28
 

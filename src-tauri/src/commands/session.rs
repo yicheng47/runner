@@ -144,7 +144,7 @@ pub async fn session_output_snapshot(
 
 /// One row per direct-chat *session* in the sidebar SESSION tray. Each
 /// runner can host multiple parallel chats — see
-/// docs/impls/direct-chats.md — so the tray is flat (not collapsed per
+/// docs/impls/0003-direct-chats.md — so the tray is flat (not collapsed per
 /// runner). Stopped/crashed rows stay listed because they can be
 /// resumed via `session_resume`, which preserves the row's id and
 /// `agent_session_key`.

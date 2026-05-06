@@ -7,7 +7,7 @@
 // `mission_goal`), cross-process stdin push (`ask_lead`, `human_said`,
 // `human_response`), the UI bridge (`ask_human` → `human_question` event),
 // and the runner-availability map (`runner_status`). See arch §5.5 and
-// docs/impls/v0-mvp.md `C8 — Signal router v0`.
+// docs/impls/0001-v0-mvp.md `C8 — Signal router v0`.
 //
 // What this is not. There is no policy engine, no rule abstraction, no
 // per-crew config in MVP. Handlers are a flat `match signal_type { … }`.
