@@ -151,25 +151,38 @@ This is independent of runner command PATH resolution. Even if the app launched
 with a stripped PATH, Homebrew tmux should still be found through the fallback
 locations.
 
-### Use a private tmux server (`-L runner`)
+### Use a private tmux server (`-L runner -f /dev/null`)
 
-Every tmux invocation must include `-L runner` (or `-L $RUNNER_TMUX_LABEL`
-for tests/dev). This:
+Every tmux invocation must include both `-L runner` (or `-L
+$RUNNER_TMUX_LABEL` for tests/dev) **and** `-f /dev/null`. This:
 
 - Resolves to a separate socket at `/tmp/tmux-<UID>/runner` with the
   inherited 0700 dir perms — we don't share state with the user's
   default `tmux ls` server. Avoids cs#277 (env-var inheritance from a
   pre-existing user tmux server) by construction.
+- `-f /dev/null` skips loading `~/.tmux.conf`. `-L` only isolates the
+  *socket*; the server still reads the user's config by default,
+  which can rebind keys, set `default-shell`, alias `paste-buffer`,
+  override `history-limit`, etc. Skipping it keeps Runner's behavior
+  deterministic regardless of what the user has in their dotfiles.
+  (We can swap `/dev/null` for a generated `~/Library/Application
+  Support/runner/tmux.conf` later if we ever need to ship our own
+  config; for v1 the server-level `set-option`s in Step 5 cover
+  everything we need.)
 - Lets us own server-wide options (`history-limit`, `default-size`,
   `window-size`, `remain-on-exit`) without polluting the user's tmux
   config.
-- Makes "kill all Runner sessions" a single `tmux -L runner
-  kill-server`, which we want for diagnostics and the dev "wipe state"
-  flow.
+- Makes "kill all Runner sessions" a single `tmux -L runner -f
+  /dev/null kill-server`, which we want for diagnostics and the dev
+  "wipe state" flow.
 
 Prefer `-L runner` over `-S /path/to/sock` because tmux already places
 `-L` sockets under the per-UID dir with the right perms; rolling a
 custom path means hand-managing the parent directory mode.
+
+Wrap this in a single helper: `fn tmux_cmd() -> Command` returning a
+`Command::new("tmux").args(["-L", "runner", "-f", "/dev/null"])` so
+the global flags can never be forgotten at a call site.
 
 ### Windows fallback
 
@@ -308,16 +321,31 @@ Rationale:
 ### Spawn shape
 
 ```text
-tmux -L runner new-session -d -s runner-<session_id> -n main -c <cwd> -- <launch-script>
-tmux -L runner display-message -p -t=runner-<session_id>:main '#{pane_id}'
+tmux -L runner -f /dev/null new-session -d -P -F '#{pane_id}' \
+    -s runner-<session_id> -n main -c <cwd> -- '<shell-quoted-launch-script>'
 ```
 
-Note the **exact-match `-t=name`**, not `-t name`: the latter does
-prefix matching and a session named `runner-1` will collide with
-`runner-10`. claude-squad calls this footgun out inline at
-`tmux.go:459` — it's worth catching at the helper layer (a
-`fn target(name: &str) -> String { format!("={}", name) }` keeps it
-hard to forget).
+Notes:
+
+- `-P -F '#{pane_id}'` makes `new-session` itself print the new
+  pane id on stdout. Avoids a second `display-message` round-trip
+  (one less point where the pane could exit between create and
+  query).
+- Use **exact-match `-t=name`** everywhere else, not `-t name`: the
+  latter does prefix matching and a session named `runner-1` will
+  collide with `runner-10`. claude-squad calls this footgun out
+  inline at `tmux.go:459` — catch it at the helper layer (a
+  `fn target(name: &str) -> String { format!("={}", name) }` keeps
+  it hard to forget).
+- The trailing positional argument to `new-session` is a
+  **`shell-command` string**, not argv — tmux passes it through the
+  user's `default-shell` with `-c`. If the launch-script path can
+  contain spaces or special characters (it lives under the
+  per-session runtime dir, which we control, but session ids /
+  session paths can drift), single-quote the path explicitly when
+  generating the command. The `--` before it stops tmux's own
+  option parsing but does **not** disable the shell-string
+  semantics.
 
 Persist the returned `pane_id`. Pane ids (e.g. `%3`) survive index
 reshuffles; never persist `:0.0`-style indexes.
@@ -348,75 +376,113 @@ layer (target ~50ms; coalesce repeated resizes within the window).
 
 **File:** `src-tauri/src/session/tmux.rs`
 
-Replace direct `portable-pty` reads with tmux capture.
+Replace direct `portable-pty` reads with two distinct mechanisms:
 
-### Capture flags
+| Need | Tool |
+|------|------|
+| Live byte stream → `session_output` events | `pipe-pane` |
+| One-shot scrollback replay on attach | `capture-pane` |
 
-- Live tick (visible region only):
-  `tmux -L runner capture-pane -p -e -t=<pane_id>`
-- Replay on attach (full available scrollback):
-  `tmux -L runner capture-pane -p -e -S - -E - -t=<pane_id>`
+These are not interchangeable. **`capture-pane` returns a screen
+snapshot, not a stream of terminal bytes.** Hashing snapshots and
+appending them into xterm.js on change would duplicate the same
+on-screen cells every tick they redraw — the cursor moves, a
+spinner spins, and we'd append a near-identical screen on every
+hash mismatch. xterm.js needs the raw output the agent wrote to its
+PTY, in order, exactly once. That's `pipe-pane`.
+
+### Live stream via `pipe-pane`
+
+```text
+tmux -L runner -f /dev/null pipe-pane -t=<pane_id> -O \
+    'cat >> /path/to/per-session/runtime-dir/output.fifo'
+```
+
+- `-O` (open) starts piping; calling without `-O` toggles, which is
+  fragile — always use `-O` and call `pipe-pane -t=<pane>` (no
+  command) explicitly to stop.
+- The shell command's stdin is whatever the pane writes to its PTY,
+  byte-for-byte. We get exactly the bytes xterm.js needs.
+- Use a **named FIFO under the per-session runtime dir**
+  (`mkfifo`) rather than a regular file: regular files grow
+  unbounded; the FIFO blocks the writer until our reader is
+  attached, which is exactly the backpressure semantics we want.
+  Open the FIFO non-blocking on the reader side and `tokio::spawn`
+  a forwarder task that emits `session_output` chunks.
+- Alternative if FIFOs become a portability headache on Linux
+  containers: pipe to a Unix-domain socket we accept on, or open a
+  control-mode child (deferred — see below). For v1, FIFO under
+  the per-session dir.
+- `pipe-pane` survives detach/reattach of clients (we never have
+  one) and persists across capture-pane calls. Stop it with `tmux
+  pipe-pane -t=<pane_id>` (no command).
+
+### One-shot scrollback on attach
+
+```text
+tmux -L runner -f /dev/null capture-pane -p -e -S - -E - -t=<pane_id>
+```
 
 Flag meanings:
 
 - `-p` print to stdout (versus `-b` to a tmux buffer).
 - `-e` preserve SGR/ANSI escape sequences. **Required** for xterm.js
   to render colors and cursor movement.
+- `-S - -E -` full available scrollback (bounded by
+  `history-limit`).
 - **No `-J`**. `-J` joins wrapped lines into a single physical line
   with trailing spaces — useful for archival, breaks xterm.js's own
-  reflow on resize. Use `-J` only for the "export transcript" feature
-  if/when we add one.
-- `-S - -E -` only on the replay path; on every tick this is wasted
-  socket bandwidth.
+  reflow on resize. Use `-J` only for the "export transcript"
+  feature if/when we add one.
 
-### Polling cadence
+Emit the capture as a **single replay payload** distinct from
+`session_output` — xterm.js needs to know "this is a snapshot,
+reset the buffer to it" rather than "append this to the live
+stream". Use a separate `session_replay` Tauri event, or a
+`{ kind: "replay" | "stream" }` discriminator on the existing
+output event. This also handles the "switch tabs and the terminal
+re-mounts" case cleanly.
 
-- Focused pane (the one currently rendered in the foreground tab):
-  100–150 ms.
-- Background panes (mission slots not currently visible): 500 ms.
-- Idle panes (no detectable change for >5s): 1 s.
+Order on attach:
 
-Detect change by hashing the captured bytes and comparing — claude-squad
-does this with SHA-256 (`tmux.go:235-256`), which is overkill;
-`xxhash` or `bytes.Equal` against the previously captured chunk is
-fine. Only emit a frontend `session_output` event when the hash
-changes.
+1. `pipe-pane -O 'cat > fifo'` to start capturing live bytes.
+2. `capture-pane -p -e -S - -E -` for the replay snapshot.
+3. Emit `session_replay`.
+4. Start the forwarder task that drains the FIFO into
+   `session_output`.
 
-### Replay vs. delta
+There is a tiny window between (2) and (4) where bytes the agent
+writes are pipe-pane'd into the FIFO but the replay snapshot
+doesn't yet include them. xterm.js will replay the snapshot, then
+get those bytes as live appends — net effect is they appear twice
+(once at end of snapshot, once as fresh output). Acceptable for v1
+(rare, and it's just a few ms of duplicate cells); revisit if it's
+visible.
 
-On frontend attach, do one full-scrollback capture and emit it as a
-single replay payload (xterm.js can ingest large pastes fast). Track
-`#{history_size}` from the previous tick so subsequent ticks can
-request only the delta — but `history_size` only grows on scrollback
-push, not on visible-region rewrites, so always include the visible
-region in the delta as well.
+This must preserve the user-visible scrollback across:
 
-This does not need perfect byte-for-byte terminal history in the first pass, but
-it must preserve the user-visible scrollback across:
-
-- tab switch
-- route switch
-- window reload
-- app restart while tmux server is still alive
-
-If capture-pane line cursoring is too lossy for interactive redraws, keep a
-small backend transcript as a second layer. Tmux still remains the source of
-truth for process lifetime.
+- tab switch (replay from in-memory buffer, no tmux call needed)
+- route switch (same)
+- window reload (replay via fresh `capture-pane`)
+- app restart while tmux server is still alive (replay via fresh
+  `capture-pane`; live stream resumes via `pipe-pane`)
 
 ### Why not control mode (`tmux -CC`) yet
 
-Control mode would replace the polling loop with a single long-lived
-`tmux -L runner -CC new-session …` child emitting `%output`,
-`%window-renamed`, `%exit`, etc. Tempting. Skipping it for v1 because:
+Control mode would replace the FIFO+pipe-pane plumbing with a
+single long-lived `tmux -L runner -CC new-session …` child emitting
+`%output`, `%window-renamed`, `%exit`, etc. Tempting. Skipping it
+for v1 because:
 
 - `%output` chunks can split mid-multi-byte UTF-8 codepoint
   (wezterm#6769); the parser must buffer and decode lazily.
 - Output bytes < 0x20 and `\` are octal-escaped (`\nnn`); the
   unescape pass is non-trivial.
-- claude-squad ships pure polling and works.
+- `pipe-pane` ships ~the same byte-stream semantics with less
+  parser surface.
 
-Revisit once polling cost (CPU per pane × N missions) becomes
-measurable, and put it behind a feature flag so we can A/B in the
+Revisit if FIFO management or per-pane forwarder tasks become a
+bottleneck, and put it behind a feature flag so we can A/B in the
 field.
 
 ## Step 7: Send input through tmux
@@ -438,15 +504,22 @@ Use tmux APIs instead of writing to a frontend-owned PTY writer.
   agent recognizes it as a paste rather than typed input):
 
   ```text
-  printf %s "$payload" | tmux -L runner load-buffer -b runner-<id> -
-  tmux -L runner paste-buffer -p -d -b runner-<id> -t=<pane_id>
+  printf %s "$payload" | tmux -L runner -f /dev/null load-buffer -b runner-<id> -
+  tmux -L runner -f /dev/null paste-buffer -p -r -d -b runner-<id> -t=<pane_id>
   ```
 
   - `-p` wraps the payload in `\e[200~ … \e[201~` so claude-code /
     codex see a real paste event.
+  - **`-r` (do not replace LF with CR).** This is critical and
+    counter-intuitive: `paste-buffer` **defaults to LF→CR
+    translation**, so a multi-line prompt without `-r` would have
+    every `\n` rewritten to `\r` and the agent would see each line
+    as a submitted message. `load-buffer` itself is verbatim — the
+    LF→CR happens at *paste* time. With `-r`, the buffer's `\n`s
+    arrive as `\n` on the pane and we send a separate `Enter` to
+    submit the whole multi-line prompt as one message.
   - `-d` deletes the named buffer after pasting (no leak).
-  - `load-buffer -` reads stdin verbatim and does **not** translate
-    `\n` → `\r`. **Strip the trailing newline from the payload before
+  - **Strip the trailing newline from the payload before
     `load-buffer`**; submit with a separate `send-keys Enter` so the
     agent's `\r`-bound submit handler fires.
 
@@ -510,10 +583,19 @@ On app startup or session list:
 - If a session row has `runtime = 'tmux'`, check whether its pane still exists:
 
 ```text
-tmux -L runner has-session -t=runner-<session_id>
-tmux -L runner list-panes -t=runner-<session_id> \
+tmux -L runner -f /dev/null has-session -t=runner-<session_id>
+tmux -L runner -f /dev/null list-panes -s -t=runner-<session_id> \
     -F '#{pane_id} #{pane_dead} #{pane_dead_status} #{pane_pid} #{pane_current_command}'
 ```
+
+- `-s` makes `list-panes` treat the target as a session and
+  enumerate every pane in every window of that session. Without
+  `-s`, `list-panes` interprets the target as a *window* and a
+  bare `runner-<session_id>` won't resolve to anything (or worse,
+  resolves to the wrong window via tmux's lookup rules). The
+  alternative is targeting the window directly:
+  `-t=runner-<session_id>:main` without `-s`. Either works; `-s`
+  is robust against window-name drift.
 
 - If pane exists and `pane_dead = 0`, mark the session `running` and
   allow attach.
