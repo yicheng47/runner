@@ -189,9 +189,19 @@ pub fn tmux_cmd(tmux_bin: &Path, label: &str, config: &Path) -> Command {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::Mutex;
+
+    /// Tests that mutate `RUNNER_TMUX` / `PATH` must hold this
+    /// mutex for the duration of the mutation. Rust's default
+    /// test runner is multi-threaded, so without serialization
+    /// two env-mutating tests can race and observe each other's
+    /// half-restored state. Using a single `Mutex<()>` is enough
+    /// — the lock scope just needs to span set + read + restore.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn resolve_honors_runner_tmux_when_executable() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("tmux");
         fs::write(&bin, "#!/bin/sh\nexit 0\n").unwrap();
@@ -202,7 +212,6 @@ mod tests {
             perms.set_mode(0o755);
             fs::set_permissions(&bin, perms).unwrap();
         }
-        // Save and restore env so test ordering doesn't matter.
         let prev = env::var_os("RUNNER_TMUX");
         env::set_var("RUNNER_TMUX", &bin);
         let resolved = resolve_tmux_binary();
@@ -215,6 +224,7 @@ mod tests {
 
     #[test]
     fn resolve_skips_runner_tmux_when_missing() {
+        let _guard = ENV_LOCK.lock().unwrap();
         // Set RUNNER_TMUX to a path that doesn't exist; resolution
         // should fall through to PATH / fallbacks rather than
         // succeeding. We can't assert what it falls through to

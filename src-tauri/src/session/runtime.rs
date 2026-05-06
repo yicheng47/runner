@@ -69,22 +69,29 @@ pub struct RuntimeSession {
     pub pane: String,
 }
 
-/// Cursor for incremental output replay. Opaque to callers — the
-/// runtime decides what counts as a position. For tmux this is a
-/// pane history offset; for a future runtime it might be a byte
-/// count.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct CaptureCursor {
-    pub history_lines: u64,
+/// One unit of output produced by a runtime session. The manager
+/// forwards these to xterm.js with **distinct semantics** for each
+/// variant — collapsing them back into a single byte stream is the
+/// duplicated-cells bug the plan calls out (Step 6: snapshot ≠
+/// stream).
+#[derive(Debug, Clone)]
+pub enum RuntimeOutput {
+    /// Attach-time snapshot. xterm.js **resets** its buffer to this
+    /// content. Includes alternate-screen handling — for a
+    /// Claude/Codex pane in alternate-screen mode, this is the
+    /// current TUI render, not the pre-TUI scrollback.
+    Replay(Vec<u8>),
+    /// Live PTY bytes the agent wrote since the last `Stream`
+    /// chunk. xterm.js **appends**. Sourced from `pipe-pane`.
+    Stream(Vec<u8>),
 }
 
-/// One increment of captured output, plus the cursor to ask for the
-/// next one with.
-#[derive(Debug)]
-pub struct CaptureChunk {
-    pub bytes: Vec<u8>,
-    pub cursor: CaptureCursor,
-}
+/// Receiver half of a runtime session's output channel. Returned
+/// from `spawn` / `resume`; the runtime is the sender. Sized as a
+/// blocking `std::sync::mpsc` because the manager already runs
+/// reader threads off `std::thread`; matching that avoids dragging
+/// in a tokio runtime for the session layer.
+pub type OutputStream = std::sync::mpsc::Receiver<RuntimeOutput>;
 
 /// Typed runtime errors. These bubble up through
 /// `crate::error::Error` via the `From` impl so command code can `?`
@@ -138,41 +145,54 @@ pub type RuntimeResult<T> = std::result::Result<T, RuntimeError>;
 /// implementer right now. Frontend / Tauri commands never touch
 /// this — they go through `SessionManager`, which in turn delegates
 /// to a `dyn SessionRuntime` for the per-pane work.
+///
+/// Output / input are split into distinct shapes by intent so
+/// callers can't accidentally collapse a snapshot into the live
+/// stream (Step 6 anti-pattern) or send a literal byte payload as a
+/// paste (Step 7 anti-pattern).
 pub trait SessionRuntime: Send + Sync {
     /// Start a fresh session. Returns the runtime-side ids to
-    /// persist on the `sessions` row.
-    fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<RuntimeSession>;
+    /// persist on the `sessions` row, plus the output channel the
+    /// runtime will write `RuntimeOutput::Replay` (once) and
+    /// `RuntimeOutput::Stream` (indefinitely) into.
+    fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)>;
 
     /// Re-establish liveness for a session that already has runtime
     /// metadata persisted (app restart, route switch, etc.). Errors
     /// out if the underlying pane is gone — the manager treats that
     /// as `terminal-unavailable` and marks the session stopped.
-    fn resume(&self, session: &RuntimeSession) -> RuntimeResult<()>;
+    /// Returns a fresh output channel: a `Replay` snapshot of the
+    /// pane's current state arrives first, then live `Stream`
+    /// events resume.
+    fn resume(&self, session: &RuntimeSession) -> RuntimeResult<OutputStream>;
 
     /// Best-effort terminate. The runtime is responsible for
     /// triggering whatever exit-status capture the manager needs;
     /// this method only signals.
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()>;
 
-    /// Inject bytes into the running pane. Today the trait is
-    /// single-shape: paste-style multi-line prompts get
-    /// `paste-buffer -p -r -d` semantics (bracketed paste, LF stays
-    /// literal); literal byte streams (xterm.js passthrough) get
-    /// `send-keys -l --`. The runtime decides which based on
-    /// content / call site. Specialized methods can grow on this
-    /// trait if the manager ever needs explicit control.
-    fn send_input(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()>;
+    /// Multi-line prompt paste. Runtime applies bracketed-paste
+    /// (`paste-buffer -p -r -d`); LF stays literal so the agent
+    /// sees one paste, not one submit per line. The runtime does
+    /// **not** submit — the manager follows up with `send_key`
+    /// when it wants the agent to act, so the timing is explicit
+    /// (Step 7's `paste_after` readiness wait lives on the
+    /// manager).
+    fn paste(&self, session: &RuntimeSession, payload: &[u8]) -> RuntimeResult<()>;
 
-    /// Pull the next chunk of output past `cursor`. The runtime
-    /// decides whether this is a `pipe-pane` drain, a
-    /// `capture-pane` snapshot, or something else entirely; the
-    /// manager just forwards `CaptureChunk.bytes` as
-    /// `session/output`.
-    fn capture_since(
-        &self,
-        session: &RuntimeSession,
-        cursor: CaptureCursor,
-    ) -> RuntimeResult<CaptureChunk>;
+    /// Literal byte stream from xterm.js passthrough — the user is
+    /// typing directly into the foreground terminal. Runtime uses
+    /// `send-keys -l -- <bytes>` so the bytes arrive as keystrokes
+    /// without bracketed-paste markers.
+    fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()>;
+
+    /// Named key. Examples: `"Enter"`, `"C-c"`, `"Up"`,
+    /// `"Escape"`. Runtime uses `send-keys -t=<pane> <key>` (no
+    /// `-l`, no `--`, so tmux's key-name lookup runs). Caller is
+    /// responsible for using a name tmux understands; the runtime
+    /// validates the name shape but does not enumerate every
+    /// possible key.
+    fn send_key(&self, session: &RuntimeSession, key: &str) -> RuntimeResult<()>;
 
     /// Frontend resize event. The runtime is expected to debounce
     /// internally if multiple `resize` calls land back-to-back.
