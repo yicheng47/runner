@@ -73,9 +73,15 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // runners on existing installs are unaffected. (Was 0003 pre-rename
 // — the freed 0002 slot used to hold the default-crew SQL seed,
 // which now lives in `seed_default_crew` below.)
+// 0003: nullable runtime_* columns on `sessions` for the tmux
+// runtime migration (docs/impls/0004-tmux-session-runtime.md). Pure
+// schema add — no data backfill, existing rows keep NULL runtime
+// metadata, which the manager (post-Step 9) treats as "legacy
+// portable-pty session, can't reattach."
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
+    (3, include_str!("../migrations/0003_session_runtime.sql")),
 ];
 
 // Default-data seed: ships the Build squad starter crew on first launch.
@@ -904,5 +910,38 @@ Talking to the human:
             MIGRATIONS.len() as i64,
             "each migration should apply exactly once"
         );
+    }
+
+    #[test]
+    fn sessions_has_runtime_columns_after_migration() {
+        // Defensive: the tmux runtime layer (Step 5+) reads /
+        // writes these columns by name. If a future migration
+        // ever renames or drops one, this test fails before
+        // anything panics at runtime.
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("runner.db");
+        let pool = open_pool(&path).unwrap();
+        let conn = pool.get().unwrap();
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(sessions)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>("name"))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        for required in [
+            "runtime",
+            "runtime_socket",
+            "runtime_session",
+            "runtime_window",
+            "runtime_pane",
+            "runtime_cursor",
+        ] {
+            assert!(
+                columns.iter().any(|c| c == required),
+                "sessions.{required} missing; columns = {columns:?}"
+            );
+        }
     }
 }
