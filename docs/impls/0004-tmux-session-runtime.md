@@ -23,6 +23,26 @@ that, but the same class of bugs keeps returning.
 Decision: use `tmux` as the session runtime for now. We can add a `native-pty`
 runtime later behind the same internal boundary if we want a no-dependency mode.
 
+## Progress
+
+Implementation lives on `feature/tmux-session-runtime` (PR #67).
+Foundation lands first as `#![allow(dead_code)]` modules; the
+manager wiring (Step 9) flips the active code path off
+`portable-pty` once Steps 5–8 are in.
+
+| Step | Status | Commit | Notes |
+|---|---|---|---|
+| 1. SessionRuntime trait | ✅ done | `7649548` (refined `46f25f1`) | Push channel `OutputStream` with `Replay`/`Stream` discriminator; input split into `paste` / `send_bytes` / `send_key`. |
+| 2. tmux discovery + private socket | ✅ done | `7649548` | `resolve_tmux_binary` (RUNNER_TMUX → PATH → Homebrew/Linux fallbacks; `TmuxRequiresUnix` on Windows), `write_runner_config` (idempotent), `tmux_cmd()` helper. |
+| 3. Schema migration | ✅ done | `112b43e` | `0003_session_runtime.sql` adds nullable `runtime_*` columns; defensive `PRAGMA table_info` test. |
+| 4. Launch wrapper + composed PATH | ✅ done | `eaba871` | `compose_path` (off-bus invariant for direct chats, dedupe, fallback dirs always included), `shell_quote`, `render_launch_script`, `write_launch_script` (mode 0700). |
+| 5. tmux `new-session` spawn + resize | ⏳ pending | — | |
+| 6. `pipe-pane` + `capture-pane` streaming | ⏳ pending | — | |
+| 7. Input via `load-buffer` + `paste-buffer` + `send-keys` | ⏳ pending | — | |
+| 8. Resume + status + config reconciliation | ⏳ pending | — | |
+| 9. Replace `portable-pty` in active code path | ⏳ pending | — | |
+| 10. Unit + integration tests | ⏳ rolling | — | Per-step unit tests landing alongside foundation; integration tests over `-L runner-test-<pid> -f <temp.conf>` arrive in Step 10. |
+
 ## Goals
 
 - Use `tmux` as the owner of direct-chat and mission agent terminals.
