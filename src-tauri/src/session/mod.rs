@@ -10,6 +10,7 @@
 // schema migration.
 
 pub mod codex_capture;
+pub mod launch;
 pub mod manager;
 pub mod runtime;
 pub mod tmux;
