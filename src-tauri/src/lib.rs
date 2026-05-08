@@ -19,8 +19,9 @@ pub struct AppState {
     /// installs, a tempdir in tests. Mission commands resolve event-log paths
     /// relative to this via `runner_core::event_log::path`.
     pub app_data_dir: PathBuf,
-    /// Live per-mission PTY sessions. Created at app start, shared across
-    /// all Tauri commands and the reader threads they spawn.
+    /// Live per-mission session manager (tmux-backed). Created at app
+    /// start, shared across all Tauri commands and the per-session
+    /// forwarder threads it spawns.
     pub sessions: Arc<session::SessionManager>,
     /// Live per-mission event-bus watchers. Mounted by `mission_start` once
     /// the opening events are durable; unmounted by `mission_stop` and on
@@ -62,23 +63,14 @@ pub fn run() {
             std::fs::create_dir_all(&app_data_dir)?;
             let db_path = app_data_dir.join("runner.db");
             let pool = Arc::new(db::open_pool(&db_path)?);
-            // Reconcile orphaned sessions: any row still marked `running`
-            // is from a previous process whose SessionManager died with it,
-            // so the child PTY is gone too. Mark them stopped so the
-            // sidebar's `direct_session_id` query and the chat page agree
-            // with reality. Without this, post-restart clicks land on a
-            // session id the live SessionManager doesn't know about and
-            // every action returns "session not found".
-            {
-                let conn = pool.get()?;
-                conn.execute(
-                    "UPDATE sessions
-                        SET status = 'stopped',
-                            stopped_at = COALESCE(stopped_at, ?1)
-                      WHERE status = 'running'",
-                    rusqlite::params![chrono::Utc::now().to_rfc3339()],
-                )?;
-            }
+            // Session reconciliation now happens AFTER the
+            // runtime is constructed (below) — for tmux-runtime
+            // rows we need to query the runtime's view of the
+            // pane before deciding whether to mark the row
+            // stopped. Live panes survive Runner restart by
+            // design (`exit-empty off` in the generated tmux
+            // config); the prior portable-pty-era bulk UPDATE
+            // would have killed that survival path.
             // Drop the bundled `runner` CLI into $APPDATA/runner/bin/ so
             // child PTYs find it on PATH (arch §5.3 Layer 2). Best-effort:
             // a copy failure is logged and the app keeps running. Sessions
@@ -98,10 +90,48 @@ pub fn run() {
             // launchd-strips-PATH problem this fixes.
             let shell_path = shell_path::resolve_login_shell_path();
 
+            // Construct the session runtime (Step 9 of
+            // docs/impls/0004-tmux-session-runtime.md). v1 is
+            // tmux-only — Windows fails at startup with a clear
+            // error; the native-pty runtime is the future Windows
+            // path.
+            //
+            // reconcile_config() rewrites the per-app tmux.conf and
+            // source-files it into a leftover server when the
+            // @runner_config_version stamp is stale.
+            let runtime: Arc<dyn session::runtime::SessionRuntime> = {
+                #[cfg(unix)]
+                {
+                    let rt = session::tmux_runtime::TmuxRuntime::new(&app_data_dir).map_err(
+                        |e| -> Box<dyn std::error::Error> { format!("tmux runtime: {e}").into() },
+                    )?;
+                    let _ = rt.reconcile_config();
+                    Arc::new(rt)
+                }
+                #[cfg(not(unix))]
+                {
+                    return Err("Runner requires macOS or Linux (tmux runtime); \
+                                native-pty runtime is not yet shipped"
+                        .into());
+                }
+            };
+
+            let sessions = session::SessionManager::new(shell_path, runtime);
+
+            // Reattach to any live tmux panes from a prior Runner
+            // process. Rows whose pane is still alive stay
+            // `running` and the manager rebuilds its forwarder
+            // thread + handle for them. Rows whose pane is gone
+            // (or has exited) get flipped to stopped/crashed via
+            // the runtime's exit code.
+            let events_for_reattach: Arc<dyn session::manager::SessionEvents> =
+                Arc::new(session::manager::TauriSessionEvents(app.handle().clone()));
+            sessions.reattach_running_sessions(Arc::clone(&pool), events_for_reattach);
+
             app.manage(AppState {
                 db: pool,
                 app_data_dir,
-                sessions: session::SessionManager::new(shell_path),
+                sessions,
                 buses: event_bus::BusRegistry::new(),
                 routers: router::RouterRegistry::new(),
             });

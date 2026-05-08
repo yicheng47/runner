@@ -154,6 +154,34 @@ pub(super) fn validate_handle(handle: &str) -> Result<()> {
     Ok(())
 }
 
+/// Reject env var names that aren't POSIX shell identifiers. The
+/// session launch script (`session::launch::render_launch_script`)
+/// emits `export <name>=<value>` for every env entry, and bash
+/// errors out under `set -e` if `<name>` isn't `[A-Za-z_][A-Za-z0-9_]*`.
+/// Validating at persist time keeps bad names from ever entering
+/// the DB; the launch-script renderer also re-checks defensively
+/// so legacy rows that pre-date this validation surface a clear
+/// error rather than crashing the spawn.
+pub(super) fn validate_env_keys<S: std::hash::BuildHasher>(
+    env: &HashMap<String, String, S>,
+) -> Result<()> {
+    for k in env.keys() {
+        if !crate::session::launch::is_valid_env_name(k) {
+            return Err(Error::msg(format!(
+                "env var name {k:?} is invalid: must match [A-Za-z_][A-Za-z0-9_]*"
+            )));
+        }
+        if crate::session::launch::is_reserved_env_name(k) {
+            return Err(Error::msg(format!(
+                "env var name {k:?} is reserved by the runner launcher \
+                 (the deterministic PATH must win over any per-runner override; \
+                 if you need extra dirs on PATH, configure them in your shell rc)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn row_to_runner(row: &Row<'_>) -> rusqlite::Result<Runner> {
     let args_raw: Option<String> = row.get("args_json")?;
     let env_raw: Option<String> = row.get("env_json")?;
@@ -251,6 +279,7 @@ pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
     if input.display_name.trim().is_empty() {
         return Err(Error::msg("display_name must not be empty"));
     }
+    validate_env_keys(&input.env)?;
 
     let id = new_id();
     let ts = now().to_rfc3339();
@@ -339,7 +368,13 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
     };
     let working_dir = input.working_dir.unwrap_or(existing.working_dir);
     let system_prompt = input.system_prompt.unwrap_or(existing.system_prompt);
-    let env = input.env.unwrap_or(existing.env);
+    let env = match input.env {
+        Some(new_env) => {
+            validate_env_keys(&new_env)?;
+            new_env
+        }
+        None => existing.env,
+    };
     // Trim + collapse blank strings to NULL: the editor's text inputs
     // produce `Some("")` when the user clears the field, and we want
     // that to read as "inherit the agent's default" — same semantic

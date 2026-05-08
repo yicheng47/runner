@@ -23,6 +23,24 @@ that, but the same class of bugs keeps returning.
 Decision: use `tmux` as the session runtime for now. We can add a `native-pty`
 runtime later behind the same internal boundary if we want a no-dependency mode.
 
+## Progress
+
+Implementation lives on `feature/tmux-session-runtime` (PR #67).
+Foundation lands first as `#![allow(dead_code)]` modules; the
+manager wiring (Step 9) flips the active code path off
+`portable-pty` once Steps 5–8 are in.
+
+| Step | Status | Commit | Notes |
+|---|---|---|---|
+| 1. SessionRuntime trait | ✅ done | `7649548` (refined `46f25f1`) | Push channel `OutputStream` with `Replay`/`Stream` discriminator; input split into `paste` / `send_bytes` / `send_key`. |
+| 2. tmux discovery + private socket | ✅ done | `7649548` | `resolve_tmux_binary` (RUNNER_TMUX → PATH → Homebrew/Linux fallbacks; `TmuxRequiresUnix` on Windows), `write_runner_config` (idempotent), `tmux_cmd()` helper. |
+| 3. Schema migration | ✅ done | `112b43e` | `0003_session_runtime.sql` adds nullable `runtime_*` columns; defensive `PRAGMA table_info` test. |
+| 4. Launch wrapper + composed PATH | ✅ done | `eaba871` (env-name validation `e47e085`) | `compose_path` (off-bus invariant for direct chats, dedupe, fallback dirs always included), `shell_quote`, `render_launch_script` (POSIX-identifier validation), `write_launch_script` (mode 0700). |
+| 5+6+7. `TmuxRuntime` impl (spawn / streaming / input) | ✅ done | `553cc88` (review fixes `1ba563d`) | `tmux_runtime.rs` (Unix-only). spawn / resume share an `attach_streaming` helper that installs `pipe-pane` BEFORE `capture-pane` (closing the gap-loss case from review pass 1), drains FIFO non-blocking, then sends Replay + buffered Stream + spawns forwarder. FIFO opens `O_RDONLY \| O_NONBLOCK`; forwarder uses `poll(POLLIN, 200ms)` and an `Arc<AtomicBool>` cancellation flag (set by `OutputStream::Drop`) so detach doesn't leak threads. spawn cleans up the new tmux session if any post-`new-session` step fails. paste = `load-buffer -` then `paste-buffer -p -r -d`. send_bytes = `send-keys -l --`. send_key = `send-keys` with name validation. Plan corrections discovered: `window-size manual` triggers tmux 3.5a server-exit (dropped); `=name` exact-match is session/window only — pane ids (`%N`) need raw target. |
+| 8. Resume + status + config reconciliation | ✅ done | `13c4f76` (legacy-server fix `8b64335`) | `SessionRuntime::status()` returns `Option<SessionStatus { alive, exit_code, pid, command }>` parsed from `list-panes -s -F '#{pane_id} #{pane_dead} #{pane_dead_status} #{pane_pid} #{pane_current_command}'`; `Ok(None)` = terminal-unavailable. `TmuxRuntime::reconcile_config()` two-step probe: `list-sessions` for liveness, then `show-options -g -v @runner_config_version` for stamp; missing/different stamp → `source-file <runner.conf>`. Bug fix during integration testing: `has-session`/`kill-session` need `-t` before the target arg — bare argv didn't work even though tmux's interactive parser is more forgiving. |
+| 9. Replace `portable-pty` in active code path | ✅ done | `6600d79` (scaffold) + cutover (reattach + cleanup follow-ups) | `SpawnSpec` extended with `shim_dir` / `bundled_bin_dir` / `shell_path` / `initial_size`. `SessionManager` delegates spawn / spawn_direct / resume / inject_stdin / resize / kill through the runtime. New `inject_paste(payload)` uses `paste-buffer -p -r -d` + `send_key("Enter")` so multi-line first-prompt blocks land as one bracketed-paste event. Forwarder thread drains `OutputStream` into `session/output`; on channel close queries `runtime.status()` for exit code. `portable-pty` dropped from `Cargo.toml`. **App-restart reattach**: new `SessionManager::reattach_running_sessions(pool, events)` called from `lib.rs::run` replaces the prior portable-pty-era bulk `UPDATE status='stopped'`. For each `running` row with runtime metadata: alive panes get rebuilt SessionHandle + forwarder thread (the row stays `running`), dead panes flip to stopped/crashed by exit code, missing panes flip to stopped. **Mission sessions don't reattach** — the mission's bus + router only mount on `mission_attach` (workspace UI), and `router::mod` doesn't replay stdin side effects on reconstruction; reattaching the PTY without the bus would silently miss `ask_lead` / `human_said` / `runner_status` events appended after restart. Mission rows get the pane killed and the row stopped so the user resumes from the workspace, which mounts the bus correctly. Direct chats are off-bus by design and reattach unchanged — that's the survivability win the migration delivers. Failed `attach_existing` (live pane but the runtime call errored) tears down the pane to avoid leaving an orphan agent. **Cleanup robustness**: post-spawn `resize-window` moved INSIDE the cleanup-wrapped setup closure so a failed resize triggers `kill-session` instead of leaking an untracked tmux session. |
+| 10. Unit + integration tests | ✅ done | next | All 12 Step-9 deferred manager tests rewritten against a `FakeRuntime` test stand-in that captures every spawn / paste / send_bytes / send_key / resize / stop call so assertions can read what the manager handed to the runtime layer. Tests now run fast (no real tmux, no shell child) and run cleanly in CI. Real tmux interaction stays gated under `session::tmux_runtime::tests::integration_*` (6 `#[ignore]` tests, opt-in via `cargo test -- --ignored`). 197 unit + 6 integration tests pass on this PR. |
+
 ## Goals
 
 - Use `tmux` as the owner of direct-chat and mission agent terminals.
@@ -116,22 +134,47 @@ config.
 - optionally `src-tauri/src/session/runtime.rs`
 - optionally `src-tauri/src/session/tmux.rs`
 
-Add a small internal runtime abstraction:
+Add a small internal runtime abstraction. Output is a **push
+channel** with discriminated `Replay` (one-shot snapshot, xterm.js
+resets) vs `Stream` (live PTY bytes, xterm.js appends) so a
+careless impl can't conflate them. Input is split by intent
+(`paste` / `send_bytes` / `send_key`) so the runtime can pick the
+right tmux primitive without inferring from byte content.
 
 ```rust
-trait SessionRuntime {
-    fn spawn(&self, spec: SpawnSpec) -> Result<RuntimeSession>;
-    fn resume(&self, session: &Session) -> Result<RuntimeSession>;
-    fn stop(&self, session: &Session) -> Result<()>;
-    fn send_input(&self, session: &Session, bytes: &[u8]) -> Result<()>;
-    fn capture_since(&self, session: &Session, cursor: CaptureCursor) -> Result<CaptureChunk>;
-    fn resize(&self, session: &Session, cols: u16, rows: u16) -> Result<()>;
+pub enum RuntimeOutput {
+    Replay(Vec<u8>),
+    Stream(Vec<u8>),
+}
+pub type OutputStream = std::sync::mpsc::Receiver<RuntimeOutput>;
+
+pub trait SessionRuntime: Send + Sync {
+    fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)>;
+    fn resume(&self, session: &RuntimeSession) -> RuntimeResult<OutputStream>;
+    fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()>;
+
+    /// `paste-buffer -p -r -d` semantics — bracketed paste, LF
+    /// stays literal. Runtime does NOT submit; manager calls
+    /// `send_key("Enter")` after the readiness wait.
+    fn paste(&self, session: &RuntimeSession, payload: &[u8]) -> RuntimeResult<()>;
+
+    /// `send-keys -l -- <bytes>` — literal byte stream from
+    /// xterm.js passthrough.
+    fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()>;
+
+    /// `send-keys -t=<pane> <name>` — named keys (`"Enter"`,
+    /// `"C-c"`, `"Up"`).
+    fn send_key(&self, session: &RuntimeSession, key: &str) -> RuntimeResult<()>;
+
+    fn resize(&self, session: &RuntimeSession, cols: u16, rows: u16) -> RuntimeResult<()>;
 }
 ```
 
-This does not need to be public or over-abstracted. It is just the seam between
-the command layer and the terminal owner. For this PR, instantiate only the
-tmux runtime.
+Std `mpsc::Receiver` rather than tokio's: `manager.rs` is
+`std::thread`-based throughout — no tokio runtime in the session
+layer. This does not need to be public or over-abstracted. It is
+just the seam between the command layer and the terminal owner.
+For this PR, instantiate only the tmux runtime.
 
 ## Step 2: Discover tmux without depending on GUI PATH
 
