@@ -96,7 +96,7 @@ pub struct RuntimeSession {
 /// `stopped` (status 0) or `crashed` (non-zero); a missing pane
 /// (the runtime returns `Ok(None)`) is treated as
 /// terminal-unavailable.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SessionStatus {
     /// `true` while the agent process is still attached to the
     /// pane. Once the agent exits and tmux flags `pane_dead=1`,
