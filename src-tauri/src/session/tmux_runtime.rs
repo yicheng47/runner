@@ -15,9 +15,12 @@
 //! Windows builds don't trip on the FIFO/libc pieces.
 
 use std::io::{Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread;
 
 use super::launch;
@@ -176,25 +179,17 @@ impl SessionRuntime for TmuxRuntime {
         };
         let launch_path = launch::write_launch_script(&sess_dir, &script)?;
 
-        // 2. Create per-session FIFO and open reader-side
-        //    (O_NONBLOCK to avoid the open-side block; flip back to
-        //    blocking for reads so the forwarder thread sleeps when
-        //    the FIFO is empty).
+        // 2. mkfifo + open reader O_RDONLY|O_NONBLOCK. Non-blocking
+        //    avoids the open-side wait for a writer; later the
+        //    forwarder uses poll() to wait for readability with a
+        //    timeout, so we never spurious-EOF on a transient
+        //    no-writer condition.
         let fifo_path = sess_dir.join("output.fifo");
         ensure_fifo(&fifo_path)?;
-        let reader = open_fifo_reader_blocking(&fifo_path)?;
+        let reader = open_fifo_reader(&fifo_path)?;
 
-        // 3. Wire the output channel. Send Replay before installing
-        //    pipe-pane so xterm.js sees the snapshot first; the
-        //    forwarder thread then begins flushing live Stream
-        //    chunks once `cat` connects to the writer side.
-        let (tx, rx) = mpsc::channel::<RuntimeOutput>();
-        let forwarder_tx = tx.clone();
-        thread::spawn(move || forward_fifo(reader, forwarder_tx));
-
-        // 4. Pre-spawn: kill any stale session left over from a
-        //    crashed prior process. has-session returns non-zero if
-        //    missing; treat both outcomes as success.
+        // 3. Pre-spawn: kill any stale session left over from a
+        //    crashed prior process.
         let _ = self
             .cmd()
             .arg("kill-session")
@@ -204,7 +199,7 @@ impl SessionRuntime for TmuxRuntime {
             .stderr(Stdio::null())
             .status();
 
-        // 5. tmux new-session.
+        // 4. tmux new-session.
         let mut new_session = self.cmd();
         new_session
             .arg("new-session")
@@ -219,9 +214,6 @@ impl SessionRuntime for TmuxRuntime {
         if let Some(cwd) = &spec.cwd {
             new_session.arg("-c").arg(cwd);
         }
-        // tmux's trailing positional is a shell-command string
-        // (passed to default-shell -c), so quote the launch script
-        // path explicitly.
         new_session
             .arg("--")
             .arg(launch::shell_quote(&launch_path.display().to_string()));
@@ -248,11 +240,31 @@ impl SessionRuntime for TmuxRuntime {
             pane: pane_id,
         };
 
-        // 6. Replay snapshot, then pipe-pane install.
-        emit_replay(&self.cmd(), &session, &tx)?;
-        install_pipe_pane(&self.cmd(), &session, &fifo_path)?;
-
-        Ok((session, rx))
+        // 5–7. Wire pipe-pane → capture-pane → channel. Wrap in a
+        //      closure so any error after new-session triggers
+        //      kill-session below; otherwise a partially-set-up pane
+        //      lives on the tmux server with no `RuntimeSession`
+        //      tracked anywhere for reconciliation.
+        let setup = || -> RuntimeResult<OutputStream> {
+            attach_streaming(&self.cmd(), &session, &fifo_path, reader.try_clone()?)
+        };
+        match setup() {
+            Ok(stream) => {
+                drop(reader);
+                Ok((session, stream))
+            }
+            Err(e) => {
+                let _ = self
+                    .cmd()
+                    .arg("kill-session")
+                    .arg(target(&session.session_name))
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                Err(e)
+            }
+        }
     }
 
     fn resume(&self, session: &RuntimeSession) -> RuntimeResult<OutputStream> {
@@ -274,9 +286,10 @@ impl SessionRuntime for TmuxRuntime {
             )));
         }
 
-        // Reattach: open a fresh FIFO + forwarder, snapshot the
-        // pane state for replay, install a new pipe-pane (close
-        // any stale one first per Step 6's reattach-safe pattern).
+        // Reattach: rebuild the FIFO + forwarder around the
+        // existing pane, then install pipe-pane → capture-pane →
+        // channel via the same `attach_streaming` helper as spawn
+        // so the gap-free attach order is shared.
         let session_id = session
             .session_name
             .strip_prefix("runner-")
@@ -290,15 +303,11 @@ impl SessionRuntime for TmuxRuntime {
         std::fs::create_dir_all(&sess_dir)?;
         let fifo_path = sess_dir.join("output.fifo");
         ensure_fifo(&fifo_path)?;
-        let reader = open_fifo_reader_blocking(&fifo_path)?;
-
-        let (tx, rx) = mpsc::channel::<RuntimeOutput>();
-        let forwarder_tx = tx.clone();
-        thread::spawn(move || forward_fifo(reader, forwarder_tx));
-
-        emit_replay(&self.cmd(), session, &tx)?;
-        install_pipe_pane(&self.cmd(), session, &fifo_path)?;
-        Ok(rx)
+        let reader = open_fifo_reader(&fifo_path)?;
+        // Resume does NOT kill the session on attach failure —
+        // unlike spawn we don't own the session. Reconciliation
+        // (Step 8) handles a permanently broken pane separately.
+        attach_streaming(&self.cmd(), session, &fifo_path, reader)
     }
 
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
@@ -443,59 +452,161 @@ fn ensure_fifo(path: &Path) -> RuntimeResult<()> {
     Ok(())
 }
 
-/// Open a FIFO with `O_RDWR`. Three properties we need from this:
+/// Open a FIFO `O_RDONLY|O_NONBLOCK`. The non-blocking flag is
+/// load-bearing twice over:
 ///
-/// 1. **Non-blocking open.** O_RDONLY blocks until a writer
-///    attaches (default POSIX FIFO semantics). O_RDONLY|O_NONBLOCK
-///    returns immediately but reads then return EOF until a writer
-///    shows up. O_RDWR opens immediately without either of those
-///    problems — we have a write end too, so the kernel sees a
-///    writer attached.
-/// 2. **No spurious EOF.** As long as our own fd stays open, the
-///    kernel never reports EOF. That matters because the forwarder
-///    thread starts before tmux's `pipe-pane | cat` writer attaches,
-///    and an O_RDONLY reader sees EOF whenever there are zero
-///    writers — including the ~ms window before pipe-pane installs.
-///    With O_RDWR the read blocks instead, which is what we want.
-/// 3. **Blocking reads.** Default for O_RDWR. The forwarder loop
-///    sleeps in `read()` when the FIFO is empty.
+/// 1. **Non-blocking open.** Plain `O_RDONLY` blocks until a writer
+///    attaches (default POSIX FIFO semantics); we open before tmux
+///    has even spawned `pipe-pane`, so we'd deadlock.
+/// 2. **No spurious EOF.** A blocking O_RDONLY reader sees `read()`
+///    return 0 (EOF) the moment there are zero writers — including
+///    the ms-window before tmux's `cat` opens the write end. With
+///    `O_NONBLOCK`, that case is `EAGAIN` instead, so the
+///    forwarder keeps polling rather than exiting prematurely.
 ///
-/// We never write through this fd — the forwarder only reads. The
-/// write side is purely a kernel-side ref-count keeper.
-fn open_fifo_reader_blocking(path: &Path) -> RuntimeResult<std::fs::File> {
+/// We previously tried O_RDWR (kernel sees a writer = us), but
+/// then a manager-side detach left the forwarder thread blocked
+/// in `read()` forever because EOF was unreachable. Non-blocking +
+/// `poll()` with a timeout is the cleaner shape.
+fn open_fifo_reader(path: &Path) -> RuntimeResult<std::fs::File> {
     let file = std::fs::OpenOptions::new()
         .read(true)
-        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
         .open(path)?;
     Ok(file)
 }
 
-/// Forwarder loop: read FIFO bytes and emit `RuntimeOutput::Stream`
-/// chunks. Exits cleanly on EOF (writer closed — session ended) or
-/// when the receiver drops (manager detached).
-fn forward_fifo(mut reader: std::fs::File, tx: mpsc::Sender<RuntimeOutput>) {
+/// Read everything currently in the FIFO without blocking. Returns
+/// the accumulated bytes and stops on the first `EAGAIN` (no more
+/// data right now). The reader fd must already be `O_NONBLOCK`.
+/// Used during attach to drain whatever pipe-pane has buffered
+/// between the install and the snapshot capture, so those bytes
+/// flush as `Stream` events after `Replay` rather than getting
+/// silently dropped.
+fn drain_fifo_nonblocking(reader: &mut std::fs::File) -> Vec<u8> {
+    let mut out = Vec::new();
     let mut buf = [0u8; 8192];
     loop {
         match reader.read(&mut buf) {
-            Ok(0) => break, // EOF
-            Ok(n) => {
-                if tx.send(RuntimeOutput::Stream(buf[..n].to_vec())).is_err() {
-                    break;
-                }
-            }
+            Ok(0) => break, // No writer + non-blocking ⇒ done.
+            Ok(n) => out.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
+        }
+    }
+    out
+}
+
+/// Wire pipe-pane → capture-pane → channel for an existing tmux
+/// pane. Shared between `spawn` and `resume` so the gap-free
+/// attach order can't drift between the two.
+///
+/// The order is the v1 attach sequence from
+/// docs/impls/0004-tmux-session-runtime.md (Step 6):
+///
+/// 1. Install `pipe-pane` so the pane's PTY output starts flowing
+///    into the FIFO immediately. Bytes that arrive between this
+///    and step 3 land in the FIFO buffer (kernel-managed).
+/// 2. Snapshot via `capture-pane` (with alternate-screen
+///    branching). Some bytes may appear in BOTH the snapshot and
+///    the FIFO — that's the acknowledged "few ms of duplicate
+///    cells" case from the plan, and it's strictly preferable to
+///    the previous implementation's gap which lost output.
+/// 3. Drain the FIFO buffer non-blockingly into a `Vec<u8>`.
+/// 4. Send `Replay(snapshot)` first, then `Stream(buffered)` so
+///    the receiver can apply the snapshot and then append.
+/// 5. Spawn the forwarder thread for ongoing live bytes.
+fn attach_streaming(
+    cmd: &Command,
+    session: &RuntimeSession,
+    fifo_path: &Path,
+    mut reader: std::fs::File,
+) -> RuntimeResult<OutputStream> {
+    install_pipe_pane(cmd, session, fifo_path)?;
+    let snapshot = capture_replay_bytes(cmd, session)?;
+    let buffered = drain_fifo_nonblocking(&mut reader);
+
+    let (tx, rx) = mpsc::channel::<RuntimeOutput>();
+    let stop = Arc::new(AtomicBool::new(false));
+
+    // Send Replay first, then any bytes that landed in the FIFO
+    // between pipe-pane install and now. After this, all pane
+    // output flows through the forwarder.
+    let _ = tx.send(RuntimeOutput::Replay(snapshot));
+    if !buffered.is_empty() {
+        let _ = tx.send(RuntimeOutput::Stream(buffered));
+    }
+
+    let forwarder_stop = Arc::clone(&stop);
+    thread::spawn(move || forward_fifo(reader, tx, forwarder_stop));
+
+    Ok(OutputStream::new(rx, stop))
+}
+
+/// Forwarder loop. Uses `poll()` with a 200ms timeout so the
+/// thread wakes regularly to check `stop` (set when the
+/// `OutputStream` receiver is dropped) and can exit even when no
+/// bytes are flowing through the FIFO. Reads are non-blocking
+/// because the fd was opened `O_NONBLOCK`; `poll(POLLIN)` ensures
+/// data is actually ready before each read.
+fn forward_fifo(mut reader: std::fs::File, tx: mpsc::Sender<RuntimeOutput>, stop: Arc<AtomicBool>) {
+    let raw_fd = reader.as_raw_fd();
+    let mut buf = [0u8; 8192];
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        let mut pfd = libc::pollfd {
+            fd: raw_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: pfd is a single valid struct on the stack; nfds
+        // = 1 matches. Timeout is in milliseconds.
+        let rc = unsafe { libc::poll(&mut pfd, 1, 200) };
+        if rc < 0 {
+            // EINTR or other transient. Loop and re-check stop.
+            continue;
+        }
+        if rc == 0 {
+            // Timeout. Loop and re-check stop.
+            continue;
+        }
+        let revents = pfd.revents;
+        if revents & libc::POLLIN != 0 {
+            match reader.read(&mut buf) {
+                Ok(0) => {
+                    // Non-blocking O_RDONLY shouldn't see EOF
+                    // unless every writer has closed AND POLLIN
+                    // fired against an empty FIFO — meaning the
+                    // pipe-pane writer closed for good.
+                    break;
+                }
+                Ok(n) => {
+                    if tx.send(RuntimeOutput::Stream(buf[..n].to_vec())).is_err() {
+                        break; // Receiver dropped — also caught by `stop`.
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(_) => break,
+            }
+        } else if revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+            // POLLHUP without POLLIN means the writer closed and
+            // the FIFO is drained. Real EOF — exit.
+            break;
         }
     }
 }
 
 /// Probe alternate-screen state and run the right capture-pane
-/// shape. Send the result to `tx` as a single `Replay` event.
-fn emit_replay(
-    cmd: &Command,
-    session: &RuntimeSession,
-    tx: &mpsc::Sender<RuntimeOutput>,
-) -> RuntimeResult<()> {
+/// shape. Returns the raw snapshot bytes; the caller decides when
+/// to send them as a `Replay` event over the channel — the gap-
+/// free attach order in `attach_streaming` requires sending
+/// `Replay` _after_ the FIFO drain, so the helper has to stay
+/// channel-agnostic.
+fn capture_replay_bytes(cmd: &Command, session: &RuntimeSession) -> RuntimeResult<Vec<u8>> {
     let alt_on = is_alternate_on(cmd, &session.pane)?;
     let mut capture = clone_cmd(cmd);
     capture
@@ -517,10 +628,7 @@ fn emit_replay(
             stderr: String::from_utf8_lossy(&out.stderr).to_string(),
         });
     }
-    // Best-effort: a closed receiver means the manager already
-    // dropped the channel; drop the snapshot rather than failing.
-    let _ = tx.send(RuntimeOutput::Replay(out.stdout));
-    Ok(())
+    Ok(out.stdout)
 }
 
 /// `display-message -p -t=<pane> '#{alternate_on}'` returns

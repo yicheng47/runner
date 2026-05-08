@@ -87,11 +87,73 @@ pub enum RuntimeOutput {
 }
 
 /// Receiver half of a runtime session's output channel. Returned
-/// from `spawn` / `resume`; the runtime is the sender. Sized as a
+/// from `spawn` / `resume`; the runtime is the sender. Backed by a
 /// blocking `std::sync::mpsc` because the manager already runs
 /// reader threads off `std::thread`; matching that avoids dragging
 /// in a tokio runtime for the session layer.
-pub type OutputStream = std::sync::mpsc::Receiver<RuntimeOutput>;
+///
+/// Wrapped in a struct (rather than the bare `Receiver`) so a
+/// `Drop` impl can flip a stop flag the runtime's forwarder thread
+/// polls — without that, dropping the receiver while no bytes are
+/// arriving leaves the forwarder blocked forever in `read()`,
+/// which leaks one OS thread per detach. The wrapper trades the
+/// `Receiver` API for explicit `recv_timeout` / `try_recv`
+/// methods; callers that want the full receiver surface can take
+/// `&self.inner` via the `as_receiver` accessor.
+pub struct OutputStream {
+    inner: std::sync::mpsc::Receiver<RuntimeOutput>,
+    /// Set to true when this `OutputStream` is dropped. The
+    /// runtime's forwarder thread polls this flag every tick and
+    /// exits when it flips, releasing its FIFO read fd and
+    /// `Sender` half of the channel.
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl OutputStream {
+    /// Construct from a `Receiver` plus the stop flag the runtime
+    /// already gave to its forwarder thread. Internal — only the
+    /// runtime impl wires this; manager code drops in via
+    /// `recv_timeout` / `try_recv`.
+    pub(crate) fn new(
+        inner: std::sync::mpsc::Receiver<RuntimeOutput>,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self { inner, stop }
+    }
+
+    /// Mirrors `Receiver::recv_timeout`. Used by the integration
+    /// tests; the manager will reach for it once Step 9 wires the
+    /// runtime in.
+    pub fn recv_timeout(
+        &self,
+        dur: std::time::Duration,
+    ) -> Result<RuntimeOutput, std::sync::mpsc::RecvTimeoutError> {
+        self.inner.recv_timeout(dur)
+    }
+
+    /// Mirrors `Receiver::try_recv`.
+    pub fn try_recv(&self) -> Result<RuntimeOutput, std::sync::mpsc::TryRecvError> {
+        self.inner.try_recv()
+    }
+
+    /// Borrow the inner receiver for callers that need the full
+    /// surface (iterator chains, select-style multiplexing).
+    pub fn as_receiver(&self) -> &std::sync::mpsc::Receiver<RuntimeOutput> {
+        &self.inner
+    }
+}
+
+impl Drop for OutputStream {
+    fn drop(&mut self) {
+        // Tell the forwarder to wake up on its next poll tick and
+        // exit. The Sender half held by the forwarder thread also
+        // gets `send`-Err on the next attempted send, but that
+        // path only fires when bytes actually flow; the explicit
+        // flag handles the "no bytes arriving, manager detached"
+        // case so the thread doesn't sleep forever.
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 /// Typed runtime errors. These bubble up through
 /// `crate::error::Error` via the `From` impl so command code can `?`
