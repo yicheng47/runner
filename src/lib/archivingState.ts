@@ -5,10 +5,10 @@
 // triggered the archive (sidebar kebab, workspace topbar kebab,
 // chat header kebab).
 //
-// Module-scoped sets mirror the shape of `activeSessions.ts`:
-// archive operations are short-lived and don't need to survive a
-// reload — if the user reloads mid-archive the backend has already
-// committed the row flip, so the pill would be stale anyway.
+// Module-scoped sets: archive operations are short-lived and don't
+// need to survive a reload — if the user reloads mid-archive the
+// backend has already committed the row flip, so the pill would be
+// stale anyway.
 //
 // Subscribers re-render on any change. The hooks below do an exact
 // id-membership check so unrelated components don't churn when an

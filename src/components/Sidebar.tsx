@@ -45,10 +45,6 @@ import {
 
 import { api, type DirectSessionEntry } from "../lib/api";
 import {
-  clearActiveSession,
-  setActiveSession,
-} from "../lib/activeSessions";
-import {
   markArchivingMission,
   markArchivingSession,
   unmarkArchivingMission,
@@ -160,17 +156,12 @@ export function Sidebar({ settingsOpen, onSettingsOpenChange }: SidebarProps) {
   // sidebar row. `useMatch` returns null when the URL doesn't match.
   const missionMatch = useMatch("/missions/:id");
   const currentMissionId = missionMatch?.params.id ?? null;
-  const chatMatch = useMatch("/runners/:handle/chat");
+  const chatMatch = useMatch("/runners/:handle/chat/:sessionId");
   // Which direct-chat session is currently in view. The chat route
-  // uses :handle in the URL but a runner can host multiple chats
-  // (see docs/impls/0003-direct-chats.md), so highlight by session id —
-  // matching on handle alone would light up every row sharing the
-  // same runner. The session id rides on `location.state` from the
-  // navigation that opened the chat.
-  const currentChatSessionId =
-    chatMatch && typeof location.state === "object" && location.state !== null
-      ? ((location.state as { sessionId?: string }).sessionId ?? null)
-      : null;
+  // encodes the session id in the URL (a runner can host multiple
+  // chats — see docs/impls/0003-direct-chats.md), so we match by
+  // session id rather than handle.
+  const currentChatSessionId = chatMatch?.params.sessionId ?? null;
 
   const refreshMissions = useCallback(async () => {
     try {
@@ -236,29 +227,11 @@ export function Sidebar({ settingsOpen, onSettingsOpenChange }: SidebarProps) {
   }, [refreshMissions]);
 
   // Direct-chat tray: pull the flat list of un-archived sessions and
-  // refresh on lifecycle events. The activeSessions registry still
-  // tracks "the currently-running session for this handle" so direct
-  // chats opened by clicking a row find the live session id; we keep
-  // it in sync with the running rows below.
+  // refresh on lifecycle events.
   const refreshDirectSessions = useCallback(async () => {
     try {
       const rows = await api.session.listRecentDirect();
       setDirectSessions(rows);
-      // Activity registry: handle → live running session id (used by
-      // RunnerChat's no-state attach path). Pick the first running row
-      // per handle; clear handles that no longer have any.
-      const liveByHandle = new Map<string, string>();
-      for (const r of rows) {
-        if (r.status === "running" && !liveByHandle.has(r.handle)) {
-          liveByHandle.set(r.handle, r.session_id);
-        }
-      }
-      const seenHandles = new Set(rows.map((r) => r.handle));
-      for (const handle of seenHandles) {
-        const live = liveByHandle.get(handle);
-        if (live) setActiveSession(handle, live);
-        else clearActiveSession(handle);
-      }
     } catch (e) {
       console.error("sidebar: refreshDirectSessions failed", e);
     }
@@ -434,7 +407,6 @@ export function Sidebar({ settingsOpen, onSettingsOpenChange }: SidebarProps) {
         await api.session.archive(session.session_id);
         await refreshDirectSessions();
         if (currentChatSessionId === session.session_id) {
-          clearActiveSession(session.handle);
           navigate(`/runners/${session.handle}`);
         }
       } catch (e) {
@@ -484,18 +456,9 @@ export function Sidebar({ settingsOpen, onSettingsOpenChange }: SidebarProps) {
   // longer in the live map → "session not found" banner.
   const openDirectChat = useCallback(
     (entry: DirectSessionEntry) => {
-      const target = `/runners/${entry.handle}/chat`;
-      // Only register a live link for running sessions; a stopped
-      // row's id is no longer attachable to a PTY, so the sidebar
-      // shouldn't claim it as the runner's "active" chat.
-      if (entry.status === "running") {
-        setActiveSession(entry.handle, entry.session_id);
-      }
+      const target = `/runners/${entry.handle}/chat/${entry.session_id}`;
       navigate(target, {
-        state: {
-          sessionId: entry.session_id,
-          sessionStatus: entry.status,
-        },
+        state: { sessionStatus: entry.status },
         replace: location.pathname === target,
       });
     },

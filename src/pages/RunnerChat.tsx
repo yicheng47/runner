@@ -35,10 +35,6 @@ import {
 } from "../components/SessionEndedOverlay";
 import { api, type DirectSessionEntry } from "../lib/api";
 import {
-  clearActiveSession,
-  setActiveSession,
-} from "../lib/activeSessions";
-import {
   markArchivingSession,
   unmarkArchivingSession,
   useArchivingSession,
@@ -55,11 +51,17 @@ interface ExitEvent {
 // Always lands here in "attach" mode: the originating button
 // (RunnerDetail "Chat now", Runners list "Chat" pill, sidebar
 // SESSION list) spawns or looks up the session synchronously and
-// navigates with the resulting `sessionId`. Removing in-effect
-// spawning was the cleanest fix for the StrictMode double-mount
-// race that left two visible sessions per click.
+// navigates with the resulting `sessionId` baked into the URL.
+// Removing in-effect spawning was the cleanest fix for the StrictMode
+// double-mount race that left two visible sessions per click.
+//
+// The session id rides on the URL itself (`/runners/:handle/chat/:sessionId`),
+// so refresh / back-forward / paste all attach to the right chat.
+// `location.state.sessionStatus` is an optional optimistic seed that
+// avoids a one-tick "running" flicker when the originating row is
+// already stopped — when missing we fall back to "stopped" and let the
+// chatMeta fetch correct it.
 interface RunnerChatLocationState {
-  sessionId?: string;
   /** Real status of the session row at navigation time so we don't
    *  briefly seed the pane as running and let xterm forward
    *  keystrokes to a session that's no longer in the live map. */
@@ -76,12 +78,15 @@ interface DirectSessionPane {
 }
 
 export default function RunnerChat() {
-  const { handle } = useParams<{ handle: string }>();
+  const { handle, sessionId: sessionIdParam } = useParams<{
+    handle: string;
+    sessionId: string;
+  }>();
   const location = useLocation();
   const navigate = useNavigate();
   const state = location.state as RunnerChatLocationState | null;
 
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const sessionId = sessionIdParam ?? null;
   const [directSessions, setDirectSessions] = useState<DirectSessionPane[]>([]);
   const [err, setErr] = useState<string | null>(null);
   // Resume-fallback banner: distinct from `err` because it isn't a failure
@@ -129,10 +134,10 @@ export default function RunnerChat() {
   // crash. Without this, every End chat lands on status="crashed"
   // because SIGKILL bubbles up as a non-zero exit.
   const killedSessionsRef = useRef<Set<string>>(new Set());
-  // Last route/session request this component attached or spawned for.
-  // React Router reuses RunnerChat when moving between
-  // `/runners/:handle/chat` routes, so this must be keyed by handle and
-  // session state instead of a one-shot boolean.
+  // Last route/session request this component attached for. React
+  // Router reuses RunnerChat when moving between
+  // `/runners/:handle/chat/:sessionId` routes, so this must be keyed
+  // by the URL params instead of a one-shot boolean.
   const startedKeyRef = useRef<string | null>(null);
 
   const activeSession = directSessions.find((s) => s.id === sessionId) ?? null;
@@ -158,7 +163,6 @@ export default function RunnerChat() {
 
   const attach = useCallback(
     (id: string, sessionHandle: string, status: SessionStatus = "running") => {
-      setSessionId(id);
       setErr(null);
       upsertSession({
         id,
@@ -166,21 +170,11 @@ export default function RunnerChat() {
         status,
         exitCode: null,
       });
-      // Only register the live link for actually-running sessions. A
-      // stopped row's id can't be attached to a PTY, so we shouldn't
-      // claim it as the runner's active chat — and the sidebar would
-      // otherwise mis-route a future click as "attach" instead of
-      // navigating-then-resume.
-      if (status === "running") {
-        setActiveSession(sessionHandle, id);
-      } else {
-        clearActiveSession(sessionHandle);
-      }
     },
     [upsertSession],
   );
 
-  const onTerminalExit = useCallback((sessionHandle: string, ev: ExitEvent) => {
+  const onTerminalExit = useCallback((ev: ExitEvent) => {
     const userEnded = killedSessionsRef.current.has(ev.session_id);
     const nextStatus = ev.success || userEnded ? "stopped" : "crashed";
     killedSessionsRef.current.delete(ev.session_id);
@@ -191,7 +185,6 @@ export default function RunnerChat() {
           : s,
       ),
     );
-    clearActiveSession(sessionHandle);
   }, []);
 
   // Pull the runner config so the header can show the runtime
@@ -370,39 +363,21 @@ export default function RunnerChat() {
   // dev (mount → cleanup → mount) raced its own cleanup and left two
   // visible sessions per click. The originating buttons (RunnerDetail
   // "Chat now", Runners list "Chat" pill) now spawn synchronously and
-  // navigate here with the resulting `sessionId`, so this effect only
+  // navigate here with the URL-encoded `sessionId`, so this effect only
   // ever runs the deterministic attach path.
   useEffect(() => {
-    const requestKey = [handle ?? "", state?.sessionId ?? ""].join(" ");
+    const requestKey = [handle ?? "", sessionId ?? ""].join(" ");
     if (startedKeyRef.current === requestKey) return;
     startedKeyRef.current = requestKey;
-    setSessionId(null);
     setErr(null);
-
-    if (state?.sessionId && handle) {
-      attach(state.sessionId, handle, state.sessionStatus ?? "stopped");
-      return;
+    if (sessionId && handle) {
+      attach(sessionId, handle, state?.sessionStatus ?? "stopped");
     }
-
-    // No location.state — typical after a window reload while on the
-    // chat route. With multi-chat per runner the URL alone no longer
-    // identifies which conversation to attach to, so we direct the
-    // user back to the sidebar / runner detail to pick one.
-    if (!handle) {
-      setErr(
-        "Chat must be opened from the runner detail page or the sidebar.",
-      );
-      return;
-    }
-    setErr(
-      "Pick a chat from the sidebar, or start a new one from the runner detail page.",
-    );
-  }, [attach, handle, state?.sessionId, state?.sessionStatus]);
+  }, [attach, handle, sessionId, state?.sessionStatus]);
 
   async function endChat() {
     if (!sessionId || !handle) return;
     const targetId = sessionId;
-    const targetHandle = handle;
     killedSessionsRef.current.add(targetId);
     try {
       // session_kill blocks until the reader thread reaps the child
@@ -418,11 +393,6 @@ export default function RunnerChat() {
           s.id === targetId ? { ...s, status: "stopped" } : s,
         ),
       );
-      // Sidebar's activeSessions registry says "this handle has a
-      // running PTY at <id>". Clear it so a fresh click in the sidebar
-      // routes through the resume path instead of attaching to a
-      // dead session id.
-      clearActiveSession(targetHandle);
       void refreshChatMeta();
     } catch (e) {
       setErr(String(e));
@@ -440,14 +410,12 @@ export default function RunnerChat() {
   //   2. Await the resume RPC. The new PTY's first chunk continues
   //      the seq counter (we keep it across forget) so the live
   //      listener doesn't drop the agent's repaint.
-  //   3. Flip the local pane status back to running and re-publish
-  //      this handle to the activeSessions registry. Clearing the
+  //   3. Flip the local pane status back to running. Clearing the
   //      `resuming` flag waits for chatMeta.status to confirm the
   //      DB-backed truth (the sync effect drives that).
   async function resumeChat() {
     if (!sessionId || !handle) return;
     const targetId = sessionId;
-    const targetHandle = handle;
     setResuming(true);
     setClearVersion((v) => v + 1);
     setErr(null);
@@ -460,7 +428,6 @@ export default function RunnerChat() {
             : s,
         ),
       );
-      setActiveSession(targetHandle, targetId);
       void refreshChatMeta();
     } catch (e) {
       setErr(String(e));
@@ -525,7 +492,6 @@ export default function RunnerChat() {
         await api.session.kill(targetId);
       }
       await api.session.archive(targetId);
-      clearActiveSession(targetHandle);
       navigate(`/runners/${targetHandle}`);
     } catch (e) {
       setErr(String(e));
@@ -781,7 +747,7 @@ export default function RunnerChat() {
                   active={active && !resuming}
                   disabled={dead || resuming}
                   clearVersion={active ? clearVersion : undefined}
-                  onExit={(ev) => onTerminalExit(s.handle, ev)}
+                  onExit={onTerminalExit}
                   onError={setErr}
                 />
               </div>

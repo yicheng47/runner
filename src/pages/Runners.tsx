@@ -77,38 +77,23 @@ export default function Runners() {
     };
   }, []);
 
-  // The Chat pill on a runner card takes you straight into a PTY — not
-  // a detour through the runner detail page. Re-attach if a live direct
-  // session already exists; otherwise spawn a fresh one *here* (not in
-  // RunnerChat's mount effect) so the click-to-spawn is a single
-  // deterministic call. The mount-effect spawn path tripped a
+  // The Chat pill on a runner card always spawns a fresh chat — a
+  // runner can host multiple direct chats, so re-attaching to "the"
+  // existing session would silently hide every chat after the first.
+  // Discovery of existing chats happens via the sidebar SESSION list
+  // and the runner detail page. Spawn-then-navigate runs *here* (not
+  // in RunnerChat's mount effect) so the click-to-spawn is a single
+  // deterministic call; the mount-effect spawn path tripped a
   // StrictMode double-mount race that left two visible sessions per
-  // click; spawning here and navigating with a real sessionId keeps
-  // RunnerChat on the deterministic attach path.
+  // click.
   const [chatPending, setChatPending] = useState<string | null>(null);
   const onChat = async (item: RunnerWithActivity) => {
     if (chatPending) return;
-    if (item.direct_session_id) {
-      // `direct_session_id` from runner_activity only ever points at a
-      // currently-running PTY, so seed the chat with sessionStatus
-      // "running". RunnerChat's attach path now defaults missing
-      // sessionStatus to "stopped" (defensive for the sidebar's
-      // arbitrary-row navigation), so without this the terminal would
-      // briefly mount disabled and only flip to running once chatMeta
-      // round-trips — and stay wrong if the metadata fetch fails.
-      navigate(`/runners/${item.handle}/chat`, {
-        state: {
-          sessionId: item.direct_session_id,
-          sessionStatus: "running",
-        },
-      });
-      return;
-    }
     setChatPending(item.id);
     try {
       const spawned = await api.session.startDirect(item.id, null, null, null);
-      navigate(`/runners/${item.handle}/chat`, {
-        state: { sessionId: spawned.id, sessionStatus: "running" },
+      navigate(`/runners/${item.handle}/chat/${spawned.id}`, {
+        state: { sessionStatus: "running" },
       });
     } catch (e) {
       setError(String(e));
@@ -288,11 +273,7 @@ function RunnerCard({
               }}
               disabled={chatPending}
               className="ml-1 inline-flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent/10 active:bg-accent/20 disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
-              title={
-                item.direct_session_id
-                  ? "Re-attach to live chat"
-                  : "Start a new chat"
-              }
+              title="Start a new chat"
             >
               <MessageSquare aria-hidden className="h-3 w-3" />
               <span>{chatPending ? "Starting…" : "Chat"}</span>
