@@ -26,9 +26,11 @@ use std::thread;
 use super::launch;
 use super::runtime::{
     OutputStream, RuntimeError, RuntimeOutput, RuntimeResult, RuntimeSession, SessionRuntime,
-    SpawnSpec,
+    SessionStatus, SpawnSpec,
 };
-use super::tmux::{resolve_tmux_binary, tmux_cmd, write_runner_config, DEFAULT_LABEL};
+use super::tmux::{
+    resolve_tmux_binary, tmux_cmd, write_runner_config, CONFIG_VERSION, DEFAULT_LABEL,
+};
 
 /// Tmux-backed session runtime. Constructed once per app process
 /// from `app_data_dir`; clones are cheap (it's just paths and a
@@ -72,6 +74,56 @@ impl TmuxRuntime {
 
     fn session_dir(&self, session_id: &str) -> PathBuf {
         self.runtime_dir.join(session_id)
+    }
+
+    /// App-start config reconciliation (Step 8 of the plan). When
+    /// `exit-empty off` keeps the tmux server alive across Runner
+    /// upgrades, an old server is still running with the previous
+    /// config's options at next launch. `-f <runner.conf>` is
+    /// only re-read on server start; running options stay stale
+    /// unless we reload them explicitly.
+    ///
+    /// Cheap probe: read `@runner_config_version` from the running
+    /// server. Match against our stamp ⇒ skip. Mismatch or missing
+    /// ⇒ `source-file <runner.conf>` to reload, then re-stamp via
+    /// the config (which sets `@runner_config_version`).
+    ///
+    /// No-op if the server isn't running (idempotent — the next
+    /// `new-session` will start a fresh server with the current
+    /// config).
+    pub fn reconcile_config(&self) -> RuntimeResult<bool> {
+        let probe = self
+            .cmd()
+            .arg("show-options")
+            .arg("-g")
+            .arg("-v")
+            .arg("@runner_config_version")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()?;
+        if !probe.status.success() {
+            // Two innocuous cases land here: (a) server not
+            // running yet — the next spawn will start a fresh
+            // server that loads the current config, no work
+            // needed; (b) the option isn't set on the running
+            // server (legacy server pre-dates the stamp). Treat
+            // both as "no live server to reload"; if there *is* a
+            // live server, the next has-session probe will detect
+            // it and trigger a real reload.
+            return Ok(false);
+        }
+        let stamped = String::from_utf8_lossy(&probe.stdout).trim().to_string();
+        if stamped == CONFIG_VERSION {
+            return Ok(false);
+        }
+        // Stale — reload the config against the running server.
+        // The config itself sets `@runner_config_version`, so a
+        // successful source-file is also the re-stamp.
+        run_tmux_check(
+            self.cmd().arg("source-file").arg(&self.config_path),
+            "source-file",
+        )?;
+        Ok(true)
     }
 }
 
@@ -146,6 +198,71 @@ pub fn window_target(session: &str, window: &str) -> String {
     format!("={session}:{window}")
 }
 
+/// Parse one row of `list-panes -F '#{pane_id} #{pane_dead}
+/// #{pane_dead_status} #{pane_pid} #{pane_current_command}'`.
+/// Returns `(pane_id, SessionStatus)` so the caller can match by
+/// pane id. Returns `None` for rows that don't fit the expected
+/// shape — defensive against tmux format changes; the manager
+/// treats that as "no info this tick" and re-polls.
+///
+/// Whitespace splitting handles missing fields the way the format
+/// actually emits them: `pane_dead_status` is empty (no preceding
+/// space gap) when the pane is alive, and `pane_current_command`
+/// is the whole tail. We require pane_id, pane_dead, and pane_pid
+/// at minimum; everything else is optional.
+pub fn parse_pane_status_line(line: &str) -> Option<(String, SessionStatus)> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut parts = trimmed.split_whitespace();
+    let pane_id = parts.next()?.to_string();
+    let dead_raw = parts.next()?;
+    let alive = match dead_raw {
+        "0" => true,
+        "1" => false,
+        _ => return None,
+    };
+    // `pane_dead_status` is empty (no token) when the pane is
+    // alive. With `split_whitespace` empty fields collapse —
+    // `0  12345 sh` becomes ["0", "12345", "sh"], skipping the
+    // missing dead-status. So we need to peek: the next token is
+    // either a numeric dead-status (when dead=1) or the pid (when
+    // alive). Disambiguate by looking at `alive`.
+    let exit_code: Option<i32>;
+    let pid_raw: Option<&str>;
+    if alive {
+        // Skip dead-status (it'll be empty/missing); next token is pid.
+        exit_code = None;
+        pid_raw = parts.next();
+    } else {
+        let next = parts.next();
+        exit_code = next.and_then(|s| s.parse::<i32>().ok());
+        pid_raw = parts.next();
+    }
+    // pid is the one tail field we treat as required — every
+    // working tmux pane has a pane_pid. Reject the row otherwise
+    // so callers see "no info" rather than half-populated noise.
+    let pid_str = pid_raw?;
+    let pid = pid_str.parse::<i32>().ok();
+    pid?;
+    let command_tail: Vec<&str> = parts.collect();
+    let command = if command_tail.is_empty() {
+        None
+    } else {
+        Some(command_tail.join(" "))
+    };
+    Some((
+        pane_id,
+        SessionStatus {
+            alive,
+            exit_code,
+            pid,
+            command,
+        },
+    ))
+}
+
 // ──────────────────────────────────────────────────────────────────
 // SessionRuntime impl.
 // ──────────────────────────────────────────────────────────────────
@@ -193,6 +310,7 @@ impl SessionRuntime for TmuxRuntime {
         let _ = self
             .cmd()
             .arg("kill-session")
+            .arg("-t")
             .arg(target(&sess_name))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -257,6 +375,7 @@ impl SessionRuntime for TmuxRuntime {
                 let _ = self
                     .cmd()
                     .arg("kill-session")
+                    .arg("-t")
                     .arg(target(&session.session_name))
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
@@ -274,6 +393,7 @@ impl SessionRuntime for TmuxRuntime {
         let status = self
             .cmd()
             .arg("has-session")
+            .arg("-t")
             .arg(target(&session.session_name))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -317,6 +437,7 @@ impl SessionRuntime for TmuxRuntime {
         let _ = self
             .cmd()
             .arg("kill-session")
+            .arg("-t")
             .arg(target(&session.session_name))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -427,6 +548,65 @@ impl SessionRuntime for TmuxRuntime {
             "resize-window",
         )?;
         Ok(())
+    }
+
+    fn status(&self, session: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
+        // First gate: has-session. tmux exits non-zero if the
+        // target session is gone — that's our terminal-unavailable
+        // signal. We could fold this into list-panes' error
+        // handling, but the explicit probe gives the manager a
+        // clean Ok(None) without parsing tmux's stderr.
+        let probe = self
+            .cmd()
+            .arg("has-session")
+            .arg("-t")
+            .arg(target(&session.session_name))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        if !probe.success() {
+            return Ok(None);
+        }
+
+        // list-panes -s targets the whole session (vs. the bare
+        // -t which interprets the target as a window). With
+        // `remain-on-exit on`, dead panes stay around with
+        // pane_dead=1 + pane_dead_status; without it those
+        // fields are blank. The format keeps fields space-
+        // separated so a dead pane with `pane_current_command`
+        // empty still parses.
+        let out = self
+            .cmd()
+            .arg("list-panes")
+            .arg("-s")
+            .arg("-t")
+            .arg(target(&session.session_name))
+            .arg("-F")
+            .arg("#{pane_id} #{pane_dead} #{pane_dead_status} #{pane_pid} #{pane_current_command}")
+            .output()?;
+        if !out.status.success() {
+            return Err(RuntimeError::TmuxFailed {
+                command: "list-panes".into(),
+                status: out.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+            });
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        // Find the row matching our pane_id; one pane per session
+        // today, but mission spawns may grow more, and we always
+        // want the row tied to this RuntimeSession.
+        for line in stdout.lines() {
+            if let Some(parsed) = parse_pane_status_line(line) {
+                if parsed.0 == session.pane {
+                    return Ok(Some(parsed.1));
+                }
+            }
+        }
+        // Session exists but our pane id no longer does — treat
+        // as terminal-unavailable so the manager marks the
+        // session stopped without inventing exit info.
+        Ok(None)
     }
 }
 
@@ -767,6 +947,61 @@ mod tests {
         assert_eq!(window_target("runner-01HX1", "main"), "=runner-01HX1:main");
     }
 
+    #[test]
+    fn parse_pane_status_line_alive_pane() {
+        // Live pane: dead=0, no dead-status token, then pid + cmd.
+        let (pane, status) = parse_pane_status_line("%0 0  12345 sh").unwrap();
+        assert_eq!(pane, "%0");
+        assert!(status.alive);
+        assert_eq!(status.exit_code, None);
+        assert_eq!(status.pid, Some(12345));
+        assert_eq!(status.command.as_deref(), Some("sh"));
+    }
+
+    #[test]
+    fn parse_pane_status_line_dead_pane_with_exit_code() {
+        // Dead pane: dead=1, dead-status=42, then pid + cmd.
+        let (pane, status) = parse_pane_status_line("%3 1 42 67890 claude").unwrap();
+        assert_eq!(pane, "%3");
+        assert!(!status.alive);
+        assert_eq!(status.exit_code, Some(42));
+        assert_eq!(status.pid, Some(67890));
+        assert_eq!(status.command.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn parse_pane_status_line_dead_pane_zero_exit() {
+        // Clean exit (status 0) is the success path; manager
+        // distinguishes "stopped" vs "crashed" via this.
+        let (_, status) = parse_pane_status_line("%1 1 0 100 bash").unwrap();
+        assert!(!status.alive);
+        assert_eq!(status.exit_code, Some(0));
+    }
+
+    #[test]
+    fn parse_pane_status_line_command_with_spaces() {
+        // pane_current_command can include args / spaces (rare in
+        // practice, but agents launched with -c "..." can show up
+        // this way).
+        let (_, status) = parse_pane_status_line("%0 0  100 my agent --flag").unwrap();
+        assert_eq!(status.command.as_deref(), Some("my agent --flag"));
+    }
+
+    #[test]
+    fn parse_pane_status_line_rejects_bad_shapes() {
+        for bad in [
+            "",     // empty
+            "%0",   // missing dead
+            "%0 ?", // bad dead value
+            "%0 0", // missing pid
+        ] {
+            assert!(
+                parse_pane_status_line(bad).is_none(),
+                "{bad:?} should not parse"
+            );
+        }
+    }
+
     // ─────── Tmux-gated integration tests ───────
     //
     // These actually shell out to a tmux server. They use a
@@ -878,6 +1113,82 @@ mod tests {
         rt.send_bytes(&session, b"echo hi\n")
             .expect("send_bytes echo");
         rt.resize(&session, 100, 30).expect("resize");
+        rt.stop(&session).unwrap();
+        cleanup(&rt);
+    }
+
+    #[test]
+    #[ignore]
+    fn integration_status_alive_then_dead() {
+        let Some(rt) = test_runtime("status-alive-then-dead") else {
+            return;
+        };
+        // Quick-exit command so the pane goes dead within the
+        // test deadline. With remain-on-exit on (in the runner
+        // config), the pane stays around with pane_dead=1 +
+        // pane_dead_status so we can read the exit code.
+        let spec = SpawnSpec {
+            session_id: "statusprobe01".into(),
+            cwd: None,
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "exit 7".into()],
+            env: Default::default(),
+            mission: false,
+        };
+        let (session, _rx) = rt.spawn(spec).unwrap();
+
+        // Poll up to 2s for pane_dead=1. The agent exits ~ms
+        // after spawn but tmux's pane reaper has its own cadence.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut final_status = None;
+        let mut last_seen = None;
+        while std::time::Instant::now() < deadline {
+            let st = rt.status(&session).unwrap();
+            last_seen = Some(format!("{st:?}"));
+            match st {
+                Some(s) if !s.alive => {
+                    final_status = Some(s);
+                    break;
+                }
+                _ => std::thread::sleep(std::time::Duration::from_millis(50)),
+            }
+        }
+        let s = final_status.unwrap_or_else(|| {
+            panic!("pane never went dead; last status seen = {last_seen:?}");
+        });
+        assert!(!s.alive);
+        assert_eq!(s.exit_code, Some(7), "exit code should be 7");
+
+        // After kill-session the runtime should report None
+        // (terminal-unavailable).
+        rt.stop(&session).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let after = rt.status(&session).unwrap();
+        assert!(after.is_none(), "expected None after kill, got {after:?}");
+        cleanup(&rt);
+    }
+
+    #[test]
+    #[ignore]
+    fn integration_reconcile_config_no_op_on_fresh_server() {
+        // A fresh server's first session creation already loads
+        // -f <runner.conf>, so reconcile_config should observe a
+        // matching stamp and return Ok(false) (no reload needed).
+        let Some(rt) = test_runtime("reconcile-noop") else {
+            return;
+        };
+        // Create a session so the server actually exists.
+        let spec = SpawnSpec {
+            session_id: "reconcileprobe01".into(),
+            cwd: None,
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 5".into()],
+            env: Default::default(),
+            mission: false,
+        };
+        let (session, _rx) = rt.spawn(spec).unwrap();
+        let reloaded = rt.reconcile_config().unwrap();
+        assert!(!reloaded, "fresh server should already have current stamp");
         rt.stop(&session).unwrap();
         cleanup(&rt);
     }

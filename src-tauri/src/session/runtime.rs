@@ -69,6 +69,34 @@ pub struct RuntimeSession {
     pub pane: String,
 }
 
+/// Liveness snapshot of a runtime session. Returned by
+/// `SessionRuntime::status` so the manager (Step 9) can reconcile
+/// the DB row against what the runtime knows: a live pane stays
+/// `running`; a dead pane with a captured exit code becomes
+/// `stopped` (status 0) or `crashed` (non-zero); a missing pane
+/// (the runtime returns `Ok(None)`) is treated as
+/// terminal-unavailable.
+#[derive(Debug, Clone)]
+pub struct SessionStatus {
+    /// `true` while the agent process is still attached to the
+    /// pane. Once the agent exits and tmux flags `pane_dead=1`,
+    /// this flips to `false`.
+    pub alive: bool,
+    /// Exit code captured from `pane_dead_status` once the agent
+    /// has exited. Only populated when `alive == false` AND the
+    /// runtime config has `remain-on-exit on` so tmux retains the
+    /// dead pane long enough for the manager to read it.
+    pub exit_code: Option<i32>,
+    /// Process id of the most-recent foreground program in the
+    /// pane (`pane_pid` in tmux). Useful for "kill the bare pid"
+    /// flows from the manager.
+    pub pid: Option<i32>,
+    /// Name of the foreground command (`pane_current_command`).
+    /// Useful for diagnostics — "is this still claude or has it
+    /// fallen back to the shell?".
+    pub command: Option<String>,
+}
+
 /// One unit of output produced by a runtime session. The manager
 /// forwards these to xterm.js with **distinct semantics** for each
 /// variant — collapsing them back into a single byte stream is the
@@ -259,4 +287,12 @@ pub trait SessionRuntime: Send + Sync {
     /// Frontend resize event. The runtime is expected to debounce
     /// internally if multiple `resize` calls land back-to-back.
     fn resize(&self, session: &RuntimeSession, cols: u16, rows: u16) -> RuntimeResult<()>;
+
+    /// Liveness probe used by the manager's reconciliation loop
+    /// (Step 8). `Ok(None)` means the runtime can't find the
+    /// session — treat as terminal-unavailable. `Ok(Some(_))`
+    /// means the pane exists; the caller branches on
+    /// `SessionStatus.alive` and `exit_code`. Errors are reserved
+    /// for transport failures (tmux daemon gone, etc.).
+    fn status(&self, session: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>>;
 }
