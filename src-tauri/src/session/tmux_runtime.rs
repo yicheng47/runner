@@ -345,14 +345,27 @@ impl SessionRuntime for TmuxRuntime {
             .stderr(Stdio::null())
             .status();
 
-        // 4. tmux new-session.
+        // 4. tmux new-session, chained with pipe-pane install AND
+        //    a display-message pane-id readout. tmux processes
+        //    chained commands sequentially in a single server
+        //    event-loop iteration, so pipe-pane attaches
+        //    microseconds after new-session forks the launch
+        //    script — far smaller than the IPC roundtrip we'd see
+        //    if we ran them as separate `tmux` invocations. This
+        //    minimizes the pre-install race where a fast-startup
+        //    agent could write to its PTY before pipe-pane
+        //    forwards. Real agents (claude-code, codex) take
+        //    100ms+ to start; chaining shrinks the race below
+        //    their startup latency.
+        let pipe_cmd = format!(
+            "cat >> {}",
+            launch::shell_quote(&fifo_path.display().to_string())
+        );
+        let window_tgt = window_target(&sess_name, "main");
         let mut new_session = self.cmd();
         new_session
             .arg("new-session")
             .arg("-d")
-            .arg("-P")
-            .arg("-F")
-            .arg("#{pane_id}")
             .arg("-s")
             .arg(&sess_name)
             .arg("-n")
@@ -363,10 +376,26 @@ impl SessionRuntime for TmuxRuntime {
         new_session
             .arg("--")
             .arg(launch::shell_quote(&launch_path.display().to_string()));
+        // \; separator between chained commands. tmux's argv
+        // parser treats a bare `;` arg as the command separator.
+        new_session
+            .arg(";")
+            .arg("pipe-pane")
+            .arg("-O")
+            .arg("-t")
+            .arg(&window_tgt)
+            .arg(&pipe_cmd);
+        new_session
+            .arg(";")
+            .arg("display-message")
+            .arg("-p")
+            .arg("-t")
+            .arg(&window_tgt)
+            .arg("#{pane_id}");
         let output = new_session.output()?;
         if !output.status.success() {
             return Err(RuntimeError::TmuxFailed {
-                command: "new-session".into(),
+                command: "new-session+pipe-pane".into(),
                 status: output.status.code().unwrap_or(-1),
                 stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             });
@@ -489,9 +518,21 @@ impl SessionRuntime for TmuxRuntime {
     }
 
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
-        // Best-effort. kill-session against a missing target is
-        // not a runtime error — the manager polls list-panes
-        // separately to confirm the pane is gone (Step 8).
+        // Try to kill, then verify with `has-session`. Discarding
+        // kill-session's failure isn't safe: if tmux itself is
+        // wedged (socket gone, daemon dead), we'd otherwise
+        // return Ok and let the manager's forwarder reconcile
+        // the row to "stopped" while the agent stays alive in
+        // tmux with no UI/DB record to reach it.
+        //
+        // kill-session on a missing target ALSO returns non-zero
+        // (with a "no such session" stderr) — that's a benign
+        // success for our purposes, which is why we don't fail
+        // on the kill-session exit code itself. The has-session
+        // probe disambiguates: if the session is gone (probe
+        // fails), we did our job; if the session is still there,
+        // the kill genuinely didn't take and we should surface
+        // that as an error.
         let _ = self
             .cmd()
             .arg("kill-session")
@@ -501,6 +542,26 @@ impl SessionRuntime for TmuxRuntime {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+        let probe = self
+            .cmd()
+            .arg("has-session")
+            .arg("-t")
+            .arg(target(&session.session_name))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        if probe.success() {
+            // Session still present after kill-session — tmux is
+            // unwilling or unable to reap it. The manager's
+            // caller (typically `kill()`) propagates this so the
+            // DB row isn't flipped to stopped on a still-live
+            // pane.
+            return Err(RuntimeError::Msg(format!(
+                "tmux refused to stop session {} (has-session still finds it)",
+                session.session_name
+            )));
+        }
         Ok(())
     }
 
@@ -768,15 +829,25 @@ fn attach_streaming(
     mut reader: std::fs::File,
     is_fresh_spawn: bool,
 ) -> RuntimeResult<OutputStream> {
-    install_pipe_pane(cmd, session, fifo_path)?;
+    if !is_fresh_spawn {
+        // Reattach: install pipe-pane (close stale + install
+        // new). For fresh spawn the chained new-session+pipe-pane
+        // in `TmuxRuntime::spawn` already installed the pipe at
+        // server-tick latency, so calling install_pipe_pane here
+        // would just churn it unnecessarily.
+        install_pipe_pane(cmd, session, fifo_path)?;
+    }
 
     // Fresh spawn: skip the snapshot. The agent just started; its
-    // first paint is moments away and will arrive via the live
-    // pipe-pane stream. Capturing now would land mostly-blank
-    // rows in the snapshot (the pane's full visible region with
-    // a few rows of agent banner at the bottom), which xterm.js
-    // would then render as empty top space above the live
-    // content as the agent fills in.
+    // first paint will arrive via the live pipe-pane stream
+    // (which we already installed in the same tmux server tick
+    // as new-session). Capturing now would land mostly-blank
+    // rows in the snapshot — the pane's full visible region
+    // with a few rows of agent banner — and xterm.js would
+    // render those blanks as empty top-space above the live
+    // content. Reattach (resume after app restart) DOES include
+    // the snapshot; that's the case where there's prior state to
+    // replay onto a fresh xterm.js render.
     let snapshot = if is_fresh_spawn {
         Vec::new()
     } else {

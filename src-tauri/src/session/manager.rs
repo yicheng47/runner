@@ -1354,14 +1354,19 @@ impl SessionManager {
             }
         };
 
-        // Stop the pane. The forwarder thread should see the
-        // channel close (tmux kills pipe-pane → cat dies → FIFO
-        // POLLHUP → forward_fifo exits → tx drops →
-        // Disconnected); but that whole chain depends on tmux's
-        // async cleanup, which has been observed stalling under
-        // load. Flip the explicit cancellation flag so the
-        // consumer breaks out within ~500ms regardless.
-        let _ = self.runtime.stop(&rt_session);
+        // Stop the pane. `runtime.stop` verifies via has-session
+        // that the pane is actually gone — if tmux refuses to
+        // reap it, we surface the error rather than silently
+        // marking the row stopped while the agent keeps running.
+        // Captured before the cancellation flag flip so the
+        // forwarder doesn't race ahead and reconcile the DB on a
+        // still-live pane.
+        let stop_result = self.runtime.stop(&rt_session);
+
+        // Flip the explicit cancellation flag so the consumer
+        // breaks out within ~500ms regardless of how the
+        // pipe-pane → FIFO POLLHUP → channel-disconnect chain
+        // progresses.
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
 
         // Wait for the forwarder to drain + reconcile so the
@@ -1370,7 +1375,7 @@ impl SessionManager {
         if let Some(h) = forwarder {
             let _ = h.join();
         }
-        Ok(())
+        stop_result.map_err(Into::into)
     }
 
     /// Kill every live session; used on mission_stop and at app shutdown.
@@ -1460,30 +1465,35 @@ impl SessionManager {
             return;
         };
 
-        // Mission sessions: refuse to reattach at startup. An
-        // agent can keep appending bus events (`ask_lead`,
-        // `human_said`, `runner_status`) while Runner is
-        // closed, but the mission's bus + router don't mount
-        // until `mission_attach` fires from the workspace UI,
-        // and `router::mod` explicitly doesn't replay stdin
-        // side effects on reconstruction. Reattaching the PTY
-        // without the bus would silently miss those events.
-        // Kill the pane and mark the row stopped; the user can
-        // resume from the workspace, which mounts the bus +
-        // router properly.
-        //
-        // Direct chats are off-bus by design (PR #51) so they
-        // reattach unchanged — that's the survivability win the
-        // migration was meant to deliver.
-        if row.mission_id.is_some() {
-            let _ = self.runtime.stop(&rt_session);
-            mark_session_stopped(pool, &row.id, now);
-            return;
-        }
+        // Query status FIRST so we can apply the dead-pane crash
+        // discrimination uniformly (mission OR direct, alive OR
+        // dead). The mission carve-out below only fires for
+        // *alive* mission panes — dead missions still need to
+        // surface their exit code so the workspace shows
+        // crashed-vs-stopped correctly after restart.
+        let status = self.runtime.status(&rt_session);
+        let is_mission = row.mission_id.is_some();
 
-        match self.runtime.status(&rt_session) {
-            Ok(Some(status)) if status.alive => {
-                // Pane is still alive. Re-attach. On failure,
+        match status {
+            Ok(Some(s)) if s.alive => {
+                if is_mission {
+                    // Mission session + alive: refuse to reattach.
+                    // The mission's bus + router don't mount
+                    // until `mission_attach` fires from the
+                    // workspace UI, and `router::mod` doesn't
+                    // replay stdin side effects on
+                    // reconstruction. Reattaching the PTY
+                    // without the bus would silently miss
+                    // ask_lead / human_said / runner_status
+                    // events appended after restart. Kill the
+                    // pane and mark the row stopped; the user
+                    // can resume from the workspace, which
+                    // mounts the bus + router properly.
+                    let _ = self.runtime.stop(&rt_session);
+                    mark_session_stopped(pool, &row.id, now);
+                    return;
+                }
+                // Direct chat + alive: re-attach. On failure,
                 // kill the orphan pane before marking the row
                 // stopped — otherwise the agent keeps running
                 // with no UI / DB record to reach it.
