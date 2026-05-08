@@ -1333,35 +1333,51 @@ impl SessionManager {
     pub fn kill(&self, session_id: &str) -> Result<()> {
         // Mark the kill as intentional so the forwarder thread
         // classifies the upcoming non-zero exit as `stopped`, not
-        // `crashed`. The runtime's `stop` typically lands the
-        // pane in a non-zero exit (SIGTERM, etc.); without this
-        // flag every user-initiated stop would surface as a crash.
+        // `crashed`. We roll this back below if `runtime.stop`
+        // fails so a future successful kill applies cleanly.
         self.killed.lock().unwrap().insert(session_id.to_string());
 
-        // Take the handle out of the live map so subsequent
-        // `inject_stdin` / `kill` / `resize` against this id fail
-        // fast; the forwarder thread's runtime_session was cloned
-        // at insert time so it stays usable.
-        let (rt_session, stop, forwarder) = {
-            let mut sessions = self.sessions.lock().unwrap();
-            match sessions.remove(session_id) {
-                Some(mut h) => (
-                    h.runtime_session.clone(),
-                    h.stop.clone(),
-                    h.forwarder.take(),
-                ),
-                None => return Ok(()),
+        // Look up the rt_session WITHOUT removing the handle yet.
+        // The handle stays in the live map until we know
+        // `runtime.stop` succeeded. If it fails (pane survived
+        // kill-session), bailing here leaves the live handle
+        // intact and the caller can retry; if we'd already
+        // removed the handle + flipped the cancellation flag,
+        // the forwarder thread would reconcile the DB row to
+        // `stopped` even though the pane is still alive.
+        let rt_session = {
+            let sessions = self.sessions.lock().unwrap();
+            match sessions.get(session_id) {
+                Some(h) => h.runtime_session.clone(),
+                None => {
+                    // Already gone — clear the killed marker we
+                    // just set so subsequent spawns of the same
+                    // id (resume cycles) don't inherit a stale
+                    // intentional flag.
+                    self.killed.lock().unwrap().remove(session_id);
+                    return Ok(());
+                }
             }
         };
 
-        // Stop the pane. `runtime.stop` verifies via has-session
-        // that the pane is actually gone — if tmux refuses to
-        // reap it, we surface the error rather than silently
-        // marking the row stopped while the agent keeps running.
-        // Captured before the cancellation flag flip so the
-        // forwarder doesn't race ahead and reconcile the DB on a
-        // still-live pane.
-        let stop_result = self.runtime.stop(&rt_session);
+        // Stop verifies via has-session that the pane is actually
+        // gone. Returns Err if tmux refuses to reap.
+        if let Err(e) = self.runtime.stop(&rt_session) {
+            // Roll back: pane is alive, the handle stays
+            // in the map, the killed marker is cleared. The
+            // caller sees the error.
+            self.killed.lock().unwrap().remove(session_id);
+            return Err(e.into());
+        }
+
+        // Stop succeeded. Now tear down the handle and reconcile.
+        let (stop, forwarder) = {
+            let mut sessions = self.sessions.lock().unwrap();
+            match sessions.remove(session_id) {
+                Some(mut h) => (h.stop.clone(), h.forwarder.take()),
+                None => return Ok(()), // raced with another caller; no-op
+            }
+        };
 
         // Flip the explicit cancellation flag so the consumer
         // breaks out within ~500ms regardless of how the
@@ -1375,7 +1391,7 @@ impl SessionManager {
         if let Some(h) = forwarder {
             let _ = h.join();
         }
-        stop_result.map_err(Into::into)
+        Ok(())
     }
 
     /// Kill every live session; used on mission_stop and at app shutdown.
@@ -1489,20 +1505,41 @@ impl SessionManager {
                     // pane and mark the row stopped; the user
                     // can resume from the workspace, which
                     // mounts the bus + router properly.
-                    let _ = self.runtime.stop(&rt_session);
+                    if let Err(e) = self.runtime.stop(&rt_session) {
+                        // Pane refused to die; leave the row
+                        // alone (still `running`) so the user's
+                        // eventual `mission_attach` from the
+                        // workspace can find it via the
+                        // existing reconcile path. Marking it
+                        // stopped here would create a UI/DB-
+                        // vs-tmux mismatch.
+                        eprintln!(
+                            "runner: reattach failed to stop mission session {}: {e}",
+                            row_dbg(&row.id)
+                        );
+                        return;
+                    }
                     mark_session_stopped(pool, &row.id, now);
                     return;
                 }
                 // Direct chat + alive: re-attach. On failure,
-                // kill the orphan pane before marking the row
-                // stopped — otherwise the agent keeps running
-                // with no UI / DB record to reach it.
+                // try to kill the orphan pane before marking the
+                // row stopped — but only mark stopped if the
+                // kill actually succeeded; otherwise the agent
+                // is still running and lying in the DB would
+                // strand it.
                 let id = row.id.clone();
                 let rt_for_cleanup = rt_session.clone();
                 if let Err(e) = self.attach_existing(row, rt_session, pool, events) {
                     eprintln!("runner: reattach session {} failed: {e}", row_dbg(&id));
-                    let _ = self.runtime.stop(&rt_for_cleanup);
-                    mark_session_stopped(pool, &id, now);
+                    match self.runtime.stop(&rt_for_cleanup) {
+                        Ok(()) => mark_session_stopped(pool, &id, now),
+                        Err(e) => eprintln!(
+                            "runner: reattach orphan-stop for {} failed: {e}; \
+                             leaving row as running",
+                            row_dbg(&id)
+                        ),
+                    }
                 }
             }
             Ok(Some(status)) => {

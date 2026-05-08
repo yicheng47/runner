@@ -838,18 +838,23 @@ fn attach_streaming(
         install_pipe_pane(cmd, session, fifo_path)?;
     }
 
-    // Fresh spawn: skip the snapshot. The agent just started; its
-    // first paint will arrive via the live pipe-pane stream
-    // (which we already installed in the same tmux server tick
-    // as new-session). Capturing now would land mostly-blank
-    // rows in the snapshot — the pane's full visible region
-    // with a few rows of agent banner — and xterm.js would
-    // render those blanks as empty top-space above the live
-    // content. Reattach (resume after app restart) DOES include
-    // the snapshot; that's the case where there's prior state to
-    // replay onto a fresh xterm.js render.
+    // Snapshot strategy:
+    // - **Fresh spawn**: capture the *visible region only* (no
+    //   `-S/-E` for full scrollback) and trim leading blank
+    //   lines. This recovers any bytes the agent produced
+    //   before pipe-pane attached (rare for real agents, real
+    //   for fast shell commands), without dragging in the
+    //   pane's empty top-rows from the agent's bottom-anchored
+    //   layout. Trim is leading-only — trailing blanks may be
+    //   intentional spacing in the agent's banner.
+    // - **Reattach**: full alt-screen-aware capture so the
+    //   resumed render sees the existing pane state (including
+    //   scrollback for main-screen panes). No trimming —
+    //   long-running agents produce real layouts that
+    //   shouldn't be edited.
     let snapshot = if is_fresh_spawn {
-        Vec::new()
+        let raw = capture_visible_region(cmd, session)?;
+        trim_leading_blank_lines(raw)
     } else {
         capture_replay_bytes(cmd, session)?
     };
@@ -933,6 +938,91 @@ fn forward_fifo(mut reader: std::fs::File, tx: mpsc::Sender<RuntimeOutput>, stop
 /// free attach order in `attach_streaming` requires sending
 /// `Replay` _after_ the FIFO drain, so the helper has to stay
 /// channel-agnostic.
+/// Capture only the pane's currently-visible region (no `-S/-E`
+/// scrollback). Used at fresh spawn to recover any bytes the
+/// agent produced before pipe-pane attached, without including
+/// the (empty) main-screen scrollback. Always preserves SGR
+/// escapes (`-e`) so xterm.js sees colors.
+fn capture_visible_region(cmd: &Command, session: &RuntimeSession) -> RuntimeResult<Vec<u8>> {
+    let out = clone_cmd(cmd)
+        .arg("capture-pane")
+        .arg("-p")
+        .arg("-e")
+        .arg("-t")
+        .arg(&session.pane)
+        .output()?;
+    if !out.status.success() {
+        return Err(RuntimeError::TmuxFailed {
+            command: "capture-pane".into(),
+            status: out.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+        });
+    }
+    Ok(out.stdout)
+}
+
+/// Drop leading blank lines from a capture-pane snapshot. A line
+/// is "blank" if it contains only ASCII whitespace once SGR / CSI
+/// escape sequences are stripped — handles tmux's `-e` output
+/// where rows might have `\e[40m  \e[0m` without any visible
+/// content. Trailing blank lines are preserved (agents
+/// occasionally use them as intentional spacing in banners).
+fn trim_leading_blank_lines(snapshot: Vec<u8>) -> Vec<u8> {
+    if snapshot.is_empty() {
+        return snapshot;
+    }
+    let mut line_start = 0usize;
+    let mut i = 0usize;
+    while i < snapshot.len() {
+        if snapshot[i] == b'\n' {
+            let line = &snapshot[line_start..i];
+            if !is_visually_blank(line) {
+                return snapshot[line_start..].to_vec();
+            }
+            line_start = i + 1;
+        }
+        i += 1;
+    }
+    // Trailing line without a `\n` — only meaningful if non-blank.
+    if line_start < snapshot.len() {
+        let line = &snapshot[line_start..];
+        if !is_visually_blank(line) {
+            return snapshot[line_start..].to_vec();
+        }
+    }
+    Vec::new()
+}
+
+/// True if `line` contains only whitespace once CSI escape
+/// sequences (ESC `[` … final byte 0x40-0x7e) are stripped. Tmux's
+/// `capture-pane -e` emits SGR escapes around colored content;
+/// this lets us treat a row of "background-only" cells as blank.
+fn is_visually_blank(line: &[u8]) -> bool {
+    let mut i = 0;
+    while i < line.len() {
+        let b = line[i];
+        if b == 0x1b {
+            // Skip CSI escape: ESC [ <params> <final 0x40-0x7e>
+            i += 1;
+            if i < line.len() && line[i] == b'[' {
+                i += 1;
+                while i < line.len() && !(0x40..=0x7e).contains(&line[i]) {
+                    i += 1;
+                }
+                if i < line.len() {
+                    i += 1; // consume final byte
+                }
+            }
+            continue;
+        }
+        if b != b' ' && b != b'\t' && b != b'\r' {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 fn capture_replay_bytes(cmd: &Command, session: &RuntimeSession) -> RuntimeResult<Vec<u8>> {
     let alt_on = is_alternate_on(cmd, &session.pane)?;
     let mut capture = clone_cmd(cmd);
@@ -1092,6 +1182,53 @@ mod tests {
         assert_eq!(target("runner-01HX1"), "=runner-01HX1");
         // Window-scoped form for resize-window etc.
         assert_eq!(window_target("runner-01HX1", "main"), "=runner-01HX1:main");
+    }
+
+    #[test]
+    fn trim_leading_blank_lines_strips_padding() {
+        // Typical fresh-spawn capture: agent painted at the
+        // bottom of its allocated screen, pane has empty rows
+        // above. Leading blanks (including ones containing only
+        // SGR escape sequences) should be stripped.
+        let input = b"\n\n   \n\x1b[40m  \x1b[0m\nClaude Code v2.1.133\nbody\n";
+        let out = trim_leading_blank_lines(input.to_vec());
+        let s = String::from_utf8_lossy(&out);
+        assert!(s.starts_with("Claude Code"), "got = {s:?}");
+        assert!(s.contains("body"), "trailing content preserved: {s:?}");
+    }
+
+    #[test]
+    fn trim_leading_blank_lines_preserves_trailing_blanks() {
+        // Trailing blank lines may be intentional spacing in the
+        // banner; don't touch them.
+        let input = b"banner\n\n\n";
+        let out = trim_leading_blank_lines(input.to_vec());
+        assert_eq!(out, b"banner\n\n\n");
+    }
+
+    #[test]
+    fn trim_leading_blank_lines_returns_empty_when_all_blank() {
+        let input = b"\n   \n\x1b[40m\x1b[0m\n";
+        let out = trim_leading_blank_lines(input.to_vec());
+        assert!(out.is_empty(), "expected empty, got {:?}", out);
+    }
+
+    #[test]
+    fn trim_leading_blank_lines_no_op_when_first_line_has_content() {
+        let input = b"hello\n\nworld\n";
+        let out = trim_leading_blank_lines(input.to_vec());
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn is_visually_blank_handles_csi_escapes() {
+        assert!(is_visually_blank(b""));
+        assert!(is_visually_blank(b"   "));
+        assert!(is_visually_blank(b"\t \r"));
+        assert!(is_visually_blank(b"\x1b[40m  \x1b[0m"));
+        assert!(is_visually_blank(b"\x1b[2J"));
+        assert!(!is_visually_blank(b" hi "));
+        assert!(!is_visually_blank(b"\x1b[31mhello\x1b[0m"));
     }
 
     #[test]
