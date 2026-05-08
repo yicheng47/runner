@@ -1417,12 +1417,38 @@ impl SessionManager {
             return;
         };
 
+        // Mission sessions: refuse to reattach at startup. An
+        // agent can keep appending bus events (`ask_lead`,
+        // `human_said`, `runner_status`) while Runner is
+        // closed, but the mission's bus + router don't mount
+        // until `mission_attach` fires from the workspace UI,
+        // and `router::mod` explicitly doesn't replay stdin
+        // side effects on reconstruction. Reattaching the PTY
+        // without the bus would silently miss those events.
+        // Kill the pane and mark the row stopped; the user can
+        // resume from the workspace, which mounts the bus +
+        // router properly.
+        //
+        // Direct chats are off-bus by design (PR #51) so they
+        // reattach unchanged — that's the survivability win the
+        // migration was meant to deliver.
+        if row.mission_id.is_some() {
+            let _ = self.runtime.stop(&rt_session);
+            mark_session_stopped(pool, &row.id, now);
+            return;
+        }
+
         match self.runtime.status(&rt_session) {
             Ok(Some(status)) if status.alive => {
-                // Pane is still alive. Re-attach.
+                // Pane is still alive. Re-attach. On failure,
+                // kill the orphan pane before marking the row
+                // stopped — otherwise the agent keeps running
+                // with no UI / DB record to reach it.
                 let id = row.id.clone();
+                let rt_for_cleanup = rt_session.clone();
                 if let Err(e) = self.attach_existing(row, rt_session, pool, events) {
                     eprintln!("runner: reattach session {} failed: {e}", row_dbg(&id));
+                    let _ = self.runtime.stop(&rt_for_cleanup);
                     mark_session_stopped(pool, &id, now);
                 }
             }
@@ -3640,6 +3666,94 @@ mod tests {
         // The row must NOT be in the live map — there's no live
         // pane to attach to.
         assert!(!mgr.sessions.lock().unwrap().contains_key(&session_id));
+    }
+
+    #[test]
+    fn reattach_running_sessions_kills_mission_panes_to_avoid_routing_drift() {
+        // Mission sessions don't reattach at startup — an agent
+        // appending bus events while Runner is closed and then
+        // reattaching without the mission's bus + router mounted
+        // would silently miss routing of those events. Kill the
+        // pane (so it doesn't keep running), mark the row stopped
+        // (so the user can resume from the workspace, which
+        // mounts the bus). Direct chats are unaffected.
+        let pool = pool_with_schema();
+        let now = Utc::now().to_rfc3339();
+        let runner_id = ulid::Ulid::new().to_string();
+        let session_id = ulid::Ulid::new().to_string();
+        let crew_id = "c-mission-reattach".to_string();
+        let mission_id = ulid::Ulid::new().to_string();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO crews (id, name, created_at, updated_at)
+                 VALUES (?1, 'c', ?2, ?2)",
+                params![crew_id, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'mr', 'M', 'shell', '/bin/sh',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+                params![runner_id, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO missions (id, crew_id, title, status, started_at)
+                 VALUES (?1, ?2, 't', 'running', ?3)",
+                params![mission_id, crew_id, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions
+                    (id, mission_id, runner_id, status, started_at,
+                     runtime, runtime_socket, runtime_session,
+                     runtime_window, runtime_pane)
+                 VALUES (?1, ?2, ?3, 'running', ?4,
+                         'tmux', 'runner', ?5, 'main', ?6)",
+                params![
+                    session_id,
+                    mission_id,
+                    runner_id,
+                    now,
+                    format!("runner-{session_id}"),
+                    format!("%{session_id}"),
+                ],
+            )
+            .unwrap();
+        }
+
+        let fake = fake_runtime();
+        // Pane is alive — without the mission carve-out, the
+        // current code would happily reattach.
+        {
+            let mut s = fake.status_response.lock().unwrap();
+            s.alive = true;
+            s.exit_code = None;
+        }
+        let mgr = mgr_with_fake(None, Arc::clone(&fake));
+        mgr.reattach_running_sessions(Arc::clone(&pool), capture());
+
+        // Row marked stopped (the user resumes from the workspace,
+        // which is where the bus + router mount).
+        let status: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM sessions WHERE id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "stopped");
+        // Manager should NOT have the session in its live map.
+        assert!(!mgr.sessions.lock().unwrap().contains_key(&session_id));
+        // The runtime should have observed exactly one stop call
+        // — kill the pane so it doesn't keep producing events.
+        assert_eq!(fake.stops.lock().unwrap().len(), 1);
     }
 
     #[test]
