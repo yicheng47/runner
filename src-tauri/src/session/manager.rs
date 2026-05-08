@@ -1235,6 +1235,19 @@ impl SessionManager {
     /// the agent's TUI sees the whole block as one bracketed-paste
     /// event (LF stays literal — the runtime would otherwise
     /// translate LF → CR and submit per line).
+    ///
+    /// Sleeps 120ms between paste and Enter. Without this gap,
+    /// Claude Code v2.1.x's input editor sometimes leaves pasted
+    /// content sitting in the input box unsubmitted — the
+    /// bracketed-paste end marker (`\e[201~`) and the trailing
+    /// Enter arrive too close together for the TUI to transition
+    /// out of paste mode before interpreting the keystroke.
+    /// (Observed live, fix-port of the prior portable-pty path's
+    /// 80ms gap between body-bytes and `\r` writes; tmux adds a
+    /// little server-side queueing latency on top, hence the
+    /// slightly larger 120ms.) `cfg(test)` keeps the same
+    /// constant — fake runtimes complete instantly so the wait
+    /// is harmless.
     pub fn inject_paste(&self, session_id: &str, payload: &[u8]) -> Result<()> {
         let rt_session = self
             .sessions
@@ -1244,6 +1257,7 @@ impl SessionManager {
             .map(|h| h.runtime_session.clone())
             .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
         self.runtime.paste(&rt_session, payload)?;
+        std::thread::sleep(std::time::Duration::from_millis(120));
         self.runtime
             .send_key(&rt_session, "Enter")
             .map_err(Into::into)
