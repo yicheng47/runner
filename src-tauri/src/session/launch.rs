@@ -26,7 +26,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use super::runtime::RuntimeResult;
+use super::runtime::{RuntimeError, RuntimeResult};
 
 /// Tool dirs we always include on the spawned process's PATH, even
 /// when the shell-PATH resolver failed/timed out. Covers the most
@@ -135,6 +135,29 @@ fn expand_home(path: &str, home: Option<&Path>) -> String {
     path.to_string()
 }
 
+/// True if `s` is a POSIX shell identifier suitable for `export
+/// <name>=…`. Rules: first char is `[A-Za-z_]`, every subsequent
+/// char is `[A-Za-z0-9_]`, length ≥ 1. Bash and zsh agree on this
+/// shape; an invalid name (`FOO-BAR`, `FOO BAR`, or worse `FOO=x;
+/// rm -rf /`) makes the launch script fail under `set -e` before
+/// the agent starts, or — if rendered without escaping — runs
+/// arbitrary shell. Validate at every layer that touches user-
+/// supplied env: the runner-edit form on persist (rejects the row)
+/// and `render_launch_script` on read (refuses to render a bad
+/// legacy row), so a single missed validation can't turn into a
+/// silent spawn-time crash.
+pub fn is_valid_env_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    let first = match chars.next() {
+        Some(c) => c,
+        None => return false,
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// Single-quote a string for safe inclusion in a bash command. Uses
 /// the standard `'…'` form with internal `'` rendered as `'\''`
 /// (close-quote, escaped quote, re-open). Works for any Unix shell
@@ -153,9 +176,22 @@ pub fn shell_quote(s: &str) -> String {
     out
 }
 
-/// Render the bash launcher to a string. Caller writes it to disk
-/// via `write_launch_script`.
-pub fn render_launch_script(script: &LaunchScript) -> String {
+/// Render the bash launcher to a string. Errors out (rather than
+/// emitting a script that's guaranteed to fail under `set -e`) if
+/// any env key isn't a valid POSIX shell identifier. This is the
+/// last line of defence — the runner-edit form should also
+/// validate at persist time so bad rows never reach the DB — but
+/// rendering enforces the invariant for legacy rows that pre-date
+/// the validation.
+pub fn render_launch_script(script: &LaunchScript) -> RuntimeResult<String> {
+    for k in script.env.keys() {
+        if !is_valid_env_name(k) {
+            return Err(RuntimeError::Msg(format!(
+                "invalid env var name {k:?}: must match [A-Za-z_][A-Za-z0-9_]*"
+            )));
+        }
+    }
+
     let mut out = String::new();
     out.push_str("#!/usr/bin/env bash\n");
     out.push_str("# Runner-generated session launcher — see\n");
@@ -184,7 +220,7 @@ pub fn render_launch_script(script: &LaunchScript) -> String {
     } else {
         out.push_str(&format!("exec {cmd} {args}\n"));
     }
-    out
+    Ok(out)
 }
 
 /// Write the rendered launcher to `dir/launch.sh` and chmod 700.
@@ -192,9 +228,9 @@ pub fn render_launch_script(script: &LaunchScript) -> String {
 /// Idempotent: rewrites every spawn so a stale script from a
 /// crashed prior session doesn't get reused with the wrong env.
 pub fn write_launch_script(dir: &Path, script: &LaunchScript) -> RuntimeResult<PathBuf> {
+    let body = render_launch_script(script)?;
     std::fs::create_dir_all(dir)?;
     let path = dir.join("launch.sh");
-    let body = render_launch_script(script);
     std::fs::write(&path, body)?;
     #[cfg(unix)]
     {
@@ -344,7 +380,7 @@ mod tests {
             ]),
             path: "/usr/bin:/bin".to_string(),
         };
-        let body = render_launch_script(&script);
+        let body = render_launch_script(&script).unwrap();
         assert!(body.starts_with("#!/usr/bin/env bash\n"));
         assert!(body.contains("set -e\n"));
         assert!(body.contains("export PATH='/usr/bin:/bin'\n"));
@@ -366,7 +402,7 @@ mod tests {
             env: BTreeMap::new(),
             path: "/usr/bin".into(),
         };
-        let body = render_launch_script(&script);
+        let body = render_launch_script(&script).unwrap();
         assert!(!body.contains("\ncd "), "no cd line expected: {body}");
         assert!(body.contains("exec 'claude'\n"));
     }
@@ -384,7 +420,7 @@ mod tests {
             env: BTreeMap::new(),
             path: "/usr/bin".into(),
         };
-        let body = render_launch_script(&script);
+        let body = render_launch_script(&script).unwrap();
         assert!(body.contains("exec '/Applications/Weird App/bin/agent'\n"));
     }
 
@@ -422,5 +458,67 @@ mod tests {
         // No HOME → tilde stays literal (compose_path will treat
         // it as just another absolute-ish entry; harmless).
         assert_eq!(expand_home("~/.cargo/bin", None), "~/.cargo/bin");
+    }
+
+    #[test]
+    fn is_valid_env_name_accepts_posix_identifiers() {
+        for ok in ["FOO", "foo", "_under", "FOO_BAR", "X1", "_1", "F00"] {
+            assert!(is_valid_env_name(ok), "{ok:?} should be valid");
+        }
+    }
+
+    #[test]
+    fn is_valid_env_name_rejects_bad_shapes() {
+        for bad in [
+            "",         // empty
+            "1FOO",     // starts with digit
+            "FOO-BAR",  // hyphen — bash export error
+            "FOO BAR",  // space
+            "FOO=x",    // assignment-shape
+            "FOO;rm",   // shell metachar — script-injection vector
+            "FOO\nBAR", // newline
+            "FOO.BAR",  // period
+            "FOO/BAR",  // slash
+            "ünicode",  // non-ASCII
+        ] {
+            assert!(!is_valid_env_name(bad), "{bad:?} should be invalid");
+        }
+    }
+
+    #[test]
+    fn render_launch_script_rejects_invalid_env_name() {
+        let script = LaunchScript {
+            command: "claude".into(),
+            args: vec![],
+            cwd: None,
+            env: BTreeMap::from([("FOO-BAR".to_string(), "value".to_string())]),
+            path: "/usr/bin".into(),
+        };
+        let err = render_launch_script(&script).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("FOO-BAR"),
+            "error should name the bad var: {msg}"
+        );
+        assert!(
+            msg.contains("[A-Za-z_]"),
+            "error should explain the rule: {msg}"
+        );
+    }
+
+    #[test]
+    fn write_launch_script_propagates_invalid_env_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = LaunchScript {
+            command: "claude".into(),
+            args: vec![],
+            cwd: None,
+            env: BTreeMap::from([("FOO BAR".to_string(), "value".to_string())]),
+            path: "/usr/bin".into(),
+        };
+        let err = write_launch_script(dir.path(), &script).unwrap_err();
+        assert!(err.to_string().contains("FOO BAR"));
+        // No file should be left behind on validation failure.
+        assert!(!dir.path().join("launch.sh").exists());
     }
 }

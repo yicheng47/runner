@@ -136,22 +136,47 @@ config.
 - optionally `src-tauri/src/session/runtime.rs`
 - optionally `src-tauri/src/session/tmux.rs`
 
-Add a small internal runtime abstraction:
+Add a small internal runtime abstraction. Output is a **push
+channel** with discriminated `Replay` (one-shot snapshot, xterm.js
+resets) vs `Stream` (live PTY bytes, xterm.js appends) so a
+careless impl can't conflate them. Input is split by intent
+(`paste` / `send_bytes` / `send_key`) so the runtime can pick the
+right tmux primitive without inferring from byte content.
 
 ```rust
-trait SessionRuntime {
-    fn spawn(&self, spec: SpawnSpec) -> Result<RuntimeSession>;
-    fn resume(&self, session: &Session) -> Result<RuntimeSession>;
-    fn stop(&self, session: &Session) -> Result<()>;
-    fn send_input(&self, session: &Session, bytes: &[u8]) -> Result<()>;
-    fn capture_since(&self, session: &Session, cursor: CaptureCursor) -> Result<CaptureChunk>;
-    fn resize(&self, session: &Session, cols: u16, rows: u16) -> Result<()>;
+pub enum RuntimeOutput {
+    Replay(Vec<u8>),
+    Stream(Vec<u8>),
+}
+pub type OutputStream = std::sync::mpsc::Receiver<RuntimeOutput>;
+
+pub trait SessionRuntime: Send + Sync {
+    fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)>;
+    fn resume(&self, session: &RuntimeSession) -> RuntimeResult<OutputStream>;
+    fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()>;
+
+    /// `paste-buffer -p -r -d` semantics — bracketed paste, LF
+    /// stays literal. Runtime does NOT submit; manager calls
+    /// `send_key("Enter")` after the readiness wait.
+    fn paste(&self, session: &RuntimeSession, payload: &[u8]) -> RuntimeResult<()>;
+
+    /// `send-keys -l -- <bytes>` — literal byte stream from
+    /// xterm.js passthrough.
+    fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()>;
+
+    /// `send-keys -t=<pane> <name>` — named keys (`"Enter"`,
+    /// `"C-c"`, `"Up"`).
+    fn send_key(&self, session: &RuntimeSession, key: &str) -> RuntimeResult<()>;
+
+    fn resize(&self, session: &RuntimeSession, cols: u16, rows: u16) -> RuntimeResult<()>;
 }
 ```
 
-This does not need to be public or over-abstracted. It is just the seam between
-the command layer and the terminal owner. For this PR, instantiate only the
-tmux runtime.
+Std `mpsc::Receiver` rather than tokio's: `manager.rs` is
+`std::thread`-based throughout — no tokio runtime in the session
+layer. This does not need to be public or over-abstracted. It is
+just the seam between the command layer and the terminal owner.
+For this PR, instantiate only the tmux runtime.
 
 ## Step 2: Discover tmux without depending on GUI PATH
 
