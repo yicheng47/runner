@@ -135,6 +135,21 @@ fn expand_home(path: &str, home: Option<&Path>) -> String {
     path.to_string()
 }
 
+/// Env var names users must not set on a runner row. These are
+/// owned by the launcher itself; letting a runner env entry shadow
+/// them defeats the deterministic-spawn guarantees the launcher is
+/// designed to provide. Currently a one-element list — `PATH` —
+/// because that's the only one wiring the GUI-launch fix from
+/// issue #65 hangs off; widen the list (e.g. `LD_LIBRARY_PATH`,
+/// `DYLD_*`) only when a concrete need arises.
+pub const RESERVED_ENV_NAMES: &[&str] = &["PATH"];
+
+/// True if `s` is a name we ban runners from setting via their
+/// env map. See `RESERVED_ENV_NAMES`.
+pub fn is_reserved_env_name(s: &str) -> bool {
+    RESERVED_ENV_NAMES.contains(&s)
+}
+
 /// True if `s` is a POSIX shell identifier suitable for `export
 /// <name>=…`. Rules: first char is `[A-Za-z_]`, every subsequent
 /// char is `[A-Za-z0-9_]`, length ≥ 1. Bash and zsh agree on this
@@ -202,7 +217,19 @@ pub fn render_launch_script(script: &LaunchScript) -> RuntimeResult<String> {
     // BTreeMap iter is alphabetical, so the rendered script is
     // stable across runs — useful for diffing one launcher against
     // another in a debugging context.
+    //
+    // Skip RESERVED_ENV_NAMES (PATH today). Persist-time
+    // validation in `commands::runner` should already keep them
+    // out of the DB, but legacy rows from before that validation
+    // — or anything an integration test happens to construct
+    // directly — must not be allowed to shadow the deterministic
+    // PATH the launcher exports above. A user-supplied PATH is
+    // exactly the failure mode that brings back the GUI-launch
+    // CLI-resolution bug from issue #65.
     for (k, v) in &script.env {
+        if is_reserved_env_name(k) {
+            continue;
+        }
         out.push_str(&format!("export {}={}\n", k, shell_quote(v)));
     }
     if let Some(cwd) = &script.cwd {
@@ -520,5 +547,49 @@ mod tests {
         assert!(err.to_string().contains("FOO BAR"));
         // No file should be left behind on validation failure.
         assert!(!dir.path().join("launch.sh").exists());
+    }
+
+    #[test]
+    fn render_launch_script_filters_reserved_path() {
+        // Defensive layer: even if a legacy row sneaks PATH into
+        // the env map, the launcher must not let it shadow the
+        // composed PATH on the line above.
+        let script = LaunchScript {
+            command: "claude".into(),
+            args: vec![],
+            cwd: None,
+            env: BTreeMap::from([
+                ("FOO".to_string(), "bar".to_string()),
+                ("PATH".to_string(), "/evil/bin".to_string()),
+            ]),
+            path: "/usr/bin:/bin".into(),
+        };
+        let body = render_launch_script(&script).unwrap();
+        // Composed PATH must be the only export PATH= line.
+        let path_lines: Vec<&str> = body
+            .lines()
+            .filter(|l| l.starts_with("export PATH="))
+            .collect();
+        assert_eq!(path_lines.len(), 1, "body =\n{body}");
+        assert!(
+            path_lines[0].contains("/usr/bin:/bin"),
+            "wrong PATH preserved: {body}"
+        );
+        assert!(
+            !body.contains("/evil/bin"),
+            "user PATH leaked into launcher: {body}"
+        );
+        // Non-reserved entries still emit.
+        assert!(body.contains("export FOO='bar'"), "FOO missing: {body}");
+    }
+
+    #[test]
+    fn is_reserved_env_name_covers_path() {
+        assert!(is_reserved_env_name("PATH"));
+        // Case-sensitive: a lowercase `path` would just be a
+        // weird user var, not the launcher's PATH.
+        assert!(!is_reserved_env_name("path"));
+        assert!(!is_reserved_env_name("FOO"));
+        assert!(!is_reserved_env_name(""));
     }
 }

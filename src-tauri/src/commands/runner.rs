@@ -171,6 +171,13 @@ pub(super) fn validate_env_keys<S: std::hash::BuildHasher>(
                 "env var name {k:?} is invalid: must match [A-Za-z_][A-Za-z0-9_]*"
             )));
         }
+        if crate::session::launch::is_reserved_env_name(k) {
+            return Err(Error::msg(format!(
+                "env var name {k:?} is reserved by the runner launcher \
+                 (the deterministic PATH must win over any per-runner override; \
+                 if you need extra dirs on PATH, configure them in your shell rc)"
+            )));
+        }
     }
     Ok(())
 }
