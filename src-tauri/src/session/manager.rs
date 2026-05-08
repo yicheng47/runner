@@ -33,6 +33,7 @@ use crate::db::DbPool;
 use crate::error::{Error, Result};
 use crate::model::{Mission, Runner};
 use crate::router;
+use crate::session::runtime::SessionRuntime;
 
 const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
 
@@ -208,6 +209,14 @@ pub struct SessionManager {
     /// find tools (claude, codex, mise, etc.) that aren't on
     /// launchd's stripped default PATH.
     shell_path: Option<String>,
+    /// Underlying terminal runtime (Step 9 of
+    /// docs/impls/0004-tmux-session-runtime.md). v1 is `TmuxRuntime`
+    /// on macOS + Linux; Windows fails at runtime construction in
+    /// `lib.rs::run`. Not yet flipped on for the active spawn path
+    /// — manager-side spawn / resume / kill / inject_stdin still
+    /// route through portable-pty until the per-call-site cutovers
+    /// land.
+    runtime: Arc<dyn SessionRuntime>,
 }
 
 /// RAII guard that releases a `resuming_claims` entry on drop. The
@@ -231,7 +240,7 @@ impl Drop for ResumeClaim {
 }
 
 impl SessionManager {
-    pub fn new(shell_path: Option<String>) -> Arc<Self> {
+    pub fn new(shell_path: Option<String>, runtime: Arc<dyn SessionRuntime>) -> Arc<Self> {
         Arc::new(Self {
             sessions: Mutex::new(HashMap::new()),
             killed: Mutex::new(HashSet::new()),
@@ -239,7 +248,17 @@ impl SessionManager {
             output_seq: Mutex::new(HashMap::new()),
             resuming_claims: Mutex::new(HashSet::new()),
             shell_path,
+            runtime,
         })
+    }
+
+    /// Borrow the underlying session runtime. Held on the manager
+    /// itself rather than passed through every method so the
+    /// Step 9 cutovers can land one entry point at a time without
+    /// rewiring every Tauri command's signature in the same change.
+    #[allow(dead_code)] // Wired into spawn paths in subsequent commits.
+    pub(crate) fn runtime(&self) -> &Arc<dyn SessionRuntime> {
+        &self.runtime
     }
 
     /// Compose a child PTY's PATH from the bundled-bin dir, an optional
@@ -1862,9 +1881,59 @@ mod tests {
 
     use crate::db;
     use crate::model::{MissionStatus, Runner};
+    use crate::session::runtime::{
+        OutputStream, RuntimeError, RuntimeResult, RuntimeSession, SessionRuntime, SessionStatus,
+        SpawnSpec,
+    };
     use std::collections::HashMap;
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
+
+    /// Test stand-in for `SessionRuntime`. Step 9 wires
+    /// `SessionManager` to hold an `Arc<dyn SessionRuntime>` so the
+    /// runtime layer is always present, but most legacy tests
+    /// exercise the portable-pty path through the manager and never
+    /// touch the runtime field. This stub errors on every method —
+    /// any test that *does* land in the runtime layer would surface
+    /// it, and intentional runtime tests live in
+    /// `session::tmux_runtime::tests` instead.
+    struct InertRuntime;
+    impl SessionRuntime for InertRuntime {
+        fn spawn(&self, _: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
+            Err(RuntimeError::Msg(
+                "InertRuntime: spawn unsupported in unit tests".into(),
+            ))
+        }
+        fn resume(&self, _: &RuntimeSession) -> RuntimeResult<OutputStream> {
+            Err(RuntimeError::Msg("InertRuntime: resume unsupported".into()))
+        }
+        fn stop(&self, _: &RuntimeSession) -> RuntimeResult<()> {
+            Err(RuntimeError::Msg("InertRuntime: stop unsupported".into()))
+        }
+        fn paste(&self, _: &RuntimeSession, _: &[u8]) -> RuntimeResult<()> {
+            Err(RuntimeError::Msg("InertRuntime: paste unsupported".into()))
+        }
+        fn send_bytes(&self, _: &RuntimeSession, _: &[u8]) -> RuntimeResult<()> {
+            Err(RuntimeError::Msg(
+                "InertRuntime: send_bytes unsupported".into(),
+            ))
+        }
+        fn send_key(&self, _: &RuntimeSession, _: &str) -> RuntimeResult<()> {
+            Err(RuntimeError::Msg(
+                "InertRuntime: send_key unsupported".into(),
+            ))
+        }
+        fn resize(&self, _: &RuntimeSession, _: u16, _: u16) -> RuntimeResult<()> {
+            Err(RuntimeError::Msg("InertRuntime: resize unsupported".into()))
+        }
+        fn status(&self, _: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
+            Err(RuntimeError::Msg("InertRuntime: status unsupported".into()))
+        }
+    }
+
+    fn inert_runtime() -> Arc<dyn SessionRuntime> {
+        Arc::new(InertRuntime)
+    }
 
     /// Test emitter that just records every event. Replaces the Tauri
     /// `AppHandle` in unit tests — no runtime dependency.
@@ -1992,9 +2061,10 @@ mod tests {
         // Deterministic parent for the duration of the test.
         std::env::set_var("PATH", "/usr/bin:/bin");
 
-        let with_shell = SessionManager::new(Some(
-            "/opt/homebrew/bin:/Users/x/.npm-global/bin".to_string(),
-        ));
+        let with_shell = SessionManager::new(
+            Some("/opt/homebrew/bin:/Users/x/.npm-global/bin".to_string()),
+            inert_runtime(),
+        );
         let bin = std::path::PathBuf::from("/app/bin");
         let shim = std::path::PathBuf::from("/app/shim/m1/s1");
 
@@ -2005,12 +2075,12 @@ mod tests {
         );
 
         // No shim, no shell PATH — only bin + parent.
-        let bare = SessionManager::new(None);
+        let bare = SessionManager::new(None, inert_runtime());
         let p = bare.compose_path(None, Some(&bin));
         assert_eq!(p.to_string_lossy(), "/app/bin:/usr/bin:/bin");
 
         // Empty shell PATH is treated as None (no doubled separator).
-        let empty_shell = SessionManager::new(Some(String::new()));
+        let empty_shell = SessionManager::new(Some(String::new()), inert_runtime());
         let p = empty_shell.compose_path(None, Some(&bin));
         assert_eq!(p.to_string_lossy(), "/app/bin:/usr/bin:/bin");
 
@@ -2112,7 +2182,7 @@ mod tests {
             ..mission()
         };
 
-        let mgr = SessionManager::new(None);
+        let mgr = SessionManager::new(None, inert_runtime());
         let spawned_a = mgr
             .spawn(
                 &mission_row_a,
@@ -2229,7 +2299,7 @@ mod tests {
             ..mission
         };
 
-        let mgr = SessionManager::new(None);
+        let mgr = SessionManager::new(None, inert_runtime());
         let slot = slot_for(&runner);
         let spawned = mgr
             .spawn(
@@ -2290,7 +2360,7 @@ mod tests {
             ..mission
         };
 
-        let mgr = SessionManager::new(None);
+        let mgr = SessionManager::new(None, inert_runtime());
         let slot = slot_for(&runner);
         let spawned = mgr
             .spawn(
@@ -2331,7 +2401,7 @@ mod tests {
 
     #[test]
     fn inject_stdin_on_unknown_session_errors_cleanly() {
-        let mgr = SessionManager::new(None);
+        let mgr = SessionManager::new(None, inert_runtime());
         let err = mgr.inject_stdin("nope", b"x").unwrap_err();
         assert!(format!("{err}").contains("session not found"));
     }
@@ -2407,7 +2477,7 @@ mod tests {
         runner.runtime = "codex".into();
         runner.system_prompt = Some("CODEX_PERSONA_TOKEN".into());
 
-        let mgr = SessionManager::new(None);
+        let mgr = SessionManager::new(None, inert_runtime());
         let spawned = mgr
             .spawn_direct(
                 &runner,
@@ -2474,7 +2544,7 @@ mod tests {
         runner.runtime = "claude-code".into();
         runner.system_prompt = Some("CC_PERSONA_TOKEN".into());
 
-        let mgr = SessionManager::new(None);
+        let mgr = SessionManager::new(None, inert_runtime());
         let spawned = mgr
             .spawn_direct(
                 &runner,
@@ -2565,7 +2635,7 @@ mod tests {
         slot.id = slot_id;
         slot.lead = false;
 
-        let mgr = SessionManager::new(None);
+        let mgr = SessionManager::new(None, inert_runtime());
         let spawned = mgr
             .spawn(
                 &mission,
@@ -2651,7 +2721,7 @@ mod tests {
             .unwrap();
         }
 
-        let mgr = SessionManager::new(None);
+        let mgr = SessionManager::new(None, inert_runtime());
         let resumed = mgr
             .resume(
                 &session_id,
@@ -2712,7 +2782,7 @@ mod tests {
             .execute("DROP TABLE sessions", [])
             .unwrap();
 
-        let mgr = SessionManager::new(None);
+        let mgr = SessionManager::new(None, inert_runtime());
         let slot = slot_for(&runner);
         let err = mgr
             .spawn(
@@ -2757,7 +2827,7 @@ mod tests {
             ..mission
         };
 
-        let mgr = SessionManager::new(None);
+        let mgr = SessionManager::new(None, inert_runtime());
         let slot = slot_for(&runner);
         let spawned = mgr
             .spawn(
@@ -2818,7 +2888,7 @@ mod tests {
         runner.handle = "directrunner".into();
 
         let cap = capture();
-        let mgr = SessionManager::new(None);
+        let mgr = SessionManager::new(None, inert_runtime());
         let spawned = mgr
             .spawn_direct(
                 &runner,
@@ -2900,7 +2970,7 @@ mod tests {
         runner.id = runner_id;
         runner.handle = "buffered".into();
 
-        let mgr = SessionManager::new(None);
+        let mgr = SessionManager::new(None, inert_runtime());
         let spawned = mgr
             .spawn_direct(
                 &runner,
@@ -2979,7 +3049,7 @@ mod tests {
         runner.handle = "resumer".into();
         runner.runtime = "claude-code".into();
 
-        let mgr = SessionManager::new(None);
+        let mgr = SessionManager::new(None, inert_runtime());
         let spawned = mgr
             .spawn_direct(
                 &runner,
@@ -3139,7 +3209,7 @@ mod tests {
             )
             .unwrap();
         }
-        let mgr = SessionManager::new(None);
+        let mgr = SessionManager::new(None, inert_runtime());
         for (sid, needle) in [
             ("running-sid", "already running"),
             ("archived-sid", "archived"),
@@ -3215,7 +3285,7 @@ mod tests {
             .unwrap();
         }
 
-        let mgr = SessionManager::new(None);
+        let mgr = SessionManager::new(None, inert_runtime());
         let spawned = mgr
             .resume(
                 "mr-sid",

@@ -98,10 +98,36 @@ pub fn run() {
             // launchd-strips-PATH problem this fixes.
             let shell_path = shell_path::resolve_login_shell_path();
 
+            // Construct the session runtime (Step 9 of
+            // docs/impls/0004-tmux-session-runtime.md). v1 is
+            // tmux-only — Windows fails at startup with a clear
+            // error; the native-pty runtime is the future Windows
+            // path.
+            //
+            // reconcile_config() rewrites the per-app tmux.conf and
+            // source-files it into a leftover server when the
+            // @runner_config_version stamp is stale.
+            let runtime: Arc<dyn session::runtime::SessionRuntime> = {
+                #[cfg(unix)]
+                {
+                    let rt = session::tmux_runtime::TmuxRuntime::new(&app_data_dir).map_err(
+                        |e| -> Box<dyn std::error::Error> { format!("tmux runtime: {e}").into() },
+                    )?;
+                    let _ = rt.reconcile_config();
+                    Arc::new(rt)
+                }
+                #[cfg(not(unix))]
+                {
+                    return Err("Runner requires macOS or Linux (tmux runtime); \
+                                native-pty runtime is not yet shipped"
+                        .into());
+                }
+            };
+
             app.manage(AppState {
                 db: pool,
                 app_data_dir,
-                sessions: session::SessionManager::new(shell_path),
+                sessions: session::SessionManager::new(shell_path, runtime),
                 buses: event_bus::BusRegistry::new(),
                 routers: router::RouterRegistry::new(),
             });
