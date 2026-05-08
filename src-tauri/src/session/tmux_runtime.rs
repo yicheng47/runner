@@ -386,29 +386,30 @@ impl SessionRuntime for TmuxRuntime {
             pane: pane_id,
         };
 
-        // 4b. Apply initial pane size if requested. The agent's
-        //     COLUMNS/LINES env was set to match in step 1; this
-        //     resize tells tmux about it.
-        if let Some((cols, rows)) = spec.initial_size {
-            run_tmux_check(
-                self.cmd()
-                    .arg("resize-window")
-                    .arg("-t")
-                    .arg(window_target(&session.session_name, &session.window))
-                    .arg("-x")
-                    .arg(cols.to_string())
-                    .arg("-y")
-                    .arg(rows.to_string()),
-                "resize-window",
-            )?;
-        }
-
-        // 5–7. Wire pipe-pane → capture-pane → channel. Wrap in a
-        //      closure so any error after new-session triggers
-        //      kill-session below; otherwise a partially-set-up pane
-        //      lives on the tmux server with no `RuntimeSession`
-        //      tracked anywhere for reconciliation.
+        // 4b–7. Resize + pipe-pane + capture-pane + channel.
+        //       Wrap in a closure so any error after new-session
+        //       triggers kill-session below — including a failed
+        //       resize-window. Without resize being inside the
+        //       cleanup block, a transient resize failure left the
+        //       new tmux session alive with no `RuntimeSession`
+        //       tracked anywhere for reconciliation.
         let setup = || -> RuntimeResult<OutputStream> {
+            // 4b. Apply initial pane size if requested. The agent's
+            //     COLUMNS/LINES env was set to match in step 1; this
+            //     resize tells tmux about it.
+            if let Some((cols, rows)) = spec.initial_size {
+                run_tmux_check(
+                    self.cmd()
+                        .arg("resize-window")
+                        .arg("-t")
+                        .arg(window_target(&session.session_name, &session.window))
+                        .arg("-x")
+                        .arg(cols.to_string())
+                        .arg("-y")
+                        .arg(rows.to_string()),
+                    "resize-window",
+                )?;
+            }
             attach_streaming(&self.cmd(), &session, &fifo_path, reader.try_clone()?)
         };
         match setup() {

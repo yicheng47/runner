@@ -1367,6 +1367,132 @@ impl SessionManager {
         Ok(())
     }
 
+    /// App-startup reconciliation: for every `sessions` row still
+    /// marked `running`, ask the runtime whether the pane is alive.
+    /// If yes, reattach (rebuild the SessionHandle + forwarder
+    /// thread) so Tauri commands can target the surviving pane. If
+    /// the pane is gone or has exited, flip the row to
+    /// stopped/crashed using the captured exit code.
+    ///
+    /// This replaces the prior portable-pty-era logic that
+    /// indiscriminately marked every running row stopped on
+    /// startup — that was correct when the manager owned the PTY
+    /// lifecycle (process death = PTY death), but with tmux the
+    /// pane survives Runner's process and we'd lose live agent
+    /// sessions on every restart. Step 9 cutover follow-up.
+    ///
+    /// Best-effort. Errors per-row are logged to stderr; the
+    /// overall reattach loop never fails the caller (app startup
+    /// must not block on a transient runtime hiccup).
+    pub fn reattach_running_sessions(
+        self: &Arc<Self>,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+    ) {
+        let now = Utc::now().to_rfc3339();
+        let rows: Vec<RowSnap> = match collect_running_rows(&pool) {
+            Ok(rows) => rows,
+            Err(e) => {
+                eprintln!("runner: reattach query failed: {e}");
+                return;
+            }
+        };
+        for row in rows {
+            self.reattach_one(row, &now, &pool, &events);
+        }
+    }
+
+    fn reattach_one(
+        self: &Arc<Self>,
+        row: RowSnap,
+        now: &str,
+        pool: &Arc<DbPool>,
+        events: &Arc<dyn SessionEvents>,
+    ) {
+        // No runtime metadata persisted (legacy row, or a row
+        // that crashed before we got a chance to write the
+        // runtime_* columns) → mark stopped and move on.
+        let Some(rt_session) = row.runtime_session() else {
+            mark_session_stopped(pool, &row.id, now);
+            return;
+        };
+
+        match self.runtime.status(&rt_session) {
+            Ok(Some(status)) if status.alive => {
+                // Pane is still alive. Re-attach.
+                let id = row.id.clone();
+                if let Err(e) = self.attach_existing(row, rt_session, pool, events) {
+                    eprintln!("runner: reattach session {} failed: {e}", row_dbg(&id));
+                    mark_session_stopped(pool, &id, now);
+                }
+            }
+            Ok(Some(status)) => {
+                // Pane is dead but tmux is still holding it
+                // (remain-on-exit). Capture the exit code, mark the
+                // row, then tear down the dead pane.
+                let final_status = if status.exit_code == Some(0) {
+                    "stopped"
+                } else {
+                    "crashed"
+                };
+                let _ = self.runtime.stop(&rt_session);
+                if let Ok(conn) = pool.get() {
+                    let _ = conn.execute(
+                        "UPDATE sessions
+                            SET status = ?2,
+                                stopped_at = COALESCE(stopped_at, ?3)
+                          WHERE id = ?1",
+                        params![row.id, final_status, now],
+                    );
+                }
+            }
+            Ok(None) | Err(_) => {
+                // tmux can't find the pane — terminal-unavailable.
+                mark_session_stopped(pool, &row.id, now);
+            }
+        }
+    }
+
+    fn attach_existing(
+        self: &Arc<Self>,
+        row: RowSnap,
+        rt_session: RuntimeSession,
+        pool: &Arc<DbPool>,
+        events: &Arc<dyn SessionEvents>,
+    ) -> Result<()> {
+        // Pull the runner row so the forwarder thread can fire
+        // `runner/activity` events with the right handle.
+        let runner = {
+            let conn = pool.get()?;
+            crate::commands::runner::get(&conn, &row.runner_id)?
+        };
+        let output = self.runtime.resume(&rt_session)?;
+        self.sessions.lock().unwrap().insert(
+            row.id.clone(),
+            SessionHandle {
+                id: row.id.clone(),
+                mission_id: row.mission_id.clone(),
+                runner_id: row.runner_id.clone(),
+                runtime_session: rt_session.clone(),
+                forwarder: None,
+            },
+        );
+        let forwarder = self.start_forwarder_thread(
+            row.id.clone(),
+            row.mission_id,
+            rt_session,
+            output,
+            Arc::clone(pool),
+            Arc::clone(events),
+            runner,
+            false, // resuming flag — re-attach to a live pane is not a resume_plan resume
+        );
+        if let Some(h) = self.sessions.lock().unwrap().get_mut(&row.id) {
+            h.forwarder = Some(forwarder);
+        }
+        Ok(())
+    }
+
     fn forget(&self, session_id: &str) -> Result<()> {
         // Only the live PTY handle is dropped here. We deliberately keep
         // `output_buffers` and `output_seq` alive so that:
@@ -1442,6 +1568,85 @@ impl SessionManager {
 /// falling back to the parent process's cwd when the spawn didn't
 /// set one (the child inherits parent's cwd, which is what codex
 /// stamps into the rollout's `payload.cwd`).
+/// Subset of the `sessions` row needed to reattach to a live pane
+/// at app startup. Pulled all-at-once so the conn drops before we
+/// start hitting the runtime layer per row.
+#[derive(Debug, Clone)]
+struct RowSnap {
+    id: String,
+    runner_id: String,
+    mission_id: Option<String>,
+    runtime: Option<String>,
+    runtime_socket: Option<String>,
+    runtime_session: Option<String>,
+    runtime_window: Option<String>,
+    runtime_pane: Option<String>,
+}
+
+impl RowSnap {
+    /// Reconstruct the `RuntimeSession` that the original spawn
+    /// persisted into the runtime_* columns. Returns `None` for
+    /// any row missing pieces — the caller treats that as a
+    /// legacy row and marks it stopped.
+    fn runtime_session(&self) -> Option<RuntimeSession> {
+        Some(RuntimeSession {
+            runtime: self.runtime.clone()?,
+            socket: self.runtime_socket.clone()?,
+            session_name: self.runtime_session.clone()?,
+            window: self.runtime_window.clone()?,
+            pane: self.runtime_pane.clone()?,
+        })
+    }
+}
+
+fn collect_running_rows(pool: &DbPool) -> Result<Vec<RowSnap>> {
+    let conn = pool.get()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, runner_id, mission_id,
+                runtime, runtime_socket, runtime_session,
+                runtime_window, runtime_pane
+           FROM sessions
+          WHERE status = 'running'",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(RowSnap {
+                id: r.get("id")?,
+                runner_id: r.get("runner_id")?,
+                mission_id: r.get("mission_id")?,
+                runtime: r.get("runtime")?,
+                runtime_socket: r.get("runtime_socket")?,
+                runtime_session: r.get("runtime_session")?,
+                runtime_window: r.get("runtime_window")?,
+                runtime_pane: r.get("runtime_pane")?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+fn mark_session_stopped(pool: &DbPool, id: &str, now: &str) {
+    if let Ok(conn) = pool.get() {
+        let _ = conn.execute(
+            "UPDATE sessions
+                SET status = 'stopped',
+                    stopped_at = COALESCE(stopped_at, ?2)
+              WHERE id = ?1",
+            params![id, now],
+        );
+    }
+}
+
+/// Trim a session id for stderr logging — show just enough to
+/// identify the row without dumping a full ULID into the log line.
+fn row_dbg(id: &str) -> &str {
+    if id.len() <= 8 {
+        id
+    } else {
+        &id[id.len() - 8..]
+    }
+}
+
 fn capture_cwd(explicit: Option<String>) -> Option<String> {
     if let Some(cwd) = explicit {
         if !cwd.is_empty() {
@@ -3325,5 +3530,157 @@ mod tests {
         );
 
         mgr.kill("mr-sid").unwrap();
+    }
+
+    /// Helper: insert a runner row + a `running` direct-chat
+    /// session row with the runtime_* columns populated as if a
+    /// prior Runner process had spawned the session through tmux.
+    fn insert_running_row_with_runtime_meta(pool: &Arc<DbPool>) -> (String, String) {
+        let now = Utc::now().to_rfc3339();
+        let runner_id = ulid::Ulid::new().to_string();
+        let session_id = ulid::Ulid::new().to_string();
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                (id, handle, display_name, runtime, command,
+                 args_json, working_dir, system_prompt, env_json,
+                 created_at, updated_at)
+             VALUES (?1, 'reattach', 'R', 'shell', '/bin/sh',
+                     NULL, NULL, NULL, NULL, ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+                (id, mission_id, runner_id, cwd, status, started_at,
+                 runtime, runtime_socket, runtime_session,
+                 runtime_window, runtime_pane)
+             VALUES (?1, NULL, ?2, '/tmp', 'running', ?3,
+                     'tmux', 'runner', ?4, 'main', ?5)",
+            params![
+                session_id,
+                runner_id,
+                now,
+                format!("runner-{session_id}"),
+                format!("%{session_id}"),
+            ],
+        )
+        .unwrap();
+        (session_id, runner_id)
+    }
+
+    #[test]
+    fn reattach_running_sessions_recovers_live_pane() {
+        // Simulate "Runner restarted while a tmux pane survived":
+        // a sessions row is `running` with runtime_* populated.
+        // FakeRuntime's status() returns alive=true by default,
+        // so reattach should rebuild the SessionHandle (the row
+        // stays running) and the manager's sessions map gains
+        // an entry.
+        let pool = pool_with_schema();
+        let (session_id, _runner_id) = insert_running_row_with_runtime_meta(&pool);
+
+        let fake = fake_runtime();
+        // Override status: alive (the default exit_code=0 still
+        // applies but alive=true takes precedence).
+        {
+            let mut s = fake.status_response.lock().unwrap();
+            s.alive = true;
+            s.exit_code = None;
+        }
+        let mgr = mgr_with_fake(None, Arc::clone(&fake));
+        mgr.reattach_running_sessions(Arc::clone(&pool), capture());
+
+        // Row should still be running.
+        let status: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM sessions WHERE id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "running");
+        // Manager should have the session in its live map.
+        assert!(mgr.sessions.lock().unwrap().contains_key(&session_id));
+
+        // Cleanup so the forwarder thread doesn't leak.
+        mgr.kill(&session_id).unwrap();
+    }
+
+    #[test]
+    fn reattach_running_sessions_marks_dead_pane_with_exit_code() {
+        // Pane is gone-but-flagged-dead: tmux still has the
+        // remain-on-exit row and reports pane_dead=1 with a
+        // non-zero exit code. Reattach should mark the row
+        // crashed (non-zero) and tear down the dead pane.
+        let pool = pool_with_schema();
+        let (session_id, _runner_id) = insert_running_row_with_runtime_meta(&pool);
+
+        let fake = fake_runtime();
+        {
+            let mut s = fake.status_response.lock().unwrap();
+            s.alive = false;
+            s.exit_code = Some(42);
+        }
+        let mgr = mgr_with_fake(None, Arc::clone(&fake));
+        mgr.reattach_running_sessions(Arc::clone(&pool), capture());
+
+        let status: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM sessions WHERE id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "crashed");
+        // The row must NOT be in the live map — there's no live
+        // pane to attach to.
+        assert!(!mgr.sessions.lock().unwrap().contains_key(&session_id));
+    }
+
+    #[test]
+    fn reattach_running_sessions_marks_terminal_unavailable_stopped() {
+        // Pane is gone entirely (tmux returns Ok(None) — no such
+        // session). Mark the row stopped without inventing exit
+        // info.
+        let pool = pool_with_schema();
+        let (session_id, _runner_id) = insert_running_row_with_runtime_meta(&pool);
+
+        // FakeRuntime's status() always returns Ok(Some(...)) by
+        // default, so we can't easily express terminal-unavailable
+        // through the canned response. Instead, blank out the
+        // runtime_* columns to simulate a row that has no usable
+        // metadata — the reattach code path goes through
+        // `runtime_session()` returning None and immediately marks
+        // stopped.
+        pool.get()
+            .unwrap()
+            .execute(
+                "UPDATE sessions
+                    SET runtime = NULL, runtime_socket = NULL, runtime_session = NULL,
+                        runtime_window = NULL, runtime_pane = NULL
+                  WHERE id = ?1",
+                params![session_id],
+            )
+            .unwrap();
+
+        let fake = fake_runtime();
+        let mgr = mgr_with_fake(None, Arc::clone(&fake));
+        mgr.reattach_running_sessions(Arc::clone(&pool), capture());
+
+        let status: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM sessions WHERE id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "stopped");
     }
 }
