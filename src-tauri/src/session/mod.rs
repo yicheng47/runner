@@ -14,5 +14,7 @@ pub mod launch;
 pub mod manager;
 pub mod runtime;
 pub mod tmux;
+#[cfg(unix)]
+pub mod tmux_runtime;
 
 pub use manager::SessionManager;

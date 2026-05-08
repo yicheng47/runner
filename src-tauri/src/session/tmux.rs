@@ -50,8 +50,14 @@ set-option -s exit-empty off
 # Per-session option defaults applied at server start. New sessions
 # inherit these; existing panes keep whatever was active when they
 # were created (history-limit in particular is sticky per pane).
+#
+# `default-size` covers the no-attached-client case: headless
+# windows use this size until a `resize-window` arrives. We
+# *don't* set `window-size manual` — on tmux 3.5a (macOS) it
+# trips a server-exit-on-new-session bug, and since we never
+# attach a client there's no client-resize event to fight off.
+# `resize-window -x cols -y rows` continues to work as expected.
 set-option -g history-limit 50000
-set-option -g window-size manual
 set-option -g default-size 120x32
 set-option -g remain-on-exit on
 set-option -g status off
@@ -299,7 +305,18 @@ mod tests {
         // catch it before we ship.
         assert!(RUNNER_CONFIG_TEMPLATE.contains("set-option -s exit-empty off"));
         assert!(RUNNER_CONFIG_TEMPLATE.contains("history-limit 50000"));
-        assert!(RUNNER_CONFIG_TEMPLATE.contains("window-size manual"));
+        assert!(RUNNER_CONFIG_TEMPLATE.contains("default-size 120x32"));
+        // window-size = manual was *removed* on purpose (tmux 3.5a
+        // server-exit bug). Guard against re-adding it.
+        // window-size = manual was *removed* on purpose (tmux 3.5a
+        // server-exit bug). Guard against re-adding it. Match on
+        // the directive shape rather than the bare substring so
+        // the explanatory comment in the template body doesn't
+        // false-positive.
+        assert!(
+            !RUNNER_CONFIG_TEMPLATE.contains("set-option -g window-size manual"),
+            "window-size manual breaks tmux 3.5a headless start; resize-window works without it"
+        );
         assert!(RUNNER_CONFIG_TEMPLATE.contains("remain-on-exit on"));
         assert!(RUNNER_CONFIG_TEMPLATE.contains("@runner_config_version"));
         assert!(RUNNER_CONFIG_TEMPLATE.contains(CONFIG_VERSION));
