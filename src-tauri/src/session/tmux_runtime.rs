@@ -410,7 +410,13 @@ impl SessionRuntime for TmuxRuntime {
                     "resize-window",
                 )?;
             }
-            attach_streaming(&self.cmd(), &session, &fifo_path, reader.try_clone()?)
+            attach_streaming(
+                &self.cmd(),
+                &session,
+                &fifo_path,
+                reader.try_clone()?,
+                /*is_fresh_spawn=*/ true,
+            )
         };
         match setup() {
             Ok(stream) => {
@@ -473,7 +479,13 @@ impl SessionRuntime for TmuxRuntime {
         // Resume does NOT kill the session on attach failure —
         // unlike spawn we don't own the session. Reconciliation
         // (Step 8) handles a permanently broken pane separately.
-        attach_streaming(&self.cmd(), session, &fifo_path, reader)
+        attach_streaming(
+            &self.cmd(),
+            session,
+            &fifo_path,
+            reader,
+            /*is_fresh_spawn=*/ false,
+        )
     }
 
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
@@ -734,32 +746,50 @@ fn drain_fifo_nonblocking(reader: &mut std::fs::File) -> Vec<u8> {
 /// 1. Install `pipe-pane` so the pane's PTY output starts flowing
 ///    into the FIFO immediately. Bytes that arrive between this
 ///    and step 3 land in the FIFO buffer (kernel-managed).
-/// 2. Snapshot via `capture-pane` (with alternate-screen
-///    branching). Some bytes may appear in BOTH the snapshot and
-///    the FIFO — that's the acknowledged "few ms of duplicate
-///    cells" case from the plan, and it's strictly preferable to
-///    the previous implementation's gap which lost output.
+/// 2. **Reattach only**: snapshot via `capture-pane` (with
+///    alternate-screen branching) so the new xterm.js render
+///    starts with the existing pane state. Skipped on fresh
+///    spawn — there's nothing meaningful to replay (the agent
+///    just started), and including the snapshot writes the
+///    pane's empty top rows into xterm.js's buffer ahead of any
+///    live output, leaving a big blank region above the agent's
+///    actual content.
 /// 3. Drain the FIFO buffer non-blockingly into a `Vec<u8>`.
-/// 4. Send `Replay(snapshot)` first, then `Stream(buffered)` so
-///    the receiver can apply the snapshot and then append.
+///    Picks up any bytes that arrived between pipe-pane install
+///    and now.
+/// 4. Send `Replay(snapshot)` (when non-empty), then
+///    `Stream(buffered)` (when non-empty). xterm.js applies
+///    Replay as a snapshot reset and Stream as appends.
 /// 5. Spawn the forwarder thread for ongoing live bytes.
 fn attach_streaming(
     cmd: &Command,
     session: &RuntimeSession,
     fifo_path: &Path,
     mut reader: std::fs::File,
+    is_fresh_spawn: bool,
 ) -> RuntimeResult<OutputStream> {
     install_pipe_pane(cmd, session, fifo_path)?;
-    let snapshot = capture_replay_bytes(cmd, session)?;
+
+    // Fresh spawn: skip the snapshot. The agent just started; its
+    // first paint is moments away and will arrive via the live
+    // pipe-pane stream. Capturing now would land mostly-blank
+    // rows in the snapshot (the pane's full visible region with
+    // a few rows of agent banner at the bottom), which xterm.js
+    // would then render as empty top space above the live
+    // content as the agent fills in.
+    let snapshot = if is_fresh_spawn {
+        Vec::new()
+    } else {
+        capture_replay_bytes(cmd, session)?
+    };
     let buffered = drain_fifo_nonblocking(&mut reader);
 
     let (tx, rx) = mpsc::channel::<RuntimeOutput>();
     let stop = Arc::new(AtomicBool::new(false));
 
-    // Send Replay first, then any bytes that landed in the FIFO
-    // between pipe-pane install and now. After this, all pane
-    // output flows through the forwarder.
-    let _ = tx.send(RuntimeOutput::Replay(snapshot));
+    if !snapshot.is_empty() {
+        let _ = tx.send(RuntimeOutput::Replay(snapshot));
+    }
     if !buffered.is_empty() {
         let _ = tx.send(RuntimeOutput::Stream(buffered));
     }
