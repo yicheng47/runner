@@ -290,24 +290,36 @@ impl SessionRuntime for TmuxRuntime {
         let sess_dir = self.session_dir(&spec.session_id);
         std::fs::create_dir_all(&sess_dir)?;
 
-        // 1. Compose PATH + render launch script.
+        // 1. Compose PATH + render launch script. Manager-provided
+        //    shim_dir / bundled_bin_dir / shell_path are threaded
+        //    in here; the runtime layer doesn't read DB or env-var
+        //    state directly.
         let process_path = std::env::var("PATH").ok();
         let composed = launch::compose_path(
-            None, // shim_dir — wired by manager in Step 9 for missions
-            None, // bundled_bin_dir — same
-            None, // shell_path — manager's responsibility to provide
+            spec.shim_dir.as_deref(),
+            spec.bundled_bin_dir.as_deref(),
+            spec.shell_path.as_deref(),
             self.home.as_deref(),
             process_path.as_deref(),
         );
+        // Inject COLUMNS/LINES so Node-based TUIs (claude-code, ink)
+        // pick up the initial grid before SIGWINCH lands. The pane
+        // also gets resized to `initial_size` after new-session via
+        // `resize-window`.
+        let mut env: std::collections::BTreeMap<String, String> = spec
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        if let Some((cols, rows)) = spec.initial_size {
+            env.insert("COLUMNS".into(), cols.to_string());
+            env.insert("LINES".into(), rows.to_string());
+        }
         let script = launch::LaunchScript {
             command: spec.command.clone(),
             args: spec.args.clone(),
             cwd: spec.cwd.clone(),
-            env: spec
-                .env
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
+            env,
             path: composed,
         };
         let launch_path = launch::write_launch_script(&sess_dir, &script)?;
@@ -373,6 +385,23 @@ impl SessionRuntime for TmuxRuntime {
             window: "main".into(),
             pane: pane_id,
         };
+
+        // 4b. Apply initial pane size if requested. The agent's
+        //     COLUMNS/LINES env was set to match in step 1; this
+        //     resize tells tmux about it.
+        if let Some((cols, rows)) = spec.initial_size {
+            run_tmux_check(
+                self.cmd()
+                    .arg("resize-window")
+                    .arg("-t")
+                    .arg(window_target(&session.session_name, &session.window))
+                    .arg("-x")
+                    .arg(cols.to_string())
+                    .arg("-y")
+                    .arg(rows.to_string()),
+                "resize-window",
+            )?;
+        }
 
         // 5–7. Wire pipe-pane → capture-pane → channel. Wrap in a
         //      closure so any error after new-session triggers
@@ -1082,6 +1111,7 @@ mod tests {
             ],
             env: Default::default(),
             mission: false,
+            ..Default::default()
         };
         rt.spawn(spec)
     }
@@ -1150,6 +1180,7 @@ mod tests {
             args: vec!["-c".into(), "exit 7".into()],
             env: Default::default(),
             mission: false,
+            ..Default::default()
         };
         let (session, _rx) = rt.spawn(spec).unwrap();
 
@@ -1202,6 +1233,7 @@ mod tests {
             args: vec!["-c".into(), "sleep 5".into()],
             env: Default::default(),
             mission: false,
+            ..Default::default()
         };
         let (session, _rx) = rt.spawn(spec).unwrap();
         // Unset the stamp on the running server.
@@ -1241,6 +1273,7 @@ mod tests {
             args: vec!["-c".into(), "sleep 5".into()],
             env: Default::default(),
             mission: false,
+            ..Default::default()
         };
         let (session, _rx) = rt.spawn(spec).unwrap();
         let reloaded = rt.reconcile_config().unwrap();

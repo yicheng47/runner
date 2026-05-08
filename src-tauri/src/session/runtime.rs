@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 /// Everything `spawn` needs that doesn't already live on a `Session`
 /// row. The runtime never reads the DB — callers (mission/session
 /// commands) gather the inputs and hand them in.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SpawnSpec {
     /// ULID of the `sessions` row that will own this runtime session.
     /// The runtime uses this for deterministic naming
@@ -42,6 +42,26 @@ pub struct SpawnSpec {
     /// invariant — see PR #51). The runtime uses this only to log /
     /// emit, not to make spawn decisions.
     pub mission: bool,
+    /// Per-(mission, slot) shim directory containing a `runner` shim
+    /// that bakes the mission-bus env vars and execs the bundled CLI.
+    /// `None` for direct chats (off-bus invariant).
+    pub shim_dir: Option<PathBuf>,
+    /// `<app_data>/bin/` containing the bundled `runner` CLI. `None`
+    /// for direct chats (also off-bus invariant — direct chats must
+    /// not have the bundled CLI on PATH).
+    pub bundled_bin_dir: Option<PathBuf>,
+    /// Best-effort login-shell PATH from
+    /// `shell_path::resolve_login_shell_path`, captured once by the
+    /// manager at app start. `None` if the resolver
+    /// failed/timed out — the launch script's fallback CLI dirs
+    /// (`~/.local/bin`, `/opt/homebrew/bin`, etc.) cover the common
+    /// cases regardless.
+    pub shell_path: Option<String>,
+    /// Initial pane size (cols, rows) — `xterm.js` reports its
+    /// foreground grid on direct-chat spawn so the pane lays out at
+    /// the right size before the first paint. `None` falls back to
+    /// the runner config's `default-size`.
+    pub initial_size: Option<(u16, u16)>,
 }
 
 /// What `spawn`/`resume` returns: the runtime-side identifiers we

@@ -19,8 +19,9 @@ pub struct AppState {
     /// installs, a tempdir in tests. Mission commands resolve event-log paths
     /// relative to this via `runner_core::event_log::path`.
     pub app_data_dir: PathBuf,
-    /// Live per-mission PTY sessions. Created at app start, shared across
-    /// all Tauri commands and the reader threads they spawn.
+    /// Live per-mission session manager (tmux-backed). Created at app
+    /// start, shared across all Tauri commands and the per-session
+    /// forwarder threads it spawns.
     pub sessions: Arc<session::SessionManager>,
     /// Live per-mission event-bus watchers. Mounted by `mission_start` once
     /// the opening events are durable; unmounted by `mission_stop` and on
