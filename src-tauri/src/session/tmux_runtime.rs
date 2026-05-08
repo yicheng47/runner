@@ -83,15 +83,38 @@ impl TmuxRuntime {
     /// only re-read on server start; running options stay stale
     /// unless we reload them explicitly.
     ///
-    /// Cheap probe: read `@runner_config_version` from the running
-    /// server. Match against our stamp ⇒ skip. Mismatch or missing
-    /// ⇒ `source-file <runner.conf>` to reload, then re-stamp via
-    /// the config (which sets `@runner_config_version`).
+    /// Two-step probe so the missing-stamp legacy-server case is
+    /// handled correctly (the previous shape lumped "no server"
+    /// and "server up but stamp missing" into a single Ok(false)
+    /// branch, leaving legacy servers permanently stale):
     ///
-    /// No-op if the server isn't running (idempotent — the next
-    /// `new-session` will start a fresh server with the current
-    /// config).
+    /// 1. `list-sessions` — is the tmux server up at all? Non-
+    ///    zero = no server, no-op (next spawn boots a fresh one
+    ///    with the current config).
+    /// 2. `show-options -g -v @runner_config_version` — read the
+    ///    stamp. Empty stdout (or non-zero on a tmux that errors
+    ///    on missing user-options) means the running server is
+    ///    pre-stamp legacy. Treat as stale and reload.
+    ///
+    /// Returns `Ok(true)` when a `source-file` reload happened,
+    /// `Ok(false)` when no work was needed.
     pub fn reconcile_config(&self) -> RuntimeResult<bool> {
+        // Step 1: is the server running?
+        let server_up = self
+            .cmd()
+            .arg("list-sessions")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        if !server_up.success() {
+            return Ok(false);
+        }
+
+        // Step 2: read the stamp. Treat both `success + empty
+        // stdout` and `non-zero exit` as missing — both mean the
+        // running server doesn't carry our @runner_config_version
+        // user-option (legacy server, or the option was unset).
         let probe = self
             .cmd()
             .arg("show-options")
@@ -101,18 +124,11 @@ impl TmuxRuntime {
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output()?;
-        if !probe.status.success() {
-            // Two innocuous cases land here: (a) server not
-            // running yet — the next spawn will start a fresh
-            // server that loads the current config, no work
-            // needed; (b) the option isn't set on the running
-            // server (legacy server pre-dates the stamp). Treat
-            // both as "no live server to reload"; if there *is* a
-            // live server, the next has-session probe will detect
-            // it and trigger a real reload.
-            return Ok(false);
-        }
-        let stamped = String::from_utf8_lossy(&probe.stdout).trim().to_string();
+        let stamped = if probe.status.success() {
+            String::from_utf8_lossy(&probe.stdout).trim().to_string()
+        } else {
+            String::new()
+        };
         if stamped == CONFIG_VERSION {
             return Ok(false);
         }
@@ -1165,6 +1181,46 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(100));
         let after = rt.status(&session).unwrap();
         assert!(after.is_none(), "expected None after kill, got {after:?}");
+        cleanup(&rt);
+    }
+
+    #[test]
+    #[ignore]
+    fn integration_reconcile_config_reloads_legacy_server() {
+        // Simulate a legacy server: start one, then explicitly
+        // unset the @runner_config_version user-option so the
+        // probe sees a stamp-less running server. reconcile
+        // should detect that and source-file the config back
+        // in, returning Ok(true).
+        let Some(rt) = test_runtime("reconcile-legacy") else {
+            return;
+        };
+        let spec = SpawnSpec {
+            session_id: "reconcilelegacy01".into(),
+            cwd: None,
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 5".into()],
+            env: Default::default(),
+            mission: false,
+        };
+        let (session, _rx) = rt.spawn(spec).unwrap();
+        // Unset the stamp on the running server.
+        let unset = rt
+            .cmd()
+            .arg("set-option")
+            .arg("-g")
+            .arg("-u")
+            .arg("@runner_config_version")
+            .status()
+            .unwrap();
+        assert!(unset.success(), "set-option -u failed");
+        // Now reconcile_config should reload (legacy path).
+        let reloaded = rt.reconcile_config().unwrap();
+        assert!(reloaded, "expected reload of legacy server");
+        // After reload, calling again should be a no-op.
+        let second = rt.reconcile_config().unwrap();
+        assert!(!second, "second call should observe current stamp");
+        rt.stop(&session).unwrap();
         cleanup(&rt);
     }
 
