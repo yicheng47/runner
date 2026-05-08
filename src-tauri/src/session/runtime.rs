@@ -189,6 +189,19 @@ impl OutputStream {
     pub fn as_receiver(&self) -> &std::sync::mpsc::Receiver<RuntimeOutput> {
         &self.inner
     }
+
+    /// Clone of the cancellation flag. Set this from outside the
+    /// consumer thread to break it out of `recv_timeout` on the
+    /// next tick, regardless of whether the channel has
+    /// disconnected. Used by `SessionManager::kill` so kill
+    /// doesn't hang waiting on tmux's pipe-pane cleanup chain
+    /// (kill-session → cat dies → FIFO POLLHUP → forward_fifo
+    /// exits → tx drops → Disconnected) — that chain is normally
+    /// fast but can stall under load, and `kill` must not block
+    /// the calling Tauri command indefinitely.
+    pub fn stop_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::clone(&self.stop)
+    }
 }
 
 impl Drop for OutputStream {

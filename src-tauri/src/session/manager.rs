@@ -182,6 +182,16 @@ struct SessionHandle {
     /// (mission_stop) get the same "no live sessions after we
     /// return" contract the portable-pty path provided.
     forwarder: Option<thread::JoinHandle<()>>,
+    /// Cancellation flag the forwarder thread polls between
+    /// `recv_timeout` calls. `kill` flips it so the consumer
+    /// breaks out within ~500ms regardless of whether tmux's
+    /// pipe-pane cleanup chain (kill-session → cat dies → FIFO
+    /// POLLHUP → forward_fifo exits → tx drops → Disconnected)
+    /// has completed. Without this, kill could hang waiting on
+    /// the channel-disconnect path if anything in that chain
+    /// stalled — observed live as a stuck "Archiving…" pill on
+    /// the chat page.
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub struct SessionManager {
@@ -472,6 +482,7 @@ impl SessionManager {
             );
         }
 
+        let stop = output.stop_flag();
         self.sessions.lock().unwrap().insert(
             session_id.clone(),
             SessionHandle {
@@ -480,6 +491,7 @@ impl SessionManager {
                 runner_id: runner.id.clone(),
                 runtime_session: rt_session.clone(),
                 forwarder: None,
+                stop,
             },
         );
 
@@ -636,6 +648,7 @@ impl SessionManager {
                 runner_id: runner.id.clone(),
                 runtime_session: rt_session.clone(),
                 forwarder: None,
+                stop: output.stop_flag(),
             },
         );
 
@@ -988,6 +1001,7 @@ impl SessionManager {
                 runner_id: runner.id.clone(),
                 runtime_session: rt_session.clone(),
                 forwarder: None,
+                stop: output.stop_flag(),
             },
         );
 
@@ -1108,16 +1122,22 @@ impl SessionManager {
     ) -> thread::JoinHandle<()> {
         let manager_t: Arc<SessionManager> = Arc::clone(self);
         let started_at = std::time::Instant::now();
+        // Capture the cancellation flag before moving `output` into
+        // the thread. `kill` flips this flag so the consumer
+        // breaks out within ~500ms even if the channel-disconnect
+        // path stalls (tmux's pipe-pane cleanup chain has been
+        // observed hanging in the field, leaving the chat's
+        // "Archiving…" pill stuck).
+        let stop = output.stop_flag();
         thread::spawn(move || {
             // Drain pane output until the runtime closes the
-            // channel (pane died, or the OutputStream was dropped).
-            // Replay and Stream both flow as `session/output` events
-            // — xterm.js appends sequentially regardless. The
-            // distinction matters for snapshot-vs-append semantics
-            // when the manager exposes a separate `session/replay`
-            // event; today we keep the one-channel shape for
-            // backward compat with the existing frontend.
+            // channel OR `kill` flips the stop flag. Replay and
+            // Stream both flow as `session/output` events — xterm.js
+            // appends sequentially regardless.
             loop {
+                if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
                 match output.recv_timeout(Duration::from_millis(500)) {
                     Ok(RuntimeOutput::Replay(bytes)) | Ok(RuntimeOutput::Stream(bytes)) => {
                         let ev = manager_t.record_output(
@@ -1322,18 +1342,27 @@ impl SessionManager {
         // `inject_stdin` / `kill` / `resize` against this id fail
         // fast; the forwarder thread's runtime_session was cloned
         // at insert time so it stays usable.
-        let (rt_session, forwarder) = {
+        let (rt_session, stop, forwarder) = {
             let mut sessions = self.sessions.lock().unwrap();
             match sessions.remove(session_id) {
-                Some(mut h) => (h.runtime_session.clone(), h.forwarder.take()),
+                Some(mut h) => (
+                    h.runtime_session.clone(),
+                    h.stop.clone(),
+                    h.forwarder.take(),
+                ),
                 None => return Ok(()),
             }
         };
 
-        // Stop the pane. The forwarder thread sees the channel
-        // close, queries final status, and updates the DB +
-        // emits exit on its way out.
+        // Stop the pane. The forwarder thread should see the
+        // channel close (tmux kills pipe-pane → cat dies → FIFO
+        // POLLHUP → forward_fifo exits → tx drops →
+        // Disconnected); but that whole chain depends on tmux's
+        // async cleanup, which has been observed stalling under
+        // load. Flip the explicit cancellation flag so the
+        // consumer breaks out within ~500ms regardless.
         let _ = self.runtime.stop(&rt_session);
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
 
         // Wait for the forwarder to drain + reconcile so the
         // caller (mission_stop) gets the no-live-sessions-after-
@@ -1507,6 +1536,7 @@ impl SessionManager {
             crate::commands::runner::get(&conn, &row.runner_id)?
         };
         let output = self.runtime.resume(&rt_session)?;
+        let stop = output.stop_flag();
         self.sessions.lock().unwrap().insert(
             row.id.clone(),
             SessionHandle {
@@ -1515,6 +1545,7 @@ impl SessionManager {
                 runner_id: row.runner_id.clone(),
                 runtime_session: rt_session.clone(),
                 forwarder: None,
+                stop,
             },
         );
         let forwarder = self.start_forwarder_thread(
