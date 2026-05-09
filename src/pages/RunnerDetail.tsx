@@ -98,11 +98,8 @@ export default function RunnerDetail() {
         null,
         null,
       );
-      navigate(`/runners/${runner.handle}/chat`, {
-        state: {
-          sessionId: spawned.id,
-          sessionStatus: "running",
-        },
+      navigate(`/runners/${runner.handle}/chat/${spawned.id}`, {
+        state: { sessionStatus: "running" },
       });
     } catch (e) {
       setError(String(e));
