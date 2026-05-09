@@ -16,10 +16,23 @@ use super::{Router, RouterRegistry, StdinInjector};
 use crate::error::Result;
 use crate::model::{Runner, Slot, SlotWithRunner};
 
-/// Records every `inject` call so handler outputs can be asserted.
+/// Discriminator on each recorded push so tests can assert which
+/// primitive the router used: raw byte injection (`inject`) for
+/// already-running-agent paths, vs verified paste-and-submit
+/// (`inject_paste_with_verify`) for fresh-spawn launch prompts.
+/// Existing `pushes_for` / `all_pushes` helpers project the kind
+/// away, so existing body-content assertions stay valid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InjectKind {
+    Raw,
+    PasteVerified,
+}
+
+/// Records every `inject` / `inject_paste_with_verify` call so
+/// handler outputs can be asserted.
 #[derive(Default)]
 struct RecordingInjector {
-    pushes: Mutex<Vec<(String, Vec<u8>)>>,
+    pushes: Mutex<Vec<(String, InjectKind, Vec<u8>)>>,
     /// Optional `dead_session` set — `inject` errors when called with one
     /// of these ids, simulating a crashed PTY for `mission_warning` tests.
     dead: Mutex<Vec<String>>,
@@ -31,8 +44,8 @@ impl RecordingInjector {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(s, _)| s == session_id)
-            .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .filter(|(s, _, _)| s == session_id)
+            .map(|(_, _, bytes)| String::from_utf8_lossy(bytes).into_owned())
             .collect()
     }
 
@@ -41,7 +54,35 @@ impl RecordingInjector {
             .lock()
             .unwrap()
             .iter()
-            .map(|(s, b)| (s.clone(), String::from_utf8_lossy(b).into_owned()))
+            .map(|(s, _, b)| (s.clone(), String::from_utf8_lossy(b).into_owned()))
+            .collect()
+    }
+
+    /// Pushes for `session_id` recorded specifically via the
+    /// verified-paste primitive. Used by the lead-launch-prompt test
+    /// to confirm the routing didn't fall back to raw stdin.
+    #[allow(dead_code)]
+    fn paste_pushes_for(&self, session_id: &str) -> Vec<String> {
+        self.pushes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(s, k, _)| s == session_id && *k == InjectKind::PasteVerified)
+            .map(|(_, _, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .collect()
+    }
+
+    /// Pushes for `session_id` recorded specifically via the raw
+    /// primitive. Used to confirm the verified path didn't *also*
+    /// fall through to raw stdin.
+    #[allow(dead_code)]
+    fn raw_pushes_for(&self, session_id: &str) -> Vec<String> {
+        self.pushes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(s, k, _)| s == session_id && *k == InjectKind::Raw)
+            .map(|(_, _, bytes)| String::from_utf8_lossy(bytes).into_owned())
             .collect()
     }
 
@@ -60,7 +101,21 @@ impl StdinInjector for RecordingInjector {
         self.pushes
             .lock()
             .unwrap()
-            .push((session_id.to_string(), bytes.to_vec()));
+            .push((session_id.to_string(), InjectKind::Raw, bytes.to_vec()));
+        Ok(())
+    }
+
+    fn inject_paste_with_verify(&self, session_id: &str, body: &[u8]) -> Result<()> {
+        if self.dead.lock().unwrap().iter().any(|d| d == session_id) {
+            return Err(crate::error::Error::msg(format!(
+                "test: session {session_id} is dead"
+            )));
+        }
+        self.pushes.lock().unwrap().push((
+            session_id.to_string(),
+            InjectKind::PasteVerified,
+            body.to_vec(),
+        ));
         Ok(())
     }
 }
@@ -235,6 +290,53 @@ fn mission_goal_injects_composed_prompt_to_lead() {
     assert!(prompt.contains("Allowed signal types"));
     // Workers do not receive the launch prompt.
     assert!(injector.pushes_for("S-IMPL").is_empty());
+}
+
+#[test]
+fn lead_launch_prompt_routes_through_verified_paste() {
+    // Round-2 review regression guard (impl plan 0005): the lead's
+    // launch prompt must land via `inject_paste_with_verify`, NOT
+    // raw stdin. The verified primitive captures the pane post-paste
+    // and only sends Enter once it confirms the body landed —
+    // critical for fresh-spawn agents whose TUI hasn't bound raw
+    // input yet (Codex argv `[PROMPT]` gets eaten by the approval
+    // dialog; claude-code body keystrokes get eaten by the
+    // trust-folder screen).
+    let (router, injector, log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    let ev = log
+        .append(signal(
+            "human",
+            "mission_goal",
+            serde_json::json!({ "text": "ship v0" }),
+        ))
+        .unwrap();
+    router.handle_event(&ev);
+
+    // Body landed via the verified-paste primitive exactly once.
+    let lead_paste_pushes = injector.paste_pushes_for("S-LEAD");
+    assert_eq!(
+        lead_paste_pushes.len(),
+        1,
+        "lead launch prompt must route through inject_paste_with_verify; got {lead_paste_pushes:?}"
+    );
+    assert!(lead_paste_pushes[0].contains("Goal: ship v0"));
+
+    // Body did NOT also land via the legacy raw `inject` path —
+    // guards against future churn re-introducing the keystroke
+    // chord. Worker-inbox nudges (which DO use raw `inject`) only
+    // fire on directed messages, not on `mission_goal`, so S-LEAD
+    // shouldn't have any raw pushes in this test.
+    let lead_raw_pushes = injector.raw_pushes_for("S-LEAD");
+    assert!(
+        lead_raw_pushes.is_empty(),
+        "lead must not also receive a raw stdin push for the launch prompt; got {lead_raw_pushes:?}"
+    );
 }
 
 #[test]

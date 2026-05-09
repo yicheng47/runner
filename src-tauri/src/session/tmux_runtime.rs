@@ -669,6 +669,10 @@ impl SessionRuntime for TmuxRuntime {
         Ok(())
     }
 
+    fn capture_visible(&self, session: &RuntimeSession) -> RuntimeResult<Vec<u8>> {
+        capture_visible_region(&self.cmd(), session)
+    }
+
     fn status(&self, session: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
         // First gate: has-session. tmux exits non-zero if the
         // target session is gone — that's our terminal-unavailable
