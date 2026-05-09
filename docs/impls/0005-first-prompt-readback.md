@@ -92,33 +92,59 @@ exposed. The plan covers all three.
 A new manager-side method `inject_paste_with_verify` runs the loop:
 
 ```text
-sleep(initial_wait)          // first-cut readiness wait, smaller than today
+sleep(initial_wait)              // first-cut readiness wait, smaller than today
+before = runtime.capture_visible(session)
+marker = paste_marker(body)
+before_marker_count = count_substr(strip_ansi(before), marker)
+before_placeholder_count = count_placeholders(before)
 loop attempt = 0..max_attempts:
     if session no longer in self.sessions: bail (user killed it)
     runtime.paste(session, body)
-    sleep(render_wait)        // give tmux + agent TUI time to render
-    snapshot = runtime.capture_visible(session)
-    if pane_acknowledged_paste(snapshot, marker(body)):
+    sleep(render_wait)           // give tmux + agent TUI time to render
+    after = runtime.capture_visible(session)
+    after_stripped = strip_ansi(after)
+    if count_substr(after_stripped, marker) > before_marker_count:
+        runtime.send_key(session, "Enter")
+        return Ok
+    if body.len() >= PLACEHOLDER_MIN_BODY_LEN
+       && count_placeholders_stripped(after_stripped) > before_placeholder_count:
         runtime.send_key(session, "Enter")
         return Ok
     sleep(between_attempts)
-return Err("persona not visible after N attempts")
+return Err("paste not visible after N attempts")
 ```
 
-`pane_acknowledged_paste` matches **either** of:
+Both acceptance signals use a **count delta** between `before` (one
+capture, taken once before the loop) and `after` (one capture per
+attempt). Either delta increasing by ≥ 1 means our paste landed:
 
-1. The body marker (first ≤32 chars of trimmed body, line-bounded)
-   appears verbatim in the pane after CSI escapes are stripped. Covers
-   short personas (Claude Code shows the paste verbatim under its
-   wrap threshold) and the codex TUI (always verbatim).
-2. The literal substring `Pasted text` appears in the pane. Covers
-   long personas where Claude Code substitutes a `[Pasted text #N
-   +M lines]` placeholder for the actual content.
+1. **Body-marker count delta.** The first ≤32 chars of trimmed body
+   (line-bounded; stop at first `\n`) — `paste_marker(body)` —
+   counted as a substring in the CSI-stripped snapshot. Covers
+   short pastes (Claude Code shows them verbatim) and the codex
+   TUI (always verbatim regardless of length). For 8-byte bodies
+   like `"continue"` this is the only signal that fires; using the
+   delta (rather than just "marker is now visible") handles the
+   resume case where the prior conversation already contains the
+   marker text — a `continue` resume against a transcript
+   mentioning the word "continue" still verifies correctly,
+   because the paste pushes the count from N to N+1.
+2. **Placeholder count delta.** `count_placeholders` is occurrences
+   of the literal `Pasted text` substring in the CSI-stripped
+   snapshot. Only consulted when `body.len() >=
+   PLACEHOLDER_MIN_BODY_LEN` (64 bytes — well below Claude Code's
+   actual wrap threshold of ~200, but above any reasonable
+   short-prompt zone where the placeholder shouldn't fire). Skipping
+   for short bodies plus using a delta both defend against the
+   resume false-ack case the reviewer flagged: a resumed pane that
+   already shows `[Pasted text #5 ...]` from prior turns has
+   `before_placeholder_count = 1`; a failed `continue` paste leaves
+   `after_placeholder_count = 1`; delta = 0 → reject and retry.
 
-Either match means the paste landed in the input box. The placeholder
-match is Claude-Code-specific by design — codex is the other
-production runtime and it always shows verbatim, so the body-marker
-match covers it.
+The capture-before is taken **once**, before the retry loop. Each
+retry compares against that fixed baseline, so duplicate pastes that
+actually do land (a paste-then-render race resulting in two
+placeholders) still verify on the first delta-positive attempt.
 
 ### Timing budget
 
@@ -228,18 +254,24 @@ impl StdinInjector for SessionManager {
 }
 ```
 
-Update `Router::inject_and_submit_delayed` to drop the
-keystroke-then-`\r` chord on the non-zero-delay path and use
-`injector.inject_paste_with_verify(session_id, &body)` instead. The
-verified path delivers the body as a bracketed paste (so multi-line
-launch prompts render correctly inside the input box, not as
-character-by-character keystrokes that wrap differently) and
-internally handles the Enter once it's confirmed the body landed.
+Update `Router::inject_and_submit_delayed` so **both** branches route
+through `injector.inject_paste_with_verify(session_id, &body)`,
+regardless of whether the `delay` parameter is zero or non-zero. The
+delay parameter now controls only "spawn a thread vs run inline";
+the *routing* decision is settled by the method name (the
+`_delayed` suffix means launch-prompt-class injection, which always
+needs the verified path):
 
-The zero-delay path (used by router unit tests with
-`LEAD_LAUNCH_PROMPT_DELAY = ZERO`) keeps the existing inline-`inject`
-behavior — those tests assert byte-write counts against a fake
-injector and shouldn't see a different call shape.
+- **Non-zero delay** (production): spawn a thread, immediately call
+  `inject_paste_with_verify` (no outer `sleep(delay)` — see Risks /
+  budget below).
+- **Zero delay** (tests): call `inject_paste_with_verify` inline.
+  Under `cfg(test)` the verified path's own durations are all zero,
+  so this stays a synchronous millisecond no-op.
+
+Drop the trailing `\r` chord entirely from the delayed path — the
+verified primitive sends Enter internally once it confirms the body
+landed.
 
 `inject_and_submit` (the synchronous, non-delayed path used by
 `human_said` and `ask_lead`) stays on raw byte injection. Those
@@ -247,21 +279,75 @@ target *running* agents that already have their TUI bound, so the
 readback isn't needed; using a paste there would just add latency
 and double-encode user-typed text.
 
+#### Readiness budget — verified path owns it
+
+The lead launch prompt today wraps the legacy raw-byte path in an
+outer `LEAD_LAUNCH_PROMPT_DELAY` (2500ms). The verified path has
+its own `initial_wait` (1500ms) plus per-attempt `render_wait`
+(600ms). **Stacking both would mean ~4600ms before the first
+verify, which is worse UX than today's blind 2500ms.** To avoid the
+stack:
+
+- The verified path is the sole owner of pre-paste readiness
+  waiting. `inject_paste_with_verify` does its own `initial_wait`
+  internally; callers must not sleep before calling it.
+- `inject_and_submit_delayed`'s thread *immediately* calls
+  `inject_paste_with_verify` — no outer `sleep`. The `delay`
+  parameter is preserved as a no-op argument for API stability with
+  the existing call sites (`handlers::mission_goal` and
+  `Router::fire_lead_launch_prompt`); the constant
+  `LEAD_LAUNCH_PROMPT_DELAY` itself can be removed once the
+  legacy raw-byte branch is gone, but keeping it as a documented
+  vestigial argument for one release simplifies the diff.
+  Optionally we delete it in the same commit — judgment call at
+  implementation time, plan accepts either.
+- Net production cost on lead path: 1500ms initial + 600ms render =
+  ~2100ms best case (faster than today's 2500ms blind), 7100ms
+  worst case (vs today's 2500ms-then-fail).
+
 ### Test stubs
 
 - `InertRuntime` (in-test stand-in for tests that never reach the
   runtime): return `Err` from `capture_visible`, matching its other
   methods. The verify loop treats capture errors as "not seen" and
   retries — the eventual give-up path is exercised this way.
-- `FakeRuntime`: add `pane_content: Mutex<Vec<u8>>` (canned snapshot
-  body) and `acknowledge_after: Mutex<usize>` (number of pastes
-  before `capture_visible` reveals the canned content). Default
-  `acknowledge_after = 0` so existing tests are unaffected.
-- The router's test-side fake `StdinInjector` (in `router/tests.rs`)
-  needs the new `inject_paste_with_verify` method too. For
-  zero-delay router unit tests this routes through the same
-  recording shape as `inject` (one byte-write captured), so existing
-  push-count assertions stay valid.
+- `FakeRuntime`: capture the new "before-then-after" probe shape
+  with three fields: `pane_pre_paste: Mutex<Vec<u8>>` (what
+  `capture_visible` returns before the canned acknowledge
+  threshold), `pane_post_paste: Mutex<Vec<u8>>` (what it returns
+  after), and `acknowledge_after: Mutex<usize>` (paste count
+  threshold). Defaults: pre-paste empty, post-paste = persona body,
+  threshold 0 — so any paste is acknowledged on first capture-after,
+  matching existing test expectations. Tests that exercise
+  retry/give-up override the threshold; the false-ack-on-resume test
+  sets `pane_pre_paste = pane_post_paste = stale-placeholder` and
+  asserts the delta check rejects.
+- `RecordingInjector` in `router/tests.rs`: implements the new
+  `StdinInjector::inject_paste_with_verify` method. To preserve
+  existing push-count assertions (e.g. `lead_pushes.len() == 1`
+  in `tests.rs:230`), tag each recorded entry with an `InjectKind`
+  enum (`Raw` / `PasteVerified`) and have the existing
+  `pushes_for` / `all_pushes` helpers continue projecting the kind
+  away — so existing assertions on body content stay valid as-is.
+  Add `paste_pushes_for(session_id)` filter so the new
+  lead-routing test can assert which path was used.
+
+### Existing test impact
+
+- Router tests that currently assert on lead-launch-prompt body
+  content via `pushes_for("S-LEAD")` (e.g. `tests.rs:230-232`,
+  `tests.rs:273-275`, `tests.rs:296`) keep their content
+  assertions unchanged — the body still goes through the recorder,
+  just tagged `PasteVerified` now. The trailing `\r` push that
+  exists in the *non-zero-delay production* path doesn't appear in
+  these tests today (they run under `cfg(test)` zero-delay which
+  skips the `\r` chord), so the chord removal is a no-op for the
+  test suite.
+- Manager-level first-prompt tests (the existing ones, pre-this-PR)
+  stay green because the default `acknowledge_after = 0` +
+  non-empty `pane_post_paste` means the verified loop terminates
+  on attempt 1 with the same paste + Enter call shape — plus one
+  capture_visible-pre and one capture_visible-post per spawn.
 
 ### Tests
 
@@ -279,39 +365,46 @@ Three new manager-level unit tests against `FakeRuntime`:
 
 Plus one router-level unit test:
 
-4. **`lead_launch_prompt_routes_through_verified_paste`** —
-   configure `LEAD_LAUNCH_PROMPT_DELAY` non-zero, fire
-   `mission_goal`, assert the fake injector's
+4. **`lead_launch_prompt_routes_through_verified_paste`** — fire
+   `mission_goal` against the router with the existing
+   `cfg(test)` zero-delay constant; assert the fake injector's
    `inject_paste_with_verify` was called once with the composed
-   launch-prompt body (and that the legacy `inject` path was *not*
-   called for that body). Guards against future churn re-introducing
-   the keystroke path.
-
-Existing first-prompt tests stay green because they don't configure
-`acknowledge_after` — the default-zero value means
-`capture_visible` returns the canned `pane_content` immediately, and
-the loop terminates on attempt 1 with the same call shape as today
-plus one `capture_visible` invocation per spawn.
+   launch-prompt body, **and** that the legacy `inject` path was
+   *not* called for that body (no leftover keystroke-then-`\r`
+   chord). The test works under `cfg(test)`'s zero-delay shape
+   because the new routing decision (verified path for *all*
+   delay values, not just non-zero) is no longer keyed on the
+   `LEAD_LAUNCH_PROMPT_DELAY` constant — guards against future
+   churn re-introducing the keystroke path.
 
 ## Risks
 
 - **`Pasted text` match is Claude-Code-specific.** If a future
   Claude Code version renames the placeholder, large pastes start
-  failing the body-marker path AND failing the placeholder path —
-  retry loop exhausts attempts, persona doesn't land. Mitigation:
-  the substring check is a single literal in `pane_acknowledged_paste`,
-  trivial to update. Worst case we revert to the blind wait — same
-  failure mode as today, no regression.
-- **Body marker false-positive on agent prior output.** The first 32
-  chars of a persona could coincidentally match unrelated pane
-  content (e.g. agent's own banner). For "You are an…" personas this
-  is unlikely; for very generic openings it could fire. Mitigation:
-  the marker comes from the *first non-whitespace line* of the body,
-  capped at 32 chars — distinctive enough in practice. If it
-  becomes a real issue we'd extend the match to require the marker
-  appear *after* a known input-box delimiter.
-- **Capture-pane cost.** ~1ms per call on macOS in benchmarks; 4
-  calls per spawn worst case. Negligible.
+  failing the body-marker path AND failing the placeholder-delta
+  path — retry loop exhausts attempts, persona doesn't land.
+  Mitigation: the substring check is a single literal in
+  `count_placeholders`, trivial to update. Worst case we revert to
+  the blind wait — same failure mode as today, no regression.
+- **Body marker false-positive on agent prior output.** The first
+  ≤32 chars of a persona could coincidentally match unrelated pane
+  content (e.g. agent's own banner). The count-delta-vs-before
+  scheme defends against the *static* version of this (resume into
+  a pane that already contains the marker — `before` and `after`
+  both count it once, delta = 0, reject) but not the *dynamic*
+  version: if the agent's banner produces the marker substring
+  between our `before` capture and our `after` capture, the count
+  goes 0 → 1 even though our paste hadn't landed yet. Concretely
+  this would require the agent's TUI to render text matching the
+  first 32 chars of the persona during the 600ms render-wait;
+  vanishingly rare for "You are a/an…" personas, and impossible
+  for codex (its banner is a fixed string with no persona-shaped
+  text). If it bites we'd extend the marker to require it appear
+  inside the input box specifically (e.g. only count occurrences
+  in the bottom N rows of the visible region).
+- **Capture-pane cost.** ~1ms per call on macOS in benchmarks; 1
+  pre-paste capture + up to 4 post-paste captures per spawn worst
+  case. Negligible.
 
 ## Out of scope follow-ups
 
