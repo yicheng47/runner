@@ -38,6 +38,31 @@ substring matching, but with much weaker guarantees (frontend-coupled
 buffer, no alternate-screen awareness). Now that we own the pane via
 tmux, the readback loop is straightforward.
 
+### Three injection paths share the race
+
+`SessionManager::inject_first_turn` is one of three places where Runner
+hands a first user turn to a freshly-spawned agent on the same 2500ms
+budget. All three race the agent's TUI bind, all three need the fix:
+
+| Path | Caller | Today's primitive | Used for |
+|---|---|---|---|
+| `inject_first_turn` (manager.rs:1897) | `schedule_direct_first_prompt`, `schedule_mission_first_prompt` (non-lead workers) | `inject_paste` — `tmux paste-buffer -p -r -d` + 120ms + `send_key("Enter")` | Direct-chat persona; non-lead mission worker preamble |
+| `Router::inject_and_submit_delayed` (router/mod.rs:425) | `handlers::mission_goal` (mission boot), `Router::fire_lead_launch_prompt` (resume-fresh-fallback) | `StdinInjector::inject` — raw bytes via `tmux send-keys -l`; trailing `b"\r"` after 80ms | Mission lead launch prompt (system_prompt + bus protocol + mission goal) |
+| `schedule_continue_on_resume` (manager.rs:1953) | claude-code resume path | `inject_paste` of `b"continue"` | Auto-`continue` after a successful resume |
+
+The lead-launch-prompt path is the most fragile of the three: it
+delivers a multi-line prompt (preamble + roster + brief) as
+*keystrokes* (`send-keys -l`, character-by-character) rather than as a
+bracketed paste, so even when the readiness window does hold,
+embedded `\n`s can render as line breaks the TUI never wraps the same
+way a real paste would. Plus the readiness race itself.
+
+A v0.1.4 fix that only patched `inject_first_turn` would leave Codex
+mission leads (always on this path because their argv `[PROMPT]`
+positional gets swallowed by the approval dialog —
+`router/runtime.rs:13-16`) and Claude Code mission leads still
+exposed. The plan covers all three.
+
 ## What we're not doing
 
 - **Not bumping the timer.** 4000ms or 5000ms would mask the bug for
@@ -172,6 +197,56 @@ Five changes:
    just the literal string "continue" (covered by the body-marker
    path; `Pasted text` doesn't fire for an 8-char paste).
 
+### `src-tauri/src/router/mod.rs`
+
+Extend the `StdinInjector` trait so the router can route lead launch
+prompts through the verified path without bypassing the seam the
+test-side fake injector relies on:
+
+```rust
+pub trait StdinInjector: Send + Sync + 'static {
+    fn inject(&self, session_id: &str, bytes: &[u8]) -> Result<()>;
+    /// Verified paste-and-submit. Used by `inject_and_submit_delayed`
+    /// for mission lead launch prompts. Performs the readback retry
+    /// loop internally; on success the agent has the body in its
+    /// input buffer AND has received Enter.
+    fn inject_paste_with_verify(&self, session_id: &str, body: &[u8]) -> Result<()>;
+}
+
+impl StdinInjector for SessionManager {
+    fn inject(&self, session_id: &str, bytes: &[u8]) -> Result<()> {
+        SessionManager::inject_stdin(self, session_id, bytes)
+    }
+    fn inject_paste_with_verify(&self, session_id: &str, body: &[u8]) -> Result<()> {
+        SessionManager::inject_paste_with_verify(
+            self,
+            session_id,
+            body,
+            FIRST_PROMPT_CONFIG, // exposed pub(crate) from session::manager
+        )
+    }
+}
+```
+
+Update `Router::inject_and_submit_delayed` to drop the
+keystroke-then-`\r` chord on the non-zero-delay path and use
+`injector.inject_paste_with_verify(session_id, &body)` instead. The
+verified path delivers the body as a bracketed paste (so multi-line
+launch prompts render correctly inside the input box, not as
+character-by-character keystrokes that wrap differently) and
+internally handles the Enter once it's confirmed the body landed.
+
+The zero-delay path (used by router unit tests with
+`LEAD_LAUNCH_PROMPT_DELAY = ZERO`) keeps the existing inline-`inject`
+behavior — those tests assert byte-write counts against a fake
+injector and shouldn't see a different call shape.
+
+`inject_and_submit` (the synchronous, non-delayed path used by
+`human_said` and `ask_lead`) stays on raw byte injection. Those
+target *running* agents that already have their TUI bound, so the
+readback isn't needed; using a paste there would just add latency
+and double-encode user-typed text.
+
 ### Test stubs
 
 - `InertRuntime` (in-test stand-in for tests that never reach the
@@ -182,10 +257,15 @@ Five changes:
   body) and `acknowledge_after: Mutex<usize>` (number of pastes
   before `capture_visible` reveals the canned content). Default
   `acknowledge_after = 0` so existing tests are unaffected.
+- The router's test-side fake `StdinInjector` (in `router/tests.rs`)
+  needs the new `inject_paste_with_verify` method too. For
+  zero-delay router unit tests this routes through the same
+  recording shape as `inject` (one byte-write captured), so existing
+  push-count assertions stay valid.
 
 ### Tests
 
-Three new unit tests against `FakeRuntime`:
+Three new manager-level unit tests against `FakeRuntime`:
 
 1. **`first_prompt_landed_first_try`** —
    `acknowledge_after = 0`, `pane_content = persona`. Inject. Assert
@@ -196,6 +276,16 @@ Three new unit tests against `FakeRuntime`:
 3. **`first_prompt_gives_up_after_max_attempts`** —
    `acknowledge_after = 999`. Inject. Assert `max_attempts` pastes
    captured, **zero** Enters captured.
+
+Plus one router-level unit test:
+
+4. **`lead_launch_prompt_routes_through_verified_paste`** —
+   configure `LEAD_LAUNCH_PROMPT_DELAY` non-zero, fire
+   `mission_goal`, assert the fake injector's
+   `inject_paste_with_verify` was called once with the composed
+   launch-prompt body (and that the legacy `inject` path was *not*
+   called for that body). Guards against future churn re-introducing
+   the keystroke path.
 
 Existing first-prompt tests stay green because they don't configure
 `acknowledge_after` — the default-zero value means
