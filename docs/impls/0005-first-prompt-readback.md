@@ -84,8 +84,10 @@ exposed. The plan covers all three.
   `continue` injection, which has the same race) gets the new path.
 - **Not implementing this on `InertRuntime` / non-tmux runtimes.**
   `InertRuntime` returns an error from `capture_visible`; the verify
-  loop treats capture errors the same as "needle not visible" and
-  retries. Non-tmux runtimes don't exist yet in production.
+  loop's capture-error policy (zero baselines on `before` failure,
+  skip-the-attempt on `after` failure — see "Capture error
+  handling" under Approach) covers it. Non-tmux runtimes don't
+  exist yet in production.
 
 ## Approach
 
@@ -93,58 +95,99 @@ A new manager-side method `inject_paste_with_verify` runs the loop:
 
 ```text
 sleep(initial_wait)              // first-cut readiness wait, smaller than today
-before = runtime.capture_visible(session)
-marker = paste_marker(body)
-before_marker_count = count_substr(strip_ansi(before), marker)
-before_placeholder_count = count_placeholders(before)
+before = runtime.capture_visible(session).unwrap_or_default()  // see error policy
+(head_marker, tail_marker) = paste_markers(body)
+before_stripped = strip_ansi(before)
+before_head_count = count_substr(before_stripped, head_marker)
+before_tail_count = count_substr(before_stripped, tail_marker)
+before_placeholder_count = count_substr(before_stripped, b"Pasted text")
 loop attempt = 0..max_attempts:
     if session no longer in self.sessions: bail (user killed it)
     runtime.paste(session, body)
     sleep(render_wait)           // give tmux + agent TUI time to render
-    after = runtime.capture_visible(session)
+    after = match runtime.capture_visible(session) {
+        Ok(b) => b,
+        Err(_) => { sleep(between_attempts); continue }   // skip this attempt's check
+    };
     after_stripped = strip_ansi(after)
-    if count_substr(after_stripped, marker) > before_marker_count:
-        runtime.send_key(session, "Enter")
-        return Ok
-    if body.len() >= PLACEHOLDER_MIN_BODY_LEN
-       && count_placeholders_stripped(after_stripped) > before_placeholder_count:
+    accept = count_substr(after_stripped, head_marker) > before_head_count
+          || count_substr(after_stripped, tail_marker) > before_tail_count
+          || (body.len() >= PLACEHOLDER_MIN_BODY_LEN
+              && count_substr(after_stripped, b"Pasted text") > before_placeholder_count)
+    if accept:
         runtime.send_key(session, "Enter")
         return Ok
     sleep(between_attempts)
 return Err("paste not visible after N attempts")
 ```
 
-Both acceptance signals use a **count delta** between `before` (one
-capture, taken once before the loop) and `after` (one capture per
-attempt). Either delta increasing by ≥ 1 means our paste landed:
+All three acceptance signals use a **count delta** between `before`
+(one capture, taken once before the loop) and `after` (one capture
+per attempt). Any one delta increasing by ≥ 1 means our paste
+landed:
 
-1. **Body-marker count delta.** The first ≤32 chars of trimmed body
-   (line-bounded; stop at first `\n`) — `paste_marker(body)` —
-   counted as a substring in the CSI-stripped snapshot. Covers
-   short pastes (Claude Code shows them verbatim) and the codex
-   TUI (always verbatim regardless of length). For 8-byte bodies
-   like `"continue"` this is the only signal that fires; using the
-   delta (rather than just "marker is now visible") handles the
-   resume case where the prior conversation already contains the
-   marker text — a `continue` resume against a transcript
-   mentioning the word "continue" still verifies correctly,
-   because the paste pushes the count from N to N+1.
-2. **Placeholder count delta.** `count_placeholders` is occurrences
-   of the literal `Pasted text` substring in the CSI-stripped
-   snapshot. Only consulted when `body.len() >=
-   PLACEHOLDER_MIN_BODY_LEN` (64 bytes — well below Claude Code's
-   actual wrap threshold of ~200, but above any reasonable
-   short-prompt zone where the placeholder shouldn't fire). Skipping
-   for short bodies plus using a delta both defend against the
-   resume false-ack case the reviewer flagged: a resumed pane that
-   already shows `[Pasted text #5 ...]` from prior turns has
-   `before_placeholder_count = 1`; a failed `continue` paste leaves
-   `after_placeholder_count = 1`; delta = 0 → reject and retry.
+1. **Head-marker count delta.** The first ≤32 chars of the trimmed
+   body's first non-empty line — `head_marker` — counted as a
+   substring in the CSI-stripped snapshot. Covers short pastes
+   (Claude Code shows them verbatim) and any TUI where the input
+   editor scrolls to keep the *start* of the paste visible. For
+   8-byte bodies like `"continue"` this is the only signal that
+   fires; using the delta (rather than just "marker is now
+   visible") handles the resume case where the prior conversation
+   already contains the marker text — a `continue` resume against
+   a transcript mentioning the word "continue" still verifies
+   correctly, because the paste pushes the count from N to N+1.
+2. **Tail-marker count delta.** The last ≤32 chars of trimmed body's
+   last non-empty line — `tail_marker`. Covers TUIs that scroll the
+   input editor to keep the *cursor* (and therefore the *end* of the
+   paste) visible — codex's chat composer is the known case. A long
+   codex mission prompt (preamble + roster + brief, often >2KB)
+   will not show its first line in the visible region; the
+   editor's bottom rows show the trailing lines instead. Tail-marker
+   delta picks that up. For short bodies where head and tail
+   overlap, both signals fire on the same paste — equivalent to
+   "either marker matched" with no double-count concern.
+3. **Placeholder count delta.** Occurrences of the literal
+   `Pasted text` substring in the CSI-stripped snapshot. Consulted
+   only when `body.len() >= PLACEHOLDER_MIN_BODY_LEN` (64 bytes —
+   well below Claude Code's actual wrap threshold of ~200, but
+   above any reasonable short-prompt zone where the placeholder
+   shouldn't fire). Skipping for short bodies plus using a delta
+   both defend against the resume false-ack case: a resumed pane
+   that already shows `[Pasted text #5 ...]` from prior turns has
+   `before_placeholder_count = 1`; a failed `continue` paste
+   leaves `after_placeholder_count = 1`; delta = 0 → reject and
+   retry.
 
 The capture-before is taken **once**, before the retry loop. Each
 retry compares against that fixed baseline, so duplicate pastes that
 actually do land (a paste-then-render race resulting in two
 placeholders) still verify on the first delta-positive attempt.
+
+#### Capture error handling
+
+The `capture_visible` call can fail (tmux daemon flaked, pane id no
+longer valid, runtime returns `Err` — `InertRuntime` always errors
+this way for unit-test paths that never reach a real runtime). Two
+distinct cases:
+
+- **Baseline (`before`) capture fails.** Treat as zero counts and
+  proceed. Concretely: `unwrap_or_default()` returns an empty
+  `Vec<u8>`, and `count_substr(b"", _) == 0` — so the baselines
+  become 0 across the board. The first post-paste capture will
+  count whatever appears in the pane against zero; if that pane
+  contains the marker text from prior content, we'd false-ack on
+  attempt 1. The alternative (abort the verify and fall back to
+  raw send-keys) regresses every baseline-capture failure to the
+  pre-fix state, which is worse than a rare false-ack. We log the
+  failure to stderr so operators can correlate. In practice
+  baseline-capture failures are transient — tmux is alive enough
+  to spawn but momentarily unresponsive — and resolve by the next
+  attempt.
+- **Per-attempt (`after`) capture fails.** Skip the check for
+  *this* attempt and continue the loop after the
+  `between_attempts` sleep. Don't retry the capture inline; the
+  loop's natural cadence already rate-limits.
 
 ### Timing budget
 
@@ -351,22 +394,30 @@ stack:
 
 ### Tests
 
-Three new manager-level unit tests against `FakeRuntime`:
+Five new unit tests:
 
-1. **`first_prompt_landed_first_try`** —
-   `acknowledge_after = 0`, `pane_content = persona`. Inject. Assert
-   1 paste captured, 1 `Key("Enter")` captured, no `Err` log.
-2. **`first_prompt_landed_after_retry`** —
-   `acknowledge_after = 2`, `pane_content = persona`. Inject. Assert
-   2 pastes captured (the loop retried once), 1 Enter captured.
-3. **`first_prompt_gives_up_after_max_attempts`** —
+1. **`first_prompt_landed_first_try`** (manager) —
+   `acknowledge_after = 0`, `pane_post_paste` contains the persona
+   body. Inject. Assert 1 paste captured, 1 `Key("Enter")` captured,
+   no `Err` log.
+2. **`first_prompt_landed_after_retry`** (manager) —
+   `acknowledge_after = 2`, `pane_post_paste` contains the persona
+   body, `pane_pre_paste` empty. Inject. Assert 2 pastes captured
+   (loop retried once), 1 Enter captured.
+3. **`first_prompt_gives_up_after_max_attempts`** (manager) —
    `acknowledge_after = 999`. Inject. Assert `max_attempts` pastes
    captured, **zero** Enters captured.
-
-Plus one router-level unit test:
-
-4. **`lead_launch_prompt_routes_through_verified_paste`** — fire
-   `mission_goal` against the router with the existing
+4. **`continue_resume_rejects_stale_placeholder`** (manager) —
+   `body = b"continue"`, `pane_pre_paste = pane_post_paste =
+   "[Pasted text #5 +20 lines]"` (resume showing prior placeholder),
+   `acknowledge_after = 0`. Inject. Assert `max_attempts` pastes,
+   zero Enters — the placeholder count delta is 0 (both before and
+   after see one placeholder), `body.len() = 8 < 64` so the
+   placeholder check wouldn't fire anyway, and the body marker
+   "continue" is not in the canned content. Guards the
+   round-2 false-ack regression directly.
+5. **`lead_launch_prompt_routes_through_verified_paste`** (router) —
+   fire `mission_goal` against the router with the existing
    `cfg(test)` zero-delay constant; assert the fake injector's
    `inject_paste_with_verify` was called once with the composed
    launch-prompt body, **and** that the legacy `inject` path was
@@ -424,7 +475,9 @@ Plus one router-level unit test:
 ## Rollout
 
 Single PR off `fix/first-prompt-readback`, target v0.1.4. CI runs
-the full unit suite (so the three new tests + 197 existing pass);
-manual smoke is "spawn three direct chats with a persona in
-parallel, confirm all three show the persona as the first user turn
-in each agent".
+the full unit suite (5 new tests + 197 existing pass); manual smoke:
+(a) spawn three claude-code direct chats with personas in parallel,
+confirm all three show the persona as the first user turn; (b) start
+a fresh codex-lead mission with a long preamble+brief (≥2KB), confirm
+the lead receives the launch prompt and submits it (covers the
+tail-marker path).
