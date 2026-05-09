@@ -37,12 +37,36 @@ use crate::session::manager::SessionManager;
 /// `SessionManager` impls it; tests use a recording fake. Lives behind a
 /// trait so the router doesn't pull a PTY runtime into unit tests.
 pub trait StdinInjector: Send + Sync + 'static {
+    /// Raw stdin bytes — used by `inject_and_submit` for the
+    /// already-running-agent paths (`human_said`, `ask_lead`).
+    /// `\r` becomes Enter, anything else is a literal byte stream.
     fn inject(&self, session_id: &str, bytes: &[u8]) -> Result<()>;
+
+    /// Verified paste-and-submit. Used by
+    /// `inject_and_submit_delayed` for mission lead launch prompts:
+    /// the agent's TUI may not be bound for raw input yet, and
+    /// blind keystrokes get eaten by whatever pre-input handler is
+    /// on screen (trust dialog, banner animation). The verified
+    /// primitive pastes via tmux paste-buffer, captures the pane,
+    /// confirms the paste rendered (head/tail-marker or
+    /// `Pasted text` placeholder count delta), and only then sends
+    /// Enter. Owns its own readiness budget — callers MUST NOT
+    /// sleep before calling it.
+    fn inject_paste_with_verify(&self, session_id: &str, body: &[u8]) -> Result<()>;
 }
 
 impl StdinInjector for SessionManager {
     fn inject(&self, session_id: &str, bytes: &[u8]) -> Result<()> {
         SessionManager::inject_stdin(self, session_id, bytes)
+    }
+
+    fn inject_paste_with_verify(&self, session_id: &str, body: &[u8]) -> Result<()> {
+        SessionManager::inject_paste_with_verify(
+            self,
+            session_id,
+            body,
+            crate::session::manager::FIRST_PROMPT_CONFIG,
+        )
     }
 }
 
@@ -408,16 +432,23 @@ impl Router {
         Ok(())
     }
 
-    /// Same contract as `inject_and_submit`, but the whole sequence
-    /// (body + delayed `\r`) is deferred by `delay`. Used for the
-    /// lead's launch prompt: the bus's initial replay fires
-    /// `mission_goal` immediately after the lead PTY spawns, but on
-    /// a warm app (mission_reset, fast mission_start) claude-code's
-    /// TUI hasn't drawn yet, so synchronous bytes get swallowed by
-    /// the boot / trust-folder screen and the lead never sees its
-    /// system prompt. The 2.5s budget matches
-    /// `SessionManager::FIRST_PROMPT_DELAY`, which solves the
-    /// same race for non-lead workers.
+    /// Lead launch-prompt injection: routes through the verified
+    /// paste-and-submit primitive (`inject_paste_with_verify`) so
+    /// the body lands as one bracketed paste and Enter only fires
+    /// once the pane confirms the paste rendered. Used for the
+    /// lead's `mission_goal`-driven launch prompt and the
+    /// resume-fresh-fallback path; both spawn a fresh agent that
+    /// races us to bind raw-mode input.
+    ///
+    /// `delay` controls only thread-vs-inline execution:
+    /// non-zero spawns a thread; zero (cfg(test)) runs inline.
+    /// **The verified primitive owns pre-paste readiness waiting**
+    /// — this method does NOT sleep before calling it, otherwise
+    /// the lead path would stack `delay` on top of the verify
+    /// loop's own initial_wait. The legacy outer-sleep budget
+    /// (`LEAD_LAUNCH_PROMPT_DELAY`) is therefore vestigial post
+    /// 0005-first-prompt-readback and should be removed once the
+    /// constant has no other readers.
     ///
     /// Resolves the handle → session_id at schedule time. Mission
     /// boot is the only caller and the lead's session is fully
@@ -439,34 +470,30 @@ impl Router {
             return;
         };
         self.synthesize_wake_busy(handle);
-        // Zero-delay path: run inline, body only — no separate `\r`
-        // chord. Used by unit tests
-        // (`LEAD_LAUNCH_PROMPT_DELAY = ZERO` under `cfg(test)`) so
-        // synchronous push-count assertions match the prior single-
-        // push behavior of `inject_and_submit` (where the `\r` was
-        // always deferred to a background thread and never observed
-        // by sync test code). Production never hits this branch —
-        // claude-code is the only consumer that needs the
-        // body-then-`\r` chord, and it's always on a non-zero delay.
+        if body.is_empty() {
+            return;
+        }
+
+        // Zero-delay path: run inline. Under `cfg(test)`
+        // (LEAD_LAUNCH_PROMPT_DELAY = ZERO) the verified primitive's
+        // own durations are also zero, so this stays a synchronous
+        // millisecond no-op and existing `pushes_for(...)`
+        // assertions still observe one body push.
         if delay.is_zero() {
-            if !body.is_empty() {
-                if let Err(e) = self.injector.inject(&session_id, &body) {
-                    eprintln!("router: inline inject to {session_id} failed: {e}");
-                }
+            if let Err(e) = self.injector.inject_paste_with_verify(&session_id, &body) {
+                eprintln!("router: inline verified-paste to {session_id} failed: {e}");
             }
             return;
         }
         let injector = Arc::clone(&self.injector);
         std::thread::spawn(move || {
-            std::thread::sleep(delay);
-            if !body.is_empty() {
-                if let Err(e) = injector.inject(&session_id, &body) {
-                    eprintln!("router: delayed inject to {session_id} failed: {e}");
-                    return;
-                }
+            // No outer sleep — the verified primitive owns the
+            // readiness budget (initial_wait + render_wait). Stacking
+            // `delay` here would push the lead launch prompt past
+            // 4s before the first paste even tries.
+            if let Err(e) = injector.inject_paste_with_verify(&session_id, &body) {
+                eprintln!("router: delayed verified-paste to {session_id} failed: {e}");
             }
-            std::thread::sleep(std::time::Duration::from_millis(80));
-            let _ = injector.inject(&session_id, b"\r");
         });
     }
 

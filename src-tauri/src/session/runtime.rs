@@ -328,4 +328,15 @@ pub trait SessionRuntime: Send + Sync {
     /// `SessionStatus.alive` and `exit_code`. Errors are reserved
     /// for transport failures (tmux daemon gone, etc.).
     fn status(&self, session: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>>;
+
+    /// Snapshot of the pane's currently-rendered visible region with
+    /// SGR escapes preserved (`tmux capture-pane -p -e` for the tmux
+    /// runtime). Used by the manager's first-prompt readback loop
+    /// (`inject_paste_with_verify`) to verify a paste actually landed
+    /// in the agent's input box before sending Enter — the agent
+    /// readiness window is variable across boot phases (Node init,
+    /// trust dialog, banner animation), and a verbatim post-paste
+    /// readback is the only reliable signal absent a runtime-level
+    /// "input bound" event.
+    fn capture_visible(&self, session: &RuntimeSession) -> RuntimeResult<Vec<u8>>;
 }

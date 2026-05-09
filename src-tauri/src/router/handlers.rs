@@ -19,17 +19,20 @@ use runner_core::model::Event;
 use super::prompt::{compose_launch_prompt, LaunchPromptInput, RosterEntry};
 use super::{Router, RunnerStatus};
 
-/// How long to defer the lead's launch-prompt write after spawn so
-/// claude-code's TUI has time to draw before the bytes land. Matches
-/// `SessionManager::FIRST_PROMPT_DELAY` for workers — same race in
-/// two places. 500ms wasn't enough in practice (the lead came up
-/// without its system prompt on warm boots), so we hold the
-/// 2500ms budget pending a real readback-verification fix (#50).
-/// `cfg(test)` zeros the delay so unit tests can assert injections
-/// synchronously without sleeping (the injector's `inject_and_submit_
-/// delayed` runs inline when the duration is zero).
+/// Vestigial post 0005-first-prompt-readback. Used to be the
+/// blind-wait budget before the lead's launch prompt landed via raw
+/// keystrokes; that role is now owned by the verified primitive
+/// (`SessionManager::inject_paste_with_verify` via the
+/// `StdinInjector::inject_paste_with_verify` trait method), which
+/// has its own initial_wait + render_wait. This constant now
+/// controls **only** thread-vs-inline execution inside
+/// `Router::inject_and_submit_delayed`: a non-zero duration spawns
+/// a thread, ZERO under `cfg(test)` runs the verified primitive
+/// inline so unit tests can read the recording injector
+/// synchronously. The exact production value is not load-bearing —
+/// any non-zero duration triggers the threaded branch.
 #[cfg(not(test))]
-const LEAD_LAUNCH_PROMPT_DELAY: std::time::Duration = std::time::Duration::from_millis(2500);
+const LEAD_LAUNCH_PROMPT_DELAY: std::time::Duration = std::time::Duration::from_millis(1);
 #[cfg(test)]
 const LEAD_LAUNCH_PROMPT_DELAY: std::time::Duration = std::time::Duration::ZERO;
 
@@ -71,13 +74,13 @@ pub(super) fn mission_goal(router: &Router, event: &Event) {
         roster: &roster_entries,
         allowed_signals: launch.allowed_signals(),
     });
-    // Defer the lead's launch prompt by the same 2.5s budget the
-    // worker preamble uses (`SessionManager::FIRST_PROMPT_DELAY`).
-    // The bus's initial replay can fire `mission_goal` milliseconds
-    // after the lead PTY spawns — on a warm app (mission_reset, fast
-    // mission_start) claude-code's TUI hasn't drawn yet and any bytes
-    // we write get swallowed by its boot / trust-folder screen,
-    // leaving the architect with no system prompt.
+    // Route through the verified paste-and-submit primitive: the
+    // bus's initial replay can fire `mission_goal` milliseconds after
+    // the lead PTY spawns, before claude-code's / codex's TUI has
+    // bound raw input. The primitive captures the pane after each
+    // attempt and only sends Enter once it confirms the paste landed.
+    // Owns its own readiness waiting — `LEAD_LAUNCH_PROMPT_DELAY`
+    // here just selects thread (production) vs inline (cfg(test)).
     router.inject_and_submit_delayed(
         lead_row.handle(),
         submit_body(&prompt),
