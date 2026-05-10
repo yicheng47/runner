@@ -17,3 +17,6 @@ links to its tracking issue.
 - [04 — New-messages pill](./04-new-messages-pill.md) — floating pill in
   the workspace feed that tells the user new events arrived while they
   were scrolled up; click to jump to bottom.
+- [05 — Skills + MCPs management per runner](./05-runner-skills.md) —
+  attach reusable skills and MCP servers to runner templates; injected
+  natively at spawn via a per-session synthetic agent home.
