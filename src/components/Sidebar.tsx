@@ -32,6 +32,8 @@ import {
   Archive,
   ChevronDown,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   MoreHorizontal,
   Pin,
   PinOff,
@@ -95,9 +97,20 @@ interface SidebarProps {
   // outsiders trigger it.
   settingsOpen: boolean;
   onSettingsOpenChange: (open: boolean) => void;
+  // Collapsed/expanded state lives in AppShell so the global cmd+\
+  // shortcut can toggle it. The `width` resize state stays local —
+  // it's preserved across collapse/expand cycles so users get their
+  // last full width back when they re-open.
+  collapsed: boolean;
+  onCollapsedChange: (collapsed: boolean) => void;
 }
 
-export function Sidebar({ settingsOpen, onSettingsOpenChange }: SidebarProps) {
+export function Sidebar({
+  settingsOpen,
+  onSettingsOpenChange,
+  collapsed,
+  onCollapsedChange,
+}: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -524,139 +537,201 @@ export function Sidebar({ settingsOpen, onSettingsOpenChange }: SidebarProps) {
   return (
     <>
       <aside
-        style={{ width }}
-        className="relative flex h-full shrink-0 select-none flex-col overflow-hidden border-r border-line bg-raised"
+        style={{ width: collapsed ? 52 : width }}
+        className="relative flex h-full shrink-0 select-none flex-col overflow-hidden border-r border-line bg-raised transition-[width] duration-150"
       >
         <div data-tauri-drag-region className="h-7" />
 
-        <div className="flex items-center gap-2 px-5 pb-5 pt-1">
-          <BrandMark />
-          <span className="text-base font-semibold tracking-tight text-fg">
-            Runner
-          </span>
-        </div>
-
-        <div className="flex min-h-0 flex-1 flex-col pb-4">
-          {/* WORKSPACE keeps natural height; doesn't compete for the
-              flex-share allotted to MISSION + SESSION. */}
-          <div className="shrink-0">
-            <SectionHeader>WORKSPACE</SectionHeader>
-            <nav className="flex flex-col gap-0.5 px-3 pb-1">
-              <NavRow icon={Terminal} to="/runners" label="runner" />
-              <NavRow icon={Users} to="/crews" label="crew" />
-              {/* Search opens a command-palette modal — matches design
-                  `Fkoe8`. Default interaction is click-to-callout, not
-                  type-in-place, so this lives as a nav row alongside
-                  runner/crew rather than an inline input. The actual
-                  palette is a follow-up; for now the row stubs the
-                  callout. */}
-              <SearchNavRow onOpen={() => setPaletteOpen(true)} />
-            </nav>
-          </div>
-
-          <div className="h-5 shrink-0" />
-
-          {/* MISSION + SESSION always split the remaining vertical
-              space 1:2 (mission takes 1 share, session takes 2),
-              regardless of expand/collapse state. Collapsing a
-              section just hides its body — the section still claims
-              its share of height so the column rhythm doesn't jump
-              when toggling. Each expanded body scrolls independently
-              so a long SESSION list can't push MISSION off-screen. */}
-          <section className="flex min-h-0 flex-[1] basis-0 flex-col">
-            <CollapsibleSectionHeader
-              label="MISSION"
-              count={missions.length}
-              open={missionsOpen}
-              onToggle={toggleMissions}
-              onPlus={() => setCreatingMission(true)}
-              plusTitle="Start mission"
+        {collapsed ? (
+          // Rail body: single flex column. The h-7 drag strip above
+          // already contributes 28px of top padding; pt-2 brings the
+          // brand to y=36 to match the .pen frame's [36, 0, 16, 0]
+          // padding. gap-1 (4px) between siblings; explicit h-2
+          // spacer adds the 8px gap below the divider that the
+          // designer called for.
+          <div className="flex min-h-0 flex-1 flex-col items-center gap-1 pb-4 pt-2">
+            <BrandMark />
+            <div className="h-px w-full bg-line" />
+            <div className="h-2 w-full" />
+            <RailIconLink icon={Terminal} to="/runners" label="runner" />
+            <RailIconLink icon={Users} to="/crews" label="crew" />
+            <RailIconButton
+              icon={Search}
+              label="Search (⌘K)"
+              onClick={() => setPaletteOpen(true)}
             />
-            {missionsOpen ? (
-              <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1">
-                {missions.length === 0 ? (
-                  <p className="px-2.5 py-1 text-xs text-fg-3">
-                    No live missions.
-                  </p>
-                ) : (
-                  missions.map((m) => (
-                    <RuntimeRow
-                      key={m.id}
-                      selected={m.id === currentMissionId}
-                      label={m.title}
-                      onClick={() => openMission(m.id)}
-                      onContextMenu={(anchor) => openMissionMenu(m, anchor)}
-                      title={m.crew_name || ""}
-                      pinned={!!m.pinned_at}
-                      renaming={renamingMissionId === m.id}
-                      onRenameSubmit={(next) =>
-                        void submitMissionRename(m.id, next)
-                      }
-                      onRenameCancel={() => setRenamingMissionId(null)}
-                    />
-                  ))
-                )}
-              </div>
-            ) : null}
-          </section>
-
-          <div className="h-8 shrink-0" />
-
-          <section className="flex min-h-0 flex-[2] basis-0 flex-col">
-            <CollapsibleSectionHeader
-              label="CHAT"
-              count={directSessions.length}
-              open={sessionsOpen}
-              onToggle={toggleSessions}
-              onPlus={handleNewDirectChat}
-              plusTitle="Start a chat"
-            />
-            {sessionsOpen ? (
-              <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1">
-                {directSessions.length === 0 ? (
-                  <p className="px-2.5 py-1 text-xs text-fg-3">
-                    No chats yet.
-                  </p>
-                ) : (
-                  directSessions.map((s) => (
-                    <SessionRow
-                      key={s.session_id}
-                      session={s}
-                      selected={s.session_id === currentChatSessionId}
-                      renaming={renamingId === s.session_id}
-                      onClick={() => openDirectChat(s)}
-                      onContextMenu={(anchor) => openSessionMenu(s, anchor)}
-                      onRenameSubmit={(nextTitle) =>
-                        void submitRename(s.session_id, nextTitle)
-                      }
-                      onRenameCancel={() => setRenamingId(null)}
-                    />
-                  ))
-                )}
-              </div>
-            ) : null}
-          </section>
-
-          {/* Settings row — pinned at the bottom of the sidebar
-              column. Mirrors Pencil node `IJsUO` (sidebar settings).
-              Opens the SettingsModal as a centered overlay; modal
-              owns its open/close state effects. */}
-          <div className="shrink-0 border-t border-line px-3 pt-2">
+            {/* Archived rail icon — slot reserved for feature #31.
+                When the archived nav lands, render a RailIconLink
+                here pointing at its route (icon: lucide Archive).
+                Leaving this as a clearly-marked placeholder so the
+                merge with #31 is mechanical. */}
+            <div className="w-full flex-1" />
+            <div className="h-px w-full bg-line" />
             <button
               type="button"
-              onClick={() => setSettingsOpen(true)}
-              className="flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-fg-2 transition-colors hover:bg-raised hover:text-fg"
+              onClick={() => onCollapsedChange(false)}
+              title="Expand sidebar (⌘\\)"
+              aria-label="Expand sidebar"
+              className="flex h-9 w-9 cursor-pointer items-center justify-center rounded border border-transparent text-fg-2 transition-colors hover:border-line hover:bg-bg hover:text-fg"
             >
-              <SettingsIcon aria-hidden className="h-3.5 w-3.5" />
-              <span className="text-[13px]">Settings</span>
+              <ChevronsRight aria-hidden className="h-4 w-4" />
             </button>
+            <RailIconButton
+              icon={SettingsIcon}
+              label="Settings"
+              onClick={() => setSettingsOpen(true)}
+            />
           </div>
-        </div>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col pb-4">
+            {/* Brand row — open state only. Toggle has moved to the
+                bottom Settings row, so this is brand + wordmark
+                only. */}
+            <div className="flex shrink-0 items-center gap-2 px-5 pb-5 pt-1">
+              <BrandMark />
+              <span className="text-base font-semibold tracking-tight text-fg">
+                Runner
+              </span>
+            </div>
+            {/* WORKSPACE keeps natural height; doesn't compete for the
+                flex-share allotted to MISSION + SESSION. */}
+            <div className="shrink-0">
+              <SectionHeader>WORKSPACE</SectionHeader>
+              <nav className="flex flex-col gap-0.5 px-3 pb-1">
+                <NavRow icon={Terminal} to="/runners" label="runner" />
+                <NavRow icon={Users} to="/crews" label="crew" />
+                {/* Search opens a command-palette modal — matches design
+                    `Fkoe8`. Default interaction is click-to-callout, not
+                    type-in-place, so this lives as a nav row alongside
+                    runner/crew rather than an inline input. The actual
+                    palette is a follow-up; for now the row stubs the
+                    callout. */}
+                <SearchNavRow onOpen={() => setPaletteOpen(true)} />
+              </nav>
+            </div>
 
+            <div className="h-5 shrink-0" />
+
+            {/* MISSION + SESSION always split the remaining vertical
+                space 1:2 (mission takes 1 share, session takes 2),
+                regardless of expand/collapse state. Collapsing a
+                section just hides its body — the section still claims
+                its share of height so the column rhythm doesn't jump
+                when toggling. Each expanded body scrolls independently
+                so a long SESSION list can't push MISSION off-screen. */}
+            <section className="flex min-h-0 flex-[1] basis-0 flex-col">
+              <CollapsibleSectionHeader
+                label="MISSION"
+                count={missions.length}
+                open={missionsOpen}
+                onToggle={toggleMissions}
+                onPlus={() => setCreatingMission(true)}
+                plusTitle="Start mission"
+              />
+              {missionsOpen ? (
+                <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1">
+                  {missions.length === 0 ? (
+                    <p className="px-2.5 py-1 text-xs text-fg-3">
+                      No live missions.
+                    </p>
+                  ) : (
+                    missions.map((m) => (
+                      <RuntimeRow
+                        key={m.id}
+                        selected={m.id === currentMissionId}
+                        label={m.title}
+                        onClick={() => openMission(m.id)}
+                        onContextMenu={(anchor) => openMissionMenu(m, anchor)}
+                        title={m.crew_name || ""}
+                        pinned={!!m.pinned_at}
+                        renaming={renamingMissionId === m.id}
+                        onRenameSubmit={(next) =>
+                          void submitMissionRename(m.id, next)
+                        }
+                        onRenameCancel={() => setRenamingMissionId(null)}
+                      />
+                    ))
+                  )}
+                </div>
+              ) : null}
+            </section>
+
+            <div className="h-8 shrink-0" />
+
+            <section className="flex min-h-0 flex-[2] basis-0 flex-col">
+              <CollapsibleSectionHeader
+                label="CHAT"
+                count={directSessions.length}
+                open={sessionsOpen}
+                onToggle={toggleSessions}
+                onPlus={handleNewDirectChat}
+                plusTitle="Start a chat"
+              />
+              {sessionsOpen ? (
+                <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1">
+                  {directSessions.length === 0 ? (
+                    <p className="px-2.5 py-1 text-xs text-fg-3">
+                      No chats yet.
+                    </p>
+                  ) : (
+                    directSessions.map((s) => (
+                      <SessionRow
+                        key={s.session_id}
+                        session={s}
+                        selected={s.session_id === currentChatSessionId}
+                        renaming={renamingId === s.session_id}
+                        onClick={() => openDirectChat(s)}
+                        onContextMenu={(anchor) => openSessionMenu(s, anchor)}
+                        onRenameSubmit={(nextTitle) =>
+                          void submitRename(s.session_id, nextTitle)
+                        }
+                        onRenameCancel={() => setRenamingId(null)}
+                      />
+                    ))
+                  )}
+                </div>
+              ) : null}
+            </section>
+
+            {/* Settings row — pinned at the bottom of the sidebar
+                column. Mirrors Pencil node `IJsUO` (sidebar settings).
+                The collapse toggle now lives on the right of this
+                row (24×24, ChevronsLeft) — see frame s31wik. The
+                Settings button keeps the rest of the row width via
+                flex-1 so its hit target stays large. */}
+            <div className="flex shrink-0 items-center gap-2 border-t border-line px-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setSettingsOpen(true)}
+                className="flex flex-1 cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-fg-2 transition-colors hover:bg-raised hover:text-fg"
+              >
+                <SettingsIcon aria-hidden className="h-3.5 w-3.5" />
+                <span className="text-[13px]">Settings</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onCollapsedChange(true)}
+                title="Collapse sidebar (⌘\\)"
+                aria-label="Collapse sidebar"
+                className="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-fg-3 transition-colors hover:bg-bg hover:text-fg"
+              >
+                <ChevronsLeft aria-hidden className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Resize handle is inert in rail mode (no width to drag). We
+            render a noop placeholder so the DOM stays stable, just
+            without the col-resize cursor / mousedown handler. */}
         <div
-          onMouseDown={handleResizeStart}
-          title="Drag to resize"
-          className="absolute right-0 top-0 z-20 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-accent/40"
+          onMouseDown={collapsed ? undefined : handleResizeStart}
+          title={collapsed ? undefined : "Drag to resize"}
+          className={
+            collapsed
+              ? "absolute right-0 top-0 z-20 h-full w-1 bg-transparent"
+              : "absolute right-0 top-0 z-20 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-accent/40"
+          }
         />
       </aside>
 
@@ -757,6 +832,64 @@ function NavRow({
         </>
       )}
     </NavLink>
+  );
+}
+
+// Icon-only nav row used in the collapsed rail. Reuses NavLink for
+// the active-state styling so the rail and full sidebar agree on
+// what's selected. The label is exposed via a native `title`
+// tooltip — there is no in-tree tooltip primitive, so we keep this
+// lightweight rather than introduce one for v1.
+function RailIconLink({
+  icon: Icon,
+  to,
+  label,
+}: {
+  icon: ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
+  to: string;
+  label: string;
+}) {
+  return (
+    <NavLink
+      to={to}
+      title={label}
+      aria-label={label}
+      className={({ isActive }) =>
+        `flex h-9 w-9 items-center justify-center rounded border transition-colors ${
+          isActive
+            ? "border-line bg-bg text-fg"
+            : "border-transparent text-fg-2 hover:border-line hover:bg-bg hover:text-fg"
+        }`
+      }
+    >
+      <Icon aria-hidden className="h-4 w-4" />
+    </NavLink>
+  );
+}
+
+// Icon-only button variant for non-routing actions in the rail
+// (search palette, settings). Border-transparent → border-line on
+// hover keeps the layout stable while matching the active treatment
+// on the link variant.
+function RailIconButton({
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  icon: ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      className="flex h-9 w-9 cursor-pointer items-center justify-center rounded border border-transparent text-fg-2 transition-colors hover:border-line hover:bg-bg hover:text-fg"
+    >
+      <Icon aria-hidden className="h-4 w-4" />
+    </button>
   );
 }
 
