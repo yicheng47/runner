@@ -5,6 +5,7 @@
 // of truth so the modal and its consumers can't drift apart.
 
 export const STORAGE_AUTO_INSTALL_UPDATES = "settings.autoInstallUpdates";
+export const STORAGE_SIDEBAR_COLLAPSED = "runner.sidebar.collapsed";
 
 export function readStoredBool(key: string, defaultValue: boolean): boolean {
   try {

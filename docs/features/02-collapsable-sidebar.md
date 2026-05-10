@@ -20,8 +20,9 @@ that affordance.
 - Two-state collapse: **full** (current behavior, user-resizable) ↔
   **icon rail** (~52px wide, icon-only).
 - Toggle methods:
-  - Chevron button at the sidebar's right edge near the existing
-    resize handle.
+  - Chevron button at the bottom of the sidebar in both states —
+    on the right of the Settings row when expanded, as its own row
+    above Settings when in rail mode.
   - Keyboard shortcut `cmd+\\` (mac) / `ctrl+\\` (win/linux).
 - State persists in `localStorage` via a new
   `STORAGE_SIDEBAR_COLLAPSED` key in `src/lib/settings.ts`, using the
@@ -104,14 +105,20 @@ that affordance.
 
 ### Phase 3 — Toggle button + keyboard shortcut polish
 
-- Chevron button at the top-right corner of the aside, vertically
-  centered with the brand-mark row. Icon: `ChevronsLeft` when
-  expanded, `ChevronsRight` when collapsed (lucide).
-- Make sure the toggle is reachable by keyboard (focus order
-  follows brand → toggle → first nav row).
-- Verify the title-bar drag region above the toggle still works
-  (the toggle button must not eat the drag area — give it
-  `pointer-events-auto` only on the visible button bounds).
+- Chevron toggle lives at the bottom of the sidebar in both states.
+  - **Open state**: 24×24 button on the right of the bottom Settings
+    row (justify-between with the Settings link). Icon:
+    `ChevronsLeft` (lucide). Click → collapse.
+  - **Rail state**: 36×36 button as its own row above the Settings
+    icon, separated from the WORKSPACE icon stack by a 1px divider.
+    Icon: `ChevronsRight` (lucide). Click → expand.
+- Focus order in both states: `brand → first nav row → … →
+  settings → toggle` — the toggle is the last interactive element
+  in the aside.
+- Keep the title-bar drag region (`data-tauri-drag-region` h-7
+  strip) at the top of the aside in both states. The toggle no
+  longer interacts with this strip — they don't share a row
+  anymore — so no special pointer-events handling is required.
 
 ### Phase 4 — Pencil design + visual polish
 
