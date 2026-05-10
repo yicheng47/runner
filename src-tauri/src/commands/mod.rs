@@ -4,6 +4,7 @@
 // in-memory pool) plus thin `#[tauri::command]` wrappers that pull a
 // connection from the r2d2 pool and delegate. See docs/impls/0001-v0-mvp.md §C2.
 
+pub mod app;
 pub mod crew;
 pub mod mission;
 pub mod runner;

@@ -138,6 +138,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::app::app_ready,
             commands::crew::crew_list,
             commands::crew::crew_get,
             commands::crew::crew_create,
