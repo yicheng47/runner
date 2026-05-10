@@ -9,13 +9,14 @@
 // the carbon background. Lists keep their bullets and indentation.
 
 import ReactMarkdown from "react-markdown";
+import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 
 export function MessageBody({ text }: { text: string }) {
   return (
     <div className="prose-message">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkBreaks]}
         components={{
           // Open links in a new window via the Tauri shell. Plain
           // anchors would crash the webview by trying to navigate
