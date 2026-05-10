@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 #
-# Seed the runner DB with the Build squad crew + architect/impl/reviewer
-# runners + their slots. Pulls system prompts from the sibling
-# tests/fixtures/system-prompts/*.md files so a single source of truth
-# survives ad-hoc edits.
+# Seed the runner DB with the Build squad crew + architect / designer /
+# impl / reviewer runners + their slots. Pulls system prompts from the
+# sibling tests/fixtures/system-prompts/*.md files so a single source
+# of truth survives ad-hoc edits.
 #
 # This shell script seeds against any DB you point it at and is the
-# fixture used by manual testing. The same crew shape ships to all
-# users via migration 0002_default_crew.sql — keep the two in sync.
+# fixture used by manual testing. The Rust production seed
+# (`db::seed_default_crew`) currently writes the smaller 3-runner
+# shape (architect / impl / reviewer); this fixture is intentionally
+# ahead of it on the designer slot so we can exercise the
+# Pencil-driven design workflow before promoting the shape to the
+# production seed.
 #
 # Usage:
 #   ./tests/fixtures/crews/build-squad.seed.sh           # default (prod) app db
@@ -43,6 +47,7 @@ PROMPTS_DIR="$FIXTURES_DIR/../system-prompts"
 # parameter-expansion equivalent (${var//\'/\'\'}) doubles the escape
 # in zsh and lands `\'\'` in the SQL.
 ARCHITECT_PROMPT="$(sed "s/'/''/g" "$PROMPTS_DIR/architect.md")"
+DESIGNER_PROMPT="$(sed "s/'/''/g" "$PROMPTS_DIR/designer.md")"
 IMPL_PROMPT="$(sed "s/'/''/g" "$PROMPTS_DIR/impl.md")"
 REVIEWER_PROMPT="$(sed "s/'/''/g" "$PROMPTS_DIR/reviewer.md")"
 
@@ -52,9 +57,11 @@ REVIEWER_PROMPT="$(sed "s/'/''/g" "$PROMPTS_DIR/reviewer.md")"
 # the same rows.
 CREW_ID="01K000DEFAULT000BUILDSQUAD01"
 ARCHITECT_RUNNER_ID="01K000DEFAULT000RUNNERARCH01"
+DESIGNER_RUNNER_ID="01K000DEFAULT000RUNNERDESN01"
 IMPL_RUNNER_ID="01K000DEFAULT000RUNNERIMPL01"
 REVIEWER_RUNNER_ID="01K000DEFAULT000RUNNERREVW01"
 ARCHITECT_SLOT_ID="01K000DEFAULT000SLOTARCH0001"
+DESIGNER_SLOT_ID="01K000DEFAULT000SLOTDESN0001"
 IMPL_SLOT_ID="01K000DEFAULT000SLOTIMPL0001"
 REVIEWER_SLOT_ID="01K000DEFAULT000SLOTREVW0001"
 
@@ -90,6 +97,23 @@ VALUES (
   '["--permission-mode","acceptEdits"]',
   NULL,
   '$ARCHITECT_PROMPT',
+  NULL,
+  'claude-opus-4-7',
+  'xhigh',
+  '$NOW',
+  '$NOW'
+);
+
+INSERT OR REPLACE INTO runners (id, handle, display_name, runtime, command, args_json, working_dir, system_prompt, env_json, model, effort, created_at, updated_at)
+VALUES (
+  '$DESIGNER_RUNNER_ID',
+  'designer',
+  'Designer',
+  'claude-code',
+  'claude',
+  '["--permission-mode","acceptEdits"]',
+  NULL,
+  '$DESIGNER_PROMPT',
   NULL,
   'claude-opus-4-7',
   'xhigh',
@@ -135,19 +159,23 @@ INSERT OR REPLACE INTO slots (id, crew_id, runner_id, slot_handle, position, lea
 VALUES ('$ARCHITECT_SLOT_ID', '$CREW_ID', '$ARCHITECT_RUNNER_ID', 'architect', 0, 1, '$NOW');
 
 INSERT OR REPLACE INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-VALUES ('$IMPL_SLOT_ID', '$CREW_ID', '$IMPL_RUNNER_ID', 'impl', 1, 0, '$NOW');
+VALUES ('$DESIGNER_SLOT_ID', '$CREW_ID', '$DESIGNER_RUNNER_ID', 'designer', 1, 0, '$NOW');
 
 INSERT OR REPLACE INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-VALUES ('$REVIEWER_SLOT_ID', '$CREW_ID', '$REVIEWER_RUNNER_ID', 'reviewer', 2, 0, '$NOW');
+VALUES ('$IMPL_SLOT_ID', '$CREW_ID', '$IMPL_RUNNER_ID', 'impl', 2, 0, '$NOW');
+
+INSERT OR REPLACE INTO slots (id, crew_id, runner_id, slot_handle, position, lead, added_at)
+VALUES ('$REVIEWER_SLOT_ID', '$CREW_ID', '$REVIEWER_RUNNER_ID', 'reviewer', 3, 0, '$NOW');
 
 COMMIT;
 SQL
 
 echo "seeded Build squad crew + runners + slots into $DB_PATH"
 echo "  crew:       $CREW_ID"
-echo "  architect:  $ARCHITECT_RUNNER_ID (slot $ARCHITECT_SLOT_ID, lead, opus / high)"
-echo "  impl:       $IMPL_RUNNER_ID (slot $IMPL_SLOT_ID, sonnet / medium)"
-echo "  reviewer:   $REVIEWER_RUNNER_ID (slot $REVIEWER_SLOT_ID, sonnet / medium)"
+echo "  architect:  $ARCHITECT_RUNNER_ID (slot $ARCHITECT_SLOT_ID, lead, opus / xhigh)"
+echo "  designer:   $DESIGNER_RUNNER_ID (slot $DESIGNER_SLOT_ID, opus / xhigh)"
+echo "  impl:       $IMPL_RUNNER_ID (slot $IMPL_SLOT_ID, opus / xhigh)"
+echo "  reviewer:   $REVIEWER_RUNNER_ID (slot $REVIEWER_SLOT_ID, opus / xhigh)"
 echo ""
 echo "next: launch the app and click 'Start mission' against the crew."
 echo "      mission rows aren't seeded — going through the real"
