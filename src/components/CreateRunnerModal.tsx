@@ -40,18 +40,17 @@ export function CreateRunnerModal({
   const [handle, setHandle] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [runtime, setRuntime] = useState<string>(RUNTIME_OPTIONS[0].value);
-  const [command, setCommand] = useState(RUNTIME_OPTIONS[0].defaultCommand);
   const [argsText, setArgsText] = useState("");
   const [workingDir, setWorkingDir] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
-  // "Permission mode" dropdown — defaults to AcceptEdits, matching
-  // the backend's `default_permission_mode()` and the seed's args.
-  // The backend writes the runtime's canonical mode flags onto the
+  // "Permission mode" dropdown — defaults to Bypass, matching the
+  // backend's `default_permission_mode()` and the seed's args. The
+  // backend writes the runtime's canonical mode flags onto the
   // stored args column at create time (see commands::runner::create
   // → router::runtime::apply_permission_mode), so the user never
   // has to type the flags themselves.
   const [permissionMode, setPermissionMode] =
-    useState<PermissionMode>("accept_edits");
+    useState<PermissionMode>("bypass");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -60,14 +59,20 @@ export function CreateRunnerModal({
       setHandle("");
       setDisplayName("");
       setRuntime(RUNTIME_OPTIONS[0].value);
-      setCommand(RUNTIME_OPTIONS[0].defaultCommand);
       setArgsText("");
       setWorkingDir("");
       setSystemPrompt("");
-      setPermissionMode("accept_edits");
+      setPermissionMode("bypass");
       setError(null);
     }
   }, [open]);
+
+  // Command is bound to runtime — each runtime's `defaultCommand` is
+  // the binary we actually spawn. The Command field below is read-only
+  // confirmation of what `claude-code` / `codex` resolves to on PATH.
+  const command =
+    RUNTIME_OPTIONS.find((o) => o.value === runtime)?.defaultCommand ??
+    RUNTIME_OPTIONS[0].defaultCommand;
 
   const handleError = (() => {
     if (!handle) return null;
@@ -80,7 +85,6 @@ export function CreateRunnerModal({
     handle.length > 0 &&
     handleError === null &&
     displayName.trim().length > 0 &&
-    command.trim().length > 0 &&
     !submitting;
 
   const browseWorkingDir = async () => {
@@ -193,28 +197,25 @@ export function CreateRunnerModal({
         <Field
           id="new-runner-runtime"
           label="Runtime"
-          hint="picks the default command — override below if needed"
+          hint="picks the binary spawned for this runner"
         >
           <RuntimeSelect
             id="new-runner-runtime"
             value={runtime}
-            onChange={(opt) => {
-              setRuntime(opt.value);
-              setCommand(opt.defaultCommand);
-            }}
+            onChange={(opt) => setRuntime(opt.value)}
           />
         </Field>
 
         <Field
           id="new-runner-command"
           label="Command"
-          hint="the binary to spawn; ↵ to add flags via Args"
+          hint="resolved from runtime · PATH lookup"
         >
           <Input
             id="new-runner-command"
             value={command}
-            placeholder="claude, codex, sh"
-            onChange={(e) => setCommand(e.target.value)}
+            disabled
+            readOnly
           />
         </Field>
 

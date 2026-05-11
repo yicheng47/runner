@@ -44,27 +44,28 @@ pub struct CreateRunnerInput {
     /// Permission mode the runner-edit form's dropdown chose. Mapped
     /// to concrete flags on the row's `args` column at create time
     /// via `router::runtime::apply_permission_mode`. Defaults to
-    /// `AcceptEdits`:
-    /// - claude-code → `--permission-mode acceptEdits`. Works on
-    ///   every plan and avoids the consent dialog.
-    /// - codex → no flag (codex has no edits-only middle on the
-    ///   wire; `AcceptEdits` is treated as `Default` there).
+    /// `Bypass`:
+    /// - claude-code → `--permission-mode bypassPermissions`. Skips
+    ///   every check; the first launch per user account triggers
+    ///   claude-code's one-time consent dialog.
+    /// - codex → `--ask-for-approval never --sandbox
+    ///   workspace-write`. Auto-runs every command in the workspace.
     ///
-    /// `Auto` is opt-in for claude-code because the real `auto`
-    /// mode is plan/model-gated (Max/Team/Enterprise/API + a
-    /// supported model). `Bypass` is opt-in because claude-code
-    /// shows a one-time consent dialog the first time per user
-    /// account. Hidden in the form for runtimes without a
+    /// `Auto` and `AcceptEdits` are opt-in: `Auto` requires a
+    /// plan/model gate on claude-code (Max/Team/Enterprise/API + a
+    /// supported model), and `AcceptEdits` is the more cautious
+    /// fallback for users who don't want Bypass's blanket
+    /// auto-approval. Hidden in the form for runtimes without a
     /// permission concept (shell / unknown).
     #[serde(default = "default_permission_mode")]
     pub permission_mode: crate::router::runtime::PermissionMode,
 }
 
-/// Default permission mode for new runners — `AcceptEdits`. Matches
-/// the frontend's dropdown default and the seed's runner args.
-/// Pulled out so serde's `#[serde(default = "...")]` can name it.
+/// Default permission mode for new runners — `Bypass`. Matches the
+/// frontend's dropdown default and the seed's runner args. Pulled
+/// out so serde's `#[serde(default = "...")]` can name it.
 fn default_permission_mode() -> crate::router::runtime::PermissionMode {
-    crate::router::runtime::PermissionMode::AcceptEdits
+    crate::router::runtime::PermissionMode::Bypass
 }
 
 // `handle` is intentionally excluded from updates: per arch §2.2 and §5.2

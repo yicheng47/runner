@@ -21,9 +21,11 @@ import { Field, Input, Textarea } from "./ui/Field";
 import { RuntimeSelect } from "./ui/RuntimeSelect";
 import { StyledSelect } from "./ui/StyledSelect";
 import {
+  EFFORT_OPTIONS_BY_RUNTIME,
   PERMISSION_MODES_BY_RUNTIME,
   RUNTIME_OPTIONS,
   inferPermissionMode,
+  runtimeSupportsEffort,
   runtimeSupportsPermissionMode,
   stripPermissionFlags,
 } from "./ui/runtimes";
@@ -41,7 +43,6 @@ export function RunnerEditDrawer({
 }) {
   const [displayName, setDisplayName] = useState("");
   const [runtime, setRuntime] = useState<string>(RUNTIME_OPTIONS[0].value);
-  const [command, setCommand] = useState("");
   const [argsText, setArgsText] = useState("");
   const [workingDir, setWorkingDir] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
@@ -52,11 +53,13 @@ export function RunnerEditDrawer({
   // visible Args field strips them on display so the user sees only
   // their extra flags, and the backend re-applies the canonical pair
   // on save (see `commands::runner::update` →
-  // `router::runtime::apply_permission_mode`). Defaults to
-  // `accept_edits` to match the seed and the backend's
-  // `default_permission_mode()`.
+  // `router::runtime::apply_permission_mode`). Falls back to
+  // `bypass` (matching the seed and the backend's
+  // `default_permission_mode()`) only for the rare case where a row
+  // hasn't loaded yet; once the runner is in, this is overwritten by
+  // `inferPermissionMode` below.
   const [permissionMode, setPermissionMode] =
-    useState<PermissionMode>("accept_edits");
+    useState<PermissionMode>("bypass");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -64,7 +67,6 @@ export function RunnerEditDrawer({
     if (open && runner) {
       setDisplayName(runner.display_name);
       setRuntime(runner.runtime);
-      setCommand(runner.command);
       setArgsText(stripPermissionFlags(runner.runtime, runner.args).join(" "));
       setWorkingDir(runner.working_dir ?? "");
       setSystemPrompt(runner.system_prompt ?? "");
@@ -75,10 +77,17 @@ export function RunnerEditDrawer({
     }
   }, [open, runner]);
 
+  // Command is bound to runtime — each runtime's `defaultCommand` is the
+  // binary we spawn. The field below is a read-only display; the saved
+  // value is recomputed from runtime on every save, so a stored custom
+  // command (rare; carried over from the days when this was editable)
+  // is normalized the next time the runner is saved.
+  const command =
+    RUNTIME_OPTIONS.find((o) => o.value === runtime)?.defaultCommand ?? "";
+
   const canSubmit =
     runner !== null &&
     displayName.trim().length > 0 &&
-    command.trim().length > 0 &&
     !submitting;
 
   const browseWorkingDir = async () => {
@@ -172,21 +181,16 @@ export function RunnerEditDrawer({
           <RuntimeSelect
             id="edit-runtime"
             value={runtime}
-            onChange={(opt) => {
-              setRuntime(opt.value);
-              // Edit drawer keeps the existing command — picking a
-              // runtime here just changes the runtime tag, not the
-              // user's already-tweaked binary path.
-            }}
+            onChange={(opt) => setRuntime(opt.value)}
           />
         </Field>
 
-        <Field id="edit-command" label="Command">
-          <Input
-            id="edit-command"
-            value={command}
-            onChange={(e) => setCommand(e.target.value)}
-          />
+        <Field
+          id="edit-command"
+          label="Command"
+          hint="resolved from runtime · PATH lookup"
+        >
+          <Input id="edit-command" value={command} disabled readOnly />
         </Field>
 
         <Field
@@ -201,6 +205,49 @@ export function RunnerEditDrawer({
             onChange={(e) => setArgsText(e.target.value)}
           />
         </Field>
+
+        <Field
+          id="edit-model"
+          label="Model"
+          hint="optional · claude-code / codex: e.g. claude-opus-4-7"
+        >
+          <Input
+            id="edit-model"
+            value={model}
+            placeholder="claude-opus-4-7"
+            onChange={(e) => setModel(e.target.value)}
+          />
+        </Field>
+
+        {runtimeSupportsEffort(runtime) ? (() => {
+          const effortOptions = EFFORT_OPTIONS_BY_RUNTIME[runtime] ?? [];
+          // Effort enums differ per runtime — claude-code's `max` is
+          // not in codex's enum; codex's `none / minimal` aren't in
+          // claude-code's. Coerce out-of-set values to the empty
+          // sentinel ("Inherit CLI default") so the dropdown can't
+          // render an unknown trigger.
+          const safeEffort = effortOptions.some((o) => o.value === effort)
+            ? effort
+            : "";
+          return (
+            <Field
+              id="edit-effort"
+              label="Thinking effort"
+              hint="optional · resolves to the runtime's native effort flag"
+            >
+              <StyledSelect
+                className="w-full"
+                value={safeEffort}
+                options={effortOptions.map((o) => ({
+                  value: o.value,
+                  label: o.label,
+                  description: o.description,
+                }))}
+                onChange={(v) => setEffort(v)}
+              />
+            </Field>
+          );
+        })() : null}
 
         {runtimeSupportsPermissionMode(runtime) ? (() => {
           const modeOptions = PERMISSION_MODES_BY_RUNTIME[runtime] ?? [];
@@ -271,37 +318,6 @@ export function RunnerEditDrawer({
             rows={6}
             value={systemPrompt}
             onChange={(e) => setSystemPrompt(e.target.value)}
-          />
-        </Field>
-
-        {/* Model + effort: claude-code-only today (codex's adapter
-            degrades silently). Empty = inherit the agent CLI's
-            default. Hint copy is intentionally permissive — the row
-            stores whatever the user types so we don't have to keep
-            an enum in sync with model rotations. */}
-        <Field
-          id="edit-model"
-          label="Model"
-          hint="optional · claude-code / codex: e.g. claude-opus-4-7"
-        >
-          <Input
-            id="edit-model"
-            value={model}
-            placeholder="claude-opus-4-7"
-            onChange={(e) => setModel(e.target.value)}
-          />
-        </Field>
-
-        <Field
-          id="edit-effort"
-          label="Thinking effort"
-          hint="optional · claude-code: low / medium / high / xhigh / max"
-        >
-          <Input
-            id="edit-effort"
-            value={effort}
-            placeholder="xhigh"
-            onChange={(e) => setEffort(e.target.value)}
           />
         </Field>
 
