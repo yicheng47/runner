@@ -43,6 +43,59 @@ export function runtimeSupportsPermissionMode(runtime: string): boolean {
   return RUNTIMES_WITH_PERMISSION_MODE.has(runtime);
 }
 
+// Per-runtime "thinking effort" enum. Hand-synced with backend
+// `router::runtime::model_effort_args`, which maps:
+//   - claude-code → `--effort <level>` (case-insensitive,
+//     `low / medium / high / xhigh / max` per `claude --help`).
+//   - codex → `-c model_reasoning_effort=<lowercased>` (case-sensitive
+//     enum: `none / minimal / low / medium / high / xhigh`).
+// An empty value means "inherit the CLI default" — the runner row
+// stores NULL and `model_effort_args` emits no flag.
+export interface EffortOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+const EFFORT_INHERIT: EffortOption = {
+  value: "",
+  label: "Inherit CLI default",
+  description: "Don't pass the runtime's effort flag.",
+};
+
+export const EFFORT_OPTIONS_BY_RUNTIME: Record<
+  string,
+  ReadonlyArray<EffortOption>
+> = {
+  "claude-code": [
+    EFFORT_INHERIT,
+    { value: "low", label: "low" },
+    { value: "medium", label: "medium" },
+    { value: "high", label: "high" },
+    { value: "xhigh", label: "xhigh" },
+    { value: "max", label: "max" },
+  ],
+  // Codex's underlying TOML enum (verified against codex-cli 0.130.0
+  // via `unknown variant 'xxx', expected one of 'none', 'minimal',
+  // 'low', 'medium', 'high', 'xhigh'`) accepts six values, but
+  // codex's own in-CLI `/reasoning` picker only surfaces four. We
+  // mirror the picker so the Runner UI matches what codex users
+  // already see. Rows that previously stored `none` / `minimal`
+  // coerce to "Inherit CLI default" via the safe-value guard in the
+  // edit drawer.
+  codex: [
+    EFFORT_INHERIT,
+    { value: "low", label: "Low", description: "Fast responses with lighter reasoning." },
+    { value: "medium", label: "Medium", description: "Balances speed and reasoning depth." },
+    { value: "high", label: "High", description: "Greater reasoning depth for complex problems." },
+    { value: "xhigh", label: "Extra high", description: "Extra reasoning depth for complex problems." },
+  ],
+};
+
+export function runtimeSupportsEffort(runtime: string): boolean {
+  return runtime in EFFORT_OPTIONS_BY_RUNTIME;
+}
+
 export interface PermissionModeOption {
   value: PermissionMode;
   label: string;

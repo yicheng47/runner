@@ -7,6 +7,8 @@
 
 import { useEffect, useState } from "react";
 
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+
 import { api } from "../lib/api";
 import type {
   PermissionMode,
@@ -19,9 +21,11 @@ import { Field, Input, Textarea } from "./ui/Field";
 import { RuntimeSelect } from "./ui/RuntimeSelect";
 import { StyledSelect } from "./ui/StyledSelect";
 import {
+  EFFORT_OPTIONS_BY_RUNTIME,
   PERMISSION_MODES_BY_RUNTIME,
   RUNTIME_OPTIONS,
   inferPermissionMode,
+  runtimeSupportsEffort,
   runtimeSupportsPermissionMode,
   stripPermissionFlags,
 } from "./ui/runtimes";
@@ -39,6 +43,12 @@ export function RunnerEditDrawer({
 }) {
   const [displayName, setDisplayName] = useState("");
   const [runtime, setRuntime] = useState<string>(RUNTIME_OPTIONS[0].value);
+  // Command is bound to runtime — the field below is read-only — but
+  // we keep the value in state (not derived) so that opening an
+  // existing runner with a custom command (e.g. `/opt/homebrew/bin/
+  // claude` from before the bind) preserves that custom binary
+  // unless the user explicitly changes the runtime. Changing
+  // runtime writes the new runtime's `defaultCommand` here.
   const [command, setCommand] = useState("");
   const [argsText, setArgsText] = useState("");
   const [workingDir, setWorkingDir] = useState("");
@@ -67,7 +77,17 @@ export function RunnerEditDrawer({
       setWorkingDir(runner.working_dir ?? "");
       setSystemPrompt(runner.system_prompt ?? "");
       setModel(runner.model ?? "");
-      setEffort(runner.effort ?? "");
+      // Coerce historically-stored effort values that aren't in this
+      // runtime's current enum (e.g. an old codex row with
+      // `minimal`, dropped from the picker) to "" so what's saved
+      // matches what's shown.
+      {
+        const loaded = runner.effort ?? "";
+        const validEfforts = EFFORT_OPTIONS_BY_RUNTIME[runner.runtime] ?? [];
+        setEffort(
+          validEfforts.some((o) => o.value === loaded) ? loaded : "",
+        );
+      }
       setPermissionMode(inferPermissionMode(runner.runtime, runner.args));
       setError(null);
     }
@@ -76,8 +96,20 @@ export function RunnerEditDrawer({
   const canSubmit =
     runner !== null &&
     displayName.trim().length > 0 &&
-    command.trim().length > 0 &&
     !submitting;
+
+  const browseWorkingDir = async () => {
+    try {
+      const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Pick a working directory",
+      });
+      if (typeof picked === "string") setWorkingDir(picked);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
 
   const submit = async () => {
     if (!runner || !canSubmit) return;
@@ -159,19 +191,31 @@ export function RunnerEditDrawer({
             value={runtime}
             onChange={(opt) => {
               setRuntime(opt.value);
-              // Edit drawer keeps the existing command — picking a
-              // runtime here just changes the runtime tag, not the
-              // user's already-tweaked binary path.
+              // Runtime change is the explicit signal to normalize
+              // Command to the new runtime's defaultCommand. Without
+              // a runtime change we keep whatever was saved on the
+              // row so custom commands aren't wiped silently.
+              setCommand(opt.defaultCommand);
+              // Coerce effort to "" if the current value isn't in
+              // the new runtime's enum, so the saved value tracks
+              // what the dropdown displays. claude-code's `max` is
+              // not in codex's enum; codex's `none / minimal` aren't
+              // in claude-code's.
+              const nextEffortOptions =
+                EFFORT_OPTIONS_BY_RUNTIME[opt.value] ?? [];
+              if (!nextEffortOptions.some((o) => o.value === effort)) {
+                setEffort("");
+              }
             }}
           />
         </Field>
 
-        <Field id="edit-command" label="Command">
-          <Input
-            id="edit-command"
-            value={command}
-            onChange={(e) => setCommand(e.target.value)}
-          />
+        <Field
+          id="edit-command"
+          label="Command"
+          hint="resolved from runtime · PATH lookup"
+        >
+          <Input id="edit-command" value={command} disabled readOnly />
         </Field>
 
         <Field
@@ -186,6 +230,49 @@ export function RunnerEditDrawer({
             onChange={(e) => setArgsText(e.target.value)}
           />
         </Field>
+
+        <Field
+          id="edit-model"
+          label="Model"
+          hint="optional · claude-code / codex: e.g. claude-opus-4-7"
+        >
+          <Input
+            id="edit-model"
+            value={model}
+            placeholder="claude-opus-4-7"
+            onChange={(e) => setModel(e.target.value)}
+          />
+        </Field>
+
+        {runtimeSupportsEffort(runtime) ? (() => {
+          const effortOptions = EFFORT_OPTIONS_BY_RUNTIME[runtime] ?? [];
+          // Effort enums differ per runtime — claude-code's `max` is
+          // not in codex's enum; codex's `none / minimal` aren't in
+          // claude-code's. Coerce out-of-set values to the empty
+          // sentinel ("Inherit CLI default") so the dropdown can't
+          // render an unknown trigger.
+          const safeEffort = effortOptions.some((o) => o.value === effort)
+            ? effort
+            : "";
+          return (
+            <Field
+              id="edit-effort"
+              label="Thinking effort"
+              hint="optional · resolves to the runtime's native effort flag"
+            >
+              <StyledSelect
+                className="w-full"
+                value={safeEffort}
+                options={effortOptions.map((o) => ({
+                  value: o.value,
+                  label: o.label,
+                  description: o.description,
+                }))}
+                onChange={(v) => setEffort(v)}
+              />
+            </Field>
+          );
+        })() : null}
 
         {runtimeSupportsPermissionMode(runtime) ? (() => {
           const modeOptions = PERMISSION_MODES_BY_RUNTIME[runtime] ?? [];
@@ -230,11 +317,20 @@ export function RunnerEditDrawer({
           label="Working directory"
           hint="optional"
         >
-          <Input
-            id="edit-working-dir"
-            value={workingDir}
-            onChange={(e) => setWorkingDir(e.target.value)}
-          />
+          <div className="flex items-center gap-2">
+            <Input
+              id="edit-working-dir"
+              value={workingDir}
+              onChange={(e) => setWorkingDir(e.target.value)}
+              className="min-w-0 flex-1"
+            />
+            <Button
+              onClick={() => void browseWorkingDir()}
+              disabled={submitting}
+            >
+              Browse…
+            </Button>
+          </div>
         </Field>
 
         <Field
@@ -247,37 +343,6 @@ export function RunnerEditDrawer({
             rows={6}
             value={systemPrompt}
             onChange={(e) => setSystemPrompt(e.target.value)}
-          />
-        </Field>
-
-        {/* Model + effort: claude-code-only today (codex's adapter
-            degrades silently). Empty = inherit the agent CLI's
-            default. Hint copy is intentionally permissive — the row
-            stores whatever the user types so we don't have to keep
-            an enum in sync with model rotations. */}
-        <Field
-          id="edit-model"
-          label="Model"
-          hint="optional · claude-code / codex: e.g. claude-opus-4-7"
-        >
-          <Input
-            id="edit-model"
-            value={model}
-            placeholder="claude-opus-4-7"
-            onChange={(e) => setModel(e.target.value)}
-          />
-        </Field>
-
-        <Field
-          id="edit-effort"
-          label="Thinking effort"
-          hint="optional · claude-code: low / medium / high / xhigh / max"
-        >
-          <Input
-            id="edit-effort"
-            value={effort}
-            placeholder="xhigh"
-            onChange={(e) => setEffort(e.target.value)}
           />
         </Field>
 
