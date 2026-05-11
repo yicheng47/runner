@@ -230,10 +230,17 @@ export function RunnerTerminal({
       if (!sid || disabledRef.current) return;
       const items = e.clipboardData?.items;
       if (!items) return;
+      // PNG-only for now. The clipboard-restore path writes the
+      // bytes verbatim into NSPasteboard's `public.png` flavor, so
+      // non-PNG payloads would end up labeled PNG with non-PNG bytes
+      // and decode as garbage in the agent. macOS screenshots are
+      // PNG; JPEG/GIF/WebP support needs either a per-MIME OSType
+      // map or a transcode step — out of scope for v1 (#79
+      // follow-up).
       let imageFile: File | null = null;
       for (let i = 0; i < items.length; i += 1) {
         const it = items[i];
-        if (it.type.startsWith("image/")) {
+        if (it.type === "image/png") {
           imageFile = it.getAsFile();
           if (imageFile) break;
         }
@@ -241,11 +248,10 @@ export function RunnerTerminal({
       if (!imageFile) return;
       e.preventDefault();
       e.stopImmediatePropagation();
-      const ext = imageFile.type.slice("image/".length) || "png";
       void (async () => {
         try {
           const buf = await imageFile.arrayBuffer();
-          await api.session.pasteImage(new Uint8Array(buf), ext);
+          await api.session.pasteImage(new Uint8Array(buf));
           await api.session.injectStdin(sid, "\x16");
         } catch (err) {
           onErrorRef.current?.(String(err));
