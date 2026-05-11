@@ -208,39 +208,55 @@ export function RunnerTerminal({
       return true;
     });
 
-    // Image paste support. claude-code and codex already know how to
-    // attach a clipboard image when they see Ctrl+V (\x16) on stdin —
-    // they shell out to `pbpaste -Prefer png` (or the platform
-    // equivalent) and read the OS clipboard themselves. The bug surface
-    // is that on macOS the user instinctively presses Cmd+V, which the
-    // WebView intercepts as a *text* paste; xterm.js's default handler
-    // then drops the image and pastes whatever placeholder text rep the
-    // OS attached, so the keystroke that would have triggered the CLI's
-    // clipboard read never reaches the PTY.
+    // Image paste support. We can't trust the OS clipboard across the
+    // WKWebView boundary: when the user presses Cmd+V over the webview,
+    // WebKit materializes the image into a `File` (a temp file under
+    // the hood), and as a side effect NSPasteboard's `public.png`
+    // representation becomes the *icon* for that temp file rather than
+    // the original screenshot bytes. So the agent CLI's own
+    // `pbpaste -Prefer png` (triggered by Ctrl-V) gets a generic file
+    // icon instead of what the user copied (#79).
     //
-    // Fix: when the paste event carries an image, swallow xterm.js's
-    // text-paste handler and inject \x16 instead. The agent CLI takes
-    // it from there. Pure-text pastes fall through to xterm.js's
-    // default behavior unchanged.
+    // Fix: read the bytes off the `ClipboardEvent`'s File ourselves
+    // (still the original screenshot at that point), ship them to Rust,
+    // which writes them back to NSPasteboard's `public.png` so the
+    // agent's existing pbpaste-based flow returns the real bytes.
+    // Then inject Ctrl-V (`\x16`) — claude-code / codex see Ctrl-V as
+    // they would in a host terminal, attach the image with their
+    // native `[Image x]` placeholder. Pure-text pastes fall through
+    // to xterm.js's default behavior unchanged.
     const onPaste = (e: ClipboardEvent) => {
       const sid = sessionIdRef.current;
       if (!sid || disabledRef.current) return;
       const items = e.clipboardData?.items;
       if (!items) return;
-      let hasImage = false;
+      // PNG-only for now. The clipboard-restore path writes the
+      // bytes verbatim into NSPasteboard's `public.png` flavor, so
+      // non-PNG payloads would end up labeled PNG with non-PNG bytes
+      // and decode as garbage in the agent. macOS screenshots are
+      // PNG; JPEG/GIF/WebP support needs either a per-MIME OSType
+      // map or a transcode step — out of scope for v1 (#79
+      // follow-up).
+      let imageFile: File | null = null;
       for (let i = 0; i < items.length; i += 1) {
         const it = items[i];
-        if (it.kind === "file" && it.type.startsWith("image/")) {
-          hasImage = true;
-          break;
+        if (it.type === "image/png") {
+          imageFile = it.getAsFile();
+          if (imageFile) break;
         }
       }
-      if (!hasImage) return;
+      if (!imageFile) return;
       e.preventDefault();
       e.stopImmediatePropagation();
-      void api.session.injectStdin(sid, "\x16").catch((err) => {
-        onErrorRef.current?.(String(err));
-      });
+      void (async () => {
+        try {
+          const buf = await imageFile.arrayBuffer();
+          await api.session.pasteImage(new Uint8Array(buf));
+          await api.session.injectStdin(sid, "\x16");
+        } catch (err) {
+          onErrorRef.current?.(String(err));
+        }
+      })();
     };
     const textarea = term.textarea;
     textarea?.addEventListener("paste", onPaste, { capture: true });

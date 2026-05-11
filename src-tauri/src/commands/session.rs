@@ -142,6 +142,86 @@ pub async fn session_output_snapshot(
     Ok(state.sessions.output_snapshot(&session_id))
 }
 
+/// Restore NSPasteboard for a PNG paste that came in through the
+/// webview, so the agent CLI's NSPasteboard read returns the real
+/// bytes and renders its native `[Image x]` placeholder in the prompt.
+///
+/// Why: when the user presses Cmd+V over the WKWebView, WebKit
+/// materializes the image clipboard item into a `File` object (a temp
+/// file under the hood). As a side effect NSPasteboard's `public.png`
+/// representation becomes the OS-rendered icon of that temp file
+/// rather than the original screenshot bytes. The agent CLI's
+/// subsequent clipboard read then returns the icon, not the screenshot
+/// (#79).
+///
+/// Fix: the frontend grabs the original bytes off the `ClipboardEvent`
+/// File before they reach the child process, ships them here, we
+/// write them to a `NamedTempFile`, and use `osascript` to repopulate
+/// NSPasteboard with the real bytes. The frontend then injects Ctrl-V
+/// (`\x16`); the agent's existing paste-attach flow runs unchanged.
+///
+/// PNG-only. AppleScript writes the bytes verbatim into the
+/// `public.png` pasteboard flavor, so non-PNG payloads would end up
+/// labeled PNG with non-PNG bytes. The frontend filters to
+/// `image/png` for the same reason. JPEG/GIF/WebP support is a
+/// follow-up that would need either a per-MIME OSType map or a
+/// transcode step.
+///
+/// macOS-only; on other platforms this is a no-op (the embedded
+/// webview's paste behavior on Linux/Windows hasn't been audited and
+/// the runner doesn't ship there yet).
+#[tauri::command]
+pub async fn session_paste_image(bytes: Vec<u8>) -> Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = bytes;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::io::Write;
+        // NamedTempFile so the file is removed on drop — pasted
+        // screenshots can be sensitive and shouldn't accumulate in
+        // $TMPDIR. The OS would eventually reap them, but explicit
+        // cleanup is cheaper and matches the value's lifetime:
+        // osascript reads the bytes into NSPasteboard synchronously,
+        // and after that we don't need the file.
+        let mut tmp = tempfile::Builder::new()
+            .prefix("runner-paste-")
+            .suffix(".png")
+            .tempfile_in(std::env::temp_dir())?;
+        tmp.write_all(&bytes)?;
+        tmp.flush()?;
+
+        let path_str = tmp.path().to_string_lossy();
+        // AppleScript: read the temp file's bytes and write them to
+        // NSPasteboard's `public.png` representation. `«class PNGf»`
+        // is the four-char OSType code for PNG. The `{:?}` debug
+        // format quotes the path with `\\` / `\"` escapes that
+        // AppleScript also accepts, so paths with spaces or quotes
+        // pass through safely.
+        let script = format!(
+            "set the clipboard to (read POSIX file {:?} as «class PNGf»)",
+            path_str
+        );
+        let status = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .status()
+            .map_err(|e| Error::msg(format!("osascript spawn failed: {e}")))?;
+        // tmp drops here either way — file is removed regardless of
+        // osascript's success.
+        if !status.success() {
+            return Err(Error::msg(format!(
+                "osascript exited with status {:?}",
+                status.code()
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// One row per direct-chat *session* in the sidebar SESSION tray. Each
 /// runner can host multiple parallel chats — see
 /// docs/impls/0003-direct-chats.md — so the tray is flat (not collapsed per
