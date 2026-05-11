@@ -164,6 +164,11 @@ export const api = {
       invoke<void>("session_resize", { sessionId, cols, rows }),
     outputSnapshot: (sessionId: string) =>
       invoke<SessionOutputEvent[]>("session_output_snapshot", { sessionId }),
+    pasteImage: (bytes: Uint8Array, ext: string) =>
+      invoke<void>("session_paste_image", {
+        bytes: Array.from(bytes),
+        ext,
+      }),
     startDirect: (
       runnerId: string,
       cwd: string | null,

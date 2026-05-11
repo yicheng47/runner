@@ -181,6 +181,7 @@ pub fn run() {
             commands::session::session_kill,
             commands::session::session_resize,
             commands::session::session_output_snapshot,
+            commands::session::session_paste_image,
             commands::session::session_start_direct,
         ])
         .run(tauri::generate_context!())
