@@ -7,6 +7,8 @@
 
 import { useEffect, useState } from "react";
 
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+
 import { api } from "../lib/api";
 import type {
   PermissionMode,
@@ -78,6 +80,19 @@ export function RunnerEditDrawer({
     displayName.trim().length > 0 &&
     command.trim().length > 0 &&
     !submitting;
+
+  const browseWorkingDir = async () => {
+    try {
+      const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Pick a working directory",
+      });
+      if (typeof picked === "string") setWorkingDir(picked);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
 
   const submit = async () => {
     if (!runner || !canSubmit) return;
@@ -230,11 +245,20 @@ export function RunnerEditDrawer({
           label="Working directory"
           hint="optional"
         >
-          <Input
-            id="edit-working-dir"
-            value={workingDir}
-            onChange={(e) => setWorkingDir(e.target.value)}
-          />
+          <div className="flex items-center gap-2">
+            <Input
+              id="edit-working-dir"
+              value={workingDir}
+              onChange={(e) => setWorkingDir(e.target.value)}
+              className="min-w-0 flex-1"
+            />
+            <Button
+              onClick={() => void browseWorkingDir()}
+              disabled={submitting}
+            >
+              Browse…
+            </Button>
+          </div>
         </Field>
 
         <Field
