@@ -1,4 +1,4 @@
-# 07 — App zoom & terminal font size in General settings
+# 07 — App zoom (General) & terminal font size (new Terminal pane)
 
 > Tracking issue: [#78](https://github.com/yicheng47/runner/issues/78)
 
@@ -17,10 +17,16 @@ Two recurring asks from users on different display sizes:
    own renderer and needs its own font-size knob to stay crisp; a
    webview zoom on a canvas-rendered terminal blurs.
 
-The General pane in Settings is the right home: it already owns
-"Defaults and startup behavior" and is where users go to look first.
-Two new rows: one for **App zoom** (whole-UI scale) and one for
-**Terminal font size** (xterm-only).
+Settings split:
+
+- **App zoom** lives in the existing **General** pane — it's a
+  whole-app affordance and belongs next to other startup/defaults.
+- **Terminal font size** lives in a new dedicated **Terminal** pane
+  in the Settings sidebar. It's the first xterm-specific knob, but
+  it won't be the last: cursor style, scrollback length, copy-on-
+  select, shell preference are all natural future neighbours. Giving
+  terminal settings their own home now avoids overstuffing General
+  later.
 
 ## Scope
 
@@ -37,7 +43,13 @@ Two new rows: one for **App zoom** (whole-UI scale) and one for
   - Applied at app boot (a small effect in `App.tsx` reads the stored
     value and calls `setZoom` once on mount) and immediately on
     change.
-- **Terminal font size row** in `GeneralPane`:
+- **New `TerminalPane`** in `SettingsModal.tsx`:
+  - Add `"terminal"` to the `Pane` union and an entry to `PANES`
+    (lucide `Terminal` icon, subtitle e.g. "xterm appearance").
+    Insert between **General** and **Updates** in the sidebar.
+  - Render a `<TerminalPane />` component that hosts the terminal-
+    scoped rows; future terminal settings land here.
+- **Terminal font size row** in the new `TerminalPane`:
   - Control: a `StyledSelect` with `Small (12)`, `Default (13)`,
     `Large (15)`, `Extra large (17)`. Default `Default (13)`.
   - Persisted in localStorage at `settings.terminalFontSize`
@@ -76,12 +88,13 @@ Two new rows: one for **App zoom** (whole-UI scale) and one for
 
 ### Key decisions
 
-1. **Two distinct settings, not one.** Webview zoom handles DOM-rendered
-   surfaces correctly but blurs xterm's canvas. xterm's own
-   `fontSize` produces crisp glyphs but doesn't affect the rest of
-   the UI. They're load-bearing in different layers, so they get
-   different controls. Naming makes the distinction visible:
-   "App zoom" vs. "Terminal font size".
+1. **Two distinct settings, in two different panes.** Webview zoom
+   handles DOM-rendered surfaces correctly but blurs xterm's canvas.
+   xterm's own `fontSize` produces crisp glyphs but doesn't affect
+   the rest of the UI. They're load-bearing in different layers, so
+   they get different controls. Putting them in different panes
+   (General vs. Terminal) makes the distinction visible and gives
+   future terminal-only settings a natural home.
 2. **Discrete steps, not a free slider.** Six zoom steps and four
    font-size steps cover the realistic range and avoid users
    landing on weird non-integer pixel sizes that subpixel-rasterise
@@ -111,18 +124,20 @@ Two new rows: one for **App zoom** (whole-UI scale) and one for
   effects today), add a one-shot effect that reads the stored zoom
   and calls `getCurrentWebview().setZoom(stored)`. No-op on `1.0`.
 
-### Phase 2 — `GeneralPane` rows
+### Phase 2 — Settings UI
 
-- Two new `<Row>`s in `GeneralPane`:
-  - `App zoom` — `−` / `<percent>` / `+` cluster (decision: stepper
-    cluster matches the rest of the modal; alternative is
-    `StyledSelect` with the discrete options). Picks one and
-    documents the choice in the implementation PR.
-  - `Terminal font size` — `StyledSelect` over the four named
-    sizes.
-- Both write through to localStorage immediately on change.
-- App zoom also calls `setZoom(next)` so the change is felt
-  immediately; the persisted value is the ground truth on next boot.
+- **`GeneralPane`**: add an `App zoom` `<Row>` — `−` / `<percent>` /
+  `+` cluster (decision: stepper cluster matches the rest of the
+  modal; alternative is `StyledSelect` with the discrete options).
+  Picks one and documents the choice in the implementation PR.
+  Writes through to localStorage immediately and calls `setZoom(next)`
+  so the change is felt right away; the persisted value is the
+  ground truth on next boot.
+- **New `TerminalPane`**: add `"terminal"` to the `Pane` union and
+  to the `PANES` array in `SettingsModal.tsx`, render the new pane
+  in the content switch, and add a `Terminal font size` `<Row>` —
+  `StyledSelect` over the four named sizes — writing through to
+  localStorage on change.
 
 ### Phase 3 — `RunnerTerminal` consumption + live update
 
@@ -145,9 +160,10 @@ Two new rows: one for **App zoom** (whole-UI scale) and one for
       modal open.
 - [ ] Reset to 100%: UI restores; localStorage key cleared (or set
       to `"1"`, decided in Phase 1).
-- [ ] Open a runner chat with a streaming session, change Terminal
-      font size to Large: text re-rasterises to 15px, no dropped
-      output, cursor stays correct.
+- [ ] Open Settings → **Terminal** pane (new sidebar entry between
+      General and Updates) → with a runner chat streaming, change
+      Terminal font size to Large: text re-rasterises to 15px, no
+      dropped output, cursor stays correct.
 - [ ] Change font size with no terminal mounted: open a new runner
       chat afterwards → new chat picks up the stored size on first
       render.
