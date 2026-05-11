@@ -43,6 +43,13 @@ export function RunnerEditDrawer({
 }) {
   const [displayName, setDisplayName] = useState("");
   const [runtime, setRuntime] = useState<string>(RUNTIME_OPTIONS[0].value);
+  // Command is bound to runtime — the field below is read-only — but
+  // we keep the value in state (not derived) so that opening an
+  // existing runner with a custom command (e.g. `/opt/homebrew/bin/
+  // claude` from before the bind) preserves that custom binary
+  // unless the user explicitly changes the runtime. Changing
+  // runtime writes the new runtime's `defaultCommand` here.
+  const [command, setCommand] = useState("");
   const [argsText, setArgsText] = useState("");
   const [workingDir, setWorkingDir] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
@@ -53,13 +60,11 @@ export function RunnerEditDrawer({
   // visible Args field strips them on display so the user sees only
   // their extra flags, and the backend re-applies the canonical pair
   // on save (see `commands::runner::update` →
-  // `router::runtime::apply_permission_mode`). Falls back to
-  // `bypass` (matching the seed and the backend's
-  // `default_permission_mode()`) only for the rare case where a row
-  // hasn't loaded yet; once the runner is in, this is overwritten by
-  // `inferPermissionMode` below.
+  // `router::runtime::apply_permission_mode`). Defaults to
+  // `accept_edits` to match the seed and the backend's
+  // `default_permission_mode()`.
   const [permissionMode, setPermissionMode] =
-    useState<PermissionMode>("bypass");
+    useState<PermissionMode>("accept_edits");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -67,23 +72,26 @@ export function RunnerEditDrawer({
     if (open && runner) {
       setDisplayName(runner.display_name);
       setRuntime(runner.runtime);
+      setCommand(runner.command);
       setArgsText(stripPermissionFlags(runner.runtime, runner.args).join(" "));
       setWorkingDir(runner.working_dir ?? "");
       setSystemPrompt(runner.system_prompt ?? "");
       setModel(runner.model ?? "");
-      setEffort(runner.effort ?? "");
+      // Coerce historically-stored effort values that aren't in this
+      // runtime's current enum (e.g. an old codex row with
+      // `minimal`, dropped from the picker) to "" so what's saved
+      // matches what's shown.
+      {
+        const loaded = runner.effort ?? "";
+        const validEfforts = EFFORT_OPTIONS_BY_RUNTIME[runner.runtime] ?? [];
+        setEffort(
+          validEfforts.some((o) => o.value === loaded) ? loaded : "",
+        );
+      }
       setPermissionMode(inferPermissionMode(runner.runtime, runner.args));
       setError(null);
     }
   }, [open, runner]);
-
-  // Command is bound to runtime — each runtime's `defaultCommand` is the
-  // binary we spawn. The field below is a read-only display; the saved
-  // value is recomputed from runtime on every save, so a stored custom
-  // command (rare; carried over from the days when this was editable)
-  // is normalized the next time the runner is saved.
-  const command =
-    RUNTIME_OPTIONS.find((o) => o.value === runtime)?.defaultCommand ?? "";
 
   const canSubmit =
     runner !== null &&
@@ -181,7 +189,24 @@ export function RunnerEditDrawer({
           <RuntimeSelect
             id="edit-runtime"
             value={runtime}
-            onChange={(opt) => setRuntime(opt.value)}
+            onChange={(opt) => {
+              setRuntime(opt.value);
+              // Runtime change is the explicit signal to normalize
+              // Command to the new runtime's defaultCommand. Without
+              // a runtime change we keep whatever was saved on the
+              // row so custom commands aren't wiped silently.
+              setCommand(opt.defaultCommand);
+              // Coerce effort to "" if the current value isn't in
+              // the new runtime's enum, so the saved value tracks
+              // what the dropdown displays. claude-code's `max` is
+              // not in codex's enum; codex's `none / minimal` aren't
+              // in claude-code's.
+              const nextEffortOptions =
+                EFFORT_OPTIONS_BY_RUNTIME[opt.value] ?? [];
+              if (!nextEffortOptions.some((o) => o.value === effort)) {
+                setEffort("");
+              }
+            }}
           />
         </Field>
 

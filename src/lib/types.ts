@@ -234,8 +234,8 @@ export interface CreateRunnerInput {
   env?: Record<string, string>;
   model?: string | null;
   effort?: string | null;
-  /** Form's "Permission mode" dropdown. Defaults to `"bypass"` on
-   *  the backend when omitted. Hidden in the form for runtimes
+  /** Form's "Permission mode" dropdown. Defaults to `"accept_edits"`
+   *  on the backend when omitted. Hidden in the form for runtimes
    *  without a permission concept (shell / unknown); this is a no-op
    *  in that case. */
   permission_mode?: PermissionMode;

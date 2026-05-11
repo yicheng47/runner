@@ -43,14 +43,14 @@ export function CreateRunnerModal({
   const [argsText, setArgsText] = useState("");
   const [workingDir, setWorkingDir] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
-  // "Permission mode" dropdown — defaults to Bypass, matching the
-  // backend's `default_permission_mode()` and the seed's args. The
-  // backend writes the runtime's canonical mode flags onto the
+  // "Permission mode" dropdown — defaults to AcceptEdits, matching
+  // the backend's `default_permission_mode()` and the seed's args.
+  // The backend writes the runtime's canonical mode flags onto the
   // stored args column at create time (see commands::runner::create
   // → router::runtime::apply_permission_mode), so the user never
   // has to type the flags themselves.
   const [permissionMode, setPermissionMode] =
-    useState<PermissionMode>("bypass");
+    useState<PermissionMode>("accept_edits");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -62,7 +62,7 @@ export function CreateRunnerModal({
       setArgsText("");
       setWorkingDir("");
       setSystemPrompt("");
-      setPermissionMode("bypass");
+      setPermissionMode("accept_edits");
       setError(null);
     }
   }, [open]);

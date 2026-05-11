@@ -114,16 +114,14 @@ const SEED_IMPL_RUNNER_ID: &str = "01K000DEFAULT000RUNNERIMPL01";
 const SEED_REVIEWER_RUNNER_ID: &str = "01K000DEFAULT000RUNNERREVW01";
 const SEED_TIMESTAMP: &str = "2026-05-03T00:00:00Z";
 
-// Bypass permission mode args — `claude --permission-mode
-// bypassPermissions`. Skips every approval check so seeded runners
-// can start working as soon as the mission launches without
-// per-tool prompts. NOTE: on a fresh claude-code install this
-// triggers a one-time consent dialog the first time the user
-// launches a Bypass runner; the dialog blocks the first injection,
-// but on subsequent missions the runner spawns clean. Users who
-// want the more cautious AcceptEdits behaviour can flip individual
-// runners back via the runner-edit form.
-const SEED_RUNNER_ARGS_JSON: &str = r#"["--permission-mode","bypassPermissions"]"#;
+// Auto permission mode args — `claude --permission-mode acceptEdits`.
+// Auto-approves edits but still asks for blast-radius operations
+// (shell commands outside the workspace, network calls). Crucially
+// does NOT trigger claude-code's one-time bypass-permissions consent
+// dialog, which used to break first-mission injection. Users can
+// flip individual runners to Bypass via the runner-edit form's
+// segmented control if they want the more aggressive default.
+const SEED_RUNNER_ARGS_JSON: &str = r#"["--permission-mode","acceptEdits"]"#;
 
 // Persona-only system prompts shared with `tests/fixtures/system-prompts/*.md`.
 // Keeping a single source of truth means the migration 0002 UPDATE
