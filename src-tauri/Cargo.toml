@@ -1,6 +1,6 @@
 [package]
 name = "runner"
-version = "0.1.6"
+version = "0.1.7"
 description = "An editor for teams of local coding agents (Claude Code, Codex, and friends)"
 edition.workspace = true
 authors.workspace = true
