@@ -557,7 +557,7 @@ export function Sidebar({
             <RailIconLink icon={Users} to="/crews" label="crew" />
             <RailIconButton
               icon={Search}
-              label="Search (⌘K)"
+              label="Search"
               onClick={() => setPaletteOpen(true)}
             />
             {/* Archived rail icon — slot reserved for feature #31.
@@ -894,20 +894,19 @@ function RailIconButton({
 }
 
 /// Search nav row — visually indistinguishable from runner/crew rows
-/// but opens the CommandPalette modal instead of routing.
+/// but opens the CommandPalette modal instead of routing. The ⌘K
+/// keyboard binding (registered above) still works; the shortcut
+/// hint just isn't displayed in the UI.
 function SearchNavRow({ onOpen }: { onOpen: () => void }) {
   return (
     <button
       type="button"
-      title="Search (⌘K)"
+      title="Search"
       onClick={onOpen}
-      className="flex w-full cursor-pointer items-center justify-between gap-2 rounded px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:text-fg"
+      className="flex w-full cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:text-fg"
     >
-      <span className="flex items-center gap-2">
-        <Search aria-hidden className="h-3 w-3 text-fg-2" />
-        <span>search</span>
-      </span>
-      <span className="font-mono text-[10px] text-fg-3">⌘K</span>
+      <Search aria-hidden className="h-3 w-3 text-fg-2" />
+      <span>search</span>
     </button>
   );
 }
