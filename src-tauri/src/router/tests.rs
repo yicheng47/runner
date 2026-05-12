@@ -265,7 +265,13 @@ fn message_self_directed_is_not_nudged() {
 }
 
 #[test]
-fn mission_goal_injects_composed_prompt_to_lead() {
+fn mission_goal_handler_no_longer_injects_launch_prompt() {
+    // Plan 0007: lead launch prompt is delivered at spawn time via
+    // the positional `[PROMPT]` argv (see
+    // `router::runtime::first_turn_argv`). The bus's `mission_goal`
+    // handler stays subscribed for UI consumers but no longer
+    // injects the body — the prior post-spawn paste path raced
+    // claude-code's trust-folder dialog / boot banner.
     let (router, injector, log, _dir) = fixture(
         vec![
             slot_with_runner("lead", true),
@@ -282,61 +288,21 @@ fn mission_goal_injects_composed_prompt_to_lead() {
         .unwrap();
     router.handle_event(&ev);
 
-    let lead_pushes = injector.pushes_for("S-LEAD");
-    assert_eq!(lead_pushes.len(), 1, "lead receives one prompt push");
-    let prompt = &lead_pushes[0];
-    assert!(prompt.contains("Goal: ship v0"));
-    assert!(prompt.contains("`impl`"));
-    assert!(prompt.contains("Allowed signal types"));
-    // Workers do not receive the launch prompt.
-    assert!(injector.pushes_for("S-IMPL").is_empty());
-}
-
-#[test]
-fn lead_launch_prompt_routes_through_verified_paste() {
-    // Round-2 review regression guard (impl plan 0005): the lead's
-    // launch prompt must land via `inject_paste_with_verify`, NOT
-    // raw stdin. The verified primitive captures the pane post-paste
-    // and only sends Enter once it confirms the body landed —
-    // critical for fresh-spawn agents whose TUI hasn't bound raw
-    // input yet (Codex argv `[PROMPT]` gets eaten by the approval
-    // dialog; claude-code body keystrokes get eaten by the
-    // trust-folder screen).
-    let (router, injector, log, _dir) = fixture(
-        vec![
-            slot_with_runner("lead", true),
-            slot_with_runner("impl", false),
-        ],
-        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
-    );
-    let ev = log
-        .append(signal(
-            "human",
-            "mission_goal",
-            serde_json::json!({ "text": "ship v0" }),
-        ))
-        .unwrap();
-    router.handle_event(&ev);
-
-    // Body landed via the verified-paste primitive exactly once.
-    let lead_paste_pushes = injector.paste_pushes_for("S-LEAD");
-    assert_eq!(
-        lead_paste_pushes.len(),
-        1,
-        "lead launch prompt must route through inject_paste_with_verify; got {lead_paste_pushes:?}"
-    );
-    assert!(lead_paste_pushes[0].contains("Goal: ship v0"));
-
-    // Body did NOT also land via the legacy raw `inject` path —
-    // guards against future churn re-introducing the keystroke
-    // chord. Worker-inbox nudges (which DO use raw `inject`) only
-    // fire on directed messages, not on `mission_goal`, so S-LEAD
-    // shouldn't have any raw pushes in this test.
-    let lead_raw_pushes = injector.raw_pushes_for("S-LEAD");
+    // No injection (raw or paste) fires for the lead from
+    // `mission_goal`. Spawn-time delivery is exercised end-to-end
+    // by the `commands::mission` tests.
     assert!(
-        lead_raw_pushes.is_empty(),
-        "lead must not also receive a raw stdin push for the launch prompt; got {lead_raw_pushes:?}"
+        injector.pushes_for("S-LEAD").is_empty(),
+        "mission_goal handler must not inject the launch prompt — \
+         that path moved to spawn-time argv (#88)"
     );
+    assert!(
+        injector.paste_pushes_for("S-LEAD").is_empty(),
+        "mission_goal handler must not paste the launch prompt — \
+         spawn-time argv is the delivery path now (#88)"
+    );
+    // Workers were never targeted by `mission_goal` and still aren't.
+    assert!(injector.pushes_for("S-IMPL").is_empty());
 }
 
 #[test]
@@ -819,14 +785,21 @@ fn reconstruct_recovers_latest_runner_status_only() {
 }
 
 #[test]
-fn fresh_mission_start_does_not_call_reconstruct_so_mission_goal_fires() {
+fn fresh_mission_start_does_not_call_reconstruct() {
     // Regression on the reviewer's caveat: if a fresh-start mount called
     // reconstruct_from_log() over the just-written opening events, the
-    // watermark would cover mission_goal and the lead would never receive
-    // its launch prompt. mission_start must skip reconstruct entirely.
-    // This test mirrors that path: pre-write opening events, build a
-    // router WITHOUT calling reconstruct, then replay through handle_event
-    // (what the bus does). The mission_goal handler must fire.
+    // watermark would cover mission_goal and downstream handlers (UI
+    // toasts, future signal-routing extensions) wouldn't see them on
+    // replay. mission_start must skip reconstruct entirely.
+    //
+    // Plan 0007 update: the lead's launch prompt is now delivered at
+    // spawn time via the positional `[PROMPT]` argv, not by the
+    // `mission_goal` handler — see
+    // `commands::mission::mission_start` and
+    // `router::runtime::first_turn_argv`. This test still guards the
+    // "no watermark over opening events" invariant by replaying the
+    // log without reconstruct; we just no longer assert the handler
+    // injects to the lead, since that side effect moved upstream.
     let dir = tempfile::tempdir().unwrap();
     let log = Arc::new(EventLog::open(dir.path()).unwrap());
     let roster = vec![slot_with_runner("lead", true)];
@@ -858,17 +831,18 @@ fn fresh_mission_start_does_not_call_reconstruct_so_mission_goal_fires() {
     .unwrap();
     router.register_sessions(&[("lead".into(), "S-LEAD".into())]);
     // NB: no reconstruct call. The bus's initial replay drives the
-    // bootstrap.
+    // bootstrap; the router exercises every handler without
+    // suppressing the opening events.
     for entry in log.read_from(0).unwrap() {
         router.handle_event(&entry.event);
     }
-    let lead_pushes = injector.pushes_for("S-LEAD");
-    assert_eq!(
-        lead_pushes.len(),
-        1,
-        "mission_goal must fire on fresh start; got {lead_pushes:?}",
+    // Spawn-time argv owns launch-prompt delivery now, so the
+    // handler-side recorder should be silent for the lead.
+    assert!(
+        injector.pushes_for("S-LEAD").is_empty(),
+        "mission_goal handler must not inject the launch prompt (#88)"
     );
-    assert!(lead_pushes[0].contains("Goal: go"));
+    assert!(injector.paste_pushes_for("S-LEAD").is_empty());
 }
 
 #[test]

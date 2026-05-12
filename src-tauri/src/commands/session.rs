@@ -516,6 +516,15 @@ pub async fn session_start_direct(
         let conn = state.db.get()?;
         runner::get(&conn, &runner_id)?
     };
+    // Compose the persona first-user-turn body upstream so the spawn
+    // path can deliver it via the positional `[PROMPT]` argv at
+    // process boot — eliminating the post-spawn paste race the
+    // verify loop was working around. Direct chats are off-bus, so
+    // the body is just the runner's `system_prompt` (no worker
+    // coordination preamble). See
+    // `docs/impls/0007-spawn-time-prompt-delivery.md`.
+    let first_turn =
+        crate::router::prompt::compose_direct_first_turn(runner.system_prompt.as_deref());
     let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app));
     let spawned = state
         .sessions
@@ -527,6 +536,7 @@ pub async fn session_start_direct(
             &state.app_data_dir,
             state.db.clone(),
             emitter,
+            first_turn,
         )
         .map_err(|e| Error::msg(format!("session_start_direct: {e}")))?;
     Ok(spawned)
