@@ -1292,9 +1292,9 @@ impl SessionManager {
     /// up to `max_attempts` rounds of paste → sleep `render_wait` →
     /// capture → if any of head/tail-marker delta or (body ≥
     /// `PLACEHOLDER_MIN_BODY_LEN`) placeholder delta ≥ 1 vs the
-    /// baseline, send Enter and return. Otherwise sleep
-    /// `between_attempts` and retry. If no attempt verifies, return
-    /// Err — caller logs.
+    /// baseline, wait `submit_wait`, send Enter and return. Otherwise
+    /// sleep `between_attempts` and retry. If no attempt verifies,
+    /// return Err — caller logs.
     ///
     /// `before` capture failures fall through with zero baselines
     /// (alternative is to abort, which regresses every transient
@@ -1371,6 +1371,9 @@ impl SessionManager {
                 && count_substr(&after_stripped, b"Pasted text") > before_placeholder_count;
 
             if head_delta_pos || tail_delta_pos || placeholder_delta_pos {
+                if !config.submit_wait.is_zero() {
+                    std::thread::sleep(config.submit_wait);
+                }
                 return self
                     .runtime
                     .send_key(&rt_session, "Enter")
@@ -1884,16 +1887,19 @@ fn capture_cwd(explicit: Option<String>) -> Option<String> {
 /// Tunables for the first-prompt readback loop. Production uses a
 /// short initial wait (so a fast spawn doesn't sit idle), modest
 /// per-attempt render wait (let tmux + the agent TUI commit the
-/// paste before we capture-pane), and a small max_attempts. `cfg(test)`
-/// zeros every duration so unit tests stay synchronous; the count
-/// stays at 4 so retry/give-up paths still exercise their branches.
+/// paste before we capture-pane), a submit wait after verification
+/// (let the editor leave bracketed-paste mode before Enter), and a
+/// small max_attempts. `cfg(test)` zeros every duration so unit tests
+/// stay synchronous; the count stays at 4 so retry/give-up paths still
+/// exercise their branches.
 ///
 /// See `docs/impls/0005-first-prompt-readback.md` for the rationale
-/// behind the specific numbers (best case 2100ms, worst case 7100ms).
+/// behind the specific numbers (best case 2220ms, give-up 7100ms).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FirstPromptConfig {
     pub initial_wait: std::time::Duration,
     pub render_wait: std::time::Duration,
+    pub submit_wait: std::time::Duration,
     pub between_attempts: std::time::Duration,
     pub max_attempts: usize,
 }
@@ -1902,6 +1908,7 @@ pub(crate) struct FirstPromptConfig {
 pub(crate) const FIRST_PROMPT_CONFIG: FirstPromptConfig = FirstPromptConfig {
     initial_wait: std::time::Duration::from_millis(1500),
     render_wait: std::time::Duration::from_millis(600),
+    submit_wait: std::time::Duration::from_millis(120),
     between_attempts: std::time::Duration::from_millis(800),
     max_attempts: 4,
 };
@@ -1910,6 +1917,7 @@ pub(crate) const FIRST_PROMPT_CONFIG: FirstPromptConfig = FirstPromptConfig {
 pub(crate) const FIRST_PROMPT_CONFIG: FirstPromptConfig = FirstPromptConfig {
     initial_wait: std::time::Duration::ZERO,
     render_wait: std::time::Duration::ZERO,
+    submit_wait: std::time::Duration::ZERO,
     between_attempts: std::time::Duration::ZERO,
     max_attempts: 4,
 };
