@@ -553,13 +553,13 @@ export function Sidebar({
             <BrandMark />
             <div className="h-px w-full bg-line" />
             <div className="h-2 w-full" />
-            <RailIconLink icon={Terminal} to="/runners" label="runner" />
-            <RailIconLink icon={Users} to="/crews" label="crew" />
             <RailIconButton
               icon={Search}
               label="Search"
               onClick={() => setPaletteOpen(true)}
             />
+            <RailIconLink icon={Terminal} to="/runners" label="runner" />
+            <RailIconLink icon={Users} to="/crews" label="crew" />
             {/* Archived rail icon — slot reserved for feature #31.
                 When the archived nav lands, render a RailIconLink
                 here pointing at its route (icon: lucide Archive).
@@ -598,15 +598,16 @@ export function Sidebar({
             <div className="shrink-0">
               <SectionHeader>WORKSPACE</SectionHeader>
               <nav className="flex flex-col gap-0.5 px-3 pb-1">
-                <NavRow icon={Terminal} to="/runners" label="runner" />
-                <NavRow icon={Users} to="/crews" label="crew" />
                 {/* Search opens a command-palette modal — matches design
                     `Fkoe8`. Default interaction is click-to-callout, not
                     type-in-place, so this lives as a nav row alongside
-                    runner/crew rather than an inline input. The actual
-                    palette is a follow-up; for now the row stubs the
-                    callout. */}
+                    runner/crew rather than an inline input. Placed
+                    first in WORKSPACE because it's the highest-velocity
+                    entry point — jumping to any mission / runner /
+                    crew without scrolling the lists below. */}
                 <SearchNavRow onOpen={() => setPaletteOpen(true)} />
+                <NavRow icon={Terminal} to="/runners" label="runner" />
+                <NavRow icon={Users} to="/crews" label="crew" />
               </nav>
             </div>
 
