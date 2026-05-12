@@ -139,6 +139,28 @@ pub fn get(conn: &Connection, id: &str) -> Result<Mission> {
     .ok_or_else(|| Error::msg(format!("mission not found: {id}")))
 }
 
+/// Cap on the effective mission goal byte length. The launch prompt
+/// composer pastes this into the lead's first-user-turn body
+/// alongside `system_prompt` (≤ `MAX_SYSTEM_PROMPT_BYTES`) and the
+/// roster + coordination block; together they have to fit under
+/// `router::runtime::FIRST_TURN_ARGV_MAX_BYTES`. 8 KB is roomy for
+/// a real mission goal (typical goals are a few sentences) while
+/// leaving generous headroom for the rest of the composed body.
+pub const MAX_MISSION_GOAL_BYTES: usize = 8 * 1024;
+
+fn validate_mission_goal(goal: &str) -> Result<()> {
+    if goal.len() > MAX_MISSION_GOAL_BYTES {
+        return Err(Error::msg(format!(
+            "mission goal is {} bytes; max {} ({} KB). Trim the goal text or move \
+             long-form context into the runner brief / per-task messages.",
+            goal.len(),
+            MAX_MISSION_GOAL_BYTES,
+            MAX_MISSION_GOAL_BYTES / 1024,
+        )));
+    }
+    Ok(())
+}
+
 pub fn start(
     conn: &mut Connection,
     app_data_dir: &Path,
@@ -147,6 +169,9 @@ pub fn start(
     let title = input.title.trim().to_string();
     if title.is_empty() {
         return Err(Error::msg("mission title must not be empty"));
+    }
+    if let Some(g) = input.goal_override.as_deref() {
+        validate_mission_goal(g)?;
     }
 
     // Validate crew exists and is launchable.
@@ -484,10 +509,10 @@ pub async fn mission_start(
     // each slot references. Mission spawn iterates per slot — two
     // slots referencing the same runner template both produce
     // distinct PTYs identifying as their respective slot_handles.
-    let (crew_name, allowed_signals) = {
+    let (crew_name, allowed_signals, crew_default_goal) = {
         let conn = state.db.get()?;
         let crew = crew::get(&conn, &out.mission.crew_id)?;
-        (crew.name, crew.signal_types)
+        (crew.name, crew.signal_types, crew.goal)
     };
     let roster = {
         let conn = state.db.get()?;
@@ -495,6 +520,64 @@ pub async fn mission_start(
     };
     let events_log_path =
         event_log::events_path(&state.app_data_dir, &out.mission.crew_id, &out.mission.id);
+
+    // Effective mission goal — same precedence as the `mission_goal`
+    // event opened by `start()` above (override > crew default > "").
+    // Used here to compose the lead's launch prompt before the spawn
+    // loop, so the body can land via the positional `[PROMPT]` argv
+    // at process boot rather than racing the post-spawn paste path.
+    // See `docs/impls/0007-spawn-time-prompt-delivery.md`.
+    let goal_text: String = out
+        .mission
+        .goal_override
+        .as_deref()
+        .or(crew_default_goal.as_deref())
+        .unwrap_or("")
+        .to_string();
+
+    // Pre-compose each slot's first-user-turn body. Lead gets the
+    // full launch prompt (preamble + brief + goal + roster +
+    // coordination). Non-leads get the worker preamble + brief.
+    // Both delivery paths (spawn-time argv vs post-spawn paste
+    // fallback) read from the same composer in `router::prompt`,
+    // so the body is byte-identical regardless of route.
+    let first_turns: Vec<Option<String>> = {
+        let roster_entries: Vec<crate::router::prompt::RosterEntry> = roster
+            .iter()
+            .map(|m| crate::router::prompt::RosterEntry {
+                handle: m.slot.slot_handle.as_str(),
+                display_name: m.runner.display_name.as_str(),
+                lead: m.slot.lead,
+            })
+            .collect();
+        let lead_member = roster.iter().find(|m| m.slot.lead);
+        roster
+            .iter()
+            .map(|m| {
+                if m.slot.lead {
+                    lead_member.map(|lm| {
+                        crate::router::prompt::compose_launch_prompt(
+                            &crate::router::prompt::LaunchPromptInput {
+                                lead: crate::router::prompt::LeadView {
+                                    handle: lm.slot.slot_handle.as_str(),
+                                    display_name: lm.runner.display_name.as_str(),
+                                    system_prompt: lm.runner.system_prompt.as_deref(),
+                                },
+                                crew_name: crew_name.as_str(),
+                                mission_goal: goal_text.as_str(),
+                                roster: &roster_entries,
+                                allowed_signals: &allowed_signals,
+                            },
+                        )
+                    })
+                } else {
+                    Some(crate::router::prompt::compose_worker_first_turn(
+                        m.runner.system_prompt.as_deref(),
+                    ))
+                }
+            })
+            .collect()
+    };
 
     // Build the router up front (opens the log, validates the lead, holds
     // empty state). It does NOT subscribe to the bus yet — see ordering
@@ -557,7 +640,8 @@ pub async fn mission_start(
     // can race the watcher attachment.
     let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app.clone()));
     let mut spawned_pairs: Vec<(String, String)> = Vec::with_capacity(roster.len());
-    for member in &roster {
+    for (idx, member) in roster.iter().enumerate() {
+        let first_turn = first_turns.get(idx).cloned().flatten();
         let spawn_res = state.sessions.spawn(
             &out.mission,
             &member.runner,
@@ -566,6 +650,7 @@ pub async fn mission_start(
             events_log_path.clone(),
             state.db.clone(),
             Arc::clone(&emitter),
+            first_turn,
         );
         match spawn_res {
             Ok(spawned) => {
@@ -946,6 +1031,49 @@ pub async fn mission_reset(
         payload: serde_json::json!({ "text": goal_text }),
     })?;
 
+    // Pre-compose each slot's first-user-turn body so the spawn loop
+    // can deliver it via the positional `[PROMPT]` argv at process
+    // boot — same contract as `mission_start`. Borrows of
+    // `crew_name` / `crew_signal_types` end here; both are moved
+    // into `Router::new` below.
+    let first_turns: Vec<Option<String>> = {
+        let roster_entries: Vec<crate::router::prompt::RosterEntry> = roster
+            .iter()
+            .map(|m| crate::router::prompt::RosterEntry {
+                handle: m.slot.slot_handle.as_str(),
+                display_name: m.runner.display_name.as_str(),
+                lead: m.slot.lead,
+            })
+            .collect();
+        let lead_member = roster.iter().find(|m| m.slot.lead);
+        roster
+            .iter()
+            .map(|m| {
+                if m.slot.lead {
+                    lead_member.map(|lm| {
+                        crate::router::prompt::compose_launch_prompt(
+                            &crate::router::prompt::LaunchPromptInput {
+                                lead: crate::router::prompt::LeadView {
+                                    handle: lm.slot.slot_handle.as_str(),
+                                    display_name: lm.runner.display_name.as_str(),
+                                    system_prompt: lm.runner.system_prompt.as_deref(),
+                                },
+                                crew_name: crew_name.as_str(),
+                                mission_goal: goal_text.as_str(),
+                                roster: &roster_entries,
+                                allowed_signals: &crew_signal_types,
+                            },
+                        )
+                    })
+                } else {
+                    Some(crate::router::prompt::compose_worker_first_turn(
+                        m.runner.system_prompt.as_deref(),
+                    ))
+                }
+            })
+            .collect()
+    };
+
     // 7. Build router + spawn fresh PTYs + mount bus. Same ordering
     // contract as mission_start: spawn first so register_sessions has
     // the full handle map before the bus's initial replay fires the
@@ -976,7 +1104,8 @@ pub async fn mission_reset(
     // mission would sit half-reset — old PTYs gone, some new ones
     // alive, no bus / router mounted, and the mission row stuck in
     // `running`.
-    for member in &roster {
+    for (idx, member) in roster.iter().enumerate() {
+        let first_turn = first_turns.get(idx).cloned().flatten();
         let spawn_res = state.sessions.spawn(
             &mission_for_spawn,
             &member.runner,
@@ -985,6 +1114,7 @@ pub async fn mission_reset(
             events_log_path.clone(),
             state.db.clone(),
             Arc::clone(&emitter),
+            first_turn,
         );
         match spawn_res {
             Ok(spawned) => {
@@ -1211,6 +1341,33 @@ mod tests {
         )
         .unwrap();
         slot::create(conn, crew_id, &r.id, handle).unwrap();
+    }
+
+    #[test]
+    fn start_rejects_goal_override_over_cap() {
+        // Plan 0007: validation at persist time keeps the composed
+        // launch prompt under the runtime argv ceiling. mission_start
+        // refuses a goal_override over MAX_MISSION_GOAL_BYTES.
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "C", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let oversized = "Z".repeat(MAX_MISSION_GOAL_BYTES + 1);
+        let err = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id,
+                title: "Try".into(),
+                goal_override: Some(oversized),
+                cwd: None,
+            },
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("goal"), "expected goal-size error, got {msg}");
     }
 
     #[test]

@@ -431,31 +431,91 @@ pub fn system_prompt_args(runtime: &str, system_prompt: Option<&str>) -> Vec<Str
     }
 }
 
-/// Compose the runtime-specific trailing args (model/effort flags + any
-/// `system_prompt` argv) in the order the runtime's CLI expects.
+/// Defense-in-depth ceiling on the positional `[PROMPT]` argv payload.
+/// Persistence-layer validation in `commands::runner` /
+/// `commands::mission` / `commands::crew` caps the individual fields
+/// (`system_prompt`, `mission_goal`, `crew.goal`) so the composed
+/// body never approaches this number. Set well below macOS `ARG_MAX`
+/// (~256 KB) but high enough that no realistic user input can hit it
+/// once the persist-time caps are honored. `debug_assert!`-trips on
+/// overshoot — surfaces a logic bug, not a user error.
+pub const FIRST_TURN_ARGV_MAX_BYTES: usize = 32 * 1024;
+
+/// Map a runtime + composed first-turn body to the positional argv
+/// the agent CLI reads as its first user turn at process spawn.
 ///
-/// Both supported runtimes now deliver the system prompt via stdin
-/// (`SessionManager::schedule_first_prompt`) so `system_prompt_args`
-/// returns empty for both — the helper still composes via that path so
-/// a future runtime that wants positional argv can opt back in without
-/// rewriting the call sites. Centralising the splice keeps `spawn`,
-/// `spawn_direct`, and `resume` from drifting.
+/// claude-code and codex both accept a positional `[PROMPT]` argument
+/// (verified against claude-code and codex-cli 0.130.0). Delivering
+/// the first turn at spawn-time eliminates the post-spawn paste race
+/// the original `inject_paste_with_verify` machinery was working
+/// around: the agent reads its argv during init, before the TUI binds
+/// raw input, before any trust-folder dialog, before the input editor
+/// even exists. See `docs/impls/0007-spawn-time-prompt-delivery.md`.
 ///
-/// `plan_resuming` is retained for symmetry with the resume guard in
-/// `resume_plan`: callers that add a positional argv via
-/// `system_prompt_args` should not replay it onto an existing
-/// conversation. With both supported runtimes returning empty argv it
-/// is a no-op today, but kept so the contract stays self-describing.
+/// Returns empty when:
+///   - the body is None or blank,
+///   - the runtime has no positional first-turn convention (`shell`).
+///
+/// In debug builds, panics if the body exceeds
+/// `FIRST_TURN_ARGV_MAX_BYTES` — that indicates a missing
+/// persist-time validation upstream. Release builds silently truncate
+/// the argv to empty to fail safe.
+///
+/// The old comment block in `system_prompt_args` claiming codex's
+/// positional gets swallowed by a startup approval dialog was stale
+/// (likely pre-0.130.0); modern codex has no startup dialog by
+/// default. `--ask-for-approval` modes gate in-session *command*
+/// approvals, not boot.
+pub fn first_turn_argv(runtime: &str, body: Option<&str>) -> Vec<String> {
+    let body = match body {
+        Some(s) if !s.trim().is_empty() => s,
+        _ => return Vec::new(),
+    };
+    debug_assert!(
+        body.len() <= FIRST_TURN_ARGV_MAX_BYTES,
+        "first-turn argv body exceeds {FIRST_TURN_ARGV_MAX_BYTES} bytes \
+         (got {}) — persistence-layer validation should have caught this",
+        body.len()
+    );
+    if body.len() > FIRST_TURN_ARGV_MAX_BYTES {
+        return Vec::new();
+    }
+    match runtime {
+        "claude-code" | "codex" => vec![body.to_string()],
+        _ => Vec::new(),
+    }
+}
+
+/// Compose the runtime-specific trailing args (model/effort flags +
+/// any `system_prompt` argv + first-turn body positional) in the
+/// order the runtime's CLI expects.
+///
+/// `system_prompt_args` still returns empty for both supported
+/// runtimes (claude-code's `--append-system-prompt` is SDK-only; codex
+/// has no equivalent flag). The first user turn — composed launch
+/// prompt for a mission lead, worker preamble for non-leads, persona
+/// for direct chats — rides on `first_turn_argv` instead and lands as
+/// the trailing positional.
+///
+/// `plan_resuming` suppresses both the system_prompt argv (legacy,
+/// no-op today) and the first_turn argv — replaying a launch prompt
+/// onto a resumed conversation would inject a duplicate user turn.
+/// Resume paths rely on the agent CLI's own session resume to restore
+/// context; the rare resume-fresh-fallback case is handled by
+/// `Router::fire_lead_launch_prompt` via paste delivery instead.
 pub fn trailing_runtime_args(
     runtime: &str,
     plan_resuming: bool,
     model: Option<&str>,
     effort: Option<&str>,
     system_prompt: Option<&str>,
+    first_turn: Option<&str>,
 ) -> Vec<String> {
     let mut out = model_effort_args(runtime, model, effort);
     let prompt_for_argv = if plan_resuming { None } else { system_prompt };
     out.extend(system_prompt_args(runtime, prompt_for_argv));
+    let first_turn_for_argv = if plan_resuming { None } else { first_turn };
+    out.extend(first_turn_argv(runtime, first_turn_for_argv));
     out
 }
 
@@ -832,12 +892,18 @@ mod tests {
         // still ride along so the runner row's pinned settings reach
         // the spawned CLI.
         for plan_resuming in [false, true] {
+            // `system_prompt` (the role/persona stub) still rides via
+            // stdin for both runtimes — `system_prompt_args` returns
+            // empty. The first-user-turn body is delivered separately
+            // via `first_turn` (spawn-time positional argv) per
+            // `docs/impls/0007-spawn-time-prompt-delivery.md`.
             let args = trailing_runtime_args(
                 "codex",
                 plan_resuming,
                 Some("gpt-5-codex"),
                 Some("high"),
                 Some("be helpful"),
+                None,
             );
             assert!(
                 !args.iter().any(|a| a == "be helpful"),
@@ -1279,16 +1345,18 @@ mod tests {
     }
 
     #[test]
-    fn claude_code_trailing_args_unaffected_by_resume_flag() {
-        // claude-code's system_prompt_args is empty (prompt is
-        // delivered via stdin). `plan_resuming` should have no effect
-        // on the assembled args.
+    fn claude_code_trailing_args_unaffected_by_resume_flag_when_first_turn_absent() {
+        // claude-code's `system_prompt_args` is empty (the persona
+        // stub rides via stdin). With `first_turn = None`, the
+        // `plan_resuming` flag has no effect — the trailing args
+        // are just the model/effort pair.
         let fresh = trailing_runtime_args(
             "claude-code",
             false,
             Some("claude-opus-4-7"),
             Some("xhigh"),
             Some("be helpful"),
+            None,
         );
         let resuming = trailing_runtime_args(
             "claude-code",
@@ -1296,6 +1364,7 @@ mod tests {
             Some("claude-opus-4-7"),
             Some("xhigh"),
             Some("be helpful"),
+            None,
         );
         assert_eq!(fresh, resuming);
         assert_eq!(
@@ -1307,5 +1376,63 @@ mod tests {
                 "xhigh".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn first_turn_rides_trailing_argv_on_fresh_spawn_for_both_runtimes() {
+        for runtime in ["claude-code", "codex"] {
+            let body = "You are the architect. Goal: ship 0007.";
+            let args = trailing_runtime_args(
+                runtime,
+                false,
+                Some("model-x"),
+                Some("high"),
+                Some("persona"),
+                Some(body),
+            );
+            // Body lands as the trailing positional after model/effort
+            // flags. system_prompt is unchanged (still empty) for both
+            // runtimes.
+            assert_eq!(args.last().map(String::as_str), Some(body));
+            assert!(args
+                .windows(2)
+                .any(|w| w[0] == "--model" && w[1] == "model-x"));
+        }
+    }
+
+    #[test]
+    fn first_turn_suppressed_on_resume_for_both_runtimes() {
+        for runtime in ["claude-code", "codex"] {
+            let body = "You are the architect. Goal: ship 0007.";
+            let args = trailing_runtime_args(
+                runtime,
+                true,
+                Some("model-x"),
+                Some("high"),
+                Some("persona"),
+                Some(body),
+            );
+            assert!(
+                !args.iter().any(|a| a == body),
+                "resume must not replay the first-turn body as positional argv ({runtime}): {args:?}"
+            );
+        }
+    }
+
+    // The pre-#88 `first_turn_argv_skipped_when_body_exceeds_arg_max_threshold`
+    // test exercised the post-spawn paste fallback for oversized bodies.
+    // Plan 0007 retired that fallback in favour of persistence-layer
+    // validation (`commands::runner::MAX_SYSTEM_PROMPT_BYTES` /
+    // `commands::mission::MAX_MISSION_GOAL_BYTES`). The debug_assert
+    // inside `first_turn_argv` is now defense-in-depth — exercising it
+    // here would just trip the assertion. Validation tests live in
+    // `commands::runner` / `commands::mission` / `commands::crew`.
+
+    #[test]
+    fn first_turn_argv_empty_for_blank_or_unsupported_runtime() {
+        assert!(first_turn_argv("claude-code", Some("   \n  ")).is_empty());
+        assert!(first_turn_argv("claude-code", None).is_empty());
+        assert!(first_turn_argv("shell", Some("body")).is_empty());
+        assert!(first_turn_argv("unknown", Some("body")).is_empty());
     }
 }

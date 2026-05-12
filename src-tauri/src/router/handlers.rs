@@ -16,25 +16,15 @@
 
 use runner_core::model::Event;
 
-use super::prompt::{compose_launch_prompt, LaunchPromptInput, RosterEntry};
 use super::{Router, RunnerStatus};
 
-/// Vestigial post 0005-first-prompt-readback. Used to be the
-/// blind-wait budget before the lead's launch prompt landed via raw
-/// keystrokes; that role is now owned by the verified primitive
-/// (`SessionManager::inject_paste_with_verify` via the
-/// `StdinInjector::inject_paste_with_verify` trait method), which
-/// has its own initial_wait + render_wait. This constant now
-/// controls **only** thread-vs-inline execution inside
-/// `Router::inject_and_submit_delayed`: a non-zero duration spawns
-/// a thread, ZERO under `cfg(test)` runs the verified primitive
-/// inline so unit tests can read the recording injector
-/// synchronously. The exact production value is not load-bearing —
-/// any non-zero duration triggers the threaded branch.
-#[cfg(not(test))]
-const LEAD_LAUNCH_PROMPT_DELAY: std::time::Duration = std::time::Duration::from_millis(1);
-#[cfg(test)]
-const LEAD_LAUNCH_PROMPT_DELAY: std::time::Duration = std::time::Duration::ZERO;
+// Note: `LEAD_LAUNCH_PROMPT_DELAY` and the launch-prompt composition
+// imports lived here previously. The mission_goal handler no longer
+// drives launch-prompt delivery — that path moved to spawn-time
+// positional argv in `commands::mission::mission_start` per
+// `docs/impls/0007-spawn-time-prompt-delivery.md`. The resume-fresh-
+// fallback (`Router::fire_lead_launch_prompt`) keeps the paste path
+// alive but composes the prompt and selects its own delay internally.
 
 /// Strip any trailing `\n`/`\r` so the body can be handed to
 /// `Router::inject_and_submit` cleanly — the trailing carriage
@@ -47,45 +37,26 @@ fn submit_body(text: &str) -> Vec<u8> {
 }
 
 pub(super) fn mission_goal(router: &Router, event: &Event) {
-    let goal = event
-        .payload
-        .get("text")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let launch = router.launch();
-    let roster_entries: Vec<RosterEntry> = launch
-        .roster()
-        .iter()
-        .map(|r| RosterEntry {
-            handle: r.handle(),
-            display_name: r.display_name(),
-            lead: r.is_lead(),
-        })
-        .collect();
-    let lead_row = launch.lead();
-    let prompt = compose_launch_prompt(&LaunchPromptInput {
-        lead: super::prompt::LeadView {
-            handle: lead_row.handle(),
-            display_name: lead_row.display_name(),
-            system_prompt: lead_row.system_prompt(),
-        },
-        crew_name: launch.crew_name(),
-        mission_goal: goal,
-        roster: &roster_entries,
-        allowed_signals: launch.allowed_signals(),
-    });
-    // Route through the verified paste-and-submit primitive: the
-    // bus's initial replay can fire `mission_goal` milliseconds after
-    // the lead PTY spawns, before claude-code's / codex's TUI has
-    // bound raw input. The primitive captures the pane after each
-    // attempt and only sends Enter once it confirms the paste landed.
-    // Owns its own readiness waiting — `LEAD_LAUNCH_PROMPT_DELAY`
-    // here just selects thread (production) vs inline (cfg(test)).
-    router.inject_and_submit_delayed(
-        lead_row.handle(),
-        submit_body(&prompt),
-        LEAD_LAUNCH_PROMPT_DELAY,
-    );
+    // Fresh-mission delivery moved to the spawn-time positional
+    // `[PROMPT]` argv path (see
+    // `docs/impls/0007-spawn-time-prompt-delivery.md` and
+    // `router::runtime::first_turn_argv`). `commands::mission::
+    // mission_start` composes the lead's launch prompt before the
+    // spawn loop and passes it to `SessionManager::spawn`; the
+    // agent reads it during process init, before the TUI binds raw
+    // input, so the post-spawn paste race this handler used to
+    // work around is gone.
+    //
+    // The resume-fresh-fallback path (`Router::fire_lead_launch_prompt`)
+    // is unchanged — it still composes the prompt locally and routes
+    // through `inject_and_submit_delayed` for paste-and-verify
+    // delivery on a freshly-respawned-without-context lead.
+    //
+    // This handler intentionally stays subscribed (bus initial replay
+    // still surfaces the `mission_goal` event for UI consumers and
+    // future signal-routing extensions); only the launch-prompt
+    // injection side effect is dropped.
+    let _ = (router, event);
 }
 
 pub(super) fn human_said(router: &Router, event: &Event) {

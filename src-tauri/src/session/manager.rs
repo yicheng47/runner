@@ -322,11 +322,21 @@ impl SessionManager {
     /// `SpawnSpec`. Mirrors what the portable-pty `spawn` paths
     /// did inline; factored out so spawn / spawn_direct / resume
     /// can share the argv composition.
+    ///
+    /// `first_turn` is the composed first-user-turn body (mission
+    /// launch prompt for a lead, worker preamble for non-leads,
+    /// persona for direct chats). When the runtime accepts the
+    /// positional `[PROMPT]` argv and the body fits in
+    /// `FIRST_TURN_ARGV_MAX_BYTES`, the body lands as the trailing
+    /// positional and the caller skips post-spawn paste injection.
+    /// Returns whether the body was delivered via argv — the caller
+    /// uses this to decide whether to schedule the paste fallback.
     fn apply_runtime_args(
         spec: &mut SpawnSpec,
         runner: &Runner,
         plan: &router::runtime::ResumePlan,
-    ) {
+        first_turn: Option<&str>,
+    ) -> bool {
         let mut composed: Vec<String> = Vec::new();
         if plan.prepend {
             composed.extend(plan.args.iter().cloned());
@@ -335,16 +345,20 @@ impl SessionManager {
             composed.append(&mut spec.args);
             composed.extend(plan.args.iter().cloned());
         }
+        let first_turn_for_argv = router::runtime::first_turn_argv(&runner.runtime, first_turn);
+        let delivered_via_argv = !first_turn_for_argv.is_empty();
         for extra in router::runtime::trailing_runtime_args(
             &runner.runtime,
             plan.resuming,
             runner.model.as_deref(),
             runner.effort.as_deref(),
             runner.system_prompt.as_deref(),
+            first_turn,
         ) {
             composed.push(extra);
         }
         spec.args = composed;
+        delivered_via_argv
     }
 
     /// Spawn one PTY child for `runner` as part of `mission`. Persists a
@@ -355,6 +369,16 @@ impl SessionManager {
     /// `<app_data_dir>/bin` onto the child's PATH — arch §5.3 Layer 2 and
     /// 0001-v0-mvp.md C9 both require the bundled `runner` CLI to win over any
     /// system binary with the same name.
+    /// `first_turn` is the composed first-user-turn body to deliver
+    /// at spawn (lead launch prompt for a lead slot, worker preamble
+    /// plus brief for a non-lead). When the runtime accepts the
+    /// positional `[PROMPT]` argv and the body fits
+    /// `FIRST_TURN_ARGV_MAX_BYTES`, it lands as the trailing
+    /// positional during process init — eliminating the post-spawn
+    /// paste race. Otherwise the body falls through to
+    /// `schedule_mission_first_prompt`'s stdin-paste path. Pass
+    /// `None` to skip first-turn delivery entirely, for tests that
+    /// don't care about boot context.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         self: &Arc<Self>,
@@ -365,6 +389,7 @@ impl SessionManager {
         events_log_path: PathBuf,
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
+        first_turn: Option<String>,
     ) -> Result<SpawnedSession> {
         // Agent-native session resume: this is a *fresh* session row, so
         // there's no prior key to inherit. The runtime adapter still
@@ -423,7 +448,8 @@ impl SessionManager {
             None, // mission spawn doesn't yet receive cols/rows from the caller
             mission_env,
         );
-        Self::apply_runtime_args(&mut spec, runner, &plan);
+        let first_turn_delivered_via_argv =
+            Self::apply_runtime_args(&mut spec, runner, &plan, first_turn.as_deref());
 
         // Insert the row first (status=running with no runtime_*
         // metadata yet) so a fast-failing runtime spawn doesn't leave
@@ -510,7 +536,13 @@ impl SessionManager {
         }
 
         emit_runner_activity(&pool, runner, events.as_ref());
-        schedule_mission_first_prompt(self, session_id.clone(), runner, &plan, slot.lead);
+        schedule_mission_first_prompt(
+            self,
+            session_id.clone(),
+            runner,
+            &plan,
+            first_turn_delivered_via_argv,
+        );
 
         Ok(SpawnedSession {
             id: session_id,
@@ -544,6 +576,14 @@ impl SessionManager {
     ///   - The session does not show up in `kill_all_for_mission` for any
     ///     mission_id, so a `mission_stop` on some unrelated crew never
     ///     yanks the user's open chat.
+    ///
+    /// `first_turn` is the composed persona body for the direct chat
+    /// (no preamble — direct chats are off-bus). When the runtime
+    /// supports argv-based delivery the persona lands as the
+    /// trailing positional at spawn; otherwise the body falls
+    /// through to `schedule_direct_first_prompt`'s stdin-paste
+    /// path. Pass `None` when there's no persona to deliver, or for
+    /// tests that don't care about boot context.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_direct(
         self: &Arc<Self>,
@@ -554,6 +594,7 @@ impl SessionManager {
         app_data_dir: &Path,
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
+        first_turn: Option<String>,
     ) -> Result<SpawnedSession> {
         let _ = app_data_dir; // direct chats don't get the bundled CLI on PATH
 
@@ -589,7 +630,8 @@ impl SessionManager {
             initial_size,
             direct_env,
         );
-        Self::apply_runtime_args(&mut spec, runner, &plan);
+        let first_turn_delivered_via_argv =
+            Self::apply_runtime_args(&mut spec, runner, &plan, first_turn.as_deref());
 
         // Insert the row first so a fast-failing spawn doesn't leave
         // a half-row.
@@ -684,7 +726,13 @@ impl SessionManager {
         }
 
         emit_runner_activity(&pool, runner, events.as_ref());
-        schedule_direct_first_prompt(self, session_id.clone(), runner, &plan);
+        schedule_direct_first_prompt(
+            self,
+            session_id.clone(),
+            runner,
+            &plan,
+            first_turn_delivered_via_argv,
+        );
 
         Ok(SpawnedSession {
             id: session_id,
@@ -936,7 +984,13 @@ impl SessionManager {
             initial_size,
             env_extra,
         );
-        Self::apply_runtime_args(&mut spec, &runner, &plan);
+        // Resume never delivers a first-turn via argv: a real resume
+        // restores prior context via the agent CLI's own session
+        // resume, and the rare fresh-fallback case routes its launch
+        // prompt through paste-and-verify via the caller in
+        // `commands::session::session_resume`. `first_turn = None`
+        // here so the argv path stays inert.
+        let _ = Self::apply_runtime_args(&mut spec, &runner, &plan, None);
 
         let started_at_dt = Utc::now();
         let started_at = started_at_dt.to_rfc3339();
@@ -1059,16 +1113,15 @@ impl SessionManager {
         // (`schedule_direct_first_prompt`) is the right shape if the
         // resume happens to degrade to fresh.
         if mission_ctx.is_some() {
-            let is_lead_resume = is_lead_slot;
-            schedule_mission_first_prompt(
-                self,
-                session_id.to_string(),
-                &runner,
-                &plan,
-                is_lead_resume,
-            );
+            // Resume path: agent CLI restores prior conversation
+            // context via its own session resume. The
+            // `plan.resuming` guard inside the function makes this
+            // a no-op for the dominant case (a real resume). The
+            // resume-fresh-fallback case is handled separately by
+            // `Router::fire_lead_launch_prompt` via paste-verify.
+            schedule_mission_first_prompt(self, session_id.to_string(), &runner, &plan, false);
         } else {
-            schedule_direct_first_prompt(self, session_id.to_string(), &runner, &plan);
+            schedule_direct_first_prompt(self, session_id.to_string(), &runner, &plan, false);
         }
 
         // On a real resume (not a fresh-with-known-uuid spawn), nudge
@@ -1953,7 +2006,7 @@ fn schedule_mission_first_prompt(
     session_id: String,
     runner: &Runner,
     plan: &router::runtime::ResumePlan,
-    suppress_lead_preamble: bool,
+    delivered_via_argv: bool,
 ) {
     if runner.runtime != "claude-code" && runner.runtime != "codex" {
         return;
@@ -1961,22 +2014,23 @@ fn schedule_mission_first_prompt(
     if plan.resuming {
         return;
     }
-    if suppress_lead_preamble {
-        return;
+    // Spawn-time argv is the only first-turn delivery path on a
+    // fresh mission (plan 0007). The caller in
+    // `commands::mission::mission_start` always passes the composed
+    // body; persistence-layer validation caps `system_prompt` and
+    // `goal` so the body never exceeds the runtime's argv slot.
+    // If we reach this point with `delivered_via_argv == false`,
+    // either the runtime doesn't support argv (`shell`, future
+    // adapters) or the body slipped past validation — log and skip
+    // rather than re-introducing the paste race the plan got rid
+    // of.
+    if !delivered_via_argv {
+        eprintln!(
+            "runner: first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",
+            runner.runtime,
+        );
     }
-    let user_brief = runner
-        .system_prompt
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let mut prompt = String::new();
-    prompt.push_str(WORKER_COORDINATION_PREAMBLE);
-    if let Some(brief) = user_brief {
-        prompt.push_str("\n\n== Your brief ==\n");
-        prompt.push_str(&brief);
-    }
-    inject_first_turn(mgr, session_id, prompt);
+    let _ = mgr;
 }
 
 /// Direct-chat-flavored first-turn injection: types just
@@ -1999,6 +2053,7 @@ fn schedule_direct_first_prompt(
     session_id: String,
     runner: &Runner,
     plan: &router::runtime::ResumePlan,
+    delivered_via_argv: bool,
 ) {
     if runner.runtime != "claude-code" && runner.runtime != "codex" {
         return;
@@ -2006,63 +2061,27 @@ fn schedule_direct_first_prompt(
     if plan.resuming {
         return;
     }
-    let Some(persona) = runner
-        .system_prompt
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-    else {
-        return;
-    };
-    inject_first_turn(mgr, session_id, persona);
-}
-
-/// Shared mechanics for typing a first user turn into the PTY.
-/// Strips any embedded `\r` so the prompt body is one piece; embedded
-/// `\n`s render as line breaks inside the input box.
-/// `inject_paste_with_verify` handles the readback-and-retry loop +
-/// emits Enter once the paste lands. Production runs on a settle
-/// thread; `cfg(test)` zeros every duration in `FIRST_PROMPT_CONFIG`
-/// so the loop completes inline within one synchronous call.
-fn inject_first_turn(mgr: &Arc<SessionManager>, session_id: String, prompt: String) {
-    let body: String = prompt.chars().filter(|c| *c != '\r').collect();
-    let config = FIRST_PROMPT_CONFIG;
-
-    if config.initial_wait.is_zero() && config.between_attempts.is_zero() {
-        // Inline path under `cfg(test)`: every duration in
-        // `FIRST_PROMPT_CONFIG` is zero, so the verify loop completes
-        // synchronously and tests can read the FakeRuntime
-        // immediately. Production never hits this branch.
-        let _ = mgr.inject_paste_with_verify(&session_id, body.as_bytes(), config);
-        return;
+    if !delivered_via_argv {
+        eprintln!(
+            "runner: first-turn argv not delivered for direct chat {session_id} (runtime {}); skipping post-spawn injection",
+            runner.runtime,
+        );
     }
-    let mgr = Arc::clone(mgr);
-    std::thread::spawn(move || {
-        if let Err(e) = mgr.inject_paste_with_verify(&session_id, body.as_bytes(), config) {
-            eprintln!("runner: first-prompt for {session_id} failed: {e}");
-        }
-    });
+    let _ = mgr;
 }
 
-/// Platform-injected preamble for non-lead worker spawns. Covers the
-/// bus conventions a worker needs to interact with the crew + the
-/// human, leaving the user-authored `system_prompt` free to focus on
-/// persona / role. Sent as the first user turn (before any task
-/// dispatch from the lead) by `schedule_first_prompt`.
-const WORKER_COORDINATION_PREAMBLE: &str = r#"You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew + the human operator via a shared event bus. Use these verbs to participate; do not invent your own conventions.
+// Pre-#88 `inject_first_turn` (the paste-fallback orchestrator) was
+// removed when first-turn delivery moved to spawn-time argv. The
+// only remaining paste-based path is `schedule_continue_on_resume`,
+// which calls `inject_paste_with_verify` directly with the 8-byte
+// "continue" body.
 
-== Coordination ==
-- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.
-- `runner msg post --to <handle> "<text>"` — direct message to a specific handle. Valid handles: any slot in this crew, plus the reserved virtual handle `human` (the workspace operator).
-- `runner msg post "<text>"` — broadcast to the crew (no `--to`).
-- `runner signal ask_lead --payload '{"question":"…","context":"…"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.
-- `runner status idle` — report you've finished the current task. The lead view uses this to dispatch the next slot.
-
-== Replying to the human ==
-The human is watching the workspace feed, NOT your TUI. When the human speaks to you directly (raw input lands in your TUI, often prefixed with `[human_said]`), reply via:
-    runner msg post --to human "<your reply>"
-Plain TUI output (typing into your editor, printing to stdout) stays in your local scrollback only — it never reaches the human. The `--to human` route is the only way your reply lands in the workspace feed."#;
+// `WORKER_COORDINATION_PREAMBLE` and the per-runtime first-turn
+// composition helpers (`compose_worker_first_turn`,
+// `compose_direct_first_turn`) live in `router::prompt` — both the
+// spawn-time argv path (here) and any post-spawn paste fallback
+// pull from the same composers so the delivered body is byte-
+// identical regardless of route.
 
 /// Auto-send "continue" as a first user turn after a successful
 /// resume so the agent picks up where it left off without the user
@@ -2855,6 +2874,7 @@ mod tests {
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
                 capture(),
+                None,
             )
             .unwrap();
         let spawned_b = mgr
@@ -2866,6 +2886,7 @@ mod tests {
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
                 capture(),
+                None,
             )
             .unwrap();
         assert_ne!(
@@ -2977,6 +2998,7 @@ mod tests {
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
                 Arc::clone(&cap) as Arc<dyn SessionEvents>,
+                None,
             )
             .unwrap();
         // pid is no longer pre-known on spawn return — the runtime
@@ -3053,6 +3075,7 @@ mod tests {
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
                 capture(),
+                None,
             )
             .unwrap();
         mgr.inject_stdin(&spawned.id, b"hello\n").unwrap();
@@ -3105,19 +3128,26 @@ mod tests {
     // pastes / keys / bytes_writes directly — faster and free of
     // shell-timing flakes.
 
+    // Pre-#88 `codex_direct_chat_injects_persona_without_preamble`
+    // and `claude_code_direct_chat_injects_persona_without_preamble`
+    // asserted the off-bus invariant from #51 over the post-spawn
+    // paste path. Plan 0007 moved first-turn delivery to spawn-time
+    // positional argv; the same invariant is now exercised by
+    // `direct_chat_persona_lands_as_trailing_positional_argv_without_worker_preamble`
+    // below, and `compose_direct_first_turn` is unit-tested in
+    // `router::prompt`.
+
     #[test]
-    fn codex_direct_chat_injects_persona_without_preamble() {
-        // Direct chats are off-bus: the bundled `runner` CLI is not on
-        // PATH (#51) and there's no crew/mission to coordinate over,
-        // so the WORKER_COORDINATION_PREAMBLE would advertise verbs
-        // that don't work. Direct chat sends ONLY the persona
-        // (runner.system_prompt) via the runtime's paste() —
-        // `inject_paste` from the manager.
-        //
-        // Assert (a) `runtime.paste` was called with the persona
-        // token and (b) a distinctive substring of
-        // WORKER_COORDINATION_PREAMBLE was NOT — regression guard
-        // for the bug in #51.
+    fn direct_chat_persona_lands_as_trailing_positional_argv_without_worker_preamble() {
+        // Plan 0007: when `spawn_direct` receives a non-empty
+        // `first_turn`, the body must (a) land as the trailing
+        // positional argv on the SpawnSpec, (b) suppress the
+        // post-spawn paste fallback so the agent doesn't receive
+        // the persona twice, and (c) preserve the off-bus
+        // invariant from #51 — direct chats must NOT carry the
+        // worker coordination preamble (the bundled `runner` CLI
+        // isn't on PATH for direct chats; the preamble's verbs
+        // would mislead the agent).
         let pool = pool_with_schema();
         let now = Utc::now().to_rfc3339();
         let runner_id = ulid::Ulid::new().to_string();
@@ -3128,86 +3158,26 @@ mod tests {
                     (id, handle, display_name, runtime, command,
                      args_json, working_dir, system_prompt, env_json,
                      created_at, updated_at)
-                 VALUES (?1, 'codex-tester', 'CT', 'codex', '/bin/cat',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-                params![runner_id, now],
-            )
-            .unwrap();
-        }
-        let mut runner = runner("/bin/cat", &[]);
-        runner.id = runner_id.clone();
-        runner.handle = "codex-tester".into();
-        runner.runtime = "codex".into();
-        runner.system_prompt = Some("CODEX_PERSONA_TOKEN".into());
-
-        let fake = fake_runtime();
-        let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        let spawned = mgr
-            .spawn_direct(
-                &runner,
-                Some("/tmp"),
-                None,
-                None,
-                std::path::Path::new("/tmp"),
-                Arc::clone(&pool),
-                capture(),
-            )
-            .unwrap();
-
-        // FIRST_PROMPT_DELAY = ZERO under cfg(test) so the inject
-        // happens inline before spawn_direct returns.
-        let pastes = fake.pastes();
-        let merged: String = pastes
-            .iter()
-            .map(|(_, p)| String::from_utf8_lossy(p).to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            merged.contains("CODEX_PERSONA_TOKEN"),
-            "codex direct chat must paste the persona; got pastes = {merged:?}",
-        );
-        assert!(
-            !merged.contains("in a crew coordinated by the bundled"),
-            "direct chat must NOT paste WORKER_COORDINATION_PREAMBLE: {merged:?}",
-        );
-        // Manager should also follow up with send_key("Enter") to
-        // submit the paste.
-        assert!(
-            fake.keys().iter().any(|(_, k)| k == "Enter"),
-            "expected Enter key after paste; got keys = {:?}",
-            fake.keys()
-        );
-
-        mgr.kill(&spawned.id).unwrap();
-    }
-
-    #[test]
-    fn claude_code_direct_chat_injects_persona_without_preamble() {
-        // Same shape as the codex test, but with claude-code runtime
-        // — claude-code's `--append-system-prompt` is SDK-only
-        // (silently dropped by the interactive TUI), so stdin is the
-        // only persona-delivery path.
-        let pool = pool_with_schema();
-        let now = Utc::now().to_rfc3339();
-        let runner_id = ulid::Ulid::new().to_string();
-        {
-            let conn = pool.get().unwrap();
-            conn.execute(
-                "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'cc-tester', 'CC', 'claude-code', '/bin/sh',
-                         ?3, NULL, NULL, NULL, ?2, ?2)",
-                params![runner_id, now, r#"["-c","cat"]"#],
+                 VALUES (?1, 'cc-argv', 'CC', 'claude-code', '/bin/sh',
+                         ?3, NULL, ?4, NULL, ?2, ?2)",
+                params![runner_id, now, r#"["-c","cat"]"#, "DIRECT_PERSONA"],
             )
             .unwrap();
         }
         let mut runner = runner("/bin/sh", &["-c", "cat"]);
-        runner.id = runner_id.clone();
-        runner.handle = "cc-tester".into();
+        runner.id = runner_id;
+        runner.handle = "cc-argv".into();
         runner.runtime = "claude-code".into();
-        runner.system_prompt = Some("CC_PERSONA_TOKEN".into());
+        runner.system_prompt = Some("DIRECT_PERSONA".into());
+
+        // Compose via the same helper `session_start_direct` uses.
+        let body =
+            crate::router::prompt::compose_direct_first_turn(runner.system_prompt.as_deref())
+                .expect("non-empty persona");
+        assert!(
+            !body.contains("in a crew coordinated by the bundled"),
+            "compose_direct_first_turn must NOT include the worker preamble (off-bus invariant)",
+        );
 
         let fake = fake_runtime();
         let mgr = mgr_with_fake(None, Arc::clone(&fake));
@@ -3220,71 +3190,66 @@ mod tests {
                 std::path::Path::new("/tmp"),
                 Arc::clone(&pool),
                 capture(),
+                Some(body.clone()),
             )
             .unwrap();
 
-        let merged: String = fake
-            .pastes()
-            .iter()
-            .map(|(_, p)| String::from_utf8_lossy(p).to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let spec = fake.last_spawn_spec().expect("spawn was called");
+        let trailing = spec.args.last().map(String::as_str).unwrap_or("");
         assert!(
-            merged.contains("CC_PERSONA_TOKEN"),
-            "claude-code direct chat must paste the persona; got = {merged:?}",
+            trailing.contains("DIRECT_PERSONA"),
+            "first_turn body must land as the trailing positional argv; got args = {:?}",
+            spec.args
         );
         assert!(
-            !merged.contains("in a crew coordinated by the bundled"),
-            "direct chat must NOT paste WORKER_COORDINATION_PREAMBLE: {merged:?}",
+            !trailing.contains("in a crew coordinated by the bundled"),
+            "direct chat must NOT ship the worker coordination preamble in argv: {trailing:?}",
+        );
+        assert!(
+            fake.pastes().is_empty(),
+            "argv delivery must suppress the post-spawn paste fallback; got pastes = {:?}",
+            fake.pastes()
         );
 
         mgr.kill(&spawned.id).unwrap();
     }
 
     #[test]
-    fn mission_spawn_injects_preamble_for_non_lead_worker() {
-        // Regression guard for #45 after the schedule_first_prompt
-        // split. Mission spawn (non-lead worker) must STILL get the
-        // bus-contract WORKER_COORDINATION_PREAMBLE typed into stdin
-        // ahead of the user-authored brief, since workers are
-        // expected to call `runner msg post`, `runner status idle`,
-        // etc. Mirrors the direct-chat tests but spawns through the
-        // mission-flavored `spawn` path with a non-lead slot.
+    fn mission_spawn_worker_preamble_lands_as_trailing_positional_argv_with_brief() {
+        // Regression guard for #45 + #88 combined: a non-lead worker
+        // must still receive the WORKER_COORDINATION_PREAMBLE plus
+        // its brief as the first user turn, but now via the
+        // spawn-time positional argv path rather than post-spawn
+        // paste. Argv delivery must also suppress the paste
+        // fallback so the worker doesn't get double-delivered.
+        use crate::router::prompt::compose_worker_first_turn;
+
         let pool = pool_with_schema();
         let mission = mission();
         let mut runner = runner("/bin/sh", &["-c", "cat"]);
         runner.runtime = "claude-code".into();
-        runner.handle = "worker-tester".into();
-        runner.system_prompt = Some("WORKER_PERSONA_TOKEN".into());
+        runner.handle = "worker-argv".into();
+        runner.system_prompt = Some("WORKER_BRIEF".into());
 
         let slot_id = insert_crew_runner(&pool, &mission.id, &runner.id);
-        // Override the inserted slot row to non-lead so
-        // schedule_mission_first_prompt actually fires (lead path is
-        // suppressed because the launch prompt is dispatched separately
-        // by the bus's mission_goal handler).
         {
             let conn = pool.get().unwrap();
             conn.execute("UPDATE slots SET lead = 0 WHERE id = ?1", params![slot_id])
                 .unwrap();
-            // Mirror runner row updates so spawn() reads the test's
-            // runtime / handle / system_prompt / args.
             conn.execute(
                 "UPDATE runners
-                    SET runtime = ?2, handle = ?3, system_prompt = ?4,
-                        command = ?5, args_json = ?6
+                    SET runtime = ?2, handle = ?3, system_prompt = ?4
                   WHERE id = ?1",
                 params![
                     runner.id,
                     runner.runtime,
                     runner.handle,
-                    runner.system_prompt,
-                    runner.command,
-                    r#"["-c","cat"]"#,
+                    runner.system_prompt
                 ],
             )
             .unwrap();
         }
-        let fresh_mission_id = {
+        let fresh_mission_id: String = {
             let conn = pool.get().unwrap();
             conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
                 .unwrap()
@@ -3297,6 +3262,11 @@ mod tests {
         slot.id = slot_id;
         slot.lead = false;
 
+        let body = compose_worker_first_turn(runner.system_prompt.as_deref());
+        // Composer ships the on-bus preamble + the brief.
+        assert!(body.contains("in a crew coordinated by the bundled"));
+        assert!(body.contains("WORKER_BRIEF"));
+
         let fake = fake_runtime();
         let mgr = mgr_with_fake(None, Arc::clone(&fake));
         let spawned = mgr
@@ -3308,29 +3278,40 @@ mod tests {
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
                 capture(),
+                Some(body.clone()),
             )
             .unwrap();
 
-        // FIRST_PROMPT_DELAY = ZERO under cfg(test) so the inject
-        // happens inline. The mission preamble + brief are pasted
-        // as a single bracketed-paste through `inject_paste`.
-        let merged: String = fake
-            .pastes()
-            .iter()
-            .map(|(_, p)| String::from_utf8_lossy(p).to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            merged.contains("in a crew coordinated by the bundled"),
-            "non-lead worker must paste WORKER_COORDINATION_PREAMBLE: {merged:?}",
+        let spec = fake.last_spawn_spec().expect("spawn was called");
+        let trailing = spec.args.last().map(String::as_str).unwrap_or("");
+        assert_eq!(
+            trailing, body,
+            "worker first-turn body must land as the trailing positional argv; got args.last() = {trailing:?}"
         );
         assert!(
-            merged.contains("WORKER_PERSONA_TOKEN"),
-            "non-lead worker must paste the user-authored brief: {merged:?}",
+            trailing.contains("in a crew coordinated by the bundled"),
+            "worker argv must ship the coordination preamble (on-bus invariant)"
+        );
+        assert!(
+            trailing.contains("WORKER_BRIEF"),
+            "worker argv must ship the brief"
+        );
+        assert!(
+            fake.pastes().is_empty(),
+            "argv delivery must suppress the post-spawn paste fallback; got = {:?}",
+            fake.pastes()
         );
 
         mgr.kill(&spawned.id).unwrap();
     }
+
+    // Pre-#88 `mission_spawn_injects_preamble_for_non_lead_worker`
+    // is superseded by
+    // `mission_spawn_worker_preamble_lands_as_trailing_positional_argv_with_brief`
+    // above; the on-bus invariant from #45 is now exercised over
+    // the argv delivery path, and persistence-layer validation
+    // (`MAX_SYSTEM_PROMPT_BYTES` / `MAX_MISSION_GOAL_BYTES`)
+    // prevents the body from exceeding the runtime's argv slot.
 
     #[test]
     fn codex_resume_skips_first_prompt_injection() {
@@ -3453,6 +3434,7 @@ mod tests {
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
                 capture(),
+                None,
             )
             .unwrap_err();
         // The error must surface the DB failure, not a spawn failure.
@@ -3502,6 +3484,7 @@ mod tests {
                 PathBuf::from("/dev/null"),
                 Arc::clone(&pool),
                 capture(),
+                None,
             )
             .unwrap();
 
@@ -3569,6 +3552,7 @@ mod tests {
                 std::path::Path::new("/tmp"),
                 Arc::clone(&pool),
                 cap.clone(),
+                None,
             )
             .unwrap();
         assert_eq!(spawned.mission_id, None);
@@ -3656,6 +3640,7 @@ mod tests {
                 std::path::Path::new("/tmp"),
                 Arc::clone(&pool),
                 capture(),
+                None,
             )
             .unwrap();
 
@@ -3737,6 +3722,7 @@ mod tests {
                 std::path::Path::new("/tmp"),
                 Arc::clone(&pool),
                 capture(),
+                None,
             )
             .unwrap();
         let session_id = spawned.id.clone();
