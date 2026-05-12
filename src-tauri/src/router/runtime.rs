@@ -431,11 +431,14 @@ pub fn system_prompt_args(runtime: &str, system_prompt: Option<&str>) -> Vec<Str
     }
 }
 
-/// Max bytes of `first_turn` to deliver via the positional `[PROMPT]`
-/// argv. Conservatively well below macOS `ARG_MAX` (~256KB) — bodies
-/// over this fall back to post-spawn paste-and-verify so we never
-/// trip the OS cap. Mission launch prompts are typically 1-5KB; this
-/// leaves a generous 8x safety margin.
+/// Defense-in-depth ceiling on the positional `[PROMPT]` argv payload.
+/// Persistence-layer validation in `commands::runner` /
+/// `commands::mission` / `commands::crew` caps the individual fields
+/// (`system_prompt`, `mission_goal`, `crew.goal`) so the composed
+/// body never approaches this number. Set well below macOS `ARG_MAX`
+/// (~256 KB) but high enough that no realistic user input can hit it
+/// once the persist-time caps are honored. `debug_assert!`-trips on
+/// overshoot — surfaces a logic bug, not a user error.
 pub const FIRST_TURN_ARGV_MAX_BYTES: usize = 32 * 1024;
 
 /// Map a runtime + composed first-turn body to the positional argv
@@ -451,9 +454,12 @@ pub const FIRST_TURN_ARGV_MAX_BYTES: usize = 32 * 1024;
 ///
 /// Returns empty when:
 ///   - the body is None or blank,
-///   - the runtime has no positional first-turn convention (`shell`),
-///   - the body is over `FIRST_TURN_ARGV_MAX_BYTES` (defensive ARG_MAX
-///     guard — caller falls back to paste delivery).
+///   - the runtime has no positional first-turn convention (`shell`).
+///
+/// In debug builds, panics if the body exceeds
+/// `FIRST_TURN_ARGV_MAX_BYTES` — that indicates a missing
+/// persist-time validation upstream. Release builds silently truncate
+/// the argv to empty to fail safe.
 ///
 /// The old comment block in `system_prompt_args` claiming codex's
 /// positional gets swallowed by a startup approval dialog was stale
@@ -465,6 +471,12 @@ pub fn first_turn_argv(runtime: &str, body: Option<&str>) -> Vec<String> {
         Some(s) if !s.trim().is_empty() => s,
         _ => return Vec::new(),
     };
+    debug_assert!(
+        body.len() <= FIRST_TURN_ARGV_MAX_BYTES,
+        "first-turn argv body exceeds {FIRST_TURN_ARGV_MAX_BYTES} bytes \
+         (got {}) — persistence-layer validation should have caught this",
+        body.len()
+    );
     if body.len() > FIRST_TURN_ARGV_MAX_BYTES {
         return Vec::new();
     }
@@ -1405,15 +1417,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn first_turn_argv_skipped_when_body_exceeds_arg_max_threshold() {
-        let body = "x".repeat(FIRST_TURN_ARGV_MAX_BYTES + 1);
-        let args = first_turn_argv("claude-code", Some(&body));
-        assert!(
-            args.is_empty(),
-            "bodies over FIRST_TURN_ARGV_MAX_BYTES must fall through to the paste path"
-        );
-    }
+    // The pre-#88 `first_turn_argv_skipped_when_body_exceeds_arg_max_threshold`
+    // test exercised the post-spawn paste fallback for oversized bodies.
+    // Plan 0007 retired that fallback in favour of persistence-layer
+    // validation (`commands::runner::MAX_SYSTEM_PROMPT_BYTES` /
+    // `commands::mission::MAX_MISSION_GOAL_BYTES`). The debug_assert
+    // inside `first_turn_argv` is now defense-in-depth — exercising it
+    // here would just trip the assertion. Validation tests live in
+    // `commands::runner` / `commands::mission` / `commands::crew`.
 
     #[test]
     fn first_turn_argv_empty_for_blank_or_unsupported_runtime() {

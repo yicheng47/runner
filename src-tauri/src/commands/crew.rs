@@ -167,11 +167,33 @@ pub fn get(conn: &Connection, id: &str) -> Result<Crew> {
     .ok_or_else(|| Error::msg(format!("crew not found: {id}")))
 }
 
+/// Reject `crew.goal` payloads that would push the composed lead
+/// launch prompt past `router::runtime::FIRST_TURN_ARGV_MAX_BYTES`
+/// once layered with `system_prompt` + roster + coordination block.
+/// `mission_start` uses the per-mission `goal_override` when set,
+/// else this default; capping at the same `MAX_MISSION_GOAL_BYTES`
+/// limit at both layers makes the invariant uniform.
+fn validate_crew_goal(goal: Option<&str>) -> Result<()> {
+    if let Some(g) = goal {
+        if g.len() > crate::commands::mission::MAX_MISSION_GOAL_BYTES {
+            return Err(Error::msg(format!(
+                "crew goal is {} bytes; max {} ({} KB). Trim the goal text or move \
+                 long-form context into the runner brief / per-task messages.",
+                g.len(),
+                crate::commands::mission::MAX_MISSION_GOAL_BYTES,
+                crate::commands::mission::MAX_MISSION_GOAL_BYTES / 1024,
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub fn create(conn: &Connection, input: CreateCrewInput) -> Result<Crew> {
     let name = input.name.trim();
     if name.is_empty() {
         return Err(Error::msg("crew name must not be empty"));
     }
+    validate_crew_goal(input.goal.as_deref())?;
     let id = new_id();
     let ts = now().to_rfc3339();
     conn.execute(
@@ -197,6 +219,7 @@ pub fn update(conn: &Connection, id: &str, input: UpdateCrewInput) -> Result<Cre
     };
     let purpose = input.purpose.unwrap_or(existing.purpose);
     let goal = input.goal.unwrap_or(existing.goal);
+    validate_crew_goal(goal.as_deref())?;
     let orchestrator_policy = input
         .orchestrator_policy
         .unwrap_or(existing.orchestrator_policy);
@@ -272,6 +295,59 @@ mod tests {
 
     fn ctx() -> db::DbPool {
         db::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn create_rejects_goal_over_cap() {
+        // Plan 0007: validation at persist time keeps the composed
+        // launch prompt under the runtime argv ceiling. crew.goal
+        // feeds into the lead's launch prompt at mission_start (the
+        // mission_goal event uses goal_override || crew.goal), so
+        // the same cap applies here.
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let oversized =
+            "Y".repeat(crate::commands::mission::MAX_MISSION_GOAL_BYTES + 1);
+        let err = create(
+            &conn,
+            CreateCrewInput {
+                name: "Big".into(),
+                purpose: None,
+                goal: Some(oversized),
+            },
+        )
+        .expect_err("oversize crew.goal must be rejected");
+        assert!(err.to_string().contains("goal"));
+    }
+
+    #[test]
+    fn update_rejects_goal_over_cap() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let crew = create(
+            &conn,
+            CreateCrewInput {
+                name: "Victim".into(),
+                purpose: None,
+                goal: None,
+            },
+        )
+        .unwrap();
+        let oversized =
+            "Y".repeat(crate::commands::mission::MAX_MISSION_GOAL_BYTES + 1);
+        let err = update(
+            &conn,
+            &crew.id,
+            UpdateCrewInput {
+                name: None,
+                purpose: None,
+                goal: Some(Some(oversized)),
+                orchestrator_policy: None,
+                signal_types: None,
+            },
+        )
+        .expect_err("oversize crew.goal must be rejected on update");
+        assert!(err.to_string().contains("goal"));
     }
 
     #[test]

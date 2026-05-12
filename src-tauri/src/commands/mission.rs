@@ -139,6 +139,28 @@ pub fn get(conn: &Connection, id: &str) -> Result<Mission> {
     .ok_or_else(|| Error::msg(format!("mission not found: {id}")))
 }
 
+/// Cap on the effective mission goal byte length. The launch prompt
+/// composer pastes this into the lead's first-user-turn body
+/// alongside `system_prompt` (≤ `MAX_SYSTEM_PROMPT_BYTES`) and the
+/// roster + coordination block; together they have to fit under
+/// `router::runtime::FIRST_TURN_ARGV_MAX_BYTES`. 8 KB is roomy for
+/// a real mission goal (typical goals are a few sentences) while
+/// leaving generous headroom for the rest of the composed body.
+pub const MAX_MISSION_GOAL_BYTES: usize = 8 * 1024;
+
+fn validate_mission_goal(goal: &str) -> Result<()> {
+    if goal.len() > MAX_MISSION_GOAL_BYTES {
+        return Err(Error::msg(format!(
+            "mission goal is {} bytes; max {} ({} KB). Trim the goal text or move \
+             long-form context into the runner brief / per-task messages.",
+            goal.len(),
+            MAX_MISSION_GOAL_BYTES,
+            MAX_MISSION_GOAL_BYTES / 1024,
+        )));
+    }
+    Ok(())
+}
+
 pub fn start(
     conn: &mut Connection,
     app_data_dir: &Path,
@@ -147,6 +169,9 @@ pub fn start(
     let title = input.title.trim().to_string();
     if title.is_empty() {
         return Err(Error::msg("mission title must not be empty"));
+    }
+    if let Some(g) = input.goal_override.as_deref() {
+        validate_mission_goal(g)?;
     }
 
     // Validate crew exists and is launchable.
@@ -1316,6 +1341,33 @@ mod tests {
         )
         .unwrap();
         slot::create(conn, crew_id, &r.id, handle).unwrap();
+    }
+
+    #[test]
+    fn start_rejects_goal_override_over_cap() {
+        // Plan 0007: validation at persist time keeps the composed
+        // launch prompt under the runtime argv ceiling. mission_start
+        // refuses a goal_override over MAX_MISSION_GOAL_BYTES.
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "C", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let oversized = "Z".repeat(MAX_MISSION_GOAL_BYTES + 1);
+        let err = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id,
+                title: "Try".into(),
+                goal_override: Some(oversized),
+                cwd: None,
+            },
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("goal"), "expected goal-size error, got {msg}");
     }
 
     #[test]

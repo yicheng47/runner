@@ -210,23 +210,31 @@ post-spawn. After this plan:
 - On resume of a non-lead, the agent's own session resume restores
   the persona context; no re-injection needed for either runtime.
 
-### ARG_MAX guard
+### Persist-time validation (no fallback)
 
-macOS `ARG_MAX` is ~256KB. Mission prompts are typically 1-5KB.
-Add a defensive cap:
+`first_turn_argv` is now the **only** path for the first user turn
+on a fresh spawn. There is no paste fallback for oversize bodies —
+instead, persistence-layer validation rejects inputs that would
+push the composed body past the runtime's argv slot.
 
-```rust
-const SPAWN_ARGV_PROMPT_MAX_BYTES: usize = 32 * 1024; // 32KB
+Two caps, both surfaced in the corresponding `commands::*` module:
 
-if first_turn.len() > SPAWN_ARGV_PROMPT_MAX_BYTES {
-    log + fall back to post-spawn paste-verify for this slot
-}
-```
+| Constant | Site | Value |
+|---|---|---|
+| `MAX_SYSTEM_PROMPT_BYTES` | `commands::runner` | 16 KB |
+| `MAX_MISSION_GOAL_BYTES` | `commands::mission` (reused by `commands::crew::validate_crew_goal`) | 8 KB |
 
-32KB leaves an 8x safety margin against the OS cap and trips well
-before any realistic mission prompt. The fallback path is the
-existing `schedule_mission_first_prompt` / `inject_paste_with_verify`
-machinery — unchanged.
+Sized so the composed launch prompt — preamble (~1 KB) +
+`system_prompt` (≤16 KB) + goal (≤8 KB) + roster (~2 KB) +
+coordination (~1 KB) — stays well under
+`router::runtime::FIRST_TURN_ARGV_MAX_BYTES` (32 KB, defense-in-
+depth). The worker preamble and direct-chat persona use only a
+subset of those fields and are bounded by the same caps.
+
+`first_turn_argv` carries a `debug_assert!` on the
+`FIRST_TURN_ARGV_MAX_BYTES` ceiling so a future drift in the
+composition logic that bypasses validation surfaces in tests
+rather than silently truncating at spawn.
 
 ### Trust-folder dialog (claude-code)
 
@@ -299,9 +307,14 @@ them forward.
 ## Risks
 
 - **ARG_MAX edge cases on weird systems.** macOS is fine. Linux
-  varies (per `getconf ARG_MAX`); typical 2MB. The 32KB cap is
-  defensive. Embedded environments with smaller limits would trip
-  the fallback path — acceptable.
+  varies (per `getconf ARG_MAX`); typical 2MB. The 32 KB
+  defense-in-depth ceiling in `first_turn_argv` is the secondary
+  guard; the primary guard is the persistence-layer cap on the
+  composing fields (`system_prompt` ≤ 16 KB, `goal` ≤ 8 KB), which
+  prevents the body from approaching the ceiling in the first
+  place. Embedded environments with `ARG_MAX` below 32 KB would
+  need a smaller persist-time cap — punted until a real platform
+  surface asks for it.
 
 - **Shell-quoting bugs.** The existing
   `render_launch_script` quoter handles single quotes; multi-line
@@ -359,9 +372,14 @@ them forward.
 4. **`direct_chat_passes_persona_via_argv`** (session.rs) —
    `session_start_direct` calls spawn with `first_turn = persona`.
 
-5. **`spawn_argv_too_long_falls_back_to_paste`** (mission.rs or
-   manager.rs) — a body > 32KB triggers the fallback path and
-   `inject_paste_with_verify` is called instead.
+5. **`create_rejects_system_prompt_over_cap`** /
+   **`update_rejects_system_prompt_over_cap`** (commands::runner) —
+   `system_prompt` over `MAX_SYSTEM_PROMPT_BYTES` is rejected at
+   create + update; no DB write happens.
+   **`create_rejects_goal_over_cap`** /
+   **`update_rejects_goal_over_cap`** (commands::crew) — same for
+   `crew.goal`. **`start_rejects_goal_override_over_cap`**
+   (commands::mission) — same for per-mission goal_override.
 
 6. **`mission_goal_handler_no_op_when_prompt_spawn_delivered`**
    (router) — bus replay of `mission_goal` against a fresh mission

@@ -130,6 +130,38 @@ fn now() -> Timestamp {
     Utc::now()
 }
 
+/// Cap on `system_prompt` byte length. The composed first-user-turn
+/// body (`compose_launch_prompt` for a lead, `compose_worker_first_turn`
+/// for a non-lead) wraps this field plus ~1-3 KB of preamble + goal +
+/// roster + coordination. The defense-in-depth ceiling in
+/// `router::runtime::first_turn_argv` is 32 KB; keeping
+/// `system_prompt` ≤ 16 KB plus `mission_goal` ≤ 8 KB leaves the
+/// composed body well under that ceiling so spawn-time argv
+/// delivery is guaranteed to fit. See
+/// `docs/impls/0007-spawn-time-prompt-delivery.md`.
+pub const MAX_SYSTEM_PROMPT_BYTES: usize = 16 * 1024;
+
+/// Reject `system_prompt` payloads that would exceed the
+/// `first_turn_argv` budget once wrapped in the composed launch /
+/// worker / direct-chat body. Persist-time validation keeps the
+/// first-turn delivery path argv-only — there is no paste fallback
+/// to rescue an oversized row, so the boundary check has to live
+/// here.
+pub(super) fn validate_system_prompt(prompt: Option<&str>) -> Result<()> {
+    if let Some(p) = prompt {
+        if p.len() > MAX_SYSTEM_PROMPT_BYTES {
+            return Err(Error::msg(format!(
+                "system_prompt is {} bytes; max {} ({} KB). Trim the brief or move \
+                 long-form content into per-task instructions.",
+                p.len(),
+                MAX_SYSTEM_PROMPT_BYTES,
+                MAX_SYSTEM_PROMPT_BYTES / 1024,
+            )));
+        }
+    }
+    Ok(())
+}
+
 // Handle validation: lowercase ASCII slug, 1..=32 chars, [a-z0-9] start,
 // body [a-z0-9_-]. Matches PRD §4 handle rules.
 pub(super) fn validate_handle(handle: &str) -> Result<()> {
@@ -280,6 +312,7 @@ pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
         return Err(Error::msg("display_name must not be empty"));
     }
     validate_env_keys(&input.env)?;
+    validate_system_prompt(input.system_prompt.as_deref())?;
 
     let id = new_id();
     let ts = now().to_rfc3339();
@@ -368,6 +401,7 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
     };
     let working_dir = input.working_dir.unwrap_or(existing.working_dir);
     let system_prompt = input.system_prompt.unwrap_or(existing.system_prompt);
+    validate_system_prompt(system_prompt.as_deref())?;
     let env = match input.env {
         Some(new_env) => {
             validate_env_keys(&new_env)?;
@@ -1173,6 +1207,66 @@ mod tests {
         assert_eq!(a.active_missions, 0);
         assert_eq!(a.crew_count, 0);
         assert!(a.last_started_at.is_none());
+    }
+
+    #[test]
+    fn create_rejects_system_prompt_over_cap() {
+        // Plan 0007: validation at persist time keeps the composed
+        // launch / worker / direct-chat body under
+        // `router::runtime::FIRST_TURN_ARGV_MAX_BYTES` so spawn-time
+        // argv delivery is guaranteed to fit. Reject oversized
+        // `system_prompt` payloads here instead of relying on a
+        // post-spawn paste fallback (which the plan retired).
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let oversized = "X".repeat(MAX_SYSTEM_PROMPT_BYTES + 1);
+        let err = create(
+            &conn,
+            CreateRunnerInput {
+                handle: "too-long".into(),
+                display_name: "T".into(),
+                runtime: "claude-code".into(),
+                command: "claude".into(),
+                args: vec![],
+                working_dir: None,
+                system_prompt: Some(oversized),
+                env: Default::default(),
+                model: None,
+                effort: None,
+                permission_mode: crate::router::runtime::PermissionMode::AcceptEdits,
+            },
+        )
+        .expect_err("oversize system_prompt must be rejected");
+        assert!(
+            err.to_string().contains("system_prompt"),
+            "error should mention system_prompt; got {err}"
+        );
+    }
+
+    #[test]
+    fn update_rejects_system_prompt_over_cap() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let r = make(&conn, "victim");
+        let oversized = "X".repeat(MAX_SYSTEM_PROMPT_BYTES + 1);
+        let err = update(
+            &conn,
+            &r.id,
+            UpdateRunnerInput {
+                display_name: None,
+                runtime: None,
+                command: None,
+                args: None,
+                working_dir: None,
+                system_prompt: Some(Some(oversized)),
+                env: None,
+                model: None,
+                effort: None,
+                permission_mode: None,
+            },
+        )
+        .expect_err("oversize system_prompt must be rejected on update");
+        assert!(err.to_string().contains("system_prompt"));
     }
 
     #[test]
