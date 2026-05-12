@@ -306,8 +306,7 @@ mod tests {
         // the same cap applies here.
         let pool = ctx();
         let conn = pool.get().unwrap();
-        let oversized =
-            "Y".repeat(crate::commands::mission::MAX_MISSION_GOAL_BYTES + 1);
+        let oversized = "Y".repeat(crate::commands::mission::MAX_MISSION_GOAL_BYTES + 1);
         let err = create(
             &conn,
             CreateCrewInput {
@@ -333,8 +332,7 @@ mod tests {
             },
         )
         .unwrap();
-        let oversized =
-            "Y".repeat(crate::commands::mission::MAX_MISSION_GOAL_BYTES + 1);
+        let oversized = "Y".repeat(crate::commands::mission::MAX_MISSION_GOAL_BYTES + 1);
         let err = update(
             &conn,
             &crew.id,

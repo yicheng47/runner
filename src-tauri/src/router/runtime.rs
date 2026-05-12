@@ -1394,7 +1394,9 @@ mod tests {
             // flags. system_prompt is unchanged (still empty) for both
             // runtimes.
             assert_eq!(args.last().map(String::as_str), Some(body));
-            assert!(args.windows(2).any(|w| w[0] == "--model" && w[1] == "model-x"));
+            assert!(args
+                .windows(2)
+                .any(|w| w[0] == "--model" && w[1] == "model-x"));
         }
     }
 

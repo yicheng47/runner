@@ -1119,21 +1119,9 @@ impl SessionManager {
             // a no-op for the dominant case (a real resume). The
             // resume-fresh-fallback case is handled separately by
             // `Router::fire_lead_launch_prompt` via paste-verify.
-            schedule_mission_first_prompt(
-                self,
-                session_id.to_string(),
-                &runner,
-                &plan,
-                false,
-            );
+            schedule_mission_first_prompt(self, session_id.to_string(), &runner, &plan, false);
         } else {
-            schedule_direct_first_prompt(
-                self,
-                session_id.to_string(),
-                &runner,
-                &plan,
-                false,
-            );
+            schedule_direct_first_prompt(self, session_id.to_string(), &runner, &plan, false);
         }
 
         // On a real resume (not a fresh-with-known-uuid spawn), nudge
@@ -3252,7 +3240,12 @@ mod tests {
                 "UPDATE runners
                     SET runtime = ?2, handle = ?3, system_prompt = ?4
                   WHERE id = ?1",
-                params![runner.id, runner.runtime, runner.handle, runner.system_prompt],
+                params![
+                    runner.id,
+                    runner.runtime,
+                    runner.handle,
+                    runner.system_prompt
+                ],
             )
             .unwrap();
         }
