@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AppShell } from "./components/AppShell";
 import { UpdateProvider } from "./contexts/UpdateContext";
+import { nudgeAppZoom } from "./lib/appZoom";
 import { readAppZoom } from "./lib/settings";
 import Crews from "./pages/Crews";
 import CrewEditor from "./pages/CrewEditor";
@@ -36,6 +37,33 @@ export default function App() {
     } catch {
       // No Tauri runtime (dev browser preview).
     }
+  }, []);
+
+  // Global Cmd/Ctrl +/-/0 zoom shortcuts. Capture phase so xterm's
+  // textarea doesn't swallow the key before us; preventDefault only on
+  // matches so other Cmd-key combos (copy, paste, etc.) still work.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.altKey || e.shiftKey) return;
+      // With Cmd held, US keyboards deliver `=` unshifted for the
+      // `+` key, but other layouts/devices can send either — accept both.
+      if (e.key === "+" || e.key === "=") {
+        e.preventDefault();
+        e.stopPropagation();
+        nudgeAppZoom(1);
+      } else if (e.key === "-") {
+        e.preventDefault();
+        e.stopPropagation();
+        nudgeAppZoom(-1);
+      } else if (e.key === "0") {
+        e.preventDefault();
+        e.stopPropagation();
+        nudgeAppZoom("reset");
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
   return (

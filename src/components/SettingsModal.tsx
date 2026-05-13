@@ -33,20 +33,35 @@ import {
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { getVersion } from "@tauri-apps/api/app";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 import { api } from "../lib/api";
+import { applyAppZoom } from "../lib/appZoom";
 import {
+  notifySameWindowStorage,
   readAppZoom,
   readStoredBool,
+  readTerminalCursorStyle,
+  readTerminalFontFamily,
   readTerminalFontSize,
+  readTerminalScrollback,
+  STORAGE_APP_ZOOM,
   STORAGE_AUTO_INSTALL_UPDATES,
+  STORAGE_TERMINAL_CURSOR_STYLE,
+  STORAGE_TERMINAL_FONT_FAMILY,
   STORAGE_TERMINAL_FONT_SIZE,
+  STORAGE_TERMINAL_SCROLLBACK,
+  TERMINAL_CURSOR_STYLE_OPTIONS,
+  TERMINAL_FONT_FAMILY_OPTIONS,
   TERMINAL_FONT_SIZE_MAX,
   TERMINAL_FONT_SIZE_MIN,
-  writeAppZoom,
+  TERMINAL_SCROLLBACK_OPTIONS,
+  type TerminalCursorStyle,
+  type TerminalFontFamily,
   writeStoredBool,
+  writeTerminalCursorStyle,
+  writeTerminalFontFamily,
   writeTerminalFontSize,
+  writeTerminalScrollback,
   ZOOM_STEPS,
 } from "../lib/settings";
 import { useUpdate } from "../contexts/UpdateContext";
@@ -264,21 +279,25 @@ function GeneralPane() {
   };
   // App zoom — snap-to-step value driven by `ZOOM_STEPS`. Persist + apply
   // immediately so the user feels the change while picking. The boot-time
-  // apply in `App.tsx` is what makes it survive restarts.
+  // apply in `App.tsx` is what makes it survive restarts. Goes through
+  // the shared `applyAppZoom` so the stepper and the global Cmd+/- path
+  // can't drift.
   const [appZoom, setAppZoomState] = useState<number>(() => readAppZoom());
   const setAppZoom = (next: number) => {
     setAppZoomState(next);
-    writeAppZoom(next);
-    try {
-      void getCurrentWebview()
-        .setZoom(next)
-        .catch(() => {
-          // best-effort
-        });
-    } catch {
-      // No Tauri runtime (dev browser preview).
-    }
+    applyAppZoom(next);
   };
+  // Keep the visible % in sync when zoom changes from outside the modal
+  // (Cmd+/-/0 shortcut). `applyAppZoom` synthesizes a storage event after
+  // each write so we get a single notification path.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== STORAGE_APP_ZOOM) return;
+      setAppZoomState(readAppZoom());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   return (
     <>
       <PaneHeader title="General" subtitle="Defaults and startup behavior." />
@@ -318,23 +337,34 @@ function TerminalPane() {
   const [fontSize, setFontSizeState] = useState<number>(() =>
     readTerminalFontSize(),
   );
+  const [fontFamily, setFontFamilyState] = useState<TerminalFontFamily>(() =>
+    readTerminalFontFamily(),
+  );
+  const [cursorStyle, setCursorStyleState] = useState<TerminalCursorStyle>(
+    () => readTerminalCursorStyle(),
+  );
+  const [scrollback, setScrollbackState] = useState<number>(() =>
+    readTerminalScrollback(),
+  );
   const setFontSize = (next: number) => {
     setFontSizeState(next);
     writeTerminalFontSize(next);
-    // localStorage's `storage` event only fires across windows by default;
-    // dispatch one ourselves so the mounted RunnerTerminal instances in the
-    // same window pick up the new size without a custom event bus.
-    try {
-      window.dispatchEvent(
-        new StorageEvent("storage", {
-          key: STORAGE_TERMINAL_FONT_SIZE,
-          newValue: String(next),
-        }),
-      );
-    } catch {
-      // best-effort — older runtimes without StorageEvent ctor still get
-      // the persisted value applied on next mount.
-    }
+    notifySameWindowStorage(STORAGE_TERMINAL_FONT_SIZE, String(next));
+  };
+  const setFontFamily = (next: TerminalFontFamily) => {
+    setFontFamilyState(next);
+    writeTerminalFontFamily(next);
+    notifySameWindowStorage(STORAGE_TERMINAL_FONT_FAMILY, next);
+  };
+  const setCursorStyle = (next: TerminalCursorStyle) => {
+    setCursorStyleState(next);
+    writeTerminalCursorStyle(next);
+    notifySameWindowStorage(STORAGE_TERMINAL_CURSOR_STYLE, next);
+  };
+  const setScrollback = (next: number) => {
+    setScrollbackState(next);
+    writeTerminalScrollback(next);
+    notifySameWindowStorage(STORAGE_TERMINAL_SCROLLBACK, String(next));
   };
   return (
     <>
@@ -347,6 +377,48 @@ function TerminalPane() {
         sub="Glyph size for the embedded terminal."
       >
         <FontSizeStepper value={fontSize} onChange={setFontSize} />
+      </Row>
+      <Row
+        label="Font family"
+        sub="Typeface used by the embedded terminal."
+      >
+        <StyledSelect
+          value={fontFamily}
+          options={TERMINAL_FONT_FAMILY_OPTIONS.map((f) => ({
+            value: f,
+            label: f,
+          }))}
+          onChange={(v) => setFontFamily(v as TerminalFontFamily)}
+        />
+      </Row>
+      <Row
+        label="Cursor style"
+        sub="Block, underline, or bar — affects the prompt caret only."
+      >
+        <StyledSelect
+          value={cursorStyle}
+          options={TERMINAL_CURSOR_STYLE_OPTIONS.map((c) => ({
+            value: c,
+            label: c[0].toUpperCase() + c.slice(1),
+          }))}
+          onChange={(v) => setCursorStyle(v as TerminalCursorStyle)}
+        />
+      </Row>
+      <Row
+        label="Scrollback"
+        sub="Lines kept in history per session. Higher uses more memory."
+      >
+        <div className="flex items-center gap-2">
+          <StyledSelect
+            value={String(scrollback)}
+            options={TERMINAL_SCROLLBACK_OPTIONS.map((n) => ({
+              value: String(n),
+              label: n.toLocaleString(),
+            }))}
+            onChange={(v) => setScrollback(Number.parseInt(v, 10))}
+          />
+          <span className="text-[12px] text-fg-2">lines</span>
+        </div>
       </Row>
     </>
   );

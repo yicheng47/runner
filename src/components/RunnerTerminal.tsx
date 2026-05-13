@@ -18,8 +18,15 @@ import "@xterm/xterm/css/xterm.css";
 
 import { api } from "../lib/api";
 import {
+  readTerminalCursorStyle,
+  readTerminalFontFamily,
   readTerminalFontSize,
+  readTerminalScrollback,
+  resolveTerminalFontStack,
+  STORAGE_TERMINAL_CURSOR_STYLE,
+  STORAGE_TERMINAL_FONT_FAMILY,
   STORAGE_TERMINAL_FONT_SIZE,
+  STORAGE_TERMINAL_SCROLLBACK,
 } from "../lib/settings";
 
 interface OutputEvent {
@@ -155,11 +162,11 @@ export function RunnerTerminal({
       cols: 80,
       rows: 24,
       theme: TERMINAL_THEME,
-      fontFamily:
-        'Menlo, "SF Mono", Monaco, Consolas, "Liberation Mono", monospace',
+      fontFamily: resolveTerminalFontStack(readTerminalFontFamily()),
       fontSize: readTerminalFontSize(),
       cursorBlink: true,
-      scrollback: 5000,
+      cursorStyle: readTerminalCursorStyle(),
+      scrollback: readTerminalScrollback(),
       allowProposedApi: true,
     });
     const fit = new FitAddon();
@@ -301,21 +308,32 @@ export function RunnerTerminal({
     window.addEventListener("focus", refreshTerm);
     document.addEventListener("visibilitychange", onVisibility);
 
-    // Live font-size updates from SettingsModal. localStorage's `storage`
-    // event doesn't fire in the originating window, so SettingsModal
-    // dispatches one synthetically after writing. We re-read through
-    // `readTerminalFontSize` so the clamp/normalize path is identical to
-    // mount-time — an out-of-range write can't poison `term.options`.
+    // Live updates from SettingsModal. localStorage's `storage` event
+    // doesn't fire in the originating window, so the modal dispatches a
+    // synthetic one after each write (via `notifySameWindowStorage`). We
+    // always re-read through the typed readers so the clamp/normalize
+    // path is identical to mount-time — an out-of-range write can't
+    // poison `term.options`.
     const onStorage = (e: StorageEvent) => {
-      if (e.key !== STORAGE_TERMINAL_FONT_SIZE) return;
       const t = termRef.current;
       if (!t) return;
-      const next = readTerminalFontSize();
       try {
-        t.options.fontSize = next;
-        fitRef.current?.fit();
+        if (e.key === STORAGE_TERMINAL_FONT_SIZE) {
+          t.options.fontSize = readTerminalFontSize();
+          fitRef.current?.fit();
+        } else if (e.key === STORAGE_TERMINAL_FONT_FAMILY) {
+          t.options.fontFamily = resolveTerminalFontStack(
+            readTerminalFontFamily(),
+          );
+          fitRef.current?.fit();
+        } else if (e.key === STORAGE_TERMINAL_CURSOR_STYLE) {
+          t.options.cursorStyle = readTerminalCursorStyle();
+        } else if (e.key === STORAGE_TERMINAL_SCROLLBACK) {
+          t.options.scrollback = readTerminalScrollback();
+        }
       } catch {
-        // teardown / hidden pane — next activation will refit.
+        // xterm may reject runtime mutation of some options; the next
+        // mount will pick up the persisted value either way.
       }
     };
     window.addEventListener("storage", onStorage);
