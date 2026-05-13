@@ -56,6 +56,12 @@ export interface DirectSessionEntry {
   stopped_at: string | null;
   resumable: boolean;
   pinned: boolean;
+  // Set when the session has been archived. `listRecentDirect` filters
+  // these at SQL so rows from that endpoint always have `archived_at:
+  // null`. `session_get` is the unfiltered lookup the chat page uses
+  // to detect an archived direct-URL navigation and lock the
+  // workspace read-only.
+  archived_at: string | null;
 }
 
 export const api = {
@@ -141,6 +147,12 @@ export const api = {
       invoke<SessionRow[]>("session_list", { missionId }),
     listRecentDirect: () =>
       invoke<DirectSessionEntry[]>("session_list_recent_direct"),
+    /** Unfiltered single-row lookup (includes archived rows). Used by
+     *  RunnerChat to detect an archived direct-URL navigation so the
+     *  workspace can render read-only. Returns null if the id is
+     *  unknown or belongs to a mission session. */
+    get: (sessionId: string) =>
+      invoke<DirectSessionEntry | null>("session_get", { sessionId }),
     archive: (sessionId: string) =>
       invoke<void>("session_archive", { sessionId }),
     rename: (sessionId: string, title: string | null) =>

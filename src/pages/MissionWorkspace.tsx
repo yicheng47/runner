@@ -379,6 +379,11 @@ export default function MissionWorkspace() {
   // crash on one worker shouldn't gate human-to-lead messaging.
   const anySessionLive =
     sessions.length > 0 && sessions.some((s) => s.status === "running");
+  // archived_at is the single discriminator across the workspace —
+  // status pill, no-PTY render branch, hidden actions. We don't key
+  // any UX off `status === 'completed'` because the migration may
+  // later widen archive to include other terminal states.
+  const isArchived = mission?.archived_at != null;
 
   // Project ask_human → human_question pairings + human_response
   // resolutions out of the feed. Mirrors the router's reconstruct_from_log
@@ -492,15 +497,17 @@ export default function MissionWorkspace() {
                   | "archived"
                   | "aborted"
                   | "resuming";
-                const display: Display = resumingAll
-                  ? "resuming"
-                  : mission.status === "running"
-                    ? anySessionLive
-                      ? "running"
-                      : "stopped"
-                    : mission.status === "completed"
-                      ? "archived"
-                      : "aborted";
+                const display: Display = isArchived
+                  ? "archived"
+                  : resumingAll
+                    ? "resuming"
+                    : mission.status === "running"
+                      ? anySessionLive
+                        ? "running"
+                        : "stopped"
+                      : mission.status === "completed"
+                        ? "archived"
+                        : "aborted";
                 const pillClass =
                   display === "running"
                     ? "bg-accent/15 text-accent"
@@ -528,6 +535,16 @@ export default function MissionWorkspace() {
                   </span>
                 );
               })() : null}
+              {/* Unambiguous read-only affordance for archived
+                  missions — the status pill alone reads too easily
+                  as just another state. Muted chip beside the title
+                  so the workspace clearly communicates that nothing
+                  here will accept input. */}
+              {isArchived ? (
+                <span className="inline-flex shrink-0 items-center rounded border border-line bg-raised px-2 py-0.5 text-[10px] font-medium text-fg-2">
+                  Archived · read-only
+                </span>
+              ) : null}
             </div>
             <span className="truncate text-[11px] leading-tight text-fg-3">
               {sessions.length} runner{sessions.length === 1 ? "" : "s"}
@@ -627,18 +644,23 @@ export default function MissionWorkspace() {
             >
               feed
             </TabButton>
-            {openTabs
-              .map((tabId) => sessions.find((s) => s.id === tabId))
-              .filter((s): s is SessionRow => s !== undefined)
-              .map((s) => (
-                <PtyTabButton
-                  key={s.id}
-                  handle={s.handle}
-                  active={activeTab === s.id}
-                  onClick={() => setActiveTab(s.id)}
-                  onClose={() => onCloseTab(s.id)}
-                />
-              ))}
+            {/* Archived missions render feed only — skip the per-PTY
+                tabs so no xterm canvas ever mounts. The Pane block
+                below applies the same gate. */}
+            {!isArchived
+              ? openTabs
+                  .map((tabId) => sessions.find((s) => s.id === tabId))
+                  .filter((s): s is SessionRow => s !== undefined)
+                  .map((s) => (
+                    <PtyTabButton
+                      key={s.id}
+                      handle={s.handle}
+                      active={activeTab === s.id}
+                      onClick={() => setActiveTab(s.id)}
+                      onClose={() => onCloseTab(s.id)}
+                    />
+                  ))
+              : null}
           </div>
 
           <div className="relative flex flex-1 min-h-0 flex-col">
@@ -697,20 +719,25 @@ export default function MissionWorkspace() {
               ) : null}
             </Pane>
 
-            {openTabs
-              .map((tabId) => sessions.find((s) => s.id === tabId))
-              .filter((s): s is SessionRow => s !== undefined)
-              .map((s) => (
-                <Pane key={s.id} active={activeTab === s.id}>
-                  <SlotPtyPane
-                    session={s}
-                    active={activeTab === s.id}
-                    forcedResuming={resumingAll && !archivingMission}
-                    onError={setError}
-                    onResumeMission={() => void resumeMission()}
-                  />
-                </Pane>
-              ))}
+            {/* Skip per-session PTY panes for archived missions so
+                no xterm canvas ever mounts. The feed Pane stays
+                rendered above as the only surface. */}
+            {!isArchived
+              ? openTabs
+                  .map((tabId) => sessions.find((s) => s.id === tabId))
+                  .filter((s): s is SessionRow => s !== undefined)
+                  .map((s) => (
+                    <Pane key={s.id} active={activeTab === s.id}>
+                      <SlotPtyPane
+                        session={s}
+                        active={activeTab === s.id}
+                        forcedResuming={resumingAll && !archivingMission}
+                        onError={setError}
+                        onResumeMission={() => void resumeMission()}
+                      />
+                    </Pane>
+                  ))
+              : null}
             {/* Centered amber pill + scrim while a mission archive
                 is in flight — fired from either the sidebar kebab
                 or this workspace's own kebab. Scrim matches the

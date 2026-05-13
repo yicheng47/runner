@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use rusqlite::{params, Row};
+use rusqlite::{params, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
 
@@ -256,6 +256,13 @@ pub struct DirectSessionEntry {
     /// `true` iff `pinned_at IS NOT NULL`. Pinned rows render with a
     /// pin glyph and sort to the top of the tray.
     pub pinned: bool,
+    /// When set, the session has been archived: hidden from the SESSION
+    /// tray and `session_list_recent_direct`. Returned here so
+    /// `session_get` (unfiltered) can tell the chat page to render
+    /// read-only when the user navigates to an archived session by
+    /// direct URL. `listRecentDirect` filters these out at SQL, so
+    /// rows from that surface always carry `archived_at: None`.
+    pub archived_at: Option<Timestamp>,
 }
 
 #[tauri::command]
@@ -277,6 +284,7 @@ pub async fn session_list_recent_direct(
                 s.cwd       AS cwd,
                 s.started_at,
                 s.stopped_at,
+                s.archived_at,
                 CASE WHEN s.agent_session_key IS NOT NULL THEN 1 ELSE 0 END AS resumable,
                 CASE WHEN s.pinned_at         IS NOT NULL THEN 1 ELSE 0 END AS pinned
            FROM sessions s
@@ -312,6 +320,7 @@ pub async fn session_list_recent_direct(
         };
         let started_at: Option<String> = row.get("started_at")?;
         let stopped_at: Option<String> = row.get("stopped_at")?;
+        let archived_at: Option<String> = row.get("archived_at")?;
         let resumable: i64 = row.get("resumable")?;
         let pinned: i64 = row.get("pinned")?;
         Ok(DirectSessionEntry {
@@ -325,10 +334,94 @@ pub async fn session_list_recent_direct(
             stopped_at: stopped_at.map(parse_ts).transpose()?,
             resumable: resumable != 0,
             pinned: pinned != 0,
+            archived_at: archived_at.map(parse_ts).transpose()?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+/// Unfiltered single-row lookup for a direct-chat session.
+///
+/// `session_list_recent_direct` hides archived rows (`archived_at IS
+/// NOT NULL`) from the SESSION tray, but the `/runners/:handle/chat/
+/// :sessionId` route still mounts when the user navigates by direct
+/// URL. RunnerChat falls back to this helper when the list lookup
+/// misses so it can detect an archived row and render the workspace
+/// read-only (no PTY attach, no Resume, no live composer) instead of
+/// silently failing to find the session.
+///
+/// Returns `None` if the id doesn't exist. Mission sessions are not
+/// returned here — this command is for direct chats only, matching
+/// the surface that `listRecentDirect` covers.
+#[tauri::command]
+pub async fn session_get(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<DirectSessionEntry>> {
+    let conn = state.db.get()?;
+    let mut stmt = conn.prepare(
+        "SELECT s.id        AS session_id,
+                s.runner_id AS runner_id,
+                r.handle    AS handle,
+                s.status    AS status,
+                s.title     AS title,
+                s.cwd       AS cwd,
+                s.started_at,
+                s.stopped_at,
+                s.archived_at,
+                CASE WHEN s.agent_session_key IS NOT NULL THEN 1 ELSE 0 END AS resumable,
+                CASE WHEN s.pinned_at         IS NOT NULL THEN 1 ELSE 0 END AS pinned
+           FROM sessions s
+           JOIN runners r ON r.id = s.runner_id
+          WHERE s.id = ?1
+            AND s.mission_id IS NULL",
+    )?;
+    let row = stmt
+        .query_row(params![session_id], |row| {
+            let status: String = row.get("status")?;
+            let status = match status.as_str() {
+                "running" => SessionStatus::Running,
+                "stopped" => SessionStatus::Stopped,
+                "crashed" => SessionStatus::Crashed,
+                other => {
+                    return Err(rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        format!("unknown session status {other:?}").into(),
+                    ))
+                }
+            };
+            let parse_ts = |s: String| -> rusqlite::Result<Timestamp> {
+                s.parse().map_err(|e: chrono::ParseError| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })
+            };
+            let started_at: Option<String> = row.get("started_at")?;
+            let stopped_at: Option<String> = row.get("stopped_at")?;
+            let archived_at: Option<String> = row.get("archived_at")?;
+            let resumable: i64 = row.get("resumable")?;
+            let pinned: i64 = row.get("pinned")?;
+            Ok(DirectSessionEntry {
+                session_id: row.get("session_id")?,
+                runner_id: row.get("runner_id")?,
+                handle: row.get("handle")?,
+                status,
+                title: row.get("title")?,
+                cwd: row.get("cwd")?,
+                started_at: started_at.map(parse_ts).transpose()?,
+                stopped_at: stopped_at.map(parse_ts).transpose()?,
+                resumable: resumable != 0,
+                pinned: pinned != 0,
+                archived_at: archived_at.map(parse_ts).transpose()?,
+            })
+        })
+        .optional()?;
+    Ok(row)
 }
 
 /// Soft-delete a session: hides it from the SESSION sidebar tray. The row

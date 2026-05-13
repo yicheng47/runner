@@ -78,10 +78,15 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // schema add — no data backfill, existing rows keep NULL runtime
 // metadata, which the manager (post-Step 9) treats as "legacy
 // portable-pty session, can't reattach."
+// 0004: adds `archived_at` to missions so the workspace can filter
+// archived missions out of search/list surfaces without conflating
+// them with `status = 'completed'`. Backfills existing completed
+// rows so their archived_at = stopped_at.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
     (3, include_str!("../migrations/0003_session_runtime.sql")),
+    (4, include_str!("../migrations/0004_mission_archived_at.sql")),
 ];
 
 // Default-data seed: ships the Build squad starter crew on first launch.

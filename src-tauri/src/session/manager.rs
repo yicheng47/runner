@@ -2732,6 +2732,7 @@ mod tests {
             started_at: Utc::now(),
             stopped_at: None,
             pinned_at: None,
+            archived_at: None,
         }
     }
 

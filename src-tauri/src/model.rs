@@ -106,6 +106,12 @@ pub struct Mission {
     pub started_at: Timestamp,
     pub stopped_at: Option<Timestamp>,
     pub pinned_at: Option<Timestamp>,
+    // `archived_at IS NOT NULL` is the read-only / hide-from-search
+    // discriminator. Set by `mission_archive` alongside the status
+    // flip; on its own column so the `status` enum stays focused on
+    // lifecycle (running / completed / aborted) and so we can add an
+    // "Archived" view later without touching the status grammar.
+    pub archived_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
