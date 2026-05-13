@@ -373,12 +373,6 @@ function TerminalPane() {
         subtitle="xterm appearance settings for the runner terminal."
       />
       <Row
-        label="Terminal font size"
-        sub="Glyph size for the embedded terminal."
-      >
-        <FontSizeStepper value={fontSize} onChange={setFontSize} />
-      </Row>
-      <Row
         label="Font family"
         sub="Typeface used by the embedded terminal."
       >
@@ -390,6 +384,12 @@ function TerminalPane() {
           }))}
           onChange={(v) => setFontFamily(v as TerminalFontFamily)}
         />
+      </Row>
+      <Row
+        label="Terminal font size"
+        sub="Glyph size for the embedded terminal."
+      >
+        <FontSizeStepper value={fontSize} onChange={setFontSize} />
       </Row>
       <Row
         label="Cursor style"
