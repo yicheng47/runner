@@ -17,6 +17,10 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 import { api } from "../lib/api";
+import {
+  readTerminalFontSize,
+  STORAGE_TERMINAL_FONT_SIZE,
+} from "../lib/settings";
 
 interface OutputEvent {
   session_id: string;
@@ -153,7 +157,7 @@ export function RunnerTerminal({
       theme: TERMINAL_THEME,
       fontFamily:
         'Menlo, "SF Mono", Monaco, Consolas, "Liberation Mono", monospace',
-      fontSize: 13,
+      fontSize: readTerminalFontSize(),
       cursorBlink: true,
       scrollback: 5000,
       allowProposedApi: true,
@@ -297,6 +301,25 @@ export function RunnerTerminal({
     window.addEventListener("focus", refreshTerm);
     document.addEventListener("visibilitychange", onVisibility);
 
+    // Live font-size updates from SettingsModal. localStorage's `storage`
+    // event doesn't fire in the originating window, so SettingsModal
+    // dispatches one synthetically after writing. We re-read through
+    // `readTerminalFontSize` so the clamp/normalize path is identical to
+    // mount-time — an out-of-range write can't poison `term.options`.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== STORAGE_TERMINAL_FONT_SIZE) return;
+      const t = termRef.current;
+      if (!t) return;
+      const next = readTerminalFontSize();
+      try {
+        t.options.fontSize = next;
+        fitRef.current?.fit();
+      } catch {
+        // teardown / hidden pane — next activation will refit.
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
     termRef.current = term;
     fitRef.current = fit;
 
@@ -304,6 +327,7 @@ export function RunnerTerminal({
       window.removeEventListener("resize", onResize);
       window.removeEventListener("focus", refreshTerm);
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("storage", onStorage);
       textarea?.removeEventListener("paste", onPaste, { capture: true });
       onDataDisposable.dispose();
       term.dispose();

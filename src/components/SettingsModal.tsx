@@ -20,22 +20,34 @@ import {
   ExternalLink,
   Info,
   Loader2,
+  Minus,
+  Plus,
   RefreshCw,
   RotateCcw,
   Scale,
   Settings as SettingsIcon,
+  Terminal,
   X,
 } from "lucide-react";
 
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { getVersion } from "@tauri-apps/api/app";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 import { api } from "../lib/api";
 import {
+  readAppZoom,
   readStoredBool,
+  readTerminalFontSize,
   STORAGE_AUTO_INSTALL_UPDATES,
+  STORAGE_TERMINAL_FONT_SIZE,
+  TERMINAL_FONT_SIZE_MAX,
+  TERMINAL_FONT_SIZE_MIN,
+  writeAppZoom,
   writeStoredBool,
+  writeTerminalFontSize,
+  ZOOM_STEPS,
 } from "../lib/settings";
 import { useUpdate } from "../contexts/UpdateContext";
 import { StyledSelect } from "./ui/StyledSelect";
@@ -45,7 +57,7 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-type Pane = "general" | "updates" | "about";
+type Pane = "general" | "terminal" | "updates" | "about";
 
 const PANES: { key: Pane; label: string; subtitle: string; icon: typeof SettingsIcon }[] = [
   {
@@ -53,6 +65,12 @@ const PANES: { key: Pane; label: string; subtitle: string; icon: typeof Settings
     label: "General",
     subtitle: "Startup & defaults",
     icon: SettingsIcon,
+  },
+  {
+    key: "terminal",
+    label: "Terminal",
+    subtitle: "xterm appearance",
+    icon: Terminal,
   },
   {
     key: "updates",
@@ -148,6 +166,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             <X aria-hidden className="h-4 w-4" />
           </button>
           {pane === "general" ? <GeneralPane /> : null}
+          {pane === "terminal" ? <TerminalPane /> : null}
           {pane === "updates" ? <UpdatesPane /> : null}
           {pane === "about" ? <AboutPane /> : null}
         </div>
@@ -243,6 +262,23 @@ function GeneralPane() {
       // best-effort
     }
   };
+  // App zoom — snap-to-step value driven by `ZOOM_STEPS`. Persist + apply
+  // immediately so the user feels the change while picking. The boot-time
+  // apply in `App.tsx` is what makes it survive restarts.
+  const [appZoom, setAppZoomState] = useState<number>(() => readAppZoom());
+  const setAppZoom = (next: number) => {
+    setAppZoomState(next);
+    writeAppZoom(next);
+    try {
+      void getCurrentWebview()
+        .setZoom(next)
+        .catch(() => {
+          // best-effort
+        });
+    } catch {
+      // No Tauri runtime (dev browser preview).
+    }
+  };
   return (
     <>
       <PaneHeader title="General" subtitle="Defaults and startup behavior." />
@@ -268,7 +304,165 @@ function GeneralPane() {
           onChange={setDefaultWorkingDir}
         />
       </Row>
+      <Row
+        label="App zoom"
+        sub="Whole-app scale. Doesn't apply to the runner terminal canvas — see Terminal pane."
+      >
+        <ZoomStepper value={appZoom} onChange={setAppZoom} />
+      </Row>
     </>
+  );
+}
+
+function TerminalPane() {
+  const [fontSize, setFontSizeState] = useState<number>(() =>
+    readTerminalFontSize(),
+  );
+  const setFontSize = (next: number) => {
+    setFontSizeState(next);
+    writeTerminalFontSize(next);
+    // localStorage's `storage` event only fires across windows by default;
+    // dispatch one ourselves so the mounted RunnerTerminal instances in the
+    // same window pick up the new size without a custom event bus.
+    try {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: STORAGE_TERMINAL_FONT_SIZE,
+          newValue: String(next),
+        }),
+      );
+    } catch {
+      // best-effort — older runtimes without StorageEvent ctor still get
+      // the persisted value applied on next mount.
+    }
+  };
+  return (
+    <>
+      <PaneHeader
+        title="Terminal"
+        subtitle="xterm appearance settings for the runner terminal."
+      />
+      <Row
+        label="Terminal font size"
+        sub="Glyph size for the embedded terminal."
+      >
+        <FontSizeStepper value={fontSize} onChange={setFontSize} />
+      </Row>
+    </>
+  );
+}
+
+// Generic [−] <value> [+] stepper matching pencil nodes `KfYfw` and `CcFty`.
+// Caller renders the value cell's contents and supplies its width.
+function Stepper({
+  valueCellWidth,
+  decDisabled,
+  incDisabled,
+  onDec,
+  onInc,
+  decAriaLabel,
+  incAriaLabel,
+  children,
+}: {
+  valueCellWidth: number;
+  decDisabled?: boolean;
+  incDisabled?: boolean;
+  onDec: () => void;
+  onInc: () => void;
+  decAriaLabel: string;
+  incAriaLabel: string;
+  children: React.ReactNode;
+}) {
+  const buttonClass =
+    "flex h-[30px] w-[30px] shrink-0 cursor-pointer items-center justify-center text-fg-3 transition-colors hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-fg-3";
+  return (
+    <div className="flex h-[30px] items-center rounded-md border border-line bg-bg">
+      <button
+        type="button"
+        onClick={onDec}
+        disabled={decDisabled}
+        aria-label={decAriaLabel}
+        className={buttonClass}
+      >
+        <Minus aria-hidden className="h-3.5 w-3.5" />
+      </button>
+      <div
+        style={{ width: valueCellWidth }}
+        className="flex h-[30px] items-center justify-center border-x border-line"
+      >
+        {children}
+      </div>
+      <button
+        type="button"
+        onClick={onInc}
+        disabled={incDisabled}
+        aria-label={incAriaLabel}
+        className={buttonClass}
+      >
+        <Plus aria-hidden className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function ZoomStepper({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  // Snap a possibly-stale persisted value to the nearest known step so the
+  // user can always move with `−`/`+`; nothing in the modal hard-blocks
+  // off-step values.
+  const idx = ZOOM_STEPS.findIndex((s) => Math.abs(s - value) < 0.001);
+  const currentIdx = idx === -1 ? ZOOM_STEPS.indexOf(1.0) : idx;
+  const pct = Math.round(ZOOM_STEPS[currentIdx] * 100);
+  return (
+    <Stepper
+      valueCellWidth={56}
+      decDisabled={currentIdx <= 0}
+      incDisabled={currentIdx >= ZOOM_STEPS.length - 1}
+      decAriaLabel="Decrease zoom"
+      incAriaLabel="Increase zoom"
+      onDec={() => onChange(ZOOM_STEPS[Math.max(0, currentIdx - 1)])}
+      onInc={() =>
+        onChange(ZOOM_STEPS[Math.min(ZOOM_STEPS.length - 1, currentIdx + 1)])
+      }
+    >
+      <span className="font-mono text-[12px] font-medium text-fg">{pct}%</span>
+    </Stepper>
+  );
+}
+
+function FontSizeStepper({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  const clamped = Math.max(
+    TERMINAL_FONT_SIZE_MIN,
+    Math.min(TERMINAL_FONT_SIZE_MAX, value),
+  );
+  return (
+    <Stepper
+      valueCellWidth={64}
+      decDisabled={clamped <= TERMINAL_FONT_SIZE_MIN}
+      incDisabled={clamped >= TERMINAL_FONT_SIZE_MAX}
+      decAriaLabel="Decrease terminal font size"
+      incAriaLabel="Increase terminal font size"
+      onDec={() => onChange(Math.max(TERMINAL_FONT_SIZE_MIN, clamped - 1))}
+      onInc={() => onChange(Math.min(TERMINAL_FONT_SIZE_MAX, clamped + 1))}
+    >
+      <span className="flex items-center gap-[3px]">
+        <span className="font-mono text-[12px] font-medium text-fg">
+          {clamped}
+        </span>
+        <span className="font-mono text-[10px] text-fg-3">px</span>
+      </span>
+    </Stepper>
   );
 }
 

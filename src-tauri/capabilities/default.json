@@ -9,6 +9,7 @@
     "core:window:allow-close",
     "core:window:allow-set-focus",
     "core:window:allow-set-title",
+    "core:webview:allow-set-webview-zoom",
     "opener:default",
     "dialog:default",
     "fs:default",

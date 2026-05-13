@@ -1,8 +1,10 @@
 import { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AppShell } from "./components/AppShell";
 import { UpdateProvider } from "./contexts/UpdateContext";
+import { readAppZoom } from "./lib/settings";
 import Crews from "./pages/Crews";
 import CrewEditor from "./pages/CrewEditor";
 import MissionWorkspace from "./pages/MissionWorkspace";
@@ -18,6 +20,22 @@ export default function App() {
   // enough to guarantee a non-blank webview before show.
   useEffect(() => {
     invoke("app_ready").catch(console.error);
+  }, []);
+
+  // Restore the user's persisted app zoom on boot. Skipped when the stored
+  // value is the default (1.0) so we don't roundtrip through Tauri for a
+  // no-op. Wrapped in try/catch because dev browser preview has no Tauri
+  // webview API.
+  useEffect(() => {
+    const zoom = readAppZoom();
+    if (zoom === 1.0) return;
+    try {
+      void getCurrentWebview().setZoom(zoom).catch(() => {
+        // best-effort — webview swap or platform refusal shouldn't block boot.
+      });
+    } catch {
+      // No Tauri runtime (dev browser preview).
+    }
   }, []);
 
   return (
