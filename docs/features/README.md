@@ -20,3 +20,7 @@ links to its tracking issue.
 - [05 — Skills + MCPs management per runner](./05-runner-skills.md) —
   attach reusable skills and MCP servers to runner templates; injected
   natively at spawn via a per-session synthetic agent home.
+- [08 — Hide system signals from the mission feed](./08-hide-system-signals-from-feed.md)
+  — drop router-internal `inbox_read` / `runner_status` /
+  `mission_warning` rows from the workspace feed; NDJSON log remains
+  the audit trail.
