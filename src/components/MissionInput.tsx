@@ -39,11 +39,21 @@ export function MissionInput({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const pickerRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Sync with new lead if the prop changes.
   useEffect(() => {
     setTarget((cur) => (handles.includes(cur) ? cur : leadHandle));
   }, [handles, leadHandle]);
+
+  // Autosize the textarea to fit content, capped at 240px. Reset to "auto"
+  // first so shrinking (e.g. after submit clears text) works as well as growth.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
+  }, [text]);
 
   useEffect(() => {
     if (!pickerOpen) return;
@@ -130,6 +140,7 @@ export function MissionInput({
       </div>
       <div className="flex items-end gap-3 rounded-lg border border-line bg-panel px-4 py-3">
         <textarea
+          ref={textareaRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
@@ -140,7 +151,7 @@ export function MissionInput({
           }
           disabled={disabled}
           rows={1}
-          className="flex-1 resize-none bg-transparent text-[13px] text-fg placeholder:text-fg-3 focus:outline-none disabled:cursor-not-allowed"
+          className="flex-1 resize-none overflow-y-auto bg-transparent text-[13px] text-fg placeholder:text-fg-3 focus:outline-none disabled:cursor-not-allowed"
           style={{ minHeight: "24px", maxHeight: "240px" }}
         />
         <button
