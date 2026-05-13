@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use rusqlite::{params, Row};
+use rusqlite::{params, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
 
@@ -256,6 +256,13 @@ pub struct DirectSessionEntry {
     /// `true` iff `pinned_at IS NOT NULL`. Pinned rows render with a
     /// pin glyph and sort to the top of the tray.
     pub pinned: bool,
+    /// When set, the session has been archived: hidden from the SESSION
+    /// tray and `session_list_recent_direct`. Returned here so
+    /// `session_get` (unfiltered) can tell the chat page to render
+    /// read-only when the user navigates to an archived session by
+    /// direct URL. `listRecentDirect` filters these out at SQL, so
+    /// rows from that surface always carry `archived_at: None`.
+    pub archived_at: Option<Timestamp>,
 }
 
 #[tauri::command]
@@ -277,6 +284,7 @@ pub async fn session_list_recent_direct(
                 s.cwd       AS cwd,
                 s.started_at,
                 s.stopped_at,
+                s.archived_at,
                 CASE WHEN s.agent_session_key IS NOT NULL THEN 1 ELSE 0 END AS resumable,
                 CASE WHEN s.pinned_at         IS NOT NULL THEN 1 ELSE 0 END AS pinned
            FROM sessions s
@@ -312,6 +320,7 @@ pub async fn session_list_recent_direct(
         };
         let started_at: Option<String> = row.get("started_at")?;
         let stopped_at: Option<String> = row.get("stopped_at")?;
+        let archived_at: Option<String> = row.get("archived_at")?;
         let resumable: i64 = row.get("resumable")?;
         let pinned: i64 = row.get("pinned")?;
         Ok(DirectSessionEntry {
@@ -325,10 +334,104 @@ pub async fn session_list_recent_direct(
             stopped_at: stopped_at.map(parse_ts).transpose()?,
             resumable: resumable != 0,
             pinned: pinned != 0,
+            archived_at: archived_at.map(parse_ts).transpose()?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+/// Unfiltered single-row lookup for a direct-chat session.
+///
+/// `session_list_recent_direct` hides archived rows (`archived_at IS
+/// NOT NULL`) from the SESSION tray, but the `/runners/:handle/chat/
+/// :sessionId` route still mounts when the user navigates by direct
+/// URL. RunnerChat falls back to this helper when the list lookup
+/// misses so it can detect an archived row and render the workspace
+/// read-only (no PTY attach, no Resume, no live composer) instead of
+/// silently failing to find the session.
+///
+/// Returns `None` if the id doesn't exist. Mission sessions are not
+/// returned here — this command is for direct chats only, matching
+/// the surface that `listRecentDirect` covers.
+///
+/// The SQL lives in `get_direct(...)` below so the test module can
+/// exercise the real query against an in-memory DB without spinning
+/// up an `AppState`. If a future refactor adds `AND archived_at IS
+/// NULL` to that helper's WHERE clause, the archived-row tests fail
+/// and the chat-page lockdown stays honest.
+#[tauri::command]
+pub async fn session_get(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<DirectSessionEntry>> {
+    let conn = state.db.get()?;
+    get_direct(&conn, &session_id)
+}
+
+fn get_direct(conn: &rusqlite::Connection, session_id: &str) -> Result<Option<DirectSessionEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id        AS session_id,
+                s.runner_id AS runner_id,
+                r.handle    AS handle,
+                s.status    AS status,
+                s.title     AS title,
+                s.cwd       AS cwd,
+                s.started_at,
+                s.stopped_at,
+                s.archived_at,
+                CASE WHEN s.agent_session_key IS NOT NULL THEN 1 ELSE 0 END AS resumable,
+                CASE WHEN s.pinned_at         IS NOT NULL THEN 1 ELSE 0 END AS pinned
+           FROM sessions s
+           JOIN runners r ON r.id = s.runner_id
+          WHERE s.id = ?1
+            AND s.mission_id IS NULL",
+    )?;
+    let row = stmt
+        .query_row(params![session_id], |row| {
+            let status: String = row.get("status")?;
+            let status = match status.as_str() {
+                "running" => SessionStatus::Running,
+                "stopped" => SessionStatus::Stopped,
+                "crashed" => SessionStatus::Crashed,
+                other => {
+                    return Err(rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        format!("unknown session status {other:?}").into(),
+                    ))
+                }
+            };
+            let parse_ts = |s: String| -> rusqlite::Result<Timestamp> {
+                s.parse().map_err(|e: chrono::ParseError| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })
+            };
+            let started_at: Option<String> = row.get("started_at")?;
+            let stopped_at: Option<String> = row.get("stopped_at")?;
+            let archived_at: Option<String> = row.get("archived_at")?;
+            let resumable: i64 = row.get("resumable")?;
+            let pinned: i64 = row.get("pinned")?;
+            Ok(DirectSessionEntry {
+                session_id: row.get("session_id")?,
+                runner_id: row.get("runner_id")?,
+                handle: row.get("handle")?,
+                status,
+                title: row.get("title")?,
+                cwd: row.get("cwd")?,
+                started_at: started_at.map(parse_ts).transpose()?,
+                stopped_at: stopped_at.map(parse_ts).transpose()?,
+                resumable: resumable != 0,
+                pinned: pinned != 0,
+                archived_at: archived_at.map(parse_ts).transpose()?,
+            })
+        })
+        .optional()?;
+    Ok(row)
 }
 
 /// Soft-delete a session: hides it from the SESSION sidebar tray. The row
@@ -639,6 +742,142 @@ mod tests {
         assert!(
             !ids.contains(&"pinned-archived"),
             "archived rows must be excluded from the SESSION tray"
+        );
+    }
+
+    fn seed_runner(conn: &rusqlite::Connection) -> String {
+        let runner_id = ulid::Ulid::new().to_string();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO runners
+                (id, handle, display_name, runtime, command,
+                 created_at, updated_at)
+             VALUES (?1, 'r', 'R', 'shell', '/bin/sh', ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+        runner_id
+    }
+
+    fn insert_direct_session(
+        conn: &rusqlite::Connection,
+        runner_id: &str,
+        archived: bool,
+    ) -> String {
+        let id = ulid::Ulid::new().to_string();
+        let now = Utc::now();
+        let archived_at: Option<String> = if archived {
+            Some(now.to_rfc3339())
+        } else {
+            None
+        };
+        conn.execute(
+            "INSERT INTO sessions
+                (id, mission_id, runner_id, status, started_at, archived_at)
+             VALUES (?1, NULL, ?2, 'stopped', ?3, ?4)",
+            params![id, runner_id, now.to_rfc3339(), archived_at],
+        )
+        .unwrap();
+        id
+    }
+
+    #[test]
+    fn session_get_returns_archived_row() {
+        // Whole reason this command exists: listRecentDirect filters
+        // archived rows, so RunnerChat needs an unfiltered fallback to
+        // detect an archived direct-URL navigation and render
+        // read-only. A future refactor that adds `archived_at IS NULL`
+        // to get_direct's WHERE breaks the chat-page lockdown — this
+        // test fails if it ever does.
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let runner_id = seed_runner(&conn);
+        let session_id = insert_direct_session(&conn, &runner_id, /*archived*/ true);
+
+        let row = get_direct(&conn, &session_id).unwrap();
+        let row = row.expect("archived row must be returned");
+        assert_eq!(row.session_id, session_id);
+        assert!(
+            row.archived_at.is_some(),
+            "archived_at must be populated for archived rows"
+        );
+    }
+
+    #[test]
+    fn session_get_populates_archived_at_when_set() {
+        // Belt-and-suspenders for the column round-trip: archived
+        // direct sessions returned by get_direct must carry the
+        // timestamp the row was archived with, not a recoded `now()`.
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let runner_id = seed_runner(&conn);
+        let id = ulid::Ulid::new().to_string();
+        let now = Utc::now().to_rfc3339();
+        let archived_at = "2025-01-01T00:00:00+00:00";
+        conn.execute(
+            "INSERT INTO sessions
+                (id, mission_id, runner_id, status, started_at, archived_at)
+             VALUES (?1, NULL, ?2, 'stopped', ?3, ?4)",
+            params![id, runner_id, now, archived_at],
+        )
+        .unwrap();
+
+        let row = get_direct(&conn, &id).unwrap().unwrap();
+        let got = row.archived_at.expect("archived_at populated").to_rfc3339();
+        assert_eq!(got, archived_at);
+    }
+
+    #[test]
+    fn session_get_returns_none_for_unknown_id() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let row = get_direct(&conn, "01HZUNKNOWNUNKNOWNUNKNOWN").unwrap();
+        assert!(row.is_none());
+    }
+
+    #[test]
+    fn session_get_returns_none_for_mission_session() {
+        // `mission_id IS NULL` filter scopes this command to direct
+        // chats only — mission sessions go through `session_list`
+        // instead. Dropping that filter would let an archived
+        // mission's PTY row leak into RunnerChat's lookup and confuse
+        // the read-only branch (mission sessions don't have a
+        // /runners/:handle/chat URL).
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let runner_id = seed_runner(&conn);
+
+        // Seed a crew + mission so the FK is satisfied. The mission
+        // table's other NOT NULL columns are populated minimally.
+        let crew_id = ulid::Ulid::new().to_string();
+        let mission_id = ulid::Ulid::new().to_string();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO crews (id, name, created_at, updated_at)
+             VALUES (?1, 'C', ?2, ?2)",
+            params![crew_id, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO missions
+                (id, crew_id, title, status, started_at)
+             VALUES (?1, ?2, 't', 'running', ?3)",
+            params![mission_id, crew_id, now],
+        )
+        .unwrap();
+        let session_id = ulid::Ulid::new().to_string();
+        conn.execute(
+            "INSERT INTO sessions
+                (id, mission_id, runner_id, status, started_at)
+             VALUES (?1, ?2, ?3, 'stopped', ?4)",
+            params![session_id, mission_id, runner_id, now],
+        )
+        .unwrap();
+
+        let row = get_direct(&conn, &session_id).unwrap();
+        assert!(
+            row.is_none(),
+            "mission sessions must not leak through session_get"
         );
     }
 }

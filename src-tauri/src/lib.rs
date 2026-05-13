@@ -173,6 +173,7 @@ pub fn run() {
             commands::mission::mission_post_human_signal,
             commands::session::session_list,
             commands::session::session_list_recent_direct,
+            commands::session::session_get,
             commands::session::session_archive,
             commands::session::session_rename,
             commands::session::session_pin,

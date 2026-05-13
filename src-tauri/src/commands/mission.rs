@@ -66,6 +66,7 @@ fn row_to_mission(row: &Row<'_>) -> rusqlite::Result<Mission> {
     let started_at: String = row.get("started_at")?;
     let stopped_at: Option<String> = row.get("stopped_at")?;
     let pinned_at: Option<String> = row.get("pinned_at")?;
+    let archived_at: Option<String> = row.get("archived_at")?;
 
     let status = match status.as_str() {
         "running" => MissionStatus::Running,
@@ -95,6 +96,7 @@ fn row_to_mission(row: &Row<'_>) -> rusqlite::Result<Mission> {
         started_at: parse_ts(started_at)?,
         stopped_at: stopped_at.map(parse_ts).transpose()?,
         pinned_at: pinned_at.map(parse_ts).transpose()?,
+        archived_at: archived_at.map(parse_ts).transpose()?,
     })
 }
 
@@ -102,10 +104,18 @@ pub fn list(conn: &Connection, crew_id: Option<&str>) -> Result<Vec<Mission>> {
     // Pinned missions float to the top, then most-recently-started.
     // Sort key: NULL pinned_at sorts last (DESC), older pinned_at
     // sorts after newer (last-pinned first feels right for testing).
+    //
+    // `archived_at IS NULL` is the single chokepoint that hides
+    // archived missions from every surface that lists missions: the
+    // ⌘K palette, the sidebar tray, the Missions page summary. New
+    // surfaces inherit the filter by going through this helper. To
+    // open an archived mission by direct URL, use `get()` instead —
+    // it intentionally does NOT filter.
     let sql = "SELECT id, crew_id, title, status, goal_override, cwd,
-                      started_at, stopped_at, pinned_at
+                      started_at, stopped_at, pinned_at, archived_at
                  FROM missions
                  WHERE (?1 IS NULL OR crew_id = ?1)
+                   AND archived_at IS NULL
                  ORDER BY pinned_at IS NULL, pinned_at DESC, started_at DESC";
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(params![crew_id], row_to_mission)?;
@@ -128,9 +138,12 @@ pub struct MissionSummary {
 }
 
 pub fn get(conn: &Connection, id: &str) -> Result<Mission> {
+    // Intentionally no `archived_at` filter — opening an archived
+    // mission by direct URL has to still resolve so the workspace can
+    // render it read-only.
     conn.query_row(
         "SELECT id, crew_id, title, status, goal_override, cwd,
-                started_at, stopped_at, pinned_at
+                started_at, stopped_at, pinned_at, archived_at
            FROM missions WHERE id = ?1",
         params![id],
         row_to_mission,
@@ -294,10 +307,16 @@ pub fn stop(conn: &mut Connection, app_data_dir: &Path, id: &str) -> Result<Miss
     // a `mission_stopped` event (duplicate terminal). With `WHERE status =
     // 'running'`, the slower of the two updates 0 rows and is rejected
     // below, so only one writer ever reaches the log append.
+    //
+    // `archived_at` is set in the same UPDATE: `stop()` is reached only
+    // via `mission_archive`, so a terminal stop is by definition an
+    // archive. Atomic with the status flip means a row never observes
+    // `status='completed' AND archived_at IS NULL` (other than
+    // pre-existing rows the migration backfilled).
     let stopped_at = now();
     let affected = tx.execute(
         "UPDATE missions
-            SET status = 'completed', stopped_at = ?1
+            SET status = 'completed', stopped_at = ?1, archived_at = ?1
           WHERE id = ?2 AND status = 'running'",
         params![stopped_at.to_rfc3339(), id],
     )?;
@@ -982,8 +1001,16 @@ pub async fn mission_reset(
     write_roster_sidecar(&mission_dir, &roster)?;
 
     // 5. Update mission row: status back to running, started_at
-    // refreshed (this IS a fresh run), stopped_at cleared. Title /
-    // goal_override / cwd / pinned_at preserved.
+    // refreshed (this IS a fresh run), stopped_at + archived_at
+    // cleared. Title / goal_override / cwd / pinned_at preserved.
+    //
+    // archived_at must be cleared in lockstep with the status flip:
+    // reset is a return-to-running, and `list()` keys on `archived_at
+    // IS NULL`, so leaving the stamp would make a freshly-reset live
+    // mission vanish from the sidebar / palette. The UI gates reset
+    // on `status === 'running'` today so this can't happen via the
+    // workspace, but `mission_reset` is a public Tauri command and
+    // the backend invariant has to hold regardless of caller.
     let started_at_dt = now();
     {
         let conn = state.db.get()?;
@@ -991,7 +1018,8 @@ pub async fn mission_reset(
             "UPDATE missions
                 SET status = 'running',
                     started_at = ?1,
-                    stopped_at = NULL
+                    stopped_at = NULL,
+                    archived_at = NULL
               WHERE id = ?2",
             params![started_at_dt.to_rfc3339(), id],
         )?;
@@ -1588,9 +1616,13 @@ mod tests {
         )
         .unwrap()
         .mission;
-        // One-live-mission-per-crew rule: stop the first before starting the second.
-        stop(&mut conn, tmp.path(), &m1.id).unwrap();
-        // Force a distinct started_at.
+        // Per #55 concurrent missions on one crew are allowed, so we
+        // don't need to stop m1 before starting m2. We also avoid
+        // stop() here because it now stamps `archived_at` atomically
+        // with the status flip — calling it would hide m1 from
+        // list(), which would defeat this test's purpose (verifying
+        // the crew filter + ordering, not the archive filter; the
+        // latter has its own test).
         std::thread::sleep(std::time::Duration::from_millis(5));
         let m2 = start(
             &mut conn,
@@ -1973,5 +2005,240 @@ mod tests {
             missions.is_empty(),
             "mission row must be rolled back; found {missions:?}"
         );
+    }
+
+    #[test]
+    fn list_excludes_archived_missions() {
+        // `archived_at IS NULL` filter at SQL hides archived missions
+        // from every list surface (sidebar, ⌘K palette, summary). Open
+        // by direct URL still resolves through `get()`.
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "A", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id: crew_id.clone(),
+                title: "live".into(),
+                goal_override: Some("go".into()),
+                cwd: None,
+            },
+        )
+        .unwrap();
+
+        // Visible while running.
+        assert_eq!(
+            list(&conn, Some(&crew_id)).unwrap().len(),
+            1,
+            "running mission must list"
+        );
+
+        // Archive it (stop() flips status AND stamps archived_at atomically).
+        let archived = stop(&mut conn, tmp.path(), &out.mission.id).unwrap();
+        assert!(archived.archived_at.is_some());
+
+        // Hidden from list().
+        assert!(
+            list(&conn, Some(&crew_id)).unwrap().is_empty(),
+            "archived mission must not appear in list"
+        );
+        // Still resolves by id via get().
+        let fetched = get(&conn, &out.mission.id).unwrap();
+        assert!(fetched.archived_at.is_some());
+        assert_eq!(fetched.status, MissionStatus::Completed);
+    }
+
+    #[test]
+    fn stop_sets_archived_at_alongside_status() {
+        // stop() is the only path to status='completed' (only called
+        // from mission_archive); the same UPDATE must stamp
+        // archived_at so a future row can never be observed as
+        // completed-but-not-archived.
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "A", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id,
+                title: "m".into(),
+                goal_override: Some("go".into()),
+                cwd: None,
+            },
+        )
+        .unwrap();
+        let stopped = stop(&mut conn, tmp.path(), &out.mission.id).unwrap();
+
+        assert_eq!(stopped.status, MissionStatus::Completed);
+        let stopped_ts = stopped.stopped_at.expect("stopped_at populated");
+        let archived_ts = stopped.archived_at.expect("archived_at populated");
+        assert_eq!(stopped_ts, archived_ts, "must share the timestamp");
+    }
+
+    #[test]
+    fn aborted_missions_stay_visible_in_list() {
+        // 0004 backfill is narrow: only `status='completed'` rows get
+        // archived_at; aborted rows (spawn-failure rollback) stay in
+        // the visible list because they're triage state, not archive.
+        // Simulate the production rollback path's UPDATE.
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "A", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id: crew_id.clone(),
+                title: "m".into(),
+                goal_override: Some("go".into()),
+                cwd: None,
+            },
+        )
+        .unwrap();
+        // Mirror mission_start's rollback path: flip to aborted
+        // without setting archived_at.
+        conn.execute(
+            "UPDATE missions SET status = 'aborted', stopped_at = ?1 WHERE id = ?2",
+            params![now().to_rfc3339(), out.mission.id],
+        )
+        .unwrap();
+
+        let listed = list(&conn, Some(&crew_id)).unwrap();
+        assert_eq!(listed.len(), 1, "aborted mission must remain in list");
+        assert!(
+            listed[0].archived_at.is_none(),
+            "aborted mission must not be archived"
+        );
+        assert_eq!(listed[0].status, MissionStatus::Aborted);
+    }
+
+    #[test]
+    fn reset_clears_archived_at() {
+        // mission_reset's step-5 UPDATE (in production) flips status
+        // back to running and must clear archived_at in lockstep —
+        // otherwise the freshly-reset live row stays hidden from
+        // list() (which filters archived_at IS NULL). The UI today
+        // gates reset on status='running', but the backend invariant
+        // has to hold regardless of caller. Simulate the reset UPDATE
+        // directly here so the test stays focused on the SQL contract.
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "A", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id: crew_id.clone(),
+                title: "m".into(),
+                goal_override: Some("go".into()),
+                cwd: None,
+            },
+        )
+        .unwrap();
+        let archived = stop(&mut conn, tmp.path(), &out.mission.id).unwrap();
+        assert!(archived.archived_at.is_some(), "stop() must archive");
+        assert!(
+            list(&conn, Some(&crew_id)).unwrap().is_empty(),
+            "archived row hidden before reset"
+        );
+
+        // Mirror mission_reset's step-5 SQL (mission.rs:1009-1019).
+        conn.execute(
+            "UPDATE missions
+                SET status = 'running',
+                    started_at = ?1,
+                    stopped_at = NULL,
+                    archived_at = NULL
+              WHERE id = ?2",
+            params![now().to_rfc3339(), out.mission.id],
+        )
+        .unwrap();
+
+        let listed = list(&conn, Some(&crew_id)).unwrap();
+        assert_eq!(
+            listed.len(),
+            1,
+            "reset must make the mission visible to list() again"
+        );
+        assert_eq!(listed[0].id, out.mission.id);
+        assert!(listed[0].archived_at.is_none(), "archived_at cleared");
+        assert_eq!(listed[0].status, MissionStatus::Running);
+        assert!(listed[0].stopped_at.is_none(), "stopped_at cleared");
+    }
+
+    #[test]
+    fn migration_backfills_archived_at_for_completed_rows() {
+        // The 0004 migration runs once on first open. Simulate the
+        // pre-migration state by inserting a `completed` row with
+        // `archived_at` already nulled out (which is how the column
+        // would look pre-migration), then re-run the migration body
+        // and assert the backfill stamped archived_at = stopped_at.
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "A", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Seed a "pre-migration" completed mission. Use the production
+        // stop() then NULL out archived_at to mimic the state of rows
+        // that existed before the 0004 column landed.
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id: crew_id.clone(),
+                title: "old".into(),
+                goal_override: Some("g".into()),
+                cwd: None,
+            },
+        )
+        .unwrap();
+        let stopped = stop(&mut conn, tmp.path(), &out.mission.id).unwrap();
+        let original_stopped_at = stopped.stopped_at.unwrap().to_rfc3339();
+        conn.execute(
+            "UPDATE missions SET archived_at = NULL WHERE id = ?1",
+            params![out.mission.id],
+        )
+        .unwrap();
+
+        // Sanity: row currently looks pre-migration.
+        let pre: Option<String> = conn
+            .query_row(
+                "SELECT archived_at FROM missions WHERE id = ?1",
+                params![out.mission.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(pre.is_none());
+
+        // Re-run the 0004 backfill statement and assert the post state.
+        conn.execute(
+            "UPDATE missions
+                SET archived_at = stopped_at
+              WHERE status = 'completed' AND archived_at IS NULL",
+            [],
+        )
+        .unwrap();
+
+        let backfilled = get(&conn, &out.mission.id).unwrap();
+        let backfilled_archived_at = backfilled
+            .archived_at
+            .expect("backfill must populate archived_at")
+            .to_rfc3339();
+        assert_eq!(backfilled_archived_at, original_stopped_at);
     }
 }

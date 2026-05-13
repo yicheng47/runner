@@ -99,6 +99,17 @@ export default function RunnerChat() {
   // meta line. Pulled from session_list_recent_direct so the chat
   // surface and the sidebar agree on the truth.
   const [chatMeta, setChatMeta] = useState<DirectSessionEntry | null>(null);
+  // chatMeta is async (listRecentDirect → session_get fallback) and is
+  // the only source of `archived_at`. Until it resolves we don't know
+  // whether the URL points at an archived row, and we can't safely
+  // attach a PTY or mount RunnerTerminal — that would briefly subscribe
+  // to session/output and call outputSnapshot for an archived row
+  // before the read-only branch kicks in. Gate both the attach effect
+  // and the body render on this flag; it flips true once the first
+  // refresh completes (success or miss). Per-sessionId so back-forward
+  // navigation to a different chat doesn't reuse the stale flag.
+  const [metaLoadedFor, setMetaLoadedFor] = useState<string | null>(null);
+  const metaLoaded = sessionId != null && metaLoadedFor === sessionId;
   // True while the user has clicked Resume and we're waiting for the
   // resumed PTY to come back online. Drives the cyan status pill, the
   // header "Resuming…" affordance, and the centered Resuming pill
@@ -143,6 +154,11 @@ export default function RunnerChat() {
   const activeSession = directSessions.find((s) => s.id === sessionId) ?? null;
   const status = activeSession?.status ?? "running";
   const exitCode = activeSession?.exitCode ?? null;
+  // Archived rows can be reached by direct URL but render read-only.
+  // We don't attach a PTY, mount RunnerTerminal, or expose Resume /
+  // End / Archive — the row is terminal and the operator can only
+  // read the meta + go back to the runner.
+  const isArchived = chatMeta?.archived_at != null;
 
   const upsertSession = useCallback((next: DirectSessionPane) => {
     setDirectSessions((prev) => {
@@ -209,21 +225,41 @@ export default function RunnerChat() {
     };
   }, [handle]);
 
-  // Pull this chat's metadata (started_at, cwd, title) by finding it
-  // inside the direct-sessions list. Refetched on session/exit so
-  // status changes flip the header pill. We piggyback on
-  // listRecentDirect rather than adding a new "session_get" command —
-  // it's the same query the sidebar uses, so the two surfaces agree.
+  // Pull this chat's metadata (started_at, cwd, title) for the header.
+  // Refetched on session/exit so status changes flip the pill.
+  //
+  // Primary lookup: `listRecentDirect` — same SELECT the sidebar
+  // uses, so the two surfaces agree on un-archived rows. Archived
+  // sessions are filtered out at SQL, so direct-URL navigation to
+  // an archived session would miss; we fall back to the unfiltered
+  // `session_get` so the chat page can detect the archived state
+  // and lock the workspace read-only instead of treating the row
+  // as missing.
   const refreshChatMeta = useCallback(async () => {
     if (!sessionId) {
       setChatMeta(null);
+      setMetaLoadedFor(null);
       return;
     }
     try {
       const rows = await api.session.listRecentDirect();
-      setChatMeta(rows.find((r) => r.session_id === sessionId) ?? null);
+      const found = rows.find((r) => r.session_id === sessionId);
+      if (found) {
+        setChatMeta(found);
+        return;
+      }
+      // Missed in the visible list — could be archived. The
+      // unfiltered get returns the row regardless so the read-only
+      // branch below can render the right UX.
+      const archived = await api.session.get(sessionId);
+      setChatMeta(archived);
     } catch (e) {
       console.error("RunnerChat: refreshChatMeta failed", e);
+    } finally {
+      // Flag flips regardless of outcome so the body render can leave
+      // the neutral loading state — a network failure shouldn't strand
+      // the user on a perpetual spinner.
+      setMetaLoadedFor(sessionId);
     }
   }, [sessionId]);
 
@@ -368,12 +404,22 @@ export default function RunnerChat() {
   useEffect(() => {
     const requestKey = [handle ?? "", sessionId ?? ""].join(" ");
     if (startedKeyRef.current === requestKey) return;
+    // Wait for chatMeta to resolve before attaching. Without this
+    // gate, the brief window between mount and the first
+    // refreshChatMeta resolution would attach a PTY listener even
+    // for archived sessions (chatMeta is null → isArchived false),
+    // briefly subscribing to session/output + calling
+    // outputSnapshot before the read-only branch takes over.
+    if (!metaLoaded) return;
     startedKeyRef.current = requestKey;
     setErr(null);
-    if (sessionId && handle) {
+    // Skip attach for archived rows: the workspace renders read-only,
+    // so mounting RunnerTerminal would spawn a PTY listener for a row
+    // that's terminal by definition.
+    if (sessionId && handle && !isArchived) {
       attach(sessionId, handle, state?.sessionStatus ?? "stopped");
     }
-  }, [attach, handle, sessionId, state?.sessionStatus]);
+  }, [attach, handle, sessionId, state?.sessionStatus, isArchived, metaLoaded]);
 
   async function endChat() {
     if (!sessionId || !handle) return;
@@ -580,6 +626,11 @@ export default function RunnerChat() {
                 <span className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass}`} />
                 {sessionId ? statusLabel : "starting"}
               </span>
+              {isArchived ? (
+                <span className="inline-flex shrink-0 items-center rounded border border-line bg-raised px-2 py-0.5 text-[10px] font-medium text-fg-2">
+                  Archived · read-only
+                </span>
+              ) : null}
             </div>
             {metaParts.length > 0 ? (
               <div className="flex min-w-0 items-center gap-2 text-[11px] text-fg-2">
@@ -598,7 +649,16 @@ export default function RunnerChat() {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {chatState === "resuming" ? (
+          {isArchived ? (
+            // Archived rows are terminal: no Resume / Stop / Archive.
+            // Only surface the navigation escape hatch.
+            <button
+              onClick={() => navigate(`/runners/${handle}`)}
+              className="cursor-pointer rounded border border-line bg-raised px-2.5 py-1.5 text-xs text-fg hover:border-fg-3"
+            >
+              Back to runner
+            </button>
+          ) : chatState === "resuming" ? (
             <button
               type="button"
               disabled
@@ -645,10 +705,10 @@ export default function RunnerChat() {
           )}
           {/* Topbar overflow menu — Pin / Rename / Archive, matching
               the design's `session_ctx_menu` (`P5CLA` / `L31Zb`) and
-              the mission topbar's `MissionKebab`. Only meaningful
-              once the chat row exists in the DB (sessionId + meta
-              loaded). */}
-          {sessionId && chatMeta ? (
+              the mission topbar's `MissionKebab`. Hidden for archived
+              rows: Pin/Rename make no sense for a terminal row, and
+              Archive is a no-op. */}
+          {sessionId && chatMeta && !isArchived ? (
             <ChatKebab
               pinned={chatMeta.pinned}
               open={kebabOpen}
@@ -710,9 +770,31 @@ export default function RunnerChat() {
           PTY output into their buffers, so switching sessions preserves the
           real terminal state. When the active pane's session has exited the
           xterm dims and a "Session ended" card overlays the center —
-          mirrors Pencil node `vS5ce`. */}
+          mirrors Pencil node `vS5ce`.
+          Archived rows render a static placeholder instead — no xterm,
+          no PTY listener, no live data path. */}
       <div className="relative flex-1 overflow-hidden p-4">
-        {directSessions.length === 0 ? (
+        {!metaLoaded && sessionId ? (
+          // Neutral loading state until chatMeta resolves. Rendering
+          // the terminal map here would briefly mount RunnerTerminal
+          // for archived rows (chatMeta null → isArchived false) and
+          // fire a session/output subscribe + outputSnapshot call
+          // before the read-only branch takes over. The flash is short
+          // but visible and contradicts the 'no PTY listener' goal.
+          <div className="text-sm text-fg-3">Loading chat…</div>
+        ) : isArchived ? (
+          <div className="flex h-full items-center justify-center">
+            <div className="flex max-w-md flex-col items-center gap-2 rounded border border-line bg-raised px-6 py-5 text-center">
+              <span className="text-[13px] font-semibold text-fg">
+                Session ended — terminal closed
+              </span>
+              <span className="text-[12px] text-fg-2">
+                This chat was archived. The PTY is gone and the workspace is
+                read-only.
+              </span>
+            </div>
+          </div>
+        ) : directSessions.length === 0 ? (
           <div className="text-sm text-fg-3">Starting…</div>
         ) : (
           directSessions.map((s) => {

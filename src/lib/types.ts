@@ -140,6 +140,12 @@ export interface Mission {
   started_at: Timestamp;
   stopped_at: Timestamp | null;
   pinned_at: Timestamp | null;
+  // archived_at != null → mission is archived. The workspace renders
+  // read-only (no PTY mount, no Resume/Stop) and the row is filtered
+  // out of list() at SQL so search/sidebar surfaces never see it. Use
+  // this as the single discriminator — don't key UX off
+  // status === 'completed'.
+  archived_at: Timestamp | null;
 }
 
 export type SessionStatus = "running" | "stopped" | "crashed";
