@@ -35,23 +35,25 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       # Tauri 2 on Linux needs webkit2gtk and friends even for `cargo check`
-      # because tauri-runtime-wry links against them. We install them
-      # directly with apt-get (the canonical Tauri Linux CI pattern)
-      # instead of going through cache-apt-pkgs-action — the latter
-      # wraps apt-fast/aria2 which intermittently hangs on
-      # `Clean installing 4 packages...`, costing more in lost runs
-      # than the ~40s the cache layer saves on a hit.
-      - name: Install system dependencies
-        env:
-          DEBIAN_FRONTEND: noninteractive
+      # because tauri-runtime-wry links against them. cache-apt-pkgs-action
+      # caches the *installed filesystem* (not just the .debs), so a cache
+      # hit untars in ~3s. The cold path occasionally hangs on
+      # apt-fast/aria2 — `timeout-minutes` bounds that so a stalled cold
+      # install fails fast and surfaces in the PR checks instead of
+      # sitting indefinitely; rerun the job to retry. Bump the `version`
+      # key when the package list changes to invalidate the cache.
+      #
+      # Raw `apt-get install` (without this action) takes 5+ min on a
+      # cold runner because Azure's Ubuntu mirror serves the 177
+      # transitive deps slowly with occasional 60s `Ign:` retries —
+      # tried that path on PR #105 and it consistently hit the same
+      # 5-min wall before completing.
+      - name: Install system dependencies (cached)
+        uses: awalsh128/cache-apt-pkgs-action@v1
         timeout-minutes: 5
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev
+        with:
+          packages: libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+          version: 1.0
       # Tauri's build script validates that every `bundle.externalBin`
       # entry exists for the active target on every cargo build,
       # including clippy / check / test. CI doesn't bundle, but it does
