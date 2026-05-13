@@ -199,8 +199,12 @@ export function RunnerTerminal({
     // Shift+Enter → ESC+CR so claude-code/codex insert a newline in their
     // input frame instead of submitting. Plain Enter falls through to the
     // default \r emission via onData above.
+    //
+    // We must intercept both keydown AND keypress: WKWebView fires a
+    // legacy `keypress` for Shift+Enter, and xterm's `_keyPress` will
+    // emit \r (same as plain Enter) unless this handler also returns
+    // false for that event (see #99).
     term.attachCustomKeyEventHandler((e) => {
-      if (e.type !== "keydown") return true;
       if (
         e.key === "Enter" &&
         e.shiftKey &&
@@ -208,11 +212,13 @@ export function RunnerTerminal({
         !e.altKey &&
         !e.metaKey
       ) {
-        const sid = sessionIdRef.current;
-        if (sid && !disabledRef.current) {
-          void api.session.injectStdin(sid, "\x1b\r").catch((err) => {
-            onErrorRef.current?.(String(err));
-          });
+        if (e.type === "keydown") {
+          const sid = sessionIdRef.current;
+          if (sid && !disabledRef.current) {
+            void api.session.injectStdin(sid, "\x1b\r").catch((err) => {
+              onErrorRef.current?.(String(err));
+            });
+          }
         }
         return false;
       }
