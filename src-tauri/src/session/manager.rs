@@ -1441,6 +1441,25 @@ impl SessionManager {
         )))
     }
 
+    /// Send a bare Enter keystroke to a live session's pane. Used by
+    /// `schedule_continue_on_resume` as a recovery path when
+    /// `inject_paste_with_verify` couldn't confirm the "continue"
+    /// body landed: see that caller for the safety rationale (stray
+    /// Enter on an empty composer is a no-op for claude-code, so the
+    /// downside of NOT recovering — user stuck — outweighs it).
+    pub(crate) fn send_enter(&self, session_id: &str) -> Result<()> {
+        let rt_session = self
+            .sessions
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map(|h| h.runtime_session.clone())
+            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+        self.runtime
+            .send_key(&rt_session, "Enter")
+            .map_err(Into::into)
+    }
+
     /// Resize the session's pane. The frontend calls this after
     /// xterm fits its container — without it, claude-code stays at
     /// the spawn-time grid regardless of how big the visible grid
@@ -2102,6 +2121,23 @@ fn schedule_direct_first_prompt(
 /// is 0, and the body length (`continue` is 8 bytes < 64) skips
 /// the placeholder gate entirely; only the head/tail-marker delta
 /// for "continue" can accept.
+///
+/// Caller-side recovery policy: when `inject_paste_with_verify`
+/// returns Err for this caller, we still send one fallback Enter
+/// keystroke. Two paths land us in that Err. (1) The paste body
+/// landed in the composer but readback never observed the
+/// head/tail marker (capture race, TUI line-wrap, or prior
+/// transcript content matching the marker) — Enter submits the
+/// visible "continue" and the agent resumes, exactly the user's
+/// intent. (2) The paste truly didn't land — Enter on an empty
+/// claude-code composer is a no-op.
+///
+/// Both paths beat the alternative of giving up silently and
+/// leaving the user stuck with no auto-continue. This is a
+/// caller-policy decision; `inject_paste_with_verify` keeps its
+/// strict "only Enter on verified paste" contract for callers like
+/// `inject_first_turn` that paste long mission prompts where a
+/// stray Enter on a partial body would be destructive.
 fn schedule_continue_on_resume(
     mgr: &Arc<SessionManager>,
     session_id: String,
@@ -2118,13 +2154,29 @@ fn schedule_continue_on_resume(
     if config.initial_wait.is_zero() && config.between_attempts.is_zero() {
         // Inline path under `cfg(test)` so synchronous output
         // assertions can observe the injection.
-        let _ = mgr.inject_paste_with_verify(&session_id, b"continue", config);
+        if let Err(e) = mgr.inject_paste_with_verify(&session_id, b"continue", config) {
+            eprintln!(
+                "runner: continue-on-resume verify failed for {session_id}: {e}; sending fallback Enter"
+            );
+            if let Err(ee) = mgr.send_enter(&session_id) {
+                eprintln!(
+                    "runner: continue-on-resume fallback Enter for {session_id} failed: {ee}"
+                );
+            }
+        }
         return;
     }
     let mgr = Arc::clone(mgr);
     std::thread::spawn(move || {
         if let Err(e) = mgr.inject_paste_with_verify(&session_id, b"continue", config) {
-            eprintln!("runner: continue-on-resume for {session_id} failed: {e}");
+            eprintln!(
+                "runner: continue-on-resume verify failed for {session_id}: {e}; sending fallback Enter"
+            );
+            if let Err(ee) = mgr.send_enter(&session_id) {
+                eprintln!(
+                    "runner: continue-on-resume fallback Enter for {session_id} failed: {ee}"
+                );
+            }
         }
     });
 }
@@ -4376,6 +4428,121 @@ mod tests {
         assert!(
             enters.is_empty(),
             "stale placeholder must not trigger Enter; got {enters:?}",
+        );
+    }
+
+    /// Helper: build a claude-code Runner for the resume-continue
+    /// flow tests. The shared `runner()` helper hardcodes
+    /// `runtime: "shell"`, which `schedule_continue_on_resume`
+    /// short-circuits on.
+    fn claude_runner() -> Runner {
+        let mut r = runner("/bin/true", &[]);
+        r.runtime = "claude-code".into();
+        r
+    }
+
+    fn resume_plan_resuming() -> router::runtime::ResumePlan {
+        router::runtime::ResumePlan {
+            args: Vec::new(),
+            prepend: false,
+            assigned_key: Some("k".into()),
+            resuming: true,
+        }
+    }
+
+    #[test]
+    fn continue_resume_falls_back_to_enter_on_verify_failure() {
+        // Mirror `continue_resume_rejects_stale_placeholder`: a
+        // resumed pane already shows old `[Pasted text #N ...]`
+        // content, the head/tail-marker delta for "continue" stays
+        // 0 across all attempts, and `inject_paste_with_verify`
+        // returns Err. The end-to-end resume-continue caller must
+        // recover by sending exactly one fallback Enter — that's
+        // the whole point of the policy. `inject_paste_with_verify`
+        // semantics are unchanged; the recovery lives in
+        // `schedule_continue_on_resume`.
+        let fake = fake_runtime();
+        let mgr = mgr_with_fake(None, Arc::clone(&fake));
+        register_fake_session(&mgr, &fake, "S-CONT-FB");
+        let stale = b"...prior conversation...\n[Pasted text #5 +20 lines]\n>";
+        fake.set_pane_pre_paste(stale);
+        fake.set_pane_post_paste(stale);
+
+        let r = claude_runner();
+        let plan = resume_plan_resuming();
+        super::schedule_continue_on_resume(&mgr, "S-CONT-FB".into(), &r, &plan);
+
+        let pastes = fake.pastes();
+        assert_eq!(
+            pastes.len(),
+            FIRST_PROMPT_CONFIG.max_attempts,
+            "expected max_attempts pastes; got {pastes:?}",
+        );
+        let enters: Vec<_> = fake
+            .keys()
+            .into_iter()
+            .filter(|(_, k)| k == "Enter")
+            .collect();
+        assert_eq!(
+            enters.len(),
+            1,
+            "expected exactly one fallback Enter on verify failure; got {enters:?}",
+        );
+    }
+
+    #[test]
+    fn continue_resume_no_double_enter_on_verify_success() {
+        // Default FakeRuntime (empty `pane_post_paste`) makes
+        // `capture_visible` synthesize a snapshot containing the last
+        // paste body, so the head-marker delta hits ≥ 1 on attempt 1
+        // and `inject_paste_with_verify` sends Enter and returns Ok.
+        // The fallback path must NOT fire — otherwise the agent gets
+        // two Enters and submits a stray empty turn.
+        let fake = fake_runtime();
+        let mgr = mgr_with_fake(None, Arc::clone(&fake));
+        register_fake_session(&mgr, &fake, "S-CONT-OK");
+
+        let r = claude_runner();
+        let plan = resume_plan_resuming();
+        super::schedule_continue_on_resume(&mgr, "S-CONT-OK".into(), &r, &plan);
+
+        let pastes = fake.pastes();
+        assert_eq!(pastes.len(), 1, "expected one paste; got {pastes:?}");
+        let enters: Vec<_> = fake
+            .keys()
+            .into_iter()
+            .filter(|(_, k)| k == "Enter")
+            .collect();
+        assert_eq!(
+            enters.len(),
+            1,
+            "verify-success path must send exactly one Enter (no fallback double); got {enters:?}",
+        );
+    }
+
+    #[test]
+    fn continue_resume_skips_for_non_claude_runtime() {
+        // codex / shell don't have a real "continue" semantic — the
+        // function must no-op (no paste, no Enter) regardless of
+        // `plan.resuming`.
+        let fake = fake_runtime();
+        let mgr = mgr_with_fake(None, Arc::clone(&fake));
+        register_fake_session(&mgr, &fake, "S-CONT-SHELL");
+
+        let mut r = runner("/bin/true", &[]);
+        r.runtime = "shell".into();
+        let plan = resume_plan_resuming();
+        super::schedule_continue_on_resume(&mgr, "S-CONT-SHELL".into(), &r, &plan);
+
+        assert!(
+            fake.pastes().is_empty(),
+            "no paste for non-claude runtime; got {:?}",
+            fake.pastes()
+        );
+        assert!(
+            fake.keys().is_empty(),
+            "no key events for non-claude runtime; got {:?}",
+            fake.keys()
         );
     }
 }
