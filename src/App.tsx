@@ -45,18 +45,22 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
-      if (e.altKey || e.shiftKey) return;
-      // With Cmd held, US keyboards deliver `=` unshifted for the
-      // `+` key, but other layouts/devices can send either — accept both.
+      if (e.altKey) return;
+      // `+` is reached via Shift+`=` on US layouts, so we must accept
+      // Shift specifically for the zoom-in branch. `-` and `0` are
+      // unshifted keys — Shift there is something else (e.g. Cmd+Shift+0
+      // is Safari's "Show downloads"), so we don't claim it.
       if (e.key === "+" || e.key === "=") {
         e.preventDefault();
         e.stopPropagation();
         nudgeAppZoom(1);
       } else if (e.key === "-") {
+        if (e.shiftKey) return;
         e.preventDefault();
         e.stopPropagation();
         nudgeAppZoom(-1);
       } else if (e.key === "0") {
+        if (e.shiftKey) return;
         e.preventDefault();
         e.stopPropagation();
         nudgeAppZoom("reset");

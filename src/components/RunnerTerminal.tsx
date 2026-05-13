@@ -280,7 +280,10 @@ export function RunnerTerminal({
         // session may have exited
       });
     };
-    const onResize = () => {
+    // Refit + push backend geometry when the pane is active and
+    // measurable. Hidden panes don't refit/push — the activation
+    // effect picks up the new metrics when they come to the front.
+    const refitAndPush = () => {
       if (!activeRef.current || !containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
@@ -291,7 +294,7 @@ export function RunnerTerminal({
         // teardown
       }
     };
-    window.addEventListener("resize", onResize);
+    window.addEventListener("resize", refitAndPush);
 
     const refreshTerm = () => {
       const t = termRef.current;
@@ -320,12 +323,15 @@ export function RunnerTerminal({
       try {
         if (e.key === STORAGE_TERMINAL_FONT_SIZE) {
           t.options.fontSize = readTerminalFontSize();
-          fitRef.current?.fit();
+          // Cell metrics changed — refit and push the new PTY geometry
+          // so an active streaming TUI doesn't keep writing against
+          // stale cols/rows until the next window resize.
+          refitAndPush();
         } else if (e.key === STORAGE_TERMINAL_FONT_FAMILY) {
           t.options.fontFamily = resolveTerminalFontStack(
             readTerminalFontFamily(),
           );
-          fitRef.current?.fit();
+          refitAndPush();
         } else if (e.key === STORAGE_TERMINAL_CURSOR_STYLE) {
           t.options.cursorStyle = readTerminalCursorStyle();
         } else if (e.key === STORAGE_TERMINAL_SCROLLBACK) {
@@ -342,7 +348,7 @@ export function RunnerTerminal({
     fitRef.current = fit;
 
     return () => {
-      window.removeEventListener("resize", onResize);
+      window.removeEventListener("resize", refitAndPush);
       window.removeEventListener("focus", refreshTerm);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("storage", onStorage);
