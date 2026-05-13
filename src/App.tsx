@@ -1,8 +1,11 @@
 import { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AppShell } from "./components/AppShell";
 import { UpdateProvider } from "./contexts/UpdateContext";
+import { nudgeAppZoom } from "./lib/appZoom";
+import { readAppZoom } from "./lib/settings";
 import Crews from "./pages/Crews";
 import CrewEditor from "./pages/CrewEditor";
 import MissionWorkspace from "./pages/MissionWorkspace";
@@ -18,6 +21,53 @@ export default function App() {
   // enough to guarantee a non-blank webview before show.
   useEffect(() => {
     invoke("app_ready").catch(console.error);
+  }, []);
+
+  // Restore the user's persisted app zoom on boot. Skipped when the stored
+  // value is the default (1.0) so we don't roundtrip through Tauri for a
+  // no-op. Wrapped in try/catch because dev browser preview has no Tauri
+  // webview API.
+  useEffect(() => {
+    const zoom = readAppZoom();
+    if (zoom === 1.0) return;
+    try {
+      void getCurrentWebview().setZoom(zoom).catch(() => {
+        // best-effort — webview swap or platform refusal shouldn't block boot.
+      });
+    } catch {
+      // No Tauri runtime (dev browser preview).
+    }
+  }, []);
+
+  // Global Cmd/Ctrl +/-/0 zoom shortcuts. Capture phase so xterm's
+  // textarea doesn't swallow the key before us; preventDefault only on
+  // matches so other Cmd-key combos (copy, paste, etc.) still work.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.altKey) return;
+      // `+` is reached via Shift+`=` on US layouts, so we must accept
+      // Shift specifically for the zoom-in branch. `-` and `0` are
+      // unshifted keys — Shift there is something else (e.g. Cmd+Shift+0
+      // is Safari's "Show downloads"), so we don't claim it.
+      if (e.key === "+" || e.key === "=") {
+        e.preventDefault();
+        e.stopPropagation();
+        nudgeAppZoom(1);
+      } else if (e.key === "-") {
+        if (e.shiftKey) return;
+        e.preventDefault();
+        e.stopPropagation();
+        nudgeAppZoom(-1);
+      } else if (e.key === "0") {
+        if (e.shiftKey) return;
+        e.preventDefault();
+        e.stopPropagation();
+        nudgeAppZoom("reset");
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
   return (

@@ -17,6 +17,17 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 import { api } from "../lib/api";
+import {
+  readTerminalCursorStyle,
+  readTerminalFontFamily,
+  readTerminalFontSize,
+  readTerminalScrollback,
+  resolveTerminalFontStack,
+  STORAGE_TERMINAL_CURSOR_STYLE,
+  STORAGE_TERMINAL_FONT_FAMILY,
+  STORAGE_TERMINAL_FONT_SIZE,
+  STORAGE_TERMINAL_SCROLLBACK,
+} from "../lib/settings";
 
 interface OutputEvent {
   session_id: string;
@@ -151,11 +162,11 @@ export function RunnerTerminal({
       cols: 80,
       rows: 24,
       theme: TERMINAL_THEME,
-      fontFamily:
-        'Menlo, "SF Mono", Monaco, Consolas, "Liberation Mono", monospace',
-      fontSize: 13,
+      fontFamily: resolveTerminalFontStack(readTerminalFontFamily()),
+      fontSize: readTerminalFontSize(),
       cursorBlink: true,
-      scrollback: 5000,
+      cursorStyle: readTerminalCursorStyle(),
+      scrollback: readTerminalScrollback(),
       allowProposedApi: true,
     });
     const fit = new FitAddon();
@@ -269,7 +280,10 @@ export function RunnerTerminal({
         // session may have exited
       });
     };
-    const onResize = () => {
+    // Refit + push backend geometry when the pane is active and
+    // measurable. Hidden panes don't refit/push — the activation
+    // effect picks up the new metrics when they come to the front.
+    const refitAndPush = () => {
       if (!activeRef.current || !containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
@@ -280,7 +294,7 @@ export function RunnerTerminal({
         // teardown
       }
     };
-    window.addEventListener("resize", onResize);
+    window.addEventListener("resize", refitAndPush);
 
     const refreshTerm = () => {
       const t = termRef.current;
@@ -297,13 +311,47 @@ export function RunnerTerminal({
     window.addEventListener("focus", refreshTerm);
     document.addEventListener("visibilitychange", onVisibility);
 
+    // Live updates from SettingsModal. localStorage's `storage` event
+    // doesn't fire in the originating window, so the modal dispatches a
+    // synthetic one after each write (via `notifySameWindowStorage`). We
+    // always re-read through the typed readers so the clamp/normalize
+    // path is identical to mount-time — an out-of-range write can't
+    // poison `term.options`.
+    const onStorage = (e: StorageEvent) => {
+      const t = termRef.current;
+      if (!t) return;
+      try {
+        if (e.key === STORAGE_TERMINAL_FONT_SIZE) {
+          t.options.fontSize = readTerminalFontSize();
+          // Cell metrics changed — refit and push the new PTY geometry
+          // so an active streaming TUI doesn't keep writing against
+          // stale cols/rows until the next window resize.
+          refitAndPush();
+        } else if (e.key === STORAGE_TERMINAL_FONT_FAMILY) {
+          t.options.fontFamily = resolveTerminalFontStack(
+            readTerminalFontFamily(),
+          );
+          refitAndPush();
+        } else if (e.key === STORAGE_TERMINAL_CURSOR_STYLE) {
+          t.options.cursorStyle = readTerminalCursorStyle();
+        } else if (e.key === STORAGE_TERMINAL_SCROLLBACK) {
+          t.options.scrollback = readTerminalScrollback();
+        }
+      } catch {
+        // xterm may reject runtime mutation of some options; the next
+        // mount will pick up the persisted value either way.
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
     termRef.current = term;
     fitRef.current = fit;
 
     return () => {
-      window.removeEventListener("resize", onResize);
+      window.removeEventListener("resize", refitAndPush);
       window.removeEventListener("focus", refreshTerm);
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("storage", onStorage);
       textarea?.removeEventListener("paste", onPaste, { capture: true });
       onDataDisposable.dispose();
       term.dispose();
