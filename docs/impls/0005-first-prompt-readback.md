@@ -481,3 +481,57 @@ confirm all three show the persona as the first user turn; (b) start
 a fresh codex-lead mission with a long preamble+brief (≥2KB), confirm
 the lead receives the launch prompt and submits it (covers the
 tail-marker path).
+
+## Addendum: resume-continue caller policy (issue #94)
+
+`schedule_continue_on_resume` pastes the literal `continue` (8 bytes)
+into a freshly resumed claude-code pane so the agent picks up where
+it left off without the user touching the keyboard. The body is 8
+bytes — below `PLACEHOLDER_MIN_BODY_LEN = 64` — so the placeholder
+delta gate inside `inject_paste_with_verify` is closed and only the
+head/tail-marker delta for "continue" can ack the paste. Three real-
+world conditions defeat that single ack signal:
+
+1. **Capture race.** The 600ms render-wait isn't always enough; the
+   pane snapshot we take post-paste sometimes hasn't repainted yet.
+2. **TUI line-wrap.** When the composer happens to wrap mid-word,
+   the rendered "continue" gets split across a soft-wrap boundary
+   and the literal 8-char substring search misses it.
+3. **Stale transcript content.** A resumed pane that already has the
+   word "continue" scrolled into view (the agent's last turn echoed
+   it, the user typed it earlier, etc.) makes `before_head_count`
+   match `after_head_count`. Delta = 0, verify rejects.
+
+Originally the caller just logged the verify failure and gave up —
+leaving the user staring at a pane with `continue` typed into the
+composer but no Enter sent. The fix layers a **caller-side recovery
+policy** on top of the unchanged strict primitive:
+
+- On verify success, `inject_paste_with_verify` sends Enter and
+  returns Ok. Fallback path does not fire.
+- On verify failure (Err), the caller sends one fallback Enter via
+  `SessionManager::send_enter`. Two cases land here:
+  - Paste body did land but readback missed it → Enter submits the
+    visible "continue" and the agent resumes. User's intent.
+  - Paste body did not land → Enter on an empty claude-code composer
+    is a no-op. Cheap.
+
+The downside of NOT recovering (user stuck, has to type manually)
+clearly outweighs the downside of a stray Enter on this specific
+caller. The policy is intentionally caller-local: `inject_first_turn`
+and other callers paste multi-KB launch prompts where a stray Enter
+on a partial body would submit garbage. Those callers keep the
+strict "only Enter on verified paste" contract guarded by
+`continue_resume_rejects_stale_placeholder`.
+
+Tests added alongside the fix:
+- `continue_resume_falls_back_to_enter_on_verify_failure` — exact
+  one fallback Enter on stale-placeholder Err.
+- `continue_resume_no_double_enter_on_verify_success` — exactly one
+  Enter on the happy path; fallback does not double-fire.
+- `continue_resume_skips_for_non_claude_runtime` — no paste, no Enter
+  for shell / codex.
+
+Distinct stderr logs (`verify failed … sending fallback Enter` vs.
+`fallback Enter … failed`) let us detect frequency in the field
+without re-instrumenting.
