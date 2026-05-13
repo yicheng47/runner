@@ -99,6 +99,17 @@ export default function RunnerChat() {
   // meta line. Pulled from session_list_recent_direct so the chat
   // surface and the sidebar agree on the truth.
   const [chatMeta, setChatMeta] = useState<DirectSessionEntry | null>(null);
+  // chatMeta is async (listRecentDirect → session_get fallback) and is
+  // the only source of `archived_at`. Until it resolves we don't know
+  // whether the URL points at an archived row, and we can't safely
+  // attach a PTY or mount RunnerTerminal — that would briefly subscribe
+  // to session/output and call outputSnapshot for an archived row
+  // before the read-only branch kicks in. Gate both the attach effect
+  // and the body render on this flag; it flips true once the first
+  // refresh completes (success or miss). Per-sessionId so back-forward
+  // navigation to a different chat doesn't reuse the stale flag.
+  const [metaLoadedFor, setMetaLoadedFor] = useState<string | null>(null);
+  const metaLoaded = sessionId != null && metaLoadedFor === sessionId;
   // True while the user has clicked Resume and we're waiting for the
   // resumed PTY to come back online. Drives the cyan status pill, the
   // header "Resuming…" affordance, and the centered Resuming pill
@@ -227,6 +238,7 @@ export default function RunnerChat() {
   const refreshChatMeta = useCallback(async () => {
     if (!sessionId) {
       setChatMeta(null);
+      setMetaLoadedFor(null);
       return;
     }
     try {
@@ -243,6 +255,11 @@ export default function RunnerChat() {
       setChatMeta(archived);
     } catch (e) {
       console.error("RunnerChat: refreshChatMeta failed", e);
+    } finally {
+      // Flag flips regardless of outcome so the body render can leave
+      // the neutral loading state — a network failure shouldn't strand
+      // the user on a perpetual spinner.
+      setMetaLoadedFor(sessionId);
     }
   }, [sessionId]);
 
@@ -387,6 +404,13 @@ export default function RunnerChat() {
   useEffect(() => {
     const requestKey = [handle ?? "", sessionId ?? ""].join(" ");
     if (startedKeyRef.current === requestKey) return;
+    // Wait for chatMeta to resolve before attaching. Without this
+    // gate, the brief window between mount and the first
+    // refreshChatMeta resolution would attach a PTY listener even
+    // for archived sessions (chatMeta is null → isArchived false),
+    // briefly subscribing to session/output + calling
+    // outputSnapshot before the read-only branch takes over.
+    if (!metaLoaded) return;
     startedKeyRef.current = requestKey;
     setErr(null);
     // Skip attach for archived rows: the workspace renders read-only,
@@ -395,7 +419,7 @@ export default function RunnerChat() {
     if (sessionId && handle && !isArchived) {
       attach(sessionId, handle, state?.sessionStatus ?? "stopped");
     }
-  }, [attach, handle, sessionId, state?.sessionStatus, isArchived]);
+  }, [attach, handle, sessionId, state?.sessionStatus, isArchived, metaLoaded]);
 
   async function endChat() {
     if (!sessionId || !handle) return;
@@ -750,7 +774,15 @@ export default function RunnerChat() {
           Archived rows render a static placeholder instead — no xterm,
           no PTY listener, no live data path. */}
       <div className="relative flex-1 overflow-hidden p-4">
-        {isArchived ? (
+        {!metaLoaded && sessionId ? (
+          // Neutral loading state until chatMeta resolves. Rendering
+          // the terminal map here would briefly mount RunnerTerminal
+          // for archived rows (chatMeta null → isArchived false) and
+          // fire a session/output subscribe + outputSnapshot call
+          // before the read-only branch takes over. The flash is short
+          // but visible and contradicts the 'no PTY listener' goal.
+          <div className="text-sm text-fg-3">Loading chat…</div>
+        ) : isArchived ? (
           <div className="flex h-full items-center justify-center">
             <div className="flex max-w-md flex-col items-center gap-2 rounded border border-line bg-raised px-6 py-5 text-center">
               <span className="text-[13px] font-semibold text-fg">

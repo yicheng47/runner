@@ -497,6 +497,12 @@ export default function MissionWorkspace() {
                   | "archived"
                   | "aborted"
                   | "resuming";
+                // archived_at short-circuits at the top. The
+                // remaining branches only see non-archived rows, so
+                // any status='completed' here would mean a row that
+                // missed the migration backfill — fall through to
+                // 'aborted' since it's terminal-but-not-archived and
+                // the worker pill copy reads correctly for triage.
                 const display: Display = isArchived
                   ? "archived"
                   : resumingAll
@@ -505,9 +511,7 @@ export default function MissionWorkspace() {
                       ? anySessionLive
                         ? "running"
                         : "stopped"
-                      : mission.status === "completed"
-                        ? "archived"
-                        : "aborted";
+                      : "aborted";
                 const pillClass =
                   display === "running"
                     ? "bg-accent/15 text-accent"
