@@ -86,7 +86,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
     (3, include_str!("../migrations/0003_session_runtime.sql")),
-    (4, include_str!("../migrations/0004_mission_archived_at.sql")),
+    (
+        4,
+        include_str!("../migrations/0004_mission_archived_at.sql"),
+    ),
 ];
 
 // Default-data seed: ships the Build squad starter crew on first launch.

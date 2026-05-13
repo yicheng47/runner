@@ -369,10 +369,7 @@ pub async fn session_get(
     get_direct(&conn, &session_id)
 }
 
-fn get_direct(
-    conn: &rusqlite::Connection,
-    session_id: &str,
-) -> Result<Option<DirectSessionEntry>> {
+fn get_direct(conn: &rusqlite::Connection, session_id: &str) -> Result<Option<DirectSessionEntry>> {
     let mut stmt = conn.prepare(
         "SELECT s.id        AS session_id,
                 s.runner_id AS runner_id,
