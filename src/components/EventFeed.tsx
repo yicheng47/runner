@@ -10,11 +10,22 @@
 // feed. We never silently drop events — the audit-trail invariant means
 // every line in the log surfaces somewhere.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { AskHumanCard } from "./AskHumanCard";
 import { MessageBody } from "./MessageBody";
 import type { Event, HumanQuestionPayload } from "../lib/types";
+
+// Events authored by the human via MissionInput / AskHumanCard. When one
+// of these appends we always commit to the bottom — pressing send on a
+// chat surface should always land you at your own message, regardless of
+// where you'd scrolled.
+function isHumanAuthored(ev: Event): boolean {
+  return (
+    ev.kind === "signal" &&
+    (ev.type === "human_said" || ev.type === "human_response")
+  );
+}
 
 interface EventFeedProps {
   missionId: string;
@@ -25,6 +36,11 @@ interface EventFeedProps {
   /** asker handle for each pending `human_question`, derived in the
    *  workspace by walking ask_human → human_question chains. */
   askersByQuestion: Record<string, string>;
+  /** Whether this pane is the visible tab. When the pane flips from
+   *  hidden → visible we re-anchor to the bottom if the user was parked
+   *  there before tab-switching away. `onScroll` can't fire while
+   *  `display: none`, so `wasNearBottomRef` is still the pre-flip value. */
+  active: boolean;
   onError?: (msg: string) => void;
 }
 
@@ -33,49 +49,113 @@ export function EventFeed({
   events,
   resolvedAsks,
   askersByQuestion,
+  active,
   onError,
 }: EventFeedProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const wasNearBottomRef = useRef(true);
+  // Tail id of the last event we processed in the append effect. Without
+  // this we can't distinguish a true append from a re-render with the
+  // same events array — both fire the effect under StrictMode.
+  const lastSeenIdRef = useRef<string | null>(null);
+  const [hasNewSinceLeftBottom, setHasNewSinceLeftBottom] = useState(false);
 
-  // Auto-stick to the bottom unless the user has scrolled away. Without
-  // this the feed just keeps appending offscreen and the workspace looks
-  // dead from the human's perspective.
+  // Single decision tree on append. The three branches map to the three
+  // chat-surface behaviors: human-authored always commits to bottom;
+  // crew-emitted commits to bottom only if the user was parked there;
+  // otherwise we light the "New messages" pill instead of yanking the
+  // viewport.
   useEffect(() => {
+    if (events.length === 0) return;
+    const tail = events[events.length - 1];
+    const isNew = lastSeenIdRef.current !== tail.id;
+    lastSeenIdRef.current = tail.id;
+    if (!isNew) return;
+
+    const el = scrollRef.current;
+    if (!el) return;
+
+    if (isHumanAuthored(tail)) {
+      el.scrollTop = el.scrollHeight;
+      wasNearBottomRef.current = true;
+      setHasNewSinceLeftBottom(false);
+      return;
+    }
+
+    if (wasNearBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
+
+    setHasNewSinceLeftBottom(true);
+  }, [events]);
+
+  // Re-anchor on tab-back: events that arrived while the pane was
+  // `display: none` don't trigger the append effect's scroll write
+  // because layout was stale; once we're visible again we land the user
+  // at the bottom if that's where they were parked.
+  useEffect(() => {
+    if (!active) return;
     const el = scrollRef.current;
     if (!el) return;
     if (wasNearBottomRef.current) {
       el.scrollTop = el.scrollHeight;
+      setHasNewSinceLeftBottom(false);
     }
-  }, [events.length]);
+  }, [active]);
 
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    wasNearBottomRef.current = distance < 80;
+    const near = distance < 80;
+    wasNearBottomRef.current = near;
+    if (near) setHasNewSinceLeftBottom(false);
+  };
+
+  const onPillClick = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    // Plain synchronous write — `scrollTo({ behavior: "smooth" })` fires
+    // `onScroll` per-frame during the animation, each frame sees
+    // `distance > 80` and overwrites `wasNearBottomRef = false`,
+    // which races append events arriving mid-animation.
+    el.scrollTop = el.scrollHeight;
+    wasNearBottomRef.current = true;
+    setHasNewSinceLeftBottom(false);
   };
 
   return (
-    <div
-      ref={scrollRef}
-      onScroll={onScroll}
-      className="flex flex-1 flex-col gap-4 overflow-y-auto px-10 py-6"
-    >
-      {events.length === 0 ? (
-        <p className="text-[12px] text-fg-3">No events yet.</p>
-      ) : (
-        events.map((ev) => (
-          <EventRow
-            key={ev.id}
-            event={ev}
-            missionId={missionId}
-            resolvedAsks={resolvedAsks}
-            askersByQuestion={askersByQuestion}
-            onError={onError}
-          />
-        ))
-      )}
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-10 py-6"
+      >
+        {events.length === 0 ? (
+          <p className="text-[12px] text-fg-3">No events yet.</p>
+        ) : (
+          events.map((ev) => (
+            <EventRow
+              key={ev.id}
+              event={ev}
+              missionId={missionId}
+              resolvedAsks={resolvedAsks}
+              askersByQuestion={askersByQuestion}
+              onError={onError}
+            />
+          ))
+        )}
+      </div>
+      {hasNewSinceLeftBottom ? (
+        <button
+          type="button"
+          onClick={onPillClick}
+          className="absolute bottom-4 left-1/2 -translate-x-1/2 cursor-pointer rounded-full bg-accent px-3 py-1.5 text-[12px] font-medium text-bg shadow-md transition-opacity hover:opacity-90"
+        >
+          New messages ↓
+        </button>
+      ) : null}
     </div>
   );
 }

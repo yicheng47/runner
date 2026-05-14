@@ -679,6 +679,7 @@ export default function MissionWorkspace() {
                 events={events}
                 resolvedAsks={resolvedAsks}
                 askersByQuestion={askersByQuestion}
+                active={activeTab === "feed"}
                 onError={setError}
               />
               <MissionInput
