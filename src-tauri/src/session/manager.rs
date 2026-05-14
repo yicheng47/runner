@@ -397,14 +397,17 @@ impl SessionManager {
         // a future `SessionManager::resume` can hand it back.
         let plan = router::runtime::resume_plan(&runner.runtime, None);
 
-        // Working directory: runner override if set, else mission cwd, else
-        // inherit parent's. Capture the resolved cwd so we can persist it
-        // on the session row — `resume` reads it back to spawn the same
-        // dir on respawn, which matters for claude-code (its conversation
-        // files are keyed under `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`;
-        // resuming with a different cwd makes `--resume` fail).
+        // Working directory: mission cwd if set, else runner override, else
+        // inherit parent's. The mission-level cwd is what the operator typed
+        // into the Start-mission modal and the modal's helper text promises
+        // it wins ("Each runner's PTY starts in this directory"). Capture the
+        // resolved cwd so we can persist it on the session row — `resume`
+        // reads it back to spawn the same dir on respawn, which matters for
+        // claude-code (its conversation files are keyed under
+        // `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`; resuming with a
+        // different cwd makes `--resume` fail).
         let resolved_cwd: Option<String> =
-            runner.working_dir.clone().or_else(|| mission.cwd.clone());
+            mission.cwd.clone().or_else(|| runner.working_dir.clone());
 
         // Per-slot runner shim: hardcodes the RUNNER_* env vars + exec's
         // the real bundled CLI. claude-code's Bash tool spawns
@@ -3356,6 +3359,73 @@ mod tests {
         );
 
         mgr.kill(&spawned.id).unwrap();
+    }
+
+    #[test]
+    fn mission_spawn_cwd_prefers_mission_over_runner_working_dir() {
+        // Regression guard for #101: the per-mission cwd typed into the
+        // Start-mission modal must beat the runner template's
+        // `working_dir` default. Before the fix the runner override
+        // silently won, so StartMissionModal's helper text ("Each
+        // runner's PTY starts in this directory") was a lie.
+        //
+        // Exercises the resolver at the spawn site by inspecting the
+        // SpawnSpec FakeRuntime captures. The contended both-set case
+        // is the load-bearing one; the others lock in the fallback
+        // chain so a future refactor can't quietly drop a branch.
+        fn resolved_spawn_cwd(
+            mission_cwd: Option<&str>,
+            runner_cwd: Option<&str>,
+        ) -> Option<PathBuf> {
+            let pool = pool_with_schema();
+            let mission_base = mission();
+            let mut runner = runner("/bin/sh", &["-c", "cat"]);
+            runner.working_dir = runner_cwd.map(|s| s.to_string());
+            let slot_id = insert_crew_runner(&pool, &mission_base.id, &runner.id);
+            let mission = Mission {
+                cwd: mission_cwd.map(|s| s.to_string()),
+                ..mission_base
+            };
+            let mut slot = slot_for(&runner);
+            slot.id = slot_id;
+
+            let fake = fake_runtime();
+            let mgr = mgr_with_fake(None, Arc::clone(&fake));
+            let spawned = mgr
+                .spawn(
+                    &mission,
+                    &runner,
+                    &slot,
+                    std::path::Path::new("/tmp"),
+                    PathBuf::from("/dev/null"),
+                    Arc::clone(&pool),
+                    capture(),
+                    None,
+                )
+                .unwrap();
+            let cwd = fake.last_spawn_spec().expect("spawn was called").cwd;
+            mgr.kill(&spawned.id).unwrap();
+            cwd
+        }
+
+        // The contended case: both set, mission wins. This is the bug.
+        assert_eq!(
+            resolved_spawn_cwd(Some("/mission-dir"), Some("/runner-dir")),
+            Some(PathBuf::from("/mission-dir")),
+            "mission.cwd must beat runner.working_dir when both are set",
+        );
+        // Mission only: mission flows through.
+        assert_eq!(
+            resolved_spawn_cwd(Some("/mission-only"), None),
+            Some(PathBuf::from("/mission-only")),
+        );
+        // Runner only: runner is the fallback.
+        assert_eq!(
+            resolved_spawn_cwd(None, Some("/runner-only")),
+            Some(PathBuf::from("/runner-only")),
+        );
+        // Neither set: inherit parent (None).
+        assert_eq!(resolved_spawn_cwd(None, None), None);
     }
 
     // Pre-#88 `mission_spawn_injects_preamble_for_non_lead_worker`
