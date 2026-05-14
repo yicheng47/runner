@@ -1,6 +1,6 @@
 # 10 — Persist mission sessions across app restart
 
-> Tracking issue: TBD (filed alongside this spec)
+> Tracking issue: [#115](https://github.com/yicheng47/runner/issues/115)
 
 ## Motivation
 
