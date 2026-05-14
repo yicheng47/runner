@@ -12,26 +12,26 @@ import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 
+import { open as openExternal } from "@tauri-apps/plugin-shell";
+
 export function MessageBody({ text }: { text: string }) {
   return (
     <div className="prose-message">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks]}
         components={{
-          // Open links in a new window via the Tauri shell. Plain
-          // anchors would crash the webview by trying to navigate
-          // away from the SPA. For now we render as a styled span
-          // that copies the URL on click — a real opener is a
-          // follow-up.
+          // Route clicks through Tauri's shell-opener so the URL
+          // lands in the user's default browser. preventDefault stays
+          // because a bare anchor navigation would tear the WKWebView
+          // off the SPA.
           a: ({ children, href }) => (
             <a
               href={href ?? "#"}
               onClick={(e) => {
                 e.preventDefault();
-                if (href) navigator.clipboard?.writeText(href).catch(() => {});
+                if (href) void openExternal(href).catch(() => {});
               }}
               className="text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
-              title={href ? `Click to copy: ${href}` : undefined}
             >
               {children}
             </a>

@@ -11,8 +11,10 @@
 import { useEffect, useRef } from "react";
 
 import { listen } from "@tauri-apps/api/event";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
@@ -150,6 +152,15 @@ export function RunnerTerminal({
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    const webLinks = new WebLinksAddon((event, uri) => {
+      // Cmd+click on macOS to match iTerm/Terminal.app and avoid accidental
+      // navigations during scrollback selection. Plain click on other OSes.
+      if (navigator.platform.toLowerCase().includes("mac") && !event.metaKey) return;
+      void openExternal(uri).catch(() => {
+        // swallow — shell allowlist may reject
+      });
+    });
+    term.loadAddon(webLinks);
     term.open(containerRef.current);
     try {
       const webgl = new WebglAddon();
