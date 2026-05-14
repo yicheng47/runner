@@ -22,11 +22,14 @@ import {
   readTerminalFontFamily,
   readTerminalFontSize,
   readTerminalScrollback,
+  readTerminalTheme,
   resolveTerminalFontStack,
+  resolveTerminalTheme,
   STORAGE_TERMINAL_CURSOR_STYLE,
   STORAGE_TERMINAL_FONT_FAMILY,
   STORAGE_TERMINAL_FONT_SIZE,
   STORAGE_TERMINAL_SCROLLBACK,
+  STORAGE_TERMINAL_THEME,
 } from "../lib/settings";
 
 interface OutputEvent {
@@ -67,30 +70,6 @@ interface RunnerTerminalProps {
    *  on top of the prior session's banner + scrollback. */
   clearVersion?: number;
 }
-
-const TERMINAL_THEME = {
-  background: "#0E0E10",
-  foreground: "#EDEDF0",
-  cursor: "#00FF9C",
-  cursorAccent: "#0E0E10",
-  selectionBackground: "#1F2127",
-  black: "#0E0E10",
-  red: "#FF4D6D",
-  green: "#00FF9C",
-  yellow: "#FFB020",
-  blue: "#39E5FF",
-  magenta: "#C792EA",
-  cyan: "#39E5FF",
-  white: "#EDEDF0",
-  brightBlack: "#5A5C66",
-  brightRed: "#FF7B8E",
-  brightGreen: "#5FFFB8",
-  brightYellow: "#FFCB6B",
-  brightBlue: "#82AAFF",
-  brightMagenta: "#C792EA",
-  brightCyan: "#89DDFF",
-  brightWhite: "#FFFFFF",
-};
 
 function decodeBase64Chunk(data: string): Uint8Array {
   const raw = atob(data);
@@ -161,7 +140,7 @@ export function RunnerTerminal({
     const term = new Terminal({
       cols: 80,
       rows: 24,
-      theme: TERMINAL_THEME,
+      theme: resolveTerminalTheme(readTerminalTheme()),
       fontFamily: resolveTerminalFontStack(readTerminalFontFamily()),
       fontSize: readTerminalFontSize(),
       cursorBlink: true,
@@ -342,6 +321,8 @@ export function RunnerTerminal({
           t.options.cursorStyle = readTerminalCursorStyle();
         } else if (e.key === STORAGE_TERMINAL_SCROLLBACK) {
           t.options.scrollback = readTerminalScrollback();
+        } else if (e.key === STORAGE_TERMINAL_THEME) {
+          t.options.theme = resolveTerminalTheme(readTerminalTheme());
         }
       } catch {
         // xterm may reject runtime mutation of some options; the next

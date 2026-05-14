@@ -44,24 +44,30 @@ import {
   readTerminalFontFamily,
   readTerminalFontSize,
   readTerminalScrollback,
+  readTerminalTheme,
   STORAGE_APP_ZOOM,
   STORAGE_AUTO_INSTALL_UPDATES,
   STORAGE_TERMINAL_CURSOR_STYLE,
   STORAGE_TERMINAL_FONT_FAMILY,
   STORAGE_TERMINAL_FONT_SIZE,
   STORAGE_TERMINAL_SCROLLBACK,
+  STORAGE_TERMINAL_THEME,
   TERMINAL_CURSOR_STYLE_OPTIONS,
   TERMINAL_FONT_FAMILY_OPTIONS,
   TERMINAL_FONT_SIZE_MAX,
   TERMINAL_FONT_SIZE_MIN,
   TERMINAL_SCROLLBACK_OPTIONS,
+  TERMINAL_THEME_LABELS,
+  TERMINAL_THEME_OPTIONS,
   type TerminalCursorStyle,
   type TerminalFontFamily,
+  type TerminalTheme,
   writeStoredBool,
   writeTerminalCursorStyle,
   writeTerminalFontFamily,
   writeTerminalFontSize,
   writeTerminalScrollback,
+  writeTerminalTheme,
   ZOOM_STEPS,
 } from "../lib/settings";
 import { useUpdate } from "../contexts/UpdateContext";
@@ -346,6 +352,9 @@ function TerminalPane() {
   const [scrollback, setScrollbackState] = useState<number>(() =>
     readTerminalScrollback(),
   );
+  const [theme, setThemeState] = useState<TerminalTheme>(() =>
+    readTerminalTheme(),
+  );
   const setFontSize = (next: number) => {
     setFontSizeState(next);
     writeTerminalFontSize(next);
@@ -366,12 +375,30 @@ function TerminalPane() {
     writeTerminalScrollback(next);
     notifySameWindowStorage(STORAGE_TERMINAL_SCROLLBACK, String(next));
   };
+  const setTheme = (next: TerminalTheme) => {
+    setThemeState(next);
+    writeTerminalTheme(next);
+    notifySameWindowStorage(STORAGE_TERMINAL_THEME, next);
+  };
   return (
     <>
       <PaneHeader
         title="Terminal"
         subtitle="xterm appearance settings for the runner terminal."
       />
+      <Row
+        label="Theme"
+        sub="ANSI palette for the embedded terminal. Background stays locked to app chrome."
+      >
+        <StyledSelect
+          value={theme}
+          options={TERMINAL_THEME_OPTIONS.map((id) => ({
+            value: id,
+            label: TERMINAL_THEME_LABELS[id],
+          }))}
+          onChange={(v) => setTheme(v as TerminalTheme)}
+        />
+      </Row>
       <Row
         label="Font family"
         sub="Typeface used by the embedded terminal."

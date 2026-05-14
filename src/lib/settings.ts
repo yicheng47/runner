@@ -4,6 +4,8 @@
 // `"0"` encoding the modal writes — keep this file the single source
 // of truth so the modal and its consumers can't drift apart.
 
+import type { ITheme } from "@xterm/xterm";
+
 export const STORAGE_AUTO_INSTALL_UPDATES = "settings.autoInstallUpdates";
 export const STORAGE_SIDEBAR_COLLAPSED = "runner.sidebar.collapsed";
 export const STORAGE_APP_ZOOM = "settings.appZoom";
@@ -11,6 +13,7 @@ export const STORAGE_TERMINAL_FONT_SIZE = "settings.terminalFontSize";
 export const STORAGE_TERMINAL_FONT_FAMILY = "settings.terminalFontFamily";
 export const STORAGE_TERMINAL_CURSOR_STYLE = "settings.terminalCursorStyle";
 export const STORAGE_TERMINAL_SCROLLBACK = "settings.terminalScrollback";
+export const STORAGE_TERMINAL_THEME = "settings.terminalTheme";
 
 // Public domain for the App-zoom and Terminal-* controls. Kept here (not
 // in SettingsModal) so the readers can snap/clamp to the same domain the
@@ -46,6 +49,180 @@ export const TERMINAL_CURSOR_STYLE_OPTIONS: readonly TerminalCursorStyle[] = [
 export const TERMINAL_SCROLLBACK_OPTIONS: readonly number[] = [
   1000, 5000, 10000, 50000,
 ];
+
+export type TerminalTheme =
+  | "runner"
+  | "dracula"
+  | "tokyo-night"
+  | "nord"
+  | "gruvbox-dark"
+  | "catppuccin-mocha";
+export const TERMINAL_THEME_OPTIONS: readonly TerminalTheme[] = [
+  "runner",
+  "dracula",
+  "tokyo-night",
+  "nord",
+  "gruvbox-dark",
+  "catppuccin-mocha",
+];
+export const TERMINAL_THEME_LABELS: Record<TerminalTheme, string> = {
+  runner: "Runner",
+  dracula: "Dracula",
+  "tokyo-night": "Tokyo Night",
+  nord: "Nord",
+  "gruvbox-dark": "Gruvbox Dark",
+  "catppuccin-mocha": "Catppuccin Mocha",
+};
+export const DEFAULT_TERMINAL_THEME: TerminalTheme = "runner";
+
+// Locked surfaces: every bundled theme overrides foreground + ANSI 16 +
+// cursor + selectionBackground, but background and cursorAccent are
+// pinned to the app chrome (#15161B) so the terminal stays seamless
+// with the surrounding panel. Don't unlock these per-theme — a light
+// background would flash white during a remount before the WebGL
+// renderer catches up.
+const TERMINAL_THEME_LOCKED_BG = "#15161B";
+
+export const TERMINAL_THEMES: Record<TerminalTheme, ITheme> = {
+  runner: {
+    background: TERMINAL_THEME_LOCKED_BG,
+    foreground: "#DCDCE0",
+    cursor: "#00FF9C",
+    cursorAccent: TERMINAL_THEME_LOCKED_BG,
+    selectionBackground: "#272930",
+    black: "#15161B",
+    red: "#FF4D6D",
+    green: "#00FF9C",
+    yellow: "#FFB020",
+    blue: "#39E5FF",
+    magenta: "#C792EA",
+    cyan: "#39E5FF",
+    white: "#DCDCE0",
+    brightBlack: "#5A5C66",
+    brightRed: "#FF7B8E",
+    brightGreen: "#5FFFB8",
+    brightYellow: "#FFCB6B",
+    brightBlue: "#82AAFF",
+    brightMagenta: "#C792EA",
+    brightCyan: "#89DDFF",
+    brightWhite: "#FFFFFF",
+  },
+  dracula: {
+    background: TERMINAL_THEME_LOCKED_BG,
+    foreground: "#F8F8F2",
+    cursor: "#F8F8F2",
+    cursorAccent: TERMINAL_THEME_LOCKED_BG,
+    selectionBackground: "#44475A",
+    black: "#21222C",
+    red: "#FF5555",
+    green: "#50FA7B",
+    yellow: "#F1FA8C",
+    blue: "#BD93F9",
+    magenta: "#FF79C6",
+    cyan: "#8BE9FD",
+    white: "#F8F8F2",
+    brightBlack: "#6272A4",
+    brightRed: "#FF6E6E",
+    brightGreen: "#69FF94",
+    brightYellow: "#FFFFA5",
+    brightBlue: "#D6ACFF",
+    brightMagenta: "#FF92DF",
+    brightCyan: "#A4FFFF",
+    brightWhite: "#FFFFFF",
+  },
+  "tokyo-night": {
+    background: TERMINAL_THEME_LOCKED_BG,
+    foreground: "#A9B1D6",
+    cursor: "#C0CAF5",
+    cursorAccent: TERMINAL_THEME_LOCKED_BG,
+    selectionBackground: "#28344A",
+    black: "#15161E",
+    red: "#F7768E",
+    green: "#9ECE6A",
+    yellow: "#E0AF68",
+    blue: "#7AA2F7",
+    magenta: "#BB9AF7",
+    cyan: "#7DCFFF",
+    white: "#A9B1D6",
+    brightBlack: "#414868",
+    brightRed: "#F7768E",
+    brightGreen: "#9ECE6A",
+    brightYellow: "#E0AF68",
+    brightBlue: "#7AA2F7",
+    brightMagenta: "#BB9AF7",
+    brightCyan: "#7DCFFF",
+    brightWhite: "#C0CAF5",
+  },
+  nord: {
+    background: TERMINAL_THEME_LOCKED_BG,
+    foreground: "#D8DEE9",
+    cursor: "#D8DEE9",
+    cursorAccent: TERMINAL_THEME_LOCKED_BG,
+    selectionBackground: "#4C566A",
+    black: "#3B4252",
+    red: "#BF616A",
+    green: "#A3BE8C",
+    yellow: "#EBCB8B",
+    blue: "#81A1C1",
+    magenta: "#B48EAD",
+    cyan: "#88C0D0",
+    white: "#E5E9F0",
+    brightBlack: "#4C566A",
+    brightRed: "#BF616A",
+    brightGreen: "#A3BE8C",
+    brightYellow: "#EBCB8B",
+    brightBlue: "#81A1C1",
+    brightMagenta: "#B48EAD",
+    brightCyan: "#8FBCBB",
+    brightWhite: "#ECEFF4",
+  },
+  "gruvbox-dark": {
+    background: TERMINAL_THEME_LOCKED_BG,
+    foreground: "#EBDBB2",
+    cursor: "#EBDBB2",
+    cursorAccent: TERMINAL_THEME_LOCKED_BG,
+    selectionBackground: "#3C3836",
+    black: "#282828",
+    red: "#CC241D",
+    green: "#98971A",
+    yellow: "#D79921",
+    blue: "#458588",
+    magenta: "#B16286",
+    cyan: "#689D6A",
+    white: "#A89984",
+    brightBlack: "#928374",
+    brightRed: "#FB4934",
+    brightGreen: "#B8BB26",
+    brightYellow: "#FABD2F",
+    brightBlue: "#83A598",
+    brightMagenta: "#D3869B",
+    brightCyan: "#8EC07C",
+    brightWhite: "#EBDBB2",
+  },
+  "catppuccin-mocha": {
+    background: TERMINAL_THEME_LOCKED_BG,
+    foreground: "#CDD6F4",
+    cursor: "#F5E0DC",
+    cursorAccent: TERMINAL_THEME_LOCKED_BG,
+    selectionBackground: "#585B70",
+    black: "#45475A",
+    red: "#F38BA8",
+    green: "#A6E3A1",
+    yellow: "#F9E2AF",
+    blue: "#89B4FA",
+    magenta: "#F5C2E7",
+    cyan: "#94E2D5",
+    white: "#BAC2DE",
+    brightBlack: "#585B70",
+    brightRed: "#F38BA8",
+    brightGreen: "#A6E3A1",
+    brightYellow: "#F9E2AF",
+    brightBlue: "#89B4FA",
+    brightMagenta: "#F5C2E7",
+    brightCyan: "#94E2D5",
+    brightWhite: "#A6ADC8",
+  },
+};
 
 const DEFAULT_APP_ZOOM = 1.0;
 const DEFAULT_TERMINAL_FONT_SIZE = 13;
@@ -193,6 +370,30 @@ export function writeTerminalScrollback(value: number): void {
   } catch {
     // best-effort
   }
+}
+
+export function readTerminalTheme(): TerminalTheme {
+  try {
+    const raw = localStorage.getItem(STORAGE_TERMINAL_THEME);
+    if (raw == null) return DEFAULT_TERMINAL_THEME;
+    return (TERMINAL_THEME_OPTIONS as readonly string[]).includes(raw)
+      ? (raw as TerminalTheme)
+      : DEFAULT_TERMINAL_THEME;
+  } catch {
+    return DEFAULT_TERMINAL_THEME;
+  }
+}
+
+export function writeTerminalTheme(value: TerminalTheme): void {
+  try {
+    localStorage.setItem(STORAGE_TERMINAL_THEME, value);
+  } catch {
+    // best-effort
+  }
+}
+
+export function resolveTerminalTheme(id: TerminalTheme): ITheme {
+  return TERMINAL_THEMES[id];
 }
 
 // localStorage's `storage` event only fires in *other* windows by spec.
