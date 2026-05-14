@@ -147,7 +147,7 @@ export function ArchivingOverlay({ withScrim = false }: { withScrim?: boolean })
   return (
     <>
       {withScrim ? (
-        <div className="pointer-events-none absolute inset-0 bg-[#0E0E10F2]" />
+        <div className="pointer-events-none absolute inset-0 bg-[#15161BF2]" />
       ) : null}
       <div className="pointer-events-none absolute inset-4 flex items-center justify-center">
         <div

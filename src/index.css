@@ -5,13 +5,13 @@
    utilities: `bg-bg`, `bg-panel`, `bg-raised`, `border-line`,
    `text-fg`, `text-fg-2`, `text-fg-3`, `bg-accent`, `text-accent`. */
 @theme {
-  --color-bg: #0e0e10;
-  --color-panel: #16171b;
-  --color-raised: #1f2127;
-  --color-line: #1f2127;
+  --color-bg: #15161b;
+  --color-panel: #1d1e23;
+  --color-raised: #272930;
+  --color-line: #272930;
   --color-line-strong: #2a2c33;
 
-  --color-fg: #ededf0;
+  --color-fg: #dcdce0;
   --color-fg-2: #9a9ba5;
   --color-fg-3: #5a5c66;
 
