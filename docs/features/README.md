@@ -24,3 +24,7 @@ links to its tracking issue.
   — drop router-internal `inbox_read` / `runner_status` /
   `mission_warning` rows from the workspace feed; NDJSON log remains
   the audit trail.
+- [09 — Persistent auto-update toast](./09-auto-update-toast.md) —
+  keep the update toast visible through `downloading` and `ready`, not
+  just the millisecond-long `available` window; surface `Restart`
+  directly so background auto-installs stop happening in secret.
