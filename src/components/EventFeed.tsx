@@ -25,6 +25,11 @@ interface EventFeedProps {
   /** asker handle for each pending `human_question`, derived in the
    *  workspace by walking ask_human → human_question chains. */
   askersByQuestion: Record<string, string>;
+  /** Whether this pane is the visible tab. When the pane flips from
+   *  hidden → visible we re-anchor to the bottom if the user was parked
+   *  there before tab-switching away. `onScroll` can't fire while
+   *  `display: none`, so `wasNearBottomRef` is still the pre-flip value. */
+  active: boolean;
   onError?: (msg: string) => void;
 }
 
@@ -33,6 +38,7 @@ export function EventFeed({
   events,
   resolvedAsks,
   askersByQuestion,
+  active,
   onError,
 }: EventFeedProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -48,6 +54,19 @@ export function EventFeed({
       el.scrollTop = el.scrollHeight;
     }
   }, [events.length]);
+
+  // Re-anchor on tab-back: events that arrived while the pane was
+  // `display: none` don't trigger the append effect's scroll write
+  // because layout was stale; once we're visible again we land the user
+  // at the bottom if that's where they were parked.
+  useEffect(() => {
+    if (!active) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    if (wasNearBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [active]);
 
   const onScroll = () => {
     const el = scrollRef.current;
