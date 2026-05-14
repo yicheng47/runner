@@ -28,3 +28,7 @@ links to its tracking issue.
   keep the update toast visible through `downloading` and `ready`, not
   just the millisecond-long `available` window; surface `Restart`
   directly so background auto-installs stop happening in secret.
+- [10 — Mission session persistence](./10-mission-session-persistence.md) —
+  stop killing alive mission panes on app restart; mount the mission
+  bus + router eagerly so direct-chat-style persistence works for
+  missions too.
