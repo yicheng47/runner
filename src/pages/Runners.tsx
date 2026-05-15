@@ -13,6 +13,7 @@ import { listen } from "@tauri-apps/api/event";
 import { MessageSquare } from "lucide-react";
 
 import { api } from "../lib/api";
+import { readDefaultWorkingDir } from "../lib/settings";
 import type { RunnerActivityEvent, RunnerWithActivity } from "../lib/types";
 // AppShell is supplied by the layout route in App.tsx; pages render
 // their content as-is and the shell wraps them automatically.
@@ -91,7 +92,19 @@ export default function Runners() {
     if (chatPending) return;
     setChatPending(item.id);
     try {
-      const spawned = await api.session.startDirect(item.id, null, null, null);
+      // Only override cwd when the runner has no `working_dir` of
+      // its own — otherwise the backend's runner-cwd resolution
+      // stays the source of truth and Settings doesn't shadow a
+      // runner-specific value.
+      const fallbackCwd = item.working_dir
+        ? null
+        : (readDefaultWorkingDir() || null);
+      const spawned = await api.session.startDirect(
+        item.id,
+        fallbackCwd,
+        null,
+        null,
+      );
       navigate(`/runners/${item.handle}/chat/${spawned.id}`, {
         state: { sessionStatus: "running" },
       });

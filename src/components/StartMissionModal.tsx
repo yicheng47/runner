@@ -12,6 +12,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
 
 import { api } from "../lib/api";
+import { readDefaultWorkingDir } from "../lib/settings";
 import type { CrewListItem, Mission, SlotWithRunner } from "../lib/types";
 import { Button } from "./ui/Button";
 import { Modal } from "./ui/Overlay";
@@ -54,7 +55,7 @@ export function StartMissionModal({
     setSubmitting(false);
     setTitle("");
     setGoal("");
-    setCwd("");
+    setCwd(readDefaultWorkingDir());
     setAdvancedOpen(false);
     setCrewPickerOpen(false);
     setCrewSlots([]);

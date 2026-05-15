@@ -11,6 +11,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 
 import { api } from "../lib/api";
+import { readDefaultWorkingDir } from "../lib/settings";
 import type {
   CrewMembership,
   Runner,
@@ -92,9 +93,16 @@ export default function RunnerDetail() {
     // inherits the runner's `working_dir`; an in-chat affordance can
     // expose per-chat cwd later.
     try {
+      // Only override cwd when the runner has no `working_dir` of
+      // its own — otherwise the backend's runner-cwd resolution
+      // stays the source of truth and Settings doesn't shadow a
+      // runner-specific value.
+      const fallbackCwd = runner.working_dir
+        ? null
+        : (readDefaultWorkingDir() || null);
       const spawned = await api.session.startDirect(
         runner.id,
-        null,
+        fallbackCwd,
         null,
         null,
       );

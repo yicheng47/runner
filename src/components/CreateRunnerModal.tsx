@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 import { api } from "../lib/api";
+import { readDefaultWorkingDir } from "../lib/settings";
 import type {
   CreateRunnerInput,
   PermissionMode,
@@ -60,7 +61,7 @@ export function CreateRunnerModal({
       setDisplayName("");
       setRuntime(RUNTIME_OPTIONS[0].value);
       setArgsText("");
-      setWorkingDir("");
+      setWorkingDir(readDefaultWorkingDir());
       setSystemPrompt("");
       setPermissionMode("accept_edits");
       setError(null);
