@@ -30,7 +30,7 @@ import {
 } from "lucide-react";
 
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { getVersion } from "@tauri-apps/api/app";
 
 import { api } from "../lib/api";
@@ -739,9 +739,9 @@ function AboutPane() {
       .catch(() => setVersion(""));
   }, []);
   const openLink = (url: string) => {
-    void openExternal(url).catch(() => {
+    void openUrl(url).catch(() => {
       // Fallback: window.open works in dev (browser preview) when
-      // the Tauri shell plugin isn't available.
+      // the Tauri opener plugin isn't available.
       window.open(url, "_blank");
     });
   };
