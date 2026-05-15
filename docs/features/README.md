@@ -32,3 +32,6 @@ links to its tracking issue.
   stop killing alive mission panes on app restart; mount the mission
   bus + router eagerly so direct-chat-style persistence works for
   missions too.
+- [11 — Runner avatar](./11-runner-avatar.md) — procedural 5×5
+  identicon ("bits graph") derived from the handle, rendered in the
+  rail, sidebar, mission roster, and chat header.
