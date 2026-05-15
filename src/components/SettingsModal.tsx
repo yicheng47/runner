@@ -4,11 +4,10 @@
 //
 // All settings persist to localStorage for now: there's no backend
 // settings store yet, but the surfaces are in place so individual
-// settings can land without UI churn. The "Default crew" /
-// "Default working directory" pickers and update-channel /
-// auto-install controls write to localStorage but no other surface
-// reads them yet — the consumer wiring (StartMissionModal,
-// RunnerChat cwd inheritance) is the obvious follow-up.
+// settings can land without UI churn. "Default working directory"
+// is read by StartMissionModal, CreateRunnerModal, and the direct-
+// chat spawn sites via the helpers in `src/lib/settings.ts`;
+// "Default crew" still has no consumer (follow-up).
 //
 // Entry point: AppShell mounts a button (`Settings` link in the
 // sidebar) that toggles `open`.
@@ -39,6 +38,7 @@ import { applyAppZoom } from "../lib/appZoom";
 import {
   notifySameWindowStorage,
   readAppZoom,
+  readDefaultWorkingDir,
   readStoredBool,
   readTerminalCursorStyle,
   readTerminalFontFamily,
@@ -62,6 +62,7 @@ import {
   type TerminalCursorStyle,
   type TerminalFontFamily,
   type TerminalTheme,
+  writeDefaultWorkingDir,
   writeStoredBool,
   writeTerminalCursorStyle,
   writeTerminalFontFamily,
@@ -235,19 +236,11 @@ function GeneralPane() {
       return "";
     }
   });
-  // Default working directory. localStorage-backed for symmetry with
-  // Default crew above; consumer wiring (RunnerChat / mission-start
-  // cwd inheritance) is a follow-up. Picked via Tauri's dialog
-  // plugin (open({ directory: true })) so the value is always an
-  // absolute path the OS confirmed exists.
+  // Default working directory. Picked via Tauri's dialog plugin
+  // (open({ directory: true })) so the value is always an absolute
+  // path the OS confirmed exists.
   const [defaultWorkingDir, setDefaultWorkingDirState] = useState<string>(
-    () => {
-      try {
-        return localStorage.getItem("settings.defaultWorkingDir") ?? "";
-      } catch {
-        return "";
-      }
-    },
+    () => readDefaultWorkingDir(),
   );
   useEffect(() => {
     let cancelled = false;
@@ -276,12 +269,7 @@ function GeneralPane() {
   };
   const setDefaultWorkingDir = (path: string) => {
     setDefaultWorkingDirState(path);
-    try {
-      if (path) localStorage.setItem("settings.defaultWorkingDir", path);
-      else localStorage.removeItem("settings.defaultWorkingDir");
-    } catch {
-      // best-effort
-    }
+    writeDefaultWorkingDir(path);
   };
   // App zoom — snap-to-step value driven by `ZOOM_STEPS`. Persist + apply
   // immediately so the user feels the change while picking. The boot-time

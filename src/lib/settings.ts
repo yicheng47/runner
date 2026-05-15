@@ -14,6 +14,7 @@ export const STORAGE_TERMINAL_FONT_FAMILY = "settings.terminalFontFamily";
 export const STORAGE_TERMINAL_CURSOR_STYLE = "settings.terminalCursorStyle";
 export const STORAGE_TERMINAL_SCROLLBACK = "settings.terminalScrollback";
 export const STORAGE_TERMINAL_THEME = "settings.terminalTheme";
+export const STORAGE_DEFAULT_WORKING_DIR = "settings.defaultWorkingDir";
 
 // Public domain for the App-zoom and Terminal-* controls. Kept here (not
 // in SettingsModal) so the readers can snap/clamp to the same domain the
@@ -416,4 +417,21 @@ export function resolveTerminalFontStack(label: TerminalFontFamily): string {
   return label === "System default"
     ? SYSTEM_FONT_STACK
     : `'${label}', ${SYSTEM_FONT_STACK}`;
+}
+
+export function readDefaultWorkingDir(): string {
+  try {
+    return localStorage.getItem(STORAGE_DEFAULT_WORKING_DIR) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function writeDefaultWorkingDir(value: string): void {
+  try {
+    if (value) localStorage.setItem(STORAGE_DEFAULT_WORKING_DIR, value);
+    else localStorage.removeItem(STORAGE_DEFAULT_WORKING_DIR);
+  } catch {
+    // best-effort
+  }
 }
