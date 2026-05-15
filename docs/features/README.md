@@ -35,3 +35,11 @@ links to its tracking issue.
 - [11 — Runner avatar](./11-runner-avatar.md) — procedural 5×5
   identicon ("bits graph") derived from the handle, rendered in the
   rail, sidebar, mission roster, and chat header.
+- [12 — Multi-window frontend](./12-multi-window.md) — spawn
+  additional Tauri windows for missions / chats; Arc-style overlay
+  when two windows look at the same subject; PTY mounts only in the
+  primary.
+- [13 — PTY-silence idle detection](./13-pty-silence-idle-detection.md)
+  — derive runner busy/idle from forwarder-observed PTY output
+  silence instead of relying on the agent to call `runner status`;
+  works for any TUI without runner-CLI integration.
