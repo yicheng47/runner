@@ -4,9 +4,10 @@
 //   - WORKSPACE: search (placeholder), runner, crew nav links.
 //   - MISSION:   collapsible header with count + `+` (Start Mission), one row
 //                per running mission. The currently-open mission is highlighted.
-//   - SESSION:   collapsible header with count + `+` (jump to runners list),
-//                one row per live direct-chat. The currently-open
-//                direct chat is highlighted.
+//   - SESSION:   collapsible header with count + `+` (opens an inline
+//                runner-picker popover that spawns a direct chat in
+//                place), one row per live direct-chat. The currently-
+//                open direct chat is highlighted.
 //
 // MISSION pulls from `mission_list_summary` (filtered to status === "running").
 // SESSION continues to consume `runner/activity` events for live direct chats.
@@ -52,7 +53,8 @@ import {
   unmarkArchivingMission,
   unmarkArchivingSession,
 } from "../lib/archivingState";
-import type { AppendedEvent, MissionSummary } from "../lib/types";
+import { readDefaultWorkingDir } from "../lib/settings";
+import type { AppendedEvent, MissionSummary, Runner } from "../lib/types";
 import { StartMissionModal } from "./StartMissionModal";
 import { SettingsModal } from "./SettingsModal";
 import { CommandPalette } from "./CommandPalette";
@@ -164,6 +166,17 @@ export function Sidebar({
   // instead of its label. Submit (Enter) → session_rename + refresh.
   // Cancel (Escape / blur with no change) → close without write.
   const [renamingId, setRenamingId] = useState<string | null>(null);
+
+  // CHAT `+` runner-picker popover. Lazy-loaded on first open; the cached
+  // list stays around so subsequent opens render immediately while a
+  // refetch runs in the background. `spawningRunnerId` gates concurrent
+  // spawns and drives the per-row "Starting…" affordance.
+  const [chatPickerOpen, setChatPickerOpen] = useState(false);
+  const [pickerRunners, setPickerRunners] = useState<Runner[] | null>(null);
+  const [pickerLoading, setPickerLoading] = useState(false);
+  const [pickerError, setPickerError] = useState<string | null>(null);
+  const [spawningRunnerId, setSpawningRunnerId] = useState<string | null>(null);
+  const chatPickerRef = useRef<HTMLDivElement | null>(null);
 
   // Identify the currently-open runtime so we can highlight the matching
   // sidebar row. `useMatch` returns null when the URL doesn't match.
@@ -478,12 +491,83 @@ export function Sidebar({
     [navigate, location.pathname],
   );
 
-  // SESSION's `+` button — direct chats are spawned from a runner, so we
-  // route to the runners list and let the user pick. A future v0.x could
-  // open an inline runner-picker popover instead.
-  const handleNewDirectChat = useCallback(() => {
-    navigate("/runners");
-  }, [navigate]);
+  // CHAT `+` button — opens an inline runner-picker popover (GH #104).
+  // Direct chats are spawned from a runner; the popover lets the user
+  // pick one without leaving the sidebar context. We also force the
+  // CHAT section open so the spawned row lands visibly. Runner list is
+  // lazy-loaded on each open (small, rare).
+  const openChatPicker = useCallback(() => {
+    setChatPickerOpen(true);
+    setPickerError(null);
+    if (!sessionsOpen) {
+      setSessionsOpen(true);
+      setStoredFlag(STORAGE_SESSION_OPEN, true);
+    }
+    setPickerLoading(true);
+    api.runner
+      .list()
+      .then((rows) => setPickerRunners(rows))
+      .catch((e) => setPickerError(String(e)))
+      .finally(() => setPickerLoading(false));
+  }, [sessionsOpen]);
+
+  const closeChatPicker = useCallback(() => {
+    setChatPickerOpen(false);
+    setPickerError(null);
+  }, []);
+
+  // Spawn a direct chat for the picked runner. Mirrors the spawn-then-
+  // navigate dance in Runners.tsx / RunnerDetail.tsx — the
+  // working_dir-vs-fallback rule is load-bearing: only override cwd
+  // when the runner has none of its own.
+  const spawnDirectChatFromPicker = useCallback(
+    async (runner: Runner) => {
+      if (spawningRunnerId) return;
+      setSpawningRunnerId(runner.id);
+      setPickerError(null);
+      try {
+        const fallbackCwd = runner.working_dir
+          ? null
+          : (readDefaultWorkingDir() || null);
+        const spawned = await api.session.startDirect(
+          runner.id,
+          fallbackCwd,
+          null,
+          null,
+        );
+        setChatPickerOpen(false);
+        navigate(`/runners/${runner.handle}/chat/${spawned.id}`, {
+          state: { sessionStatus: "running" },
+        });
+      } catch (e) {
+        setPickerError(String(e));
+      } finally {
+        setSpawningRunnerId(null);
+      }
+    },
+    [navigate, spawningRunnerId],
+  );
+
+  // Outside-click + Escape close. Mirrors the crewPickerRef pattern in
+  // StartMissionModal.tsx.
+  useEffect(() => {
+    if (!chatPickerOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (!chatPickerRef.current) return;
+      if (!chatPickerRef.current.contains(e.target as Node)) {
+        setChatPickerOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setChatPickerOpen(false);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [chatPickerOpen]);
 
   const toggleMissions = useCallback(() => {
     setMissionsOpen((prev) => {
@@ -660,14 +744,75 @@ export function Sidebar({
             <div className="h-8 shrink-0" />
 
             <section className="flex min-h-0 flex-[2] basis-0 flex-col">
-              <CollapsibleSectionHeader
-                label="CHAT"
-                count={directSessions.length}
-                open={sessionsOpen}
-                onToggle={toggleSessions}
-                onPlus={handleNewDirectChat}
-                plusTitle="Start a chat"
-              />
+              <div ref={chatPickerRef} className="relative">
+                <CollapsibleSectionHeader
+                  label="CHAT"
+                  count={directSessions.length}
+                  open={sessionsOpen}
+                  onToggle={toggleSessions}
+                  onPlus={openChatPicker}
+                  plusTitle="Start a chat"
+                  plusExpanded={chatPickerOpen}
+                />
+                {chatPickerOpen ? (
+                  <div
+                    role="listbox"
+                    aria-label="Pick a runner to chat with"
+                    className="absolute left-3 right-3 top-full z-30 mt-1 max-h-56 overflow-y-auto rounded-md border border-line bg-panel p-1 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
+                  >
+                    {pickerRunners === null && pickerLoading ? (
+                      <div className="px-2.5 py-2 text-xs text-fg-3">
+                        Loading…
+                      </div>
+                    ) : pickerError && (pickerRunners?.length ?? 0) === 0 ? (
+                      <div className="px-2.5 py-1 text-[11px] text-danger">
+                        {pickerError}
+                      </div>
+                    ) : pickerRunners && pickerRunners.length === 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          closeChatPicker();
+                          navigate("/runners");
+                        }}
+                        className="flex w-full cursor-pointer items-center gap-1 rounded px-2.5 py-2 text-left text-xs text-fg-2 transition-colors hover:bg-raised hover:text-fg"
+                      >
+                        No runners yet · Create one →
+                      </button>
+                    ) : (
+                      <>
+                        {(pickerRunners ?? []).map((r) => {
+                          const thisSpawning = spawningRunnerId === r.id;
+                          const disabled = spawningRunnerId !== null;
+                          return (
+                            <button
+                              key={r.id}
+                              type="button"
+                              role="option"
+                              aria-selected={false}
+                              disabled={disabled}
+                              onClick={() => void spawnDirectChatFromPicker(r)}
+                              className="flex w-full cursor-pointer items-center justify-between gap-2 rounded px-2.5 py-2 text-left transition-colors hover:bg-raised disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
+                            >
+                              <span className="truncate font-mono text-[13px] text-fg">
+                                @{r.handle}
+                              </span>
+                              <span className="shrink-0 rounded bg-bg px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-fg-2">
+                                {thisSpawning ? "Starting…" : r.runtime}
+                              </span>
+                            </button>
+                          );
+                        })}
+                        {pickerError ? (
+                          <p className="px-2.5 py-1 text-[11px] text-danger">
+                            {pickerError}
+                          </p>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                ) : null}
+              </div>
               {sessionsOpen ? (
                 <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1">
                   {directSessions.length === 0 ? (
@@ -921,6 +1066,7 @@ function CollapsibleSectionHeader({
   onToggle,
   onPlus,
   plusTitle,
+  plusExpanded,
 }: {
   label: string;
   count: number;
@@ -928,6 +1074,9 @@ function CollapsibleSectionHeader({
   onToggle: () => void;
   onPlus: () => void;
   plusTitle: string;
+  /** When the `+` opens a popover, pass `true` while it's open so the
+   *  trigger advertises `aria-haspopup="listbox"` + `aria-expanded`. */
+  plusExpanded?: boolean;
 }) {
   const Chevron = open ? ChevronDown : ChevronRight;
   return (
@@ -950,6 +1099,8 @@ function CollapsibleSectionHeader({
         onClick={onPlus}
         title={plusTitle}
         aria-label={plusTitle}
+        aria-haspopup={plusExpanded === undefined ? undefined : "listbox"}
+        aria-expanded={plusExpanded}
         className="cursor-pointer rounded p-1 text-fg-2 transition-colors hover:bg-bg hover:text-fg"
       >
         <Plus aria-hidden className="h-3 w-3" />
