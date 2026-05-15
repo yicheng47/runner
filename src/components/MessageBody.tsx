@@ -12,7 +12,7 @@ import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 
-import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 export function MessageBody({ text }: { text: string }) {
   return (
@@ -29,7 +29,7 @@ export function MessageBody({ text }: { text: string }) {
               href={href ?? "#"}
               onClick={(e) => {
                 e.preventDefault();
-                if (href) void openExternal(href).catch(() => {});
+                if (href) void openUrl(href).catch(() => {});
               }}
               className="text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
             >

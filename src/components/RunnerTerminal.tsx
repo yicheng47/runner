@@ -11,7 +11,7 @@
 import { useEffect, useRef } from "react";
 
 import { listen } from "@tauri-apps/api/event";
-import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -156,8 +156,8 @@ export function RunnerTerminal({
       // Cmd+click on macOS to match iTerm/Terminal.app and avoid accidental
       // navigations during scrollback selection. Plain click on other OSes.
       if (navigator.platform.toLowerCase().includes("mac") && !event.metaKey) return;
-      void openExternal(uri).catch(() => {
-        // swallow — shell allowlist may reject
+      void openUrl(uri).catch((err) => {
+        console.error("[terminal] openUrl failed:", err);
       });
     });
     term.loadAddon(webLinks);
@@ -291,6 +291,15 @@ export function RunnerTerminal({
       }
     };
     window.addEventListener("resize", refitAndPush);
+    // Panel toggles (left sidebar collapse, right rail) animate the
+    // container's width without firing window-resize, so the xterm
+    // grid and backend PTY geometry stay stale until the user nudges
+    // the OS window (#108). Observing the container catches those
+    // CSS-driven size changes; refitAndPush's activeRef + measurable-
+    // rect guards keep hidden panes from pushing stale geometry to
+    // the backend.
+    const ro = new ResizeObserver(() => refitAndPush());
+    ro.observe(containerRef.current);
 
     const refreshTerm = () => {
       const t = termRef.current;
@@ -346,6 +355,7 @@ export function RunnerTerminal({
     fitRef.current = fit;
 
     return () => {
+      ro.disconnect();
       window.removeEventListener("resize", refitAndPush);
       window.removeEventListener("focus", refreshTerm);
       document.removeEventListener("visibilitychange", onVisibility);
