@@ -47,3 +47,9 @@ links to its tracking issue.
   system notification when an agent posts to `@human` or fires
   `ask_human`; suppress when the relevant mission/chat is already
   in foreground.
+- [15 — Light theme](./15-light-theme.md) — Solarized Light palette
+  applied via CSS variable override on `<html data-theme>`; new
+  `Auto · Light · Dark` setting; app icon stays brand-constant.
+- [16 — Sidebar mission detail](./16-sidebar-mission-detail.md) —
+  expand the selected mission row to show goal, cwd, crew, started
+  time; inline edit for goal and cwd via folder picker.
