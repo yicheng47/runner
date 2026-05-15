@@ -221,9 +221,9 @@ impl Router {
     /// - `runner_status` from the latest `runner_status` row per handle.
     ///
     /// What is *not* rebuilt: stdin pushes. The launch prompt, ask_lead
-    /// relays, human_said echoes, and idle nudges are all live-only side
-    /// effects. Per the C8 plan, replay does not re-inject prompts into
-    /// a sleeping LLM.
+    /// relays, human_said echoes, and message_nudge fan-outs are all
+    /// live-only side effects. Per the C8 plan, replay does not re-inject
+    /// prompts into a sleeping LLM.
     ///
     /// **MUST NOT be called for fresh missions.** Setting the watermark
     /// over the just-written opening `mission_goal` would cause the bus
@@ -371,8 +371,8 @@ impl Router {
     ///
     /// Centralized here so the policy applies uniformly to every wake
     /// source: directed/broadcast `message_nudge`, `ask_lead` relay,
-    /// `human_said`, `human_response`, the lead's `mission_goal`
-    /// bootstrap, and the `runner_status idle` notice to the lead.
+    /// `human_said`, `human_response`, and the lead's `mission_goal`
+    /// bootstrap.
     fn synthesize_wake_busy(&self, handle: &str) {
         if handle == "human" {
             return;

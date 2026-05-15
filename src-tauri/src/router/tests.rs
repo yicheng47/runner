@@ -525,7 +525,10 @@ fn human_response_without_matching_question_emits_mission_warning() {
 }
 
 #[test]
-fn runner_status_idle_for_worker_notifies_lead_and_busy_does_not() {
+fn runner_status_updates_state_map_without_injecting_to_lead() {
+    // Contract: runner_status is observability, not coordination. It must
+    // never inject into any session — including the lead's — under any
+    // state transition. The in-memory status map is the only side effect.
     let (router, injector, log, _dir) = fixture(
         vec![
             slot_with_runner("lead", true),
@@ -545,21 +548,29 @@ fn runner_status_idle_for_worker_notifies_lead_and_busy_does_not() {
     router.handle_event(&busy);
     assert!(injector.pushes_for("S-LEAD").is_empty());
 
-    // idle from a worker — push to the lead, mentioning the worker.
+    // idle from a worker — also silent. (Was the regression in #125: the
+    // idle notice injected into the lead's TUI as a fake user message.)
     let idle = log
         .append(signal(
             "impl",
             "runner_status",
-            serde_json::json!({ "state": "idle", "note": "ready for next task" }),
+            serde_json::json!({ "state": "idle" }),
         ))
         .unwrap();
     router.handle_event(&idle);
-    let pushes = injector.pushes_for("S-LEAD");
-    assert_eq!(pushes.len(), 1);
-    assert!(pushes[0].contains("@impl is idle"));
-    assert!(pushes[0].contains("ready for next task"));
+    assert!(
+        injector.pushes_for("S-LEAD").is_empty(),
+        "runner_status idle must not inject into the lead",
+    );
 
-    // idle from the lead itself — does not self-notify.
+    // Observability path still works: the state map reflects the latest
+    // status from the worker.
+    assert!(matches!(
+        router.state.lock().unwrap().status.get("impl"),
+        Some(super::RunnerStatus::Idle),
+    ));
+
+    // idle from the lead itself — defense-in-depth, still no push.
     let lead_idle = log
         .append(signal(
             "lead",
@@ -568,9 +579,8 @@ fn runner_status_idle_for_worker_notifies_lead_and_busy_does_not() {
         ))
         .unwrap();
     router.handle_event(&lead_idle);
-    assert_eq!(
-        injector.pushes_for("S-LEAD").len(),
-        1,
+    assert!(
+        injector.pushes_for("S-LEAD").is_empty(),
         "lead going idle must not push to lead",
     );
 }
@@ -712,7 +722,8 @@ fn pending_ask_map_reconstructs_from_log_on_reopen() {
 fn reconstruct_recovers_latest_runner_status_only() {
     // Reopen-path test for arch §5.5.1: latest reported state per handle.
     // busy → idle → busy must leave status[impl] = Busy after reconstruct,
-    // and no historical idle-notice should re-inject into the lead.
+    // and replay of the historical sequence must never inject into the
+    // lead (runner_status is observability-only since #125).
     let dir = tempfile::tempdir().unwrap();
     let log = Arc::new(EventLog::open(dir.path()).unwrap());
     let roster = vec![
@@ -757,31 +768,41 @@ fn reconstruct_recovers_latest_runner_status_only() {
     ]);
     router.reconstruct_from_log().unwrap();
 
-    // Bus replay of the historical events must short-circuit; no idle
-    // notice is pushed to the lead, even though one of them is `idle`.
+    // After reconstruct, the state map reflects the latest reported state.
+    assert!(matches!(
+        router.state.lock().unwrap().status.get("impl"),
+        Some(super::RunnerStatus::Busy),
+    ));
+
+    // Bus replay of the historical events must not inject into the lead —
+    // runner_status is observability-only.
     for entry in log.read_from(0).unwrap() {
         router.handle_event(&entry.event);
     }
     assert!(
         injector.all_pushes().is_empty(),
-        "historical idle must not push to lead on replay; got {:?}",
+        "historical runner_status replay must not push to lead; got {:?}",
         injector.all_pushes(),
     );
 
-    // A *new* idle event after the watermark must push normally — proves
-    // the watermark only suppresses history, not live tail.
+    // A *new* idle event after reconstruct also must not push — same
+    // observability-only contract applies to live events.
     let live_idle = log
         .append(signal(
             "impl",
             "runner_status",
-            serde_json::json!({ "state": "idle", "note": "live" }),
+            serde_json::json!({ "state": "idle" }),
         ))
         .unwrap();
     router.handle_event(&live_idle);
-    let lead_pushes = injector.pushes_for("S-LEAD");
-    assert_eq!(lead_pushes.len(), 1);
-    assert!(lead_pushes[0].contains("@impl is idle"));
-    assert!(lead_pushes[0].contains("live"));
+    assert!(
+        injector.pushes_for("S-LEAD").is_empty(),
+        "live runner_status idle must not push to lead",
+    );
+    assert!(matches!(
+        router.state.lock().unwrap().status.get("impl"),
+        Some(super::RunnerStatus::Idle),
+    ));
 }
 
 #[test]
