@@ -5,6 +5,9 @@
 //   - ask-human cards (signal type: human_question): rich card variant
 //     consumed by AskHumanCard
 //
+// User-authored signals (`human_said`, `human_response`) render as
+// message rows so they look like normal chat turns in the feed.
+//
 // Router-internal plumbing (`inbox_read`, `runner_status`) is hidden by
 // default — the audit trail lives in `<mission_dir>/events.ndjson`, and
 // the feed is a reading surface for humans collaborating with runners.
@@ -16,7 +19,12 @@ import { useEffect, useRef, useState } from "react";
 
 import { AskHumanCard } from "./AskHumanCard";
 import { MessageBody } from "./MessageBody";
-import type { Event, HumanQuestionPayload } from "../lib/types";
+import type {
+  Event,
+  HumanQuestionPayload,
+  HumanResponsePayload,
+  HumanSaidPayload,
+} from "../lib/types";
 
 // Events authored by the human via MissionInput / AskHumanCard. When one
 // of these appends we always commit to the bottom — pressing send on a
@@ -235,6 +243,50 @@ function EventRow({
     );
   }
 
+  // User-authored signals render as message rows (header + plain text
+  // body via MessageBody), so a `human_said` from MissionInput and a
+  // `human_response` from AskHumanCard look like normal chat turns
+  // instead of a JSON-y signal box. Target derivation differs by type:
+  // human_said carries `payload.target`; human_response is paired back
+  // to the original asker via askersByQuestion[question_id].
+  if (
+    event.kind === "signal" &&
+    (event.type === "human_said" || event.type === "human_response")
+  ) {
+    let target: string | null;
+    let text: string;
+    if (event.type === "human_said") {
+      const p = (event.payload ?? {}) as Partial<HumanSaidPayload>;
+      text = p.text ?? "";
+      target = p.target ?? null;
+    } else {
+      const p = (event.payload ?? {}) as Partial<HumanResponsePayload>;
+      text = p.choice ?? "";
+      target = p.question_id ? askersByQuestion[p.question_id] ?? "?" : "?";
+    }
+    return (
+      <div className="flex flex-col gap-1">
+        <div className="flex items-baseline gap-2 text-[11px] text-fg-3">
+          <span className="font-mono text-[12px] font-semibold text-accent">
+            @{event.from}
+          </span>
+          <span>message</span>
+          {target ? (
+            <>
+              <span>→</span>
+              <span className="font-mono text-fg-2">@{target}</span>
+            </>
+          ) : null}
+          <span>·</span>
+          <span>{formatTs(event.ts)}</span>
+        </div>
+        <div className="text-[13px] leading-relaxed text-fg">
+          <MessageBody text={text} />
+        </div>
+      </div>
+    );
+  }
+
   // Default signal row. `inbox_read` / `runner_status` are filtered out
   // upstream (see isHiddenSystemSignal); `mission_warning` reaches here
   // and renders at full strength so the diagnostic stands out.
@@ -263,7 +315,7 @@ function renderPayload(event: Event): React.ReactNode {
   if (!p || typeof p !== "object") {
     return <span>{String(p ?? "")}</span>;
   }
-  if (event.type === "mission_goal" || event.type === "human_said") {
+  if (event.type === "mission_goal") {
     const text = typeof p.text === "string" ? p.text : "";
     const target = typeof p.target === "string" ? p.target : null;
     return (
@@ -286,16 +338,6 @@ function renderPayload(event: Event): React.ReactNode {
       <span>
         {state}
         {note}
-      </span>
-    );
-  }
-  if (event.type === "human_response") {
-    const choice = typeof p.choice === "string" ? p.choice : "";
-    const qid = typeof p.question_id === "string" ? p.question_id : "";
-    return (
-      <span>
-        chose <span className="text-fg">{choice || "?"}</span>
-        {qid ? <span className="text-fg-3"> · q={qid.slice(-6)}</span> : null}
       </span>
     );
   }
