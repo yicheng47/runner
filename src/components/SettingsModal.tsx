@@ -72,6 +72,7 @@ import {
   ZOOM_STEPS,
 } from "../lib/settings";
 import { useUpdate } from "../contexts/UpdateContext";
+import { Button } from "./ui/Button";
 import { StyledSelect } from "./ui/StyledSelect";
 
 interface SettingsModalProps {
@@ -312,7 +313,7 @@ function GeneralPane() {
         label="Default working directory"
         sub="Cwd new chats inherit unless overridden."
       >
-        <FolderPicker
+        <WorkingDirInput
           value={defaultWorkingDir}
           onChange={setDefaultWorkingDir}
         />
@@ -838,10 +839,12 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
   );
 }
 
-// Folder-picker button. Opens Tauri's native directory dialog;
-// commits the chosen absolute path to the parent. The X clears the
-// stored value back to empty so the row reads as "no default."
-function FolderPicker({
+// Typed input + Browse… button — matches the working-directory
+// control in StartMissionModal / CreateRunnerModal so the three
+// surfaces feel like one family. Typing an empty string flows
+// through `writeDefaultWorkingDir` (which removes the key); the
+// Browse button overlays Tauri's native directory dialog.
+function WorkingDirInput({
   value,
   onChange,
 }: {
@@ -858,9 +861,6 @@ function FolderPicker({
         multiple: false,
         defaultPath: value || undefined,
       });
-      // The plugin returns string | string[] | null. We requested a
-      // single directory so anything other than a non-empty string
-      // means the user cancelled or the platform misbehaved.
       if (typeof result === "string" && result) {
         onChange(result);
       }
@@ -872,27 +872,16 @@ function FolderPicker({
     }
   };
   return (
-    <div className="flex items-center gap-1.5">
-      <button
-        type="button"
-        onClick={() => void choose()}
-        disabled={picking}
-        title={value || "Pick a folder"}
-        className="flex max-w-[200px] cursor-pointer items-center gap-2 rounded-md border border-line bg-bg px-3 py-2 text-[12px] text-fg transition-colors hover:border-line-strong focus:border-fg-3 focus:outline-none disabled:opacity-60"
-      >
-        <span className="truncate font-mono">{value || "~/"}</span>
-      </button>
-      {value ? (
-        <button
-          type="button"
-          onClick={() => onChange("")}
-          aria-label="Clear default working directory"
-          title="Clear"
-          className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-fg-3 hover:bg-raised hover:text-fg"
-        >
-          <X aria-hidden className="h-3.5 w-3.5" />
-        </button>
-      ) : null}
+    <div className="flex w-[260px] items-center gap-2">
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="/Users/you/projects/foo"
+        className="min-w-0 flex-1 rounded-md border border-line bg-bg px-3 py-2 font-mono text-xs text-fg placeholder:text-fg-3 focus:border-fg-3 focus:outline-none"
+      />
+      <Button onClick={() => void choose()} disabled={picking}>
+        Browse…
+      </Button>
     </div>
   );
 }

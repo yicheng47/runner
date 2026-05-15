@@ -421,7 +421,8 @@ export function resolveTerminalFontStack(label: TerminalFontFamily): string {
 
 export function readDefaultWorkingDir(): string {
   try {
-    return localStorage.getItem(STORAGE_DEFAULT_WORKING_DIR) ?? "";
+    const raw = localStorage.getItem(STORAGE_DEFAULT_WORKING_DIR) ?? "";
+    return raw.trim();
   } catch {
     return "";
   }
@@ -429,7 +430,8 @@ export function readDefaultWorkingDir(): string {
 
 export function writeDefaultWorkingDir(value: string): void {
   try {
-    if (value) localStorage.setItem(STORAGE_DEFAULT_WORKING_DIR, value);
+    const trimmed = value.trim();
+    if (trimmed) localStorage.setItem(STORAGE_DEFAULT_WORKING_DIR, trimmed);
     else localStorage.removeItem(STORAGE_DEFAULT_WORKING_DIR);
   } catch {
     // best-effort
