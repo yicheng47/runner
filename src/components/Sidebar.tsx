@@ -4,9 +4,10 @@
 //   - WORKSPACE: search (placeholder), runner, crew nav links.
 //   - MISSION:   collapsible header with count + `+` (Start Mission), one row
 //                per running mission. The currently-open mission is highlighted.
-//   - SESSION:   collapsible header with count + `+` (jump to runners list),
-//                one row per live direct-chat. The currently-open
-//                direct chat is highlighted.
+//   - SESSION:   collapsible header with count + `+` (opens the
+//                StartChat modal — runner pick + optional chat name +
+//                working dir), one row per live direct-chat. The
+//                currently-open direct chat is highlighted.
 //
 // MISSION pulls from `mission_list_summary` (filtered to status === "running").
 // SESSION continues to consume `runner/activity` events for live direct chats.
@@ -54,6 +55,7 @@ import {
 } from "../lib/archivingState";
 import type { AppendedEvent, MissionSummary } from "../lib/types";
 import { StartMissionModal } from "./StartMissionModal";
+import { StartChatModal } from "./StartChatModal";
 import { SettingsModal } from "./SettingsModal";
 import { CommandPalette } from "./CommandPalette";
 
@@ -164,6 +166,10 @@ export function Sidebar({
   // instead of its label. Submit (Enter) → session_rename + refresh.
   // Cancel (Escape / blur with no change) → close without write.
   const [renamingId, setRenamingId] = useState<string | null>(null);
+
+  // CHAT `+` opens the StartChat modal. State is a single boolean —
+  // the modal owns its own field state and runner-list fetch.
+  const [creatingChat, setCreatingChat] = useState(false);
 
   // Identify the currently-open runtime so we can highlight the matching
   // sidebar row. `useMatch` returns null when the URL doesn't match.
@@ -478,12 +484,12 @@ export function Sidebar({
     [navigate, location.pathname],
   );
 
-  // SESSION's `+` button — direct chats are spawned from a runner, so we
-  // route to the runners list and let the user pick. A future v0.x could
-  // open an inline runner-picker popover instead.
+  // CHAT `+` button — opens the StartChat modal (GH #104). The modal is
+  // a takeover, so we don't pre-expand the SESSION section; the new
+  // chat row will be visible on return from the spawned chat URL.
   const handleNewDirectChat = useCallback(() => {
-    navigate("/runners");
-  }, [navigate]);
+    setCreatingChat(true);
+  }, []);
 
   const toggleMissions = useCallback(() => {
     setMissionsOpen((prev) => {
@@ -667,6 +673,7 @@ export function Sidebar({
                 onToggle={toggleSessions}
                 onPlus={handleNewDirectChat}
                 plusTitle="Start a chat"
+                plusExpanded={creatingChat}
               />
               {sessionsOpen ? (
                 <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1">
@@ -753,6 +760,17 @@ export function Sidebar({
           setCreatingMission(false);
           void refreshMissions();
           navigate(`/missions/${mission.id}`);
+        }}
+      />
+
+      <StartChatModal
+        open={creatingChat}
+        onClose={() => setCreatingChat(false)}
+        onStarted={(spawned, handle) => {
+          setCreatingChat(false);
+          navigate(`/runners/${handle}/chat/${spawned.id}`, {
+            state: { sessionStatus: "running" },
+          });
         }}
       />
 
@@ -921,6 +939,7 @@ function CollapsibleSectionHeader({
   onToggle,
   onPlus,
   plusTitle,
+  plusExpanded,
 }: {
   label: string;
   count: number;
@@ -928,6 +947,9 @@ function CollapsibleSectionHeader({
   onToggle: () => void;
   onPlus: () => void;
   plusTitle: string;
+  /** When the `+` opens a dialog (modal), pass its open state so the
+   *  trigger advertises `aria-haspopup="dialog"` + `aria-expanded`. */
+  plusExpanded?: boolean;
 }) {
   const Chevron = open ? ChevronDown : ChevronRight;
   return (
@@ -950,6 +972,8 @@ function CollapsibleSectionHeader({
         onClick={onPlus}
         title={plusTitle}
         aria-label={plusTitle}
+        aria-haspopup={plusExpanded === undefined ? undefined : "dialog"}
+        aria-expanded={plusExpanded}
         className="cursor-pointer rounded p-1 text-fg-2 transition-colors hover:bg-bg hover:text-fg"
       >
         <Plus aria-hidden className="h-3 w-3" />
