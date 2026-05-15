@@ -4,6 +4,17 @@ Spawn a runner. Create your crew. Ship the feature.
 
 Runner is a local desktop app for assembling a crew of CLI coding agents — Claude Code, Codex, and friends — giving each runner a role and a brief, and coordinating their work from one window.
 
+<table>
+  <tr>
+    <td width="50%"><img src="assets/crew.png" alt="Crew configuration — slots, lead, and runner runtimes" width="100%" /></td>
+    <td width="50%"><img src="assets/mission.png" alt="Mission workspace — per-slot PTY sessions, feed, and roster rail" width="100%" /></td>
+  </tr>
+  <tr>
+    <td align="center"><em>Crew</em></td>
+    <td align="center"><em>Mission</em></td>
+  </tr>
+</table>
+
 > Status: pre-alpha, shipping. macOS + Linux only (the session runtime is tmux). Crew + runner config, missions, direct chats, the event bus + signal router, the bundled `runner` CLI, and PTY-backed mission workspaces all run end-to-end. See `docs/impls/0001-v0-mvp.md` for the current plan and status.
 
 ## What it does

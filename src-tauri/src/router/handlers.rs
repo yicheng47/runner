@@ -222,25 +222,4 @@ pub(super) fn runner_status(router: &Router, event: &Event) {
         }
     };
     router.set_status(event.from.clone(), state);
-
-    // Wake the lead only when a non-lead reports idle. A worker reporting
-    // busy is already implicit in the fact that they're working; spamming
-    // the lead on every busy→still-busy transition would be noise. arch
-    // §5.5.1.
-    let lead_handle = router.lead_handle().to_string();
-    if state == RunnerStatus::Idle && event.from != lead_handle {
-        let note = event
-            .payload
-            .get("note")
-            .and_then(|v| v.as_str())
-            .map(|n| format!(" — {n}"))
-            .unwrap_or_default();
-        let text = format!(
-            "[runner_status] @{worker} is idle{note}",
-            worker = event.from
-        );
-        if let Err(e) = router.inject_and_submit(&lead_handle, &submit_body(&text)) {
-            router.warn(format!("runner_status idle notice to lead failed: {e}"));
-        }
-    }
 }
