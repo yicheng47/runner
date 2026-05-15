@@ -291,6 +291,15 @@ export function RunnerTerminal({
       }
     };
     window.addEventListener("resize", refitAndPush);
+    // Panel toggles (left sidebar collapse, right rail) animate the
+    // container's width without firing window-resize, so the xterm
+    // grid and backend PTY geometry stay stale until the user nudges
+    // the OS window (#108). Observing the container catches those
+    // CSS-driven size changes; refitAndPush's activeRef + measurable-
+    // rect guards keep hidden panes from pushing stale geometry to
+    // the backend.
+    const ro = new ResizeObserver(() => refitAndPush());
+    ro.observe(containerRef.current);
 
     const refreshTerm = () => {
       const t = termRef.current;
@@ -346,6 +355,7 @@ export function RunnerTerminal({
     fitRef.current = fit;
 
     return () => {
+      ro.disconnect();
       window.removeEventListener("resize", refitAndPush);
       window.removeEventListener("focus", refreshTerm);
       document.removeEventListener("visibilitychange", onVisibility);
