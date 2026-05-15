@@ -43,3 +43,7 @@ links to its tracking issue.
   — derive runner busy/idle from forwarder-observed PTY output
   silence instead of relying on the agent to call `runner status`;
   works for any TUI without runner-CLI integration.
+- [14 — Human notifications](./14-human-notifications.md) — macOS
+  system notification when an agent posts to `@human` or fires
+  `ask_human`; suppress when the relevant mission/chat is already
+  in foreground.
