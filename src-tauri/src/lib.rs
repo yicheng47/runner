@@ -118,23 +118,51 @@ pub fn run() {
 
             let sessions = session::SessionManager::new(shell_path, runtime);
 
+            // Build the AppState up front so the mission-side
+            // reattach (next block) has access to the bus + router
+            // registries it needs to mount. The session-side reattach
+            // still runs from the local `sessions` Arc handle.
+            let state = AppState {
+                db: Arc::clone(&pool),
+                app_data_dir,
+                sessions: Arc::clone(&sessions),
+                buses: event_bus::BusRegistry::new(),
+                routers: router::RouterRegistry::new(),
+            };
+
+            // Mount router + bus for every `running` mission BEFORE
+            // session reattach starts. Forwarder threads begin
+            // emitting `mission_*` events as soon as `pipe-pane` is
+            // installed; if the bus isn't mounted yet, those events
+            // get fanout-dropped. The NDJSON log is unaffected (the
+            // agent writes straight through the bundled CLI) — this
+            // is purely about the in-memory fanout layer.
+            //
+            // Returns the set of mission ids whose mount FAILED;
+            // session reattach uses it to fall back to the
+            // stop+mark-stopped path for those missions' alive
+            // panes (matches the pre-eager-mount safety property).
+            let app_handle = app.handle().clone();
+            let failed_mission_ids = tauri::async_runtime::block_on(
+                commands::mission::reattach_all_running_missions(&state, &app_handle),
+            );
+
             // Reattach to any live tmux panes from a prior Runner
             // process. Rows whose pane is still alive stay
             // `running` and the manager rebuilds its forwarder
             // thread + handle for them. Rows whose pane is gone
             // (or has exited) get flipped to stopped/crashed via
-            // the runtime's exit code.
+            // the runtime's exit code. Mission rows whose router
+            // mount failed are stopped instead.
             let events_for_reattach: Arc<dyn session::manager::SessionEvents> =
                 Arc::new(session::manager::TauriSessionEvents(app.handle().clone()));
-            sessions.reattach_running_sessions(Arc::clone(&pool), events_for_reattach);
+            sessions.reattach_running_sessions(
+                Arc::clone(&pool),
+                events_for_reattach,
+                &failed_mission_ids,
+            );
 
-            app.manage(AppState {
-                db: pool,
-                app_data_dir,
-                sessions,
-                buses: event_bus::BusRegistry::new(),
-                routers: router::RouterRegistry::new(),
-            });
+            app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

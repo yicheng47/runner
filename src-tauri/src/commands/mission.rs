@@ -12,6 +12,7 @@
 // and `mission_goal` (the human's intent, which the orchestrator routes to
 // the lead via the built-in rule in C8).
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use chrono::Utc;
@@ -750,35 +751,63 @@ pub async fn mission_start(
 /// PTY children are NOT respawned here — that's an explicit per-slot
 /// `session_resume` call from the frontend, mirroring direct-chat
 /// resume UX.
+///
+/// Idempotent: when the app's startup reconciler (or a prior workspace
+/// mount) has already mounted the bus, this is a no-op that just
+/// returns the loaded mission row.
 #[tauri::command]
 pub async fn mission_attach(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     mission_id: String,
 ) -> Result<Mission> {
+    ensure_mission_router_mounted(&state, &app, &mission_id).await?;
+    let conn = state.db.get()?;
+    get(&conn, &mission_id)
+}
+
+/// Mount the in-memory Router + EventBus for `mission_id`, idempotently.
+///
+/// Called from two places:
+///  * `mission_attach` — workspace UI mount path; runs on every
+///    workspace navigation. After the startup reconciler runs, this is
+///    almost always a no-op.
+///  * `reattach_all_running_missions` — app startup path; runs once
+///    per running mission before session reattach so forwarder threads
+///    don't emit `mission_*` events into a non-existent subscriber.
+///
+/// Returns `Ok(())` (no-op) when the mission's router is already
+/// registered, or when the mission isn't in the `running` state.
+pub(crate) async fn ensure_mission_router_mounted(
+    state: &AppState,
+    app: &tauri::AppHandle,
+    mission_id: &str,
+) -> Result<()> {
     use crate::event_bus::{BusEmitter, TauriBusEvents};
     use crate::router::{
         open_log_for_mission, CompositeBusEmitter, Router, RouterSubscriber, StdinInjector,
     };
     use std::sync::Arc;
 
-    let mission = {
-        let conn = state.db.get()?;
-        get(&conn, &mission_id)?
-    };
-
     // Idempotent: if the router is already mounted for this mission,
     // just return. The frontend calls attach on every workspace mount
     // (including back-and-forth navigation), so this happens often.
-    if state.routers.get(&mission_id).is_some() {
-        return Ok(mission);
+    // Startup-side: the second mount path (workspace) finds the bus
+    // already mounted from the startup reconciler and returns here.
+    if state.routers.get(mission_id).is_some() {
+        return Ok(());
     }
+
+    let mission = {
+        let conn = state.db.get()?;
+        get(&conn, mission_id)?
+    };
 
     // Only running missions get rehydrated. Completed/aborted missions
     // are read-only — the workspace shows their feed via
     // mission_events_replay; no live router needed.
     if !matches!(mission.status, MissionStatus::Running) {
-        return Ok(mission);
+        return Ok(());
     }
 
     let (crew_name, allowed_signals) = {
@@ -791,9 +820,11 @@ pub async fn mission_attach(
         slot::list(&conn, &mission.crew_id)?
     };
 
-    // Pull the latest session_id per slot for this mission. Sessions
-    // are stopped post-restart, but the rows persist; resume picks up
-    // the same id. Filter to non-archived rows so a deleted-and-
+    // Pull the latest session_id per slot for this mission so the
+    // rebuilt Router can resolve `slot_handle → session_id` for stdin
+    // injection. Independent of whether the panes are alive: the
+    // mapping is what the Router holds in memory, not anything about
+    // pane state. Filter to non-archived rows so a deleted-and-
     // re-added slot doesn't pull a stale row.
     let session_pairs: Vec<(String, String)> = {
         let conn = state.db.get()?;
@@ -848,7 +879,62 @@ pub async fn mission_attach(
         .mount(mission.id.clone(), &mission_dir, &roster_handles, composite)?;
 
     state.routers.register(mission.id.clone(), router);
-    Ok(mission)
+    Ok(())
+}
+
+/// Walk every `running` mission and mount its Router + EventBus.
+///
+/// Runs once at app startup, before `SessionManager::reattach_running_sessions`,
+/// so the bus is in place when forwarder threads start emitting
+/// `mission_*` events. The NDJSON log is the source of truth; this
+/// just re-wires the in-memory fanout layer that died with the old
+/// process.
+///
+/// Per-mission isolation: if one mission's mount fails (corrupt log,
+/// missing crew row, etc.), it gets logged and the loop continues.
+/// The returned set lists every mission whose mount failed —
+/// callers pass it to `SessionManager::reattach_running_sessions`
+/// so those missions' alive panes are stopped instead of reattached
+/// (preserving the pre-eager-mount safety property that mission
+/// bytes never stream into a non-existent bus).
+pub(crate) async fn reattach_all_running_missions(
+    state: &AppState,
+    app: &tauri::AppHandle,
+) -> HashSet<String> {
+    let mission_ids = match state.db.get() {
+        Ok(conn) => list_running_mission_ids(&conn).unwrap_or_else(|e| {
+            eprintln!("runner: reattach_all_running_missions query failed: {e}");
+            Vec::new()
+        }),
+        Err(e) => {
+            eprintln!("runner: reattach_all_running_missions db pool unavailable: {e}");
+            Vec::new()
+        }
+    };
+
+    let mut failed = HashSet::new();
+    for mission_id in mission_ids {
+        if let Err(e) = ensure_mission_router_mounted(state, app, &mission_id).await {
+            eprintln!("runner: mission {mission_id} reattach failed: {e}");
+            failed.insert(mission_id);
+        }
+    }
+    failed
+}
+
+/// Return the ids of every mission that's currently `running` and not
+/// archived. Factored out of `reattach_all_running_missions` so the
+/// filter logic is unit-testable without an `AppHandle`.
+fn list_running_mission_ids(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM missions
+           WHERE status = 'running' AND archived_at IS NULL
+           ORDER BY started_at ASC",
+    )?;
+    let ids = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
 }
 
 /// Pause a mission by killing every live PTY but leaving the mission
@@ -2240,5 +2326,88 @@ mod tests {
             .expect("backfill must populate archived_at")
             .to_rfc3339();
         assert_eq!(backfilled_archived_at, original_stopped_at);
+    }
+
+    #[test]
+    fn list_running_mission_ids_filters_status_and_archive() {
+        // Startup reconciler should mount router + bus for `running`
+        // missions only — archived rows and completed/aborted rows
+        // are out of scope. Stable order by started_at so the
+        // iteration is reproducible across restarts.
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "C", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let m_running_first = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id: crew_id.clone(),
+                title: "running-1".into(),
+                goal_override: Some("g".into()),
+                cwd: None,
+            },
+        )
+        .unwrap()
+        .mission
+        .id;
+        let m_running_second = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id: crew_id.clone(),
+                title: "running-2".into(),
+                goal_override: Some("g".into()),
+                cwd: None,
+            },
+        )
+        .unwrap()
+        .mission
+        .id;
+        let m_completed = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id: crew_id.clone(),
+                title: "completed".into(),
+                goal_override: Some("g".into()),
+                cwd: None,
+            },
+        )
+        .unwrap()
+        .mission
+        .id;
+        stop(&mut conn, tmp.path(), &m_completed).unwrap();
+
+        // A third running row that we manually mark archived to
+        // simulate a "soft-deleted while running" case the reconciler
+        // must ignore.
+        let m_archived = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id,
+                title: "running-archived".into(),
+                goal_override: Some("g".into()),
+                cwd: None,
+            },
+        )
+        .unwrap()
+        .mission
+        .id;
+        conn.execute(
+            "UPDATE missions SET archived_at = ?2 WHERE id = ?1",
+            params![m_archived, Utc::now().to_rfc3339()],
+        )
+        .unwrap();
+
+        let ids = list_running_mission_ids(&conn).unwrap();
+        assert_eq!(
+            ids,
+            vec![m_running_first, m_running_second],
+            "only non-archived running rows, ordered by started_at"
+        );
     }
 }
