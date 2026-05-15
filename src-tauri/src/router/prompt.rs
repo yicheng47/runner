@@ -97,9 +97,9 @@ pub(crate) const WORKER_COORDINATION_PREAMBLE: &str = r#"You are a worker in a c
 - `runner status idle` — report you've finished the current task. The lead view uses this to dispatch the next slot.
 
 == Replying to the human ==
-The human is watching the workspace feed, NOT your TUI. When the human speaks to you directly (raw input lands in your TUI, often prefixed with `[human_said]`), reply via:
+The human is watching the workspace feed, NOT your TUI — plain TUI output (typing into your editor, printing to stdout) stays in your local scrollback only. When the human asks you a question or gives you a directive (raw input lands in your TUI, often prefixed with `[human_said]`), reply via:
     runner msg post --to human "<your reply>"
-Plain TUI output (typing into your editor, printing to stdout) stays in your local scrollback only — it never reaches the human. The `--to human` route is the only way your reply lands in the workspace feed."#;
+That route is what lands your reply in the workspace feed. For passing remarks ("got it", "noted") or when your TUI output already conveys the answer, no `runner msg post` call is needed — silence is fine."#;
 
 pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
     let mut out = String::new();
@@ -149,7 +149,7 @@ pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
         "- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n",
     );
     out.push_str(
-        "- Reply to the HUMAN with `runner msg post --to human \"…\"`. The human watches the workspace feed, not your TUI — typing answers into the TUI keeps them in your local scrollback only. `human` is a reserved virtual handle for this two-way path.\n",
+        "- Reply to the HUMAN with `runner msg post --to human \"…\"` when they ask a question or give a directive — that route lands the reply in the workspace feed (typing answers into the TUI keeps them in your local scrollback only). For passing remarks, silence is fine. `human` is a reserved virtual handle for this two-way path.\n",
     );
     out.push_str("- Read your inbox with `runner msg read` — it's pull-based.\n");
     out.push_str(
@@ -216,6 +216,23 @@ mod tests {
             allowed_signals: &[],
         });
         assert!(prompt.contains("(no goal set"));
+    }
+
+    #[test]
+    fn worker_preamble_frames_human_reply_as_guideline_not_mandate() {
+        // Guardrail against regressing the #128 fix: the human-reply
+        // section must explicitly say silence is fine for passing
+        // remarks, so agents stop posting "got it"/"noted" on every
+        // human_said.
+        let body = compose_worker_first_turn(None);
+        assert!(
+            body.contains("silence is fine"),
+            "preamble should tell workers silence is acceptable for passing remarks; got: {body}",
+        );
+        assert!(
+            body.contains("no `runner msg post` call is needed"),
+            "preamble should explicitly note no msg post is needed for passing remarks; got: {body}",
+        );
     }
 
     #[test]
