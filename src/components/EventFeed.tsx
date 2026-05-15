@@ -5,10 +5,12 @@
 //   - ask-human cards (signal type: human_question): rich card variant
 //     consumed by AskHumanCard
 //
-// Router-internal noise (`mission_warning`, `inbox_read`) is muted: the
-// rows are still present but de-emphasized so they don't dominate the
-// feed. We never silently drop events — the audit-trail invariant means
-// every line in the log surfaces somewhere.
+// Router-internal plumbing (`inbox_read`, `runner_status`) is hidden by
+// default — the audit trail lives in `<mission_dir>/events.ndjson`, and
+// the feed is a reading surface for humans collaborating with runners.
+// `mission_warning` is intentionally kept (and rendered at full strength):
+// it's a diagnostic the user should see. See spec
+// `docs/features/08-hide-system-signals-from-feed.md`.
 
 import { useEffect, useRef, useState } from "react";
 
@@ -24,6 +26,19 @@ function isHumanAuthored(ev: Event): boolean {
   return (
     ev.kind === "signal" &&
     (ev.type === "human_said" || ev.type === "human_response")
+  );
+}
+
+// Router-internal plumbing rows that the reader never needs to see in
+// the feed. `runner_status` is already projected onto the RunnersRail
+// busy/idle badge; `inbox_read` is just a watermark advance. The full
+// stream still lives in NDJSON on disk, and the parent workspace keeps
+// receiving every event so projections (status map, watermark) stay
+// intact.
+function isHiddenSystemSignal(ev: Event): boolean {
+  return (
+    ev.kind === "signal" &&
+    (ev.type === "inbox_read" || ev.type === "runner_status")
   );
 }
 
@@ -135,16 +150,18 @@ export function EventFeed({
         {events.length === 0 ? (
           <p className="text-[12px] text-fg-3">No events yet.</p>
         ) : (
-          events.map((ev) => (
-            <EventRow
-              key={ev.id}
-              event={ev}
-              missionId={missionId}
-              resolvedAsks={resolvedAsks}
-              askersByQuestion={askersByQuestion}
-              onError={onError}
-            />
-          ))
+          events
+            .filter((ev) => !isHiddenSystemSignal(ev))
+            .map((ev) => (
+              <EventRow
+                key={ev.id}
+                event={ev}
+                missionId={missionId}
+                resolvedAsks={resolvedAsks}
+                askersByQuestion={askersByQuestion}
+                onError={onError}
+              />
+            ))
         )}
       </div>
       {hasNewSinceLeftBottom ? (
@@ -218,17 +235,11 @@ function EventRow({
     );
   }
 
-  // Default signal row.
-  const isQuiet =
-    event.type === "inbox_read" ||
-    event.type === "mission_warning" ||
-    event.type === "runner_status";
+  // Default signal row. `inbox_read` / `runner_status` are filtered out
+  // upstream (see isHiddenSystemSignal); `mission_warning` reaches here
+  // and renders at full strength so the diagnostic stands out.
   return (
-    <div
-      className={`flex flex-col gap-1 ${
-        isQuiet ? "opacity-60" : ""
-      }`}
-    >
+    <div className="flex flex-col gap-1">
       <div className="flex items-baseline gap-2 text-[11px] text-fg-3">
         <span className="font-mono text-[12px] font-semibold text-accent">
           @{event.from}
