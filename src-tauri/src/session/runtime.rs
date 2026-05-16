@@ -179,15 +179,6 @@ pub struct OutputStream {
     /// exits when it flips, releasing its FIFO read fd and
     /// `Sender` half of the channel.
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Most recent IPC `resize()` time for this session. The
-    /// frontend's xterm `activate()` calls resize twice on every
-    /// panel switch (the "SIGWINCH dance") to force a TUI repaint;
-    /// that repaint produces real bytes which the `IdleDetector`
-    /// would otherwise classify as agent activity, flickering the
-    /// runner-status dot. The manager stamps this on every resize
-    /// call and the detector consults it to suppress idle→busy
-    /// transitions inside a short window after the dance.
-    resize_stamp: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 impl OutputStream {
@@ -198,13 +189,8 @@ impl OutputStream {
     pub(crate) fn new(
         inner: std::sync::mpsc::Receiver<RuntimeOutput>,
         stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        resize_stamp: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
     ) -> Self {
-        Self {
-            inner,
-            stop,
-            resize_stamp,
-        }
+        Self { inner, stop }
     }
 
     /// Mirrors `Receiver::recv_timeout`. Used by the integration
@@ -239,15 +225,6 @@ impl OutputStream {
     /// the calling Tauri command indefinitely.
     pub fn stop_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
         std::sync::Arc::clone(&self.stop)
-    }
-
-    /// Clone of the resize-stamp handle the forwarder's
-    /// `IdleDetector` consults. `SessionManager::resize` writes the
-    /// current `Instant` here before forwarding to the runtime; the
-    /// detector reads it to suppress busy emissions inside the
-    /// SIGWINCH-repaint window (issue #124 follow-up).
-    pub fn resize_stamp(&self) -> std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>> {
-        std::sync::Arc::clone(&self.resize_stamp)
     }
 }
 

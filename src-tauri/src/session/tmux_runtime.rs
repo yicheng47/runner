@@ -867,8 +867,6 @@ fn attach_streaming(
 
     let (tx, rx) = mpsc::channel::<RuntimeOutput>();
     let stop = Arc::new(AtomicBool::new(false));
-    let resize_stamp: Arc<std::sync::Mutex<Option<Instant>>> =
-        Arc::new(std::sync::Mutex::new(None));
 
     if !snapshot.is_empty() {
         let _ = tx.send(RuntimeOutput::Replay(snapshot));
@@ -878,10 +876,9 @@ fn attach_streaming(
     }
 
     let forwarder_stop = Arc::clone(&stop);
-    let forwarder_resize_stamp = Arc::clone(&resize_stamp);
-    thread::spawn(move || forward_fifo(reader, tx, forwarder_stop, forwarder_resize_stamp));
+    thread::spawn(move || forward_fifo(reader, tx, forwarder_stop));
 
-    Ok(OutputStream::new(rx, stop, resize_stamp))
+    Ok(OutputStream::new(rx, stop))
 }
 
 /// PTY-silence threshold for the busy→idle transition (issue #124).
@@ -890,14 +887,17 @@ fn attach_streaming(
 /// busy→idle latency is ~950ms — well inside the spec's ~1s SLO.
 const IDLE_THRESHOLD: Duration = Duration::from_millis(750);
 
-/// Suppression window after an IPC `resize()`. Frontend panel-switch
-/// runs the xterm "SIGWINCH dance" (resize(cols-1) → resize(cols)) to
-/// force a TUI repaint; the repaint produces real bytes that would
-/// otherwise flicker the runner-status dot busy→idle. The detector
-/// updates `last_byte` for bytes inside this window but suppresses
-/// idle→busy emission. 350ms covers the dance + the slowest TUI
-/// repaints (claude-code full-screen) observed locally.
-const RESIZE_SUPPRESSION_WINDOW: Duration = Duration::from_millis(350);
+/// Debounce window for the idle→busy edge. Bytes must sustain at
+/// least this long after a quiet stretch before the detector emits
+/// `Busy`. Filters out short bursts that are not "the agent is
+/// actually doing something" — the xterm SIGWINCH dance on panel
+/// switch (one repaint chunk + silence), focus-induced cursor
+/// blinks, and similar one-shot terminal artifacts. A real
+/// streaming TUI sustains output for seconds, so the debounce is
+/// imperceptible in practice; the trade-off is an at-most
+/// `BUSY_DEBOUNCE` lag on legitimate wake-ups, well inside the
+/// human perception threshold.
+const BUSY_DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// Per-session busy/idle state machine driven by PTY-byte activity
 /// (issue #124). The forwarder owns one and feeds it
@@ -908,9 +908,10 @@ const RESIZE_SUPPRESSION_WINDOW: Duration = Duration::from_millis(350);
 ///
 /// Initial state is `Idle` — the forwarder thread starts when the
 /// runtime attaches, and no bytes have flowed yet. The first byte
-/// flips to `Busy`; subsequent silence past `IDLE_THRESHOLD` flips
-/// back to `Idle`. No hysteresis on the wake direction; a full
-/// `IDLE_THRESHOLD` of silence is required to go idle (spec 13).
+/// after a quiet stretch starts a `busy_pending_since` timer; the
+/// detector flips `Busy` only once activity has sustained for
+/// `BUSY_DEBOUNCE`. Sustained silence past `IDLE_THRESHOLD` flips
+/// back to `Idle`.
 struct IdleDetector {
     /// Wall-clock at the last successful byte read. `None` until
     /// the first byte arrives so `tick()` doesn't try to flip a
@@ -918,30 +919,30 @@ struct IdleDetector {
     last_byte: Option<Instant>,
     current: RunnerStatus,
     threshold: Duration,
-    /// Shared with `SessionManager::resize`. The manager stamps
-    /// `Some(Instant::now())` here on each IPC resize; the detector
-    /// reads it and suppresses idle→busy emissions inside
-    /// `RESIZE_SUPPRESSION_WINDOW`. See the const docstring for the
-    /// SIGWINCH-dance background.
-    resize_stamp: Arc<std::sync::Mutex<Option<Instant>>>,
+    /// Set on the first byte after `Idle`; held until either the
+    /// debounce elapses (→ flip `Busy`) or silence resumes (→ drop
+    /// without flipping). `None` while `current == Busy` or while
+    /// no bytes have arrived since the last idle stretch.
+    busy_pending_since: Option<Instant>,
+    busy_debounce: Duration,
 }
 
 impl IdleDetector {
-    fn new(resize_stamp: Arc<std::sync::Mutex<Option<Instant>>>) -> Self {
+    fn new() -> Self {
         Self {
             last_byte: None,
             current: RunnerStatus::Idle,
             threshold: IDLE_THRESHOLD,
-            resize_stamp,
+            busy_pending_since: None,
+            busy_debounce: BUSY_DEBOUNCE,
         }
     }
 
     /// Called after a successful `read()` produced `n > 0` bytes.
-    /// Returns `Some(Busy)` exactly on the Idle→Busy edge so the
-    /// forwarder emits one transition event per wake-up, not one
-    /// per chunk. Suppresses the emission (still updates `last_byte`
-    /// for the idle clock) when the bytes arrive inside the
-    /// SIGWINCH-repaint window after a recent IPC `resize()`.
+    /// Returns `Some(Busy)` only when activity has sustained for at
+    /// least `busy_debounce` since the first byte after the last
+    /// idle stretch — short bursts (SIGWINCH dance, cursor blink,
+    /// focus events) are dropped without flipping state.
     fn on_bytes(&mut self, n: usize) -> Option<RunnerStatus> {
         if n == 0 {
             return None;
@@ -951,24 +952,31 @@ impl IdleDetector {
         if self.current == RunnerStatus::Busy {
             return None;
         }
-        if self.in_resize_window(now) {
-            return None;
-        }
-        self.current = RunnerStatus::Busy;
-        Some(RunnerStatus::Busy)
-    }
-
-    fn in_resize_window(&self, now: Instant) -> bool {
-        match *self.resize_stamp.lock().expect("resize_stamp poisoned") {
-            Some(t) => now.saturating_duration_since(t) < RESIZE_SUPPRESSION_WINDOW,
-            None => false,
+        let pending_since = *self.busy_pending_since.get_or_insert(now);
+        if now.duration_since(pending_since) >= self.busy_debounce {
+            self.busy_pending_since = None;
+            self.current = RunnerStatus::Busy;
+            Some(RunnerStatus::Busy)
+        } else {
+            None
         }
     }
 
     /// Called from the forwarder's poll loop (every ~200ms).
-    /// Returns `Some(Idle)` exactly on the Busy→Idle edge when the
-    /// elapsed silence has exceeded `threshold`.
+    /// Drops a stale `busy_pending_since` when silence has resumed
+    /// past the debounce window (the burst didn't sustain) and
+    /// emits `Some(Idle)` exactly on the Busy→Idle edge when
+    /// elapsed silence exceeds `threshold`.
     fn tick(&mut self) -> Option<RunnerStatus> {
+        // Burst-that-didn't-sustain: if there's a pending wake but
+        // bytes haven't arrived in a debounce window, the activity
+        // wasn't real — drop the pending timer so the next quiet
+        // stretch isn't biased by it.
+        if let (Some(_pending_t), Some(last_t)) = (self.busy_pending_since, self.last_byte) {
+            if last_t.elapsed() >= self.busy_debounce {
+                self.busy_pending_since = None;
+            }
+        }
         if self.current != RunnerStatus::Busy {
             return None;
         }
@@ -995,15 +1003,10 @@ impl IdleDetector {
 /// The same 200ms tick doubles as the busy→idle check window
 /// (issue #124): `IdleDetector::tick()` runs every iteration so
 /// the worst-case wake-to-idle latency is `IDLE_THRESHOLD + 200ms`.
-fn forward_fifo(
-    mut reader: std::fs::File,
-    tx: mpsc::Sender<RuntimeOutput>,
-    stop: Arc<AtomicBool>,
-    resize_stamp: Arc<std::sync::Mutex<Option<Instant>>>,
-) {
+fn forward_fifo(mut reader: std::fs::File, tx: mpsc::Sender<RuntimeOutput>, stop: Arc<AtomicBool>) {
     let raw_fd = reader.as_raw_fd();
     let mut buf = [0u8; 8192];
-    let mut detector = IdleDetector::new(resize_stamp);
+    let mut detector = IdleDetector::new();
     loop {
         if stop.load(Ordering::Relaxed) {
             break;
@@ -1391,26 +1394,39 @@ mod tests {
         assert!(!is_visually_blank(b"\x1b[31mhello\x1b[0m"));
     }
 
-    /// Fresh detector with no resize stamp set (no SIGWINCH window).
-    /// Tests that need to exercise the resize-suppression path build
-    /// the `Arc` themselves and pass it via `IdleDetector::new`.
-    fn fresh_detector() -> IdleDetector {
-        IdleDetector::new(Arc::new(std::sync::Mutex::new(None)))
+    /// Build a detector with tiny debounce + threshold so the
+    /// state machine can be exercised without sleeping for the
+    /// real production constants. Tests that care specifically
+    /// about the debounce/idle constants override accordingly.
+    fn detector_with_threshold(threshold: Duration) -> IdleDetector {
+        let mut d = IdleDetector::new();
+        d.threshold = threshold;
+        // Tests pre-debounce assumed the first byte flips Busy
+        // immediately. Keep that contract by reducing debounce to
+        // zero unless a test asks otherwise.
+        d.busy_debounce = Duration::from_millis(0);
+        d
     }
 
-    /// Build a detector with an arbitrarily small threshold so the
-    /// busy→idle path can be exercised without sleeping in the test.
-    fn detector_with_threshold(threshold: Duration) -> IdleDetector {
-        let mut d = fresh_detector();
+    /// Helper for tests that need the production-style debounce
+    /// path but a short threshold for the busy→idle assertion.
+    fn detector_with_debounce_and_threshold(
+        debounce: Duration,
+        threshold: Duration,
+    ) -> IdleDetector {
+        let mut d = IdleDetector::new();
         d.threshold = threshold;
+        d.busy_debounce = debounce;
         d
     }
 
     #[test]
-    fn idle_detector_first_byte_flips_busy() {
-        let mut d = fresh_detector();
+    fn idle_detector_first_byte_flips_busy_with_zero_debounce() {
+        // With debounce=0, the first byte flips Busy immediately —
+        // mirrors the pre-debounce behavior the rest of the suite
+        // historically relied on.
+        let mut d = detector_with_threshold(Duration::from_millis(1));
         assert_eq!(d.on_bytes(1), Some(RunnerStatus::Busy));
-        // Subsequent reads while already Busy don't re-emit.
         assert_eq!(d.on_bytes(64), None);
     }
 
@@ -1418,7 +1434,7 @@ mod tests {
     fn idle_detector_zero_byte_read_is_noop() {
         // `read(0)` is the FIFO-EOF signal in `forward_fifo`; the
         // detector should not treat it as activity.
-        let mut d = fresh_detector();
+        let mut d = IdleDetector::new();
         assert_eq!(d.on_bytes(0), None);
         assert_eq!(d.current, RunnerStatus::Idle);
     }
@@ -1458,33 +1474,41 @@ mod tests {
     fn idle_detector_initial_tick_is_noop() {
         // Detector starts Idle. `tick()` before any bytes have
         // flowed should not emit — there's nothing to flip from.
-        let mut d = fresh_detector();
+        let mut d = IdleDetector::new();
         assert_eq!(d.tick(), None);
     }
 
     #[test]
-    fn idle_detector_suppresses_busy_inside_resize_window() {
-        // Resize stamp set to "just now" — bytes that arrive in the
-        // SIGWINCH-repaint window must update `last_byte` (so the
-        // idle clock stays accurate) but must NOT emit a busy
-        // transition: that would flicker the dot on every panel
-        // switch.
-        let stamp = Arc::new(std::sync::Mutex::new(Some(Instant::now())));
-        let mut d = IdleDetector::new(Arc::clone(&stamp));
-        assert_eq!(d.on_bytes(1), None);
+    fn idle_detector_short_burst_does_not_flip_busy() {
+        // A single chunk of bytes followed by silence (the SIGWINCH
+        // dance, a focus-induced cursor blink, etc.) must NOT flip
+        // the detector: activity didn't sustain past the debounce
+        // window.
+        let mut d = detector_with_debounce_and_threshold(
+            Duration::from_millis(30),
+            Duration::from_millis(1),
+        );
+        assert_eq!(d.on_bytes(64), None);
         assert_eq!(d.current, RunnerStatus::Idle);
-        assert!(d.last_byte.is_some());
+        // No more bytes; pending wake should age out on tick.
+        std::thread::sleep(Duration::from_millis(35));
+        assert_eq!(d.tick(), None);
+        assert!(d.busy_pending_since.is_none());
+        assert_eq!(d.current, RunnerStatus::Idle);
     }
 
     #[test]
-    fn idle_detector_emits_busy_outside_resize_window() {
-        // Resize stamp older than the suppression window — bytes
-        // arriving now are genuine activity, must emit the busy
-        // transition.
-        let past = Instant::now() - (RESIZE_SUPPRESSION_WINDOW + Duration::from_millis(50));
-        let stamp = Arc::new(std::sync::Mutex::new(Some(past)));
-        let mut d = IdleDetector::new(stamp);
-        assert_eq!(d.on_bytes(1), Some(RunnerStatus::Busy));
+    fn idle_detector_sustained_activity_flips_busy_after_debounce() {
+        // Real streaming activity (multiple chunks across the
+        // debounce window) must flip Busy exactly when the burst
+        // crosses the debounce threshold.
+        let mut d = detector_with_debounce_and_threshold(
+            Duration::from_millis(20),
+            Duration::from_millis(1),
+        );
+        assert_eq!(d.on_bytes(8), None); // starts the timer
+        std::thread::sleep(Duration::from_millis(25));
+        assert_eq!(d.on_bytes(8), Some(RunnerStatus::Busy));
     }
 
     #[test]
