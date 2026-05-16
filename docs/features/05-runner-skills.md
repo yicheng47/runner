@@ -31,6 +31,20 @@ The user's mental model — borrowed from claude-code's own loader — is:
 Runners pick from a shared pool of each. Edit the skill / MCP entry
 once; every attached runner gets the update on next spawn.
 
+A third pressure lands on the same surface: **context durability**.
+When a runner's session grows long enough to trigger the CLI's
+auto-compaction (claude-code's `/compact`, codex's equivalent), the
+agent's effective grasp of its role and rules weakens. The original
+`system_prompt` may still be in context, but attention degrades with
+distance ("lost in the middle"), and compaction itself can paraphrase
+away the specifics. A spawn-time prompt blob is a one-shot impression.
+Skills materialized to disk and an MCP config loaded per-session are
+*re-readable* — the CLI rediscovers them post-compact through its own
+native loader, with no router intervention. So the per-spawn
+`agent_home` does double duty: it scopes the attached tools/skills to
+the runner, *and* it gives the runner a durable identity surface that
+survives compaction.
+
 ## Scope
 
 ### In scope (v1)
@@ -163,6 +177,13 @@ This is identity-shape vs how-to: the runner's own `system_prompt`
 keeps its identity ("you are @impl"); skills carry the cross-cutting
 rules and live above it.
 
+The on-disk materialization is the durable copy: after the CLI
+compacts the conversation, the prepended `## Skills` block may be
+summarized away, but the `SKILL.md` files inside `agent_home` are
+still on disk for the `Skill` tool to re-list and re-load. The
+prepended block is the cheap "always-read on every turn" layer; the
+on-disk files are the "survive any compaction" layer.
+
 #### Tauri commands
 
 - **Skill CRUD** (mirror `commands/runner.rs` shape):
@@ -239,6 +260,14 @@ rules and live above it.
   doesn't propagate to a running agent — the next spawn picks it
   up. Hot-reload would need claude-code/codex cooperation we don't
   have.
+- **Mid-session role-pulse / periodic system reminder.** Skills on
+  disk solve post-compaction recovery, but attention drift *before*
+  compaction fires (long sessions where early-context instructions
+  lose effective weight) is a separate concern. A router-side
+  "remember your role" injection on a cadence is the natural
+  complement to this spec — when to fire, what to include, how to
+  avoid alarm fatigue — but is its own design. Sibling spec, not
+  here.
 
 ### Key decisions
 
@@ -290,6 +319,16 @@ rules and live above it.
    claude-code `~/.claude.json` schema 1:1**, so the merge step is
    structural, not transformative. Reduces "MCP works in
    `~/.claude.json` but not in Runner" surprise.
+9. **Skills + MCPs survive auto-compaction by design.** Both live as
+   re-readable artifacts on disk inside `agent_home` — skills as
+   `SKILL.md` files the CLI's `Skill` tool lazy-loads on demand;
+   MCPs as config the CLI rediscovers per tool invocation. This is
+   why behavioral rules ("be concise", "cite file:line") belong in
+   skills, not in `runner.system_prompt`: the system prompt is the
+   part most vulnerable to compaction drift, and the on-disk skill
+   files are the part that isn't. Decision #6's prepended `## Skills`
+   block is the always-read layer for short rules; the disk copy is
+   the survives-compaction layer for everything else.
 
 ## Implementation phases
 

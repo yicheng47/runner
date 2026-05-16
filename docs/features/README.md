@@ -57,3 +57,8 @@ links to its tracking issue.
   folders that group missions + chats together (Arc-style),
   replacing the forced MISSIONS / DIRECT CHATS top-level split;
   Inbox pseudo-folder for the un-organized.
+- [18 — App logging + crash reporting](./18-app-logging-and-crash-reporting.md)
+  — `tauri-plugin-log` writing to `~/Library/Logs/<bundle>/` +
+  panic hook that captures backtraces + Help → Reveal logs in
+  Finder; foundational so future user-reported crashes are
+  recoverable.
