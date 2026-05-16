@@ -370,9 +370,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             .close_window()
             .build()?;
 
-        return MenuBuilder::new(app)
+        MenuBuilder::new(app)
             .items(&[&app_menu, &edit_menu, &view_menu, &window_menu, &help_menu])
-            .build();
+            .build()
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -399,10 +399,9 @@ fn default_log_path() -> PathBuf {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/"));
-        return home
-            .join("Library/Logs")
+        home.join("Library/Logs")
             .join(APP_IDENTIFIER)
-            .join("runner.log");
+            .join("runner.log")
     }
     #[cfg(target_os = "linux")]
     {
@@ -410,14 +409,14 @@ fn default_log_path() -> PathBuf {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
             .unwrap_or_else(|| PathBuf::from("/tmp"));
-        return base.join(APP_IDENTIFIER).join("logs").join("runner.log");
+        base.join(APP_IDENTIFIER).join("logs").join("runner.log")
     }
     #[cfg(target_os = "windows")]
     {
         let base = std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
-        return base.join(APP_IDENTIFIER).join("logs").join("runner.log");
+        base.join(APP_IDENTIFIER).join("logs").join("runner.log")
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     PathBuf::from("runner.log")
