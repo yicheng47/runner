@@ -53,3 +53,7 @@ links to its tracking issue.
 - [16 — Sidebar mission detail](./16-sidebar-mission-detail.md) —
   expand the selected mission row to show goal, cwd, crew, started
   time; inline edit for goal and cwd via folder picker.
+- [17 — Sidebar folders](./17-sidebar-folders.md) — user-defined
+  folders that group missions + chats together (Arc-style),
+  replacing the forced MISSIONS / DIRECT CHATS top-level split;
+  Inbox pseudo-folder for the un-organized.
