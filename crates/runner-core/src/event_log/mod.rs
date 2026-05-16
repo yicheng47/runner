@@ -6,6 +6,6 @@ pub mod log;
 pub mod path;
 pub mod ulid;
 
-pub use log::{EventLog, LogEntry, SkipReport};
+pub use log::{EventLog, LogEntry, SkipReport, TryAppendError};
 pub use path::{crew_dir, events_path, mission_dir, signal_types_path, EVENTS_FILENAME};
 pub use ulid::UlidGen;

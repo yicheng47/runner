@@ -71,8 +71,8 @@ pub fn compose_worker_first_turn(system_prompt: Option<&str>) -> String {
 /// First-user-turn body for a direct chat. Just the runner's
 /// `system_prompt` (persona / role) — no coordination preamble.
 /// Direct chats are off-bus, so the worker preamble's verbs
-/// (`runner msg post`, `runner status idle`, etc.) don't resolve
-/// to anything useful and would mislead the agent.
+/// (`runner msg post` etc.) don't resolve to anything useful and
+/// would mislead the agent.
 ///
 /// Returns None when system_prompt is missing or all-whitespace, so
 /// claude-code / codex direct chats boot vanilla in that case.
@@ -94,7 +94,7 @@ pub(crate) const WORKER_COORDINATION_PREAMBLE: &str = r#"You are a worker in a c
 - `runner msg post --to <handle> "<text>"` — direct message to a specific handle. Valid handles: any slot in this crew, plus the reserved virtual handle `human` (the workspace operator).
 - `runner msg post "<text>"` — broadcast to the crew (no `--to`).
 - `runner signal ask_lead --payload '{"question":"…","context":"…"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.
-- `runner status idle` — report you've finished the current task. The lead view uses this to dispatch the next slot.
+- Busy/idle is inferred from your terminal activity — no need to call `runner status`.
 
 == Replying to the human ==
 The human is watching the workspace feed, NOT your TUI — plain TUI output (typing into your editor, printing to stdout) stays in your local scrollback only. When the human asks you a question or gives you a directive (raw input lands in your TUI, often prefixed with `[human_said]`), reply via:
@@ -155,7 +155,9 @@ pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
     out.push_str(
         "- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`. Plain replies should use `runner msg post --to human` instead.\n",
     );
-    out.push_str("- Report idle with `runner status idle` so the lead view stays accurate.\n");
+    out.push_str(
+        "- Busy/idle is inferred from your terminal activity — no need to call `runner status`.\n",
+    );
     if !input.allowed_signals.is_empty() {
         let names: Vec<&str> = input
             .allowed_signals

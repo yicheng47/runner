@@ -38,13 +38,18 @@ export function RunnersRail({
         sessions.map((s) => {
           const isLead = s.handle === leadHandle;
           const ptyStatus = s.status;
-          const dotClass =
-            ptyStatus === "running"
-              ? "bg-accent"
-              : ptyStatus === "crashed"
-                ? "bg-danger"
-                : "bg-fg-3";
           const runnerStatus = status[s.handle];
+          // Dot priority: crashed (red) > stopped (gray) > runner busy (green)
+          // > runner idle (dim green). Default to "busy" when no runner_status
+          // has landed yet — a freshly-started PTY is producing startup output.
+          const dotClass =
+            ptyStatus === "crashed"
+              ? "bg-danger"
+              : ptyStatus !== "running"
+                ? "bg-fg-3"
+                : runnerStatus === "idle"
+                  ? "bg-accent/40"
+                  : "bg-accent";
           const subtitle =
             ptyStatus === "running"
               ? runnerStatus

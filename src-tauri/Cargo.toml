@@ -44,3 +44,9 @@ notify = "6"
 # behind this cfg-gate.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+# Used by issue #124's forwarder-contention regression test to hold the
+# event-log flock from a second fd; matches the version `runner-core`
+# pulls in transitively so the trait impl resolves identically.
+fs2 = "0.4"

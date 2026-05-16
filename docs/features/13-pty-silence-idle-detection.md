@@ -59,9 +59,13 @@ no agent cooperation required, no system-prompt rule to remember.
     `Busy` (no hysteresis on the wake direction).
   - Configurable via a settings DB row keyed by runner template (e.g.,
     a slow TUI might want 2s); v1 ships a single global default.
-- **Direct-chat sessions** participate too. They don't have a router
-  / lead nudge, but the workspace UI's RunnersRail dot is the same
-  surface; PTY-silence drives it identically.
+- **Direct-chat sessions** run the detector for free (the forwarder
+  loop is shared), but the consumer side suppresses the `runner_status`
+  emission. Direct chats are off-bus by construction (no
+  `RUNNER_EVENT_LOG`, no mission event log) and the `RunnerChat` page
+  doesn't consume `runner_status` today — there is no surface for the
+  event to feed. If a future direct-chat UI wants busy/idle, the
+  consumer needs to be added first; the detector is already in place.
 - **Router-side dedupe / latest-wins** stays as it is. The router's
   existing logic that keeps only the most-recent `runner_status` per
   handle absorbs the increased emission rate fine.
@@ -233,15 +237,14 @@ no agent cooperation required, no system-prompt rule to remember.
 ## Verification
 
 - [ ] Forwarder emits `runner_status` events on PTY busy↔idle
-      transitions for every active session (mission slot or direct
-      chat).
+      transitions for mission slots; direct chats run the detector but
+      suppress emission until a direct-chat consumer exists.
 - [ ] RunnersRail busy/idle dot tracks actual PTY activity within
       ~1s of the last byte.
 - [ ] Agents with no runner-CLI integration (raw shell, gemini-cli,
       etc.) get correct busy/idle behavior with no template changes.
-- [ ] Lead receives the idle-nudge on worker→idle, identical to
-      today's behavior, without the worker calling `runner status
-      idle`.
+- [ ] Router projects worker busy/idle as observability-only state;
+      worker→idle does not inject a lead nudge.
 - [ ] `runner status` CLI verb still works and prints a deprecation
       notice on stderr; emitted events carry `source: "agent"`.
 - [ ] Router's "synthetic busy on first inject" path still wins on

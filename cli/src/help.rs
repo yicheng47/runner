@@ -10,7 +10,7 @@ USAGE:
   runner signal <type> [--payload <json>]
   runner msg post <text> [--to <handle>]
   runner msg read [--since <ulid>] [--from <handle>]
-  runner status busy|idle [--note <text>]
+  runner status busy|idle [--note <text>]   (deprecated, see below)
   runner help
 
 ENVIRONMENT:
@@ -35,8 +35,11 @@ EXAMPLES:
       success so the parent's watermark advances.
 
   runner status idle --note "ready for next task"
-      Sugar for `runner signal runner_status --payload {{state, note}}`.
-      The router uses this to wake the lead when a worker becomes idle.
+      DEPRECATED (issue #124). Busy/idle is now inferred from PTY
+      activity by the session forwarder; you do not need to call this.
+      The verb still emits the event (with `source: "agent"`) so
+      existing templates don't crash, but it prints a deprecation
+      notice on stderr and is slated for removal next release.
 
 DOCS:
   Architecture: docs/arch/v0-arch.md (§5 coordination bus, §6.3 CLI)

@@ -586,6 +586,66 @@ fn runner_status_updates_state_map_without_injecting_to_lead() {
 }
 
 #[test]
+fn runner_status_latest_wins_across_forwarder_and_agent_sources() {
+    // Spec 13 / issue #124 keeps the router's `runner_status` handler
+    // unchanged: it doesn't branch on `payload.source`. Forwarder-
+    // emitted (`source: "forwarder"`) and agent-emitted (`source:
+    // "agent"`) events both feed the same per-handle map under a
+    // strict latest-wins policy. The forwarder fires more often than
+    // the deprecated CLI verb, so in practice it dominates; this test
+    // proves the invariant holds regardless of interleaving order.
+    let (router, _injector, log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+
+    // Interleave: forwarder busy → agent idle → forwarder idle →
+    // agent busy → forwarder idle. Each event lands one after the
+    // other so the latest wins.
+    let series = [
+        ("forwarder", "busy"),
+        ("agent", "idle"),
+        ("forwarder", "idle"),
+        ("agent", "busy"),
+        ("forwarder", "idle"),
+    ];
+    for (source, state) in series {
+        let ev = log
+            .append(signal(
+                "impl",
+                "runner_status",
+                serde_json::json!({ "state": state, "source": source }),
+            ))
+            .unwrap();
+        router.handle_event(&ev);
+    }
+
+    // Last event was a forwarder Idle — that's what the state map
+    // should reflect.
+    assert!(matches!(
+        router.state.lock().unwrap().status.get("impl"),
+        Some(super::RunnerStatus::Idle),
+    ));
+
+    // One more flip — agent says busy, that wins.
+    let agent_busy = log
+        .append(signal(
+            "impl",
+            "runner_status",
+            serde_json::json!({ "state": "busy", "source": "agent" }),
+        ))
+        .unwrap();
+    router.handle_event(&agent_busy);
+    assert!(matches!(
+        router.state.lock().unwrap().status.get("impl"),
+        Some(super::RunnerStatus::Busy),
+    ));
+}
+
+#[test]
 fn pending_ask_map_reconstructs_from_log_on_reopen() {
     // Mount router #1, dispatch ask_human (which appends human_question),
     // drop. Mount router #2, call reconstruct_from_log (the reopen entry

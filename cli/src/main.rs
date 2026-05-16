@@ -53,7 +53,9 @@ enum Cmd {
         #[command(subcommand)]
         cmd: MsgCmd,
     },
-    /// Sugar over `signal runner_status` — report `busy` or `idle`.
+    /// DEPRECATED (issue #124): busy/idle is now inferred from PTY
+    /// activity. Kept as a back-compat alias; emits with `source:
+    /// "agent"` and a stderr deprecation notice.
     Status {
         state: String,
         #[arg(long)]

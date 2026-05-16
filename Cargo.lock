@@ -3508,6 +3508,7 @@ version = "0.1.12"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "fs2",
  "libc",
  "notify",
  "r2d2",

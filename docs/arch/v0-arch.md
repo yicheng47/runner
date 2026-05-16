@@ -662,6 +662,7 @@ This is how the Reviewer knows there's a Coder.
 runner signal <type> [--payload <json>]
 runner msg    post <text> [--to <runner>]
 runner msg    read [--since <ts>] [--from <runner>]
+runner status busy|idle [--note <text>]   (deprecated, issue #124)
 runner help
 ```
 
@@ -672,6 +673,7 @@ One binary. Two verbs. Context always from env. No event-DAG flags in v0 — cau
 - `msg read` → the calling runner's inbox (broadcasts + directs addressed to me), sorted by ULID.
 - `msg read --from <runner>` → filter to messages authored by a specific sender.
 - `msg read --since <ts>` → only messages newer than `ts` (for polling without re-reading history).
+- `status busy|idle` is **deprecated** as of issue #124. Busy/idle is now inferred by the session forwarder from PTY-byte silence (see `docs/features/13-pty-silence-idle-detection.md`). The verb is kept as a back-compat alias — it still appends a `runner_status` event (stamped `source: "agent"`) so user-authored templates don't crash, but the bundled templates no longer instruct agents to call it, and it prints a stderr deprecation notice. Slated for removal next release.
 
 ## 7. Data model
 
