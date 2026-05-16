@@ -17,6 +17,8 @@ import {
   BookText,
   Download,
   ExternalLink,
+  FileText,
+  FolderOpen,
   Info,
   Loader2,
   Minus,
@@ -29,6 +31,7 @@ import {
   X,
 } from "lucide-react";
 
+import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getVersion } from "@tauri-apps/api/app";
@@ -80,7 +83,7 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-type Pane = "general" | "terminal" | "updates" | "about";
+type Pane = "general" | "terminal" | "diagnostics" | "updates" | "about";
 
 const PANES: { key: Pane; label: string; subtitle: string; icon: typeof SettingsIcon }[] = [
   {
@@ -94,6 +97,12 @@ const PANES: { key: Pane; label: string; subtitle: string; icon: typeof Settings
     label: "Terminal",
     subtitle: "xterm appearance",
     icon: Terminal,
+  },
+  {
+    key: "diagnostics",
+    label: "Diagnostics",
+    subtitle: "Logs & troubleshooting",
+    icon: FileText,
   },
   {
     key: "updates",
@@ -190,6 +199,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           </button>
           {pane === "general" ? <GeneralPane /> : null}
           {pane === "terminal" ? <TerminalPane /> : null}
+          {pane === "diagnostics" ? <DiagnosticsPane /> : null}
           {pane === "updates" ? <UpdatesPane /> : null}
           {pane === "about" ? <AboutPane /> : null}
         </div>
@@ -551,6 +561,52 @@ function FontSizeStepper({
         <span className="font-mono text-[10px] text-fg-3">px</span>
       </span>
     </Stepper>
+  );
+}
+
+function DiagnosticsPane() {
+  // Mirrors the Help → "Reveal logs in Finder" menu item. Both routes
+  // invoke `runner_logs_reveal`, which resolves
+  // `~/Library/Logs/com.wycstudios.runner/` and hands it to the
+  // opener plugin. Dedicated pane (not buried in About) so #10/#13/#14
+  // diagnostic affordances have a home to grow into.
+  const [busy, setBusy] = useState(false);
+  const reveal = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await invoke("runner_logs_reveal");
+    } catch (e) {
+      // Best-effort: the only failure path is opener refusing the
+      // path or the log dir not yet existing. The backend creates
+      // the dir on demand, so a swallow here keeps the modal quiet —
+      // a follow-up could surface a toast.
+      console.error("reveal logs failed", e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <PaneHeader
+        title="Diagnostics"
+        subtitle="Logs and troubleshooting tools."
+      />
+      <Row
+        label="Application logs"
+        sub="Open the folder containing runner.log so you can attach it to a bug report."
+      >
+        <button
+          type="button"
+          onClick={() => void reveal()}
+          disabled={busy}
+          className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-line bg-panel px-3 py-1.5 text-[12px] font-medium text-fg-2 transition-colors hover:border-line-strong hover:text-fg disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <FolderOpen aria-hidden className="h-3 w-3" />
+          Reveal logs in Finder
+        </button>
+      </Row>
+    </>
   );
 }
 

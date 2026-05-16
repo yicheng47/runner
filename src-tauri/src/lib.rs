@@ -4,14 +4,29 @@ mod db;
 mod error;
 mod event_bus;
 mod model;
+mod panic_hook;
 mod router;
 mod session;
 mod shell_path;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tauri::Manager;
+#[cfg(target_os = "macos")]
+use tauri::menu::{AboutMetadataBuilder, PredefinedMenuItem};
+use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::{AppHandle, Manager, Wry};
+use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
+
+/// Bundle identifier as declared in `tauri.conf.json`. Used by:
+///
+/// 1. The pre-builder fallback panic-log path (so panics that fire
+///    before `tauri-plugin-log`'s setup callback runs still land in
+///    the same dir the plugin itself will write to once it boots).
+/// 2. The `identifier_matches_tauri_conf` test, which string-asserts
+///    `tauri.conf.json` against this constant — catches a silent
+///    rename in either direction.
+pub const APP_IDENTIFIER: &str = "com.wycstudios.runner";
 
 pub struct AppState {
     pub db: Arc<db::DbPool>,
@@ -35,7 +50,42 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Install the panic hook BEFORE the Tauri builder. The fallback
+    // path mirrors the dir `tauri-plugin-log` will resolve from the
+    // bundle identifier; both writes (the `log::error!` line and the
+    // direct-file append from the hook) end up next to each other.
+    panic_hook::install(default_log_path());
+
+    let default_level = if cfg!(debug_assertions) {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Info
+    };
+    let log_levels = std::env::var("RUST_LOG")
+        .ok()
+        .map(|raw| parse_rust_log(&raw, default_level))
+        .unwrap_or(LogLevels {
+            global: default_level,
+            per_target: Vec::new(),
+        });
+
+    let mut log_builder = LogBuilder::new()
+        .targets([
+            Target::new(TargetKind::LogDir {
+                file_name: Some("runner".into()),
+            }),
+            #[cfg(debug_assertions)]
+            Target::new(TargetKind::Stdout),
+        ])
+        .level(log_levels.global)
+        .max_file_size(10 * 1024 * 1024)
+        .rotation_strategy(RotationStrategy::KeepSome(3));
+    for (target, level) in log_levels.applied_targets() {
+        log_builder = log_builder.level_for(target, level);
+    }
+
     tauri::Builder::default()
+        .plugin(log_builder.build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -61,6 +111,10 @@ pub fn run() {
                 }
             };
             std::fs::create_dir_all(&app_data_dir)?;
+
+            // First line of every app start. Triage-from-log starts here.
+            log_startup_banner(app.handle(), &app_data_dir);
+
             let db_path = app_data_dir.join("runner.db");
             let pool = Arc::new(db::open_pool(&db_path)?);
             // Session reconciliation now happens AFTER the
@@ -78,7 +132,7 @@ pub fn run() {
             // try to invoke `runner` — surfaced as a runtime stderr from
             // the agent rather than a startup hang.
             if let Err(e) = cli_install::install_runner_cli(&app_data_dir) {
-                eprintln!("runner: failed to install bundled CLI: {e}");
+                log::error!("failed to install bundled CLI: {e}");
             }
 
             // Resolve the user's login-shell PATH once at startup so
@@ -164,10 +218,27 @@ pub fn run() {
             );
 
             app.manage(state);
+
+            // Build the app menu and wire the `runner_logs_reveal`
+            // menu item to the same handler the Settings →
+            // Diagnostics button calls. Done in `setup` (not at the
+            // builder level) so we get a real `AppHandle` for the
+            // menu's child item builders.
+            let menu = build_menu(app.handle())?;
+            app.set_menu(menu)?;
+            app.on_menu_event(|app, ev| {
+                if ev.id() == "runner_logs_reveal" {
+                    if let Err(e) = commands::app::reveal_logs_dir(app) {
+                        log::error!("reveal logs failed: {e}");
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::app::app_ready,
+            commands::app::runner_logs_reveal,
             commands::crew::crew_list,
             commands::crew::crew_get,
             commands::crew::crew_create,
@@ -216,4 +287,300 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// First log line on every app start. Captures the four things
+/// triage usually wants up front: version, app_data_dir, OS/arch,
+/// and tmux version.
+fn log_startup_banner(app: &AppHandle, app_data_dir: &Path) {
+    let pkg = app.package_info();
+    let tmux = std::process::Command::new("tmux")
+        .arg("-V")
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "(unavailable)".to_string());
+    log::info!(
+        "starting {} v{} on {}-{}; app_data_dir={}; {}",
+        pkg.name,
+        pkg.version,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        app_data_dir.display(),
+        tmux,
+    );
+}
+
+/// Build the application menu. On macOS we recreate the full
+/// standard menu (App / Edit / View / Window / Help) so the system
+/// shortcuts (Cmd+C/V/X, Cmd+W, Cmd+Q, fullscreen, …) stay wired up
+/// — calling `set_menu` with a smaller menu would strip them. On
+/// other platforms we only attach Help; standard shortcuts there
+/// flow through the webview without a menu bar.
+fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+    let reveal_logs =
+        MenuItemBuilder::with_id("runner_logs_reveal", "Reveal logs in Finder").build(app)?;
+    let help_menu = SubmenuBuilder::new(app, "Help")
+        .item(&reveal_logs)
+        .build()?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let pkg = app.package_info();
+        let about_meta = AboutMetadataBuilder::new()
+            .name(Some(pkg.name.clone()))
+            .version(Some(pkg.version.to_string()))
+            .build();
+        let about = PredefinedMenuItem::about(app, Some("About Runner"), Some(about_meta))?;
+
+        let app_menu = SubmenuBuilder::new(app, "Runner")
+            .item(&about)
+            .separator()
+            .services()
+            .separator()
+            .hide()
+            .hide_others()
+            .show_all()
+            .separator()
+            .quit()
+            .build()?;
+
+        let edit_menu = SubmenuBuilder::new(app, "Edit")
+            .undo()
+            .redo()
+            .separator()
+            .cut()
+            .copy()
+            .paste()
+            .select_all()
+            .build()?;
+
+        let view_menu = SubmenuBuilder::new(app, "View").fullscreen().build()?;
+
+        let window_menu = SubmenuBuilder::new(app, "Window")
+            .minimize()
+            .maximize()
+            .separator()
+            .close_window()
+            .build()?;
+
+        MenuBuilder::new(app)
+            .items(&[&app_menu, &edit_menu, &view_menu, &window_menu, &help_menu])
+            .build()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        MenuBuilder::new(app).items(&[&help_menu]).build()
+    }
+}
+
+/// Compute the path `tauri-plugin-log` would resolve for the LogDir
+/// target, BEFORE any Tauri runtime exists. Used by the pre-builder
+/// panic hook as a fallback sink so a panic during plugin init still
+/// lands next to the eventual `runner.log`.
+///
+/// Mirrors the plugin's platform conventions:
+///
+/// - macOS:   `$HOME/Library/Logs/<identifier>/runner.log`
+/// - Linux:   `$XDG_DATA_HOME` (or `$HOME/.local/share`) `/<identifier>/logs/runner.log`
+/// - Windows: `$LOCALAPPDATA/<identifier>/logs/runner.log`
+///
+/// Best-effort env lookups with sane fallbacks — we'd rather write
+/// a panic line into `./runner.log` than lose it.
+fn default_log_path() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/"));
+        home.join("Library/Logs")
+            .join(APP_IDENTIFIER)
+            .join("runner.log")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        base.join(APP_IDENTIFIER).join("logs").join("runner.log")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let base = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        base.join(APP_IDENTIFIER).join("logs").join("runner.log")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    PathBuf::from("runner.log")
+}
+
+/// Parsed `RUST_LOG` directives. `global` always carries a value
+/// (the caller's default if the env var is unset / unparseable);
+/// `per_target` is empty unless one or more `target=level` pairs
+/// were present.
+struct LogLevels {
+    global: log::LevelFilter,
+    per_target: Vec<(String, log::LevelFilter)>,
+}
+
+impl LogLevels {
+    /// Expand parsed pairs into the final list handed to
+    /// `Builder::level_for`. Aliases `runner` → also `runner_lib`, the
+    /// real crate name (set by `[lib] name` in `src-tauri/Cargo.toml`).
+    ///
+    /// Spec §Phase 2 documents `RUST_LOG=runner=debug` as the dev
+    /// escape hatch, so we honor that exact form. Without the alias
+    /// the directive would silently no-op against
+    /// `runner_lib::*` targets, which is where every `log::` macro in
+    /// this crate actually emits from.
+    ///
+    /// A user-supplied `runner_lib=…` directive is preserved as-is —
+    /// `level_for` is idempotent per target, so a duplicate from
+    /// `runner` aliasing on top would only re-assert the same level.
+    fn applied_targets(&self) -> Vec<(String, log::LevelFilter)> {
+        let mut out = Vec::with_capacity(self.per_target.len());
+        for (target, level) in &self.per_target {
+            out.push((target.clone(), *level));
+            if target == "runner" {
+                out.push(("runner_lib".to_string(), *level));
+            }
+        }
+        out
+    }
+}
+
+/// Tiny `RUST_LOG` parser. Supports the two forms the spec calls
+/// out:
+///
+/// ```text
+/// RUST_LOG=debug                 → global = Debug
+/// RUST_LOG=runner=debug,info     → per-target runner=Debug, global = Info
+/// ```
+///
+/// More-elaborate `env_logger` grammar (regex filters, span scopes,
+/// etc.) is intentionally out of scope. Unrecognized fragments are
+/// silently skipped — they fall back to the caller-supplied default
+/// instead of taking the whole filter down with them.
+fn parse_rust_log(input: &str, default_global: log::LevelFilter) -> LogLevels {
+    let mut global = default_global;
+    let mut per_target = Vec::new();
+    for part in input.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        match part.split_once('=') {
+            Some((target, level)) => {
+                if let Some(lf) = parse_level(level) {
+                    per_target.push((target.trim().to_string(), lf));
+                }
+            }
+            None => {
+                if let Some(lf) = parse_level(part) {
+                    global = lf;
+                }
+            }
+        }
+    }
+    LogLevels { global, per_target }
+}
+
+fn parse_level(s: &str) -> Option<log::LevelFilter> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "off" => Some(log::LevelFilter::Off),
+        "error" => Some(log::LevelFilter::Error),
+        "warn" => Some(log::LevelFilter::Warn),
+        "info" => Some(log::LevelFilter::Info),
+        "debug" => Some(log::LevelFilter::Debug),
+        "trace" => Some(log::LevelFilter::Trace),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Identifier ↔ log-path safety net: `tauri-plugin-log` resolves
+    // `LogDir` via the bundle identifier in tauri.conf.json, and our
+    // pre-builder fallback log path uses the same constant. A rename
+    // that touches only one side would silently send logs to a
+    // different dir than the panic-hook fallback — this test wedges
+    // both sides against `APP_IDENTIFIER`.
+    #[test]
+    fn identifier_matches_tauri_conf() {
+        let raw = include_str!("../tauri.conf.json");
+        let v: serde_json::Value = serde_json::from_str(raw).expect("parse tauri.conf.json");
+        let ident = v
+            .get("identifier")
+            .and_then(|s| s.as_str())
+            .expect("identifier field");
+        assert_eq!(ident, APP_IDENTIFIER);
+    }
+
+    #[test]
+    fn parse_rust_log_global_only() {
+        let l = parse_rust_log("debug", log::LevelFilter::Info);
+        assert_eq!(l.global, log::LevelFilter::Debug);
+        assert!(l.per_target.is_empty());
+    }
+
+    #[test]
+    fn parse_rust_log_per_target_with_default() {
+        let l = parse_rust_log("runner=debug,info", log::LevelFilter::Warn);
+        assert_eq!(l.global, log::LevelFilter::Info);
+        assert_eq!(
+            l.per_target,
+            vec![("runner".to_string(), log::LevelFilter::Debug)]
+        );
+    }
+
+    #[test]
+    fn parse_rust_log_invalid_falls_back_to_default() {
+        let l = parse_rust_log("garbage,also-garbage=nope", log::LevelFilter::Info);
+        assert_eq!(l.global, log::LevelFilter::Info);
+        assert!(l.per_target.is_empty());
+    }
+
+    // Spec phase-2 escape hatch: `RUST_LOG=runner=debug` must actually
+    // bind to the `runner_lib::*` targets every `log::` macro in this
+    // crate emits from. The `[lib] name = "runner"` in Cargo.toml is
+    // "runner" on the dependency-graph side but the resulting crate
+    // module path is `runner_lib`. Alias both so the documented
+    // directive works without the user having to know the lib rename.
+    #[test]
+    fn runner_alias_expands_to_runner_lib() {
+        let l = parse_rust_log("runner=debug", log::LevelFilter::Info);
+        let applied = l.applied_targets();
+        assert!(
+            applied.contains(&("runner".to_string(), log::LevelFilter::Debug)),
+            "applied set must contain runner; got {applied:?}",
+        );
+        assert!(
+            applied.contains(&("runner_lib".to_string(), log::LevelFilter::Debug)),
+            "applied set must contain runner_lib alias; got {applied:?}",
+        );
+    }
+
+    #[test]
+    fn runner_lib_directive_does_not_double_apply() {
+        // If a user writes `runner_lib=debug` directly, we don't add a
+        // synthetic `runner` entry — only the alias goes the other
+        // direction. (`level_for` is idempotent per target anyway, but
+        // keeping the applied set tight makes the test cheap to read.)
+        let l = parse_rust_log("runner_lib=debug", log::LevelFilter::Info);
+        let applied = l.applied_targets();
+        assert_eq!(
+            applied,
+            vec![("runner_lib".to_string(), log::LevelFilter::Debug)]
+        );
+    }
 }

@@ -49,8 +49,8 @@ const DEST_BIN_NAME: &str = if cfg!(windows) {
 
 pub fn install_runner_cli(app_data_dir: &Path) -> Result<()> {
     let Some(source) = locate_source()? else {
-        eprintln!(
-            "runner: bundled CLI ({SOURCE_BIN_NAME}) not found next to current_exe; \
+        log::warn!(
+            "bundled CLI ({SOURCE_BIN_NAME}) not found next to current_exe; \
              skipping install. Sessions that invoke `runner` will error until the \
              binary is on PATH. Build the CLI with `cargo build -p runner-cli` and \
              relaunch."

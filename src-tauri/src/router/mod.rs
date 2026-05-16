@@ -237,9 +237,11 @@ impl Router {
         // tolerate at least the same set of histories the bus does.
         let (entries, skipped) = self.log.read_from_lossy(0)?;
         for skip in &skipped {
-            eprintln!(
-                "router[{}]: reconstruct skipping malformed line at offset {} ({})",
-                self.mission_id, skip.offset, skip.error,
+            log::warn!(
+                "reconstruct skipping malformed line for mission {} at offset {} ({})",
+                self.mission_id,
+                skip.offset,
+                skip.error,
             );
         }
 
@@ -400,8 +402,8 @@ impl Router {
             serde_json::json!({ "state": "busy" }),
         );
         if let Err(e) = self.log.append(draft) {
-            eprintln!(
-                "router[{}]: failed to append synthetic runner_status busy for @{handle}: {e}",
+            log::error!(
+                "failed to append synthetic runner_status busy for @{handle} on mission {}: {e}",
                 self.mission_id,
             );
             return;
@@ -490,7 +492,7 @@ impl Router {
         // assertions still observe one body push.
         if delay.is_zero() {
             if let Err(e) = self.injector.inject_paste_with_verify(&session_id, &body) {
-                eprintln!("router: inline verified-paste to {session_id} failed: {e}");
+                log::error!("inline verified-paste to {session_id} failed: {e}");
             }
             return;
         }
@@ -501,7 +503,7 @@ impl Router {
             // `delay` here would push the lead launch prompt past
             // 4s before the first paste even tries.
             if let Err(e) = injector.inject_paste_with_verify(&session_id, &body) {
-                eprintln!("router: delayed verified-paste to {session_id} failed: {e}");
+                log::error!("delayed verified-paste to {session_id} failed: {e}");
             }
         });
     }
@@ -629,9 +631,10 @@ impl Router {
             serde_json::json!({ "message": message }),
         );
         if let Err(e) = self.log.append(draft) {
-            eprintln!(
-                "router[{}]: failed to append mission_warning ({}): {e}",
-                self.mission_id, message,
+            log::error!(
+                "failed to append mission_warning for mission {} ({}): {e}",
+                self.mission_id,
+                message,
             );
         }
     }
@@ -677,8 +680,8 @@ impl Router {
         match self.log.append(draft) {
             Ok(ev) => Some(ev.id),
             Err(e) => {
-                eprintln!(
-                    "router[{}]: failed to append human_question: {e}",
+                log::error!(
+                    "failed to append human_question for mission {}: {e}",
                     self.mission_id
                 );
                 None
@@ -784,11 +787,14 @@ impl RouterRegistry {
     }
 
     pub fn register(&self, mission_id: String, router: Arc<Router>) {
+        log::info!("router mounted: mission={mission_id}");
         self.routers.lock().unwrap().insert(mission_id, router);
     }
 
     pub fn unregister(&self, mission_id: &str) {
-        self.routers.lock().unwrap().remove(mission_id);
+        if self.routers.lock().unwrap().remove(mission_id).is_some() {
+            log::info!("router unmounted: mission={mission_id}");
+        }
     }
 
     #[allow(dead_code)] // Exposed for the future workspace UI bridge.
