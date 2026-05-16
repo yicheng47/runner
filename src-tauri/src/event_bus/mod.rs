@@ -185,7 +185,7 @@ impl EventBus {
                 // can rehydrate after a reopen and so any backlog the writer
                 // produced before the watcher attached is delivered.
                 if let Err(e) = state.tick(&log, emitter_for_thread.as_ref()) {
-                    eprintln!("event_bus[{mission_id_for_thread}]: initial tick failed: {e}");
+                    log::error!("initial tick failed for mission {mission_id_for_thread}: {e}");
                 }
                 loop {
                     // recv_timeout lets us notice shutdown without a notify
@@ -201,7 +201,7 @@ impl EventBus {
                     // shutdown flag and exit before notify delivered the
                     // terminal write, dropping the event silently.
                     if let Err(e) = state.tick(&log, emitter_for_thread.as_ref()) {
-                        eprintln!("event_bus[{mission_id_for_thread}]: tick failed: {e}");
+                        log::error!("tick failed for mission {mission_id_for_thread}: {e}");
                     }
                     if shutting {
                         return;
@@ -295,9 +295,11 @@ impl BusState {
     fn tick(&mut self, log: &EventLog, emitter: &dyn BusEmitter) -> Result<()> {
         let (entries, skipped) = log.read_from_lossy(self.next_offset)?;
         for skip in &skipped {
-            eprintln!(
-                "event_bus[{}]: skipping malformed line at offset {} ({})",
-                self.mission_id, skip.offset, skip.error
+            log::warn!(
+                "skipping malformed line for mission {} at offset {} ({})",
+                self.mission_id,
+                skip.offset,
+                skip.error
             );
         }
         // Compute the new `next_offset` from the max of every line seen this
@@ -373,9 +375,10 @@ impl BusState {
         // entry as read and hide every future entry whose ULID came before
         // "zzzz" — which, given Crockford's alphabet, is all of them.
         if up_to.parse::<ulid::Ulid>().is_err() {
-            eprintln!(
-                "event_bus[{}]: dropping inbox_read with non-ULID up_to {:?}",
-                self.mission_id, up_to
+            log::warn!(
+                "dropping inbox_read with non-ULID up_to {:?} for mission {}",
+                up_to,
+                self.mission_id
             );
             return;
         }
@@ -457,6 +460,7 @@ impl BusRegistry {
             return Ok(Arc::clone(existing));
         }
         let bus = EventBus::for_mission(mission_id.clone(), mission_dir, roster, emitter)?;
+        log::info!("bus mounted: mission={mission_id}");
         buses.insert(mission_id, Arc::clone(&bus));
         Ok(bus)
     }
@@ -465,6 +469,7 @@ impl BusRegistry {
         let bus = self.buses.lock().unwrap().remove(mission_id);
         if let Some(bus) = bus {
             bus.stop();
+            log::info!("bus unmounted: mission={mission_id}");
         }
     }
 

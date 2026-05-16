@@ -517,6 +517,12 @@ pub async fn mission_start(
         let mut conn = state.db.get()?;
         start(&mut conn, &state.app_data_dir, input)?
     };
+    log::info!(
+        "mission starting: id={} crew={} title={:?}",
+        out.mission.id,
+        out.mission.crew_id,
+        out.mission.title,
+    );
 
     // Mission row + opening events are durable. Now spawn one PTY per
     // slot. This loop is **all-or-nothing**: if any spawn fails we kill
@@ -735,6 +741,11 @@ pub async fn mission_start(
     }
 
     state.routers.register(out.mission.id.clone(), router);
+    log::info!(
+        "mission started: id={} sessions={}",
+        out.mission.id,
+        spawned_pairs.len(),
+    );
     Ok(out)
 }
 
@@ -761,6 +772,7 @@ pub async fn mission_attach(
     app: tauri::AppHandle,
     mission_id: String,
 ) -> Result<Mission> {
+    log::info!("mission attach: id={mission_id}");
     ensure_mission_router_mounted(&state, &app, &mission_id).await?;
     let conn = state.db.get()?;
     get(&conn, &mission_id)
@@ -903,20 +915,26 @@ pub(crate) async fn reattach_all_running_missions(
 ) -> HashSet<String> {
     let mission_ids = match state.db.get() {
         Ok(conn) => list_running_mission_ids(&conn).unwrap_or_else(|e| {
-            eprintln!("runner: reattach_all_running_missions query failed: {e}");
+            log::error!("reattach_all_running_missions query failed: {e}");
             Vec::new()
         }),
         Err(e) => {
-            eprintln!("runner: reattach_all_running_missions db pool unavailable: {e}");
+            log::error!("reattach_all_running_missions db pool unavailable: {e}");
             Vec::new()
         }
     };
 
     let mut failed = HashSet::new();
     for mission_id in mission_ids {
-        if let Err(e) = ensure_mission_router_mounted(state, app, &mission_id).await {
-            eprintln!("runner: mission {mission_id} reattach failed: {e}");
-            failed.insert(mission_id);
+        match ensure_mission_router_mounted(state, app, &mission_id).await {
+            Ok(()) => {
+                log::info!("mission reattach: id={mission_id} action=mounted");
+            }
+            Err(e) => {
+                log::info!("mission reattach: id={mission_id} action=mount_failed → stop");
+                log::warn!("mission {mission_id} mount-failed reattach: {e}");
+                failed.insert(mission_id);
+            }
         }
     }
     failed
@@ -948,6 +966,7 @@ fn list_running_mission_ids(conn: &Connection) -> rusqlite::Result<Vec<String>> 
 /// For end-of-mission, see `mission_archive`.
 #[tauri::command]
 pub async fn mission_stop(state: State<'_, AppState>, id: String) -> Result<Mission> {
+    log::info!("mission stop: id={id}");
     state.sessions.kill_all_for_mission(&id)?;
     let conn = state.db.get()?;
     get(&conn, &id)

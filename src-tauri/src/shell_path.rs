@@ -61,8 +61,8 @@ pub fn resolve_login_shell_path() -> Option<String> {
     {
         Ok(c) => c,
         Err(e) => {
-            eprintln!(
-                "runner: shell PATH resolution via `{shell}` failed to spawn ({e}); falling back to launchd PATH"
+            log::warn!(
+                "shell PATH resolution via `{shell}` failed to spawn ({e}); falling back to launchd PATH"
             );
             return None;
         }
@@ -76,7 +76,7 @@ pub fn resolve_login_shell_path() -> Option<String> {
         None => {
             let _ = child.kill();
             let _ = child.wait();
-            eprintln!("runner: shell PATH resolution lost stdout pipe; falling back");
+            log::warn!("shell PATH resolution lost stdout pipe; falling back");
             return None;
         }
     };
@@ -99,8 +99,8 @@ pub fn resolve_login_shell_path() -> Option<String> {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    eprintln!(
-                        "runner: shell PATH resolution via `{shell}` timed out after {}s; killed shell; falling back to launchd PATH",
+                    log::warn!(
+                        "shell PATH resolution via `{shell}` timed out after {}s; killed shell; falling back to launchd PATH",
                         RESOLVE_TIMEOUT.as_secs()
                     );
                     return None;
@@ -110,8 +110,8 @@ pub fn resolve_login_shell_path() -> Option<String> {
             Err(e) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                eprintln!(
-                    "runner: shell PATH resolution via `{shell}` failed waiting ({e}); falling back to launchd PATH"
+                log::warn!(
+                    "shell PATH resolution via `{shell}` failed waiting ({e}); falling back to launchd PATH"
                 );
                 return None;
             }
@@ -119,8 +119,8 @@ pub fn resolve_login_shell_path() -> Option<String> {
     };
 
     if !status.success() {
-        eprintln!(
-            "runner: shell PATH resolution via `{shell}` exited non-zero (status={:?}); falling back to launchd PATH",
+        log::warn!(
+            "shell PATH resolution via `{shell}` exited non-zero (status={:?}); falling back to launchd PATH",
             status.code()
         );
         return None;
@@ -129,8 +129,8 @@ pub fn resolve_login_shell_path() -> Option<String> {
     let stdout_bytes = match rx.recv_timeout(STDOUT_DRAIN_GRACE) {
         Ok(b) => b,
         Err(_) => {
-            eprintln!(
-                "runner: shell PATH resolution via `{shell}` produced no stdout in time; falling back"
+            log::warn!(
+                "shell PATH resolution via `{shell}` produced no stdout in time; falling back"
             );
             return None;
         }
@@ -138,8 +138,8 @@ pub fn resolve_login_shell_path() -> Option<String> {
     let stdout_str = String::from_utf8_lossy(&stdout_bytes);
     let parsed = extract_path_between_markers(&stdout_str);
     if parsed.is_none() {
-        eprintln!(
-            "runner: shell PATH resolution via `{shell}` returned no PATH between markers; falling back to launchd PATH"
+        log::warn!(
+            "shell PATH resolution via `{shell}` returned no PATH between markers; falling back to launchd PATH"
         );
     }
     parsed

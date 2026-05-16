@@ -1639,7 +1639,7 @@ mod tests {
     #[ignore]
     fn integration_spawn_and_observe() {
         let Some(rt) = test_runtime("spawn-and-observe") else {
-            eprintln!("tmux not available — skipping");
+            log::warn!("tmux not available — skipping");
             return;
         };
         let (session, rx) = spawn_echo(&rt, "spawnobs01", "hello-from-tmux").unwrap();

@@ -95,8 +95,8 @@ fn open_mission_event_log(
     match EventLog::open(&mission_dir) {
         Ok(log) => Some(Arc::new(log)),
         Err(e) => {
-            eprintln!(
-                "runner: open event log for mission {mission_id} ({}): {e}",
+            log::error!(
+                "open event log for mission {mission_id} ({}): {e}",
                 mission_dir.display(),
             );
             None
@@ -656,6 +656,7 @@ impl SessionManager {
         }
 
         let stop = output.stop_flag();
+        let pane_for_log = rt_session.pane.clone();
         self.sessions.lock().unwrap().insert(
             session_id.clone(),
             SessionHandle {
@@ -697,6 +698,14 @@ impl SessionManager {
             runner,
             &plan,
             first_turn_delivered_via_argv,
+        );
+
+        log::info!(
+            "session spawn: mission={} session={} runner={} pane={}",
+            mission.id,
+            session_id,
+            slot.slot_handle,
+            pane_for_log,
         );
 
         Ok(SpawnedSession {
@@ -1390,9 +1399,9 @@ impl SessionManager {
                             match outcome {
                                 AppendOutcome::Ok => {
                                     if drop_streak > 0 {
-                                        eprintln!(
-                                            "forwarder[{session_id}]: runner_status emit \
-                                             recovered after {drop_streak} dropped events \
+                                        log::info!(
+                                            "runner_status emit recovered for {session_id} \
+                                             after {drop_streak} dropped events \
                                              ({drop_total} total this session)",
                                         );
                                     }
@@ -1402,9 +1411,9 @@ impl SessionManager {
                                     drop_streak += 1;
                                     drop_total += 1;
                                     if drop_streak_is_loggable(drop_streak) {
-                                        eprintln!(
-                                            "forwarder[{session_id}]: runner_status emit \
-                                             failing; {drop_streak} events dropped in a row \
+                                        log::error!(
+                                            "runner_status emit failing for {session_id}; \
+                                             {drop_streak} events dropped in a row \
                                              ({drop_total} total this session)",
                                         );
                                     }
@@ -1588,8 +1597,8 @@ impl SessionManager {
             .runtime
             .capture_visible(&rt_session)
             .unwrap_or_else(|e| {
-                eprintln!(
-                    "runner: first-prompt baseline capture for {session_id} failed: {e} \
+                log::warn!(
+                    "first-prompt baseline capture for {session_id} failed: {e} \
                      (proceeding with zero baselines)"
                 );
                 Vec::new()
@@ -1619,8 +1628,8 @@ impl SessionManager {
             let after = match self.runtime.capture_visible(&rt_session) {
                 Ok(b) => b,
                 Err(e) => {
-                    eprintln!(
-                        "runner: first-prompt capture for {session_id} attempt {attempt} failed: {e}"
+                    log::warn!(
+                        "first-prompt capture for {session_id} attempt {attempt} failed: {e}"
                     );
                     if !config.between_attempts.is_zero() {
                         std::thread::sleep(config.between_attempts);
@@ -1848,7 +1857,7 @@ impl SessionManager {
         let rows: Vec<RowSnap> = match collect_running_rows(&pool) {
             Ok(rows) => rows,
             Err(e) => {
-                eprintln!("runner: reattach query failed: {e}");
+                log::warn!("reattach query failed: {e}");
                 return;
             }
         };
@@ -1901,14 +1910,22 @@ impl SessionManager {
                     // it via the existing reconcile path. Marking
                     // it stopped here would create a UI/DB-vs-tmux
                     // mismatch.
-                    eprintln!(
-                        "runner: reattach failed to stop mission session {} \
+                    log::warn!(
+                        "reattach failed to stop mission session {} \
                          after mount failure: {e}",
                         row_dbg(&row.id)
                     );
                     return;
                 }
                 mark_session_stopped(pool, &row.id, now);
+                // Decision INFO fires only on the happy path —
+                // stop succeeded AND the row was actually marked.
+                // The Err branch above already returns without
+                // marking; a top-of-branch INFO would have lied.
+                log::info!(
+                    "session reattach: id={} action=stopped reason=mission_mount_failed",
+                    row_dbg(&row.id)
+                );
             }
             Ok(Some(s)) if s.alive => {
                 // Mission and direct rows take the same alive-pane
@@ -1923,17 +1940,24 @@ impl SessionManager {
                 // is still running and lying in the DB would strand
                 // it.
                 let id = row.id.clone();
+                let pane_for_log = rt_session.pane.clone();
                 let rt_for_cleanup = rt_session.clone();
                 if let Err(e) = self.attach_existing(row, rt_session, pool, events, app_data_dir) {
-                    eprintln!("runner: reattach session {} failed: {e}", row_dbg(&id));
+                    log::warn!("reattach session {} failed: {e}", row_dbg(&id));
                     match self.runtime.stop(&rt_for_cleanup) {
                         Ok(()) => mark_session_stopped(pool, &id, now),
-                        Err(e) => eprintln!(
-                            "runner: reattach orphan-stop for {} failed: {e}; \
+                        Err(e) => log::warn!(
+                            "reattach orphan-stop for {} failed: {e}; \
                              leaving row as running",
                             row_dbg(&id)
                         ),
                     }
+                } else {
+                    log::info!(
+                        "session reattach: id={} action=resumed pane={}",
+                        row_dbg(&id),
+                        pane_for_log,
+                    );
                 }
             }
             Ok(Some(status)) => {
@@ -1945,6 +1969,7 @@ impl SessionManager {
                 } else {
                     "crashed"
                 };
+                let exit_code = status.exit_code;
                 let _ = self.runtime.stop(&rt_session);
                 if let Ok(conn) = pool.get() {
                     let _ = conn.execute(
@@ -1955,10 +1980,19 @@ impl SessionManager {
                         params![row.id, final_status, now],
                     );
                 }
+                log::info!(
+                    "session reattach: id={} action=stopped reason=pane_exited code={:?}",
+                    row_dbg(&row.id),
+                    exit_code,
+                );
             }
             Ok(None) | Err(_) => {
                 // tmux can't find the pane — terminal-unavailable.
                 mark_session_stopped(pool, &row.id, now);
+                log::info!(
+                    "session reattach: id={} action=stopped reason=pane_gone",
+                    row_dbg(&row.id)
+                );
             }
         }
     }
@@ -2268,8 +2302,8 @@ fn schedule_mission_first_prompt(
     // rather than re-introducing the paste race the plan got rid
     // of.
     if !delivered_via_argv {
-        eprintln!(
-            "runner: first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",
+        log::warn!(
+            "first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",
             runner.runtime,
         );
     }
@@ -2305,8 +2339,8 @@ fn schedule_direct_first_prompt(
         return;
     }
     if !delivered_via_argv {
-        eprintln!(
-            "runner: first-turn argv not delivered for direct chat {session_id} (runtime {}); skipping post-spawn injection",
+        log::warn!(
+            "first-turn argv not delivered for direct chat {session_id} (runtime {}); skipping post-spawn injection",
             runner.runtime,
         );
     }
@@ -2379,13 +2413,11 @@ fn schedule_continue_on_resume(
         // Inline path under `cfg(test)` so synchronous output
         // assertions can observe the injection.
         if let Err(e) = mgr.inject_paste_with_verify(&session_id, b"continue", config) {
-            eprintln!(
-                "runner: continue-on-resume verify failed for {session_id}: {e}; sending fallback Enter"
+            log::warn!(
+                "continue-on-resume verify failed for {session_id}: {e}; sending fallback Enter"
             );
             if let Err(ee) = mgr.send_enter(&session_id) {
-                eprintln!(
-                    "runner: continue-on-resume fallback Enter for {session_id} failed: {ee}"
-                );
+                log::error!("continue-on-resume fallback Enter for {session_id} failed: {ee}");
             }
         }
         return;
@@ -2393,13 +2425,11 @@ fn schedule_continue_on_resume(
     let mgr = Arc::clone(mgr);
     std::thread::spawn(move || {
         if let Err(e) = mgr.inject_paste_with_verify(&session_id, b"continue", config) {
-            eprintln!(
-                "runner: continue-on-resume verify failed for {session_id}: {e}; sending fallback Enter"
+            log::warn!(
+                "continue-on-resume verify failed for {session_id}: {e}; sending fallback Enter"
             );
             if let Err(ee) = mgr.send_enter(&session_id) {
-                eprintln!(
-                    "runner: continue-on-resume fallback Enter for {session_id} failed: {ee}"
-                );
+                log::error!("continue-on-resume fallback Enter for {session_id} failed: {ee}");
             }
         }
     });
