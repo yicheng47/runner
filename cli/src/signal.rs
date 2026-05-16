@@ -42,6 +42,15 @@ pub fn run(ty: &str, payload: Option<&str>) -> i32 {
 /// `runner status busy|idle [--note <text>]` — emits a `runner_status`
 /// signal with the validated state. Validation lives here so the CLI can
 /// reject typos like `runner status sleeping` before they hit the log.
+///
+/// Deprecated since issue #124: the session forwarder is now the
+/// authoritative source for busy/idle via PTY silence
+/// (`docs/features/13-pty-silence-idle-detection.md`). The verb is kept
+/// as a back-compat alias so user-authored templates that still call it
+/// don't crash; we stamp `source: "agent"` on the payload so the router
+/// / debug tooling can tell agent-reported events apart from
+/// forwarder-inferred ones. Removal scheduled for the release after the
+/// forwarder ships.
 pub fn run_status(state: &str, note: Option<&str>) -> i32 {
     let normalized = match state {
         "busy" | "idle" => state,
@@ -50,10 +59,21 @@ pub fn run_status(state: &str, note: Option<&str>) -> i32 {
             return 1;
         }
     };
+    eprintln!(
+        "runner status: deprecated; busy/idle is now inferred from PTY activity (issue #124).",
+    );
     let mut payload = serde_json::Map::new();
     payload.insert(
         "state".into(),
         serde_json::Value::String(normalized.to_string()),
+    );
+    // `source` tells consumers this event came from the agent itself
+    // (vs. `"forwarder"`, which the session forwarder stamps onto
+    // PTY-silence-inferred transitions). Old consumers that don't look
+    // at the field are unaffected.
+    payload.insert(
+        "source".into(),
+        serde_json::Value::String("agent".to_string()),
     );
     if let Some(n) = note {
         payload.insert("note".into(), serde_json::Value::String(n.to_string()));

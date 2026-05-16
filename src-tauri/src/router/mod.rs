@@ -70,13 +70,13 @@ impl StdinInjector for SessionManager {
     }
 }
 
-/// Latest-known availability for a runner. Populated from `runner_status`
-/// signals; never inferred from PTY bytes (arch §5.5.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunnerStatus {
-    Busy,
-    Idle,
-}
+// `RunnerStatus` now lives in `session::runtime` because the forwarder
+// is the authoritative source (issue #124). The router consumes it via
+// `runner_status` events the forwarder appends. Agent-reported events
+// from the deprecated `runner status` CLI verb feed the same map; both
+// converge under latest-wins, so the router doesn't branch on
+// `payload.source`.
+pub use crate::session::runtime::RunnerStatus;
 
 /// Inputs to the launch-prompt composer, captured at mount so the
 /// `mission_goal` handler doesn't have to round-trip the DB. The lead row
@@ -373,6 +373,15 @@ impl Router {
     /// source: directed/broadcast `message_nudge`, `ask_lead` relay,
     /// `human_said`, `human_response`, and the lead's `mission_goal`
     /// bootstrap.
+    ///
+    /// Post-issue-#124: the session forwarder also fires `runner_status`
+    /// busy on the agent's first response byte. This path remains as a
+    /// faster cover for the inject→idle race (we may inject before the
+    /// agent has written any byte yet) and as defense against an agent
+    /// that stays silent past the forwarder's 750ms threshold —
+    /// without this, a slow-to-respond agent could appear `idle` to the
+    /// user immediately after a nudge. Latest-wins absorbs the
+    /// follow-up forwarder event without churn.
     fn synthesize_wake_busy(&self, handle: &str) {
         if handle == "human" {
             return;

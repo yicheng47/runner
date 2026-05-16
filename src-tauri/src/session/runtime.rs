@@ -117,11 +117,26 @@ pub struct SessionStatus {
     pub command: Option<String>,
 }
 
+/// Latest-known availability of a runtime session, as inferred by
+/// the forwarder from PTY-byte activity (issue #124). The router
+/// projects this into a per-handle availability map; the workspace
+/// rail dot reads off the same projection. Lives here (rather than
+/// in `router/`) because the forwarder is the authoritative source
+/// — the router consumes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerStatus {
+    Busy,
+    Idle,
+}
+
 /// One unit of output produced by a runtime session. The manager
-/// forwards these to xterm.js with **distinct semantics** for each
-/// variant — collapsing them back into a single byte stream is the
-/// duplicated-cells bug the plan calls out (Step 6: snapshot ≠
-/// stream).
+/// forwards `Replay` / `Stream` to xterm.js with **distinct
+/// semantics** for each variant — collapsing them back into a
+/// single byte stream is the duplicated-cells bug the plan calls
+/// out (Step 6: snapshot ≠ stream). `StatusTransition` is the
+/// forwarder's busy/idle signal (issue #124) and never reaches
+/// xterm.js; the SessionManager consumer routes it to the event
+/// log.
 #[derive(Debug, Clone)]
 pub enum RuntimeOutput {
     /// Attach-time snapshot. xterm.js **resets** its buffer to this
@@ -132,6 +147,15 @@ pub enum RuntimeOutput {
     /// Live PTY bytes the agent wrote since the last `Stream`
     /// chunk. xterm.js **appends**. Sourced from `pipe-pane`.
     Stream(Vec<u8>),
+    /// Forwarder-inferred busy/idle transition. `source` is
+    /// `"forwarder"` for these synthetic events (the CLI's
+    /// `runner status` verb emits `source: "agent"` directly into
+    /// the log without going through this channel). Static-str
+    /// because both producers' values are known at compile time.
+    StatusTransition {
+        state: RunnerStatus,
+        source: &'static str,
+    },
 }
 
 /// Receiver half of a runtime session's output channel. Returned

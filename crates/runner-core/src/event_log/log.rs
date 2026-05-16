@@ -132,6 +132,42 @@ impl EventLog {
         Ok(event)
     }
 
+    /// Non-blocking variant of `append`. Returns
+    /// `Err(TryAppendError::Contended)` immediately if another writer
+    /// is holding the file lock; otherwise behaves identically to
+    /// `append`. Used by the session forwarder's `runner_status`
+    /// emission path (issue #124) where the consumer thread must
+    /// never block on disk I/O — terminal output and exit-event
+    /// processing flow through the same channel, so a stuck flock
+    /// would freeze them all.
+    ///
+    /// On contention the caller is expected to drop the event (status
+    /// transitions are observability, not load-bearing) and bump a
+    /// streak counter for visibility.
+    pub fn try_append(&self, draft: EventDraft) -> std::result::Result<Event, TryAppendError> {
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(&self.path)
+            .map_err(TryAppendError::from_io)?;
+
+        // Non-blocking flock. On Linux/macOS, `fs2` maps EWOULDBLOCK
+        // into the lock's error kind; we treat any failure here as
+        // contention rather than introspecting the error code
+        // (matching the spec's "drop on contention" policy — we don't
+        // need to differentiate "locked" from "weird filesystem
+        // error", the consumer thread just must not block).
+        if file.try_lock_exclusive().is_err() {
+            return Err(TryAppendError::Contended);
+        }
+        let result = self.append_locked(&file, draft);
+        let unlock_res = file.unlock();
+        let event = result.map_err(TryAppendError::Failed)?;
+        unlock_res.map_err(TryAppendError::from_io)?;
+        Ok(event)
+    }
+
     fn append_locked(&self, file: &File, draft: EventDraft) -> Result<Event> {
         // Repair any dangling non-newline tail from a prior crash *before*
         // reading the last id — otherwise `last_id_in_file` would treat the
@@ -450,6 +486,37 @@ fn parse_id(line: &[u8]) -> Result<String> {
     Ok(t.id)
 }
 
+/// Outcome of `EventLog::try_append`. `Contended` is the
+/// expected-and-handled case for the forwarder thread (issue #124);
+/// `Failed` wraps any other error (I/O, partial-write rollback,
+/// invalid event payload).
+#[derive(Debug)]
+pub enum TryAppendError {
+    /// Another writer holds the file lock right now. Caller should
+    /// drop the event and try again on the next transition rather
+    /// than blocking the producer thread.
+    Contended,
+    /// I/O error opening the file or any other append failure.
+    Failed(Error),
+}
+
+impl TryAppendError {
+    fn from_io(e: std::io::Error) -> Self {
+        TryAppendError::Failed(e.into())
+    }
+}
+
+impl std::fmt::Display for TryAppendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TryAppendError::Contended => f.write_str("event log busy"),
+            TryAppendError::Failed(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for TryAppendError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,6 +626,52 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let log = EventLog::open(dir.path()).unwrap();
         assert!(log.read_from(0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn try_append_returns_contended_when_lock_held() {
+        // Issue #124: the session forwarder's `runner_status` emission
+        // calls `try_append` from a thread that also drains terminal
+        // output and exit events. If another process is holding the
+        // event-log flock, `try_append` must return `Contended`
+        // immediately rather than blocking; otherwise terminal output
+        // and exit-event reap would stall behind the lock.
+        use fs2::FileExt;
+        let dir = tempfile::tempdir().unwrap();
+        let log = EventLog::open(dir.path()).unwrap();
+        // Steal the flock from a parallel "process": open the same
+        // file and hold an exclusive lock. `fs2`'s flock is fcntl-
+        // based on Unix, which is per-fd (not per-thread), so this
+        // accurately simulates a separate CLI writer holding the
+        // lock — the in-process `try_append` below sees a
+        // `WouldBlock` from the kernel and returns `Contended`.
+        let blocker = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(log.path())
+            .unwrap();
+        blocker.lock_exclusive().unwrap();
+
+        let start = std::time::Instant::now();
+        let res = log.try_append(draft_signal("runner_status"));
+        let elapsed = start.elapsed();
+        // The non-blocking call must not have waited on the lock.
+        // 100ms is generous on every CI host we run on; in practice
+        // `fs2::try_lock_exclusive` returns within microseconds.
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "try_append must not block on contention; took {elapsed:?}",
+        );
+        assert!(
+            matches!(res, Err(TryAppendError::Contended)),
+            "expected Contended, got {res:?}",
+        );
+
+        // Release and confirm the same call now succeeds.
+        blocker.unlock().unwrap();
+        let ok = log.try_append(draft_signal("runner_status")).unwrap();
+        assert!(!ok.id.is_empty());
     }
 
     #[test]

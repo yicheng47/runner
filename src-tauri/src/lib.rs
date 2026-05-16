@@ -160,6 +160,7 @@ pub fn run() {
                 Arc::clone(&pool),
                 events_for_reattach,
                 &failed_mission_ids,
+                &state.app_data_dir,
             );
 
             app.manage(state);

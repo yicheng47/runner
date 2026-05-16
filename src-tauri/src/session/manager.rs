@@ -30,15 +30,159 @@ use chrono::Utc;
 use rusqlite::params;
 use serde::Serialize;
 
+use runner_core::event_log::{EventLog, TryAppendError};
+use runner_core::model::{EventDraft, SignalType};
+
 use crate::db::DbPool;
 use crate::error::{Error, Result};
 use crate::model::{Mission, Runner};
 use crate::router;
 use crate::session::runtime::{
-    OutputStream, RuntimeOutput, RuntimeSession, SessionRuntime, SpawnSpec,
+    OutputStream, RunnerStatus, RuntimeOutput, RuntimeSession, SessionRuntime, SpawnSpec,
 };
 
 const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
+
+/// Inputs the forwarder consumer needs to translate a
+/// `RuntimeOutput::StatusTransition` into a real `runner_status`
+/// event on the mission's NDJSON log (issue #124). All fields are
+/// correlated — a mission spawn has all of them; a direct chat has
+/// none — so they live together in one optional struct. The
+/// forwarder consumer carries an `Option<Self>`: `Some` for mission
+/// sessions, `None` for direct chats. See
+/// `docs/features/13-pty-silence-idle-detection.md` §Scope for why
+/// direct chats are skipped.
+///
+/// The `EventLog` handle is opened once at construction (on the
+/// Tauri command thread, where a brief blocking flock during tail
+/// repair is fine) and cached so the forwarder consumer thread's
+/// hot path never calls `EventLog::open` — that path takes a
+/// blocking flock to repair any dangling tail, and the forwarder
+/// thread also drains terminal output and exit events through the
+/// same channel; blocking it would freeze them.
+#[derive(Clone)]
+pub(crate) struct ForwarderEmitCtx {
+    /// `mission.crew_id` — needed for the `EventDraft.crew_id`
+    /// field so the appended row matches what the CLI's
+    /// `runner status` would have written.
+    pub crew_id: String,
+    /// Mission id, redundant with the forwarder's outer
+    /// `mission_id` argument but copied here so this struct is
+    /// self-contained.
+    pub mission_id: String,
+    /// `slots.slot_handle` (mission spawns) — the `from` field on
+    /// the appended event. The router projects state by `from`,
+    /// not by session id.
+    pub handle: String,
+    /// Cached event-log handle. Constructed via `EventLog::open` on
+    /// the spawn/resume/reattach path; the forwarder consumer
+    /// reuses it for every `try_append` so it never blocks on the
+    /// open-time tail-repair flock.
+    pub event_log: Arc<EventLog>,
+}
+
+/// Open the mission's event log on the calling (non-forwarder)
+/// thread. Used by spawn / resume / reattach to construct a
+/// `ForwarderEmitCtx`. Logs at WARN and returns `None` if the open
+/// fails — the forwarder still runs the detector for free; we just
+/// can't surface its events.
+fn open_mission_event_log(
+    app_data_dir: &Path,
+    crew_id: &str,
+    mission_id: &str,
+) -> Option<Arc<EventLog>> {
+    let mission_dir = runner_core::event_log::path::mission_dir(app_data_dir, crew_id, mission_id);
+    match EventLog::open(&mission_dir) {
+        Ok(log) => Some(Arc::new(log)),
+        Err(e) => {
+            eprintln!(
+                "runner: open event log for mission {mission_id} ({}): {e}",
+                mission_dir.display(),
+            );
+            None
+        }
+    }
+}
+
+/// Boot-time reattach helper: build the per-session
+/// `ForwarderEmitCtx` from the persisted session row. Pulls the
+/// mission's `crew_id` and the slot's `slot_handle` from the DB so
+/// the post-reattach forwarder emits the same `runner_status`
+/// shape a fresh spawn would. Returns `None` for direct chats and
+/// for any mission row missing its slot row (the row gets reaped
+/// elsewhere; we just don't emit for it here).
+fn mission_emit_ctx_for_row(
+    pool: &Arc<DbPool>,
+    row: &RowSnap,
+    app_data_dir: &Path,
+) -> Option<ForwarderEmitCtx> {
+    let mission_id = row.mission_id.as_deref()?;
+    let conn = pool.get().ok()?;
+    let (crew_id, slot_handle): (String, String) = conn
+        .query_row(
+            "SELECT m.crew_id, s.slot_handle
+               FROM sessions sess
+               JOIN missions m ON m.id = sess.mission_id
+               JOIN slots    s ON s.id = sess.slot_id
+              WHERE sess.id = ?1",
+            params![row.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()?;
+    let event_log = open_mission_event_log(app_data_dir, &crew_id, mission_id)?;
+    Some(ForwarderEmitCtx {
+        crew_id,
+        mission_id: mission_id.to_string(),
+        handle: slot_handle,
+        event_log,
+    })
+}
+
+/// Outcome of a single forwarder-side `try_append` attempt. Drives
+/// the streak counter in the consumer thread (P2 in the @reviewer
+/// punch list — see issue #124 comments).
+#[derive(Debug)]
+enum AppendOutcome {
+    Ok,
+    Contended,
+    Failed,
+}
+
+impl ForwarderEmitCtx {
+    /// Non-blocking append of a forwarder-emitted `runner_status`
+    /// row. The consumer thread runs this on every status
+    /// transition; it must not block (it shares the mpsc receiver
+    /// with the terminal output stream and the exit-event reap, so
+    /// a stuck flock would freeze them too). Wire shape mirrors
+    /// `cli/src/signal.rs::run_status` so router / UI projections
+    /// can't tell the two apart except by `payload.source`.
+    fn try_append_runner_status(&self, state: RunnerStatus, source: &'static str) -> AppendOutcome {
+        let state_str = match state {
+            RunnerStatus::Busy => "busy",
+            RunnerStatus::Idle => "idle",
+        };
+        let draft = EventDraft::signal(
+            self.crew_id.clone(),
+            self.mission_id.clone(),
+            self.handle.clone(),
+            SignalType::new("runner_status"),
+            serde_json::json!({ "state": state_str, "source": source }),
+        );
+        match self.event_log.try_append(draft) {
+            Ok(_) => AppendOutcome::Ok,
+            Err(TryAppendError::Contended) => AppendOutcome::Contended,
+            Err(TryAppendError::Failed(_)) => AppendOutcome::Failed,
+        }
+    }
+}
+
+/// Streak indices at which the forwarder consumer logs a WARN about
+/// dropped `runner_status` events. Picked to cover the common
+/// cases (first drop, sustained failure on a stuck mission log)
+/// without spamming once it's clear the log is broken.
+fn drop_streak_is_loggable(streak: u64) -> bool {
+    matches!(streak, 1 | 10 | 100 | 1000) || (streak >= 10_000 && streak.is_multiple_of(10_000))
+}
 
 /// Decouples the PTY layer from Tauri so the reader thread can be unit-tested
 /// with a fake. Prod wraps an `AppHandle::emit`; tests use a no-op or a
@@ -524,6 +668,13 @@ impl SessionManager {
             },
         );
 
+        let spawn_emit_ctx = open_mission_event_log(app_data_dir, &mission.crew_id, &mission.id)
+            .map(|event_log| ForwarderEmitCtx {
+                crew_id: mission.crew_id.clone(),
+                mission_id: mission.id.clone(),
+                handle: slot.slot_handle.clone(),
+                event_log,
+            });
         let forwarder = self.start_forwarder_thread(
             session_id.clone(),
             Some(mission.id.clone()),
@@ -533,6 +684,7 @@ impl SessionManager {
             Arc::clone(&events),
             runner.clone(),
             plan.resuming,
+            spawn_emit_ctx,
         );
         if let Some(h) = self.sessions.lock().unwrap().get_mut(&session_id) {
             h.forwarder = Some(forwarder);
@@ -706,6 +858,7 @@ impl SessionManager {
             Arc::clone(&events),
             runner.clone(),
             plan.resuming,
+            None, // direct chats are off-bus — no log to append runner_status to
         );
         if let Some(h) = self.sessions.lock().unwrap().get_mut(&session_id) {
             h.forwarder = Some(forwarder);
@@ -1069,6 +1222,16 @@ impl SessionManager {
         // the head of post-resume output.
         self.purge_output_buffer(session_id);
 
+        let resume_emit_ctx = mission_ctx.as_ref().and_then(|ctx| {
+            open_mission_event_log(app_data_dir, &ctx.crew_id, &ctx.mission_id).map(|event_log| {
+                ForwarderEmitCtx {
+                    crew_id: ctx.crew_id.clone(),
+                    mission_id: ctx.mission_id.clone(),
+                    handle: ctx.slot_handle.clone(),
+                    event_log,
+                }
+            })
+        });
         let forwarder = self.start_forwarder_thread(
             session_id.to_string(),
             snap.mission_id.clone(),
@@ -1078,6 +1241,7 @@ impl SessionManager {
             Arc::clone(&events),
             runner.clone(),
             plan.resuming,
+            resume_emit_ctx,
         );
         if let Some(h) = self.sessions.lock().unwrap().get_mut(session_id) {
             h.forwarder = Some(forwarder);
@@ -1161,9 +1325,10 @@ impl SessionManager {
     // mission_id for event payloads, runtime_session for status
     // queries, output for the input stream, pool for the DB row
     // update, events for emitter dispatch, runner for the
-    // post-reap activity recompute. Bundling into a Context struct just
+    // post-reap activity recompute, emit_ctx for the synthetic
+    // runner_status events the forwarder appends to the mission's
+    // event log (issue #124). Bundling into a Context struct just
     // moves the same arity to the call site without buying clarity.
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     fn start_forwarder_thread(
         self: &Arc<Self>,
@@ -1175,6 +1340,7 @@ impl SessionManager {
         events: Arc<dyn SessionEvents>,
         runner: Runner,
         resuming: bool,
+        emit_ctx: Option<ForwarderEmitCtx>,
     ) -> thread::JoinHandle<()> {
         let manager_t: Arc<SessionManager> = Arc::clone(self);
         let started_at = std::time::Instant::now();
@@ -1189,7 +1355,17 @@ impl SessionManager {
             // Drain pane output until the runtime closes the
             // channel OR `kill` flips the stop flag. Replay and
             // Stream both flow as `session/output` events — xterm.js
-            // appends sequentially regardless.
+            // appends sequentially regardless. StatusTransition is
+            // routed into the mission event log so the router /
+            // workspace rail see the busy/idle flip (issue #124).
+            //
+            // Failure bookkeeping for `runner_status` emission lives
+            // here on the consumer's stack — single-threaded access,
+            // no atomics. `drop_streak` resets on each successful
+            // append; `drop_total` is a lifetime counter logged at
+            // recovery.
+            let mut drop_streak: u64 = 0;
+            let mut drop_total: u64 = 0;
             loop {
                 if stop.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
@@ -1202,6 +1378,39 @@ impl SessionManager {
                             BASE64.encode(&bytes),
                         );
                         events.output(&ev);
+                    }
+                    Ok(RuntimeOutput::StatusTransition { state, source }) => {
+                        // Direct chats are off-bus; no event log to
+                        // append to. The IdleDetector still runs in
+                        // the forwarder for free — we just drop the
+                        // emission here (see recon notes in issue
+                        // #124).
+                        if let Some(ctx) = emit_ctx.as_ref() {
+                            let outcome = ctx.try_append_runner_status(state, source);
+                            match outcome {
+                                AppendOutcome::Ok => {
+                                    if drop_streak > 0 {
+                                        eprintln!(
+                                            "forwarder[{session_id}]: runner_status emit \
+                                             recovered after {drop_streak} dropped events \
+                                             ({drop_total} total this session)",
+                                        );
+                                    }
+                                    drop_streak = 0;
+                                }
+                                AppendOutcome::Contended | AppendOutcome::Failed => {
+                                    drop_streak += 1;
+                                    drop_total += 1;
+                                    if drop_streak_is_loggable(drop_streak) {
+                                        eprintln!(
+                                            "forwarder[{session_id}]: runner_status emit \
+                                             failing; {drop_streak} events dropped in a row \
+                                             ({drop_total} total this session)",
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                     Err(RecvTimeoutError::Timeout) => continue,
                     Err(RecvTimeoutError::Disconnected) => break,
@@ -1633,6 +1842,7 @@ impl SessionManager {
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
         failed_mission_ids: &HashSet<String>,
+        app_data_dir: &Path,
     ) {
         let now = Utc::now().to_rfc3339();
         let rows: Vec<RowSnap> = match collect_running_rows(&pool) {
@@ -1643,7 +1853,7 @@ impl SessionManager {
             }
         };
         for row in rows {
-            self.reattach_one(row, &now, &pool, &events, failed_mission_ids);
+            self.reattach_one(row, &now, &pool, &events, failed_mission_ids, app_data_dir);
         }
     }
 
@@ -1654,6 +1864,7 @@ impl SessionManager {
         pool: &Arc<DbPool>,
         events: &Arc<dyn SessionEvents>,
         failed_mission_ids: &HashSet<String>,
+        app_data_dir: &Path,
     ) {
         // No runtime metadata persisted (legacy row, or a row
         // that crashed before we got a chance to write the
@@ -1713,7 +1924,7 @@ impl SessionManager {
                 // it.
                 let id = row.id.clone();
                 let rt_for_cleanup = rt_session.clone();
-                if let Err(e) = self.attach_existing(row, rt_session, pool, events) {
+                if let Err(e) = self.attach_existing(row, rt_session, pool, events, app_data_dir) {
                     eprintln!("runner: reattach session {} failed: {e}", row_dbg(&id));
                     match self.runtime.stop(&rt_for_cleanup) {
                         Ok(()) => mark_session_stopped(pool, &id, now),
@@ -1758,6 +1969,7 @@ impl SessionManager {
         rt_session: RuntimeSession,
         pool: &Arc<DbPool>,
         events: &Arc<dyn SessionEvents>,
+        app_data_dir: &Path,
     ) -> Result<()> {
         // Pull the runner row so the forwarder thread can fire
         // `runner/activity` events with the right handle.
@@ -1765,6 +1977,11 @@ impl SessionManager {
             let conn = pool.get()?;
             crate::commands::runner::get(&conn, &row.runner_id)?
         };
+        // For mission rows, resolve the crew_id + slot_handle from
+        // the same DB lookups the original spawn used so the
+        // forwarder can emit `runner_status` events post-reboot.
+        // Direct chats stay off-bus (None).
+        let emit_ctx = mission_emit_ctx_for_row(pool, &row, app_data_dir);
         let output = self.runtime.resume(&rt_session)?;
         let stop = output.stop_flag();
         self.sessions.lock().unwrap().insert(
@@ -1787,6 +2004,7 @@ impl SessionManager {
             Arc::clone(events),
             runner,
             false, // resuming flag — re-attach to a live pane is not a resume_plan resume
+            emit_ctx,
         );
         if let Some(h) = self.sessions.lock().unwrap().get_mut(&row.id) {
             h.forwarder = Some(forwarder);
@@ -4156,7 +4374,12 @@ mod tests {
             s.exit_code = None;
         }
         let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        mgr.reattach_running_sessions(Arc::clone(&pool), capture(), &HashSet::new());
+        mgr.reattach_running_sessions(
+            Arc::clone(&pool),
+            capture(),
+            &HashSet::new(),
+            std::path::Path::new("."),
+        );
 
         // Row should still be running.
         let status: String = pool
@@ -4192,7 +4415,12 @@ mod tests {
             s.exit_code = Some(42);
         }
         let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        mgr.reattach_running_sessions(Arc::clone(&pool), capture(), &HashSet::new());
+        mgr.reattach_running_sessions(
+            Arc::clone(&pool),
+            capture(),
+            &HashSet::new(),
+            std::path::Path::new("."),
+        );
 
         let status: String = pool
             .get()
@@ -4273,7 +4501,12 @@ mod tests {
             s.exit_code = None;
         }
         let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        mgr.reattach_running_sessions(Arc::clone(&pool), capture(), &HashSet::new());
+        mgr.reattach_running_sessions(
+            Arc::clone(&pool),
+            capture(),
+            &HashSet::new(),
+            std::path::Path::new("."),
+        );
 
         // Row stays `running` — the pane is alive and the manager
         // has rebuilt its handle for it.
@@ -4363,7 +4596,12 @@ mod tests {
         let mgr = mgr_with_fake(None, Arc::clone(&fake));
         let mut failed = HashSet::new();
         failed.insert(mission_id.clone());
-        mgr.reattach_running_sessions(Arc::clone(&pool), capture(), &failed);
+        mgr.reattach_running_sessions(
+            Arc::clone(&pool),
+            capture(),
+            &failed,
+            std::path::Path::new("."),
+        );
 
         // Row flips to stopped — workspace mount path will retry
         // and resume spawns a fresh pane.
@@ -4412,7 +4650,12 @@ mod tests {
 
         let fake = fake_runtime();
         let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        mgr.reattach_running_sessions(Arc::clone(&pool), capture(), &HashSet::new());
+        mgr.reattach_running_sessions(
+            Arc::clone(&pool),
+            capture(),
+            &HashSet::new(),
+            std::path::Path::new("."),
+        );
 
         let status: String = pool
             .get()
@@ -4704,5 +4947,73 @@ mod tests {
             "no key events for non-claude runtime; got {:?}",
             fake.keys()
         );
+    }
+
+    #[test]
+    fn forwarder_status_emit_does_not_block_under_event_log_contention() {
+        // Issue #124 / @reviewer P1: the forwarder consumer drains
+        // terminal output, exit-event reap, AND `runner_status`
+        // emission through the same thread. If `try_append_runner_status`
+        // ever blocked on the event-log flock, a stuck mission log
+        // would freeze terminal output too — the user would see a
+        // hang the moment a second CLI writer took the lock.
+        // Construct a real ForwarderEmitCtx against a tempdir,
+        // steal the flock from another "process" (a parallel fd
+        // holding LOCK_EX), and assert that
+        // `try_append_runner_status` returns `Contended` within a
+        // hard 100ms bound.
+        use fs2::FileExt;
+        use std::fs::OpenOptions;
+        let dir = tempfile::tempdir().unwrap();
+        let event_log = Arc::new(EventLog::open(dir.path()).unwrap());
+        let blocker = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(event_log.path())
+            .unwrap();
+        blocker.lock_exclusive().unwrap();
+
+        let ctx = ForwarderEmitCtx {
+            crew_id: "test-crew".into(),
+            mission_id: "test-mission".into(),
+            handle: "tester".into(),
+            event_log: Arc::clone(&event_log),
+        };
+
+        let start = Instant::now();
+        let outcome = ctx.try_append_runner_status(RunnerStatus::Idle, "forwarder");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "try_append_runner_status must not block; took {elapsed:?}",
+        );
+        assert!(
+            matches!(outcome, AppendOutcome::Contended),
+            "expected Contended outcome under lock contention",
+        );
+
+        // Streak-threshold table: the consumer logs at 1 / 10 / 100 /
+        // 1000 / 10_000 / 20_000 / … Anything between those values
+        // should be silent so a steady failure doesn't spam stderr.
+        assert!(drop_streak_is_loggable(1));
+        assert!(drop_streak_is_loggable(10));
+        assert!(drop_streak_is_loggable(100));
+        assert!(drop_streak_is_loggable(1000));
+        assert!(drop_streak_is_loggable(10_000));
+        assert!(drop_streak_is_loggable(20_000));
+        assert!(!drop_streak_is_loggable(2));
+        assert!(!drop_streak_is_loggable(50));
+        assert!(!drop_streak_is_loggable(999));
+        assert!(!drop_streak_is_loggable(10_001));
+        assert!(!drop_streak_is_loggable(15_000));
+
+        // Release the blocker and confirm the same call now succeeds.
+        // Proves the test setup isn't accidentally getting Contended
+        // for the wrong reason.
+        blocker.unlock().unwrap();
+        let outcome = ctx.try_append_runner_status(RunnerStatus::Busy, "forwarder");
+        assert!(matches!(outcome, AppendOutcome::Ok));
     }
 }

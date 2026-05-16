@@ -22,11 +22,12 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use super::launch;
 use super::runtime::{
-    OutputStream, RuntimeError, RuntimeOutput, RuntimeResult, RuntimeSession, SessionRuntime,
-    SessionStatus, SpawnSpec,
+    OutputStream, RunnerStatus, RuntimeError, RuntimeOutput, RuntimeResult, RuntimeSession,
+    SessionRuntime, SessionStatus, SpawnSpec,
 };
 use super::tmux::{
     resolve_tmux_binary, tmux_cmd, write_runner_config, CONFIG_VERSION, DEFAULT_LABEL,
@@ -880,15 +881,132 @@ fn attach_streaming(
     Ok(OutputStream::new(rx, stop))
 }
 
+/// PTY-silence threshold for the busy→idle transition (issue #124).
+/// Spec 13 settled on 750ms global; per-template tuning is deferred.
+/// Combined with the 200ms `poll()` timeout below, the worst-case
+/// busy→idle latency is ~950ms — well inside the spec's ~1s SLO.
+const IDLE_THRESHOLD: Duration = Duration::from_millis(750);
+
+/// Debounce window for the idle→busy edge. Bytes must sustain at
+/// least this long after a quiet stretch before the detector emits
+/// `Busy`. Filters out short bursts that are not "the agent is
+/// actually doing something" — the xterm SIGWINCH dance on panel
+/// switch (one repaint chunk + silence), focus-induced cursor
+/// blinks, and similar one-shot terminal artifacts. A real
+/// streaming TUI sustains output for seconds, so the debounce is
+/// imperceptible in practice; the trade-off is an at-most
+/// `BUSY_DEBOUNCE` lag on legitimate wake-ups, well inside the
+/// human perception threshold.
+const BUSY_DEBOUNCE: Duration = Duration::from_millis(200);
+
+/// Per-session busy/idle state machine driven by PTY-byte activity
+/// (issue #124). The forwarder owns one and feeds it
+/// `on_bytes(n)` after every successful FIFO read and `tick()`
+/// every poll iteration. The detector returns `Some(state)` only
+/// at transition boundaries; latched runs return `None` so the
+/// caller doesn't emit redundant events.
+///
+/// Initial state is `Idle` — the forwarder thread starts when the
+/// runtime attaches, and no bytes have flowed yet. The first byte
+/// after a quiet stretch starts a `busy_pending_since` timer; the
+/// detector flips `Busy` only once activity has sustained for
+/// `BUSY_DEBOUNCE`. Sustained silence past `IDLE_THRESHOLD` flips
+/// back to `Idle`.
+struct IdleDetector {
+    /// Wall-clock at the last successful byte read. `None` until
+    /// the first byte arrives so `tick()` doesn't try to flip a
+    /// pane that has produced no output yet.
+    last_byte: Option<Instant>,
+    current: RunnerStatus,
+    threshold: Duration,
+    /// Set on the first byte after `Idle`; held until either the
+    /// debounce elapses (→ flip `Busy`) or silence resumes (→ drop
+    /// without flipping). `None` while `current == Busy` or while
+    /// no bytes have arrived since the last idle stretch.
+    busy_pending_since: Option<Instant>,
+    busy_debounce: Duration,
+}
+
+impl IdleDetector {
+    fn new() -> Self {
+        Self {
+            last_byte: None,
+            current: RunnerStatus::Idle,
+            threshold: IDLE_THRESHOLD,
+            busy_pending_since: None,
+            busy_debounce: BUSY_DEBOUNCE,
+        }
+    }
+
+    /// Called after a successful `read()` produced `n > 0` bytes.
+    /// Returns `Some(Busy)` only when activity has sustained for at
+    /// least `busy_debounce` since the first byte after the last
+    /// idle stretch — short bursts (SIGWINCH dance, cursor blink,
+    /// focus events) are dropped without flipping state.
+    fn on_bytes(&mut self, n: usize) -> Option<RunnerStatus> {
+        if n == 0 {
+            return None;
+        }
+        let now = Instant::now();
+        self.last_byte = Some(now);
+        if self.current == RunnerStatus::Busy {
+            return None;
+        }
+        let pending_since = *self.busy_pending_since.get_or_insert(now);
+        if now.duration_since(pending_since) >= self.busy_debounce {
+            self.busy_pending_since = None;
+            self.current = RunnerStatus::Busy;
+            Some(RunnerStatus::Busy)
+        } else {
+            None
+        }
+    }
+
+    /// Called from the forwarder's poll loop (every ~200ms).
+    /// Drops a stale `busy_pending_since` when silence has resumed
+    /// past the debounce window (the burst didn't sustain) and
+    /// emits `Some(Idle)` exactly on the Busy→Idle edge when
+    /// elapsed silence exceeds `threshold`.
+    fn tick(&mut self) -> Option<RunnerStatus> {
+        // Burst-that-didn't-sustain: if there's a pending wake but
+        // bytes haven't arrived in a debounce window, the activity
+        // wasn't real — drop the pending timer so the next quiet
+        // stretch isn't biased by it.
+        if let (Some(_pending_t), Some(last_t)) = (self.busy_pending_since, self.last_byte) {
+            if last_t.elapsed() >= self.busy_debounce {
+                self.busy_pending_since = None;
+            }
+        }
+        if self.current != RunnerStatus::Busy {
+            return None;
+        }
+        // Busy without a `last_byte` shouldn't happen — `on_bytes`
+        // is the only path that sets Busy — but defending against
+        // it keeps the detector honest if a future caller flips
+        // state manually.
+        let last = self.last_byte?;
+        if last.elapsed() < self.threshold {
+            return None;
+        }
+        self.current = RunnerStatus::Idle;
+        Some(RunnerStatus::Idle)
+    }
+}
+
 /// Forwarder loop. Uses `poll()` with a 200ms timeout so the
 /// thread wakes regularly to check `stop` (set when the
 /// `OutputStream` receiver is dropped) and can exit even when no
 /// bytes are flowing through the FIFO. Reads are non-blocking
 /// because the fd was opened `O_NONBLOCK`; `poll(POLLIN)` ensures
 /// data is actually ready before each read.
+///
+/// The same 200ms tick doubles as the busy→idle check window
+/// (issue #124): `IdleDetector::tick()` runs every iteration so
+/// the worst-case wake-to-idle latency is `IDLE_THRESHOLD + 200ms`.
 fn forward_fifo(mut reader: std::fs::File, tx: mpsc::Sender<RuntimeOutput>, stop: Arc<AtomicBool>) {
     let raw_fd = reader.as_raw_fd();
     let mut buf = [0u8; 8192];
+    let mut detector = IdleDetector::new();
     loop {
         if stop.load(Ordering::Relaxed) {
             break;
@@ -903,10 +1021,24 @@ fn forward_fifo(mut reader: std::fs::File, tx: mpsc::Sender<RuntimeOutput>, stop
         let rc = unsafe { libc::poll(&mut pfd, 1, 200) };
         if rc < 0 {
             // EINTR or other transient. Loop and re-check stop.
+            // Idle tick still runs so a long EINTR storm doesn't
+            // prevent the busy→idle flip.
+            if let Some(state) = detector.tick() {
+                if emit_status(&tx, state).is_err() {
+                    break;
+                }
+            }
             continue;
         }
         if rc == 0 {
-            // Timeout. Loop and re-check stop.
+            // Timeout. Loop and re-check stop, but tick first so a
+            // silent stretch flips to idle without needing another
+            // byte to arrive.
+            if let Some(state) = detector.tick() {
+                if emit_status(&tx, state).is_err() {
+                    break;
+                }
+            }
             continue;
         }
         let revents = pfd.revents;
@@ -923,6 +1055,11 @@ fn forward_fifo(mut reader: std::fs::File, tx: mpsc::Sender<RuntimeOutput>, stop
                     if tx.send(RuntimeOutput::Stream(buf[..n].to_vec())).is_err() {
                         break; // Receiver dropped — also caught by `stop`.
                     }
+                    if let Some(state) = detector.on_bytes(n) {
+                        if emit_status(&tx, state).is_err() {
+                            break;
+                        }
+                    }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
@@ -933,7 +1070,29 @@ fn forward_fifo(mut reader: std::fs::File, tx: mpsc::Sender<RuntimeOutput>, stop
             // the FIFO is drained. Real EOF — exit.
             break;
         }
+        // Even on a POLLIN iteration, check for idle: a single
+        // burst followed by silence still needs the tick to fire.
+        if let Some(state) = detector.tick() {
+            if emit_status(&tx, state).is_err() {
+                break;
+            }
+        }
     }
+}
+
+/// Helper so the four `tick`/`on_bytes` call sites in `forward_fifo`
+/// don't each reach for the same `RuntimeOutput::StatusTransition`
+/// constructor. `source` is always `"forwarder"` here — the CLI's
+/// `runner status` verb takes a different path into the log and
+/// stamps `source: "agent"` itself.
+fn emit_status(
+    tx: &mpsc::Sender<RuntimeOutput>,
+    state: RunnerStatus,
+) -> Result<(), mpsc::SendError<RuntimeOutput>> {
+    tx.send(RuntimeOutput::StatusTransition {
+        state,
+        source: "forwarder",
+    })
 }
 
 /// Probe alternate-screen state and run the right capture-pane
@@ -1235,6 +1394,123 @@ mod tests {
         assert!(!is_visually_blank(b"\x1b[31mhello\x1b[0m"));
     }
 
+    /// Build a detector with tiny debounce + threshold so the
+    /// state machine can be exercised without sleeping for the
+    /// real production constants. Tests that care specifically
+    /// about the debounce/idle constants override accordingly.
+    fn detector_with_threshold(threshold: Duration) -> IdleDetector {
+        let mut d = IdleDetector::new();
+        d.threshold = threshold;
+        // Tests pre-debounce assumed the first byte flips Busy
+        // immediately. Keep that contract by reducing debounce to
+        // zero unless a test asks otherwise.
+        d.busy_debounce = Duration::from_millis(0);
+        d
+    }
+
+    /// Helper for tests that need the production-style debounce
+    /// path but a short threshold for the busy→idle assertion.
+    fn detector_with_debounce_and_threshold(
+        debounce: Duration,
+        threshold: Duration,
+    ) -> IdleDetector {
+        let mut d = IdleDetector::new();
+        d.threshold = threshold;
+        d.busy_debounce = debounce;
+        d
+    }
+
+    #[test]
+    fn idle_detector_first_byte_flips_busy_with_zero_debounce() {
+        // With debounce=0, the first byte flips Busy immediately —
+        // mirrors the pre-debounce behavior the rest of the suite
+        // historically relied on.
+        let mut d = detector_with_threshold(Duration::from_millis(1));
+        assert_eq!(d.on_bytes(1), Some(RunnerStatus::Busy));
+        assert_eq!(d.on_bytes(64), None);
+    }
+
+    #[test]
+    fn idle_detector_zero_byte_read_is_noop() {
+        // `read(0)` is the FIFO-EOF signal in `forward_fifo`; the
+        // detector should not treat it as activity.
+        let mut d = IdleDetector::new();
+        assert_eq!(d.on_bytes(0), None);
+        assert_eq!(d.current, RunnerStatus::Idle);
+    }
+
+    #[test]
+    fn idle_detector_tick_below_threshold_returns_none() {
+        let mut d = detector_with_threshold(Duration::from_millis(50));
+        assert_eq!(d.on_bytes(1), Some(RunnerStatus::Busy));
+        // Same tick window — no elapsed silence yet.
+        assert_eq!(d.tick(), None);
+    }
+
+    #[test]
+    fn idle_detector_tick_past_threshold_flips_idle() {
+        // 1ms threshold + 5ms sleep is enough margin on every CI
+        // host we run on; the spec's 750ms is *only* about giving
+        // the agent's punctuation pauses room to breathe.
+        let mut d = detector_with_threshold(Duration::from_millis(1));
+        assert_eq!(d.on_bytes(1), Some(RunnerStatus::Busy));
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(d.tick(), Some(RunnerStatus::Idle));
+        // Subsequent ticks while already Idle don't re-emit.
+        assert_eq!(d.tick(), None);
+    }
+
+    #[test]
+    fn idle_detector_byte_after_idle_flips_busy() {
+        let mut d = detector_with_threshold(Duration::from_millis(1));
+        assert_eq!(d.on_bytes(1), Some(RunnerStatus::Busy));
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(d.tick(), Some(RunnerStatus::Idle));
+        // Next byte after the idle flip is the wake edge.
+        assert_eq!(d.on_bytes(1), Some(RunnerStatus::Busy));
+    }
+
+    #[test]
+    fn idle_detector_initial_tick_is_noop() {
+        // Detector starts Idle. `tick()` before any bytes have
+        // flowed should not emit — there's nothing to flip from.
+        let mut d = IdleDetector::new();
+        assert_eq!(d.tick(), None);
+    }
+
+    #[test]
+    fn idle_detector_short_burst_does_not_flip_busy() {
+        // A single chunk of bytes followed by silence (the SIGWINCH
+        // dance, a focus-induced cursor blink, etc.) must NOT flip
+        // the detector: activity didn't sustain past the debounce
+        // window.
+        let mut d = detector_with_debounce_and_threshold(
+            Duration::from_millis(30),
+            Duration::from_millis(1),
+        );
+        assert_eq!(d.on_bytes(64), None);
+        assert_eq!(d.current, RunnerStatus::Idle);
+        // No more bytes; pending wake should age out on tick.
+        std::thread::sleep(Duration::from_millis(35));
+        assert_eq!(d.tick(), None);
+        assert!(d.busy_pending_since.is_none());
+        assert_eq!(d.current, RunnerStatus::Idle);
+    }
+
+    #[test]
+    fn idle_detector_sustained_activity_flips_busy_after_debounce() {
+        // Real streaming activity (multiple chunks across the
+        // debounce window) must flip Busy exactly when the burst
+        // crosses the debounce threshold.
+        let mut d = detector_with_debounce_and_threshold(
+            Duration::from_millis(20),
+            Duration::from_millis(1),
+        );
+        assert_eq!(d.on_bytes(8), None); // starts the timer
+        std::thread::sleep(Duration::from_millis(25));
+        assert_eq!(d.on_bytes(8), Some(RunnerStatus::Busy));
+    }
+
     #[test]
     fn parse_pane_status_line_alive_pane() {
         // Live pane: dead=0, no dead-status token, then pid + cmd.
@@ -1379,6 +1655,7 @@ mod tests {
                         break;
                     }
                 }
+                Ok(RuntimeOutput::StatusTransition { .. }) => continue,
                 Err(_) => continue,
             }
         }

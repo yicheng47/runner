@@ -343,6 +343,19 @@ fn i2_6_status_idle_emits_runner_status_signal() {
     assert_eq!(ev.from, "impl");
     assert_eq!(ev.payload["state"], "idle");
     assert_eq!(ev.payload["note"], "ready for next task");
+    // Issue #124: CLI-emitted runner_status events stamp the
+    // payload with `source: "agent"` so debug tooling can tell them
+    // apart from forwarder-inferred transitions (`source:
+    // "forwarder"`). Router consumers ignore the field.
+    assert_eq!(ev.payload["source"], "agent");
+
+    // And the deprecation notice lands on stderr — issue #124 keeps
+    // the verb working but tells the agent to stop calling it.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("deprecated"),
+        "expected deprecation notice on stderr, got: {stderr:?}",
+    );
 }
 
 #[test]
