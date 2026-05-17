@@ -481,11 +481,14 @@ export function RunnerTerminal({
         t.focus();
         const cols = t.cols;
         const rows = t.rows;
-        void api.session.resize(sessionId, Math.max(2, cols - 1), rows)
-          .then(() => api.session.resize(sessionId, cols, rows))
-          .catch(() => {
-            // session may have exited
-          });
+        // Single resize is enough once xterm enters alt-screen at attach
+        // time (see docs/impls/0009). The earlier cols-1 → cols dance was
+        // there to coax claude-code into a repaint that would land where
+        // the user could see it; with the alt-screen state correct, the
+        // agent's single SIGWINCH redraw lands in the right buffer.
+        void api.session.resize(sessionId, cols, rows).catch(() => {
+          // session may have exited
+        });
       } catch {
         // Layout not ready yet — the next activation / resize will drive it.
       }
