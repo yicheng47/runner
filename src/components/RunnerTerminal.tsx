@@ -154,10 +154,12 @@ export function RunnerTerminal({
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    const webLinks = new WebLinksAddon((event, uri) => {
-      // Cmd+click on macOS to match iTerm/Terminal.app and avoid accidental
-      // navigations during scrollback selection. Plain click on other OSes.
-      if (navigator.platform.toLowerCase().includes("mac") && !event.metaKey) return;
+    const webLinks = new WebLinksAddon((_event, uri) => {
+      // Plain click opens, matching the feed's link behavior. xterm's link
+      // service only fires `activate` on a click that lands inside a detected
+      // URL (with cursor=pointer), so drag-to-select doesn't accidentally
+      // trigger this — the iTerm Cmd+click parity wasn't worth the
+      // discoverability cost.
       void openUrl(uri).catch((err) => {
         console.error("[terminal] openUrl failed:", err);
       });
