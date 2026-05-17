@@ -149,6 +149,8 @@ export function RunnerTerminal({
       cursorStyle: readTerminalCursorStyle(),
       scrollback: readTerminalScrollback(),
       allowProposedApi: true,
+      scrollSensitivity: 3,
+      fastScrollSensitivity: 8,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
