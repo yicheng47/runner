@@ -814,12 +814,18 @@ fn drain_fifo_nonblocking(reader: &mut std::fs::File) -> Vec<u8> {
 ///    and step 3 land in the FIFO buffer (kernel-managed).
 /// 2. **Reattach only**: snapshot via `capture-pane` (with
 ///    alternate-screen branching) so the new xterm.js render
-///    starts with the existing pane state. Skipped on fresh
-///    spawn — there's nothing meaningful to replay (the agent
-///    just started), and including the snapshot writes the
-///    pane's empty top rows into xterm.js's buffer ahead of any
-///    live output, leaving a big blank region above the agent's
-///    actual content.
+///    starts with the existing pane state. When the pane is on
+///    alt-screen, `capture_replay_bytes` prepends `ESC[?1049h`
+///    so xterm.js enters alt-screen before consuming the cells —
+///    `capture-pane` omits mode-switching escapes by design, and
+///    without this xterm stays on main-screen and subsequent live
+///    redraws from the agent stack in scrollback (see
+///    `docs/impls/0009-terminal-alt-screen-reattach.md`).
+///    Skipped on fresh spawn — there's nothing meaningful to
+///    replay (the agent just started), and including the
+///    snapshot writes the pane's empty top rows into xterm.js's
+///    buffer ahead of any live output, leaving a big blank
+///    region above the agent's actual content.
 /// 3. Drain the FIFO buffer non-blockingly into a `Vec<u8>`.
 ///    Picks up any bytes that arrived between pipe-pane install
 ///    and now.
@@ -1208,7 +1214,22 @@ fn capture_replay_bytes(cmd: &Command, session: &RuntimeSession) -> RuntimeResul
             stderr: String::from_utf8_lossy(&out.stderr).to_string(),
         });
     }
-    Ok(out.stdout)
+    // For alt-screen panes (claude-code / codex while running), `capture-pane`
+    // gives us the rendered cell content as text but never re-emits the
+    // mode-switching escapes the agent originally sent at startup. Without
+    // ESC[?1049h here, xterm.js stays on main-screen at reattach time and
+    // every subsequent live redraw from the agent stacks below the previous
+    // one in main-screen scrollback (see docs/impls/0009). Cursor home
+    // after the mode switch is defensive — it pins the first replayed cell
+    // to (1,1) regardless of stale cursor state from `term.reset()`.
+    let mut bytes = out.stdout;
+    if alt_on {
+        let mut with_alt = Vec::with_capacity(bytes.len() + 8);
+        with_alt.extend_from_slice(b"\x1b[?1049h\x1b[H");
+        with_alt.append(&mut bytes);
+        bytes = with_alt;
+    }
+    Ok(bytes)
 }
 
 /// `display-message -p -t=<pane> '#{alternate_on}'` returns
