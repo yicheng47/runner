@@ -151,6 +151,17 @@ export function RunnerTerminal({
       allowProposedApi: true,
       scrollSensitivity: 3,
       fastScrollSensitivity: 8,
+      // OSC 8 hyperlinks (emitted by claude-code and other modern CLIs) are
+      // handled by xterm natively, not by WebLinksAddon. The default activator
+      // calls window.open() which is a silent no-op in WKWebView/Tauri, so we
+      // route them through the same plugin-opener path as regex-detected URLs.
+      linkHandler: {
+        activate: (_event, uri) => {
+          void openUrl(uri).catch((err) => {
+            console.error("[terminal] OSC 8 openUrl failed:", err);
+          });
+        },
+      },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
