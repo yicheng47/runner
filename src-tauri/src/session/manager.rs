@@ -602,7 +602,8 @@ impl SessionManager {
         // metadata yet) so a fast-failing runtime spawn doesn't leave
         // a half-row. We update with runtime metadata once the
         // runtime hands them back.
-        let started_at = Utc::now().to_rfc3339();
+        let started_at_dt = Utc::now();
+        let started_at = started_at_dt.to_rfc3339();
         {
             let conn = pool.get()?;
             conn.execute(
@@ -689,6 +690,19 @@ impl SessionManager {
         );
         if let Some(h) = self.sessions.lock().unwrap().get_mut(&session_id) {
             h.forwarder = Some(forwarder);
+        }
+
+        // Mirror the codex rollout capture from spawn_direct / resume so
+        // mission-slot spawns also populate agent_session_key for restart.
+        if runner.runtime == "codex" && plan.assigned_key.is_none() {
+            if let Some(cwd) = capture_cwd(resolved_cwd.clone()) {
+                crate::session::codex_capture::spawn_capture(
+                    session_id.clone(),
+                    cwd,
+                    started_at_dt,
+                    Arc::clone(&pool),
+                );
+            }
         }
 
         emit_runner_activity(&pool, runner, events.as_ref());
