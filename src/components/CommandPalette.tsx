@@ -1,27 +1,28 @@
 // Command palette — Pencil node `Fkoe8`. Opens from the sidebar's
-// search row (and ⌘K / Ctrl+K). Lists missions, runners, and crews
-// in one searchable surface; selecting a row navigates to the
-// corresponding detail page.
+// search row (and ⌘K / Ctrl+K). Lists missions, chats, runners, and
+// crews in one searchable surface; selecting a row navigates to the
+// corresponding detail page. Chat rows navigate to the specific
+// direct-chat session; runner rows navigate to the runner template.
 //
 // Filter is plain substring match against the visible label
-// (mission title / runner handle / crew name) — fast, no scoring,
-// no fuzzy. Empty query shows everything sorted by recency
-// (missions/runners/crews each ordered by their natural recency
-// signal). The arrow keys + Enter move/select; Escape and
-// outside-click both close.
+// (mission title / chat title / runner handle / crew name) — fast,
+// no scoring, no fuzzy. Empty query shows everything sorted by
+// recency (each kind ordered by its natural recency signal). The
+// arrow keys + Enter move/select; Escape and outside-click both
+// close.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Flag, Terminal, Users } from "lucide-react";
+import { Flag, MessageSquare, Terminal, Users } from "lucide-react";
 
-import { api } from "../lib/api";
+import { api, type DirectSessionEntry } from "../lib/api";
 import type {
   CrewListItem,
   MissionSummary,
   Runner,
 } from "../lib/types";
 
-type Kind = "mission" | "runner" | "crew";
+type Kind = "mission" | "runner" | "crew" | "chat";
 
 interface PaletteItem {
   kind: Kind;
@@ -59,8 +60,9 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   // an empty section, and the user can retry by reopening.
   const refresh = useCallback(async () => {
     try {
-      const [missions, runners, crews] = await Promise.all([
+      const [missions, chats, runners, crews] = await Promise.all([
         api.mission.listSummary().catch(() => [] as MissionSummary[]),
+        api.session.listRecentDirect().catch(() => [] as DirectSessionEntry[]),
         api.runner.list().catch(() => [] as Runner[]),
         api.crew.list().catch(() => [] as CrewListItem[]),
       ]);
@@ -72,6 +74,19 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
           label: m.title,
           navigate: () => navigate(`/missions/${m.id}`),
           searchText: `${m.title} ${m.crew_name ?? ""}`.toLowerCase(),
+          order: i,
+        }),
+      );
+      chats.forEach((c, i) =>
+        next.push({
+          kind: "chat",
+          id: c.session_id,
+          label: c.title ?? `@${c.handle}`,
+          navigate: () =>
+            navigate(`/runners/${c.handle}/chat/${c.session_id}`, {
+              state: { sessionStatus: c.status },
+            }),
+          searchText: `${c.handle} ${c.title ?? ""} ${c.cwd ?? ""}`.toLowerCase(),
           order: i,
         }),
       );
@@ -141,7 +156,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       ? items.filter((it) => it.searchText.includes(q))
       : items.slice();
     matched.sort((a, b) => {
-      const kindOrder: Record<Kind, number> = { mission: 0, runner: 1, crew: 2 };
+      const kindOrder: Record<Kind, number> = { mission: 0, chat: 1, runner: 2, crew: 3 };
       if (a.kind !== b.kind) return kindOrder[a.kind] - kindOrder[b.kind];
       return a.order - b.order;
     });
@@ -212,7 +227,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
             <div className="px-3 py-6 text-center text-[12px] text-fg-3">
               {query.trim()
                 ? "No matches."
-                : "No missions, runners, or crews yet."}
+                : "No missions, chats, runners, or crews yet."}
             </div>
           ) : (
             <ul ref={listRef} className="flex flex-col gap-0.5 px-2">
@@ -261,6 +276,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
 function KindIcon({ kind }: { kind: Kind }) {
   const cls = "h-3.5 w-3.5 text-fg-2";
   if (kind === "mission") return <Flag aria-hidden className={cls} />;
+  if (kind === "chat") return <MessageSquare aria-hidden className={cls} />;
   if (kind === "runner") return <Terminal aria-hidden className={cls} />;
   return <Users aria-hidden className={cls} />;
 }
