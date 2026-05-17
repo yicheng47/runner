@@ -1317,8 +1317,8 @@ impl SessionManager {
         // On a real resume (not a fresh-with-known-uuid spawn), nudge
         // the agent with "continue" so it picks up where it left off
         // without the user having to type. Skipped for fresh spawns
-        // — the first-prompt path covers those — and for non-claude-
-        // code runtimes that don't have a real resume semantic.
+        // — the first-prompt path covers those — and for runtimes
+        // without a real resume semantic (shell).
         schedule_continue_on_resume(self, session_id.to_string(), &runner, &plan);
 
         // Return the slot's in-mission identity for mission rows so the
@@ -2378,7 +2378,7 @@ fn schedule_direct_first_prompt(
 /// resume so the agent picks up where it left off without the user
 /// having to manually nudge it. Only fires when the resume actually
 /// reloaded a prior conversation (`plan.resuming == true` AND we
-/// have an `agent_session_key` to point claude-code at). For
+/// have an `agent_session_key` for the agent CLI to bind to). For
 /// runtimes that don't have a real "resume" semantic (shell),
 /// no-op — there's no conversation thread to continue.
 ///
@@ -4968,7 +4968,7 @@ mod tests {
 
     #[test]
     fn continue_resume_skips_for_non_claude_runtime() {
-        // codex / shell don't have a real "continue" semantic — the
+        // shell doesn't have a real "continue" semantic — the
         // function must no-op (no paste, no Enter) regardless of
         // `plan.resuming`.
         let fake = fake_runtime();
