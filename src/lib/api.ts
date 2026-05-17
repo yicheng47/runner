@@ -23,6 +23,7 @@ import type {
   RunnerActivity,
   RunnerWithActivity,
   Session,
+  SessionAttachSnapshot,
   SessionOutputEvent,
   SlotWithRunner,
   SpawnedSession,
@@ -176,6 +177,12 @@ export const api = {
       invoke<void>("session_resize", { sessionId, cols, rows }),
     outputSnapshot: (sessionId: string) =>
       invoke<SessionOutputEvent[]>("session_output_snapshot", { sessionId }),
+    attachSnapshot: (sessionId: string, cols: number, rows: number) =>
+      invoke<SessionAttachSnapshot>("session_attach_snapshot", {
+        sessionId,
+        cols,
+        rows,
+      }),
     pasteImage: (bytes: Uint8Array) =>
       invoke<void>("session_paste_image", {
         bytes: Array.from(bytes),

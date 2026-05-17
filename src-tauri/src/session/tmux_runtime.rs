@@ -674,6 +674,34 @@ impl SessionRuntime for TmuxRuntime {
         capture_visible_region(&self.cmd(), session)
     }
 
+    fn resize_and_capture(
+        &self,
+        session: &RuntimeSession,
+        cols: u16,
+        rows: u16,
+    ) -> RuntimeResult<Vec<u8>> {
+        // Resize first so the agent's SIGWINCH redraw lands at the
+        // dims the caller wants the snapshot for. `capture_replay_bytes`
+        // returns whatever cells are in tmux's buffer at the moment of
+        // the call, so we briefly yield to let claude-code's redraw
+        // bytes flow through the master PTY into tmux's grid before
+        // capturing. 200 ms is enough for Ink's diff render in the
+        // pessimistic case observed on macOS aarch64 (issue #150 repro).
+        run_tmux_check(
+            self.cmd()
+                .arg("resize-window")
+                .arg("-t")
+                .arg(window_target(&session.session_name, &session.window))
+                .arg("-x")
+                .arg(cols.to_string())
+                .arg("-y")
+                .arg(rows.to_string()),
+            "resize-window",
+        )?;
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        capture_replay_bytes(&self.cmd(), session)
+    }
+
     fn status(&self, session: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
         // First gate: has-session. tmux exits non-zero if the
         // target session is gone — that's our terminal-unavailable

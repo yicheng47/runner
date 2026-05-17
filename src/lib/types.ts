@@ -128,6 +128,17 @@ export interface SessionOutputEvent {
   data: string;
 }
 
+/** Returned by `session_attach_snapshot`. `data` is the base64-encoded
+ *  capture-pane bytes at the cols/rows the frontend asked for; xterm should
+ *  be sized to those dims before writing. `as_of_seq` is the high-water-mark
+ *  in the live event stream at capture time — buffered events with
+ *  `seq <= as_of_seq` are already reflected in `data` and must be dropped to
+ *  avoid double-painting. Implements the fix for issue #150. */
+export interface SessionAttachSnapshot {
+  data: string;
+  as_of_seq: number;
+}
+
 export type MissionStatus = "running" | "completed" | "aborted";
 
 export interface Mission {

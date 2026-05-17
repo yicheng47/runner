@@ -363,4 +363,21 @@ pub trait SessionRuntime: Send + Sync {
     /// readback is the only reliable signal absent a runtime-level
     /// "input bound" event.
     fn capture_visible(&self, session: &RuntimeSession) -> RuntimeResult<Vec<u8>>;
+
+    /// Atomically resize the pane to the requested dims and return a
+    /// fresh alt-screen-aware snapshot of the resulting cells. Used
+    /// by frontend attach to align the captured bytes with xterm's
+    /// container cols before painting, avoiding the absolute-
+    /// positioning misalignment claude-code's Ink renderer produces
+    /// when the replay cols don't match the original draw cols
+    /// (issue #150). The runtime is expected to wait long enough
+    /// after the resize for the agent's SIGWINCH-triggered redraw to
+    /// land in its cell buffer; tmux's capture-pane reads the
+    /// post-redraw state so the bytes match the requested dims.
+    fn resize_and_capture(
+        &self,
+        session: &RuntimeSession,
+        cols: u16,
+        rows: u16,
+    ) -> RuntimeResult<Vec<u8>>;
 }

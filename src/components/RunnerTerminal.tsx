@@ -101,6 +101,19 @@ export function RunnerTerminal({
   // closures don't capture a stale value across the long-lived
   // terminal effect.
   const disabledRef = useRef<boolean>(disabled ?? false);
+  // Snapshot replay is deferred from mount to activation. The mount effect
+  // only subscribes + buffers live events; the activation effect calls
+  // `attach_snapshot` with the *post-fit* container cols, so the backend
+  // resizes tmux + captures fresh bytes at the right size in one round
+  // trip. That keeps absolute-positioning escapes from claude-code's Ink
+  // renderer aligned with xterm's actual grid on cold restart (issue
+  // #150). `as_of_seq` is the high-water-mark in the live event stream at
+  // capture time — buffered events with `seq <= as_of_seq` are already
+  // baked into the snapshot bytes and must be dropped to avoid
+  // double-painting.
+  const replayDoneRef = useRef(false);
+  const lastWrittenSeqRef = useRef(0);
+  const pendingLiveRef = useRef<OutputEvent[]>([]);
 
   // Keep the latest sessionId visible to the data/resize callbacks without
   // re-creating the terminal on prop change. The session listener below
@@ -118,11 +131,18 @@ export function RunnerTerminal({
   // render's value is the initial — we don't want to reset on mount,
   // only on subsequent bumps. We achieve that by skipping the very
   // first effect run via a ref.
+  //
+  // Clear semantics: parent wants a clean slate before driving a resume,
+  // so drop any buffered pre-clear live events and mark replay as already
+  // done — future live events should land on the empty xterm without us
+  // later overwriting them with a (now-stale) `attach_snapshot`.
   const lastClearVersionRef = useRef<number | undefined>(clearVersion);
   useEffect(() => {
     if (lastClearVersionRef.current === clearVersion) return;
     lastClearVersionRef.current = clearVersion;
     termRef.current?.reset();
+    replayDoneRef.current = true;
+    pendingLiveRef.current = [];
   }, [clearVersion]);
 
   useEffect(() => {
@@ -383,32 +403,31 @@ export function RunnerTerminal({
     };
   }, []);
 
-  // Subscribe to the bound session's output + exit. The listener is registered
-  // before snapshot replay so live chunks that arrive during the command round
-  // trip are buffered and merged by seq.
+  // Subscribe to the bound session's output + exit. Live chunks go into
+  // `pendingLiveRef` until the activation effect lands the snapshot; after
+  // that, the listener writes directly into xterm.
   useEffect(() => {
     let unlistenOutput: (() => void) | null = null;
     let unlistenExit: (() => void) | null = null;
     let cancelled = false;
-    let replayDone = false;
-    let lastWrittenSeq = 0;
-    const pendingLive: OutputEvent[] = [];
 
-    const writeOutput = (ev: OutputEvent) => {
-      termRef.current?.write(decodeBase64Chunk(ev.data));
-    };
+    // Reset per-session replay state. Re-binding to a different sessionId
+    // means the next activation owns refetching the snapshot for the new id.
+    replayDoneRef.current = false;
+    lastWrittenSeqRef.current = 0;
+    pendingLiveRef.current = [];
 
     void (async () => {
       const [fnOut, fnExit] = await Promise.all([
         listen<OutputEvent>("session/output", (event) => {
           if (event.payload.session_id !== sessionId) return;
-          if (!replayDone) {
-            pendingLive.push(event.payload);
+          if (!replayDoneRef.current) {
+            pendingLiveRef.current.push(event.payload);
             return;
           }
-          if (event.payload.seq <= lastWrittenSeq) return;
-          writeOutput(event.payload);
-          lastWrittenSeq = event.payload.seq;
+          if (event.payload.seq <= lastWrittenSeqRef.current) return;
+          termRef.current?.write(decodeBase64Chunk(event.payload.data));
+          lastWrittenSeqRef.current = event.payload.seq;
         }),
         listen<ExitEvent>("session/exit", (event) => {
           if (event.payload.session_id !== sessionId) return;
@@ -422,32 +441,6 @@ export function RunnerTerminal({
       }
       unlistenOutput = fnOut;
       unlistenExit = fnExit;
-
-      let snapshot: OutputEvent[] = [];
-      try {
-        snapshot = await api.session.outputSnapshot(sessionId);
-      } catch (e) {
-        onErrorRef.current?.(String(e));
-      }
-      if (cancelled) return;
-
-      termRef.current?.reset();
-      for (const ev of snapshot) {
-        writeOutput(ev);
-        lastWrittenSeq = Math.max(lastWrittenSeq, ev.seq);
-      }
-      replayDone = true;
-      for (const ev of pendingLive) {
-        if (ev.seq <= lastWrittenSeq) continue;
-        writeOutput(ev);
-        lastWrittenSeq = ev.seq;
-      }
-      pendingLive.length = 0;
-
-      // Do not resize here: hidden terminal panes mount before they are
-      // measurable, and sending that hidden geometry to TUIs makes them paint
-      // their startup screen into a tiny grid. The activation effect below
-      // owns the SIGWINCH dance once the pane is visible.
     })();
 
     return () => {
@@ -458,16 +451,17 @@ export function RunnerTerminal({
   }, [sessionId]);
 
   // Activation effect: when this tab moves to the front, wait for the pane
-  // to become measurable, fit to its container, repaint the WebGL/canvas
-  // renderer with the current scrollback, and grab focus so keystrokes flow
-  // into the expected PTY.
+  // to become measurable, fit to its container, then (first activation only)
+  // resize + capture + replay so the snapshot bytes line up with xterm's
+  // grid. Subsequent activations skip the snapshot — xterm already holds the
+  // right content; we just refit + refocus.
   useEffect(() => {
     if (!active) return;
     let cancelled = false;
     let raf1 = 0;
     let raf2 = 0;
 
-    const activate = () => {
+    const activate = async () => {
       if (cancelled) return;
       const t = termRef.current;
       const fit = fitRef.current;
@@ -477,25 +471,61 @@ export function RunnerTerminal({
       if (rect.width <= 0 || rect.height <= 0) return;
       try {
         fit.fit();
+
+        if (!replayDoneRef.current) {
+          const cols = t.cols;
+          const rows = t.rows;
+          let snapshot: { data: string; as_of_seq: number } | null = null;
+          try {
+            snapshot = await api.session.attachSnapshot(sessionId, cols, rows);
+          } catch (e) {
+            onErrorRef.current?.(String(e));
+          }
+          if (cancelled) return;
+          t.reset();
+          if (snapshot && snapshot.data) {
+            t.write(decodeBase64Chunk(snapshot.data));
+          }
+          const asOf = snapshot?.as_of_seq ?? 0;
+          lastWrittenSeqRef.current = asOf;
+          // Drain any live events that arrived during the resize+capture
+          // round trip. Those with `seq <= as_of_seq` are already inside
+          // the snapshot's cells (tmux processes PTY bytes before pipe-pane
+          // forwards them, so any event the forwarder recorded by capture
+          // time is reflected in the capture); the rest are post-capture
+          // deltas that need to be applied.
+          for (const ev of pendingLiveRef.current) {
+            if (ev.seq <= lastWrittenSeqRef.current) continue;
+            t.write(decodeBase64Chunk(ev.data));
+            lastWrittenSeqRef.current = ev.seq;
+          }
+          pendingLiveRef.current = [];
+          replayDoneRef.current = true;
+        }
+
         t.refresh(0, t.rows - 1);
         t.focus();
-        const cols = t.cols;
-        const rows = t.rows;
-        // Single resize is enough once xterm enters alt-screen at attach
-        // time (see docs/impls/0009). The earlier cols-1 → cols dance was
-        // there to coax claude-code into a repaint that would land where
-        // the user could see it; with the alt-screen state correct, the
-        // agent's single SIGWINCH redraw lands in the right buffer.
-        void api.session.resize(sessionId, cols, rows).catch(() => {
-          // session may have exited
-        });
+        // `attachSnapshot` already resized tmux to (cols, rows). On a
+        // subsequent activation (tab-switch back) the dims may have
+        // changed; a single resize keeps tmux in sync — claude-code's
+        // in-place alt-screen redraw lands cleanly since 0009 routed us
+        // into alt-screen at the first attach.
+        if (replayDoneRef.current) {
+          const cols = t.cols;
+          const rows = t.rows;
+          void api.session.resize(sessionId, cols, rows).catch(() => {
+            // session may have exited
+          });
+        }
       } catch {
         // Layout not ready yet — the next activation / resize will drive it.
       }
     };
 
     raf1 = window.requestAnimationFrame(() => {
-      raf2 = window.requestAnimationFrame(activate);
+      raf2 = window.requestAnimationFrame(() => {
+        void activate();
+      });
     });
 
     return () => {

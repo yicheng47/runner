@@ -20,7 +20,7 @@ use crate::{
     commands::runner,
     error::{Error, Result},
     model::{Session, SessionStatus, Timestamp},
-    session::manager::{OutputEvent, SessionEvents, SpawnedSession, TauriSessionEvents},
+    session::manager::{AttachSnapshot, OutputEvent, SessionEvents, SpawnedSession, TauriSessionEvents},
     AppState,
 };
 
@@ -140,6 +140,22 @@ pub async fn session_output_snapshot(
     session_id: String,
 ) -> Result<Vec<OutputEvent>> {
     Ok(state.sessions.output_snapshot(&session_id))
+}
+
+/// Resize the pane to xterm's container dims and return a fresh
+/// alt-screen-aware capture. Replaces `session_output_snapshot` in
+/// the frontend's mount-time attach flow — the cols-matched capture
+/// avoids the absolute-positioning misalignment claude-code's Ink
+/// renderer produces when the replay cols don't match the original
+/// draw cols (issue #150).
+#[tauri::command]
+pub async fn session_attach_snapshot(
+    state: State<'_, AppState>,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<AttachSnapshot> {
+    state.sessions.attach_snapshot(&session_id, cols, rows)
 }
 
 /// Restore NSPasteboard for a PNG paste that came in through the

@@ -256,6 +256,23 @@ pub struct OutputEvent {
     pub data: String,
 }
 
+/// Resize-aligned attach snapshot returned by `attach_snapshot`. The
+/// frontend writes `data` into an xterm sized to the cols/rows it asked
+/// for, then dedups buffered live events against `as_of_seq` (drop
+/// `seq <= as_of_seq`, replay `seq > as_of_seq`). Implements the fix
+/// for issue #150 (cold-restart cols-mismatch drift).
+#[derive(Debug, Clone, Serialize)]
+pub struct AttachSnapshot {
+    /// Base64-encoded capture-pane bytes at the requested dims, with
+    /// alt-screen-enter prepended when applicable (see
+    /// `capture_replay_bytes` and docs/impls/0009).
+    pub data: String,
+    /// `output_seq` value at the moment of capture. Live events with
+    /// `seq <= as_of_seq` are already reflected in `data` and should
+    /// not be replayed by the consumer.
+    pub as_of_seq: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ExitEvent {
     pub session_id: String,
@@ -1728,6 +1745,54 @@ impl SessionManager {
             .unwrap_or_default()
     }
 
+    /// Resize the runtime pane to `(cols, rows)` and return a fresh
+    /// alt-screen-aware capture of the resulting cells, plus the
+    /// `output_seq` high-water-mark at capture time. The frontend
+    /// writes the bytes into an xterm sized to `(cols, rows)` (matched
+    /// to its container), then drops any buffered live events with
+    /// `seq <= as_of_seq` because those are already baked into the
+    /// capture; events with `seq > as_of_seq` are post-capture and get
+    /// applied as deltas. Fixes the cold-restart cols-mismatch path
+    /// (issue #150).
+    ///
+    /// `as_of_seq` is read *after* `capture-pane` returns, on the
+    /// theory that tmux processes incoming PTY bytes before pipe-pane
+    /// forwards them — so any event the forwarder has recorded with
+    /// `seq <= as_of_seq` is necessarily reflected in the capture's
+    /// cells. The narrow race between `capture-pane` returning and us
+    /// reading the seq map is on the order of microseconds and would
+    /// at worst double-paint a single live chunk — visually
+    /// indistinguishable from a normal redraw.
+    pub fn attach_snapshot(
+        &self,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<AttachSnapshot> {
+        let rt_session = self
+            .sessions
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map(|h| h.runtime_session.clone())
+            .ok_or_else(|| Error::Msg(format!("session {session_id} is not live")))?;
+        let bytes = self
+            .runtime
+            .resize_and_capture(&rt_session, cols, rows)
+            .map_err(|e| Error::Msg(format!("resize_and_capture failed: {e}")))?;
+        let as_of_seq = self
+            .output_seq
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .copied()
+            .unwrap_or(0);
+        Ok(AttachSnapshot {
+            data: BASE64.encode(&bytes),
+            as_of_seq,
+        })
+    }
+
     /// Kill the child and wait for the reader thread to reap it.
     ///
     /// Sequence:
@@ -2665,6 +2730,16 @@ mod tests {
                 "InertRuntime: capture_visible unsupported".into(),
             ))
         }
+        fn resize_and_capture(
+            &self,
+            _: &RuntimeSession,
+            _: u16,
+            _: u16,
+        ) -> RuntimeResult<Vec<u8>> {
+            Err(RuntimeError::Msg(
+                "InertRuntime: resize_and_capture unsupported".into(),
+            ))
+        }
     }
 
     fn inert_runtime() -> Arc<dyn SessionRuntime> {
@@ -2977,6 +3052,19 @@ mod tests {
             } else {
                 Ok(self.pane_pre_paste.lock().unwrap().clone())
             }
+        }
+
+        fn resize_and_capture(
+            &self,
+            _: &RuntimeSession,
+            _: u16,
+            _: u16,
+        ) -> RuntimeResult<Vec<u8>> {
+            // Tests don't model resize+capture; integration coverage
+            // lives in `session::tmux_runtime::tests`. Synthesizes an
+            // empty buffer so any manager-level test that lands here
+            // gets a deterministic noop.
+            Ok(Vec::new())
         }
     }
 
