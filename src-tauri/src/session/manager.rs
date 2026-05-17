@@ -2379,9 +2379,8 @@ fn schedule_direct_first_prompt(
 /// having to manually nudge it. Only fires when the resume actually
 /// reloaded a prior conversation (`plan.resuming == true` AND we
 /// have an `agent_session_key` to point claude-code at). For
-/// runtimes that don't have a real "resume" semantic (shell, or
-/// codex pre-capture), no-op — there's no conversation thread to
-/// continue.
+/// runtimes that don't have a real "resume" semantic (shell),
+/// no-op — there's no conversation thread to continue.
 ///
 /// Same readback-verified primitive as `inject_first_turn`. The
 /// resume case carries an extra subtlety: a resumed pane may
@@ -2416,7 +2415,7 @@ fn schedule_continue_on_resume(
     runner: &Runner,
     plan: &router::runtime::ResumePlan,
 ) {
-    if runner.runtime != "claude-code" {
+    if runner.runtime != "claude-code" && runner.runtime != "codex" {
         return;
     }
     if !plan.resuming {
