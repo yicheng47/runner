@@ -602,7 +602,8 @@ impl SessionManager {
         // metadata yet) so a fast-failing runtime spawn doesn't leave
         // a half-row. We update with runtime metadata once the
         // runtime hands them back.
-        let started_at = Utc::now().to_rfc3339();
+        let started_at_dt = Utc::now();
+        let started_at = started_at_dt.to_rfc3339();
         {
             let conn = pool.get()?;
             conn.execute(
@@ -689,6 +690,19 @@ impl SessionManager {
         );
         if let Some(h) = self.sessions.lock().unwrap().get_mut(&session_id) {
             h.forwarder = Some(forwarder);
+        }
+
+        // Mirror the codex rollout capture from spawn_direct / resume so
+        // mission-slot spawns also populate agent_session_key for restart.
+        if runner.runtime == "codex" && plan.assigned_key.is_none() {
+            if let Some(cwd) = capture_cwd(resolved_cwd.clone()) {
+                crate::session::codex_capture::spawn_capture(
+                    session_id.clone(),
+                    cwd,
+                    started_at_dt,
+                    Arc::clone(&pool),
+                );
+            }
         }
 
         emit_runner_activity(&pool, runner, events.as_ref());
@@ -1303,8 +1317,8 @@ impl SessionManager {
         // On a real resume (not a fresh-with-known-uuid spawn), nudge
         // the agent with "continue" so it picks up where it left off
         // without the user having to type. Skipped for fresh spawns
-        // — the first-prompt path covers those — and for non-claude-
-        // code runtimes that don't have a real resume semantic.
+        // — the first-prompt path covers those — and for runtimes
+        // without a real resume semantic (shell).
         schedule_continue_on_resume(self, session_id.to_string(), &runner, &plan);
 
         // Return the slot's in-mission identity for mission rows so the
@@ -2364,10 +2378,9 @@ fn schedule_direct_first_prompt(
 /// resume so the agent picks up where it left off without the user
 /// having to manually nudge it. Only fires when the resume actually
 /// reloaded a prior conversation (`plan.resuming == true` AND we
-/// have an `agent_session_key` to point claude-code at). For
-/// runtimes that don't have a real "resume" semantic (shell, or
-/// codex pre-capture), no-op — there's no conversation thread to
-/// continue.
+/// have an `agent_session_key` for the agent CLI to bind to). For
+/// runtimes that don't have a real "resume" semantic (shell),
+/// no-op — there's no conversation thread to continue.
 ///
 /// Same readback-verified primitive as `inject_first_turn`. The
 /// resume case carries an extra subtlety: a resumed pane may
@@ -2402,7 +2415,7 @@ fn schedule_continue_on_resume(
     runner: &Runner,
     plan: &router::runtime::ResumePlan,
 ) {
-    if runner.runtime != "claude-code" {
+    if runner.runtime != "claude-code" && runner.runtime != "codex" {
         return;
     }
     if !plan.resuming {
@@ -4955,7 +4968,7 @@ mod tests {
 
     #[test]
     fn continue_resume_skips_for_non_claude_runtime() {
-        // codex / shell don't have a real "continue" semantic — the
+        // shell doesn't have a real "continue" semantic — the
         // function must no-op (no paste, no Enter) regardless of
         // `plan.resuming`.
         let fake = fake_runtime();
