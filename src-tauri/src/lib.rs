@@ -69,9 +69,16 @@ pub fn run() {
             per_target: Vec::new(),
         });
 
+    // `Folder` (vs `LogDir`) so dev builds write to a `-dev`-suffixed
+    // directory that mirrors `app_data_dir`'s dev/prod split applied
+    // in the setup callback below. `LogDir` resolves via the bundle
+    // identifier with no dev suffix, so without this dev + prod
+    // builds both wrote to the same `runner.log` and triage couldn't
+    // tell them apart.
     let mut log_builder = LogBuilder::new()
         .targets([
-            Target::new(TargetKind::LogDir {
+            Target::new(TargetKind::Folder {
+                path: log_dir_for_build(),
                 file_name: Some("runner".into()),
             }),
             #[cfg(debug_assertions)]
@@ -380,28 +387,34 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     }
 }
 
-/// Compute the path `tauri-plugin-log` would resolve for the LogDir
-/// target, BEFORE any Tauri runtime exists. Used by the pre-builder
-/// panic hook as a fallback sink so a panic during plugin init still
-/// lands next to the eventual `runner.log`.
-///
-/// Mirrors the plugin's platform conventions:
-///
-/// - macOS:   `$HOME/Library/Logs/<identifier>/runner.log`
-/// - Linux:   `$XDG_DATA_HOME` (or `$HOME/.local/share`) `/<identifier>/logs/runner.log`
-/// - Windows: `$LOCALAPPDATA/<identifier>/logs/runner.log`
-///
-/// Best-effort env lookups with sane fallbacks — we'd rather write
-/// a panic line into `./runner.log` than lose it.
-fn default_log_path() -> PathBuf {
+/// The bundle-id segment for log + app-data paths, with a `-dev`
+/// suffix in debug builds. Mirrors the dev/prod split that
+/// `app_data_dir` gets in the Tauri setup callback so a `tauri dev`
+/// session can't trample a packaged install's `runner.log` (or, the
+/// other way, contaminate prod-build triage with stale dev lines).
+/// Used by both the panic-hook fallback path and the plugin-log
+/// builder.
+fn bundle_segment() -> String {
+    if cfg!(debug_assertions) {
+        format!("{APP_IDENTIFIER}-dev")
+    } else {
+        APP_IDENTIFIER.to_string()
+    }
+}
+
+/// Directory the plugin-log `Folder` target writes to. Computed
+/// before the Tauri builder exists (the plugin needs the path at
+/// build time, not at setup time), so this can't go through
+/// `app.path().app_log_dir()` and has to mirror the platform
+/// conventions explicitly.
+fn log_dir_for_build() -> PathBuf {
+    let segment = bundle_segment();
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/"));
-        home.join("Library/Logs")
-            .join(APP_IDENTIFIER)
-            .join("runner.log")
+        home.join("Library/Logs").join(segment)
     }
     #[cfg(target_os = "linux")]
     {
@@ -409,17 +422,24 @@ fn default_log_path() -> PathBuf {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
             .unwrap_or_else(|| PathBuf::from("/tmp"));
-        base.join(APP_IDENTIFIER).join("logs").join("runner.log")
+        base.join(segment).join("logs")
     }
     #[cfg(target_os = "windows")]
     {
         let base = std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
-        base.join(APP_IDENTIFIER).join("logs").join("runner.log")
+        base.join(segment).join("logs")
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    PathBuf::from("runner.log")
+    PathBuf::from(".")
+}
+
+/// Compute the full path of the file `tauri-plugin-log` writes to.
+/// Used by the pre-builder panic hook as a fallback sink so a panic
+/// during plugin init still lands next to the eventual `runner.log`.
+fn default_log_path() -> PathBuf {
+    log_dir_for_build().join("runner.log")
 }
 
 /// Parsed `RUST_LOG` directives. `global` always carries a value
@@ -524,6 +544,37 @@ mod tests {
             .and_then(|s| s.as_str())
             .expect("identifier field");
         assert_eq!(ident, APP_IDENTIFIER);
+    }
+
+    #[test]
+    fn bundle_segment_appends_dev_suffix_in_debug_builds() {
+        // Wedges in the dev/prod log-dir split so a future refactor that
+        // drops the suffix doesn't silently start writing dev runs into
+        // the packaged install's `runner.log`. `cfg!(debug_assertions)`
+        // is true for `cargo test` so the assertion checks the debug
+        // arm directly.
+        let seg = bundle_segment();
+        assert!(
+            seg.ends_with("-dev"),
+            "expected -dev suffix in debug build, got {seg:?}",
+        );
+        assert!(
+            seg.starts_with(APP_IDENTIFIER),
+            "segment must start with bundle id, got {seg:?}",
+        );
+    }
+
+    #[test]
+    fn log_dir_for_build_lives_under_bundle_segment() {
+        // Sanity-check that `log_dir_for_build` actually composes the
+        // dev-aware segment — easy to break if someone refactors the
+        // path computation without rerouting through `bundle_segment`.
+        let dir = log_dir_for_build();
+        let seg = bundle_segment();
+        assert!(
+            dir.to_string_lossy().contains(&seg),
+            "log dir {dir:?} must contain bundle segment {seg:?}",
+        );
     }
 
     #[test]
