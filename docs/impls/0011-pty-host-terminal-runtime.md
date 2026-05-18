@@ -76,12 +76,16 @@ from claude-code's case at the wire level.
 The fix lives in the **snapshot**, not the live byte stream:
 
 - The host parses every PTY byte through a headless terminal emulator
-  (`wezterm-term` — the embeddable parser inside the WezTerm terminal
-  emulator; production-tested, designed-for-library use, broad and
-  aggressively-updated escape-sequence coverage). The host wraps it
-  with a small screen → ANSI walker that emits cursor positioning +
-  SGR state + cell content per row, capturing the exact bytes needed
-  to recreate the current visible state.
+  (`alacritty_terminal` — the embeddable parser inside Alacritty;
+  published on crates.io with stable semver, production-tested across
+  the Alacritty user base, broad escape-sequence coverage). Zed's
+  open-source terminal stack also uses `alacritty_terminal` as its
+  terminal model, which gives us a current Rust application reference
+  for `Term`, `Processor::advance`, `TermMode`, and
+  `renderable_content()`. The host wraps it with a small screen → ANSI
+  walker that emits cursor positioning + SGR state + cell content per
+  row, capturing the exact bytes needed to recreate the current visible
+  state.
 - The live `Output` events are still raw PTY bytes; xterm's behaviour
   on the live path matches Terminal.app / iTerm2 / any other PTY
   viewer. Claude-code's redraw-on-SIGWINCH still stacks in xterm
@@ -129,9 +133,18 @@ Introduce a Runner-owned PTY host process:
 Runner UI (xterm.js)
   <-> Tauri session manager
   <-> runner-pty-host sidecar over local IPC
-  <-> portable-pty
+  <-> alacritty_terminal::tty + Term/Processor
   <-> agent CLI
 ```
+
+The PTY layer comes from `alacritty_terminal::tty` rather than a
+separate `portable-pty` crate. `alacritty_terminal` already ships a
+production-tested PTY allocator (`rustix_openpty`-backed) plus the
+`Term` model and `Processor` parser. Zed's terminal stack uses this
+same crate for PTY spawn, terminal state, resize handling, and rendering
+state (`zed/crates/terminal/src/terminal.rs:520`). Pulling in a second
+PTY crate would duplicate functionality and double the surface area for
+SIGWINCH / drain-on-exit / signal handling bugs.
 
 The PTY host becomes the source of truth for:
 
@@ -145,8 +158,8 @@ The rule for this migration:
 
 > Do not use `tmux capture-pane` as terminal replay again.
 
-v1 ships a headless terminal model in the host (`wezterm-term` —
-see "Resize-stack fix mechanism" above and Step 5's snapshot
+v1 ships a headless terminal model in the host (`alacritty_terminal`
+— see "Resize-stack fix mechanism" above and Step 5's snapshot
 semantics). On `Attach`, the host returns the headless model's
 serialized current state via `screen_to_ansi`, not a replay of the
 raw event tape. Frontend writes those bytes into a pre-sized xterm
@@ -282,9 +295,9 @@ implementation. Validate this during phase 2 before bundling.
 
 Add dependencies:
 
-- `portable-pty` for PTY creation,
-- `wezterm-term` for the host-side headless terminal model
-  (see "Resize-stack fix mechanism" and Step 5's snapshot semantics),
+- `alacritty_terminal` for both PTY allocation (`tty::new`) and the
+  host-side headless terminal model/parser (`Term` + `Processor`) —
+  see the "Approach" diagram and Step 5's snapshot semantics,
 - `fs2` for the single-instance lockfile,
 - no tmux dependency in the new path.
 
@@ -297,47 +310,65 @@ Add dependencies:
 
 Each host session owns:
 
-- `portable_pty::MasterPty`,
-- child process handle,
-- writer handle for stdin,
-- reader thread for stdout/stderr PTY bytes,
-- `wezterm_term::Terminal` (mirror of the agent's terminal state —
-  see the resize-stack mechanism section above) with a
-  `screen_to_ansi` serializer adjacent to it (see Step 5),
+- `alacritty_terminal::tty::Pty` plus its launched child, both
+  produced by a single `tty::new(&tty::Options { … }, window_size,
+  window_id)` call. The `Options` carries shell program/args, cwd,
+  env, and `drain_on_exit: true` (matches Zed's setting in
+  `zed/crates/terminal/src/terminal.rs:540`),
+- two `File` clones of the PTY master via `pty.file().try_clone()?`
+  — one moved into the reader thread, one held under
+  `Mutex<File>` for input writes from the IPC layer,
+- `Arc<FairMutex<Term<VoidListener>>>` — the headless terminal
+  state, driven by a `Processor` we own,
+- a hand-rolled reader thread (see below). We do *not* use
+  alacritty's `EventLoop` here: it reads bytes straight into
+  `Processor::advance` and never surfaces them to anything except
+  its own (compile-time `ref_test`) tap file. The live xterm path
+  needs the raw PTY bytes — using alacritty's loop would force us
+  to either feature-fork alacritty or write a parallel reader
+  anyway, so we just write the reader,
+- `screen_to_ansi` adjacent to `Term` (see Step 5),
 - current `cols` / `rows`,
-- monotonic `seq`,
+- monotonic `seq` for `HostEvent`s,
 - raw terminal replay log file (for durability; not used on the
   attach replay path),
 - subscriber list for connected app clients.
 
-Reuse the existing launch-script machinery from `src-tauri/src/session/launch.rs`
-so PATH, cwd, runner shims, and environment filtering stay consistent with the
-current tmux runtime.
+Env / cwd / shell resolution stays consistent with the current
+tmux runtime by routing through `SpawnSpecWire` (filled in by
+`src-tauri/src/session/launch.rs`) before the sidecar builds
+`tty::Options`.
 
-The host reader thread should:
+The reader thread, per byte chunk:
 
-1. read raw PTY bytes,
-2. feed them through `wezterm_term::Terminal::advance_bytes(bytes)`
-   to update the headless terminal state,
-3. append `TerminalReplayEvent::Output` to the session log,
-4. broadcast a live `Output` event to connected app clients (raw
-   bytes, same as today's `pipe-pane` stream — frontend xterm
-   behavior on the live path is unchanged),
-5. feed the existing busy/idle detector logic currently in
+1. read raw PTY bytes from the cloned `File`,
+2. lock `term`, call `Processor::advance(&mut term, &bytes)` to
+   update the headless terminal state,
+3. append a `TerminalReplayEvent::Output` row to the session's
+   `terminal.ndjson` (durability tape; not on the attach replay
+   path),
+4. broadcast a live `HostEvent::Output` (raw bytes, same as today's
+   `pipe-pane` stream — frontend xterm behavior on the live path
+   is unchanged),
+5. feed the busy/idle detector logic currently in
    `src-tauri/src/session/tmux_runtime.rs`.
+
+EOF (read returns 0) terminates the loop, marks the session no
+longer alive, and broadcasts a final `HostEvent::Exit`.
 
 On resize:
 
-1. resize the headless model first: `terminal.resize(TerminalSize { rows, cols, pixel_width, pixel_height })`
-   (the `pixel_*` fields can be zero — wezterm only consults them
-   for pixel-addressable escape sequences we don't emit) so the
-   parser grid is ready to absorb the agent's SIGWINCH redraw at the
-   new geometry. Snapshot fidelity depends on the headless model
-   staying in lockstep with the child PTY — resizing only the master
-   would leave the parser stuck at the old size and the next
+1. resize the headless model first:
+   `term.resize(HostTermSize { cols, rows })`, where `HostTermSize`
+   is a tiny local type implementing `alacritty_terminal::grid::Dimensions`,
+   so the parser grid is ready to absorb the agent's SIGWINCH redraw
+   at the new geometry. Snapshot fidelity depends on the headless
+   model staying in lockstep with the child PTY — resizing only the
+   master would leave the parser stuck at the old size and the next
    snapshot would be wrong;
-2. then resize the PTY master: `master.resize(PtySize { rows, cols, ... })`
-   so the child receives SIGWINCH;
+2. then resize the PTY master:
+   `pty.on_resize(WindowSize { num_lines: rows, num_cols: cols, .. })`
+   (we hold the `Mutex<Pty>`), so the child receives SIGWINCH;
 3. append `TerminalReplayEvent::Resize` to the replay log;
 4. broadcast resize if the frontend needs to mirror it.
 
@@ -465,44 +496,51 @@ The raw event tape (`terminal.ndjson` — see Step 7) is still kept on
 disk for durability, debugging, and post-mortem audit, but it is not
 on the attach replay path.
 
-#### Why `wezterm-term` for v1
+#### Why `alacritty_terminal` for v1
 
-- It's the embeddable parser inside [WezTerm](https://github.com/wezterm/wezterm)
-  — production-tested in a major terminal emulator, and unlike
-  `alacritty_terminal`, **designed as a reusable library from the
-  start**. WezTerm's whole architecture is modular: `termwiz`
-  (rendering primitives), `wezterm-term` (the terminal model),
-  `wezterm-mux` (session multiplexing). The mux server uses
-  `wezterm-term` exactly the way our pty-host will — that's the
-  upstream reference design for this exact use case.
-- Aggressive modern-protocol coverage: synchronized updates
-  (`?2026h`), kitty keyboard / graphics protocol, OSC 8 hyperlinks
-  (which claude-code already emits and our existing
-  `RunnerTerminal.tsx` routes through `plugin-opener`),
-  bracketed-paste, mouse reporting, application keypad / cursor.
-  Wez Furlong tracks the modern spec aggressively; gaps close in
-  weeks, not Alacritty's quarters.
+- Published on crates.io with semver-stable releases (v0.26.0 at the
+  time of writing). `wezterm-term` — the original candidate — was
+  rejected during Step 1+2 implementation because it is not
+  published; only a third-party fork (`tattoy-wezterm-term`) is on
+  crates.io, and a git dep on `wezterm/wezterm` would trade
+  CI-clone cost and supply chain risk for a coverage edge we don't
+  need yet.
+- Production-tested by the Alacritty user base, with broad
+  escape-sequence coverage: alt-screen (`?1049h`), bracketed paste
+  (`?2004`), mouse reporting (SGR / X10 / utf8), application
+  keypad / cursor, synchronized updates (`?2026h`), OSC 8
+  hyperlinks (claude-code already emits these and our existing
+  `RunnerTerminal.tsx` routes them through `plugin-opener`). Newer
+  kitty protocol bits trail WezTerm but are not on any agent's
+  current emit path.
+- Zed independently validates this direction: its open-source
+  `crates/terminal` stores `Term<ZedListener>`, feeds bytes with
+  `alacritty_terminal::vte::ansi::Processor::advance`, derives paint
+  state through `term.renderable_content()`, and reads mode flags via
+  `TermMode`. Use the published crate first; only pin Zed's fork if the
+  implementation hits an API gap that crates.io cannot cover.
 - The whole point of this architecture migration is fidelity (the
-  failed PR #154 was a fidelity failure). Picking the parser with
-  the broader and more aggressively-updated protocol footprint
-  upfront avoids discovering gaps in production after agents adopt
-  new sequences.
-- Cost: heavier transitive dep tree (`termwiz`, `wezterm-bidi`, etc.)
-  than `alacritty_terminal`. The dep weight is contained inside the
-  sidecar binary — the main Tauri app doesn't pull it. We accept the
-  ~10 MB binary delta for a parser with first-class library posture.
+  failed PR #154 was a fidelity failure). Alacritty's coverage is
+  more than sufficient for the CLIs Runner ships against today —
+  claude-code, codex, plain shells — and the published
+  semver-stable delivery story removes a class of supply chain
+  problems WezTerm would introduce.
 
-The one shared cost with the alacritty alternative is that
-`wezterm-term` does not ship a built-in "serialize the grid as ANSI"
-helper (unlike `vt100`'s `Screen::contents_formatted()`). We write
-that ourselves in a `screen_to_ansi(terminal: &Terminal) -> Vec<u8>`
-adjacent to the parser: iterate `terminal.screen().lines()` row by
-row, emit `\x1b[<r>;1H` to position the cursor, then for each
-contiguous run of cells sharing the same SGR state emit one SGR
-escape + the cell glyphs, finally restore alt-screen state and
-cursor position from `terminal.get_mode()` and
-`terminal.cursor_pos()`. Expect ~150 lines plus a focused unit test
-that round-trips constructed screens through the serializer.
+`alacritty_terminal` does not ship a built-in "serialize the grid
+as ANSI" helper (unlike `vt100`'s `Screen::contents_formatted()`).
+We write that ourselves in
+`screen_to_ansi(term: &Term<L>) -> Vec<u8>` adjacent to the parser:
+read `let content = term.renderable_content()` (the same surface Zed
+paints), emit any required screen/mode switches first — especially
+`?1049h` before drawing when `content.mode.contains(TermMode::ALT_SCREEN)` —
+then iterate `content.display_iter` row by row. Emit `\x1b[<r>;1H`
+to position the cursor, then for each contiguous run of cells sharing
+the same SGR state emit one SGR escape + the cell glyphs. Restore the
+cursor from `content.cursor` after drawing. Do not switch into
+alt-screen after drawing; that would paint the snapshot into normal
+screen and then show a blank alt-screen. Expect ~150 lines plus a
+focused unit test that round-trips constructed screens through the
+serializer.
 
 Keep the host's parser behind a small trait (`HeadlessTerminal` with
 `process_bytes`, `resize`, `snapshot_ansi`) so the binding point is
@@ -582,17 +620,12 @@ Current first-prompt delivery uses `capture_visible` for paste verification
 (`src-tauri/src/session/runtime.rs:356`). The tmux implementation reads the
 visible pane with `capture-pane`.
 
-For PTY host, implement one of these, in order:
-
-1. Preferred: host maintains a lightweight terminal parser and exposes
-   `VisibleText { rows }`.
-2. Acceptable first cut: host records recent raw output and verifies paste
-   placeholders from the event tape when the agent emits them.
-3. Fallback: keep argv delivery as the dominant path and reduce paste
-   verification scope, but do not call tmux.
-
-If a parser crate is added, use it only inside the host. The frontend remains
-xterm.js.
+For PTY host, `capture_visible` is backed by the same Alacritty
+`HeadlessTerminal` required for snapshots. Expose a host readback request such
+as `VisibleText { rows }`, derived from `term.renderable_content()` visible
+cells with ANSI stripped. Do not verify paste placeholders from the raw event
+tape; the tape is not the attach source of truth and has the same stale-frame
+problem as replay. The frontend remains xterm.js.
 
 ## Step 9: Remove tmux From the Default Path
 
@@ -625,7 +658,7 @@ resume, paste, resize, kill, archive, and app restart.
 |---|---|
 | `crates/runner-core/src/pty_host.rs` | Shared host protocol and replay event types. |
 | `src-tauri/src/bin/runner-pty-host.rs` | New sidecar daemon owning PTYs and replay logs. |
-| `src-tauri/Cargo.toml` | Add sidecar binary and `portable-pty` dependency. |
+| `src-tauri/Cargo.toml` | Add sidecar `[[bin]]` and the `alacritty_terminal` dependency (PTY + emulator in one crate, mirroring Zed). |
 | `src-tauri/tauri.conf.json` | Bundle or locate the sidecar. |
 | `src-tauri/src/session/pty_host_runtime.rs` | New `SessionRuntime` implementation backed by the sidecar. |
 | `src-tauri/src/session/runtime.rs` | Keep trait; adjust docs and snapshot/readback contracts. |
@@ -644,8 +677,8 @@ resume, paste, resize, kill, archive, and app restart.
 - Protocol serde round-trips for every request/response/event.
 - Host replay log preserves monotonic seq across output and resize events.
 - `Attach` snapshot bytes round-trip: feed a known PTY byte sequence
-  into `wezterm_term::Terminal`, snapshot via `screen_to_ansi`, then
-  feed those bytes into a second fresh `Terminal` and confirm both
+  into `alacritty_terminal::Term`, snapshot via `screen_to_ansi`,
+  then feed those bytes into a second fresh `Term` and confirm both
   terminals' grid contents and modes match. Catches serializer
   regressions early.
 - Snapshot bytes pre-sized correctly: `HostSnapshot.cols`/`rows`

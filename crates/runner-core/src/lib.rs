@@ -4,6 +4,7 @@
 pub mod error;
 pub mod event_log;
 pub mod model;
+pub mod pty_host;
 
 pub use error::{Error, Result};
 pub use event_log::{EventLog, EVENTS_FILENAME};

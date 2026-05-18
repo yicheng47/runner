@@ -9,6 +9,14 @@ authors.workspace = true
 name = "runner_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Sidecar PTY host. Lives under `src-tauri` so future Step 3 work can
+# reuse `runner_lib::session::launch` for env / shell filtering. The
+# source is `#![cfg(unix)]`-gated; on Windows the [[bin]] target builds
+# to an empty stub until that platform gets first-class support.
+[[bin]]
+name = "runner-pty-host"
+path = "src/bin/runner-pty-host.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -41,14 +49,20 @@ tempfile = "3"
 # inotify, on Windows to ReadDirectoryChangesW.
 notify = "6"
 
-# Unix-only: FIFO mkfifo + poll() inside session::tmux_runtime. v1 is
-# tmux-only (macOS + Linux); the future native-pty runtime would also live
-# behind this cfg-gate.
+# Unix-only: FIFO mkfifo + poll() inside session::tmux_runtime, plus the
+# `runner-pty-host` sidecar's lockfile + setsid/double-fork detach. v1
+# PTY host is macOS + Linux only; Windows reuses the tmux fallback until
+# named-pipe support lands.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[dev-dependencies]
-# Used by issue #124's forwarder-contention regression test to hold the
-# event-log flock from a second fd; matches the version `runner-core`
-# pulls in transitively so the trait impl resolves identically.
-fs2 = "0.4"
+fs2 = { workspace = true }
+# PTY host sidecar dep. Live under cfg(unix) so the cargo build on
+# Windows stays lean (Windows uses the tmux fallback today).
+# `alacritty_terminal` is intentionally the only PTY/emulator crate
+# we pull in — it ships both `tty::new` (rustix_openpty-backed PTY
+# allocation + child spawn) and the headless `Term` + `Processor`
+# parser. Zed uses the same crate for its terminal stack; a separate
+# `portable-pty` would just duplicate the PTY surface.
+# (Plan originally named `wezterm-term`; swapped because that crate
+# isn't on crates.io.)
+alacritty_terminal = "0.26"
