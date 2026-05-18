@@ -151,53 +151,21 @@ pub fn run() {
             // launchd-strips-PATH problem this fixes.
             let shell_path = shell_path::resolve_login_shell_path();
 
-            // Construct the session runtime. Selection via
-            // `RUNNER_SESSION_RUNTIME` env var:
-            //   * `tmux` (default) — legacy, docs/impls/0004
-            //   * `pty`           — in-process, docs/impls/0011
-            // Windows fails at startup with a clear error either
-            // way for v1; portable-pty technically builds there
-            // but neither runtime has been validated on Windows.
-            let runtime_kind = std::env::var("RUNNER_SESSION_RUNTIME")
-                .unwrap_or_else(|_| "tmux".to_string());
-            let runtime: Arc<dyn session::runtime::SessionRuntime> = match runtime_kind.as_str() {
-                "pty" => {
-                    #[cfg(unix)]
-                    {
-                        log::info!("session runtime: pty (in-process, impl 0011)");
-                        Arc::new(session::pty_runtime::PtyRuntime::new())
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        return Err("pty session runtime is unix-only; \
-                                    unset RUNNER_SESSION_RUNTIME to fall back to tmux"
-                            .into());
-                    }
+            // Construct the in-process PTY runtime
+            // (docs/impls/0011). v1 is unix-only — Windows fails at
+            // startup with a clear error.
+            let runtime: Arc<dyn session::runtime::SessionRuntime> = {
+                #[cfg(unix)]
+                {
+                    log::info!("session runtime: pty (in-process, impl 0011)");
+                    Arc::new(session::pty_runtime::PtyRuntime::new())
                 }
-                "tmux" => {
-                    #[cfg(unix)]
-                    {
-                        log::info!("session runtime: tmux");
-                        let rt = session::tmux_runtime::TmuxRuntime::new(&app_data_dir)
-                            .map_err(|e| -> Box<dyn std::error::Error> {
-                                format!("tmux runtime: {e}").into()
-                            })?;
-                        let _ = rt.reconcile_config();
-                        Arc::new(rt)
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        return Err("Runner requires macOS or Linux (tmux runtime); \
-                                    pty runtime not yet shipped for Windows"
-                            .into());
-                    }
-                }
-                other => {
-                    return Err(format!(
-                        "RUNNER_SESSION_RUNTIME={other:?} is not recognized; \
-                         expected `tmux` or `pty`"
-                    )
-                    .into());
+                #[cfg(not(unix))]
+                {
+                    return Err("Runner requires macOS or Linux; \
+                                Windows support is pending impl 0011's \
+                                cross-platform pass"
+                        .into());
                 }
             };
 
@@ -232,39 +200,19 @@ pub fn run() {
                 commands::mission::reattach_all_running_missions(&state, &app_handle),
             );
 
-            // Reattach vs. cleanup branches on the runtime:
-            //   * tmux — agents survive Runner restart (tmux daemon
-            //     keeps panes alive). Reattach pass walks `running`
-            //     rows, queries the runtime, rebuilds forwarder
-            //     threads for live panes, marks dead panes stopped.
-            //   * pty  — agents are children of this Tauri process
-            //     and die with it. Any `running` row in the DB at
-            //     this point is from a prior process. Demote them
-            //     to `stopped` so the sidebar surfaces them with a
-            //     Resume affordance (impl 0011 §"Tauri startup").
+            // Agents die with this Tauri process under the pty
+            // runtime — any `running` row in the DB at this point
+            // is from a prior process. Demote them to `stopped`
+            // so the sidebar surfaces them with a Resume
+            // affordance (impl 0011 §"Tauri startup").
+            let _ = failed_mission_ids;
             #[cfg(unix)]
             {
-                if runtime_kind == "pty" {
-                    let _ = failed_mission_ids;
-                    if let Err(e) = session::pty_runtime::cleanup_stale_running_rows_on_startup(
-                        &pool,
-                    ) {
-                        log::warn!("pty runtime startup cleanup failed: {e}");
-                    }
-                } else {
-                    let events_for_reattach: Arc<dyn session::manager::SessionEvents> =
-                        Arc::new(session::manager::TauriSessionEvents(app.handle().clone()));
-                    sessions.reattach_running_sessions(
-                        Arc::clone(&pool),
-                        events_for_reattach,
-                        &failed_mission_ids,
-                        &state.app_data_dir,
-                    );
+                if let Err(e) =
+                    session::pty_runtime::cleanup_stale_running_rows_on_startup(&pool)
+                {
+                    log::warn!("pty runtime startup cleanup failed: {e}");
                 }
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = failed_mission_ids;
             }
 
             app.manage(state);
@@ -392,31 +340,17 @@ fn stop_running_sessions_on_quit(app_handle: &AppHandle) {
     }
 }
 
-/// First log line on every app start. Captures the four things
-/// triage usually wants up front: version, app_data_dir, OS/arch,
-/// and tmux version.
+/// First log line on every app start. Captures the things triage
+/// usually wants up front: version, app_data_dir, OS/arch.
 fn log_startup_banner(app: &AppHandle, app_data_dir: &Path) {
     let pkg = app.package_info();
-    let tmux = std::process::Command::new("tmux")
-        .arg("-V")
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| "(unavailable)".to_string());
     log::info!(
-        "starting {} v{} on {}-{}; app_data_dir={}; {}",
+        "starting {} v{} on {}-{}; app_data_dir={}",
         pkg.name,
         pkg.version,
         std::env::consts::OS,
         std::env::consts::ARCH,
         app_data_dir.display(),
-        tmux,
     );
 }
 

@@ -1,5 +1,12 @@
 # Tmux Session Runtime and PATH Recovery
 
+> **Superseded by [0011](./0011-pty-host-terminal-runtime.md).** The
+> tmux-backed `SessionRuntime` documented here has been retired in
+> favor of the in-process `PtyRuntime`. The PATH-composition logic
+> (`session::launch::compose_path`) is the one piece this doc still
+> describes that survives the migration — every other section is
+> historical record only.
+
 ## Context
 
 Issue #65 reports an intermittent packaged-app failure when a direct chat

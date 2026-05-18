@@ -242,34 +242,14 @@ impl Drop for OutputStream {
 
 /// Typed runtime errors. These bubble up through
 /// `crate::error::Error` via the `From` impl so command code can `?`
-/// across the boundary, but the variants stay typed at this layer
-/// so the manager can branch on `TmuxNotFound` (show install hint)
-/// vs. `TmuxFailed` (treat as transient) vs. `TmuxRequiresUnix`
-/// (refuse to construct the runtime on Windows).
+/// across the boundary. v1 keeps the surface narrow: I/O failures
+/// (from the master fd / writer half) and free-form `Msg(...)` for
+/// every other condition the runtime wants to name. Earlier
+/// drafts had tmux-specific variants (`TmuxRequiresUnix`,
+/// `TmuxNotFound`, `TmuxFailed`); those went away when the tmux
+/// runtime was retired (docs/impls/0011).
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
-    /// We're on Windows and tmux can't run. The Windows path is the
-    /// future native-pty runtime; v1 ships macOS + Linux only.
-    #[error("tmux runtime is not available on Windows; native-pty runtime is not yet shipped")]
-    TmuxRequiresUnix,
-
-    /// tmux binary not found in any of the searched locations. The
-    /// list is included so the error surface explains where we
-    /// looked.
-    #[error(
-        "tmux not found in any of {searched:?}; install tmux or set RUNNER_TMUX=/path/to/tmux"
-    )]
-    TmuxNotFound { searched: Vec<PathBuf> },
-
-    /// A tmux subprocess returned non-zero. Captures stderr so the
-    /// surfaced error includes whatever tmux printed.
-    #[error("tmux {command} failed (exit {status}): {stderr}")]
-    TmuxFailed {
-        command: String,
-        status: i32,
-        stderr: String,
-    },
-
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 
