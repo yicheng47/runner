@@ -448,8 +448,10 @@ reconstruct it.
 The snapshot returned by `Attach` is **the host's `screen_to_ansi`
 serialization of the headless emulator's current state**, not the raw
 event tape. See "Resize-stack fix mechanism" above for why — this is
-the load-bearing choice that makes the reattach view correct without
-regressing shell scrollback.
+the load-bearing choice that makes the reattach view correct at the
+current geometry. It intentionally does not promise full shell scrollback
+for plain-shell sessions in v1; only the visible terminal state is
+reattached.
 
 Concretely the host wraps the serialized bytes in a single synthetic
 `TerminalReplayEvent::Output { seq: last_seq, data: <base64> }` and
@@ -679,8 +681,9 @@ resume, paste, resize, kill, archive, and app restart.
    staircase indentation.
 7. Type into the chat after reopen.
 8. Expected: input lands in the same live agent process.
-9. Open two direct chats, switch between them, and verify both preserve
-   scrollback without relying on hidden mounted xterm panes.
+9. Open two direct chats, switch between them while both remain mounted,
+   and verify each visible terminal state stays correct without relying on
+   hidden xterm panes.
 10. Kill the host process manually.
 11. Expected: Runner marks affected sessions stopped/crashed and does not
     show stale "running" state.
