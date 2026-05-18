@@ -16,6 +16,7 @@
     "fs:allow-read-file",
     "fs:allow-appdata-read",
     "fs:allow-appdata-write",
+    "log:default",
     "process:allow-restart",
     "shell:default",
     "updater:default"

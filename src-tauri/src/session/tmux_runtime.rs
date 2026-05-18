@@ -656,6 +656,17 @@ impl SessionRuntime for TmuxRuntime {
     }
 
     fn resize(&self, session: &RuntimeSession, cols: u16, rows: u16) -> RuntimeResult<()> {
+        // Trace at debug so a `tauri dev` run can correlate the
+        // frontend `pushSize` → backend resize-window → agent
+        // SIGWINCH → live Stream burst chain when investigating
+        // resize-related rendering issues. Dropped in release
+        // builds via the plugin-log level filter.
+        log::debug!(
+            "session_resize pane={} cols={} rows={}",
+            session.pane,
+            cols,
+            rows,
+        );
         run_tmux_check(
             self.cmd()
                 .arg("resize-window")

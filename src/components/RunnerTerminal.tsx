@@ -11,6 +11,7 @@
 import { useEffect, useRef } from "react";
 
 import { listen } from "@tauri-apps/api/event";
+import { debug as logDebug } from "@tauri-apps/plugin-log";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -33,6 +34,27 @@ import {
   STORAGE_TERMINAL_SCROLLBACK,
   STORAGE_TERMINAL_THEME,
 } from "../lib/settings";
+
+// Debug-only trace helpers. Lines flow through @tauri-apps/plugin-log →
+// tauri-plugin-log → runner.log and are dropped in release builds by
+// the plugin-log level filter (src-tauri/src/lib.rs: default_level).
+// Tagged `term:` for grep convenience.
+function altMode(term: Terminal | null): string {
+  if (!term) return "<no-term>";
+  try {
+    return term.buffer.active.type;
+  } catch {
+    return "<unknown>";
+  }
+}
+function traceTerm(msg: string, fields: Record<string, unknown> = {}): void {
+  const parts = Object.entries(fields)
+    .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+    .join(" ");
+  void logDebug(`term: ${msg}${parts ? " " + parts : ""}`).catch(() => {
+    // Best-effort. plugin-log invoke can reject; never propagate.
+  });
+}
 
 interface OutputEvent {
   session_id: string;
@@ -101,6 +123,15 @@ export function RunnerTerminal({
   // closures don't capture a stale value across the long-lived
   // terminal effect.
   const disabledRef = useRef<boolean>(disabled ?? false);
+  // Last (cols, rows) pushed to the backend. Shared between `pushSize`
+  // (mount-effect scope) and the activation effect's trailing resize so
+  // neither hammers the backend with identical dims. During a drag both
+  // the window 'resize' listener AND the container `ResizeObserver` fire,
+  // so without this we were sending 2–3 identical `session_resize` IPCs
+  // per cols value — tmux dedupes the SIGWINCH but the round-trips still
+  // lengthen the redraw window the user perceives.
+  const lastPushedColsRef = useRef(0);
+  const lastPushedRowsRef = useRef(0);
 
   // Keep the latest sessionId visible to the data/resize callbacks without
   // re-creating the terminal on prop change. The session listener below
@@ -122,6 +153,11 @@ export function RunnerTerminal({
   useEffect(() => {
     if (lastClearVersionRef.current === clearVersion) return;
     lastClearVersionRef.current = clearVersion;
+    traceTerm("clearVersion fired", {
+      sessionId: sessionIdRef.current,
+      clearVersion,
+      altBefore: altMode(termRef.current),
+    });
     termRef.current?.reset();
   }, [clearVersion]);
 
@@ -184,8 +220,20 @@ export function RunnerTerminal({
       // No WebGL — fall through to canvas. RunnerChat does the same.
     }
     const initialRect = containerRef.current.getBoundingClientRect();
+    traceTerm("mount", {
+      sessionId: sessionIdRef.current,
+      rectW: Math.round(initialRect.width),
+      rectH: Math.round(initialRect.height),
+      preCols: term.cols,
+      preRows: term.rows,
+    });
     if (initialRect.width > 0 && initialRect.height > 0) {
       fit.fit();
+      traceTerm("mount post-fit", {
+        sessionId: sessionIdRef.current,
+        postCols: term.cols,
+        postRows: term.rows,
+      });
     }
     // Don't auto-focus on mount: in the workspace, multiple
     // RunnerTerminals mount at once before any tab is selected, and the
@@ -283,10 +331,25 @@ export function RunnerTerminal({
     const textarea = term.textarea;
     textarea?.addEventListener("paste", onPaste, { capture: true });
 
+    // Dedupe by last-pushed dims. See `lastPushedColsRef` comment for why.
     const pushSize = () => {
       const t = termRef.current;
       const sid = sessionIdRef.current;
       if (!t || !sid || disabledRef.current) return;
+      if (
+        t.cols === lastPushedColsRef.current &&
+        t.rows === lastPushedRowsRef.current
+      ) {
+        return;
+      }
+      lastPushedColsRef.current = t.cols;
+      lastPushedRowsRef.current = t.rows;
+      traceTerm("pushSize", {
+        sessionId: sid,
+        cols: t.cols,
+        rows: t.rows,
+        alt: altMode(t),
+      });
       void api.session.resize(sid, t.cols, t.rows).catch(() => {
         // session may have exited
       });
@@ -486,9 +549,19 @@ export function RunnerTerminal({
         // there to coax claude-code into a repaint that would land where
         // the user could see it; with the alt-screen state correct, the
         // agent's single SIGWINCH redraw lands in the right buffer.
-        void api.session.resize(sessionId, cols, rows).catch(() => {
-          // session may have exited
-        });
+        // Dedupe against the last value pushSize sent — common when this
+        // effect fires immediately after the mount-time fit pushed the
+        // same dims.
+        if (
+          cols !== lastPushedColsRef.current ||
+          rows !== lastPushedRowsRef.current
+        ) {
+          lastPushedColsRef.current = cols;
+          lastPushedRowsRef.current = rows;
+          void api.session.resize(sessionId, cols, rows).catch(() => {
+            // session may have exited
+          });
+        }
       } catch {
         // Layout not ready yet — the next activation / resize will drive it.
       }
