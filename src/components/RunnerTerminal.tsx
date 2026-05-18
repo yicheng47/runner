@@ -11,7 +11,6 @@
 import { useEffect, useRef } from "react";
 
 import { listen } from "@tauri-apps/api/event";
-import { debug as logDebug } from "@tauri-apps/plugin-log";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -35,27 +34,6 @@ import {
   STORAGE_TERMINAL_THEME,
 } from "../lib/settings";
 
-// Debug-only trace helpers. Lines flow through @tauri-apps/plugin-log →
-// tauri-plugin-log → runner.log and are dropped in release builds by
-// the plugin-log level filter (src-tauri/src/lib.rs: default_level).
-// Tagged `term:` for grep convenience.
-function altMode(term: Terminal | null): string {
-  if (!term) return "<no-term>";
-  try {
-    return term.buffer.active.type;
-  } catch {
-    return "<unknown>";
-  }
-}
-function traceTerm(msg: string, fields: Record<string, unknown> = {}): void {
-  const parts = Object.entries(fields)
-    .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
-    .join(" ");
-  void logDebug(`term: ${msg}${parts ? " " + parts : ""}`).catch(() => {
-    // Best-effort. plugin-log invoke can reject; never propagate.
-  });
-}
-
 interface OutputEvent {
   session_id: string;
   mission_id: string | null;
@@ -72,6 +50,14 @@ interface ExitEvent {
 
 interface RunnerTerminalProps {
   sessionId: string;
+  /** Runtime kind of the runner driving this session (e.g.
+   *  `"claude-code"`, `"codex"`, `"shell"`). Used to gate the
+   *  scrollback-clear on resize: TUI agents whose `SIGWINCH` repaint
+   *  policy fully redraws the screen get a hard-clear before the
+   *  resize lands, so the previous frame doesn't stay visible in
+   *  scrollback. Plain shells skip the clear and keep their history.
+   *  See `runtimeClearsOnResize`. */
+  runnerRuntime: string;
   /** Notified when the bound session emits an exit event. */
   onExit?: (ev: ExitEvent) => void;
   /** Surface terminal-side errors (stdin push failures, resize errors). */
@@ -95,6 +81,20 @@ interface RunnerTerminalProps {
   clearVersion?: number;
 }
 
+/**
+ * Should resizing this runtime hard-clear xterm's scrollback before
+ * pushing the new geometry to the backend?
+ *
+ * For TUI agents (claude-code, codex) the SIGWINCH-driven repaint
+ * fully redraws the screen at the new dims; without the pre-clear,
+ * the prior frame stays visible above the new one ("stacking"
+ * regression on every resize). For plain shells we leave scrollback
+ * alone — the user's prior command output is meaningful history.
+ */
+function runtimeClearsOnResize(runtime: string): boolean {
+  return runtime === "claude-code" || runtime === "codex";
+}
+
 function decodeBase64Chunk(data: string): Uint8Array {
   const raw = atob(data);
   const bytes = new Uint8Array(raw.length);
@@ -106,6 +106,7 @@ function decodeBase64Chunk(data: string): Uint8Array {
 
 export function RunnerTerminal({
   sessionId,
+  runnerRuntime,
   onExit,
   onError,
   active,
@@ -119,6 +120,10 @@ export function RunnerTerminal({
   const onExitRef = useRef(onExit);
   const onErrorRef = useRef(onError);
   const activeRef = useRef(active ?? false);
+  // Mirrors the `runnerRuntime` prop into a ref so the resize handler
+  // — declared inside the long-lived mount effect — sees the current
+  // runtime kind without a re-render restarting the whole xterm.
+  const runnerRuntimeRef = useRef<string>(runnerRuntime);
   // Mirrors the `disabled` prop into a ref so the onData/resize
   // closures don't capture a stale value across the long-lived
   // terminal effect.
@@ -145,6 +150,10 @@ export function RunnerTerminal({
     disabledRef.current = disabled ?? false;
   }, [disabled]);
 
+  useEffect(() => {
+    runnerRuntimeRef.current = runnerRuntime;
+  }, [runnerRuntime]);
+
   // Parent-driven canvas wipe (used by the resume flow). The first
   // render's value is the initial — we don't want to reset on mount,
   // only on subsequent bumps. We achieve that by skipping the very
@@ -153,11 +162,6 @@ export function RunnerTerminal({
   useEffect(() => {
     if (lastClearVersionRef.current === clearVersion) return;
     lastClearVersionRef.current = clearVersion;
-    traceTerm("clearVersion fired", {
-      sessionId: sessionIdRef.current,
-      clearVersion,
-      altBefore: altMode(termRef.current),
-    });
     termRef.current?.reset();
   }, [clearVersion]);
 
@@ -220,20 +224,8 @@ export function RunnerTerminal({
       // No WebGL — fall through to canvas. RunnerChat does the same.
     }
     const initialRect = containerRef.current.getBoundingClientRect();
-    traceTerm("mount", {
-      sessionId: sessionIdRef.current,
-      rectW: Math.round(initialRect.width),
-      rectH: Math.round(initialRect.height),
-      preCols: term.cols,
-      preRows: term.rows,
-    });
     if (initialRect.width > 0 && initialRect.height > 0) {
       fit.fit();
-      traceTerm("mount post-fit", {
-        sessionId: sessionIdRef.current,
-        postCols: term.cols,
-        postRows: term.rows,
-      });
     }
     // Don't auto-focus on mount: in the workspace, multiple
     // RunnerTerminals mount at once before any tab is selected, and the
@@ -344,12 +336,21 @@ export function RunnerTerminal({
       }
       lastPushedColsRef.current = t.cols;
       lastPushedRowsRef.current = t.rows;
-      traceTerm("pushSize", {
-        sessionId: sid,
-        cols: t.cols,
-        rows: t.rows,
-        alt: altMode(t),
-      });
+      // Clear scrollback before the SIGWINCH-driven redraw lands for
+      // full-screen TUI agents. Without this, claude-code / codex
+      // repaint at the new dims and the prior frame stays visible in
+      // scrollback — the "stacking" UX bug. We selectively clear only
+      // for TUI runtimes whose repaint policy means inter-frame
+      // scrollback isn't meaningful; plain shells keep their history.
+      // See docs/impls/0011-pty-host-terminal-runtime.md
+      // §"Per-runtime clear-on-resize".
+      if (runtimeClearsOnResize(runnerRuntimeRef.current)) {
+        // ESC[3J — erase saved lines (scrollback)
+        // ESC[2J — erase visible region
+        // ESC[H  — cursor home
+        // Same wire sequence xterm emits for a hard clear.
+        t.write("\x1b[3J\x1b[2J\x1b[H");
+      }
       void api.session.resize(sid, t.cols, t.rows).catch(() => {
         // session may have exited
       });

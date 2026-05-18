@@ -93,6 +93,39 @@ PtyRuntime **does not own**:
   client-side based on its own mode tracking before calling
   `send_bytes`.
 
+### Per-runtime clear-on-resize
+
+The first cutover surfaced a UX regression: dragging the window edge
+while a `claude-code` chat is open visibly stacks the prior frame on
+top of the post-SIGWINCH redraw. Same root cause as the original
+issue #150 stacking — claude-code's TUI repaints fully on SIGWINCH
+and the old frame stays in xterm scrollback.
+
+The fix is a small surgical hack in the frontend, gated on the
+runner's `runtime` field:
+
+- `RunnerTerminal` reads the runner's runtime kind via a prop
+  (`runnerRuntime`) plumbed in from `RunnerChat` / `MissionWorkspace`.
+- `SessionRow` carries `runtime` denormalized off the runner row so
+  mission sessions can reach it without a second lookup.
+- On the resize push path, before calling `session.resize(...)`, the
+  terminal writes `\x1b[3J\x1b[2J\x1b[H` (hard clear: scrollback +
+  visible region + cursor home) into xterm — **only** when the
+  runtime is a known full-screen TUI agent (today: `claude-code`,
+  `codex`). The SIGWINCH-driven repaint then lands on a clean
+  buffer. Plain shells (`shell`, unknown runtimes) skip the clear
+  and keep their scrollback intact.
+
+Trade-off: TUI sessions lose their own xterm scrollback on resize.
+That's fine — claude-code / codex use alt-screen-style full redraws
+that have no meaningful inter-frame scrollback anyway. The user
+gets a clean repaint on every resize, which is what they wanted.
+
+This is the v1 answer to the "stacking on resize" complaint. It is
+*not* the same surface as the headless-emulator path PR #157
+attempted; this only writes a clear sequence to xterm at resize
+time, no parser, no mode round-trip, no protocol expansion.
+
 ### Why no headless emulator
 
 PR #157 tried to give the user visible state after reattach by

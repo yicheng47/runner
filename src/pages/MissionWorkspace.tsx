@@ -860,6 +860,7 @@ function SlotPtyPane({
       >
         <RunnerTerminal
           sessionId={session.id}
+          runnerRuntime={session.runtime}
           onError={onError}
           active={active && !dead && !resuming}
           disabled={dead || resuming}

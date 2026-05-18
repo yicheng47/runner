@@ -819,6 +819,7 @@ export default function RunnerChat() {
               >
                 <RunnerTerminal
                   sessionId={s.id}
+                  runnerRuntime={runner?.runtime ?? ""}
                   // While the loader is up the canvas is hidden, so
                   // we want xterm to behave as inactive (no resize
                   // pushes, no focus). When `resuming` flips off,

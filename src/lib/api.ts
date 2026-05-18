@@ -36,6 +36,10 @@ import type {
 /** Session row joined with the runner's handle for UI labels. */
 export interface SessionRow extends Session {
   handle: string;
+  /** Runner-side `runtime` kind, denormalized onto the row for
+   *  per-runtime UX decisions (e.g. clear-on-resize for full-screen
+   *  TUI agents). See docs/impls/0011 §"Per-runtime clear-on-resize". */
+  runtime: string;
   lead: boolean;
 }
 
