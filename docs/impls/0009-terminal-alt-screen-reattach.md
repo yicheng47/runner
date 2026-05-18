@@ -1,5 +1,13 @@
 # Terminal Alt-Screen Reattach
 
+> **Superseded by [0011](./0011-pty-host-terminal-runtime.md).** The
+> alt-screen reattach fix described here lived inside the
+> tmux-backed `capture-pane` path. Under the new in-process
+> `PtyRuntime`, reattach is no longer attempted at all (impl 0011
+> §"Why no headless emulator") — sessions either remain alive
+> across Cmd+R (live byte stream resumes) or get respawned via
+> the agent's own `--resume <agent_session_key>` flow.
+
 ## Context
 
 Opening a previously-running mission whose lead is a claude-code (or any

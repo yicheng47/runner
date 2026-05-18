@@ -151,28 +151,20 @@ pub fn run() {
             // launchd-strips-PATH problem this fixes.
             let shell_path = shell_path::resolve_login_shell_path();
 
-            // Construct the session runtime (Step 9 of
-            // docs/impls/0004-tmux-session-runtime.md). v1 is
-            // tmux-only — Windows fails at startup with a clear
-            // error; the native-pty runtime is the future Windows
-            // path.
-            //
-            // reconcile_config() rewrites the per-app tmux.conf and
-            // source-files it into a leftover server when the
-            // @runner_config_version stamp is stale.
+            // Construct the in-process PTY runtime
+            // (docs/impls/0011). v1 is unix-only — Windows fails at
+            // startup with a clear error.
             let runtime: Arc<dyn session::runtime::SessionRuntime> = {
                 #[cfg(unix)]
                 {
-                    let rt = session::tmux_runtime::TmuxRuntime::new(&app_data_dir).map_err(
-                        |e| -> Box<dyn std::error::Error> { format!("tmux runtime: {e}").into() },
-                    )?;
-                    let _ = rt.reconcile_config();
-                    Arc::new(rt)
+                    log::info!("session runtime: pty (in-process, impl 0011)");
+                    Arc::new(session::pty_runtime::PtyRuntime::new())
                 }
                 #[cfg(not(unix))]
                 {
-                    return Err("Runner requires macOS or Linux (tmux runtime); \
-                                native-pty runtime is not yet shipped"
+                    return Err("Runner requires macOS or Linux; \
+                                Windows support is pending impl 0011's \
+                                cross-platform pass"
                         .into());
                 }
             };
@@ -208,21 +200,18 @@ pub fn run() {
                 commands::mission::reattach_all_running_missions(&state, &app_handle),
             );
 
-            // Reattach to any live tmux panes from a prior Runner
-            // process. Rows whose pane is still alive stay
-            // `running` and the manager rebuilds its forwarder
-            // thread + handle for them. Rows whose pane is gone
-            // (or has exited) get flipped to stopped/crashed via
-            // the runtime's exit code. Mission rows whose router
-            // mount failed are stopped instead.
-            let events_for_reattach: Arc<dyn session::manager::SessionEvents> =
-                Arc::new(session::manager::TauriSessionEvents(app.handle().clone()));
-            sessions.reattach_running_sessions(
-                Arc::clone(&pool),
-                events_for_reattach,
-                &failed_mission_ids,
-                &state.app_data_dir,
-            );
+            // Agents die with this Tauri process under the pty
+            // runtime — any `running` row in the DB at this point
+            // is from a prior process. Demote them to `stopped`
+            // so the sidebar surfaces them with a Resume
+            // affordance (impl 0011 §"Tauri startup").
+            let _ = failed_mission_ids;
+            #[cfg(unix)]
+            {
+                if let Err(e) = session::pty_runtime::cleanup_stale_running_rows_on_startup(&pool) {
+                    log::warn!("pty runtime startup cleanup failed: {e}");
+                }
+            }
 
             app.manage(state);
 
@@ -292,35 +281,74 @@ pub fn run() {
             commands::session::session_paste_image,
             commands::session::session_start_direct,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // On graceful quit, stop any `running` direct-chat
+            // sessions before the runtime drops. Under the pty
+            // runtime, this fires SIGTERM-via-ChildKiller so
+            // children get a chance to flush conversation state
+            // (claude-code session file, etc.) before the
+            // master-fd-close SIGHUP cascade lands. Under the tmux
+            // runtime this still demotes DB rows cleanly. We
+            // tolerate kill failures: best-effort path, and the
+            // startup cleanup is the safety net on next launch.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                stop_running_sessions_on_quit(app_handle);
+            }
+        });
 }
 
-/// First log line on every app start. Captures the four things
-/// triage usually wants up front: version, app_data_dir, OS/arch,
-/// and tmux version.
+/// On-quit hook body. Walks the DB for `running` direct-chat
+/// sessions and asks `SessionManager` to kill each one. Mission-
+/// scoped rows are left alone — their lifecycle is owned by
+/// `mission_stop` flows and v1 keeps router/event-bus migration
+/// out of scope (impl 0011 §"Mission sessions").
+fn stop_running_sessions_on_quit(app_handle: &AppHandle) {
+    let state = match app_handle.try_state::<AppState>() {
+        Some(s) => s,
+        None => return,
+    };
+    let ids: Vec<String> = match state.db.get().ok().and_then(|conn| {
+        conn.prepare(
+            "SELECT id FROM sessions
+                WHERE status = 'running' AND mission_id IS NULL",
+        )
+        .ok()
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .ok()
+                .map(|rows| rows.filter_map(Result::ok).collect())
+        })
+    }) {
+        Some(v) => v,
+        None => return,
+    };
+    if ids.is_empty() {
+        return;
+    }
+    log::info!(
+        "on-quit: stopping {} running direct-chat session(s)",
+        ids.len()
+    );
+    for id in &ids {
+        if let Err(e) = state.sessions.kill(id) {
+            log::warn!("on-quit kill {id}: {e}");
+        }
+    }
+}
+
+/// First log line on every app start. Captures the things triage
+/// usually wants up front: version, app_data_dir, OS/arch.
 fn log_startup_banner(app: &AppHandle, app_data_dir: &Path) {
     let pkg = app.package_info();
-    let tmux = std::process::Command::new("tmux")
-        .arg("-V")
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| "(unavailable)".to_string());
     log::info!(
-        "starting {} v{} on {}-{}; app_data_dir={}; {}",
+        "starting {} v{} on {}-{}; app_data_dir={}",
         pkg.name,
         pkg.version,
         std::env::consts::OS,
         std::env::consts::ARCH,
         app_data_dir.display(),
-        tmux,
     );
 }
 

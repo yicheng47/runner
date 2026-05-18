@@ -42,16 +42,14 @@ pub trait StdinInjector: Send + Sync + 'static {
     /// `\r` becomes Enter, anything else is a literal byte stream.
     fn inject(&self, session_id: &str, bytes: &[u8]) -> Result<()>;
 
-    /// Verified paste-and-submit. Used by
-    /// `inject_and_submit_delayed` for mission lead launch prompts:
-    /// the agent's TUI may not be bound for raw input yet, and
-    /// blind keystrokes get eaten by whatever pre-input handler is
-    /// on screen (trust dialog, banner animation). The verified
-    /// primitive pastes via tmux paste-buffer, captures the pane,
-    /// confirms the paste rendered (head/tail-marker or
-    /// `Pasted text` placeholder count delta), and only then sends
-    /// Enter. Owns its own readiness budget — callers MUST NOT
-    /// sleep before calling it.
+    /// Paste-and-submit for mission lead launch prompts. Writes the
+    /// body to the agent's input, waits a short render gap, then
+    /// submits with Enter. Earlier versions verified the paste
+    /// landed by capturing the pane post-paste — that verification
+    /// path was tmux-shaped and went away with the runtime
+    /// migration (docs/impls/0011); under the in-process PtyRuntime
+    /// xterm.js owns the terminal model and the host has nothing
+    /// to capture against. Callers MUST NOT sleep before calling.
     fn inject_paste_with_verify(&self, session_id: &str, body: &[u8]) -> Result<()>;
 }
 
@@ -61,12 +59,7 @@ impl StdinInjector for SessionManager {
     }
 
     fn inject_paste_with_verify(&self, session_id: &str, body: &[u8]) -> Result<()> {
-        SessionManager::inject_paste_with_verify(
-            self,
-            session_id,
-            body,
-            crate::session::manager::FIRST_PROMPT_CONFIG,
-        )
+        SessionManager::inject_paste(self, session_id, body)
     }
 }
 

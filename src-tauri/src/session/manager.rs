@@ -1580,121 +1580,6 @@ impl SessionManager {
     /// up to `max_attempts` rounds of paste → sleep `render_wait` →
     /// capture → if any of head/tail-marker delta or (body ≥
     /// `PLACEHOLDER_MIN_BODY_LEN`) placeholder delta ≥ 1 vs the
-    /// baseline, send Enter and return. Otherwise sleep
-    /// `between_attempts` and retry. If no attempt verifies, return
-    /// Err — caller logs.
-    ///
-    /// `before` capture failures fall through with zero baselines
-    /// (alternative is to abort, which regresses every transient
-    /// tmux flake to the pre-fix shape). Per-attempt capture
-    /// failures skip THAT attempt's check and continue.
-    pub(crate) fn inject_paste_with_verify(
-        &self,
-        session_id: &str,
-        body: &[u8],
-        config: FirstPromptConfig,
-    ) -> Result<()> {
-        if !config.initial_wait.is_zero() {
-            std::thread::sleep(config.initial_wait);
-        }
-
-        let rt_session = self
-            .sessions
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .map(|h| h.runtime_session.clone())
-            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
-
-        let (head_marker, tail_marker) = paste_markers(body);
-        let before_bytes = self
-            .runtime
-            .capture_visible(&rt_session)
-            .unwrap_or_else(|e| {
-                log::warn!(
-                    "first-prompt baseline capture for {session_id} failed: {e} \
-                     (proceeding with zero baselines)"
-                );
-                Vec::new()
-            });
-        let before_stripped = strip_ansi(&before_bytes);
-        let before_head_count = count_substr(&before_stripped, &head_marker);
-        let before_tail_count = count_substr(&before_stripped, &tail_marker);
-        let before_placeholder_count = count_substr(&before_stripped, b"Pasted text");
-
-        for attempt in 0..config.max_attempts {
-            // Re-confirm the session is still live before each
-            // attempt — a kill while the loop is sleeping shouldn't
-            // trigger more pastes.
-            let still_live = self.sessions.lock().unwrap().contains_key(session_id);
-            if !still_live {
-                return Err(Error::msg(format!(
-                    "session {session_id} gone before first-prompt verified"
-                )));
-            }
-
-            self.runtime.paste(&rt_session, body)?;
-
-            if !config.render_wait.is_zero() {
-                std::thread::sleep(config.render_wait);
-            }
-
-            let after = match self.runtime.capture_visible(&rt_session) {
-                Ok(b) => b,
-                Err(e) => {
-                    log::warn!(
-                        "first-prompt capture for {session_id} attempt {attempt} failed: {e}"
-                    );
-                    if !config.between_attempts.is_zero() {
-                        std::thread::sleep(config.between_attempts);
-                    }
-                    continue;
-                }
-            };
-            let after_stripped = strip_ansi(&after);
-
-            let head_delta_pos = count_substr(&after_stripped, &head_marker) > before_head_count;
-            let tail_delta_pos = count_substr(&after_stripped, &tail_marker) > before_tail_count;
-            let placeholder_delta_pos = body.len() >= PLACEHOLDER_MIN_BODY_LEN
-                && count_substr(&after_stripped, b"Pasted text") > before_placeholder_count;
-
-            if head_delta_pos || tail_delta_pos || placeholder_delta_pos {
-                return self
-                    .runtime
-                    .send_key(&rt_session, "Enter")
-                    .map_err(Into::into);
-            }
-
-            if !config.between_attempts.is_zero() {
-                std::thread::sleep(config.between_attempts);
-            }
-        }
-
-        Err(Error::msg(format!(
-            "first-prompt for {session_id}: paste not visible after {} attempts",
-            config.max_attempts
-        )))
-    }
-
-    /// Send a bare Enter keystroke to a live session's pane. Used by
-    /// `schedule_continue_on_resume` as a recovery path when
-    /// `inject_paste_with_verify` couldn't confirm the "continue"
-    /// body landed: see that caller for the safety rationale (stray
-    /// Enter on an empty composer is a no-op for claude-code, so the
-    /// downside of NOT recovering — user stuck — outweighs it).
-    pub(crate) fn send_enter(&self, session_id: &str) -> Result<()> {
-        let rt_session = self
-            .sessions
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .map(|h| h.runtime_session.clone())
-            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
-        self.runtime
-            .send_key(&rt_session, "Enter")
-            .map_err(Into::into)
-    }
-
     /// Resize the session's pane. The frontend calls this after
     /// xterm fits its container — without it, claude-code stays at
     /// the spawn-time grid regardless of how big the visible grid
@@ -2225,49 +2110,12 @@ fn capture_cwd(explicit: Option<String>) -> Option<String> {
         .and_then(|p| p.into_os_string().into_string().ok())
 }
 
-/// Tunables for the first-prompt readback loop. Production uses a
-/// short initial wait (so a fast spawn doesn't sit idle), modest
-/// per-attempt render wait (let tmux + the agent TUI commit the
-/// paste before we capture-pane), and a small max_attempts. `cfg(test)`
-/// zeros every duration so unit tests stay synchronous; the count
-/// stays at 4 so retry/give-up paths still exercise their branches.
-///
-/// See `docs/impls/0005-first-prompt-readback.md` for the rationale
-/// behind the specific numbers (best case 2100ms, worst case 7100ms).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct FirstPromptConfig {
-    pub initial_wait: std::time::Duration,
-    pub render_wait: std::time::Duration,
-    pub between_attempts: std::time::Duration,
-    pub max_attempts: usize,
-}
-
-#[cfg(not(test))]
-pub(crate) const FIRST_PROMPT_CONFIG: FirstPromptConfig = FirstPromptConfig {
-    initial_wait: std::time::Duration::from_millis(1500),
-    render_wait: std::time::Duration::from_millis(600),
-    between_attempts: std::time::Duration::from_millis(800),
-    max_attempts: 4,
-};
-
-#[cfg(test)]
-pub(crate) const FIRST_PROMPT_CONFIG: FirstPromptConfig = FirstPromptConfig {
-    initial_wait: std::time::Duration::ZERO,
-    render_wait: std::time::Duration::ZERO,
-    between_attempts: std::time::Duration::ZERO,
-    max_attempts: 4,
-};
-
-/// Bodies shorter than this skip the `Pasted text` placeholder
-/// check entirely. Below this threshold Claude Code shows the paste
-/// verbatim (head/tail markers cover it), and matching the
-/// placeholder substring on a short body risks false-acking against
-/// stale resume content (e.g. a resumed pane already showing
-/// `[Pasted text #5 +20 lines]` from a prior turn). 64 bytes is well
-/// below Claude Code's actual wrap threshold (~200 bytes in
-/// practice) and above any reasonable short-prompt zone where the
-/// placeholder shouldn't fire.
-const PLACEHOLDER_MIN_BODY_LEN: usize = 64;
+// The first-prompt readback machinery (FirstPromptConfig,
+// FIRST_PROMPT_CONFIG, PLACEHOLDER_MIN_BODY_LEN) lived here under the
+// tmux runtime. docs/impls/0011 retired the verify-and-retry loop
+// it tuned; `inject_paste` is now a single paste-then-Enter and the
+// surviving "schedule continue on resume" path uses a fixed 1500ms
+// initial wait baked into `schedule_continue_on_resume`.
 
 /// Mission-flavored first-turn injection. Composes the platform
 /// coordination preamble (bus mechanics, --to human convention,
@@ -2421,131 +2269,25 @@ fn schedule_continue_on_resume(
     if !plan.resuming {
         return;
     }
-    let config = FIRST_PROMPT_CONFIG;
-    if config.initial_wait.is_zero() && config.between_attempts.is_zero() {
-        // Inline path under `cfg(test)` so synchronous output
-        // assertions can observe the injection.
-        if let Err(e) = mgr.inject_paste_with_verify(&session_id, b"continue", config) {
-            log::warn!(
-                "continue-on-resume verify failed for {session_id}: {e}; sending fallback Enter"
-            );
-            if let Err(ee) = mgr.send_enter(&session_id) {
-                log::error!("continue-on-resume fallback Enter for {session_id} failed: {ee}");
-            }
+    // Under `cfg(test)` the inline path keeps assertions
+    // synchronous; under release a background thread drains the
+    // initial-wait + paste round-trip so the calling Tauri command
+    // returns promptly.
+    let inline = cfg!(test);
+    let do_inject = move |mgr: Arc<SessionManager>, session_id: String| {
+        if !inline {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
         }
-        return;
+        if let Err(e) = mgr.inject_paste(&session_id, b"continue") {
+            log::warn!("continue-on-resume inject_paste failed for {session_id}: {e}");
+        }
+    };
+    if inline {
+        do_inject(Arc::clone(mgr), session_id);
+    } else {
+        let mgr = Arc::clone(mgr);
+        std::thread::spawn(move || do_inject(mgr, session_id));
     }
-    let mgr = Arc::clone(mgr);
-    std::thread::spawn(move || {
-        if let Err(e) = mgr.inject_paste_with_verify(&session_id, b"continue", config) {
-            log::warn!(
-                "continue-on-resume verify failed for {session_id}: {e}; sending fallback Enter"
-            );
-            if let Err(ee) = mgr.send_enter(&session_id) {
-                log::error!("continue-on-resume fallback Enter for {session_id} failed: {ee}");
-            }
-        }
-    });
-}
-
-/// Pick `(head_marker, tail_marker)` from the body to look for in
-/// the post-paste pane snapshot. Head = first ≤32 chars of the
-/// trimmed body's first non-empty line (covers TUIs that scroll to
-/// keep the start of the paste visible — claude-code, codex short
-/// pastes). Tail = last ≤32 chars of the trimmed body's last
-/// non-empty line (covers TUIs that scroll to keep the cursor /
-/// end of the paste visible — codex multi-KB lead launch prompts).
-/// For short bodies the two markers can overlap; both signals fire
-/// on the same paste with no double-count concern (we only check
-/// "delta > 0", not the magnitude).
-///
-/// Boundaries are line-bounded (stop at `\n` / `\r`) because a
-/// pasted multi-line block gets line-wrapped by the agent's input
-/// editor, and a marker straddling a soft-wrap boundary won't match
-/// verbatim in the rendered pane.
-fn paste_markers(body: &[u8]) -> (Vec<u8>, Vec<u8>) {
-    fn first_line(body: &[u8]) -> &[u8] {
-        let start = body
-            .iter()
-            .position(|&b| !b.is_ascii_whitespace())
-            .unwrap_or(body.len());
-        let mut end = start;
-        while end < body.len() && end - start < 32 && body[end] != b'\n' && body[end] != b'\r' {
-            end += 1;
-        }
-        &body[start..end]
-    }
-    fn last_line(body: &[u8]) -> &[u8] {
-        // Trim trailing whitespace.
-        let mut end = body.len();
-        while end > 0 && body[end - 1].is_ascii_whitespace() {
-            end -= 1;
-        }
-        // Walk back to start of last line OR until we've covered 32 chars.
-        let mut start = end;
-        while start > 0 && end - start < 32 && body[start - 1] != b'\n' && body[start - 1] != b'\r'
-        {
-            start -= 1;
-        }
-        &body[start..end]
-    }
-    (first_line(body).to_vec(), last_line(body).to_vec())
-}
-
-/// Strip CSI escape sequences (ESC `[` … final byte 0x40-0x7e)
-/// from a captured pane snapshot. Tmux's `capture-pane -e` emits
-/// SGR + cursor-positioning escapes around colored content; the
-/// readback substring search needs those out of the way so a
-/// marker that spans a color boundary still matches. Non-CSI ESC
-/// sequences are dropped too (rare in practice; defensive).
-fn strip_ansi(input: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(input.len());
-    let mut i = 0;
-    while i < input.len() {
-        let b = input[i];
-        if b == 0x1b {
-            i += 1;
-            if i < input.len() && input[i] == b'[' {
-                // CSI: skip params then final byte.
-                i += 1;
-                while i < input.len() && !(0x40..=0x7e).contains(&input[i]) {
-                    i += 1;
-                }
-                if i < input.len() {
-                    i += 1;
-                }
-            } else if i < input.len() {
-                // Other escape (e.g. OSC, single-char). Drop the
-                // byte after ESC; good enough for our substring
-                // search.
-                i += 1;
-            }
-            continue;
-        }
-        out.push(b);
-        i += 1;
-    }
-    out
-}
-
-/// Count non-overlapping occurrences of `needle` in `haystack`. An
-/// empty needle returns 0 — empty markers can happen when the body
-/// is all whitespace, and counting "every position" isn't useful.
-fn count_substr(haystack: &[u8], needle: &[u8]) -> usize {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return 0;
-    }
-    let mut count = 0;
-    let mut i = 0;
-    while i + needle.len() <= haystack.len() {
-        if &haystack[i..i + needle.len()] == needle {
-            count += 1;
-            i += needle.len();
-        } else {
-            i += 1;
-        }
-    }
-    count
 }
 
 fn emit_runner_activity(pool: &DbPool, runner: &Runner, events: &dyn SessionEvents) {
@@ -2660,11 +2402,6 @@ mod tests {
         fn status(&self, _: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
             Err(RuntimeError::Msg("InertRuntime: status unsupported".into()))
         }
-        fn capture_visible(&self, _: &RuntimeSession) -> RuntimeResult<Vec<u8>> {
-            Err(RuntimeError::Msg(
-                "InertRuntime: capture_visible unsupported".into(),
-            ))
-        }
     }
 
     fn inert_runtime() -> Arc<dyn SessionRuntime> {
@@ -2773,27 +2510,6 @@ mod tests {
         #[allow(dead_code)]
         fn set_acknowledge_after(&self, n: usize) {
             *self.acknowledge_after.lock().unwrap() = n;
-        }
-
-        fn paste_count(&self) -> usize {
-            self.inputs
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|i| matches!(i, FakeInput::Paste { .. }))
-                .count()
-        }
-
-        fn last_paste_body(&self) -> Option<Vec<u8>> {
-            self.inputs
-                .lock()
-                .unwrap()
-                .iter()
-                .rev()
-                .find_map(|i| match i {
-                    FakeInput::Paste { payload, .. } => Some(payload.clone()),
-                    _ => None,
-                })
         }
 
         /// Push a `Stream` event through the forwarder channel for
@@ -2958,25 +2674,6 @@ mod tests {
 
         fn status(&self, _: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
             Ok(Some(self.status_response.lock().unwrap().clone()))
-        }
-
-        fn capture_visible(&self, _: &RuntimeSession) -> RuntimeResult<Vec<u8>> {
-            let pasted = self.paste_count();
-            let threshold = *self.acknowledge_after.lock().unwrap();
-            if pasted >= threshold {
-                let canned = self.pane_post_paste.lock().unwrap().clone();
-                if canned.is_empty() {
-                    // Sentinel: synthesize a snapshot containing the
-                    // last pasted body so the verifier's marker
-                    // extraction matches whatever the test pasted.
-                    // Lets ~any test that doesn't care about pane
-                    // state pass without per-test setup.
-                    return Ok(self.last_paste_body().unwrap_or_default());
-                }
-                Ok(canned)
-            } else {
-                Ok(self.pane_pre_paste.lock().unwrap().clone())
-            }
         }
     }
 
@@ -4757,125 +4454,16 @@ mod tests {
             .insert(session_id.to_string(), handle);
     }
 
-    #[test]
-    fn first_prompt_landed_first_try() {
-        let fake = fake_runtime();
-        let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        register_fake_session(&mgr, &fake, "S-FIRST");
-        // Default FakeRuntime: pane_post_paste empty (sentinel) ⇒
-        // capture_visible mirrors the last pasted body, so the
-        // verifier's head-marker delta hits ≥ 1 on attempt 1.
-        let body = b"You are an architect persona.";
-        mgr.inject_paste_with_verify("S-FIRST", body, FIRST_PROMPT_CONFIG)
-            .expect("verify should accept on attempt 1");
-        let pastes = fake.pastes();
-        assert_eq!(pastes.len(), 1, "exactly one paste; got {pastes:?}");
-        assert_eq!(pastes[0].1, body);
-        let keys = fake.keys();
-        let enters: Vec<_> = keys.iter().filter(|(_, k)| k == "Enter").collect();
-        assert_eq!(enters.len(), 1, "exactly one Enter; got {keys:?}");
-    }
-
-    #[test]
-    fn first_prompt_landed_after_retry() {
-        let fake = fake_runtime();
-        let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        register_fake_session(&mgr, &fake, "S-RETRY");
-        // First paste invisible, second paste visible. With the
-        // sentinel-empty default, the synthesized "after" content
-        // mirrors the last pasted body — but only after
-        // `acknowledge_after = 2` pastes. Until then,
-        // `pane_pre_paste` (empty by default) is returned.
-        fake.set_acknowledge_after(2);
-        let body = b"You are an architect persona.";
-        mgr.inject_paste_with_verify("S-RETRY", body, FIRST_PROMPT_CONFIG)
-            .expect("verify should accept on attempt 2");
-        let pastes = fake.pastes();
-        assert_eq!(pastes.len(), 2, "expected two pastes; got {pastes:?}");
-        let keys = fake.keys();
-        let enters: Vec<_> = keys.iter().filter(|(_, k)| k == "Enter").collect();
-        assert_eq!(enters.len(), 1, "expected one Enter; got {keys:?}");
-    }
-
-    #[test]
-    fn first_prompt_gives_up_after_max_attempts() {
-        let fake = fake_runtime();
-        let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        register_fake_session(&mgr, &fake, "S-GIVEUP");
-        // acknowledge_after = 999 ⇒ post-paste content is never
-        // observed; the pre-paste content (empty default) is what
-        // capture_visible returns. No marker delta possible. The
-        // loop must give up after `max_attempts` and NOT send Enter.
-        fake.set_acknowledge_after(999);
-        let body = b"You are an architect persona.";
-        let err = mgr
-            .inject_paste_with_verify("S-GIVEUP", body, FIRST_PROMPT_CONFIG)
-            .expect_err("verify should give up");
-        assert!(
-            err.to_string().contains("not visible"),
-            "expected give-up error; got {err}"
-        );
-        let pastes = fake.pastes();
-        assert_eq!(
-            pastes.len(),
-            FIRST_PROMPT_CONFIG.max_attempts,
-            "expected exactly max_attempts pastes; got {pastes:?}",
-        );
-        let enters: Vec<_> = fake
-            .keys()
-            .into_iter()
-            .filter(|(_, k)| k == "Enter")
-            .collect();
-        assert!(
-            enters.is_empty(),
-            "no Enter must be sent on give-up; got {enters:?}",
-        );
-    }
-
-    #[test]
-    fn continue_resume_rejects_stale_placeholder() {
-        // Round-2 review regression guard: a resumed pane that
-        // already shows `[Pasted text #5 +20 lines]` from prior
-        // turns must NOT false-ack a failed `continue` paste.
-        // - body = b"continue" (8 bytes < PLACEHOLDER_MIN_BODY_LEN)
-        //   so the placeholder gate is closed regardless.
-        // - pane_pre_paste == pane_post_paste contains the stale
-        //   placeholder string. Both head/tail-marker count of
-        //   "continue" is 0 in both before and after. Delta = 0
-        //   on every attempt ⇒ reject ⇒ no Enter.
-        let fake = fake_runtime();
-        let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        register_fake_session(&mgr, &fake, "S-CONT");
-        let stale = b"...prior conversation...\n[Pasted text #5 +20 lines]\n>";
-        fake.set_pane_pre_paste(stale);
-        fake.set_pane_post_paste(stale);
-        // acknowledge_after = 0 so capture_visible returns the
-        // canned post-paste content from the start (no sentinel
-        // synthesis); both before and after see the same stale
-        // pane content.
-        let err = mgr
-            .inject_paste_with_verify("S-CONT", b"continue", FIRST_PROMPT_CONFIG)
-            .expect_err("verify must reject stale-placeholder false-ack");
-        assert!(
-            err.to_string().contains("not visible"),
-            "expected give-up error; got {err}"
-        );
-        let pastes = fake.pastes();
-        assert_eq!(
-            pastes.len(),
-            FIRST_PROMPT_CONFIG.max_attempts,
-            "expected max_attempts pastes; got {pastes:?}",
-        );
-        let enters: Vec<_> = fake
-            .keys()
-            .into_iter()
-            .filter(|(_, k)| k == "Enter")
-            .collect();
-        assert!(
-            enters.is_empty(),
-            "stale placeholder must not trigger Enter; got {enters:?}",
-        );
-    }
+    // The verify-and-retry first-prompt readback tests
+    // (`first_prompt_landed_first_try`, `*_after_retry`,
+    // `*_gives_up_after_max_attempts`,
+    // `continue_resume_rejects_stale_placeholder`) lived here
+    // before docs/impls/0011 retired tmux's capture-pane verify
+    // path. Under the in-process PtyRuntime there is no host-side
+    // terminal model to capture against, so `inject_paste` is a
+    // straight paste-then-Enter and the verify/retry surface those
+    // tests exercised is gone. The surviving resume-continue
+    // semantics are covered by `continue_resume_*` below.
 
     /// Helper: build a claude-code Runner for the resume-continue
     /// flow tests. The shared `runner()` helper hardcodes
@@ -4897,53 +4485,14 @@ mod tests {
     }
 
     #[test]
-    fn continue_resume_falls_back_to_enter_on_verify_failure() {
-        // Mirror `continue_resume_rejects_stale_placeholder`: a
-        // resumed pane already shows old `[Pasted text #N ...]`
-        // content, the head/tail-marker delta for "continue" stays
-        // 0 across all attempts, and `inject_paste_with_verify`
-        // returns Err. The end-to-end resume-continue caller must
-        // recover by sending exactly one fallback Enter — that's
-        // the whole point of the policy. `inject_paste_with_verify`
-        // semantics are unchanged; the recovery lives in
-        // `schedule_continue_on_resume`.
-        let fake = fake_runtime();
-        let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        register_fake_session(&mgr, &fake, "S-CONT-FB");
-        let stale = b"...prior conversation...\n[Pasted text #5 +20 lines]\n>";
-        fake.set_pane_pre_paste(stale);
-        fake.set_pane_post_paste(stale);
-
-        let r = claude_runner();
-        let plan = resume_plan_resuming();
-        super::schedule_continue_on_resume(&mgr, "S-CONT-FB".into(), &r, &plan);
-
-        let pastes = fake.pastes();
-        assert_eq!(
-            pastes.len(),
-            FIRST_PROMPT_CONFIG.max_attempts,
-            "expected max_attempts pastes; got {pastes:?}",
-        );
-        let enters: Vec<_> = fake
-            .keys()
-            .into_iter()
-            .filter(|(_, k)| k == "Enter")
-            .collect();
-        assert_eq!(
-            enters.len(),
-            1,
-            "expected exactly one fallback Enter on verify failure; got {enters:?}",
-        );
-    }
-
-    #[test]
-    fn continue_resume_no_double_enter_on_verify_success() {
-        // Default FakeRuntime (empty `pane_post_paste`) makes
-        // `capture_visible` synthesize a snapshot containing the last
-        // paste body, so the head-marker delta hits ≥ 1 on attempt 1
-        // and `inject_paste_with_verify` sends Enter and returns Ok.
-        // The fallback path must NOT fire — otherwise the agent gets
-        // two Enters and submits a stray empty turn.
+    fn continue_resume_pastes_and_submits_once() {
+        // Under the in-process PtyRuntime (docs/impls/0011),
+        // `schedule_continue_on_resume` calls `inject_paste` for
+        // claude-code/codex on a resuming plan. `inject_paste` is a
+        // single paste-then-Enter — no verify, no retry, no
+        // fallback Enter. Exactly one paste + one Enter is the
+        // contract regardless of what the fake pane content looks
+        // like, because there's no host-side capture to consult.
         let fake = fake_runtime();
         let mgr = mgr_with_fake(None, Arc::clone(&fake));
         register_fake_session(&mgr, &fake, "S-CONT-OK");
@@ -4954,6 +4503,7 @@ mod tests {
 
         let pastes = fake.pastes();
         assert_eq!(pastes.len(), 1, "expected one paste; got {pastes:?}");
+        assert_eq!(pastes[0].1, b"continue");
         let enters: Vec<_> = fake
             .keys()
             .into_iter()
@@ -4962,7 +4512,7 @@ mod tests {
         assert_eq!(
             enters.len(),
             1,
-            "verify-success path must send exactly one Enter (no fallback double); got {enters:?}",
+            "expected exactly one Enter; got {enters:?}",
         );
     }
 

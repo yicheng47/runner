@@ -1,17 +1,18 @@
 // Session layer — spawns and controls each runner's local CLI process
-// via a tmux pane (the `SessionRuntime` trait → `TmuxRuntime`).
+// via the `SessionRuntime` trait. v1 implementation:
+//   * `pty_runtime::PtyRuntime` (in-process, docs/impls/0011)
 //
 // The `manager` submodule owns DB persistence, output buffering, and the
 // kill / resume state machine; it delegates every PTY-side operation to
-// the runtime. `tmux` + `tmux_runtime` + `launch` together form the
-// runtime layer (docs/impls/0004-tmux-session-runtime.md).
+// the runtime. The tmux-backed runtime that powered earlier versions
+// has been retired — see docs/impls/0011-pty-host-terminal-runtime.md
+// for the rationale.
 
 pub mod codex_capture;
 pub mod launch;
 pub mod manager;
-pub mod runtime;
-pub mod tmux;
 #[cfg(unix)]
-pub mod tmux_runtime;
+pub mod pty_runtime;
+pub mod runtime;
 
 pub use manager::SessionManager;

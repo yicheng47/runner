@@ -31,6 +31,12 @@ pub struct SessionRow {
     /// Handle of the runner this session instantiates — denormalized so the
     /// frontend can render `@coder`-style labels without a second lookup.
     pub handle: String,
+    /// Runtime kind from the runner row (`"claude-code"`, `"codex"`,
+    /// `"shell"`, …). Denormalized onto SessionRow so the frontend's
+    /// terminal pane can gate per-runtime UX decisions
+    /// (clear-on-resize for full-screen TUIs, etc.) without a second
+    /// runner lookup. See docs/impls/0011 §"Per-runtime clear-on-resize".
+    pub runtime: String,
     /// Whether this runner is the lead for the mission's crew.
     pub lead: bool,
 }
@@ -70,6 +76,7 @@ fn row_to_session(row: &Row<'_>) -> rusqlite::Result<SessionRow> {
             stopped_at: stopped_at.map(parse_ts).transpose()?,
         },
         handle: row.get("handle")?,
+        runtime: row.get("runtime")?,
         lead: row.get("lead")?,
     })
 }
@@ -97,6 +104,7 @@ pub async fn session_list(
         "SELECT s.id, s.mission_id, s.runner_id, s.slot_id, s.cwd, s.status, s.pid,
                 s.started_at, s.stopped_at,
                 COALESCE(sl.slot_handle, r.handle) AS handle,
+                r.runtime AS runtime,
                 COALESCE(sl.lead, 0) AS lead
            FROM sessions s
            JOIN runners r ON r.id = s.runner_id
