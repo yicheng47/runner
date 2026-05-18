@@ -656,6 +656,15 @@ impl SessionRuntime for TmuxRuntime {
     }
 
     fn resize(&self, session: &RuntimeSession, cols: u16, rows: u16) -> RuntimeResult<()> {
+        if pane_size(&self.cmd(), &session.pane)? == Some((cols, rows)) {
+            log::debug!(
+                "session_resize noop pane={} cols={} rows={}",
+                session.pane,
+                cols,
+                rows,
+            );
+            return Ok(());
+        }
         // Trace at debug so a `tauri dev` run can correlate the
         // frontend `pushSize` → backend resize-window → agent
         // SIGWINCH → live Stream burst chain when investigating
@@ -683,6 +692,10 @@ impl SessionRuntime for TmuxRuntime {
 
     fn capture_visible(&self, session: &RuntimeSession) -> RuntimeResult<Vec<u8>> {
         capture_visible_region(&self.cmd(), session)
+    }
+
+    fn capture_replay(&self, session: &RuntimeSession) -> RuntimeResult<Vec<u8>> {
+        capture_attach_bytes(&self.cmd(), session)
     }
 
     fn status(&self, session: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
@@ -876,7 +889,7 @@ fn attach_streaming(
     //   shouldn't be edited.
     let snapshot = if is_fresh_spawn {
         let raw = capture_visible_region(cmd, session)?;
-        trim_leading_blank_lines(raw)
+        normalize_capture_line_endings(trim_leading_blank_lines(raw))
     } else {
         capture_replay_bytes(cmd, session)?
     };
@@ -1203,6 +1216,42 @@ fn is_visually_blank(line: &[u8]) -> bool {
     true
 }
 
+/// `tmux capture-pane -p` serializes rows with bare LF. PTY streams
+/// normally use CRLF for line transitions; writing LF-only captures
+/// into xterm leaves the cursor in its current column and makes replayed
+/// rows staircase sideways.
+fn normalize_capture_line_endings(snapshot: Vec<u8>) -> Vec<u8> {
+    let extra_crs = snapshot
+        .iter()
+        .enumerate()
+        .filter(|(idx, b)| **b == b'\n' && (*idx == 0 || snapshot[*idx - 1] != b'\r'))
+        .count();
+    if extra_crs == 0 {
+        return snapshot;
+    }
+
+    let mut out = Vec::with_capacity(snapshot.len() + extra_crs);
+    for (idx, b) in snapshot.iter().enumerate() {
+        if *b == b'\n' && (idx == 0 || snapshot[idx - 1] != b'\r') {
+            out.push(b'\r');
+        }
+        out.push(*b);
+    }
+    out
+}
+
+fn capture_attach_bytes(cmd: &Command, session: &RuntimeSession) -> RuntimeResult<Vec<u8>> {
+    let alt_on = is_alternate_on(cmd, &session.pane)?;
+    let mut bytes = normalize_capture_line_endings(capture_visible_region(cmd, session)?);
+    if alt_on {
+        let mut with_alt = Vec::with_capacity(bytes.len() + 11);
+        with_alt.extend_from_slice(b"\x1b[?1049h\x1b[H");
+        with_alt.append(&mut bytes);
+        bytes = with_alt;
+    }
+    Ok(bytes)
+}
+
 fn capture_replay_bytes(cmd: &Command, session: &RuntimeSession) -> RuntimeResult<Vec<u8>> {
     let alt_on = is_alternate_on(cmd, &session.pane)?;
     let mut capture = clone_cmd(cmd);
@@ -1233,14 +1282,40 @@ fn capture_replay_bytes(cmd: &Command, session: &RuntimeSession) -> RuntimeResul
     // one in main-screen scrollback (see docs/impls/0009). Cursor home
     // after the mode switch is defensive — it pins the first replayed cell
     // to (1,1) regardless of stale cursor state from `term.reset()`.
-    let mut bytes = out.stdout;
+    let mut bytes = normalize_capture_line_endings(out.stdout);
     if alt_on {
-        let mut with_alt = Vec::with_capacity(bytes.len() + 8);
+        let mut with_alt = Vec::with_capacity(bytes.len() + 11);
         with_alt.extend_from_slice(b"\x1b[?1049h\x1b[H");
         with_alt.append(&mut bytes);
         bytes = with_alt;
     }
     Ok(bytes)
+}
+
+fn pane_size(cmd: &Command, pane: &str) -> RuntimeResult<Option<(u16, u16)>> {
+    let out = clone_cmd(cmd)
+        .arg("display-message")
+        .arg("-p")
+        .arg("-t")
+        .arg(pane)
+        .arg("#{pane_width} #{pane_height}")
+        .output()?;
+    if !out.status.success() {
+        return Err(RuntimeError::TmuxFailed {
+            command: "display-message".into(),
+            status: out.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+        });
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut parts = text.split_whitespace();
+    let Some(cols) = parts.next().and_then(|s| s.parse::<u16>().ok()) else {
+        return Ok(None);
+    };
+    let Some(rows) = parts.next().and_then(|s| s.parse::<u16>().ok()) else {
+        return Ok(None);
+    };
+    Ok(Some((cols, rows)))
 }
 
 /// `display-message -p -t=<pane> '#{alternate_on}'` returns
@@ -1424,6 +1499,13 @@ mod tests {
         assert!(is_visually_blank(b"\x1b[2J"));
         assert!(!is_visually_blank(b" hi "));
         assert!(!is_visually_blank(b"\x1b[31mhello\x1b[0m"));
+    }
+
+    #[test]
+    fn normalize_capture_line_endings_converts_lf_rows_for_xterm_replay() {
+        let input = b"one\ntwo\r\nthree\n".to_vec();
+        let out = normalize_capture_line_endings(input);
+        assert_eq!(out, b"one\r\ntwo\r\nthree\r\n");
     }
 
     /// Build a detector with tiny debounce + threshold so the

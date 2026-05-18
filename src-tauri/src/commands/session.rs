@@ -20,7 +20,7 @@ use crate::{
     commands::runner,
     error::{Error, Result},
     model::{Session, SessionStatus, Timestamp},
-    session::manager::{OutputEvent, SessionEvents, SpawnedSession, TauriSessionEvents},
+    session::manager::{OutputSnapshot, SessionEvents, SpawnedSession, TauriSessionEvents},
     AppState,
 };
 
@@ -138,8 +138,18 @@ pub async fn session_resize(
 pub async fn session_output_snapshot(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Vec<OutputEvent>> {
+) -> Result<OutputSnapshot> {
     Ok(state.sessions.output_snapshot(&session_id))
+}
+
+#[tauri::command]
+pub async fn session_attach_snapshot(
+    state: State<'_, AppState>,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<OutputSnapshot> {
+    state.sessions.attach_snapshot(&session_id, cols, rows)
 }
 
 /// Restore NSPasteboard for a PNG paste that came in through the

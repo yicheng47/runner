@@ -8,7 +8,7 @@
 // raw bytes, backend snapshot replay for late attach, and SIGWINCH dance on
 // attach so claude-code/codex repaint onto a fresh grid.
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import { listen } from "@tauri-apps/api/event";
 import { debug as logDebug } from "@tauri-apps/plugin-log";
@@ -20,6 +20,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 import { api } from "../lib/api";
+import type { SessionOutputSnapshot } from "../lib/types";
 import {
   readTerminalCursorStyle,
   readTerminalFontFamily,
@@ -132,6 +133,15 @@ export function RunnerTerminal({
   // lengthen the redraw window the user perceives.
   const lastPushedColsRef = useRef(0);
   const lastPushedRowsRef = useRef(0);
+  const replayDoneRef = useRef(false);
+  const replayInFlightRef = useRef(false);
+  const pendingLiveRef = useRef<OutputEvent[]>([]);
+  const lastWrittenSeqRef = useRef(0);
+  const outputListenerReadyRef = useRef<Promise<void>>(Promise.resolve());
+
+  const writeOutputEvent = useCallback((ev: OutputEvent) => {
+    termRef.current?.write(decodeBase64Chunk(ev.data));
+  }, []);
 
   // Keep the latest sessionId visible to the data/resize callbacks without
   // re-creating the terminal on prop change. The session listener below
@@ -187,6 +197,7 @@ export function RunnerTerminal({
       allowProposedApi: true,
       scrollSensitivity: 3,
       fastScrollSensitivity: 8,
+      smoothScrollDuration: 125,
       // OSC 8 hyperlinks (emitted by claude-code and other modern CLIs) are
       // handled by xterm natively, not by WebLinksAddon. The default activator
       // calls window.open() which is a silent no-op in WKWebView/Tauri, so we
@@ -331,11 +342,14 @@ export function RunnerTerminal({
     const textarea = term.textarea;
     textarea?.addEventListener("paste", onPaste, { capture: true });
 
+    let resizeTimer: number | null = null;
+
     // Dedupe by last-pushed dims. See `lastPushedColsRef` comment for why.
     const pushSize = () => {
       const t = termRef.current;
       const sid = sessionIdRef.current;
       if (!t || !sid || disabledRef.current) return;
+      if (!replayDoneRef.current) return;
       if (
         t.cols === lastPushedColsRef.current &&
         t.rows === lastPushedRowsRef.current
@@ -354,16 +368,23 @@ export function RunnerTerminal({
         // session may have exited
       });
     };
-    // Refit + push backend geometry when the pane is active and
-    // measurable. Hidden panes don't refit/push — the activation
-    // effect picks up the new metrics when they come to the front.
+    const schedulePushSize = () => {
+      if (resizeTimer !== null) window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        resizeTimer = null;
+        pushSize();
+      }, 140);
+    };
+    // Refit immediately, but coalesce backend geometry pushes. Claude Code's
+    // main-screen redraws on SIGWINCH are expensive and can leave stale
+    // intermediate frames in scrollback if we forward every drag tick.
     const refitAndPush = () => {
-      if (!activeRef.current || !containerRef.current) return;
+      if (!containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
       try {
         fit.fit();
-        pushSize();
+        schedulePushSize();
       } catch {
         // teardown
       }
@@ -373,9 +394,8 @@ export function RunnerTerminal({
     // container's width without firing window-resize, so the xterm
     // grid and backend PTY geometry stay stale until the user nudges
     // the OS window (#108). Observing the container catches those
-    // CSS-driven size changes; refitAndPush's activeRef + measurable-
-    // rect guards keep hidden panes from pushing stale geometry to
-    // the backend.
+    // CSS-driven size changes; measurable-rect guards keep truly hidden
+    // panes from pushing stale geometry to the backend.
     const ro = new ResizeObserver(() => refitAndPush());
     ro.observe(containerRef.current);
 
@@ -433,6 +453,7 @@ export function RunnerTerminal({
     fitRef.current = fit;
 
     return () => {
+      if (resizeTimer !== null) window.clearTimeout(resizeTimer);
       ro.disconnect();
       window.removeEventListener("resize", refitAndPush);
       window.removeEventListener("focus", refreshTerm);
@@ -447,31 +468,36 @@ export function RunnerTerminal({
   }, []);
 
   // Subscribe to the bound session's output + exit. The listener is registered
-  // before snapshot replay so live chunks that arrive during the command round
-  // trip are buffered and merged by seq.
+  // before snapshot replay. We intentionally do NOT fetch the snapshot here:
+  // mission panes mount while hidden on the Feed tab, and replaying tmux's
+  // visible grid into xterm's default 80-col hidden buffer bakes in the drift
+  // that #150 is about. The activation effect below fetches the first replay
+  // once the pane is measurable.
   useEffect(() => {
     let unlistenOutput: (() => void) | null = null;
     let unlistenExit: (() => void) | null = null;
     let cancelled = false;
-    let replayDone = false;
-    let lastWrittenSeq = 0;
-    const pendingLive: OutputEvent[] = [];
+    let markReady: () => void = () => {};
+    outputListenerReadyRef.current = new Promise((resolve) => {
+      markReady = resolve;
+    });
 
-    const writeOutput = (ev: OutputEvent) => {
-      termRef.current?.write(decodeBase64Chunk(ev.data));
-    };
+    replayDoneRef.current = false;
+    replayInFlightRef.current = false;
+    pendingLiveRef.current = [];
+    lastWrittenSeqRef.current = 0;
 
     void (async () => {
       const [fnOut, fnExit] = await Promise.all([
         listen<OutputEvent>("session/output", (event) => {
           if (event.payload.session_id !== sessionId) return;
-          if (!replayDone) {
-            pendingLive.push(event.payload);
+          if (!replayDoneRef.current) {
+            pendingLiveRef.current.push(event.payload);
             return;
           }
-          if (event.payload.seq <= lastWrittenSeq) return;
-          writeOutput(event.payload);
-          lastWrittenSeq = event.payload.seq;
+          if (event.payload.seq <= lastWrittenSeqRef.current) return;
+          writeOutputEvent(event.payload);
+          lastWrittenSeqRef.current = event.payload.seq;
         }),
         listen<ExitEvent>("session/exit", (event) => {
           if (event.payload.session_id !== sessionId) return;
@@ -481,54 +507,91 @@ export function RunnerTerminal({
       if (cancelled) {
         fnOut();
         fnExit();
+        markReady();
         return;
       }
       unlistenOutput = fnOut;
       unlistenExit = fnExit;
-
-      let snapshot: OutputEvent[] = [];
-      try {
-        snapshot = await api.session.outputSnapshot(sessionId);
-      } catch (e) {
-        onErrorRef.current?.(String(e));
-      }
-      if (cancelled) return;
-
-      termRef.current?.reset();
-      for (const ev of snapshot) {
-        writeOutput(ev);
-        lastWrittenSeq = Math.max(lastWrittenSeq, ev.seq);
-      }
-      replayDone = true;
-      for (const ev of pendingLive) {
-        if (ev.seq <= lastWrittenSeq) continue;
-        writeOutput(ev);
-        lastWrittenSeq = ev.seq;
-      }
-      pendingLive.length = 0;
-
-      // Do not resize here: hidden terminal panes mount before they are
-      // measurable, and sending that hidden geometry to TUIs makes them paint
-      // their startup screen into a tiny grid. The activation effect below
-      // owns the SIGWINCH dance once the pane is visible.
+      markReady();
     })();
 
     return () => {
       cancelled = true;
+      markReady();
       unlistenOutput?.();
       unlistenExit?.();
     };
-  }, [sessionId]);
+  }, [sessionId, writeOutputEvent]);
 
   // Activation effect: when this tab moves to the front, wait for the pane
-  // to become measurable, fit to its container, repaint the WebGL/canvas
-  // renderer with the current scrollback, and grab focus so keystrokes flow
-  // into the expected PTY.
+  // to become measurable, fit to its container, replay the first snapshot at
+  // that exact grid, repaint the renderer, and grab focus for live panes.
   useEffect(() => {
-    if (!active) return;
     let cancelled = false;
     let raf1 = 0;
     let raf2 = 0;
+
+    const flushPendingLive = () => {
+      const pending = pendingLiveRef.current;
+      pendingLiveRef.current = [];
+      for (const ev of pending) {
+        if (ev.seq <= lastWrittenSeqRef.current) continue;
+        writeOutputEvent(ev);
+        lastWrittenSeqRef.current = ev.seq;
+      }
+    };
+
+    const replayAtSize = async (cols: number, rows: number) => {
+      if (replayDoneRef.current || replayInFlightRef.current) return;
+      replayInFlightRef.current = true;
+      try {
+        await outputListenerReadyRef.current;
+        if (cancelled || sessionIdRef.current !== sessionId) return;
+        const live = !disabledRef.current;
+        let snapshot: SessionOutputSnapshot;
+        try {
+          snapshot = live
+            ? await api.session.attachSnapshot(sessionId, cols, rows)
+            : await api.session.outputSnapshot(sessionId);
+        } catch (err) {
+          if (!live) throw err;
+          // If the pane exited between render and activation, fall back
+          // to the bounded in-memory buffer so the terminal still shows
+          // whatever scrollback the manager retained.
+          snapshot = await api.session.outputSnapshot(sessionId);
+        }
+        if (cancelled || sessionIdRef.current !== sessionId) return;
+
+        const t = termRef.current;
+        if (!t) return;
+        t.reset();
+        t.clear();
+        const lastSeq = snapshot.last_seq;
+        for (const ev of snapshot.events) {
+          writeOutputEvent(ev);
+        }
+        lastWrittenSeqRef.current = Math.max(
+          lastWrittenSeqRef.current,
+          lastSeq,
+        );
+        replayDoneRef.current = true;
+        if (live) {
+          lastPushedColsRef.current = cols;
+          lastPushedRowsRef.current = rows;
+        }
+        flushPendingLive();
+        try {
+          t.refresh(0, t.rows - 1);
+        } catch {
+          // teardown
+        }
+        if (live && activeRef.current) t.focus();
+      } catch (e) {
+        if (!cancelled) onErrorRef.current?.(String(e));
+      } finally {
+        replayInFlightRef.current = false;
+      }
+    };
 
     const activate = () => {
       if (cancelled) return;
@@ -541,9 +604,15 @@ export function RunnerTerminal({
       try {
         fit.fit();
         t.refresh(0, t.rows - 1);
-        t.focus();
         const cols = t.cols;
         const rows = t.rows;
+        if (!replayDoneRef.current) {
+          void replayAtSize(cols, rows);
+          return;
+        }
+        if (!activeRef.current) return;
+        if (disabledRef.current) return;
+        t.focus();
         // Single resize is enough once xterm enters alt-screen at attach
         // time (see docs/impls/0009). The earlier cols-1 → cols dance was
         // there to coax claude-code into a repaint that would land where
@@ -576,7 +645,7 @@ export function RunnerTerminal({
       window.cancelAnimationFrame(raf1);
       window.cancelAnimationFrame(raf2);
     };
-  }, [active, sessionId]);
+  }, [active, sessionId, writeOutputEvent]);
 
   return (
     <div className="h-full w-full overflow-hidden">

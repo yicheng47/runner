@@ -363,4 +363,11 @@ pub trait SessionRuntime: Send + Sync {
     /// readback is the only reliable signal absent a runtime-level
     /// "input bound" event.
     fn capture_visible(&self, session: &RuntimeSession) -> RuntimeResult<Vec<u8>>;
+
+    /// Attach-time snapshot of the pane's current screen. The frontend
+    /// calls this after it has a visible xterm grid; the runtime may
+    /// restore mode-switch escapes needed for replay, but it should not
+    /// include historical scrollback from TUI panes because resize redraws
+    /// there are size-dependent.
+    fn capture_replay(&self, session: &RuntimeSession) -> RuntimeResult<Vec<u8>>;
 }

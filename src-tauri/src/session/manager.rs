@@ -42,6 +42,7 @@ use crate::session::runtime::{
 };
 
 const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
+const ATTACH_SNAPSHOT_REDRAW_GRACE: Duration = Duration::from_millis(120);
 
 /// Inputs the forwarder consumer needs to translate a
 /// `RuntimeOutput::StatusTransition` into a real `runner_status`
@@ -254,6 +255,16 @@ pub struct OutputEvent {
     pub seq: u64,
     /// Base64-encoded raw bytes read from the PTY.
     pub data: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OutputSnapshot {
+    pub events: Vec<OutputEvent>,
+    /// Highest per-session output seq the frontend should consider
+    /// covered by this snapshot. Live events with seq <= this value
+    /// were already recorded before snapshot capture began and can be
+    /// dropped after the replay bytes are written.
+    pub last_seq: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1719,13 +1730,75 @@ impl SessionManager {
     /// The snapshot is intentionally process-local and bounded: it covers
     /// webview reloads / chat switching for live sessions without turning the
     /// sessions table into a PTY transcript store.
-    pub fn output_snapshot(&self, session_id: &str) -> Vec<OutputEvent> {
-        self.output_buffers
+    pub fn output_snapshot(&self, session_id: &str) -> OutputSnapshot {
+        let events = self
+            .output_buffers
             .lock()
             .unwrap()
             .get(session_id)
             .map(|chunks| chunks.iter().cloned().collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let last_seq = self
+            .output_seq
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .copied()
+            .unwrap_or(0);
+        OutputSnapshot { events, last_seq }
+    }
+
+    /// Capture a fresh attach-time snapshot after the frontend has
+    /// fitted xterm to a visible container. This is the cold-restart
+    /// path for TUI panes: stale replay bytes captured during backend
+    /// startup may have been sized for tmux's old grid and must not be
+    /// written into a hidden/default 80-col xterm. The capture itself
+    /// is stored back into the bounded buffer so later remounts have a
+    /// sane baseline.
+    pub fn attach_snapshot(
+        &self,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<OutputSnapshot> {
+        let (rt_session, mission_id) = self
+            .sessions
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map(|h| (h.runtime_session.clone(), h.mission_id.clone()))
+            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+
+        self.runtime.resize(&rt_session, cols, rows)?;
+        thread::sleep(ATTACH_SNAPSHOT_REDRAW_GRACE);
+        let covered_seq = self
+            .output_seq
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .copied()
+            .unwrap_or(0);
+        let bytes = self.runtime.capture_replay(&rt_session)?;
+
+        // The fresh capture supersedes startup reattach replay and any
+        // resize-diff chunks already recorded before capture-pane ran.
+        // Keep the seq counter monotonic so pending live events can be
+        // filtered by the returned watermark; the stored snapshot gets a
+        // later seq but should not hide bytes that race after capture starts.
+        self.purge_output_buffer(session_id);
+
+        if bytes.is_empty() {
+            return Ok(OutputSnapshot {
+                events: Vec::new(),
+                last_seq: covered_seq,
+            });
+        }
+
+        let ev = self.record_output(session_id, mission_id.as_deref(), BASE64.encode(&bytes));
+        Ok(OutputSnapshot {
+            last_seq: covered_seq,
+            events: vec![ev],
+        })
     }
 
     /// Kill the child and wait for the reader thread to reap it.
@@ -2665,6 +2738,11 @@ mod tests {
                 "InertRuntime: capture_visible unsupported".into(),
             ))
         }
+        fn capture_replay(&self, _: &RuntimeSession) -> RuntimeResult<Vec<u8>> {
+            Err(RuntimeError::Msg(
+                "InertRuntime: capture_replay unsupported".into(),
+            ))
+        }
     }
 
     fn inert_runtime() -> Arc<dyn SessionRuntime> {
@@ -2977,6 +3055,10 @@ mod tests {
             } else {
                 Ok(self.pane_pre_paste.lock().unwrap().clone())
             }
+        }
+
+        fn capture_replay(&self, session: &RuntimeSession) -> RuntimeResult<Vec<u8>> {
+            self.capture_visible(session)
         }
     }
 
@@ -4038,7 +4120,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(2);
         let snapshot = loop {
             let snapshot = mgr.output_snapshot(&spawned.id);
-            if !snapshot.is_empty() {
+            if !snapshot.events.is_empty() {
                 break snapshot;
             }
             if Instant::now() > deadline {
@@ -4047,9 +4129,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         };
 
-        assert_eq!(snapshot[0].seq, 1);
+        assert_eq!(snapshot.events[0].seq, 1);
+        assert_eq!(snapshot.last_seq, 1);
         assert!(
-            snapshot.iter().all(|ev| ev.session_id == spawned.id),
+            snapshot.events.iter().all(|ev| ev.session_id == spawned.id),
             "snapshot must only include chunks for the requested session"
         );
 
@@ -4058,14 +4141,99 @@ mod tests {
         // remount can replay the dead session's scrollback. Explicit
         // cleanup is via `purge_session_buffers`.
         assert!(
-            !mgr.output_snapshot(&spawned.id).is_empty(),
+            !mgr.output_snapshot(&spawned.id).events.is_empty(),
             "kill must keep the output buffer for snapshot replay"
         );
         mgr.purge_session_buffers(&spawned.id);
         assert!(
-            mgr.output_snapshot(&spawned.id).is_empty(),
+            mgr.output_snapshot(&spawned.id).events.is_empty(),
             "purge_session_buffers must drop the buffer"
         );
+    }
+
+    #[test]
+    fn attach_snapshot_resizes_captures_and_replaces_stale_buffer() {
+        let pool = pool_with_schema();
+        let now = Utc::now().to_rfc3339();
+        let runner_id = ulid::Ulid::new().to_string();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'attachsnap', 'Attach Snapshot', 'shell', '/bin/cat',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+                params![runner_id, now],
+            )
+            .unwrap();
+        }
+
+        let mut runner = runner("/bin/cat", &[]);
+        runner.id = runner_id;
+        runner.handle = "attachsnap".into();
+
+        let fake = fake_runtime();
+        let mgr = mgr_with_fake(None, Arc::clone(&fake));
+        let spawned = mgr
+            .spawn_direct(
+                &runner,
+                Some("/tmp"),
+                None,
+                None,
+                std::path::Path::new("/tmp"),
+                Arc::clone(&pool),
+                capture(),
+                None,
+            )
+            .unwrap();
+
+        fake.push_output(0, b"stale startup replay");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if !mgr.output_snapshot(&spawned.id).events.is_empty() {
+                break;
+            }
+            if Instant::now() > deadline {
+                panic!("stale output never reached snapshot buffer");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        fake.set_pane_post_paste(b"fresh visible capture");
+        let snapshot = mgr.attach_snapshot(&spawned.id, 120, 40).unwrap();
+
+        assert_eq!(
+            fake.resizes.lock().unwrap().clone(),
+            vec![(format!("runner-{}", spawned.id), 120, 40)]
+        );
+        assert_eq!(snapshot.events.len(), 1);
+        assert_eq!(
+            snapshot.events[0].data,
+            BASE64.encode(b"fresh visible capture")
+        );
+        assert_eq!(
+            snapshot.last_seq, 1,
+            "watermark should cover stale output captured before attach, not the synthetic snapshot event"
+        );
+        assert!(
+            snapshot.events[0].seq > snapshot.last_seq,
+            "synthetic snapshot event is stored for future remounts but must not hide live race events"
+        );
+
+        let buffered = mgr.output_snapshot(&spawned.id);
+        assert_eq!(
+            buffered
+                .events
+                .iter()
+                .map(|ev| ev.data.as_str())
+                .collect::<Vec<_>>(),
+            vec![snapshot.events[0].data.as_str()],
+            "attach snapshot should replace stale startup replay in the buffer"
+        );
+
+        mgr.kill(&spawned.id).unwrap();
     }
 
     #[test]

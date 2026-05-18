@@ -128,6 +128,11 @@ export interface SessionOutputEvent {
   data: string;
 }
 
+export interface SessionOutputSnapshot {
+  events: SessionOutputEvent[];
+  last_seq: number;
+}
+
 export type MissionStatus = "running" | "completed" | "aborted";
 
 export interface Mission {

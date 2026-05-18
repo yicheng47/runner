@@ -669,10 +669,9 @@ export default function MissionWorkspace() {
 
           <div className="relative flex flex-1 min-h-0 flex-col">
             {/* All panes stay mounted so xterm's in-memory scrollback
-                survives tab switches. Inactive panes use display:none:
-                that keeps the React/xterm instances alive while making
-                the visible session unambiguous. The terminal activation
-                effect refits + repaints after the pane is shown. */}
+                survives tab switches. Inactive panes stay layout-visible
+                but transparent, so xterm can attach at real dimensions
+                and keep streaming scrollback while hidden. */}
             <Pane active={activeTab === "feed"}>
               <EventFeed
                 missionId={mission.id}
@@ -861,7 +860,7 @@ function SlotPtyPane({
         <RunnerTerminal
           sessionId={session.id}
           onError={onError}
-          active={active && !dead && !resuming}
+          active={active && !resuming}
           disabled={dead || resuming}
         />
       </div>
@@ -893,8 +892,10 @@ function Pane({
 }) {
   return (
     <div
-      className={`absolute inset-0 flex-col bg-bg ${
-        active ? "flex" : "hidden"
+      className={`absolute inset-0 flex flex-col bg-bg transition-opacity ${
+        active
+          ? "z-10 opacity-100"
+          : "pointer-events-none z-0 opacity-0"
       }`}
     >
       {children}

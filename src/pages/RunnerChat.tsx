@@ -766,9 +766,10 @@ export default function RunnerChat() {
         </div>
       ) : null}
 
-      {/* Keep one xterm mounted per direct session. Hidden panes still receive
-          PTY output into their buffers, so switching sessions preserves the
-          real terminal state. When the active pane's session has exited the
+      {/* Keep one xterm mounted per direct session. Inactive panes remain
+          layout-visible but transparent so they still receive PTY output at
+          real dimensions, preserving scrollback across session switches.
+          When the active pane's session has exited the
           xterm dims and a "Session ended" card overlays the center —
           mirrors Pencil node `vS5ce`.
           Archived rows render a static placeholder instead — no xterm,
@@ -812,10 +813,13 @@ export default function RunnerChat() {
                   ? "opacity-45"
                   : ""
               : "";
+            const visibilityClass = active
+              ? `z-10 ${paneOpacity || "opacity-100"}`
+              : "pointer-events-none z-0 opacity-0";
             return (
               <div
                 key={s.id}
-                className={`absolute inset-4 ${active ? "block" : "hidden"} ${paneOpacity} transition-opacity`}
+                className={`absolute inset-4 ${visibilityClass} transition-opacity`}
               >
                 <RunnerTerminal
                   sessionId={s.id}
