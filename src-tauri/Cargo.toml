@@ -41,11 +41,14 @@ tempfile = "3"
 # inotify, on Windows to ReadDirectoryChangesW.
 notify = "6"
 
-# Unix-only: FIFO mkfifo + poll() inside session::tmux_runtime. v1 is
-# tmux-only (macOS + Linux); the future native-pty runtime would also live
-# behind this cfg-gate.
+# Unix-only deps:
+#  - libc: FIFO mkfifo + poll() inside session::tmux_runtime.
+#  - portable-pty: backing crate for session::pty_runtime, the
+#    in-process replacement for tmux (impl 0011). Windows keeps the
+#    tmux fallback until a named-pipe equivalent lands.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+portable-pty = "0.9"
 
 [dev-dependencies]
 # Used by issue #124's forwarder-contention regression test to hold the
