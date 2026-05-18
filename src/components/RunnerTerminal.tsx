@@ -74,11 +74,6 @@ interface RunnerTerminalProps {
    *  visible (and scrollable) — only the input/resize pipes shut
    *  off. */
   disabled?: boolean;
-  /** When this number increments, the xterm buffer is reset to a
-   *  blank canvas. Used by the parent before driving a resume so the
-   *  agent's repaint lands on an empty terminal instead of stacking
-   *  on top of the prior session's banner + scrollback. */
-  clearVersion?: number;
 }
 
 /**
@@ -111,7 +106,6 @@ export function RunnerTerminal({
   onError,
   active,
   disabled,
-  clearVersion,
 }: RunnerTerminalProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -153,17 +147,6 @@ export function RunnerTerminal({
   useEffect(() => {
     runnerRuntimeRef.current = runnerRuntime;
   }, [runnerRuntime]);
-
-  // Parent-driven canvas wipe (used by the resume flow). The first
-  // render's value is the initial — we don't want to reset on mount,
-  // only on subsequent bumps. We achieve that by skipping the very
-  // first effect run via a ref.
-  const lastClearVersionRef = useRef<number | undefined>(clearVersion);
-  useEffect(() => {
-    if (lastClearVersionRef.current === clearVersion) return;
-    lastClearVersionRef.current = clearVersion;
-    termRef.current?.reset();
-  }, [clearVersion]);
 
   useEffect(() => {
     onExitRef.current = onExit;

@@ -283,13 +283,6 @@ impl SessionRuntime for PtyRuntime {
         }))
     }
 
-    fn capture_visible(&self, _session: &RuntimeSession) -> RuntimeResult<Vec<u8>> {
-        // No host-side terminal model. The first-prompt readback path
-        // (`manager::inject_paste_with_verify`) treats an empty
-        // capture as "can't verify, fall through to send-and-pray".
-        // See plan §"Step 1" `capture_visible` row.
-        Ok(Vec::new())
-    }
 }
 
 // --- Reader thread ------------------------------------------------------

@@ -120,10 +120,6 @@ export default function RunnerChat() {
   // Drives the centered amber pill + scrim over the chat body so the
   // backend's session_kill grace + archive RPC don't read as a hang.
   const archiving = useArchivingSession(sessionId);
-  // Bumped before each resume to tell RunnerTerminal to reset its
-  // xterm canvas so the agent's repaint lands on a blank terminal
-  // instead of stacking on top of the prior session's banner.
-  const [clearVersion, setClearVersion] = useState<number>(0);
   // Right-side panel (runner identity + system prompt readout) open
   // state. Mirrors Obsidian's panel-toggle pattern: a small button at
   // the right edge of the topbar flips it. Persisted in localStorage
@@ -463,7 +459,6 @@ export default function RunnerChat() {
     if (!sessionId || !handle) return;
     const targetId = sessionId;
     setResuming(true);
-    setClearVersion((v) => v + 1);
     setErr(null);
     try {
       await api.session.resume(targetId, null, null);
@@ -829,7 +824,6 @@ export default function RunnerChat() {
                   // half-painted canvas frame the user otherwise sees.
                   active={active && !resuming}
                   disabled={dead || resuming}
-                  clearVersion={active ? clearVersion : undefined}
                   onExit={onTerminalExit}
                   onError={setErr}
                 />
