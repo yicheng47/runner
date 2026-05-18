@@ -208,9 +208,7 @@ pub fn run() {
             let _ = failed_mission_ids;
             #[cfg(unix)]
             {
-                if let Err(e) =
-                    session::pty_runtime::cleanup_stale_running_rows_on_startup(&pool)
-                {
+                if let Err(e) = session::pty_runtime::cleanup_stale_running_rows_on_startup(&pool) {
                     log::warn!("pty runtime startup cleanup failed: {e}");
                 }
             }

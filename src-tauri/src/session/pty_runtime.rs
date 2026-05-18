@@ -26,14 +26,12 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
-use portable_pty::{
-    native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize,
-};
+use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use super::launch;
 use super::runtime::{
-    OutputStream, RuntimeError, RuntimeOutput, RuntimeResult, RuntimeSession, SessionStatus,
-    SessionRuntime, SpawnSpec,
+    OutputStream, RuntimeError, RuntimeOutput, RuntimeResult, RuntimeSession, SessionRuntime,
+    SessionStatus, SpawnSpec,
 };
 
 const RUNTIME_LABEL: &str = "native-pty";
@@ -282,7 +280,6 @@ impl SessionRuntime for PtyRuntime {
             command: Some(handle.command.clone()),
         }))
     }
-
 }
 
 // --- Reader thread ------------------------------------------------------
@@ -302,10 +299,7 @@ fn reader_thread(
         match reader.read(&mut buf) {
             Ok(0) => break, // EOF
             Ok(n) => {
-                if tx
-                    .send(RuntimeOutput::Stream(buf[..n].to_vec()))
-                    .is_err()
-                {
+                if tx.send(RuntimeOutput::Stream(buf[..n].to_vec())).is_err() {
                     // Receiver dropped (manager's forwarder gone).
                     break;
                 }
@@ -559,11 +553,7 @@ mod tests {
     fn resize_succeeds_on_live_session() {
         let rt = PtyRuntime::new();
         let (sess, _stream) = rt
-            .spawn(spec(
-                "test-resize",
-                "/bin/sh",
-                &["-c", "sleep 5"],
-            ))
+            .spawn(spec("test-resize", "/bin/sh", &["-c", "sleep 5"]))
             .unwrap();
         rt.resize(&sess, 120, 40).expect("resize should succeed");
         rt.stop(&sess).unwrap();
