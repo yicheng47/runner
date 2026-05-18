@@ -2512,27 +2512,6 @@ mod tests {
             *self.acknowledge_after.lock().unwrap() = n;
         }
 
-        fn paste_count(&self) -> usize {
-            self.inputs
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|i| matches!(i, FakeInput::Paste { .. }))
-                .count()
-        }
-
-        fn last_paste_body(&self) -> Option<Vec<u8>> {
-            self.inputs
-                .lock()
-                .unwrap()
-                .iter()
-                .rev()
-                .find_map(|i| match i {
-                    FakeInput::Paste { payload, .. } => Some(payload.clone()),
-                    _ => None,
-                })
-        }
-
         /// Push a `Stream` event through the forwarder channel for
         /// the spawn at index `i`. Returns Err if the channel was
         /// already closed (test-side error).

@@ -16,8 +16,10 @@
 // start (DB cleanup demotes any prior `running` rows to `stopped`), so
 // this trait method is never reached on the live path. If it does fire,
 // erroring loud is better than returning a half-initialized stream.
-
-#![cfg(unix)]
+//
+// The `#[cfg(unix)]` gate is applied at the parent `session/mod.rs`
+// when this module is registered, so no inner attribute is needed
+// here.
 
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
