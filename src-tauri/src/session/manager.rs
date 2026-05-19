@@ -43,6 +43,39 @@ use crate::session::runtime::{
 
 const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
 
+/// Returns the resulting alt-screen state if `bytes` contains one or
+/// more enter/exit alt-screen escapes; `None` when no such escape is
+/// present. Recognized escapes: `\x1b[?1049h` / `\x1b[?1049l` (the
+/// modern combined save-cursor + alt-screen pair claude-code / codex
+/// emit) and `\x1b[?47h` / `\x1b[?47l` (the legacy alt-screen pair,
+/// kept for older TUIs).
+///
+/// The *latest* match in the slice wins — chunks that enter then exit
+/// within a single buffer (rare but legal) resolve to the trailing
+/// state, not whichever bracket happens to come first in the linear
+/// scan.
+fn scan_alt_screen_transition(bytes: &[u8]) -> Option<bool> {
+    const PATTERNS: &[(&[u8], bool)] = &[
+        (b"\x1b[?1049h", true),
+        (b"\x1b[?1049l", false),
+        (b"\x1b[?47h", true),
+        (b"\x1b[?47l", false),
+    ];
+    let mut latest: Option<(usize, bool)> = None;
+    for (needle, state) in PATTERNS {
+        if bytes.len() < needle.len() {
+            continue;
+        }
+        if let Some(pos) = bytes.windows(needle.len()).rposition(|w| w == *needle) {
+            latest = match latest {
+                Some((p, _)) if p >= pos => latest,
+                _ => Some((pos, *state)),
+            };
+        }
+    }
+    latest.map(|(_, state)| state)
+}
+
 /// Inputs the forwarder consumer needs to translate a
 /// `RuntimeOutput::StatusTransition` into a real `runner_status`
 /// event on the mission's NDJSON log (issue #124). All fields are
@@ -342,6 +375,14 @@ pub struct SessionManager {
     sessions: Mutex<HashMap<String, SessionHandle>>,
     output_buffers: Mutex<HashMap<String, VecDeque<OutputEvent>>>,
     output_seq: Mutex<HashMap<String, u64>>,
+    /// Whether each session is currently inside an alt-screen
+    /// (`\x1b[?1049h` / `\x1b[?47h`). Maintained by scanning every
+    /// runtime chunk in the reader thread; consumed by
+    /// `output_snapshot` so re-attaches that hit a long-running
+    /// session (the original mode-switch escape has rolled off the
+    /// 4096-chunk buffer) get the right buffer prepended. Absent ==
+    /// main-screen, the safe default.
+    alt_screen_on: Mutex<HashMap<String, bool>>,
     /// Session ids currently inside `resume()`, between the
     /// validation read and the live-map insert. A second concurrent
     /// `resume` call for the same id refuses on insert collision so
@@ -408,6 +449,7 @@ impl SessionManager {
             killed: Mutex::new(HashSet::new()),
             output_buffers: Mutex::new(HashMap::new()),
             output_seq: Mutex::new(HashMap::new()),
+            alt_screen_on: Mutex::new(HashMap::new()),
             resuming_claims: Mutex::new(HashSet::new()),
             shell_env,
             runtime,
@@ -1398,6 +1440,11 @@ impl SessionManager {
                 }
                 match output.recv_timeout(Duration::from_millis(500)) {
                     Ok(RuntimeOutput::Replay(bytes)) | Ok(RuntimeOutput::Stream(bytes)) => {
+                        // Track alt-screen mode before recording so
+                        // that the very next `output_snapshot` (if
+                        // one races in here) reflects the latest
+                        // state the agent just emitted.
+                        manager_t.update_alt_screen_state(&session_id, &bytes);
                         let ev = manager_t.record_output(
                             &session_id,
                             mission_id.as_deref(),
@@ -1608,12 +1655,44 @@ impl SessionManager {
     /// webview reloads / chat switching for live sessions without turning the
     /// sessions table into a PTY transcript store.
     pub fn output_snapshot(&self, session_id: &str) -> Vec<OutputEvent> {
-        self.output_buffers
+        let mut events: Vec<OutputEvent> = self
+            .output_buffers
             .lock()
             .unwrap()
             .get(session_id)
             .map(|chunks| chunks.iter().cloned().collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // For sessions currently inside an alt-screen, prepend a
+        // synthetic chunk carrying the `\x1b[?1049h` enter escape.
+        // Long-running TUI sessions (claude-code, codex) lose the
+        // original enter-alt-screen escape from the bounded
+        // 4096-chunk buffer over time, so a re-attach that just
+        // replays the remaining chunks lands mid-alt-screen content
+        // into xterm's main screen — visible as stacked redraws in
+        // scrollback and a blank alt-screen pane on route remount
+        // (docs/impls/archive/0009 has the tmux-era analysis of the
+        // same failure mode). seq=0 sits below every real event's
+        // monotonic seq so the frontend's `seq <= lastWrittenSeq`
+        // filter doesn't drop it on re-replay.
+        let alt = self
+            .alt_screen_on
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .copied()
+            .unwrap_or(false);
+        if alt {
+            events.insert(
+                0,
+                OutputEvent {
+                    session_id: session_id.into(),
+                    mission_id: None,
+                    seq: 0,
+                    data: BASE64.encode(b"\x1b[?1049h"),
+                },
+            );
+        }
+        events
     }
 
     /// Kill the child and wait for the reader thread to reap it.
@@ -1972,6 +2051,7 @@ impl SessionManager {
     pub fn purge_session_buffers(&self, session_id: &str) {
         self.output_buffers.lock().unwrap().remove(session_id);
         self.output_seq.lock().unwrap().remove(session_id);
+        self.alt_screen_on.lock().unwrap().remove(session_id);
     }
 
     /// Drop only the output buffer for a session, keeping the seq
@@ -1983,6 +2063,33 @@ impl SessionManager {
     /// would otherwise drop.
     pub fn purge_output_buffer(&self, session_id: &str) {
         self.output_buffers.lock().unwrap().remove(session_id);
+        // Resume forks a new child; whether it'll be in alt-screen
+        // depends on the new process's own startup. Clear the state
+        // so it re-derives from the new child's emitted bytes
+        // instead of inheriting the prior child's mode.
+        self.alt_screen_on.lock().unwrap().remove(session_id);
+    }
+
+    /// Update the per-session alt-screen flag from a raw runtime
+    /// chunk. We scan for the four mode-switch escapes (1049h/l +
+    /// 47h/l) and take the *latest* match in the chunk as the
+    /// resulting state. No-op when the chunk contains no
+    /// mode-switch escape.
+    ///
+    /// Boundary caveat: an escape could be split across two
+    /// adjacent chunks if the PTY reader's buffer slice happens to
+    /// land mid-sequence. The sequences are 7-8 bytes and the
+    /// reader's reads are kilobyte-scale, so the odds are low and
+    /// the worst case is one missed transition — the next emitted
+    /// transition picks up the right state. If this turns out to
+    /// matter we can carry a small tail buffer across chunks.
+    fn update_alt_screen_state(&self, session_id: &str, bytes: &[u8]) {
+        if let Some(new_state) = scan_alt_screen_transition(bytes) {
+            self.alt_screen_on
+                .lock()
+                .unwrap()
+                .insert(session_id.to_string(), new_state);
+        }
     }
 
     fn record_output(
@@ -4504,5 +4611,102 @@ mod tests {
         blocker.unlock().unwrap();
         let outcome = ctx.try_append_runner_status(RunnerStatus::Busy, "forwarder");
         assert!(matches!(outcome, AppendOutcome::Ok));
+    }
+
+    #[test]
+    fn scan_alt_screen_detects_modern_and_legacy_escapes() {
+        // No escape → no transition reported.
+        assert_eq!(scan_alt_screen_transition(b"hello world"), None);
+
+        // Modern combined pair (the one claude-code / codex emit).
+        assert_eq!(
+            scan_alt_screen_transition(b"prelude\x1b[?1049hbody"),
+            Some(true)
+        );
+        assert_eq!(
+            scan_alt_screen_transition(b"\x1b[?1049lcleanup"),
+            Some(false)
+        );
+
+        // Legacy 47h/l pair still covered (older TUIs).
+        assert_eq!(scan_alt_screen_transition(b"\x1b[?47h"), Some(true));
+        assert_eq!(scan_alt_screen_transition(b"\x1b[?47l"), Some(false));
+
+        // Latest match wins — enter followed by exit resolves to
+        // main-screen, not alt.
+        assert_eq!(
+            scan_alt_screen_transition(b"\x1b[?1049henter middle \x1b[?1049lexit"),
+            Some(false)
+        );
+        // …and exit followed by enter resolves to alt.
+        assert_eq!(
+            scan_alt_screen_transition(b"\x1b[?1049l\x1b[?1049h"),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn output_snapshot_prepends_alt_screen_enter_when_session_in_alt_screen() {
+        let pool = pool_with_schema();
+        let fake = fake_runtime();
+        let mgr = SessionManager::new(
+            crate::shell_path::LoginShellEnv::default(),
+            Arc::clone(&fake) as Arc<dyn SessionRuntime>,
+        );
+        let runner = runner("/bin/sh", &["-c", "true"]);
+        {
+            let conn = pool.get().unwrap();
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'r', 'r', 'shell', '/bin/sh',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+                params![runner.id, now],
+            )
+            .unwrap();
+        }
+        let spawned = mgr
+            .spawn_direct(
+                &runner,
+                Some("/tmp"),
+                None,
+                None,
+                std::path::Path::new("/tmp"),
+                Arc::clone(&pool),
+                capture(),
+                None,
+            )
+            .unwrap();
+        // Drive a chunk that enters alt-screen + some content, then
+        // a chunk of pure content (no transition) so we exercise the
+        // "scan no-ops on chunks without escapes" branch too.
+        fake.push_output(0, b"\x1b[?1049hinitial banner");
+        fake.push_output(0, b"more painted content");
+        // Give the forwarder a beat to drain both chunks.
+        std::thread::sleep(Duration::from_millis(50));
+
+        let snapshot = mgr.output_snapshot(&spawned.id);
+        assert!(!snapshot.is_empty(), "snapshot should contain chunks");
+        // First event is the synthetic alt-screen enter, seq=0.
+        assert_eq!(snapshot[0].seq, 0);
+        assert_eq!(
+            BASE64.decode(&snapshot[0].data).unwrap(),
+            b"\x1b[?1049h",
+            "synthetic prepend must be a single bare enter-alt-screen escape"
+        );
+
+        // After an exit-alt-screen chunk, the synthetic prepend
+        // disappears and the snapshot starts at the first real event.
+        fake.push_output(0, b"\x1b[?1049lback to main");
+        std::thread::sleep(Duration::from_millis(50));
+        let snapshot2 = mgr.output_snapshot(&spawned.id);
+        assert_ne!(
+            snapshot2.first().map(|e| e.seq),
+            Some(0),
+            "main-screen sessions must not prepend the alt-screen enter"
+        );
     }
 }

@@ -157,6 +157,26 @@ export const RunnerTerminal = forwardRef<
   // lengthen the redraw window the user perceives.
   const lastPushedColsRef = useRef(0);
   const lastPushedRowsRef = useRef(0);
+  // Snapshot replay is deferred until the pane is both active and
+  // measurable. Mission workspaces mount every slot's RunnerTerminal
+  // at once with `activeTab="feed"` by default — every slot pane is
+  // `display:none`, the mount-effect's `fit.fit()` is skipped (zero-
+  // size rect), and xterm sits at the constructor default 80×24.
+  // Replaying snapshot bytes into that 80-col grid bakes wrong cell
+  // positions into the buffer, and a later `fit.fit()` on tab focus
+  // can't move them. So we cache the fetched bytes here and drain
+  // them only once the pane has come to the front and fit at real
+  // cols. See #mission-tab-return-drift.
+  const pendingSnapshotRef = useRef<OutputEvent[] | null>(null);
+  const pendingLiveRef = useRef<OutputEvent[]>([]);
+  const lastWrittenSeqRef = useRef(0);
+  const replayDoneRef = useRef(false);
+  // Bound to the latest snapshot effect's drain helper so the
+  // activation effect (declared after it) can request a drain
+  // without lifting the whole closure into module scope. Cleared on
+  // sessionId change so a stale closure can't keep writing into the
+  // previous session's xterm grid.
+  const tryDrainReplayRef = useRef<(() => void) | null>(null);
 
   // Keep the latest sessionId visible to the data/resize callbacks without
   // re-creating the terminal on prop change. The session listener below
@@ -515,25 +535,76 @@ export const RunnerTerminal = forwardRef<
     let unlistenOutput: (() => void) | null = null;
     let unlistenExit: (() => void) | null = null;
     let cancelled = false;
-    let replayDone = false;
-    let lastWrittenSeq = 0;
-    const pendingLive: OutputEvent[] = [];
+    // Fresh sessionId → fresh replay bookkeeping. Done in the body
+    // (not just on cleanup) so an early prop change can't leak state
+    // from the previous session's still-pending fetch.
+    pendingSnapshotRef.current = null;
+    pendingLiveRef.current = [];
+    lastWrittenSeqRef.current = 0;
+    replayDoneRef.current = false;
 
     const writeOutput = (ev: OutputEvent) => {
       termRef.current?.write(decodeBase64Chunk(ev.data));
     };
 
+    // Replay drains only when (a) the snapshot RPC has returned,
+    // (b) the pane is currently active, and (c) the container has a
+    // measurable rect so the in-line fit gives us real cols/rows.
+    // Until all three line up we keep the bytes parked on
+    // pendingSnapshotRef and pendingLiveRef; activation / resize
+    // observers re-call this helper as conditions change.
+    const tryDrainReplay = () => {
+      if (replayDoneRef.current) return;
+      if (!activeRef.current) return;
+      const t = termRef.current;
+      const fit = fitRef.current;
+      const node = containerRef.current;
+      if (!t || !fit || !node) return;
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      if (pendingSnapshotRef.current === null) return;
+
+      try {
+        fit.fit();
+      } catch {
+        // teardown in progress
+        return;
+      }
+
+      t.reset();
+      for (const ev of pendingSnapshotRef.current) {
+        writeOutput(ev);
+        lastWrittenSeqRef.current = Math.max(
+          lastWrittenSeqRef.current,
+          ev.seq,
+        );
+      }
+      pendingSnapshotRef.current = null;
+      for (const ev of pendingLiveRef.current) {
+        if (ev.seq <= lastWrittenSeqRef.current) continue;
+        writeOutput(ev);
+        lastWrittenSeqRef.current = ev.seq;
+      }
+      pendingLiveRef.current = [];
+      replayDoneRef.current = true;
+    };
+    tryDrainReplayRef.current = tryDrainReplay;
+
     void (async () => {
       const [fnOut, fnExit] = await Promise.all([
         listen<OutputEvent>("session/output", (event) => {
           if (event.payload.session_id !== sessionId) return;
-          if (!replayDone) {
-            pendingLive.push(event.payload);
+          if (!replayDoneRef.current) {
+            pendingLiveRef.current.push(event.payload);
+            // The snapshot may have already arrived and be waiting
+            // on activation; nudge the drain in case the live event
+            // arrived after the user just brought the pane forward.
+            tryDrainReplay();
             return;
           }
-          if (event.payload.seq <= lastWrittenSeq) return;
+          if (event.payload.seq <= lastWrittenSeqRef.current) return;
           writeOutput(event.payload);
-          lastWrittenSeq = event.payload.seq;
+          lastWrittenSeqRef.current = event.payload.seq;
         }),
         listen<ExitEvent>("session/exit", (event) => {
           if (event.payload.session_id !== sessionId) return;
@@ -556,27 +627,17 @@ export const RunnerTerminal = forwardRef<
       }
       if (cancelled) return;
 
-      termRef.current?.reset();
-      for (const ev of snapshot) {
-        writeOutput(ev);
-        lastWrittenSeq = Math.max(lastWrittenSeq, ev.seq);
-      }
-      replayDone = true;
-      for (const ev of pendingLive) {
-        if (ev.seq <= lastWrittenSeq) continue;
-        writeOutput(ev);
-        lastWrittenSeq = ev.seq;
-      }
-      pendingLive.length = 0;
-
-      // Do not resize here: hidden terminal panes mount before they are
-      // measurable, and sending that hidden geometry to TUIs makes them paint
-      // their startup screen into a tiny grid. The activation effect below
-      // owns the SIGWINCH dance once the pane is visible.
+      // Park the snapshot for the activation effect to drain. For
+      // panes that are already active and measurable this is a
+      // straight drain; for `display:none` panes (mission's
+      // non-active slots) the bytes sit here until tab focus.
+      pendingSnapshotRef.current = snapshot;
+      tryDrainReplay();
     })();
 
     return () => {
       cancelled = true;
+      tryDrainReplayRef.current = null;
       unlistenOutput?.();
       unlistenExit?.();
     };
@@ -602,6 +663,11 @@ export const RunnerTerminal = forwardRef<
       if (rect.width <= 0 || rect.height <= 0) return;
       try {
         fit.fit();
+        // Drain any pending snapshot replay now that we have a real
+        // cols/rows — this is the path that fires when mission slot
+        // tabs (mounted hidden by default, snapshot already fetched
+        // into pendingSnapshotRef) finally come to the front.
+        tryDrainReplayRef.current?.();
         // Drop the WebGL glyph atlas before the refresh: in-app tab /
         // route switches (Mission ↔ Chat, mission tab switches) keep
         // hidden terminals mounted, and the atlas can desync while a
