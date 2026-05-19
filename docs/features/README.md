@@ -62,3 +62,7 @@ links to its tracking issue.
   panic hook that captures backtraces + Help → Reveal logs in
   Finder; foundational so future user-reported crashes are
   recoverable.
+- [19 — Mission split view](./19-mission-split-view.md) — per-mission
+  pane tree with drag-tab-to-edge splitting; render two PTYs (or
+  feed + PTY) side-by-side inside one mission window; complements
+  spec 12 (multi-window can't side-by-side same-mission PTYs).
