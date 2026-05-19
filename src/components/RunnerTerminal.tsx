@@ -110,6 +110,17 @@ export function RunnerTerminal({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  // Live WebglAddon handle so the visibility / focus / font-change
+  // listeners below can call `clearTextureAtlas()` on it. The WebGL
+  // renderer caches every distinct (codepoint, fg, bg, style) cell
+  // into a GPU texture atlas; in dev (Vite HMR re-mounts) and on
+  // long-lived sessions with bold + italic + many ANSI colors the
+  // atlas occasionally desyncs and ASCII codepoints render with the
+  // wrong glyph until a resize triggers a refit. Rebuilding the
+  // atlas on the same lifecycle hooks where we already refresh /
+  // refit makes the corruption window a few hundred milliseconds at
+  // worst instead of "until the user touches the window edge."
+  const webglRef = useRef<WebglAddon | null>(null);
   const sessionIdRef = useRef<string>(sessionId);
   const onExitRef = useRef(onExit);
   const onErrorRef = useRef(onError);
@@ -200,9 +211,20 @@ export function RunnerTerminal({
     });
     term.loadAddon(webLinks);
     term.open(containerRef.current);
+    // WebGL renderer + context-loss recovery. Without the
+    // onContextLoss hook, a single GPU reset / driver hiccup / dev
+    // HMR remount would leave xterm rendering against a dead context
+    // and the canvas freezes mid-frame. Disposing the addon on loss
+    // lets xterm fall back to the DOM renderer for the rest of this
+    // mount — degraded but functional, no more frozen panes.
     try {
       const webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        webgl.dispose();
+        webglRef.current = null;
+      });
       term.loadAddon(webgl);
+      webglRef.current = webgl;
     } catch {
       // No WebGL — fall through to canvas. RunnerChat does the same.
     }
@@ -370,6 +392,15 @@ export function RunnerTerminal({
       const t = termRef.current;
       if (!t) return;
       try {
+        // Rebuild the WebGL glyph atlas before the redraw. The atlas
+        // occasionally desyncs while the app is backgrounded (other
+        // GL apps stealing the GPU, OS compositor recycling, dev HMR
+        // re-running effects), and the symptom is plain ASCII
+        // codepoints rendering with the wrong glyph until a resize
+        // forces a refit. Clearing the atlas here costs one frame's
+        // worth of glyph re-rasterization on focus / tab-visible /
+        // font-change and eliminates the "resize-to-fix" workaround.
+        webglRef.current?.clearTextureAtlas();
         t.refresh(0, t.rows - 1);
       } catch {
         // teardown
@@ -393,14 +424,18 @@ export function RunnerTerminal({
       try {
         if (e.key === STORAGE_TERMINAL_FONT_SIZE) {
           t.options.fontSize = readTerminalFontSize();
-          // Cell metrics changed — refit and push the new PTY geometry
-          // so an active streaming TUI doesn't keep writing against
-          // stale cols/rows until the next window resize.
+          // Cell metrics changed — refit, push the new PTY geometry,
+          // and drop the atlas. The atlas indexes cells by their
+          // rendered pixel dimensions; a stale cache after a font
+          // change can leave a band of pre-change glyphs at the new
+          // size until something else evicts them.
+          webglRef.current?.clearTextureAtlas();
           refitAndPush();
         } else if (e.key === STORAGE_TERMINAL_FONT_FAMILY) {
           t.options.fontFamily = resolveTerminalFontStack(
             readTerminalFontFamily(),
           );
+          webglRef.current?.clearTextureAtlas();
           refitAndPush();
         } else if (e.key === STORAGE_TERMINAL_CURSOR_STYLE) {
           t.options.cursorStyle = readTerminalCursorStyle();

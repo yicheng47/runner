@@ -235,8 +235,27 @@ const DEFAULT_TERMINAL_SCROLLBACK = 10000;
 // as the fallback chain so that even when a user picks a specific face
 // (JetBrains Mono, Fira Code) we still degrade gracefully on machines
 // where that font isn't installed.
+//
+// Head — Nerd Font fallbacks for the Private Use Area glyphs that
+// claude-code and other modern TUIs emit on their status line (PR /
+// branch / lock / cursor icons live in U+E000–U+F8FF). CSS font
+// stacks fall through per-codepoint, so the Latin / digit codepoints
+// keep coming from Menlo / SF Mono — the symbols fonts only win on
+// the PUA codepoints they cover, and they no-op if the user hasn't
+// installed any of these patches. Without this, macOS's automatic
+// PUA fallback lands on Apple SD Gothic Neo / Hiragino and the
+// glyph renders as a Hangul-looking character (#152 follow-up).
+//
+// Tail — `Apple Symbols` catches non-Nerd-Font symbol codepoints
+// (extra math, arrows, miscellaneous technical) before the generic
+// `monospace` fallback so the browser doesn't fall back to a CJK
+// face for those either.
 const SYSTEM_FONT_STACK =
-  'Menlo, "SF Mono", Monaco, Consolas, "Liberation Mono", monospace';
+  '"Symbols Nerd Font Mono", "Symbols Nerd Font", ' +
+  '"JetBrainsMono Nerd Font", "FiraCode Nerd Font", ' +
+  '"Hack Nerd Font Mono", ' +
+  'Menlo, "SF Mono", Monaco, Consolas, "Liberation Mono", ' +
+  '"Apple Symbols", monospace';
 
 export function readStoredBool(key: string, defaultValue: boolean): boolean {
   try {

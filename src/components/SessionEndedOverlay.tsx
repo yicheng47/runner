@@ -161,6 +161,24 @@ export function StartingOverlay({
   );
 }
 
+/// True iff `startedAt` is within the last few seconds — the only
+/// case where the StartingOverlay pill should fire. Switching tabs
+/// to a chat that's been running for an hour, or reopening a mission
+/// the day after `mission_start`, must NOT replay the boot pill; the
+/// agent CLI inside the PTY is already painted and the user just
+/// wants the live terminal.
+///
+/// Window is intentionally short (a couple of seconds): spawn → IPC
+/// round-trip → React Router navigation is well under a second in
+/// practice, and any session older than that has already had a
+/// chance to paint its first frame.
+export function isFreshSpawn(startedAt: string | null | undefined): boolean {
+  if (!startedAt) return false;
+  const ts = Date.parse(startedAt);
+  if (!Number.isFinite(ts)) return false;
+  return Date.now() - ts < 3_000;
+}
+
 function LoadingPill({ label }: { label: string }) {
   return (
     <div className="pointer-events-auto flex items-center gap-2.5 rounded-full border border-[#1F3D4D] bg-[#0F1E26] px-4 py-2 text-[13px] font-medium text-[#39E5FF] shadow-[0_8px_30px_rgba(0,0,0,0.5)]">

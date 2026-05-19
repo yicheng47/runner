@@ -47,6 +47,7 @@ import {
   ResumingOverlay,
   SessionEndedOverlay,
   StartingOverlay,
+  isFreshSpawn,
 } from "../components/SessionEndedOverlay";
 import {
   markArchivingMission,
@@ -846,12 +847,21 @@ function SlotPtyPane({
   const resuming = !!forcedResuming;
   const dead = session.status !== "running";
   // Per-slot "warming up" overlay: when the pane first mounts for a
-  // live slot, the agent CLI (claude-code / codex) takes a beat to
-  // paint its banner. Show the cyan pill over the otherwise-blank
-  // xterm canvas for at least 1s so the user doesn't stare at an
-  // empty pane wondering whether the spawn succeeded. Mirrors the
-  // resume dismissal dance (first-output + idle + min-visible).
-  const [starting, setStarting] = useState<boolean>(() => !dead);
+  // genuinely fresh slot, the agent CLI (claude-code / codex) takes
+  // a beat to paint its banner. Show the cyan pill over the
+  // otherwise-blank xterm canvas for at least 1s so the user doesn't
+  // stare at an empty pane wondering whether the spawn succeeded.
+  // Mirrors the resume dismissal dance (first-output + idle +
+  // min-visible).
+  //
+  // Gated on `isFreshSpawn(session.started_at)` so that
+  // navigating into an old mission — slot PTYs running for hours,
+  // agent long-since painted — drops straight into the live
+  // terminal instead of flashing the pill over already-rendered
+  // content.
+  const [starting, setStarting] = useState<boolean>(
+    () => !dead && isFreshSpawn(session.started_at),
+  );
   useEffect(() => {
     if (!starting) return;
     const STARTING_MIN_VISIBLE_MS = 1000;

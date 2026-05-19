@@ -69,7 +69,7 @@ pub struct LaunchScript {
 ///    that the shim execs into; direct chats omit both to enforce
 ///    the off-bus invariant from PR #51).
 /// 3. `shell_path` (best-effort login-shell PATH from
-///    `shell_path::resolve_login_shell_path`, possibly None).
+///    `shell_path::resolve_login_shell_env`, possibly None).
 /// 4. Fallback CLI dirs (`~/.local/bin` etc.). Always included so
 ///    spawn correctness doesn't depend on the shell resolver
 ///    succeeding before a fixed timer.
