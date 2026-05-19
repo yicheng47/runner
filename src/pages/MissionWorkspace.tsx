@@ -1019,14 +1019,15 @@ function PtyTabButton({
     <button
       type="button"
       onClick={onClick}
+      title={`@${handle}`}
       className={`-mb-px flex items-center gap-2 border-b-2 px-3.5 py-2.5 text-[13px] transition-colors ${
         active
           ? "border-accent font-medium text-fg"
           : "border-transparent text-fg-2 hover:text-fg"
       }`}
     >
-      <Terminal aria-hidden className="h-3 w-3" />
-      <span className="font-mono">@{handle}</span>
+      <Terminal aria-hidden className="h-3 w-3 shrink-0" />
+      <span className="max-w-[140px] truncate font-mono">@{handle}</span>
       <span
         role="button"
         aria-label={`Close @${handle} tab`}
@@ -1034,7 +1035,7 @@ function PtyTabButton({
           e.stopPropagation();
           onClose();
         }}
-        className="inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded text-fg-3 hover:bg-raised hover:text-fg"
+        className="inline-flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-fg-3 hover:bg-raised hover:text-fg"
       >
         <X aria-hidden className="h-3 w-3" />
       </span>
