@@ -1,4 +1,4 @@
-.PHONY: dev dev-web build package install lint typecheck test test-rust test-ts check fmt clean clean-all
+.PHONY: dev dev-web build package install lint lint-frontend lint-rust typecheck test test-rust test-ts check fmt fmt-check ci clean clean-all
 
 # Start Tauri app (frontend + Rust backend) in dev mode
 dev:
@@ -23,11 +23,25 @@ package:
 install:
 	pnpm install
 
-# Lint frontend
-lint:
-	pnpm lint
+# Lint everything (frontend + backend) — matches CI's lint gates so a
+# clean local run means CI won't fail on lint. Stops on the first
+# failing target so the error is the last thing in the scrollback.
+lint: lint-frontend lint-rust
 
-# TS typecheck (no emit)
+# Frontend: typecheck + eslint. Both gates from the `frontend` CI job.
+lint-frontend:
+	pnpm exec tsc --noEmit
+	pnpm run lint
+
+# Backend: cargo fmt --check + clippy -D warnings. Both gates from the
+# `backend` CI job (cargo check + cargo test are separate, run via
+# `make check` / `make test-rust` or `make ci`).
+lint-rust:
+	cargo fmt --all --check
+	cargo clippy --workspace --all-targets -- -D warnings
+
+# TS typecheck (no emit) — kept as a separate target for IDE-style
+# loops; `make lint` runs this transitively via lint-frontend.
 typecheck:
 	pnpm exec tsc --noEmit
 
@@ -48,6 +62,15 @@ check:
 # Rust format (rewrites files)
 fmt:
 	cargo fmt --all
+
+# Rust format check (CI parity — fails on any formatting drift)
+fmt-check:
+	cargo fmt --all --check
+
+# Full pre-push battery: every gate the `frontend` + `backend` CI jobs
+# run, in the same order. Heavier than `make lint` — includes
+# cargo check + the full workspace test run.
+ci: lint check test-rust
 
 # Clean dev artifacts
 clean:

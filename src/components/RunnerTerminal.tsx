@@ -8,7 +8,7 @@
 // raw bytes, backend snapshot replay for late attach, and SIGWINCH dance on
 // attach so claude-code/codex repaint onto a fresh grid.
 
-import { useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -77,6 +77,22 @@ interface RunnerTerminalProps {
 }
 
 /**
+ * Imperative handle exposed to the parent so resume/spawn callers can
+ * size the backend PTY to the actual xterm geometry before the child
+ * is forked. Without this, `pty_runtime` defaults to 80×24 and the
+ * agent CLI's first paint wraps at the default cols until the next
+ * user-driven SIGWINCH (#resume-pty-size-mismatch).
+ */
+export interface RunnerTerminalHandle {
+  /**
+   * Refit against the current container and return the resolved xterm
+   * cols/rows. Returns null if the terminal isn't mounted yet or the
+   * container has no measurable size (e.g. hidden via `display:none`).
+   */
+  measure(): { cols: number; rows: number } | null;
+}
+
+/**
  * Should resizing this runtime hard-clear xterm's scrollback before
  * pushing the new geometry to the backend?
  *
@@ -99,14 +115,13 @@ function decodeBase64Chunk(data: string): Uint8Array {
   return bytes;
 }
 
-export function RunnerTerminal({
-  sessionId,
-  runnerRuntime,
-  onExit,
-  onError,
-  active,
-  disabled,
-}: RunnerTerminalProps) {
+export const RunnerTerminal = forwardRef<
+  RunnerTerminalHandle,
+  RunnerTerminalProps
+>(function RunnerTerminal(
+  { sessionId, runnerRuntime, onExit, onError, active, disabled },
+  ref,
+) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -142,6 +157,26 @@ export function RunnerTerminal({
   // lengthen the redraw window the user perceives.
   const lastPushedColsRef = useRef(0);
   const lastPushedRowsRef = useRef(0);
+  // Snapshot replay is deferred until the pane is both active and
+  // measurable. Mission workspaces mount every slot's RunnerTerminal
+  // at once with `activeTab="feed"` by default — every slot pane is
+  // `display:none`, the mount-effect's `fit.fit()` is skipped (zero-
+  // size rect), and xterm sits at the constructor default 80×24.
+  // Replaying snapshot bytes into that 80-col grid bakes wrong cell
+  // positions into the buffer, and a later `fit.fit()` on tab focus
+  // can't move them. So we cache the fetched bytes here and drain
+  // them only once the pane has come to the front and fit at real
+  // cols. See #mission-tab-return-drift.
+  const pendingSnapshotRef = useRef<OutputEvent[] | null>(null);
+  const pendingLiveRef = useRef<OutputEvent[]>([]);
+  const lastWrittenSeqRef = useRef(0);
+  const replayDoneRef = useRef(false);
+  // Bound to the latest snapshot effect's drain helper so the
+  // activation effect (declared after it) can request a drain
+  // without lifting the whole closure into module scope. Cleared on
+  // sessionId change so a stale closure can't keep writing into the
+  // previous session's xterm grid.
+  const tryDrainReplayRef = useRef<(() => void) | null>(null);
 
   // Keep the latest sessionId visible to the data/resize callbacks without
   // re-creating the terminal on prop change. The session listener below
@@ -231,6 +266,31 @@ export function RunnerTerminal({
     const initialRect = containerRef.current.getBoundingClientRect();
     if (initialRect.width > 0 && initialRect.height > 0) {
       fit.fit();
+      // Push the freshly-fitted dims to the backend right here, before
+      // the snapshot effect below fires its outputSnapshot RPC. The
+      // backend's buffered bytes were emitted by the agent at whatever
+      // cols the PTY was last sized to — if that differs from xterm's
+      // current cols (common on route returns: chat → mission, mission
+      // → chat), replaying those bytes at the new cols drifts every
+      // absolute-positioned glyph and leaves the alt-screen blank
+      // (#mission-tab-return-drift). Pushing first ensures backend +
+      // xterm agree on cols before we read the snapshot, and the
+      // SIGWINCH-driven repaint that follows arrives via the live
+      // listener at the same cols xterm now uses.
+      //
+      // Hidden panes (rect 0) skip this — the activation effect picks
+      // up the push when they come to the front, same as before.
+      lastPushedColsRef.current = term.cols;
+      lastPushedRowsRef.current = term.rows;
+      // sessionIdRef is initialized with the prop value (line ~124),
+      // so this reads the right id on initial mount without forcing
+      // sessionId into the mount-effect's deps (which is intentionally
+      // `[]` to avoid tearing down the whole xterm on session swap).
+      void api.session
+        .resize(sessionIdRef.current, term.cols, term.rows)
+        .catch(() => {
+          // session may have exited before mount; nothing to do
+        });
     }
     // Don't auto-focus on mount: in the workspace, multiple
     // RunnerTerminals mount at once before any tab is selected, and the
@@ -475,25 +535,76 @@ export function RunnerTerminal({
     let unlistenOutput: (() => void) | null = null;
     let unlistenExit: (() => void) | null = null;
     let cancelled = false;
-    let replayDone = false;
-    let lastWrittenSeq = 0;
-    const pendingLive: OutputEvent[] = [];
+    // Fresh sessionId → fresh replay bookkeeping. Done in the body
+    // (not just on cleanup) so an early prop change can't leak state
+    // from the previous session's still-pending fetch.
+    pendingSnapshotRef.current = null;
+    pendingLiveRef.current = [];
+    lastWrittenSeqRef.current = 0;
+    replayDoneRef.current = false;
 
     const writeOutput = (ev: OutputEvent) => {
       termRef.current?.write(decodeBase64Chunk(ev.data));
     };
 
+    // Replay drains only when (a) the snapshot RPC has returned,
+    // (b) the pane is currently active, and (c) the container has a
+    // measurable rect so the in-line fit gives us real cols/rows.
+    // Until all three line up we keep the bytes parked on
+    // pendingSnapshotRef and pendingLiveRef; activation / resize
+    // observers re-call this helper as conditions change.
+    const tryDrainReplay = () => {
+      if (replayDoneRef.current) return;
+      if (!activeRef.current) return;
+      const t = termRef.current;
+      const fit = fitRef.current;
+      const node = containerRef.current;
+      if (!t || !fit || !node) return;
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      if (pendingSnapshotRef.current === null) return;
+
+      try {
+        fit.fit();
+      } catch {
+        // teardown in progress
+        return;
+      }
+
+      t.reset();
+      for (const ev of pendingSnapshotRef.current) {
+        writeOutput(ev);
+        lastWrittenSeqRef.current = Math.max(
+          lastWrittenSeqRef.current,
+          ev.seq,
+        );
+      }
+      pendingSnapshotRef.current = null;
+      for (const ev of pendingLiveRef.current) {
+        if (ev.seq <= lastWrittenSeqRef.current) continue;
+        writeOutput(ev);
+        lastWrittenSeqRef.current = ev.seq;
+      }
+      pendingLiveRef.current = [];
+      replayDoneRef.current = true;
+    };
+    tryDrainReplayRef.current = tryDrainReplay;
+
     void (async () => {
       const [fnOut, fnExit] = await Promise.all([
         listen<OutputEvent>("session/output", (event) => {
           if (event.payload.session_id !== sessionId) return;
-          if (!replayDone) {
-            pendingLive.push(event.payload);
+          if (!replayDoneRef.current) {
+            pendingLiveRef.current.push(event.payload);
+            // The snapshot may have already arrived and be waiting
+            // on activation; nudge the drain in case the live event
+            // arrived after the user just brought the pane forward.
+            tryDrainReplay();
             return;
           }
-          if (event.payload.seq <= lastWrittenSeq) return;
+          if (event.payload.seq <= lastWrittenSeqRef.current) return;
           writeOutput(event.payload);
-          lastWrittenSeq = event.payload.seq;
+          lastWrittenSeqRef.current = event.payload.seq;
         }),
         listen<ExitEvent>("session/exit", (event) => {
           if (event.payload.session_id !== sessionId) return;
@@ -516,27 +627,17 @@ export function RunnerTerminal({
       }
       if (cancelled) return;
 
-      termRef.current?.reset();
-      for (const ev of snapshot) {
-        writeOutput(ev);
-        lastWrittenSeq = Math.max(lastWrittenSeq, ev.seq);
-      }
-      replayDone = true;
-      for (const ev of pendingLive) {
-        if (ev.seq <= lastWrittenSeq) continue;
-        writeOutput(ev);
-        lastWrittenSeq = ev.seq;
-      }
-      pendingLive.length = 0;
-
-      // Do not resize here: hidden terminal panes mount before they are
-      // measurable, and sending that hidden geometry to TUIs makes them paint
-      // their startup screen into a tiny grid. The activation effect below
-      // owns the SIGWINCH dance once the pane is visible.
+      // Park the snapshot for the activation effect to drain. For
+      // panes that are already active and measurable this is a
+      // straight drain; for `display:none` panes (mission's
+      // non-active slots) the bytes sit here until tab focus.
+      pendingSnapshotRef.current = snapshot;
+      tryDrainReplay();
     })();
 
     return () => {
       cancelled = true;
+      tryDrainReplayRef.current = null;
       unlistenOutput?.();
       unlistenExit?.();
     };
@@ -562,6 +663,11 @@ export function RunnerTerminal({
       if (rect.width <= 0 || rect.height <= 0) return;
       try {
         fit.fit();
+        // Drain any pending snapshot replay now that we have a real
+        // cols/rows — this is the path that fires when mission slot
+        // tabs (mounted hidden by default, snapshot already fetched
+        // into pendingSnapshotRef) finally come to the front.
+        tryDrainReplayRef.current?.();
         // Drop the WebGL glyph atlas before the refresh: in-app tab /
         // route switches (Mission ↔ Chat, mission tab switches) keep
         // hidden terminals mounted, and the atlas can desync while a
@@ -611,9 +717,34 @@ export function RunnerTerminal({
     };
   }, [active, sessionId]);
 
+  useImperativeHandle(
+    ref,
+    () => ({
+      measure: () => {
+        const t = termRef.current;
+        const fit = fitRef.current;
+        const node = containerRef.current;
+        if (!t || !fit || !node) return null;
+        const rect = node.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return null;
+        try {
+          // Force a fit before reading dims: stopped tabs gate their
+          // resize listeners on activeRef, so cols/rows can be stale
+          // (often still 80×24 from the initial Terminal construction)
+          // by the time the user clicks Resume.
+          fit.fit();
+          return { cols: t.cols, rows: t.rows };
+        } catch {
+          return null;
+        }
+      },
+    }),
+    [],
+  );
+
   return (
     <div className="h-full w-full overflow-hidden">
       <div ref={containerRef} className="h-full w-full" />
     </div>
   );
-}
+});
