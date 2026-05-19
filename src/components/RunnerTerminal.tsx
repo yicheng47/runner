@@ -562,6 +562,17 @@ export function RunnerTerminal({
       if (rect.width <= 0 || rect.height <= 0) return;
       try {
         fit.fit();
+        // Drop the WebGL glyph atlas before the refresh: in-app tab /
+        // route switches (Mission ↔ Chat, mission tab switches) keep
+        // hidden terminals mounted, and the atlas can desync while a
+        // pane is off-screen (other panes painting into the same GL
+        // context, OS compositor recycling, dev HMR). Without this,
+        // coming back to a hidden pane shows mis-rendered glyphs until
+        // a resize forces a refit — the bug `refreshTerm`'s atlas
+        // clear was meant to prevent, but `refreshTerm` is wired to
+        // `focus` / `visibilitychange` and those don't fire on in-app
+        // tab switches.
+        webglRef.current?.clearTextureAtlas();
         t.refresh(0, t.rows - 1);
         t.focus();
         const cols = t.cols;
