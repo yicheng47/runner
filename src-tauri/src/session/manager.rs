@@ -1314,13 +1314,6 @@ impl SessionManager {
             schedule_direct_first_prompt(self, session_id.to_string(), &runner, &plan, false);
         }
 
-        // On a real resume (not a fresh-with-known-uuid spawn), nudge
-        // the agent with "continue" so it picks up where it left off
-        // without the user having to type. Skipped for fresh spawns
-        // — the first-prompt path covers those — and for runtimes
-        // without a real resume semantic (shell).
-        schedule_continue_on_resume(self, session_id.to_string(), &runner, &plan);
-
         // Return the slot's in-mission identity for mission rows so the
         // frontend (and the router, which keys on slot_handle) sees the
         // identity the resumed PTY actually stamps onto its events.
@@ -2112,10 +2105,10 @@ fn capture_cwd(explicit: Option<String>) -> Option<String> {
 
 // The first-prompt readback machinery (FirstPromptConfig,
 // FIRST_PROMPT_CONFIG, PLACEHOLDER_MIN_BODY_LEN) lived here under the
-// tmux runtime. docs/impls/0011 retired the verify-and-retry loop
-// it tuned; `inject_paste` is now a single paste-then-Enter and the
-// surviving "schedule continue on resume" path uses a fixed 1500ms
-// initial wait baked into `schedule_continue_on_resume`.
+// tmux runtime. docs/impls/0011 retired the verify-and-retry loop it
+// tuned; `inject_paste` is now a single paste-then-Enter and the
+// previous "schedule continue on resume" auto-nudge has been removed —
+// Resume now just respawns the PTY and lets the user drive the agent.
 
 /// Mission-flavored first-turn injection. Composes the platform
 /// coordination preamble (bus mechanics, --to human convention,
@@ -2211,9 +2204,8 @@ fn schedule_direct_first_prompt(
 
 // Pre-#88 `inject_first_turn` (the paste-fallback orchestrator) was
 // removed when first-turn delivery moved to spawn-time argv. The
-// only remaining paste-based path is `schedule_continue_on_resume`,
-// which calls `inject_paste_with_verify` directly with the 8-byte
-// "continue" body.
+// post-spawn auto-paste of "continue" on resume has also been removed
+// — Resume now just respawns the PTY without injecting any stdin.
 
 // `WORKER_COORDINATION_PREAMBLE` and the per-runtime first-turn
 // composition helpers (`compose_worker_first_turn`,
@@ -2221,74 +2213,6 @@ fn schedule_direct_first_prompt(
 // spawn-time argv path (here) and any post-spawn paste fallback
 // pull from the same composers so the delivered body is byte-
 // identical regardless of route.
-
-/// Auto-send "continue" as a first user turn after a successful
-/// resume so the agent picks up where it left off without the user
-/// having to manually nudge it. Only fires when the resume actually
-/// reloaded a prior conversation (`plan.resuming == true` AND we
-/// have an `agent_session_key` for the agent CLI to bind to). For
-/// runtimes that don't have a real "resume" semantic (shell),
-/// no-op — there's no conversation thread to continue.
-///
-/// Same readback-verified primitive as `inject_first_turn`. The
-/// resume case carries an extra subtlety: a resumed pane may
-/// already display old `[Pasted text #N ...]` placeholders from
-/// prior turns, which a naive "Pasted text appears" check would
-/// false-ack. `inject_paste_with_verify`'s count-delta check
-/// handles this — `before_placeholder_count` and
-/// `after_placeholder_count` see the same stale placeholder, delta
-/// is 0, and the body length (`continue` is 8 bytes < 64) skips
-/// the placeholder gate entirely; only the head/tail-marker delta
-/// for "continue" can accept.
-///
-/// Caller-side recovery policy: when `inject_paste_with_verify`
-/// returns Err for this caller, we still send one fallback Enter
-/// keystroke. Two paths land us in that Err. (1) The paste body
-/// landed in the composer but readback never observed the
-/// head/tail marker (capture race, TUI line-wrap, or prior
-/// transcript content matching the marker) — Enter submits the
-/// visible "continue" and the agent resumes, exactly the user's
-/// intent. (2) The paste truly didn't land — Enter on an empty
-/// claude-code composer is a no-op.
-///
-/// Both paths beat the alternative of giving up silently and
-/// leaving the user stuck with no auto-continue. This is a
-/// caller-policy decision; `inject_paste_with_verify` keeps its
-/// strict "only Enter on verified paste" contract for callers like
-/// `inject_first_turn` that paste long mission prompts where a
-/// stray Enter on a partial body would be destructive.
-fn schedule_continue_on_resume(
-    mgr: &Arc<SessionManager>,
-    session_id: String,
-    runner: &Runner,
-    plan: &router::runtime::ResumePlan,
-) {
-    if runner.runtime != "claude-code" && runner.runtime != "codex" {
-        return;
-    }
-    if !plan.resuming {
-        return;
-    }
-    // Under `cfg(test)` the inline path keeps assertions
-    // synchronous; under release a background thread drains the
-    // initial-wait + paste round-trip so the calling Tauri command
-    // returns promptly.
-    let inline = cfg!(test);
-    let do_inject = move |mgr: Arc<SessionManager>, session_id: String| {
-        if !inline {
-            std::thread::sleep(std::time::Duration::from_millis(1500));
-        }
-        if let Err(e) = mgr.inject_paste(&session_id, b"continue") {
-            log::warn!("continue-on-resume inject_paste failed for {session_id}: {e}");
-        }
-    };
-    if inline {
-        do_inject(Arc::clone(mgr), session_id);
-    } else {
-        let mgr = Arc::clone(mgr);
-        std::thread::spawn(move || do_inject(mgr, session_id));
-    }
-}
 
 fn emit_runner_activity(pool: &DbPool, runner: &Runner, events: &dyn SessionEvents) {
     let Ok(conn) = pool.get() else { return };
@@ -4409,138 +4333,15 @@ mod tests {
         assert_eq!(status, "stopped");
     }
 
-    // ──────────────────────────────────────────────────────────
-    // First-prompt readback verification (impl plan 0005).
-    //
-    // These exercise `inject_paste_with_verify` directly against
-    // a registered FakeRuntime session. They bypass the
-    // `inject_first_turn` wrapper so test setup stays minimal —
-    // the wrapper itself just selects between inline and threaded
-    // dispatch and is exercised via the existing
-    // `*_direct_chat_injects_persona_*` tests.
-    // ──────────────────────────────────────────────────────────
-
-    /// Register a FakeRuntime spawn under `session_id` so
-    /// `inject_paste_with_verify` can resolve the runtime session
-    /// without going through the full `spawn_direct` machinery.
-    /// Uses the FakeRuntime's own `spawn` to populate the
-    /// `spawns` Vec and synthesizes a SessionHandle entry on the
-    /// manager so `self.sessions.get(session_id)` returns Some.
-    fn register_fake_session(mgr: &Arc<SessionManager>, fake: &Arc<FakeRuntime>, session_id: &str) {
-        let spec = SpawnSpec {
-            session_id: session_id.into(),
-            command: "/bin/true".into(),
-            ..Default::default()
-        };
-        let (rt_session, stream) = SessionRuntime::spawn(fake.as_ref(), spec).unwrap();
-        // We don't need a forwarder thread for these tests — the
-        // verify loop only touches
-        // `self.runtime.{paste,capture_visible,send_key}`, all of
-        // which the FakeRuntime services without needing the
-        // OutputStream. Just drop the stream so its Sender goes
-        // away cleanly.
-        drop(stream);
-        let handle = SessionHandle {
-            id: session_id.to_string(),
-            mission_id: None,
-            runner_id: format!("rid-{session_id}"),
-            runtime_session: rt_session,
-            forwarder: None,
-            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        };
-        mgr.sessions
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string(), handle);
-    }
-
     // The verify-and-retry first-prompt readback tests
     // (`first_prompt_landed_first_try`, `*_after_retry`,
     // `*_gives_up_after_max_attempts`,
     // `continue_resume_rejects_stale_placeholder`) lived here
     // before docs/impls/0011 retired tmux's capture-pane verify
-    // path. Under the in-process PtyRuntime there is no host-side
-    // terminal model to capture against, so `inject_paste` is a
-    // straight paste-then-Enter and the verify/retry surface those
-    // tests exercised is gone. The surviving resume-continue
-    // semantics are covered by `continue_resume_*` below.
-
-    /// Helper: build a claude-code Runner for the resume-continue
-    /// flow tests. The shared `runner()` helper hardcodes
-    /// `runtime: "shell"`, which `schedule_continue_on_resume`
-    /// short-circuits on.
-    fn claude_runner() -> Runner {
-        let mut r = runner("/bin/true", &[]);
-        r.runtime = "claude-code".into();
-        r
-    }
-
-    fn resume_plan_resuming() -> router::runtime::ResumePlan {
-        router::runtime::ResumePlan {
-            args: Vec::new(),
-            prepend: false,
-            assigned_key: Some("k".into()),
-            resuming: true,
-        }
-    }
-
-    #[test]
-    fn continue_resume_pastes_and_submits_once() {
-        // Under the in-process PtyRuntime (docs/impls/0011),
-        // `schedule_continue_on_resume` calls `inject_paste` for
-        // claude-code/codex on a resuming plan. `inject_paste` is a
-        // single paste-then-Enter — no verify, no retry, no
-        // fallback Enter. Exactly one paste + one Enter is the
-        // contract regardless of what the fake pane content looks
-        // like, because there's no host-side capture to consult.
-        let fake = fake_runtime();
-        let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        register_fake_session(&mgr, &fake, "S-CONT-OK");
-
-        let r = claude_runner();
-        let plan = resume_plan_resuming();
-        super::schedule_continue_on_resume(&mgr, "S-CONT-OK".into(), &r, &plan);
-
-        let pastes = fake.pastes();
-        assert_eq!(pastes.len(), 1, "expected one paste; got {pastes:?}");
-        assert_eq!(pastes[0].1, b"continue");
-        let enters: Vec<_> = fake
-            .keys()
-            .into_iter()
-            .filter(|(_, k)| k == "Enter")
-            .collect();
-        assert_eq!(
-            enters.len(),
-            1,
-            "expected exactly one Enter; got {enters:?}",
-        );
-    }
-
-    #[test]
-    fn continue_resume_skips_for_non_claude_runtime() {
-        // shell doesn't have a real "continue" semantic — the
-        // function must no-op (no paste, no Enter) regardless of
-        // `plan.resuming`.
-        let fake = fake_runtime();
-        let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        register_fake_session(&mgr, &fake, "S-CONT-SHELL");
-
-        let mut r = runner("/bin/true", &[]);
-        r.runtime = "shell".into();
-        let plan = resume_plan_resuming();
-        super::schedule_continue_on_resume(&mgr, "S-CONT-SHELL".into(), &r, &plan);
-
-        assert!(
-            fake.pastes().is_empty(),
-            "no paste for non-claude runtime; got {:?}",
-            fake.pastes()
-        );
-        assert!(
-            fake.keys().is_empty(),
-            "no key events for non-claude runtime; got {:?}",
-            fake.keys()
-        );
-    }
+    // path. The post-spawn "continue" auto-paste on resume that
+    // also lived here has been removed — Resume just respawns the
+    // PTY with no stdin injection, so the helper that synthesized
+    // a FakeRuntime SessionHandle for those tests is gone too.
 
     #[test]
     fn forwarder_status_emit_does_not_block_under_event_log_contention() {
