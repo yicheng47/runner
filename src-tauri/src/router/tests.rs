@@ -177,6 +177,7 @@ fn fixture(
         "Crew One".into(),
         &roster,
         vec![SignalType::new("mission_goal"), SignalType::new("ask_lead")],
+        None,
         log.clone(),
         injector_dyn,
     )
@@ -680,6 +681,7 @@ fn pending_ask_map_reconstructs_from_log_on_reopen() {
             "Crew One".into(),
             &roster,
             vec![],
+            None,
             log.clone(),
             injector_dyn,
         )
@@ -713,6 +715,7 @@ fn pending_ask_map_reconstructs_from_log_on_reopen() {
         "Crew One".into(),
         &roster,
         vec![],
+        None,
         log.clone(),
         injector_dyn,
     )
@@ -818,6 +821,7 @@ fn reconstruct_recovers_latest_runner_status_only() {
         "Crew One".into(),
         &roster,
         vec![],
+        None,
         log.clone(),
         injector_dyn,
     )
@@ -906,6 +910,7 @@ fn fresh_mission_start_does_not_call_reconstruct() {
         "Crew One".into(),
         &roster,
         vec![],
+        None,
         log.clone(),
         injector_dyn,
     )
@@ -1002,6 +1007,7 @@ fn reconstruct_tolerates_malformed_lines_like_the_bus() {
             "Crew One".into(),
             &roster,
             vec![],
+            None,
             log.clone(),
             injector_dyn,
         )
@@ -1029,6 +1035,7 @@ fn reconstruct_tolerates_malformed_lines_like_the_bus() {
         "Crew One".into(),
         &roster,
         vec![],
+        None,
         log.clone(),
         injector_dyn,
     )
@@ -1165,6 +1172,7 @@ fn synthetic_busy_replays_through_existing_runner_status_projection() {
             "Crew One".into(),
             &roster,
             vec![],
+            None,
             log.clone(),
             injector_dyn,
         )
@@ -1186,6 +1194,7 @@ fn synthetic_busy_replays_through_existing_runner_status_projection() {
         "Crew One".into(),
         &roster,
         vec![],
+        None,
         log.clone(),
         injector_dyn,
     )

@@ -81,6 +81,12 @@ pub(crate) struct LaunchInputs {
     lead: LeadRow,
     roster: Vec<RosterRow>,
     allowed_signals: Vec<SignalType>,
+    /// `crew.system_prompt_addendum` snapshot at mount/resume time
+    /// (Layer 2 of the system-prompt stack, #54). Used by
+    /// `fire_lead_launch_prompt` on the resume fresh-fallback so the
+    /// relaunched lead sees the same composed prompt the first spawn
+    /// got. `None` / empty → no splice.
+    crew_addendum: Option<String>,
 }
 
 pub(crate) struct LeadRow {
@@ -141,12 +147,14 @@ pub struct Router {
 impl Router {
     /// Build a router from the crew's roster and lead. `roster` is the same
     /// slice `mission_start` already loaded for the spawn loop.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mission_id: String,
         crew_id: String,
         crew_name: String,
         roster: &[SlotWithRunner],
         allowed_signals: Vec<SignalType>,
+        crew_addendum: Option<String>,
         log: Arc<EventLog>,
         injector: Arc<dyn StdinInjector>,
     ) -> Result<Arc<Self>> {
@@ -180,6 +188,7 @@ impl Router {
                 lead,
                 roster: roster_rows,
                 allowed_signals,
+                crew_addendum,
             },
             state: Mutex::new(RouterState::default()),
         }))
@@ -574,6 +583,7 @@ impl Router {
                 mission_goal: &goal,
                 roster: &roster_entries,
                 allowed_signals: self.launch.allowed_signals(),
+                crew_addendum: self.launch.crew_addendum(),
             },
         );
         let body = prompt.trim_end_matches(['\n', '\r']).as_bytes().to_vec();
@@ -695,6 +705,9 @@ impl LaunchInputs {
     }
     pub(crate) fn allowed_signals(&self) -> &[SignalType] {
         &self.allowed_signals
+    }
+    pub(crate) fn crew_addendum(&self) -> Option<&str> {
+        self.crew_addendum.as_deref()
     }
 }
 

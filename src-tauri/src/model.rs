@@ -25,6 +25,11 @@ pub struct Crew {
     pub goal: Option<String>,
     pub orchestrator_policy: Option<serde_json::Value>,
     pub signal_types: Vec<SignalType>,
+    /// Layer-2 team conventions text. Spliced between the platform
+    /// preamble and the runner persona on mission spawns only;
+    /// direct chats ignore it. NULL / empty = no splice. See #54.
+    #[serde(default)]
+    pub system_prompt_addendum: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }

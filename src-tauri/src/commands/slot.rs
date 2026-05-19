@@ -508,8 +508,7 @@ mod tests {
             conn,
             crew::CreateCrewInput {
                 name: name.into(),
-                purpose: None,
-                goal: None,
+                ..Default::default()
             },
         )
         .unwrap()

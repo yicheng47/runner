@@ -41,26 +41,45 @@ pub struct LaunchPromptInput<'a> {
     pub mission_goal: &'a str,
     pub roster: &'a [RosterEntry<'a>],
     pub allowed_signals: &'a [SignalType],
+    /// Layer-2 team conventions text (`crew.system_prompt_addendum`).
+    /// Spliced under a `== Team conventions ==` section between the
+    /// "You are X, lead runner in crew Y" intro and the `== Your
+    /// brief ==` section. Empty / whitespace-only → no splice. See #54.
+    pub crew_addendum: Option<&'a str>,
 }
 
 /// First-user-turn body for a non-lead mission worker. Combines the
-/// platform-injected coordination preamble (verbs the worker needs to
-/// participate in the bus + reply to the human) with the worker's
-/// per-runner system_prompt as a "brief" section. Returns the full
-/// composed body, never empty (preamble is always present).
+/// platform-injected coordination preamble (Layer 1 — verbs the
+/// worker needs to participate in the bus + reply to the human),
+/// the optional crew-level addendum spliced under a `== Team
+/// conventions ==` section (Layer 2), and the worker's per-runner
+/// system_prompt as a `== Your brief ==` section (Layer 3 —
+/// persona). Returns the full composed body, never empty (preamble
+/// is always present).
 ///
 /// Delivered as the trailing positional `[PROMPT]` argv at spawn time
 /// when the runtime accepts it (see `router::runtime::first_turn_argv`);
 /// callers that can't use argv inject the same body via stdin paste.
 /// Source of truth lives here so both delivery paths use byte-identical
 /// content.
-pub fn compose_worker_first_turn(system_prompt: Option<&str>) -> String {
+pub fn compose_worker_first_turn(
+    system_prompt: Option<&str>,
+    crew_addendum: Option<&str>,
+) -> String {
+    let addendum = crew_addendum
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let user_brief = system_prompt
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
     let mut out = String::new();
     out.push_str(WORKER_COORDINATION_PREAMBLE);
+    if let Some(addendum) = addendum {
+        out.push_str("\n\n== Team conventions ==\n");
+        out.push_str(&addendum);
+    }
     if let Some(brief) = user_brief {
         out.push_str("\n\n== Your brief ==\n");
         out.push_str(&brief);
@@ -108,6 +127,15 @@ pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
         "You are `{}` ({}), lead runner in crew \"{}\".\n\n",
         input.lead.handle, input.lead.display_name, input.crew_name,
     ));
+
+    if let Some(addendum) = input.crew_addendum {
+        let addendum = addendum.trim();
+        if !addendum.is_empty() {
+            out.push_str("== Team conventions ==\n");
+            out.push_str(addendum);
+            out.push_str("\n\n");
+        }
+    }
 
     if let Some(brief) = input.lead.system_prompt {
         let brief = brief.trim();
@@ -192,6 +220,7 @@ mod tests {
             mission_goal: "ship v0",
             roster: &[],
             allowed_signals: &allowed,
+            crew_addendum: None,
         });
         assert!(prompt.contains("== Your brief =="));
         assert!(prompt.contains("Drive coordination."));
@@ -204,6 +233,7 @@ mod tests {
             mission_goal: "ship v0",
             roster: &[],
             allowed_signals: &allowed,
+            crew_addendum: None,
         });
         assert!(!prompt2.contains("== Your brief =="));
     }
@@ -216,6 +246,7 @@ mod tests {
             mission_goal: "",
             roster: &[],
             allowed_signals: &[],
+            crew_addendum: None,
         });
         assert!(prompt.contains("(no goal set"));
     }
@@ -226,7 +257,7 @@ mod tests {
         // section must explicitly say silence is fine for passing
         // remarks, so agents stop posting "got it"/"noted" on every
         // human_said.
-        let body = compose_worker_first_turn(None);
+        let body = compose_worker_first_turn(None, None);
         assert!(
             body.contains("silence is fine"),
             "preamble should tell workers silence is acceptable for passing remarks; got: {body}",
@@ -256,10 +287,110 @@ mod tests {
                 },
             ],
             allowed_signals: &[],
+            crew_addendum: None,
         });
         assert!(prompt.contains("`impl`"));
         // Self-row must not appear under crewmates.
         let crewmates_section = prompt.split("== Your crewmates ==").nth(1).unwrap();
         assert!(!crewmates_section.contains("`lead`"));
+    }
+
+    #[test]
+    fn worker_first_turn_with_none_addendum_matches_no_addendum_baseline() {
+        // Regression guard for #54: existing mission spawns (no crew
+        // addendum set) must produce byte-identical output to the
+        // pre-#54 composer, so seeded Build squad rows / any crew that
+        // leaves the addendum NULL keep the exact prompt they had.
+        let with_brief = compose_worker_first_turn(Some("WORKER_BRIEF"), None);
+        let without_brief = compose_worker_first_turn(None, None);
+
+        assert!(with_brief.starts_with(WORKER_COORDINATION_PREAMBLE));
+        assert!(with_brief.contains("== Your brief =="));
+        assert!(with_brief.contains("WORKER_BRIEF"));
+
+        // No addendum → preamble is the entire body when brief is None.
+        assert_eq!(without_brief, WORKER_COORDINATION_PREAMBLE);
+    }
+
+    #[test]
+    fn worker_first_turn_splices_addendum_between_preamble_and_brief() {
+        let body = compose_worker_first_turn(Some("WORKER_BRIEF"), Some("TEAM_TEXT"));
+        assert!(body.contains(WORKER_COORDINATION_PREAMBLE));
+        assert!(
+            body.contains("== Team conventions =="),
+            "addendum must be wrapped in a `== Team conventions ==` section; got: {body}",
+        );
+        assert!(body.contains("TEAM_TEXT"));
+        assert!(body.contains("== Your brief =="));
+        let preamble_pos = body.find("Coordination ==").unwrap();
+        let header_pos = body.find("== Team conventions ==").unwrap();
+        let addendum_pos = body.find("TEAM_TEXT").unwrap();
+        let brief_pos = body.find("== Your brief ==").unwrap();
+        assert!(
+            preamble_pos < header_pos,
+            "preamble must come before the team-conventions header; got body: {body}",
+        );
+        assert!(
+            header_pos < addendum_pos,
+            "team-conventions header must come before the addendum text; got body: {body}",
+        );
+        assert!(
+            addendum_pos < brief_pos,
+            "addendum must come before brief; got body: {body}",
+        );
+    }
+
+    #[test]
+    fn worker_first_turn_whitespace_only_addendum_collapses_to_none() {
+        let with_blanks = compose_worker_first_turn(Some("BRIEF"), Some("   \n\t  "));
+        let baseline = compose_worker_first_turn(Some("BRIEF"), None);
+        assert_eq!(
+            with_blanks, baseline,
+            "whitespace-only addendum must be treated as None",
+        );
+    }
+
+    #[test]
+    fn launch_prompt_splices_addendum_between_intro_and_brief() {
+        let allowed = [SignalType::new("mission_goal")];
+        let with_addendum = compose_launch_prompt(&LaunchPromptInput {
+            lead: lead("lead", Some("LEAD_BRIEF")),
+            crew_name: "Alpha",
+            mission_goal: "ship v0",
+            roster: &[],
+            allowed_signals: &allowed,
+            crew_addendum: Some("TEAM_TEXT"),
+        });
+        assert!(
+            with_addendum.contains("== Team conventions =="),
+            "addendum must be wrapped in a `== Team conventions ==` section; got: {with_addendum}",
+        );
+        let intro_pos = with_addendum.find("lead runner in crew").unwrap();
+        let header_pos = with_addendum.find("== Team conventions ==").unwrap();
+        let addendum_pos = with_addendum.find("TEAM_TEXT").unwrap();
+        let brief_pos = with_addendum.find("== Your brief ==").unwrap();
+        assert!(intro_pos < header_pos);
+        assert!(header_pos < addendum_pos);
+        assert!(addendum_pos < brief_pos);
+
+        // None addendum is byte-identical to the no-addendum baseline.
+        let baseline = compose_launch_prompt(&LaunchPromptInput {
+            lead: lead("lead", Some("LEAD_BRIEF")),
+            crew_name: "Alpha",
+            mission_goal: "ship v0",
+            roster: &[],
+            allowed_signals: &allowed,
+            crew_addendum: None,
+        });
+        let whitespace = compose_launch_prompt(&LaunchPromptInput {
+            lead: lead("lead", Some("LEAD_BRIEF")),
+            crew_name: "Alpha",
+            mission_goal: "ship v0",
+            roster: &[],
+            allowed_signals: &allowed,
+            crew_addendum: Some("   \n  "),
+        });
+        assert_eq!(whitespace, baseline);
+        assert!(!baseline.contains("TEAM_TEXT"));
     }
 }

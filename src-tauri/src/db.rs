@@ -82,6 +82,10 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // archived missions out of search/list surfaces without conflating
 // them with `status = 'completed'`. Backfills existing completed
 // rows so their archived_at = stopped_at.
+// 0005: adds `system_prompt_addendum` (TEXT, nullable) to crews —
+// Layer 2 of the system-prompt stack (#54). Spliced between
+// platform preamble and runner persona on mission spawns only.
+// No backfill; seeded Build squad rows stay NULL.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -89,6 +93,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         4,
         include_str!("../migrations/0004_mission_archived_at.sql"),
+    ),
+    (
+        5,
+        include_str!("../migrations/0005_crew_system_prompt_addendum.sql"),
     ),
 ];
 

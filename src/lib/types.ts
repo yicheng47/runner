@@ -16,6 +16,10 @@ export interface Crew {
   goal: string | null;
   orchestrator_policy: unknown | null;
   signal_types: SignalType[];
+  /** Layer-2 team conventions text. Spliced between the platform
+   *  preamble and the runner persona on mission spawns only;
+   *  direct chats ignore it. NULL / empty = no splice. See #54. */
+  system_prompt_addendum: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
@@ -202,6 +206,9 @@ export interface CreateCrewInput {
   name: string;
   purpose?: string | null;
   goal?: string | null;
+  /** Team-conventions text. Empty after trim collapses to NULL on
+   *  the backend. */
+  system_prompt_addendum?: string | null;
 }
 
 export interface UpdateCrewInput {
@@ -210,6 +217,9 @@ export interface UpdateCrewInput {
   goal?: string | null;
   orchestrator_policy?: unknown | null;
   signal_types?: SignalType[];
+  /** Omit to leave existing untouched; pass null to clear; pass a
+   *  non-empty string to set. */
+  system_prompt_addendum?: string | null;
 }
 
 /// Permission mode the runner-edit form's dropdown writes onto the

@@ -16,11 +16,16 @@ use crate::{
     AppState,
 };
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct CreateCrewInput {
     pub name: String,
     pub purpose: Option<String>,
     pub goal: Option<String>,
+    /// Optional team-conventions text. Empty after trim → stored as NULL.
+    /// Plain Option (not Option<Option>) because create has no "leave
+    /// existing" semantic. See #54.
+    #[serde(default)]
+    pub system_prompt_addendum: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -30,6 +35,10 @@ pub struct UpdateCrewInput {
     pub goal: Option<Option<String>>,
     pub orchestrator_policy: Option<Option<serde_json::Value>>,
     pub signal_types: Option<Vec<SignalType>>,
+    /// Outer None = leave existing untouched; outer Some(inner) =
+    /// write inner. Inner Some("") / whitespace-only collapses to
+    /// NULL.
+    pub system_prompt_addendum: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +93,7 @@ fn row_to_crew(row: &Row<'_>) -> rusqlite::Result<Crew> {
         signal_types: serde_json::from_str(&signal_types_raw).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
         })?,
+        system_prompt_addendum: row.get("system_prompt_addendum")?,
         created_at: created_at.parse().map_err(|e: chrono::ParseError| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
         })?,
@@ -96,7 +106,8 @@ fn row_to_crew(row: &Row<'_>) -> rusqlite::Result<Crew> {
 pub fn list(conn: &Connection) -> Result<Vec<CrewListItem>> {
     let mut stmt = conn.prepare(
         "SELECT c.id, c.name, c.purpose, c.goal, c.orchestrator_policy,
-                c.signal_types, c.created_at, c.updated_at,
+                c.signal_types, c.system_prompt_addendum,
+                c.created_at, c.updated_at,
                 (SELECT COUNT(*) FROM slots s WHERE s.crew_id = c.id) AS runner_count
            FROM crews c
          ORDER BY c.created_at ASC",
@@ -158,7 +169,8 @@ pub fn list(conn: &Connection) -> Result<Vec<CrewListItem>> {
 pub fn get(conn: &Connection, id: &str) -> Result<Crew> {
     conn.query_row(
         "SELECT id, name, purpose, goal, orchestrator_policy,
-                signal_types, created_at, updated_at
+                signal_types, system_prompt_addendum,
+                created_at, updated_at
            FROM crews WHERE id = ?1",
         params![id],
         row_to_crew,
@@ -188,6 +200,15 @@ fn validate_crew_goal(goal: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Trim a text-with-default-NULL field. `None`, all-whitespace, or
+/// the empty string all collapse to `None` so the column never
+/// stores a degenerate "" value. Used for `system_prompt_addendum`;
+/// other text fields (purpose / goal) predate this helper and keep
+/// their raw-pass-through semantics for now.
+fn normalize_addendum(raw: Option<String>) -> Option<String> {
+    raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
 pub fn create(conn: &Connection, input: CreateCrewInput) -> Result<Crew> {
     let name = input.name.trim();
     if name.is_empty() {
@@ -196,10 +217,12 @@ pub fn create(conn: &Connection, input: CreateCrewInput) -> Result<Crew> {
     validate_crew_goal(input.goal.as_deref())?;
     let id = new_id();
     let ts = now().to_rfc3339();
+    let addendum = normalize_addendum(input.system_prompt_addendum);
     conn.execute(
-        "INSERT INTO crews (id, name, purpose, goal, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-        params![id, name, input.purpose, input.goal, ts],
+        "INSERT INTO crews (id, name, purpose, goal,
+                            system_prompt_addendum, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+        params![id, name, input.purpose, input.goal, addendum, ts],
     )?;
     get(conn, &id)
 }
@@ -224,6 +247,10 @@ pub fn update(conn: &Connection, id: &str, input: UpdateCrewInput) -> Result<Cre
         .orchestrator_policy
         .unwrap_or(existing.orchestrator_policy);
     let signal_types = input.signal_types.unwrap_or(existing.signal_types);
+    let system_prompt_addendum = match input.system_prompt_addendum {
+        Some(inner) => normalize_addendum(inner),
+        None => existing.system_prompt_addendum,
+    };
 
     let policy_raw = match orchestrator_policy.as_ref() {
         Some(v) => Some(serde_json::to_string(v)?),
@@ -239,9 +266,19 @@ pub fn update(conn: &Connection, id: &str, input: UpdateCrewInput) -> Result<Cre
                 goal = ?3,
                 orchestrator_policy = ?4,
                 signal_types = ?5,
-                updated_at = ?6
-          WHERE id = ?7",
-        params![name, purpose, goal, policy_raw, signals_raw, ts, id],
+                system_prompt_addendum = ?6,
+                updated_at = ?7
+          WHERE id = ?8",
+        params![
+            name,
+            purpose,
+            goal,
+            policy_raw,
+            signals_raw,
+            system_prompt_addendum,
+            ts,
+            id,
+        ],
     )?;
     get(conn, id)
 }
@@ -311,8 +348,8 @@ mod tests {
             &conn,
             CreateCrewInput {
                 name: "Big".into(),
-                purpose: None,
                 goal: Some(oversized),
+                ..Default::default()
             },
         )
         .expect_err("oversize crew.goal must be rejected");
@@ -327,8 +364,7 @@ mod tests {
             &conn,
             CreateCrewInput {
                 name: "Victim".into(),
-                purpose: None,
-                goal: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -337,11 +373,8 @@ mod tests {
             &conn,
             &crew.id,
             UpdateCrewInput {
-                name: None,
-                purpose: None,
                 goal: Some(Some(oversized)),
-                orchestrator_policy: None,
-                signal_types: None,
+                ..Default::default()
             },
         )
         .expect_err("oversize crew.goal must be rejected on update");
@@ -356,8 +389,7 @@ mod tests {
             &conn,
             CreateCrewInput {
                 name: "Alpha".into(),
-                purpose: None,
-                goal: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -378,8 +410,7 @@ mod tests {
             &conn,
             CreateCrewInput {
                 name: "A".into(),
-                purpose: None,
-                goal: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -387,8 +418,7 @@ mod tests {
             &conn,
             CreateCrewInput {
                 name: "B".into(),
-                purpose: None,
-                goal: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -425,7 +455,7 @@ mod tests {
             CreateCrewInput {
                 name: "Original".into(),
                 purpose: Some("keep me".into()),
-                goal: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -454,8 +484,7 @@ mod tests {
             &conn,
             CreateCrewInput {
                 name: "Doomed".into(),
-                purpose: None,
-                goal: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -500,11 +529,106 @@ mod tests {
             &conn,
             CreateCrewInput {
                 name: "   ".into(),
-                purpose: None,
-                goal: None,
+                ..Default::default()
             },
         )
         .unwrap_err();
         assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn create_and_get_roundtrips_system_prompt_addendum() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let crew = create(
+            &conn,
+            CreateCrewInput {
+                name: "Conventional".into(),
+                system_prompt_addendum: Some("squash PRs against main".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            crew.system_prompt_addendum.as_deref(),
+            Some("squash PRs against main"),
+        );
+        let reread = get(&conn, &crew.id).unwrap();
+        assert_eq!(
+            reread.system_prompt_addendum.as_deref(),
+            Some("squash PRs against main"),
+        );
+    }
+
+    #[test]
+    fn create_collapses_empty_addendum_to_null() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let crew = create(
+            &conn,
+            CreateCrewInput {
+                name: "Blank".into(),
+                system_prompt_addendum: Some("   \n  ".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(crew.system_prompt_addendum, None);
+    }
+
+    #[test]
+    fn update_some_some_empty_string_clears_addendum_to_null() {
+        // Wire contract for the CrewEditor "Save" action: when the
+        // operator clears the field, the frontend sends `null`. But
+        // an older or alternate caller sending `Some("")` must also
+        // collapse to NULL so the column never stores a degenerate
+        // empty string. Issue #54 spelled this out explicitly.
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let crew = create(
+            &conn,
+            CreateCrewInput {
+                name: "Pre-filled".into(),
+                system_prompt_addendum: Some("convention".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let updated = update(
+            &conn,
+            &crew.id,
+            UpdateCrewInput {
+                system_prompt_addendum: Some(Some(String::new())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(updated.system_prompt_addendum, None);
+    }
+
+    #[test]
+    fn update_outer_none_preserves_existing_addendum() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let crew = create(
+            &conn,
+            CreateCrewInput {
+                name: "Keeper".into(),
+                system_prompt_addendum: Some("keep this".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let updated = update(
+            &conn,
+            &crew.id,
+            UpdateCrewInput {
+                name: Some("Renamed Keeper".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(updated.name, "Renamed Keeper");
+        assert_eq!(updated.system_prompt_addendum.as_deref(), Some("keep this"));
     }
 }
