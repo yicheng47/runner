@@ -41,7 +41,10 @@ import { EventFeed } from "../components/EventFeed";
 import { MissionInput } from "../components/MissionInput";
 import { MissionResetConfirm } from "../components/MissionResetConfirm";
 import { RunnersRail } from "../components/RunnersRail";
-import { RunnerTerminal } from "../components/RunnerTerminal";
+import {
+  RunnerTerminal,
+  type RunnerTerminalHandle,
+} from "../components/RunnerTerminal";
 import {
   ArchivingOverlay,
   ResumingOverlay,
@@ -74,6 +77,11 @@ export default function MissionWorkspace() {
   // also unmounts xterm — matches the "tab is gone" mental model.
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const seenIdsRef = useRef<Set<string>>(new Set());
+  // Live handles to each open slot's xterm, keyed by session id. The
+  // resume path measures the actual cols/rows before calling the
+  // backend so the new PTY is forked at the right size instead of
+  // pty_runtime's 80×24 fallback (#resume-pty-size-mismatch).
+  const terminalsRef = useRef<Map<string, RunnerTerminalHandle>>(new Map());
 
   // Combined: subscribe to `event/appended` BEFORE running the
   // events_replay query, then merge both into a single ULID-deduped
@@ -321,7 +329,7 @@ export default function MissionWorkspace() {
     } catch (e) {
       setError(String(e));
     }
-  }, [mission]);
+  }, [mission, setResetConfirmOpen]);
 
   // Resume all = iterate stopped/crashed sessions and respawn each.
   // Hits the same `session_resume` path the per-slot Resume button
@@ -338,8 +346,13 @@ export default function MissionWorkspace() {
       // Errors are collected and surfaced after the refresh.
       for (const s of sessions) {
         if (s.status === "running") continue;
+        const dims = terminalsRef.current.get(s.id)?.measure() ?? null;
         try {
-          await api.session.resume(s.id, null, null);
+          await api.session.resume(
+            s.id,
+            dims?.cols ?? null,
+            dims?.rows ?? null,
+          );
         } catch (e) {
           if (firstErr == null) firstErr = String(e);
         }
@@ -746,6 +759,10 @@ export default function MissionWorkspace() {
                         forcedResuming={resumingAll && !archivingMission}
                         onError={setError}
                         onResumeMission={() => void resumeMission()}
+                        registerTerminal={(handle) => {
+                          if (handle) terminalsRef.current.set(s.id, handle);
+                          else terminalsRef.current.delete(s.id);
+                        }}
                       />
                     </Pane>
                   ))
@@ -831,6 +848,7 @@ function SlotPtyPane({
   forcedResuming,
   onError,
   onResumeMission,
+  registerTerminal,
 }: {
   session: SessionRow;
   active: boolean;
@@ -843,6 +861,9 @@ function SlotPtyPane({
    *  isn't a valid run, so any "Resume" affordance respawns every
    *  stopped slot via the parent. */
   onResumeMission: () => void | Promise<void>;
+  /** Hand the parent a handle to this slot's xterm so it can measure
+   *  cols/rows before the resume RPC and avoid the 80×24 default. */
+  registerTerminal: (handle: RunnerTerminalHandle | null) => void;
 }) {
   const resuming = !!forcedResuming;
   const dead = session.status !== "running";
@@ -930,6 +951,7 @@ function SlotPtyPane({
         className={`flex flex-1 min-h-0 p-3 transition-opacity ${paneOpacity}`}
       >
         <RunnerTerminal
+          ref={registerTerminal}
           sessionId={session.id}
           runnerRuntime={session.runtime}
           onError={onError}

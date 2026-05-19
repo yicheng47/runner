@@ -27,7 +27,10 @@ import {
   Terminal,
 } from "lucide-react";
 
-import { RunnerTerminal } from "../components/RunnerTerminal";
+import {
+  RunnerTerminal,
+  type RunnerTerminalHandle,
+} from "../components/RunnerTerminal";
 import {
   ArchivingOverlay,
   ResumingOverlay,
@@ -90,6 +93,12 @@ export default function RunnerChat() {
 
   const sessionId = sessionIdParam ?? null;
   const [directSessions, setDirectSessions] = useState<DirectSessionPane[]>([]);
+  // Live handles to each mounted RunnerTerminal so the resume path can
+  // measure the actual xterm geometry before the backend forks the new
+  // PTY child. Without this, pty_runtime falls back to 80×24 and the
+  // agent's first paint wraps at default cols until the next user
+  // resize triggers SIGWINCH (#resume-pty-size-mismatch).
+  const terminalsRef = useRef<Map<string, RunnerTerminalHandle>>(new Map());
   const [err, setErr] = useState<string | null>(null);
   // Resume-fallback banner: distinct from `err` because it isn't a failure
   // the user has to act on — the agent just couldn't resume a prior
@@ -562,7 +571,12 @@ export default function RunnerChat() {
     setResuming(true);
     setErr(null);
     try {
-      await api.session.resume(targetId, null, null);
+      const dims = terminalsRef.current.get(targetId)?.measure() ?? null;
+      await api.session.resume(
+        targetId,
+        dims?.cols ?? null,
+        dims?.rows ?? null,
+      );
       setDirectSessions((prev) =>
         prev.map((s) =>
           s.id === targetId
@@ -915,6 +929,10 @@ export default function RunnerChat() {
                 className={`absolute inset-4 ${active ? "block" : "hidden"} ${paneOpacity} transition-opacity`}
               >
                 <RunnerTerminal
+                  ref={(handle) => {
+                    if (handle) terminalsRef.current.set(s.id, handle);
+                    else terminalsRef.current.delete(s.id);
+                  }}
                   sessionId={s.id}
                   runnerRuntime={runner?.runtime ?? ""}
                   // While the loader is up the canvas is hidden, so

@@ -8,7 +8,7 @@
 // raw bytes, backend snapshot replay for late attach, and SIGWINCH dance on
 // attach so claude-code/codex repaint onto a fresh grid.
 
-import { useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -77,6 +77,22 @@ interface RunnerTerminalProps {
 }
 
 /**
+ * Imperative handle exposed to the parent so resume/spawn callers can
+ * size the backend PTY to the actual xterm geometry before the child
+ * is forked. Without this, `pty_runtime` defaults to 80×24 and the
+ * agent CLI's first paint wraps at the default cols until the next
+ * user-driven SIGWINCH (#resume-pty-size-mismatch).
+ */
+export interface RunnerTerminalHandle {
+  /**
+   * Refit against the current container and return the resolved xterm
+   * cols/rows. Returns null if the terminal isn't mounted yet or the
+   * container has no measurable size (e.g. hidden via `display:none`).
+   */
+  measure(): { cols: number; rows: number } | null;
+}
+
+/**
  * Should resizing this runtime hard-clear xterm's scrollback before
  * pushing the new geometry to the backend?
  *
@@ -99,14 +115,13 @@ function decodeBase64Chunk(data: string): Uint8Array {
   return bytes;
 }
 
-export function RunnerTerminal({
-  sessionId,
-  runnerRuntime,
-  onExit,
-  onError,
-  active,
-  disabled,
-}: RunnerTerminalProps) {
+export const RunnerTerminal = forwardRef<
+  RunnerTerminalHandle,
+  RunnerTerminalProps
+>(function RunnerTerminal(
+  { sessionId, runnerRuntime, onExit, onError, active, disabled },
+  ref,
+) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -231,6 +246,31 @@ export function RunnerTerminal({
     const initialRect = containerRef.current.getBoundingClientRect();
     if (initialRect.width > 0 && initialRect.height > 0) {
       fit.fit();
+      // Push the freshly-fitted dims to the backend right here, before
+      // the snapshot effect below fires its outputSnapshot RPC. The
+      // backend's buffered bytes were emitted by the agent at whatever
+      // cols the PTY was last sized to — if that differs from xterm's
+      // current cols (common on route returns: chat → mission, mission
+      // → chat), replaying those bytes at the new cols drifts every
+      // absolute-positioned glyph and leaves the alt-screen blank
+      // (#mission-tab-return-drift). Pushing first ensures backend +
+      // xterm agree on cols before we read the snapshot, and the
+      // SIGWINCH-driven repaint that follows arrives via the live
+      // listener at the same cols xterm now uses.
+      //
+      // Hidden panes (rect 0) skip this — the activation effect picks
+      // up the push when they come to the front, same as before.
+      lastPushedColsRef.current = term.cols;
+      lastPushedRowsRef.current = term.rows;
+      // sessionIdRef is initialized with the prop value (line ~124),
+      // so this reads the right id on initial mount without forcing
+      // sessionId into the mount-effect's deps (which is intentionally
+      // `[]` to avoid tearing down the whole xterm on session swap).
+      void api.session
+        .resize(sessionIdRef.current, term.cols, term.rows)
+        .catch(() => {
+          // session may have exited before mount; nothing to do
+        });
     }
     // Don't auto-focus on mount: in the workspace, multiple
     // RunnerTerminals mount at once before any tab is selected, and the
@@ -611,9 +651,34 @@ export function RunnerTerminal({
     };
   }, [active, sessionId]);
 
+  useImperativeHandle(
+    ref,
+    () => ({
+      measure: () => {
+        const t = termRef.current;
+        const fit = fitRef.current;
+        const node = containerRef.current;
+        if (!t || !fit || !node) return null;
+        const rect = node.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return null;
+        try {
+          // Force a fit before reading dims: stopped tabs gate their
+          // resize listeners on activeRef, so cols/rows can be stale
+          // (often still 80×24 from the initial Terminal construction)
+          // by the time the user clicks Resume.
+          fit.fit();
+          return { cols: t.cols, rows: t.rows };
+        } catch {
+          return null;
+        }
+      },
+    }),
+    [],
+  );
+
   return (
     <div className="h-full w-full overflow-hidden">
       <div ref={containerRef} className="h-full w-full" />
     </div>
   );
-}
+});
