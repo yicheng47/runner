@@ -33,6 +33,9 @@ export default function CrewEditor() {
   const [editing, setEditing] = useState<Runner | null>(null);
   const [nameDraft, setNameDraft] = useState("");
   const [savingName, setSavingName] = useState(false);
+  const [addendumEditing, setAddendumEditing] = useState(false);
+  const [addendumDraft, setAddendumDraft] = useState("");
+  const [savingAddendum, setSavingAddendum] = useState(false);
   const [reordering, setReordering] = useState(false);
   const reorderInFlight = useRef(false);
   const navigate = useNavigate();
@@ -72,6 +75,34 @@ export default function CrewEditor() {
       setError(String(e));
     } finally {
       setSavingName(false);
+    }
+  };
+
+  const onStartAddendumEdit = () => {
+    setAddendumDraft(crew?.system_prompt_addendum ?? "");
+    setAddendumEditing(true);
+  };
+
+  const onCancelAddendumEdit = () => {
+    setAddendumEditing(false);
+    setAddendumDraft("");
+  };
+
+  const onSaveAddendum = async () => {
+    if (!crewId) return;
+    const trimmed = addendumDraft.trim();
+    setSavingAddendum(true);
+    try {
+      await api.crew.update(crewId, {
+        system_prompt_addendum: trimmed.length > 0 ? trimmed : null,
+      });
+      setAddendumEditing(false);
+      setAddendumDraft("");
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSavingAddendum(false);
     }
   };
 
@@ -227,6 +258,64 @@ export default function CrewEditor() {
                 <p className="text-sm text-fg">{crew.purpose}</p>
               ) : (
                 <p className="text-sm italic text-fg-3">No purpose set.</p>
+              )}
+            </section>
+
+            <section className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
+                  Team conventions
+                </div>
+                {!addendumEditing && crew.system_prompt_addendum ? (
+                  <button
+                    type="button"
+                    onClick={onStartAddendumEdit}
+                    className="text-xs text-fg-2 transition-colors hover:text-fg"
+                  >
+                    Edit
+                  </button>
+                ) : null}
+              </div>
+              {addendumEditing ? (
+                <div className="flex flex-col gap-2">
+                  <textarea
+                    value={addendumDraft}
+                    onChange={(e) => setAddendumDraft(e.target.value)}
+                    placeholder="Optional team-level guidance applied to all mission spawns."
+                    rows={6}
+                    className="w-full rounded border border-line bg-bg px-3 py-2 font-mono text-sm text-fg focus:border-fg-3 focus:outline-none"
+                  />
+                  <div className="flex items-center gap-2">
+                    <Button onClick={onSaveAddendum} disabled={savingAddendum}>
+                      {savingAddendum ? "Saving..." : "Save"}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={onCancelAddendumEdit}
+                      disabled={savingAddendum}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : crew.system_prompt_addendum ? (
+                <p className="whitespace-pre-wrap text-sm text-fg">
+                  {crew.system_prompt_addendum}
+                </p>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  <button
+                    type="button"
+                    onClick={onStartAddendumEdit}
+                    className="self-start text-sm text-fg-2 transition-colors hover:text-fg"
+                  >
+                    + Add team conventions
+                  </button>
+                  <p className="text-xs text-fg-3">
+                    Optional team-level guidance applied to all mission spawns.
+                    Leave blank for crews that need no team-level layer.
+                  </p>
+                </div>
               )}
             </section>
 

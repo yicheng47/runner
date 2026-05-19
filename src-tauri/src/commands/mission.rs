@@ -535,10 +535,15 @@ pub async fn mission_start(
     // each slot references. Mission spawn iterates per slot — two
     // slots referencing the same runner template both produce
     // distinct PTYs identifying as their respective slot_handles.
-    let (crew_name, allowed_signals, crew_default_goal) = {
+    let (crew_name, allowed_signals, crew_default_goal, crew_addendum) = {
         let conn = state.db.get()?;
         let crew = crew::get(&conn, &out.mission.crew_id)?;
-        (crew.name, crew.signal_types, crew.goal)
+        (
+            crew.name,
+            crew.signal_types,
+            crew.goal,
+            crew.system_prompt_addendum,
+        )
     };
     let roster = {
         let conn = state.db.get()?;
@@ -593,12 +598,14 @@ pub async fn mission_start(
                                 mission_goal: goal_text.as_str(),
                                 roster: &roster_entries,
                                 allowed_signals: &allowed_signals,
+                                crew_addendum: crew_addendum.as_deref(),
                             },
                         )
                     })
                 } else {
                     Some(crate::router::prompt::compose_worker_first_turn(
                         m.runner.system_prompt.as_deref(),
+                        crew_addendum.as_deref(),
                     ))
                 }
             })
@@ -633,6 +640,7 @@ pub async fn mission_start(
         crew_name,
         &roster,
         allowed_signals,
+        crew_addendum.clone(),
         Arc::clone(&log_arc),
         injector,
     ) {
@@ -822,10 +830,10 @@ pub(crate) async fn ensure_mission_router_mounted(
         return Ok(());
     }
 
-    let (crew_name, allowed_signals) = {
+    let (crew_name, allowed_signals, crew_addendum) = {
         let conn = state.db.get()?;
         let crew = crew::get(&conn, &mission.crew_id)?;
-        (crew.name, crew.signal_types)
+        (crew.name, crew.signal_types, crew.system_prompt_addendum)
     };
     let roster = {
         let conn = state.db.get()?;
@@ -868,6 +876,7 @@ pub(crate) async fn ensure_mission_router_mounted(
         crew_name,
         &roster,
         allowed_signals,
+        crew_addendum,
         Arc::clone(&log_arc),
         injector,
     )?;
@@ -1041,10 +1050,15 @@ pub async fn mission_reset(
         let conn = state.db.get()?;
         get(&conn, &id)?
     };
-    let (crew_name, crew_signal_types, crew_goal) = {
+    let (crew_name, crew_signal_types, crew_goal, crew_addendum) = {
         let conn = state.db.get()?;
         let crew = crew::get(&conn, &mission_snap.crew_id)?;
-        (crew.name, crew.signal_types, crew.goal)
+        (
+            crew.name,
+            crew.signal_types,
+            crew.goal,
+            crew.system_prompt_addendum,
+        )
     };
     let roster = {
         let conn = state.db.get()?;
@@ -1195,12 +1209,14 @@ pub async fn mission_reset(
                                 mission_goal: goal_text.as_str(),
                                 roster: &roster_entries,
                                 allowed_signals: &crew_signal_types,
+                                crew_addendum: crew_addendum.as_deref(),
                             },
                         )
                     })
                 } else {
                     Some(crate::router::prompt::compose_worker_first_turn(
                         m.runner.system_prompt.as_deref(),
+                        crew_addendum.as_deref(),
                     ))
                 }
             })
@@ -1220,6 +1236,7 @@ pub async fn mission_reset(
         crew_name,
         &roster,
         crew_signal_types,
+        crew_addendum.clone(),
         Arc::clone(&log_arc),
         injector,
     )?;
@@ -1444,8 +1461,8 @@ mod tests {
             conn,
             CreateCrewInput {
                 name: name.into(),
-                purpose: None,
                 goal: goal.map(String::from),
+                ..Default::default()
             },
         )
         .unwrap();

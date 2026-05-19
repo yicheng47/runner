@@ -3219,7 +3219,7 @@ mod tests {
         slot.id = slot_id;
         slot.lead = false;
 
-        let body = compose_worker_first_turn(runner.system_prompt.as_deref());
+        let body = compose_worker_first_turn(runner.system_prompt.as_deref(), None);
         // Composer ships the on-bus preamble + the brief.
         assert!(body.contains("in a crew coordinated by the bundled"));
         assert!(body.contains("WORKER_BRIEF"));
