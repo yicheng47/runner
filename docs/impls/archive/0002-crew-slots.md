@@ -4,8 +4,8 @@
 > multiple slots that all reference the same Runner template, each with its
 > own slot_handle and (in a follow-up) optional system-prompt override.
 >
-> Companion to `docs/impls/0001-v0-mvp.md` (umbrella plan), `docs/arch/v0-arch.md`,
-> and `docs/impls/0003-direct-chats.md`. Lives in its own file because the
+> Companion to `docs/impls/archive/0001-v0-mvp.md` (umbrella plan), `docs/arch/arch.md`,
+> and `docs/impls/archive/0003-direct-chats.md`. Lives in its own file because the
 > change reaches schema, mission lifecycle, router prompt composition, the
 > bundled CLI's identity env, and most of the crew-facing UI.
 >

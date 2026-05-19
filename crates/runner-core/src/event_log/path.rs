@@ -1,6 +1,6 @@
 // Filesystem layout helpers for per-mission event logs.
 //
-// Arch §7.2 pins the tree as:
+// Arch §10.2 pins the tree as:
 //   $APPDATA/runner/crews/{crew_id}/missions/{mission_id}/events.ndjson
 //
 // Callers pass the resolved `app_data` dir (whatever `tauri::Manager::path()`
@@ -35,7 +35,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn layout_matches_arch_section_7_2() {
+    fn layout_matches_arch_section_10_2() {
         let root = PathBuf::from("/tmp/rtest");
         assert_eq!(
             events_path(&root, "C", "M"),

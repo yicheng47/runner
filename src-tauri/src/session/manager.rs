@@ -83,7 +83,7 @@ fn scan_alt_screen_transition(bytes: &[u8]) -> Option<bool> {
 /// none — so they live together in one optional struct. The
 /// forwarder consumer carries an `Option<Self>`: `Some` for mission
 /// sessions, `None` for direct chats. See
-/// `docs/features/13-pty-silence-idle-detection.md` §Scope for why
+/// `docs/features/archive/13-pty-silence-idle-detection.md` §Scope for why
 /// direct chats are skipped.
 ///
 /// The `EventLog` handle is opened once at construction (on the

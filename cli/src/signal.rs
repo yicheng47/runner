@@ -45,7 +45,7 @@ pub fn run(ty: &str, payload: Option<&str>) -> i32 {
 ///
 /// Deprecated since issue #124: the session forwarder is now the
 /// authoritative source for busy/idle via PTY silence
-/// (`docs/features/13-pty-silence-idle-detection.md`). The verb is kept
+/// (`docs/features/archive/13-pty-silence-idle-detection.md`). The verb is kept
 /// as a back-compat alias so user-authored templates that still call it
 /// don't crash; we stamp `source: "agent"` on the payload so the router
 /// / debug tooling can tell agent-reported events apart from
