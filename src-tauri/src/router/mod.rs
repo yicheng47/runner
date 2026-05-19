@@ -147,6 +147,7 @@ pub struct Router {
 impl Router {
     /// Build a router from the crew's roster and lead. `roster` is the same
     /// slice `mission_start` already loaded for the spawn loop.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mission_id: String,
         crew_id: String,
