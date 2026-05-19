@@ -15,13 +15,13 @@ Runner is a local desktop app for assembling a crew of CLI coding agents — Cla
   </tr>
 </table>
 
-> Status: pre-alpha, shipping. macOS + Linux only (the session runtime is tmux). Crew + runner config, missions, direct chats, the event bus + signal router, the bundled `runner` CLI, and PTY-backed mission workspaces all run end-to-end. See `docs/impls/0001-v0-mvp.md` for the current plan and status.
+> Status: pre-alpha, shipping. macOS + Linux only. Crew + runner config, missions, direct chats, the event bus + signal router, the bundled `runner` CLI, and PTY-backed mission workspaces all run end-to-end. See `docs/impls/0001-v0-mvp.md` for the current plan and status.
 
 ## What it does
 
 - **Crews** — group runners with exactly one lead.
 - **Runners** — each runner is a local CLI runtime (claude, codex, …) with its own role, system prompt, and working directory.
-- **Missions** — spawn one PTY session per slot into a tabbed mission workspace. Sessions survive app restarts via the tmux runtime.
+- **Missions** — spawn one PTY session per slot into a tabbed mission workspace.
 - **Direct chats** — quick 1:1 PTY chat with a single runner, no mission required.
 - **Event bus** — append-only NDJSON log per mission that runners read and write through.
 - **Signal router** — a deterministic parent-process bridge that routes built-in signals between runners and the human.
@@ -31,14 +31,13 @@ Runner is a local desktop app for assembling a crew of CLI coding agents — Cla
 - Tauri 2 + Rust backend
 - React 19 + TypeScript + Tailwind 4 frontend
 - SQLite for persistence
-- tmux as the session runtime (FIFO + `poll()` forwarder; one private tmux server per app install)
+- In-process `portable-pty` as the session runtime
 
 ## Prerequisites
 
 Required at runtime and during development:
 
-- **tmux** — Runner spawns and attaches every PTY session through tmux. macOS: `brew install tmux`. Linux: `apt install tmux` / `dnf install tmux`. Resolution order: `RUNNER_TMUX` env var → `PATH` → Homebrew / standard Linux paths. Without tmux on `PATH`, `pnpm tauri dev` will start but mission and chat spawns will fail.
-- **macOS or Linux** — Windows is not supported in v1 (the runtime is tmux-only).
+- **macOS or Linux** — Windows is not supported in v1.
 - **Node ≥ 22.12** + **pnpm** — frontend build / dev server.
 - **Rust toolchain** (stable, edition 2021) — `rustup` recommended.
 - **Tauri 2 platform deps** — see <https://tauri.app/start/prerequisites/>. macOS needs Xcode Command Line Tools; Linux needs the WebKit2GTK / libsoup / build packages listed there.
