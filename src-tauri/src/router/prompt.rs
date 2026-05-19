@@ -42,19 +42,20 @@ pub struct LaunchPromptInput<'a> {
     pub roster: &'a [RosterEntry<'a>],
     pub allowed_signals: &'a [SignalType],
     /// Layer-2 team conventions text (`crew.system_prompt_addendum`).
-    /// Spliced as raw, unlabeled text between the "You are X, lead
-    /// runner in crew Y" intro and the `== Your brief ==` section.
-    /// Empty / whitespace-only → no splice. See #54.
+    /// Spliced under a `== Team conventions ==` section between the
+    /// "You are X, lead runner in crew Y" intro and the `== Your
+    /// brief ==` section. Empty / whitespace-only → no splice. See #54.
     pub crew_addendum: Option<&'a str>,
 }
 
 /// First-user-turn body for a non-lead mission worker. Combines the
 /// platform-injected coordination preamble (Layer 1 — verbs the
 /// worker needs to participate in the bus + reply to the human),
-/// the optional crew-level addendum (Layer 2 — team conventions),
-/// and the worker's per-runner system_prompt as a "brief" section
-/// (Layer 3 — persona). Returns the full composed body, never
-/// empty (preamble is always present).
+/// the optional crew-level addendum spliced under a `== Team
+/// conventions ==` section (Layer 2), and the worker's per-runner
+/// system_prompt as a `== Your brief ==` section (Layer 3 —
+/// persona). Returns the full composed body, never empty (preamble
+/// is always present).
 ///
 /// Delivered as the trailing positional `[PROMPT]` argv at spawn time
 /// when the runtime accepts it (see `router::runtime::first_turn_argv`);
@@ -76,7 +77,7 @@ pub fn compose_worker_first_turn(
     let mut out = String::new();
     out.push_str(WORKER_COORDINATION_PREAMBLE);
     if let Some(addendum) = addendum {
-        out.push_str("\n\n");
+        out.push_str("\n\n== Team conventions ==\n");
         out.push_str(&addendum);
     }
     if let Some(brief) = user_brief {
@@ -130,6 +131,7 @@ pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
     if let Some(addendum) = input.crew_addendum {
         let addendum = addendum.trim();
         if !addendum.is_empty() {
+            out.push_str("== Team conventions ==\n");
             out.push_str(addendum);
             out.push_str("\n\n");
         }
@@ -314,14 +316,23 @@ mod tests {
     fn worker_first_turn_splices_addendum_between_preamble_and_brief() {
         let body = compose_worker_first_turn(Some("WORKER_BRIEF"), Some("TEAM_TEXT"));
         assert!(body.contains(WORKER_COORDINATION_PREAMBLE));
+        assert!(
+            body.contains("== Team conventions =="),
+            "addendum must be wrapped in a `== Team conventions ==` section; got: {body}",
+        );
         assert!(body.contains("TEAM_TEXT"));
         assert!(body.contains("== Your brief =="));
         let preamble_pos = body.find("Coordination ==").unwrap();
+        let header_pos = body.find("== Team conventions ==").unwrap();
         let addendum_pos = body.find("TEAM_TEXT").unwrap();
         let brief_pos = body.find("== Your brief ==").unwrap();
         assert!(
-            preamble_pos < addendum_pos,
-            "preamble must come before addendum; got body: {body}",
+            preamble_pos < header_pos,
+            "preamble must come before the team-conventions header; got body: {body}",
+        );
+        assert!(
+            header_pos < addendum_pos,
+            "team-conventions header must come before the addendum text; got body: {body}",
         );
         assert!(
             addendum_pos < brief_pos,
@@ -350,10 +361,16 @@ mod tests {
             allowed_signals: &allowed,
             crew_addendum: Some("TEAM_TEXT"),
         });
+        assert!(
+            with_addendum.contains("== Team conventions =="),
+            "addendum must be wrapped in a `== Team conventions ==` section; got: {with_addendum}",
+        );
         let intro_pos = with_addendum.find("lead runner in crew").unwrap();
+        let header_pos = with_addendum.find("== Team conventions ==").unwrap();
         let addendum_pos = with_addendum.find("TEAM_TEXT").unwrap();
         let brief_pos = with_addendum.find("== Your brief ==").unwrap();
-        assert!(intro_pos < addendum_pos);
+        assert!(intro_pos < header_pos);
+        assert!(header_pos < addendum_pos);
         assert!(addendum_pos < brief_pos);
 
         // None addendum is byte-identical to the no-addendum baseline.
