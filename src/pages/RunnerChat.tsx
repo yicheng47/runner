@@ -33,6 +33,7 @@ import {
   ResumingOverlay,
   SessionEndedOverlay,
   StartingOverlay,
+  isFreshSpawn,
 } from "../components/SessionEndedOverlay";
 import { api, type DirectSessionEntry } from "../lib/api";
 import {
@@ -183,7 +184,12 @@ export default function RunnerChat() {
   }, []);
 
   const attach = useCallback(
-    (id: string, sessionHandle: string, status: SessionStatus = "running") => {
+    (
+      id: string,
+      sessionHandle: string,
+      status: SessionStatus = "running",
+      freshSpawn = false,
+    ) => {
       setErr(null);
       upsertSession({
         id,
@@ -192,10 +198,13 @@ export default function RunnerChat() {
         exitCode: null,
       });
       // Show the Starting pill over the freshly-mounted terminal
-      // until the agent CLI paints. Only for live sessions — landing
-      // on a stopped/crashed row from the sidebar should drop straight
-      // into the Session ended card.
-      if (status === "running") setStarting(true);
+      // until the agent CLI paints. Two gates: status === "running"
+      // (no pill over a stopped/crashed row — that surface is the
+      // Session ended card), and `freshSpawn` (no pill when the
+      // user is just switching tabs to a chat that's been running
+      // for an hour — the terminal is already painted and the user
+      // wants the live canvas, not a 1s flash).
+      if (status === "running" && freshSpawn) setStarting(true);
     },
     [upsertSession],
   );
@@ -487,9 +496,27 @@ export default function RunnerChat() {
     // so mounting RunnerTerminal would spawn a PTY listener for a row
     // that's terminal by definition.
     if (sessionId && handle && !isArchived) {
-      attach(sessionId, handle, state?.sessionStatus ?? "stopped");
+      // `freshSpawn` is the only signal that distinguishes "user just
+      // clicked Chat now and we're navigating into the spawn" from
+      // "user clicked an existing chat row in the sidebar." We key
+      // off chatMeta.started_at (loaded by the gate above) so the
+      // pill only fires on rows whose PTY was born seconds ago.
+      attach(
+        sessionId,
+        handle,
+        state?.sessionStatus ?? "stopped",
+        isFreshSpawn(chatMeta?.started_at),
+      );
     }
-  }, [attach, handle, sessionId, state?.sessionStatus, isArchived, metaLoaded]);
+  }, [
+    attach,
+    handle,
+    sessionId,
+    state?.sessionStatus,
+    isArchived,
+    metaLoaded,
+    chatMeta?.started_at,
+  ]);
 
   async function endChat() {
     if (!sessionId || !handle) return;
