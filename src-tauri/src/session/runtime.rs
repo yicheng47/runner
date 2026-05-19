@@ -51,7 +51,7 @@ pub struct SpawnSpec {
     /// not have the bundled CLI on PATH).
     pub bundled_bin_dir: Option<PathBuf>,
     /// Best-effort login-shell PATH from
-    /// `shell_path::resolve_login_shell_path`, captured once by the
+    /// `shell_path::resolve_login_shell_env`, captured once by the
     /// manager at app start. `None` if the resolver
     /// failed/timed out — the launch script's fallback CLI dirs
     /// (`~/.local/bin`, `/opt/homebrew/bin`, etc.) cover the common

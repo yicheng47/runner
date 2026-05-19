@@ -358,13 +358,17 @@ pub struct SessionManager {
     /// SIGTERM produces a non-zero exit code. Entries are cleared by
     /// the reader after the DB row is updated.
     killed: Mutex<HashSet<String>>,
-    /// User's login-shell PATH, captured once at app start by
-    /// `shell_path::resolve_login_shell_path`. None when the resolve
+    /// User's login-shell env snapshot, captured once at app start by
+    /// `shell_path::resolve_login_shell_env`. Empty when the resolve
     /// failed/timed out, when running on Windows, or in tests.
-    /// Merged into every child PTY's PATH so GUI-launched apps can
-    /// find tools (claude, codex, mise, etc.) that aren't on
-    /// launchd's stripped default PATH.
-    shell_path: Option<String>,
+    ///
+    /// `path` is composed into every child PTY's PATH (so GUI-launched
+    /// apps can find tools like claude / codex / mise that aren't on
+    /// launchd's stripped default PATH — issue #65); `vars` (the
+    /// proxy quartet in both cases) is layered into every spawn's env
+    /// under `runner.env` so the child can reach the network the same
+    /// way Terminal.app's children would (issues #109 / #152).
+    shell_env: crate::shell_path::LoginShellEnv,
     /// Underlying terminal runtime (Step 9 of
     /// docs/impls/0004-tmux-session-runtime.md). v1 is `TmuxRuntime`
     /// on macOS + Linux; Windows fails at runtime construction in
@@ -395,14 +399,17 @@ impl Drop for ResumeClaim {
 }
 
 impl SessionManager {
-    pub fn new(shell_path: Option<String>, runtime: Arc<dyn SessionRuntime>) -> Arc<Self> {
+    pub fn new(
+        shell_env: crate::shell_path::LoginShellEnv,
+        runtime: Arc<dyn SessionRuntime>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             sessions: Mutex::new(HashMap::new()),
             killed: Mutex::new(HashSet::new()),
             output_buffers: Mutex::new(HashMap::new()),
             output_seq: Mutex::new(HashMap::new()),
             resuming_claims: Mutex::new(HashSet::new()),
-            shell_path,
+            shell_env,
             runtime,
         })
     }
@@ -433,11 +440,14 @@ impl SessionManager {
         initial_size: Option<(u16, u16)>,
         extra_env: BTreeMap<String, String>,
     ) -> SpawnSpec {
-        let mut env: BTreeMap<String, String> = runner
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        // Bottom layer: login-shell vars (proxy quartet, both cases)
+        // captured at app start. A runner row can override any of these
+        // by setting the same name in its own env map — the runner row
+        // is the most specific configuration surface.
+        let mut env: BTreeMap<String, String> = self.shell_env.vars.clone();
+        for (k, v) in &runner.env {
+            env.insert(k.clone(), v.clone());
+        }
         // System vars layer on top so the user can't accidentally
         // shadow them. PATH is set by the launch script from the
         // composed path; a runner.env PATH would be filtered by
@@ -457,7 +467,7 @@ impl SessionManager {
             mission,
             shim_dir,
             bundled_bin_dir,
-            shell_path: self.shell_path.clone(),
+            shell_path: self.shell_env.path.clone(),
             initial_size,
         }
     }
@@ -2608,7 +2618,13 @@ mod tests {
     /// Build a manager backed by the supplied FakeRuntime. Returns
     /// the Arc so tests can introspect the captured calls.
     fn mgr_with_fake(shell: Option<String>, fake: Arc<FakeRuntime>) -> Arc<SessionManager> {
-        SessionManager::new(shell, fake)
+        SessionManager::new(
+            crate::shell_path::LoginShellEnv {
+                path: shell,
+                vars: Default::default(),
+            },
+            fake,
+        )
     }
 
     /// Test emitter that just records every event. Replaces the Tauri
@@ -3058,7 +3074,7 @@ mod tests {
 
     #[test]
     fn inject_stdin_on_unknown_session_errors_cleanly() {
-        let mgr = SessionManager::new(None, inert_runtime());
+        let mgr = SessionManager::new(crate::shell_path::LoginShellEnv::default(), inert_runtime());
         let err = mgr.inject_stdin("nope", b"x").unwrap_err();
         assert!(format!("{err}").contains("session not found"));
     }
@@ -3431,7 +3447,7 @@ mod tests {
             .execute("DROP TABLE sessions", [])
             .unwrap();
 
-        let mgr = SessionManager::new(None, inert_runtime());
+        let mgr = SessionManager::new(crate::shell_path::LoginShellEnv::default(), inert_runtime());
         let slot = slot_for(&runner);
         let err = mgr
             .spawn(
@@ -3611,6 +3627,91 @@ mod tests {
         assert_eq!(
             last.active_sessions, 0,
             "after reap, active_sessions for this runner must be 0"
+        );
+    }
+
+    #[test]
+    fn login_shell_proxy_env_reaches_spawn_with_runner_env_taking_precedence() {
+        // Issue #152: GUI-launched Runner.app inherits launchd's
+        // stripped env, so HTTPS_PROXY / NO_PROXY from the user's
+        // shell rc files never reaches PTY children and claude /
+        // codex login fails behind a corporate VPN / ClashX.
+        //
+        // The captured login-shell env on `SessionManager` should:
+        //   - land in every spawn's env so children see the same
+        //     proxy vars Terminal.app's children see;
+        //   - lose to an explicit runner.env override on the same
+        //     key, because the runner row is the more specific
+        //     configuration surface.
+        let pool = pool_with_schema();
+        let now = Utc::now().to_rfc3339();
+        let runner_id = ulid::Ulid::new().to_string();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'proxied', 'P', 'shell', '/bin/sh',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+                params![runner_id, now],
+            )
+            .unwrap();
+        }
+
+        let mut runner = runner("/bin/sh", &["-c", "true"]);
+        runner.id = runner_id;
+        runner.handle = "proxied".into();
+        // The runner row overrides HTTPS_PROXY but leaves
+        // NO_PROXY / lowercase variants untouched, so we expect
+        // those to come straight from the login-shell snapshot.
+        runner
+            .env
+            .insert("HTTPS_PROXY".into(), "http://runner-override:9999".into());
+
+        let fake = fake_runtime();
+        let mut vars = std::collections::BTreeMap::new();
+        vars.insert("HTTPS_PROXY".into(), "http://login-shell:7890".into());
+        vars.insert("https_proxy".into(), "http://login-shell:7890".into());
+        vars.insert(
+            "NO_PROXY".into(),
+            "localhost,127.0.0.1,*.byted.org".into(),
+        );
+        let mgr = SessionManager::new(
+            crate::shell_path::LoginShellEnv {
+                path: None,
+                vars,
+            },
+            Arc::clone(&fake) as Arc<dyn SessionRuntime>,
+        );
+        mgr.spawn_direct(
+            &runner,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+
+        let spec = fake.last_spawn_spec().expect("spawn was called");
+        assert_eq!(
+            spec.env.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://runner-override:9999"),
+            "runner.env must override the login-shell capture",
+        );
+        assert_eq!(
+            spec.env.get("https_proxy").map(String::as_str),
+            Some("http://login-shell:7890"),
+            "lowercase variant must flow through unchanged",
+        );
+        assert_eq!(
+            spec.env.get("NO_PROXY").map(String::as_str),
+            Some("localhost,127.0.0.1,*.byted.org"),
+            "NO_PROXY (with wildcard) must flow through unchanged",
         );
     }
 
@@ -3857,7 +3958,7 @@ mod tests {
             )
             .unwrap();
         }
-        let mgr = SessionManager::new(None, inert_runtime());
+        let mgr = SessionManager::new(crate::shell_path::LoginShellEnv::default(), inert_runtime());
         for (sid, needle) in [
             ("running-sid", "already running"),
             ("archived-sid", "archived"),

@@ -142,14 +142,16 @@ pub fn run() {
                 log::error!("failed to install bundled CLI: {e}");
             }
 
-            // Resolve the user's login-shell PATH once at startup so
-            // child PTYs can find tools that live outside launchd's
-            // stripped default PATH (Homebrew, mise/asdf/fnm, npm-global,
-            // etc.). Best-effort: a failure or timeout just leaves
-            // shell_path = None and we fall back to the inherited
-            // launchd PATH. See `shell_path` module docs for the
-            // launchd-strips-PATH problem this fixes.
-            let shell_path = shell_path::resolve_login_shell_path();
+            // Snapshot the user's login-shell env once at startup so
+            // child PTYs see the same PATH + proxy vars that
+            // Terminal.app's children would. Covers both the
+            // GUI-launch shim-discovery problem (Homebrew /
+            // mise / asdf / fnm / npm-global on a launchd-stripped
+            // PATH) and the claude/codex-login-behind-VPN problem
+            // (HTTPS_PROXY / NO_PROXY etc. set in rc files).
+            // Best-effort: a failure or timeout just leaves the
+            // snapshot empty and we fall back to launchd's env.
+            let login_shell_env = shell_path::resolve_login_shell_env();
 
             // Construct the in-process PTY runtime
             // (docs/impls/0011). v1 is unix-only — Windows fails at
@@ -169,7 +171,7 @@ pub fn run() {
                 }
             };
 
-            let sessions = session::SessionManager::new(shell_path, runtime);
+            let sessions = session::SessionManager::new(login_shell_env, runtime);
 
             // Build the AppState up front so the mission-side
             // reattach (next block) has access to the bus + router
