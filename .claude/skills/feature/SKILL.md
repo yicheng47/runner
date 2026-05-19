@@ -41,8 +41,12 @@ Show all features, sorted by priority.
 Mark a feature as shipped.
 
 1. Close the GitHub Issue: `gh issue close <number>`
-2. If a matching spec file exists in `docs/features/`, ask the user whether to remove it (shipped code is the source of truth) or keep it.
-3. If removing, delete the spec file and update `docs/features/README.md`.
+2. If a matching spec file exists in `docs/features/`, move it to
+   `docs/features/archive/` with `git mv`. Shipped code is the source
+   of truth, but the spec stays around as the "what we were going for"
+   record (mirrors `docs/impls/archive/`).
+3. Update `docs/features/README.md` to drop the archived entry from
+   the index.
 
 #### `prioritize <issue-number> <P0|P1|P2|P3>`
 Set or change the priority of an existing feature.
@@ -79,7 +83,9 @@ When in doubt between two levels, pick the lower-urgency one and say why; over-l
 
 - Spec files are numbered sequentially: `01-product-spec.md`, `02-ai-quick-explain.md`, etc.
 - Slugs are lowercase kebab-case derived from the feature name.
-- Specs for shipped features get deleted — the implementation is the source of truth.
+- Specs for shipped features move to `docs/features/archive/` — the
+  implementation is the source of truth, but the spec stays as the
+  "what we were going for" record (mirrors `docs/impls/archive/`).
 - The `docs/features/README.md` index only lists in-progress/planned specs.
 
 ## Notes

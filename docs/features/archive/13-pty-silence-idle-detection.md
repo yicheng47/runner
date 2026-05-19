@@ -203,7 +203,7 @@ no agent cooperation required, no system-prompt rule to remember.
   is now inferred from PTY activity`). Keep the event-emit behavior
   so existing templates don't regress.
 - Update the runner-CLI help / `runner help` and any references in
-  `docs/arch/v0-arch.md` §6.3 to call out the new inference path and
+  `docs/arch/arch.md` §7.3 to call out the new inference path and
   the deprecation.
 - Schedule removal for the release after this lands.
 

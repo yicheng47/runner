@@ -5,8 +5,8 @@
 > persists across app restarts and can be resumed later". Multi-chat per
 > runner falls out for free.
 >
-> Companion to `docs/impls/0001-v0-mvp.md` (the umbrella plan) and
-> `docs/arch/v0-arch.md`. Lives in its own file because (a) it changes the
+> Companion to `docs/impls/archive/0001-v0-mvp.md` (the umbrella plan) and
+> `docs/arch/arch.md`. Lives in its own file because (a) it changes the
 > direct-chat lifecycle model, not just the UI, and (b) parts of it
 > supersede `lookup_prior_agent_session_key` from the resume work that
 > already landed on PR #23.

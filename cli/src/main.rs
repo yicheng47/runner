@@ -1,7 +1,7 @@
 // `runner` — the bundled CLI that agents inside spawned PTYs invoke to
-// append to the mission's NDJSON event log. See `docs/arch/v0-arch.md`
-// §6.3 for the user-facing surface and `docs/impls/v0-mvp.md#C9` for the
-// chunk's scope.
+// append to the mission's NDJSON event log. See `docs/arch/arch.md`
+// §7.3 for the user-facing surface and
+// `docs/impls/archive/0001-v0-mvp.md#C9` for the original chunk scope.
 //
 // Design notes:
 // - Thin shell over `runner_core::event_log`. The CLI never reimplements

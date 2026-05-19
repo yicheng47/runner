@@ -163,7 +163,7 @@ pub(super) fn validate_system_prompt(prompt: Option<&str>) -> Result<()> {
 }
 
 // Handle validation: lowercase ASCII slug, 1..=32 chars, [a-z0-9] start,
-// body [a-z0-9_-]. Matches PRD §4 handle rules.
+// body [a-z0-9_-]. See `docs/arch/arch.md` §3.2 (Runner — handle).
 pub(super) fn validate_handle(handle: &str) -> Result<()> {
     if handle.is_empty() || handle.len() > 32 {
         return Err(Error::msg("runner handle must be 1-32 chars"));

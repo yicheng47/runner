@@ -42,8 +42,8 @@ EXAMPLES:
       notice on stderr and is slated for removal next release.
 
 DOCS:
-  Architecture: docs/arch/v0-arch.md (§5 coordination bus, §6.3 CLI)
-  Implementation: docs/impls/v0-mvp.md (C9 — runner CLI binary)
+  Architecture: docs/arch/arch.md (§5 coordination bus, §7.3 CLI)
+  Implementation: docs/impls/archive/0001-v0-mvp.md (C9 — runner CLI binary)
 "#
     );
 }

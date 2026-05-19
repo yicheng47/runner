@@ -13,7 +13,7 @@
 // the feed is a reading surface for humans collaborating with runners.
 // `mission_warning` is intentionally kept (and rendered at full strength):
 // it's a diagnostic the user should see. See spec
-// `docs/features/08-hide-system-signals-from-feed.md`.
+// `docs/features/archive/08-hide-system-signals-from-feed.md`.
 
 import { useEffect, useRef, useState } from "react";
 
