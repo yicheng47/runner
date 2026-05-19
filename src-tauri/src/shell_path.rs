@@ -263,7 +263,10 @@ mod tests {
         stdout.push_str(&block("NO_PROXY", "localhost,127.0.0.1,*.byted.org"));
         stdout.push_str(&block("HTTP_PROXY", ""));
         let parsed = parse_login_shell_env(&stdout);
-        assert_eq!(parsed.path.as_deref(), Some("/opt/homebrew/bin:/usr/bin:/bin"));
+        assert_eq!(
+            parsed.path.as_deref(),
+            Some("/opt/homebrew/bin:/usr/bin:/bin")
+        );
         assert_eq!(
             parsed.vars.get("HTTPS_PROXY").map(String::as_str),
             Some("http://127.0.0.1:7890"),

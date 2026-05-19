@@ -3674,15 +3674,9 @@ mod tests {
         let mut vars = std::collections::BTreeMap::new();
         vars.insert("HTTPS_PROXY".into(), "http://login-shell:7890".into());
         vars.insert("https_proxy".into(), "http://login-shell:7890".into());
-        vars.insert(
-            "NO_PROXY".into(),
-            "localhost,127.0.0.1,*.byted.org".into(),
-        );
+        vars.insert("NO_PROXY".into(), "localhost,127.0.0.1,*.byted.org".into());
         let mgr = SessionManager::new(
-            crate::shell_path::LoginShellEnv {
-                path: None,
-                vars,
-            },
+            crate::shell_path::LoginShellEnv { path: None, vars },
             Arc::clone(&fake) as Arc<dyn SessionRuntime>,
         );
         mgr.spawn_direct(
