@@ -32,6 +32,7 @@ import {
   ArchivingOverlay,
   ResumingOverlay,
   SessionEndedOverlay,
+  StartingOverlay,
 } from "../components/SessionEndedOverlay";
 import { api, type DirectSessionEntry } from "../lib/api";
 import {
@@ -115,6 +116,14 @@ export default function RunnerChat() {
   // header "Resuming…" affordance, and the centered Resuming pill
   // overlay on the cleared terminal canvas.
   const [resuming, setResuming] = useState<boolean>(false);
+  // True while a freshly-attached session is still warming up — the
+  // terminal has mounted but the agent CLI (claude-code / codex)
+  // hasn't painted its first frame yet. Overlays the StartingOverlay
+  // pill on top of the otherwise-blank xterm canvas so the user sees
+  // a clear "we're booting your chat" state instead of staring at an
+  // empty pane for a couple of seconds. Cleared by the same
+  // first-output + idle-debounce + min-visible dance as `resuming`.
+  const [starting, setStarting] = useState<boolean>(false);
   // True while either this chat's own archiveChat or the sidebar's
   // session-archive flow has marked this session id as archiving.
   // Drives the centered amber pill + scrim over the chat body so the
@@ -182,6 +191,11 @@ export default function RunnerChat() {
         status,
         exitCode: null,
       });
+      // Show the Starting pill over the freshly-mounted terminal
+      // until the agent CLI paints. Only for live sessions — landing
+      // on a stopped/crashed row from the sidebar should drop straight
+      // into the Session ended card.
+      if (status === "running") setStarting(true);
     },
     [upsertSession],
   );
@@ -360,6 +374,66 @@ export default function RunnerChat() {
       unlisten?.();
     };
   }, [resuming, sessionId]);
+
+  // Mirror of the resume dismissal dance for fresh-attach. The
+  // agent CLI takes a beat after spawn to print its banner, so
+  // overlay the pill until: (1) we've seen output AND it's gone idle
+  // for ~400ms, AND (2) the pill has been visible for at least 1s
+  // (no flash on instant paints). 10s hard timeout for silent
+  // runtimes (e.g. shell prompts that never emit a banner). We don't
+  // require a first chunk to start the idle timer here — even an
+  // entirely silent runtime should clear the pill after the
+  // min-visible window, otherwise a shell session would sit behind
+  // the pill until the user typed.
+  useEffect(() => {
+    if (!starting || !sessionId) return;
+    const STARTING_MIN_VISIBLE_MS = 1000;
+    const STARTING_IDLE_DEBOUNCE_MS = 400;
+    const STARTING_HARD_TIMEOUT_MS = 10_000;
+    const startTs = performance.now();
+    const targetId = sessionId;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    let idleTimer: number | null = null;
+
+    const finish = () => {
+      if (!cancelled) setStarting(false);
+    };
+
+    const scheduleIdleTimer = () => {
+      if (idleTimer !== null) window.clearTimeout(idleTimer);
+      const elapsed = performance.now() - startTs;
+      const delay = Math.max(
+        STARTING_IDLE_DEBOUNCE_MS,
+        STARTING_MIN_VISIBLE_MS - elapsed,
+      );
+      idleTimer = window.setTimeout(finish, delay);
+    };
+
+    // Seed the idle timer immediately so a silent agent still clears
+    // after the min-visible window.
+    scheduleIdleTimer();
+
+    const hardTimeout = window.setTimeout(finish, STARTING_HARD_TIMEOUT_MS);
+
+    void listen<{ session_id: string }>("session/output", (event) => {
+      if (event.payload.session_id !== targetId) return;
+      scheduleIdleTimer();
+    }).then((fn) => {
+      if (cancelled) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+
+    return () => {
+      cancelled = true;
+      if (idleTimer !== null) window.clearTimeout(idleTimer);
+      window.clearTimeout(hardTimeout);
+      unlisten?.();
+    };
+  }, [starting, sessionId]);
 
   // Surface non-fatal session warnings (today: agent-resume fallback).
   // Mounted once per page — only one direct chat is in view at a time,
@@ -776,7 +850,9 @@ export default function RunnerChat() {
           // fire a session/output subscribe + outputSnapshot call
           // before the read-only branch takes over. The flash is short
           // but visible and contradicts the 'no PTY listener' goal.
-          <div className="text-sm text-fg-3">Loading chat…</div>
+          // Centered cyan pill mirrors the resume transitional state
+          // so any "session is coming up" moment reads consistently.
+          <StartingOverlay label="Starting chat…" />
         ) : isArchived ? (
           <div className="flex h-full items-center justify-center">
             <div className="flex max-w-md flex-col items-center gap-2 rounded border border-line bg-raised px-6 py-5 text-center">
@@ -790,18 +866,17 @@ export default function RunnerChat() {
             </div>
           </div>
         ) : directSessions.length === 0 ? (
-          <div className="text-sm text-fg-3">Starting…</div>
+          <StartingOverlay label="Starting chat…" />
         ) : (
           directSessions.map((s) => {
             const active = s.id === sessionId;
             const dead = s.status !== "running";
-            // Pane visual state: while resuming the active pane is
-            // fully blank (we already wiped it via clearVersion); the
-            // centered Resuming pill below reads on a pristine
-            // canvas. When stopped, the pane dims to 45% and the
-            // Session ended card overlays it.
+            // Pane visual state: while resuming/starting the active
+            // pane is fully blank so the centered cyan pill below
+            // reads on a pristine canvas. When stopped, the pane
+            // dims to 45% and the Session ended card overlays it.
             const paneOpacity = active
-              ? resuming
+              ? resuming || starting
                 ? "opacity-0"
                 : dead
                   ? "opacity-45"
@@ -817,13 +892,14 @@ export default function RunnerChat() {
                   runnerRuntime={runner?.runtime ?? ""}
                   // While the loader is up the canvas is hidden, so
                   // we want xterm to behave as inactive (no resize
-                  // pushes, no focus). When `resuming` flips off,
-                  // `active && !resuming` flips true, which triggers
-                  // RunnerTerminal's activation effect — fit() +
-                  // refresh() + focus + winsize push — and clears the
-                  // half-painted canvas frame the user otherwise sees.
-                  active={active && !resuming}
-                  disabled={dead || resuming}
+                  // pushes, no focus). When `resuming`/`starting`
+                  // flips off, `active && !resuming && !starting`
+                  // flips true, which triggers RunnerTerminal's
+                  // activation effect — fit() + refresh() + focus +
+                  // winsize push — and clears the half-painted
+                  // canvas frame the user otherwise sees.
+                  active={active && !resuming && !starting}
+                  disabled={dead || resuming || starting}
                   onExit={onTerminalExit}
                   onError={setErr}
                 />
@@ -832,12 +908,18 @@ export default function RunnerChat() {
           })
         )}
         {archiving ? (
-          // Archiving wins over the resume + ended overlays — the
-          // session is on its way out, so reading "Resuming…" or
-          // "Session ended" mid-flight would be misleading.
+          // Archiving wins over the resume + start + ended overlays
+          // — the session is on its way out, so reading "Resuming…"
+          // / "Starting…" / "Session ended" mid-flight would be
+          // misleading.
           <ArchivingOverlay withScrim />
         ) : chatState === "resuming" ? (
           <ResumingOverlay />
+        ) : starting && activeSession ? (
+          // Min-1s overlay while the freshly-attached agent CLI
+          // boots. The terminal underneath is hidden via
+          // `opacity-0` above so the pill reads on a clean canvas.
+          <StartingOverlay label="Starting chat…" />
         ) : activeSession && chatState !== "running" ? (
           <SessionEndedOverlay
             status={status}

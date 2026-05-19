@@ -319,20 +319,23 @@ export function RunnerTerminal({
       }
       lastPushedColsRef.current = t.cols;
       lastPushedRowsRef.current = t.rows;
-      // Clear scrollback before the SIGWINCH-driven redraw lands for
-      // full-screen TUI agents. Without this, claude-code / codex
-      // repaint at the new dims and the prior frame stays visible in
-      // scrollback — the "stacking" UX bug. We selectively clear only
-      // for TUI runtimes whose repaint policy means inter-frame
-      // scrollback isn't meaningful; plain shells keep their history.
-      // See docs/impls/0011-pty-host-terminal-runtime.md
+      // Clear the visible region before the SIGWINCH-driven redraw
+      // lands for full-screen TUI agents. Without this, claude-code /
+      // codex repaint at the new dims and the prior frame's visible
+      // rows get pushed into scrollback as the new paint arrives —
+      // the "stacking" UX bug. We deliberately do NOT also write
+      // `\x1b[3J` (erase saved lines): wiping the scrollback on every
+      // resize made it impossible to scroll up to older conversation
+      // history after touching the window edge. The visible-region
+      // wipe alone is enough to prevent the duplicated-frame artifact,
+      // and any older scrollback the user had accumulated stays
+      // intact. Plain shells skip the wipe entirely and keep their
+      // history. See docs/impls/0011-pty-host-terminal-runtime.md
       // §"Per-runtime clear-on-resize".
       if (runtimeClearsOnResize(runnerRuntimeRef.current)) {
-        // ESC[3J — erase saved lines (scrollback)
         // ESC[2J — erase visible region
         // ESC[H  — cursor home
-        // Same wire sequence xterm emits for a hard clear.
-        t.write("\x1b[3J\x1b[2J\x1b[H");
+        t.write("\x1b[2J\x1b[H");
       }
       void api.session.resize(sid, t.cols, t.rows).catch(() => {
         // session may have exited

@@ -46,6 +46,7 @@ import {
   ArchivingOverlay,
   ResumingOverlay,
   SessionEndedOverlay,
+  StartingOverlay,
 } from "../components/SessionEndedOverlay";
 import {
   markArchivingMission,
@@ -638,7 +639,12 @@ export default function MissionWorkspace() {
       ) : null}
 
       {loading || !mission ? (
-        <div className="px-8 py-8 text-sm text-fg-2">Loading mission…</div>
+        // Centered cyan pill while the mission's sessions/events/state
+        // are being fetched (and slot PTYs are still warming up after a
+        // fresh `mission_start`). Same visual vocabulary as the resume
+        // transition so every "session is coming up" moment reads
+        // consistently.
+        <StartingOverlay label="Starting mission…" inline />
       ) : (
         <div className="flex flex-1 min-h-0 flex-col">
           <div className="flex h-[38px] items-end gap-1 border-b border-line bg-panel px-6">
@@ -839,6 +845,60 @@ function SlotPtyPane({
 }) {
   const resuming = !!forcedResuming;
   const dead = session.status !== "running";
+  // Per-slot "warming up" overlay: when the pane first mounts for a
+  // live slot, the agent CLI (claude-code / codex) takes a beat to
+  // paint its banner. Show the cyan pill over the otherwise-blank
+  // xterm canvas for at least 1s so the user doesn't stare at an
+  // empty pane wondering whether the spawn succeeded. Mirrors the
+  // resume dismissal dance (first-output + idle + min-visible).
+  const [starting, setStarting] = useState<boolean>(() => !dead);
+  useEffect(() => {
+    if (!starting) return;
+    const STARTING_MIN_VISIBLE_MS = 1000;
+    const STARTING_IDLE_DEBOUNCE_MS = 400;
+    const STARTING_HARD_TIMEOUT_MS = 10_000;
+    const startTs = performance.now();
+    const targetId = session.id;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    let idleTimer: number | null = null;
+    const finish = () => {
+      if (!cancelled) setStarting(false);
+    };
+    const scheduleIdleTimer = () => {
+      if (idleTimer !== null) window.clearTimeout(idleTimer);
+      const elapsed = performance.now() - startTs;
+      const delay = Math.max(
+        STARTING_IDLE_DEBOUNCE_MS,
+        STARTING_MIN_VISIBLE_MS - elapsed,
+      );
+      idleTimer = window.setTimeout(finish, delay);
+    };
+    scheduleIdleTimer();
+    const hardTimeout = window.setTimeout(finish, STARTING_HARD_TIMEOUT_MS);
+    void listen<{ session_id: string }>("session/output", (event) => {
+      if (event.payload.session_id !== targetId) return;
+      scheduleIdleTimer();
+    }).then((fn) => {
+      if (cancelled) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      if (idleTimer !== null) window.clearTimeout(idleTimer);
+      window.clearTimeout(hardTimeout);
+      unlisten?.();
+    };
+  }, [starting, session.id]);
+  // If the slot dies before the pill clears, drop the pill so the
+  // Session ended card takes over without fighting the pill for the
+  // overlay slot.
+  useEffect(() => {
+    if (dead && starting) setStarting(false);
+  }, [dead, starting]);
 
   // Mission slot pane omits the Archive option — archiving a slot's
   // session row would orphan the slot in the workspace. Mission-level
@@ -849,10 +909,11 @@ function SlotPtyPane({
   // copy than reality.
   //
   // Pane opacity:
-  //   - resuming: 0 (canvas wiped, the pill carries the visual)
+  //   - resuming/starting: 0 (canvas hidden, the pill carries the visual)
   //   - dead but not resuming: 45% (the user can read scrollback)
   //   - running: 100%
-  const paneOpacity = resuming ? "opacity-0" : dead ? "opacity-45" : "";
+  const paneOpacity =
+    resuming || starting ? "opacity-0" : dead ? "opacity-45" : "";
   return (
     <div className="relative flex flex-1 min-h-0 flex-col">
       <div
@@ -862,12 +923,14 @@ function SlotPtyPane({
           sessionId={session.id}
           runnerRuntime={session.runtime}
           onError={onError}
-          active={active && !dead && !resuming}
-          disabled={dead || resuming}
+          active={active && !dead && !resuming && !starting}
+          disabled={dead || resuming || starting}
         />
       </div>
       {resuming ? (
         <ResumingOverlay />
+      ) : starting ? (
+        <StartingOverlay label="Starting chat…" />
       ) : dead ? (
         <SessionEndedOverlay
           status={session.status}

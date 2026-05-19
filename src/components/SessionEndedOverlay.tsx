@@ -129,10 +129,43 @@ export function SessionEndedOverlay({
 export function ResumingOverlay() {
   return (
     <div className="pointer-events-none absolute inset-4 flex items-center justify-center">
-      <div className="pointer-events-auto flex items-center gap-2.5 rounded-full border border-[#1F3D4D] bg-[#0F1E26] px-4 py-2 text-[13px] font-medium text-[#39E5FF] shadow-[0_8px_30px_rgba(0,0,0,0.5)]">
-        <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
-        Resuming…
+      <LoadingPill label="Resuming…" />
+    </div>
+  );
+}
+
+/// Centered transitional pill while a fresh session is spawning —
+/// the moment between the spawn RPC returning and xterm's first paint
+/// over the PTY. Same cyan visual as `ResumingOverlay` so "in-flight"
+/// session transitions read consistently. Pass `inline` to drop the
+/// absolute positioning when the caller is already a flex container
+/// (e.g. MissionWorkspace's loading branch).
+export function StartingOverlay({
+  label = "Starting…",
+  inline = false,
+}: {
+  label?: string;
+  inline?: boolean;
+} = {}) {
+  if (inline) {
+    return (
+      <div className="flex flex-1 items-center justify-center p-6">
+        <LoadingPill label={label} />
       </div>
+    );
+  }
+  return (
+    <div className="pointer-events-none absolute inset-4 flex items-center justify-center">
+      <LoadingPill label={label} />
+    </div>
+  );
+}
+
+function LoadingPill({ label }: { label: string }) {
+  return (
+    <div className="pointer-events-auto flex items-center gap-2.5 rounded-full border border-[#1F3D4D] bg-[#0F1E26] px-4 py-2 text-[13px] font-medium text-[#39E5FF] shadow-[0_8px_30px_rgba(0,0,0,0.5)]">
+      <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
+      {label}
     </div>
   );
 }
