@@ -17,6 +17,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   Archive,
   Flag,
+  Info,
   MoreHorizontal,
   Pin,
   PinOff,
@@ -26,12 +27,14 @@ import {
   Square,
   SquarePen,
   Terminal,
+  Users as UsersIcon,
   X,
 } from "lucide-react";
 
 import { api, type SessionRow } from "../lib/api";
 import type {
   AppendedEvent,
+  Crew,
   Event,
   HumanQuestionPayload,
   Mission,
@@ -39,6 +42,7 @@ import type {
 } from "../lib/types";
 import { EventFeed } from "../components/EventFeed";
 import { MissionInput } from "../components/MissionInput";
+import { MissionMetaPanel } from "../components/MissionMetaPanel";
 import { MissionResetConfirm } from "../components/MissionResetConfirm";
 import { RunnersRail } from "../components/RunnersRail";
 import {
@@ -62,6 +66,7 @@ export default function MissionWorkspace() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [mission, setMission] = useState<Mission | null>(null);
+  const [crew, setCrew] = useState<Crew | null>(null);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -96,6 +101,7 @@ export default function MissionWorkspace() {
     let cancelled = false;
     seenIdsRef.current = new Set();
     setMission(null);
+    setCrew(null);
     setSessions([]);
     setEvents([]);
     setActiveTab("feed");
@@ -149,6 +155,15 @@ export default function MissionWorkspace() {
         if (cancelled) return;
         setMission(m);
         setSessions(ss);
+        // Crew is needed by the right rail's mission-meta view for
+        // the crew name link + goal fallback. Best-effort: a failure
+        // here shouldn't block the workspace from rendering.
+        api.crew
+          .get(m.crew_id)
+          .then((c) => {
+            if (!cancelled) setCrew(c);
+          })
+          .catch((e) => console.error("MissionWorkspace: crew_get failed", e));
         // Auto-open every slot's PTY tab on mount. The user can close
         // individual tabs via the × on each tab; if they close them
         // all and re-mount, the mount path opens them again.
@@ -473,6 +488,22 @@ export default function MissionWorkspace() {
       // ignore storage errors
     }
   }, [railOpen]);
+  // Right rail content toggle — Runners roster vs Mission meta. Persists
+  // per-app (not per-mission): the user's preference for which view to
+  // see on entry is consistent across missions.
+  const [railView, setRailView] = useState<"runners" | "meta">(() => {
+    if (typeof localStorage === "undefined") return "runners";
+    return localStorage.getItem("runner.mission.rail.view") === "meta"
+      ? "meta"
+      : "runners";
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("runner.mission.rail.view", railView);
+    } catch {
+      // ignore storage errors
+    }
+  }, [railView]);
 
   return (
     // flex-row outer so the right rail becomes a top-level sibling
@@ -794,16 +825,31 @@ export default function MissionWorkspace() {
       >
         <div className="flex h-full w-72 flex-col">
           {/* Rail header — same px-5 / pt-9 / pb-3.5 / border-b
-              rhythm as the workspace topbar so the collapse button
-              shares a baseline with the topbar buttons across the
-              divider. */}
-          <header className="flex shrink-0 items-center justify-end border-b border-line px-5 pb-3.5 pt-9">
+              rhythm as the workspace topbar so the divider lines up
+              across the column boundary. The icon strip on the left
+              flips between Runners (roster) and Mission (meta); the
+              collapse button stays on the right. */}
+          <header className="flex shrink-0 items-center justify-between gap-2 border-b border-line px-5 pb-3.5 pt-9">
+            <div className="flex h-9 items-center gap-0.5">
+              <RailViewButton
+                icon={UsersIcon}
+                label="Runners"
+                active={railView === "runners"}
+                onClick={() => setRailView("runners")}
+              />
+              <RailViewButton
+                icon={Info}
+                label="Mission detail"
+                active={railView === "meta"}
+                onClick={() => setRailView("meta")}
+              />
+            </div>
             <div className="flex h-9 items-center">
               <button
                 type="button"
                 onClick={() => setRailOpen(false)}
-                title="Collapse runners panel"
-                aria-label="Collapse runners panel"
+                title="Collapse panel"
+                aria-label="Collapse panel"
                 className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-2 hover:bg-raised hover:text-fg"
               >
                 <PanelRightClose aria-hidden className="h-4 w-4" />
@@ -811,13 +857,17 @@ export default function MissionWorkspace() {
             </div>
           </header>
           <div className="flex min-h-0 flex-1 flex-col pt-5">
-            <RunnersRail
-              sessions={sessions}
-              selectedSessionId={activeTab === "feed" ? null : activeTab}
-              status={runnerStatusMap}
-              leadHandle={leadHandle}
-              onOpenPty={onOpenPty}
-            />
+            {railView === "runners" ? (
+              <RunnersRail
+                sessions={sessions}
+                selectedSessionId={activeTab === "feed" ? null : activeTab}
+                status={runnerStatusMap}
+                leadHandle={leadHandle}
+                onOpenPty={onOpenPty}
+              />
+            ) : mission ? (
+              <MissionMetaPanel mission={mission} crew={crew} />
+            ) : null}
           </div>
         </div>
       </aside>
@@ -1163,6 +1213,35 @@ function KebabItem({
     >
       <Icon aria-hidden className={`h-3.5 w-3.5 ${danger ? "text-danger" : "text-fg"}`} />
       <span>{label}</span>
+    </button>
+  );
+}
+
+function RailViewButton({
+  icon: Icon,
+  label,
+  active,
+  onClick,
+}: {
+  icon: React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      aria-pressed={active}
+      className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded border transition-colors ${
+        active
+          ? "border-line bg-bg text-fg"
+          : "border-transparent text-fg-2 hover:bg-raised hover:text-fg"
+      }`}
+    >
+      <Icon aria-hidden className="h-3.5 w-3.5" />
     </button>
   );
 }
