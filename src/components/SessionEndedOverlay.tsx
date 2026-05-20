@@ -47,6 +47,11 @@ export interface SessionEndedOverlayProps {
   /** Override the resume button label. Defaults derive from
    *  `handle` + `resumable`. */
   resumeLabel?: string;
+  /** Override the archive button label. Defaults to "Archive".
+   *  Mission / slot callsites pass "Archive mission" so the
+   *  destructive scope is unambiguous; direct chat uses the
+   *  default since the surface itself implies session-scope. */
+  archiveLabel?: string;
 }
 
 export function SessionEndedOverlay({
@@ -60,6 +65,7 @@ export function SessionEndedOverlay({
   title,
   subtitle,
   resumeLabel,
+  archiveLabel,
 }: SessionEndedOverlayProps) {
   const computedSubtitle = !resumable
     ? "The PTY is closed. Resume to start a fresh agent process — there's no saved conversation to pick up from this row."
@@ -75,7 +81,7 @@ export function SessionEndedOverlay({
       ? "Resume chat"
       : "Restart chat";
   const finalResumeLabel = resumeLabel ?? computedResumeLabel;
-  const finalTitle = title ?? "Session ended";
+  const finalTitle = title ?? "Chat paused";
 
   const card = (
     <div className="flex w-full max-w-2xl flex-col gap-3.5 rounded-xl border border-line bg-panel p-5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]">
@@ -102,7 +108,7 @@ export function SessionEndedOverlay({
             className="flex cursor-pointer items-center gap-2 rounded-md border border-line bg-raised px-3.5 py-2 text-[13px] text-fg hover:border-fg-3"
           >
             <Archive aria-hidden className="h-3.5 w-3.5 text-fg-2" />
-            Archive
+            {archiveLabel ?? "Archive"}
           </button>
         ) : null}
       </div>
@@ -110,10 +116,20 @@ export function SessionEndedOverlay({
   );
 
   if (variant === "inline") {
+    // Backdrop scrim sits behind the inline card so the surface
+    // visually reads as paused at a glance — without it the card
+    // floats over live-looking content (xterm canvas / mission feed)
+    // and the "session is closed" affordance gets lost. `inset-0` on
+    // the scrim covers the whole pane; the card stays anchored to
+    // the bottom-center via the existing `inset-4 … items-end`
+    // wrapper. Issue #173.
     return (
-      <div className="pointer-events-none absolute inset-4 flex items-end justify-center pb-10">
-        <div className="pointer-events-auto">{card}</div>
-      </div>
+      <>
+        <div className="pointer-events-none absolute inset-0 z-0 bg-bg/70 backdrop-blur-sm" />
+        <div className="pointer-events-none absolute inset-4 z-10 flex items-end justify-center pb-10">
+          <div className="pointer-events-auto">{card}</div>
+        </div>
+      </>
     );
   }
   return (
