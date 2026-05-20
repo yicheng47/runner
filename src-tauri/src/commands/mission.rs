@@ -6,18 +6,17 @@
 //
 // `mission_start` is the point where config crystallizes into runtime:
 // validate the crew has ≥1 runner and exactly one lead, create the mission
-// row, create the mission directory, export the crew's `signal_types`
-// allowlist to a sidecar file for the CLI to read (arch §5.3 Layer 2), and
-// emit the two opening events — `mission_start` (system announces the run)
-// and `mission_goal` (the human's intent, which the orchestrator routes to
-// the lead via the built-in rule in C8).
+// row, create the mission directory, and emit the two opening events —
+// `mission_start` (system announces the run) and `mission_goal` (the
+// human's intent, which the orchestrator routes to the lead via the
+// built-in rule in C8).
 
 use std::collections::HashSet;
 use std::path::Path;
 
 use chrono::Utc;
 use runner_core::event_log::{self, EventLog};
-use runner_core::model::{EventDraft, EventKind, SignalType};
+use runner_core::model::{EventDraft, EventKind, KnownSignalType, SignalType};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -60,6 +59,15 @@ fn new_id() -> String {
 
 fn now() -> Timestamp {
     Utc::now()
+}
+
+/// Full set of known signal types as `Vec<SignalType>`, the shape the
+/// router + launch-prompt composer take.
+fn all_known_signals() -> Vec<SignalType> {
+    KnownSignalType::ALL
+        .iter()
+        .map(|k| SignalType::new(k.as_str()))
+        .collect()
 }
 
 fn row_to_mission(row: &Row<'_>) -> rusqlite::Result<Mission> {
@@ -220,8 +228,7 @@ pub fn start(
     // `kill_all_for_mission` is mission-scoped, the runner-CLI shim path
     // includes mission_id (`$APPDATA/missions/<mission_id>/shims/...`),
     // the roster sidecar is per-mission, and the router boots fresh per
-    // mission. The shared crew row's `signal_types` allowlist is
-    // immutable mid-mission and safe to reuse.
+    // mission.
     let tx = conn.transaction()?;
 
     let id = new_id();
@@ -240,11 +247,8 @@ pub fn start(
         ],
     )?;
 
-    // Create the mission directory and export the signal-types allowlist
-    // sidecar. The CLI (C9) reads this file to validate signal types.
     let mission_dir = event_log::mission_dir(app_data_dir, &crew.id, &id);
     std::fs::create_dir_all(&mission_dir)?;
-    write_signal_types_sidecar(app_data_dir, &crew.id, &crew.signal_types)?;
 
     // Snapshot the roster into a per-mission sidecar so the CLI can
     // validate `runner msg post --to <handle>` without DB access. The
@@ -351,47 +355,15 @@ pub fn stop(conn: &mut Connection, app_data_dir: &Path, id: &str) -> Result<Miss
     Ok(mission)
 }
 
-/// Write the crew's signal-type allowlist to
-/// `$APPDATA/runner/crews/{crew_id}/signal_types.json` atomically so a
-/// crash during write never leaves a half-written file that the CLI would
-/// read and reject valid types on.
-///
-/// Uses `tempfile::NamedTempFile::persist` for the replace — plain
-/// `std::fs::rename` fails on Windows when the destination exists, which
-/// would break every mission start after the first for a given crew.
-fn write_signal_types_sidecar(
-    app_data_dir: &Path,
-    crew_id: &str,
-    allowlist: &[SignalType],
-) -> Result<()> {
-    use std::io::Write;
-
-    let target = event_log::signal_types_path(app_data_dir, crew_id);
-    let parent = target
-        .parent()
-        .ok_or_else(|| Error::msg("signal_types.json path has no parent"))?;
-    std::fs::create_dir_all(parent)?;
-
-    // tempfile places the temp file in the same directory so the rename is
-    // intra-filesystem (required for atomicity on Unix) and uses
-    // `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)` under the hood on Windows.
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-    let json = serde_json::to_vec(allowlist)?;
-    tmp.write_all(&json)?;
-    tmp.flush()?;
-    tmp.persist(&target).map_err(|e| Error::Io(e.error))?;
-    Ok(())
-}
-
 /// Write the per-mission roster snapshot to `roster.json` next to
 /// `events.ndjson`. The CLI (`runner msg post --to`) reads this to
 /// validate handles without DB access. Frozen at mission_start: if the
 /// crew's membership changes mid-mission, the running mission still
 /// validates against this snapshot.
 ///
-/// Atomic write via `tempfile::NamedTempFile::persist` — same dance as
-/// `write_signal_types_sidecar` — so a crash mid-write can't leave a
-/// half-formed file the CLI would parse-fail on.
+/// Atomic write via `tempfile::NamedTempFile::persist` so a crash
+/// mid-write can't leave a half-formed file the CLI would
+/// parse-fail on.
 fn write_roster_sidecar(mission_dir: &Path, roster: &[crate::model::SlotWithRunner]) -> Result<()> {
     use std::io::Write;
 
@@ -535,16 +507,12 @@ pub async fn mission_start(
     // each slot references. Mission spawn iterates per slot — two
     // slots referencing the same runner template both produce
     // distinct PTYs identifying as their respective slot_handles.
-    let (crew_name, allowed_signals, crew_default_goal, crew_addendum) = {
+    let (crew_name, crew_default_goal, crew_addendum) = {
         let conn = state.db.get()?;
         let crew = crew::get(&conn, &out.mission.crew_id)?;
-        (
-            crew.name,
-            crew.signal_types,
-            crew.goal,
-            crew.system_prompt_addendum,
-        )
+        (crew.name, crew.goal, crew.system_prompt_addendum)
     };
+    let allowed_signals = all_known_signals();
     let roster = {
         let conn = state.db.get()?;
         slot::list(&conn, &out.mission.crew_id)?
@@ -830,11 +798,12 @@ pub(crate) async fn ensure_mission_router_mounted(
         return Ok(());
     }
 
-    let (crew_name, allowed_signals, crew_addendum) = {
+    let (crew_name, crew_addendum) = {
         let conn = state.db.get()?;
         let crew = crew::get(&conn, &mission.crew_id)?;
-        (crew.name, crew.signal_types, crew.system_prompt_addendum)
+        (crew.name, crew.system_prompt_addendum)
     };
+    let allowed_signals = all_known_signals();
     let roster = {
         let conn = state.db.get()?;
         slot::list(&conn, &mission.crew_id)?
@@ -1050,16 +1019,12 @@ pub async fn mission_reset(
         let conn = state.db.get()?;
         get(&conn, &id)?
     };
-    let (crew_name, crew_signal_types, crew_goal, crew_addendum) = {
+    let (crew_name, crew_goal, crew_addendum) = {
         let conn = state.db.get()?;
         let crew = crew::get(&conn, &mission_snap.crew_id)?;
-        (
-            crew.name,
-            crew.signal_types,
-            crew.goal,
-            crew.system_prompt_addendum,
-        )
+        (crew.name, crew.goal, crew.system_prompt_addendum)
     };
+    let allowed_signals = all_known_signals();
     let roster = {
         let conn = state.db.get()?;
         slot::list(&conn, &mission_snap.crew_id)?
@@ -1098,8 +1063,8 @@ pub async fn mission_reset(
     }
 
     // 4. Wipe the event log + per-mission shim dir so the next spawn
-    // starts from a clean slate. signal_types + roster sidecars get
-    // rewritten below from the current crew / roster state.
+    // starts from a clean slate. The roster sidecar gets rewritten
+    // below from the current roster state.
     let mission_dir = event_log::mission_dir(&state.app_data_dir, &mission_snap.crew_id, &id);
     let events_file = event_log::events_path(&state.app_data_dir, &mission_snap.crew_id, &id);
     if events_file.exists() {
@@ -1112,11 +1077,6 @@ pub async fn mission_reset(
         let _ = std::fs::remove_dir_all(&shims_root);
     }
     std::fs::create_dir_all(&mission_dir)?;
-    write_signal_types_sidecar(
-        &state.app_data_dir,
-        &mission_snap.crew_id,
-        &crew_signal_types,
-    )?;
     write_roster_sidecar(&mission_dir, &roster)?;
 
     // 5. Update mission row: status back to running, started_at
@@ -1180,9 +1140,8 @@ pub async fn mission_reset(
 
     // Pre-compose each slot's first-user-turn body so the spawn loop
     // can deliver it via the positional `[PROMPT]` argv at process
-    // boot — same contract as `mission_start`. Borrows of
-    // `crew_name` / `crew_signal_types` end here; both are moved
-    // into `Router::new` below.
+    // boot — same contract as `mission_start`. Borrow of `crew_name`
+    // ends here; it's moved into `Router::new` below.
     let first_turns: Vec<Option<String>> = {
         let roster_entries: Vec<crate::router::prompt::RosterEntry> = roster
             .iter()
@@ -1208,7 +1167,7 @@ pub async fn mission_reset(
                                 crew_name: crew_name.as_str(),
                                 mission_goal: goal_text.as_str(),
                                 roster: &roster_entries,
-                                allowed_signals: &crew_signal_types,
+                                allowed_signals: &allowed_signals,
                                 crew_addendum: crew_addendum.as_deref(),
                             },
                         )
@@ -1235,7 +1194,7 @@ pub async fn mission_reset(
         mission_snap.crew_id.clone(),
         crew_name,
         &roster,
-        crew_signal_types,
+        allowed_signals,
         crew_addendum.clone(),
         Arc::clone(&log_arc),
         injector,
@@ -1618,13 +1577,12 @@ mod tests {
         // mission_goal must sort strictly after mission_start.
         assert!(second.id > first.id);
 
-        // Signal-types sidecar exists with the crew's allowlist.
-        let sidecar = event_log::signal_types_path(tmp.path(), &crew_id);
-        assert!(sidecar.exists());
-        let raw = std::fs::read_to_string(&sidecar).unwrap();
-        let types: Vec<String> = serde_json::from_str(&raw).unwrap();
-        assert!(types.contains(&"mission_goal".to_string()));
-        assert!(types.contains(&"ask_lead".to_string()));
+        // No signal_types sidecar — CLI validation is enum-based now.
+        let stale_sidecar = event_log::crew_dir(tmp.path(), &crew_id).join("signal_types.json");
+        assert!(
+            !stale_sidecar.exists(),
+            "mission_start must not write the legacy signal_types.json sidecar"
+        );
     }
 
     #[test]
@@ -1847,50 +1805,6 @@ mod tests {
             assert_eq!(status, "running");
             assert_eq!(row_crew, &crew_id);
         }
-    }
-
-    #[test]
-    fn sidecar_is_rewritten_on_second_start_for_same_crew() {
-        // Regression for the Windows rename-over-existing issue. On Unix the
-        // test passes trivially; on Windows it previously failed because
-        // `std::fs::rename` errors when the destination exists.
-        let pool = pool();
-        let mut conn = pool.get().unwrap();
-        let crew_id = seed_crew(&conn, "A", None);
-        add_runner(&mut conn, &crew_id, "lead");
-        let tmp = tempfile::tempdir().unwrap();
-
-        let out = start(
-            &mut conn,
-            tmp.path(),
-            StartMissionInput {
-                crew_id: crew_id.clone(),
-                title: "m1".into(),
-                goal_override: Some("go".into()),
-                cwd: None,
-            },
-        )
-        .unwrap();
-        stop(&mut conn, tmp.path(), &out.mission.id).unwrap();
-
-        // Sidecar now exists — starting the next mission must overwrite it.
-        start(
-            &mut conn,
-            tmp.path(),
-            StartMissionInput {
-                crew_id: crew_id.clone(),
-                title: "m2".into(),
-                goal_override: Some("go".into()),
-                cwd: None,
-            },
-        )
-        .unwrap();
-
-        let sidecar = event_log::signal_types_path(tmp.path(), &crew_id);
-        assert!(sidecar.exists());
-        let types: Vec<String> =
-            serde_json::from_str(&std::fs::read_to_string(&sidecar).unwrap()).unwrap();
-        assert!(types.contains(&"mission_goal".to_string()));
     }
 
     #[test]

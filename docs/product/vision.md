@@ -130,7 +130,7 @@ Decisions we have not taken; revisit when the product surfaces them.
 
 1. Should the router include recent messages as context when injecting stdin on a signal, or is the recipient expected to call `runner msg read` itself? *Today: the latter.*
 2. Should `runner msg read` paginate, or always return everything sorted by ULID? *Today: returns everything; clients filter with `--since`.*
-3. Per-crew signal-type allowlist (current) vs global defaults + per-crew overrides.
+3. User-defined signal types — today the CLI's `KnownSignalType` enum is the closed set; whether to let crews extend it (and where the router gains handlers for new types) is open.
 4. Auto-restart semantics on crash. *Today: no auto-restart.*
 
 ## 8. Risks

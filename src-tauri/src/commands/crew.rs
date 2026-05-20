@@ -1,8 +1,9 @@
 // Crew CRUD — the top-level container for a team of runners.
 //
-// `crews.signal_types` is seeded by SQL DEFAULT (see migrations/0001_init.sql),
-// so crew_create leaves that column unset and lets the DB populate it. See
-// docs/impls/archive/0001-v0-mvp.md §C2 and docs/arch/arch.md §4.3 Layer 2.
+// Signal-type validation is no longer crew-scoped: the CLI checks
+// incoming `runner signal <type>` against the closed
+// `runner_core::model::KnownSignalType` enum, so the per-crew column
+// + sidecar that used to feed it are gone (feature 20).
 
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -12,7 +13,7 @@ use ulid::Ulid as UlidGen;
 
 use crate::{
     error::{Error, Result},
-    model::{Crew, SignalType, Timestamp},
+    model::{Crew, Timestamp},
     AppState,
 };
 
@@ -34,7 +35,6 @@ pub struct UpdateCrewInput {
     pub purpose: Option<Option<String>>,
     pub goal: Option<Option<String>>,
     pub orchestrator_policy: Option<Option<serde_json::Value>>,
-    pub signal_types: Option<Vec<SignalType>>,
     /// Outer None = leave existing untouched; outer Some(inner) =
     /// write inner. Inner Some("") / whitespace-only collapses to
     /// NULL.
@@ -72,7 +72,6 @@ fn now() -> Timestamp {
 
 fn row_to_crew(row: &Row<'_>) -> rusqlite::Result<Crew> {
     let orchestrator_policy: Option<String> = row.get("orchestrator_policy")?;
-    let signal_types_raw: String = row.get("signal_types")?;
     let created_at: String = row.get("created_at")?;
     let updated_at: String = row.get("updated_at")?;
     Ok(Crew {
@@ -90,9 +89,6 @@ fn row_to_crew(row: &Row<'_>) -> rusqlite::Result<Crew> {
             })?),
             None => None,
         },
-        signal_types: serde_json::from_str(&signal_types_raw).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })?,
         system_prompt_addendum: row.get("system_prompt_addendum")?,
         created_at: created_at.parse().map_err(|e: chrono::ParseError| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -106,7 +102,7 @@ fn row_to_crew(row: &Row<'_>) -> rusqlite::Result<Crew> {
 pub fn list(conn: &Connection) -> Result<Vec<CrewListItem>> {
     let mut stmt = conn.prepare(
         "SELECT c.id, c.name, c.purpose, c.goal, c.orchestrator_policy,
-                c.signal_types, c.system_prompt_addendum,
+                c.system_prompt_addendum,
                 c.created_at, c.updated_at,
                 (SELECT COUNT(*) FROM slots s WHERE s.crew_id = c.id) AS runner_count
            FROM crews c
@@ -169,7 +165,7 @@ pub fn list(conn: &Connection) -> Result<Vec<CrewListItem>> {
 pub fn get(conn: &Connection, id: &str) -> Result<Crew> {
     conn.query_row(
         "SELECT id, name, purpose, goal, orchestrator_policy,
-                signal_types, system_prompt_addendum,
+                system_prompt_addendum,
                 created_at, updated_at
            FROM crews WHERE id = ?1",
         params![id],
@@ -246,7 +242,6 @@ pub fn update(conn: &Connection, id: &str, input: UpdateCrewInput) -> Result<Cre
     let orchestrator_policy = input
         .orchestrator_policy
         .unwrap_or(existing.orchestrator_policy);
-    let signal_types = input.signal_types.unwrap_or(existing.signal_types);
     let system_prompt_addendum = match input.system_prompt_addendum {
         Some(inner) => normalize_addendum(inner),
         None => existing.system_prompt_addendum,
@@ -256,7 +251,6 @@ pub fn update(conn: &Connection, id: &str, input: UpdateCrewInput) -> Result<Cre
         Some(v) => Some(serde_json::to_string(v)?),
         None => None,
     };
-    let signals_raw = serde_json::to_string(&signal_types)?;
     let ts = now().to_rfc3339();
 
     conn.execute(
@@ -265,16 +259,14 @@ pub fn update(conn: &Connection, id: &str, input: UpdateCrewInput) -> Result<Cre
                 purpose = ?2,
                 goal = ?3,
                 orchestrator_policy = ?4,
-                signal_types = ?5,
-                system_prompt_addendum = ?6,
-                updated_at = ?7
-          WHERE id = ?8",
+                system_prompt_addendum = ?5,
+                updated_at = ?6
+          WHERE id = ?7",
         params![
             name,
             purpose,
             goal,
             policy_raw,
-            signals_raw,
             system_prompt_addendum,
             ts,
             id,
@@ -379,27 +371,6 @@ mod tests {
         )
         .expect_err("oversize crew.goal must be rejected on update");
         assert!(err.to_string().contains("goal"));
-    }
-
-    #[test]
-    fn create_seeds_default_signal_types() {
-        let pool = ctx();
-        let conn = pool.get().unwrap();
-        let crew = create(
-            &conn,
-            CreateCrewInput {
-                name: "Alpha".into(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            crew.signal_types
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>(),
-            db::DEFAULT_SIGNAL_TYPES.to_vec()
-        );
     }
 
     #[test]

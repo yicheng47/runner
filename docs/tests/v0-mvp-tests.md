@@ -40,8 +40,9 @@ What these checks cover:
 - TypeScript route/component type safety.
 - ESLint rules for the React surface.
 - Rust formatting, linting, and full workspace regression coverage.
-- CLI sidecar behavior: `runner signal`, `runner msg post`, `runner msg read`,
-  `runner status`, allowlist validation, roster validation, and missing-env
+- CLI behavior: `runner signal`, `runner msg post`, `runner msg read`,
+  `runner status`, known-signal-type validation (against the closed
+  `KnownSignalType` enum), roster sidecar validation, and missing-env
   handling.
 - Router behavior: mission bootstrap, `ask_lead`, `ask_human`,
   `human_response`, `human_said`, `runner_status`, warning paths, and

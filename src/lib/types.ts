@@ -15,7 +15,6 @@ export interface Crew {
   purpose: string | null;
   goal: string | null;
   orchestrator_policy: unknown | null;
-  signal_types: SignalType[];
   /** Layer-2 team conventions text. Spliced between the platform
    *  preamble and the runner persona on mission spawns only;
    *  direct chats ignore it. NULL / empty = no splice. See #54. */
@@ -216,7 +215,6 @@ export interface UpdateCrewInput {
   purpose?: string | null;
   goal?: string | null;
   orchestrator_policy?: unknown | null;
-  signal_types?: SignalType[];
   /** Omit to leave existing untouched; pass null to clear; pass a
    *  non-empty string to set. */
   system_prompt_addendum?: string | null;

@@ -35,6 +35,54 @@ impl From<String> for SignalType {
     }
 }
 
+/// Closed set of signal types the CLI recognizes for `runner signal
+/// <type>`. The router still dispatches on `SignalType` (the open
+/// string newtype) so future user-defined types can pass through the
+/// wire envelope unchanged; this enum is just the CLI-input guardrail
+/// against typos and the source of truth for the launch-prompt's
+/// "Allowed signal types" line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KnownSignalType {
+    MissionGoal,
+    HumanSaid,
+    AskLead,
+    AskHuman,
+    HumanQuestion,
+    HumanResponse,
+    RunnerStatus,
+    InboxRead,
+}
+
+impl KnownSignalType {
+    pub const ALL: &'static [KnownSignalType] = &[
+        KnownSignalType::MissionGoal,
+        KnownSignalType::HumanSaid,
+        KnownSignalType::AskLead,
+        KnownSignalType::AskHuman,
+        KnownSignalType::HumanQuestion,
+        KnownSignalType::HumanResponse,
+        KnownSignalType::RunnerStatus,
+        KnownSignalType::InboxRead,
+    ];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            KnownSignalType::MissionGoal => "mission_goal",
+            KnownSignalType::HumanSaid => "human_said",
+            KnownSignalType::AskLead => "ask_lead",
+            KnownSignalType::AskHuman => "ask_human",
+            KnownSignalType::HumanQuestion => "human_question",
+            KnownSignalType::HumanResponse => "human_response",
+            KnownSignalType::RunnerStatus => "runner_status",
+            KnownSignalType::InboxRead => "inbox_read",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|k| k.as_str() == s)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EventKind {
@@ -134,6 +182,14 @@ mod tests {
 
         let back = serde_json::to_value(&evt).unwrap();
         assert_eq!(back, json);
+    }
+
+    #[test]
+    fn known_signal_type_roundtrips_through_from_name() {
+        for kind in KnownSignalType::ALL {
+            assert_eq!(KnownSignalType::from_name(kind.as_str()), Some(*kind));
+        }
+        assert_eq!(KnownSignalType::from_name("not_a_real_type"), None);
     }
 
     #[test]

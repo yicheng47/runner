@@ -41,9 +41,10 @@ missions with a UI surface the architect dispatches a design task to
 referencing the resulting frames. Pure-backend missions (like the
 suggested first mission below) leave the designer idle.
 
-## Allowed signal types (default)
+## Known signal types
 
-The DB seeds new crews with the v0 default allowlist; no override needed:
+The CLI accepts the closed set defined by
+`runner_core::model::KnownSignalType` — no per-crew configuration:
 
 ```
 mission_goal, human_said, ask_lead, ask_human, human_question,

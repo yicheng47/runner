@@ -1,9 +1,9 @@
 // I2 — `runner` CLI ↔ event log roundtrip.
 // Mirrors docs/tests/v0-mvp-tests.md `## I2`.
 //
-// Each test sets up a tempdir mission directory, seeds the signal-types
-// and roster sidecars (the parts `mission_start` would write), spawns
-// the just-built `runner` binary with the four `RUNNER_*` env vars
+// Each test sets up a tempdir mission directory, seeds the roster
+// sidecar (the part `mission_start` still writes), spawns the
+// just-built `runner` binary with the four `RUNNER_*` env vars
 // pointing at it, and asserts on the resulting NDJSON.
 
 use std::path::{Path, PathBuf};
@@ -23,7 +23,6 @@ fn runner_bin() -> PathBuf {
 
 struct Fixture {
     _root: tempfile::TempDir,
-    crew_dir: PathBuf,
     mission_dir: PathBuf,
     events_log: PathBuf,
 }
@@ -37,15 +36,9 @@ impl Fixture {
         let events_log = mission_dir.join("events.ndjson");
         Self {
             _root: root,
-            crew_dir,
             mission_dir,
             events_log,
         }
-    }
-
-    fn write_signal_types(&self, types: &[&str]) {
-        let json = serde_json::to_vec(types).unwrap();
-        std::fs::write(self.crew_dir.join("signal_types.json"), json).unwrap();
     }
 
     fn write_roster(&self, members: &[(&str, bool)]) {
@@ -89,23 +82,9 @@ impl Fixture {
     }
 }
 
-fn standard_signals() -> Vec<&'static str> {
-    vec![
-        "mission_goal",
-        "human_said",
-        "ask_lead",
-        "ask_human",
-        "human_question",
-        "human_response",
-        "runner_status",
-        "inbox_read",
-    ]
-}
-
 #[test]
 fn i2_1_signal_appends_one_line_with_correct_envelope() {
     let f = Fixture::new("C", "M");
-    f.write_signal_types(&standard_signals());
 
     let out = f
         .cmd(
@@ -133,7 +112,6 @@ fn i2_1_signal_appends_one_line_with_correct_envelope() {
 #[test]
 fn i2_2_signal_rejects_unknown_type_and_does_not_append() {
     let f = Fixture::new("C", "M");
-    f.write_signal_types(&standard_signals());
 
     let out = f
         .cmd("impl", &["signal", "not_a_real_type"])
@@ -142,8 +120,8 @@ fn i2_2_signal_rejects_unknown_type_and_does_not_append() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("allowlist") || stderr.contains("signal_types"),
-        "stderr should point at the allowlist; got: {stderr}",
+        stderr.contains("unknown type") && stderr.contains("Known types"),
+        "stderr should name the unknown type and list known ones; got: {stderr}",
     );
     assert_eq!(f.line_count(), 0);
 }
@@ -151,7 +129,6 @@ fn i2_2_signal_rejects_unknown_type_and_does_not_append() {
 #[test]
 fn i2_3_msg_post_to_handle_routes_directed() {
     let f = Fixture::new("C", "M");
-    f.write_signal_types(&standard_signals());
     f.write_roster(&[("lead", true), ("impl", false)]);
 
     let out = f
@@ -176,7 +153,6 @@ fn i2_3_msg_post_to_handle_routes_directed() {
 #[test]
 fn i2_4_msg_post_to_unknown_handle_is_rejected() {
     let f = Fixture::new("C", "M");
-    f.write_signal_types(&standard_signals());
     f.write_roster(&[("lead", true), ("impl", false)]);
 
     let out = f
@@ -195,7 +171,6 @@ fn i2_4_msg_post_to_unknown_handle_is_rejected() {
 #[test]
 fn i2_5_msg_read_prints_inbox_in_order_and_emits_inbox_read() {
     let f = Fixture::new("C", "M");
-    f.write_signal_types(&standard_signals());
     f.write_roster(&[("lead", true), ("impl", false)]);
 
     // Pre-populate two directed messages to @impl from @lead.
@@ -254,7 +229,6 @@ fn i2_5c_msg_read_with_from_filter_does_not_emit_inbox_read() {
     // never saw. The CLI must suppress watermark emission on filtered
     // reads.
     let f = Fixture::new("C", "M");
-    f.write_signal_types(&standard_signals());
     f.write_roster(&[("lead", true), ("impl", false), ("reviewer", false)]);
 
     let log = EventLog::open(&f.mission_dir).unwrap();
@@ -312,7 +286,6 @@ fn i2_5c_msg_read_with_from_filter_does_not_emit_inbox_read() {
 #[test]
 fn i2_5b_msg_read_with_empty_inbox_does_not_emit_inbox_read() {
     let f = Fixture::new("C", "M");
-    f.write_signal_types(&standard_signals());
     f.write_roster(&[("lead", true), ("impl", false)]);
 
     let out = f.cmd("impl", &["msg", "read"]).output().unwrap();
@@ -323,7 +296,6 @@ fn i2_5b_msg_read_with_empty_inbox_does_not_emit_inbox_read() {
 #[test]
 fn i2_6_status_idle_emits_runner_status_signal() {
     let f = Fixture::new("C", "M");
-    f.write_signal_types(&standard_signals());
 
     let out = f
         .cmd("impl", &["status", "idle", "--note", "ready for next task"])
@@ -361,7 +333,6 @@ fn i2_6_status_idle_emits_runner_status_signal() {
 #[test]
 fn i2_6b_status_rejects_unknown_state() {
     let f = Fixture::new("C", "M");
-    f.write_signal_types(&standard_signals());
 
     let out = f.cmd("impl", &["status", "sleeping"]).output().unwrap();
     assert!(!out.status.success());
@@ -371,7 +342,6 @@ fn i2_6b_status_rejects_unknown_state() {
 #[test]
 fn i2_7_concurrent_writers_interleave_atomically() {
     let f = Fixture::new("C", "M");
-    f.write_signal_types(&standard_signals());
 
     // 5 workers × 20 invocations = 100 lines. Cut down from the spec's
     // 10×100 because we're spawning real processes; 100 is enough to
@@ -434,7 +404,6 @@ fn i2_8_partial_env_fails_fast_with_pointer() {
     // produce a non-zero exit and a stderr message naming the missing
     // var. Off-bus (none-set) is a separate test below.
     let f = Fixture::new("C", "M");
-    f.write_signal_types(&standard_signals());
 
     let mut cmd = Command::new(runner_bin());
     cmd.args(["signal", "mission_goal"]);
