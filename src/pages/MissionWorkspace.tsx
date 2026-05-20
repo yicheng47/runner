@@ -238,6 +238,23 @@ export default function MissionWorkspace() {
     };
   }, [id]);
 
+  // Effective mission goal — read from the `mission_goal` event the
+  // backend writes at mission_start. This is the only authoritative
+  // source: the crew's `goal` column drifts if a user edits the crew
+  // default after launching, and `mission.goal_override` is set only
+  // when an override was passed at start. Returns `null` while events
+  // are still loading so the rail can show a "Loading…" placeholder.
+  const missionGoal = useMemo<string | null>(() => {
+    if (events.length === 0) return null;
+    for (const e of events) {
+      if (e.kind === "signal" && e.type === "mission_goal") {
+        const text = (e.payload as { text?: unknown }).text;
+        return typeof text === "string" ? text : "";
+      }
+    }
+    return "";
+  }, [events]);
+
   // Lead handle resolved from the crew_runners.lead flag returned by
   // session_list. Fall back to roster order only for malformed/old rows.
   const leadHandle = useMemo(() => {
@@ -866,7 +883,11 @@ export default function MissionWorkspace() {
                 onOpenPty={onOpenPty}
               />
             ) : mission ? (
-              <MissionMetaPanel mission={mission} crew={crew} />
+              <MissionMetaPanel
+                mission={mission}
+                crew={crew}
+                missionGoal={missionGoal}
+              />
             ) : null}
           </div>
         </div>

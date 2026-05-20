@@ -1,7 +1,8 @@
 // Right-rail variant for the mission workspace — read-only display of
-// `mission.goal_override` (falling back to the crew's default goal),
-// `mission.cwd`, the crew handle (link), and a relative-time "started"
-// row. Toggle into this view via the icon strip in the rail header.
+// the effective mission goal (snapshotted into the `mission_goal`
+// event at mission_start), `mission.cwd`, the crew handle (link),
+// and a relative-time "started" row. Toggle into this view via the
+// icon strip in the rail header.
 //
 // Editing is intentionally not in v1: goal + cwd are baked into the
 // lead's launch prompt at `mission_start`, so post-start edits don't
@@ -18,10 +19,18 @@ import type { Crew, Mission } from "../lib/types";
 interface MissionMetaPanelProps {
   mission: Mission;
   crew: Crew | null;
+  /** Effective goal text snapshotted at mission_start. Read from the
+   *  replayed `mission_goal` event so editing the crew default after
+   *  launch doesn't drift this display from what the agents received.
+   *  `null` while events are still loading. */
+  missionGoal: string | null;
 }
 
-export function MissionMetaPanel({ mission, crew }: MissionMetaPanelProps) {
-  const goal = mission.goal_override ?? crew?.goal ?? "";
+export function MissionMetaPanel({
+  mission,
+  crew,
+  missionGoal,
+}: MissionMetaPanelProps) {
   const cwd = mission.cwd;
 
   // Re-render the relative "started X ago" row every 60s so the value
@@ -46,9 +55,11 @@ export function MissionMetaPanel({ mission, crew }: MissionMetaPanelProps) {
       </div>
 
       <Section label="Goal">
-        {goal ? (
+        {missionGoal === null ? (
+          <p className="text-[12px] italic text-fg-3">Loading…</p>
+        ) : missionGoal ? (
           <p className="whitespace-pre-wrap break-words text-[12px] leading-[1.5] text-fg">
-            {goal}
+            {missionGoal}
           </p>
         ) : (
           <p className="text-[12px] italic text-fg-3">No goal set.</p>
