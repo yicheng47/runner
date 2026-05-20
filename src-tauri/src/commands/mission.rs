@@ -769,6 +769,7 @@ pub async fn mission_start(
     let cancel = state
         .sessions
         .register_pending_mission_cancel(&out.mission.id);
+    let cancel_for_drop = Arc::clone(&cancel);
     tauri::async_runtime::spawn_blocking(move || {
         for pending in pendings {
             let session_id = pending.session_id.clone();
@@ -821,7 +822,11 @@ pub async fn mission_start(
                 }
             }
         }
-        manager.drop_pending_mission_cancel(&mission_id_for_task);
+        // Identity-checked drop: only remove the map entry if it's
+        // still *this* task's flag. A concurrent mission_reset that
+        // overwrote it with a fresh batch's flag must keep that flag
+        // reachable from `cancel_pending_mission_spawns`.
+        manager.drop_pending_mission_cancel(&mission_id_for_task, &cancel_for_drop);
     });
 
     log::info!(
@@ -1395,6 +1400,7 @@ pub async fn mission_reset(
     let mission_id_for_task = id.clone();
     let emitter_for_task = Arc::clone(&emitter);
     let cancel = state.sessions.register_pending_mission_cancel(&id);
+    let cancel_for_drop = Arc::clone(&cancel);
     tauri::async_runtime::spawn_blocking(move || {
         for pending in pendings {
             let session_id = pending.session_id.clone();
@@ -1444,7 +1450,7 @@ pub async fn mission_reset(
                 }
             }
         }
-        manager.drop_pending_mission_cancel(&mission_id_for_task);
+        manager.drop_pending_mission_cancel(&mission_id_for_task, &cancel_for_drop);
     });
 
     Ok(mission_for_spawn)

@@ -919,6 +919,30 @@ impl SessionManager {
             .spawn(spec)
             .map_err(|e| Error::msg(format!("spawn {}: {e}", runner.command)))?;
 
+        // Post-spawn cancellation: a Stop that fired while the
+        // runtime was mid-fork can't reach the PTY through
+        // `kill_all_for_mission` (no `SessionHandle` in `sessions`
+        // until the insert below). Without this check, the just-
+        // spawned PTY would survive a Stop that landed at the wrong
+        // millisecond. Tear it down via the runtime's own stop hook
+        // — output stream and rt_session get dropped on return so
+        // the reader thread observes EOF and reaps the child.
+        if cancel.load(Ordering::Acquire) {
+            log::info!(
+                "mission session spawn cancelled post-runtime-spawn: \
+                 mission={} session={} runner={}",
+                mission.id,
+                session_id,
+                slot_handle,
+            );
+            if let Err(e) = self.runtime.stop(&rt_session) {
+                log::warn!(
+                    "failed to stop just-spawned PTY for cancelled session {session_id}: {e}"
+                );
+            }
+            return Ok(CompleteSpawnOutcome::Cancelled);
+        }
+
         // Persist the runtime-side ids so `resume` after app restart
         // can find this pane.
         if let Ok(conn) = pool.get() {
@@ -2128,15 +2152,20 @@ impl SessionManager {
     }
 
     /// Clear the cancellation flag for a mission once its background
-    /// spawn task drains. Idempotent: no entry == no-op. Called from
-    /// the background task itself on completion (success or failure)
-    /// so the next mission_start/reset for the same id starts with a
-    /// fresh slate.
-    pub fn drop_pending_mission_cancel(&self, mission_id: &str) {
-        self.pending_mission_cancels
-            .lock()
-            .unwrap()
-            .remove(mission_id);
+    /// spawn task drains. Per-batch identity-checked: only the task
+    /// that owns `expected` may unregister it. Without this guard, a
+    /// slow draining task could outlive a subsequent `mission_reset`
+    /// and remove the *new* batch's flag — leaving the next
+    /// Stop/Archive/Reset with no flag to flip and pending slots
+    /// uncancellable. Callers pass an `Arc::clone(&cancel)` of the
+    /// flag they received from `register_pending_mission_cancel`.
+    pub fn drop_pending_mission_cancel(&self, mission_id: &str, expected: &Arc<AtomicBool>) {
+        let mut map = self.pending_mission_cancels.lock().unwrap();
+        if let Some(current) = map.get(mission_id) {
+            if Arc::ptr_eq(current, expected) {
+                map.remove(mission_id);
+            }
+        }
     }
 
     /// Flip the cancellation flag for `mission_id` (if one is
