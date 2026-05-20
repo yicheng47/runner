@@ -770,26 +770,20 @@ export default function MissionWorkspace() {
               !allSessionsLive &&
               !resumingAll &&
               !archivingMission ? (
-                <>
-                  {/* Backdrop only — sits behind the inline-variant
-                      card so the feed dims and reads as paused
-                      without moving the card off its original
-                      bottom anchor. */}
-                  <div className="pointer-events-none absolute inset-0 z-0 bg-bg/70 backdrop-blur-sm" />
-                  <SessionEndedOverlay
-                    status="stopped"
-                    resumable
-                    title="Mission paused"
-                    subtitle={
-                      anySessionLive
-                        ? "One or more slots stopped. Resume the mission to respawn every stopped slot — partial-mission states aren't a valid run."
-                        : "All slots are stopped. Resume to respawn every slot and pick up the conversation — the event log is preserved."
-                    }
-                    resumeLabel="Resume mission"
-                    onResume={() => void resumeMission()}
-                    variant="inline"
-                  />
-                </>
+                // Scrim is rendered by the overlay itself (issue #173).
+                <SessionEndedOverlay
+                  status="stopped"
+                  resumable
+                  title="Mission paused"
+                  subtitle={
+                    anySessionLive
+                      ? "One or more slots are paused. Resume the mission to respawn every paused slot — partial-mission states aren't a valid run."
+                      : "All slots are paused. Resume to respawn every slot and pick up the conversation — the event log is preserved."
+                  }
+                  resumeLabel="Resume mission"
+                  onResume={() => void resumeMission()}
+                  variant="inline"
+                />
               ) : null}
             </Pane>
 
@@ -1069,8 +1063,8 @@ function SlotPtyPane({
         <SessionEndedOverlay
           status={session.status}
           resumable
-          title="Slot stopped"
-          subtitle="This slot's PTY is closed. Resume the mission to respawn every stopped slot — partial-mission states aren't a valid run."
+          title="Slot paused"
+          subtitle="This slot is paused. Resume the mission to respawn every paused slot — partial-mission states aren't a valid run."
           resumeLabel="Resume mission"
           onResume={() => {
             void onResumeMission();

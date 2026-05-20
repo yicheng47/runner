@@ -75,7 +75,7 @@ export function SessionEndedOverlay({
       ? "Resume chat"
       : "Restart chat";
   const finalResumeLabel = resumeLabel ?? computedResumeLabel;
-  const finalTitle = title ?? "Session ended";
+  const finalTitle = title ?? "Chat paused";
 
   const card = (
     <div className="flex w-full max-w-2xl flex-col gap-3.5 rounded-xl border border-line bg-panel p-5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]">
@@ -110,10 +110,20 @@ export function SessionEndedOverlay({
   );
 
   if (variant === "inline") {
+    // Backdrop scrim sits behind the inline card so the surface
+    // visually reads as paused at a glance — without it the card
+    // floats over live-looking content (xterm canvas / mission feed)
+    // and the "session is closed" affordance gets lost. `inset-0` on
+    // the scrim covers the whole pane; the card stays anchored to
+    // the bottom-center via the existing `inset-4 … items-end`
+    // wrapper. Issue #173.
     return (
-      <div className="pointer-events-none absolute inset-4 flex items-end justify-center pb-10">
-        <div className="pointer-events-auto">{card}</div>
-      </div>
+      <>
+        <div className="pointer-events-none absolute inset-0 z-0 bg-bg/70 backdrop-blur-sm" />
+        <div className="pointer-events-none absolute inset-4 z-10 flex items-end justify-center pb-10">
+          <div className="pointer-events-auto">{card}</div>
+        </div>
+      </>
     );
   }
   return (
