@@ -20,6 +20,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -444,6 +445,15 @@ pub struct SessionManager {
     /// runtimes never touch this field. See `enter_claude_launch_gate`
     /// + issue #171.
     claude_launch_gate: Mutex<Option<Instant>>,
+    /// Cancellation flags for in-flight background mission spawns,
+    /// keyed by `mission_id`. `mission_start` / `mission_reset`
+    /// register a fresh flag before dispatching the
+    /// `complete_mission_session_spawn` background task;
+    /// `kill_all_for_mission` flips it; the background task checks
+    /// it around the gate sleep and at the top of each iteration so
+    /// the queued slots don't keep firing into a stopped /
+    /// archived / reset mission. See `cancel_pending_mission_spawns`.
+    pending_mission_cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// Underlying terminal runtime (Step 9 of
     /// docs/impls/0004-tmux-session-runtime.md). v1 is `TmuxRuntime`
     /// on macOS + Linux; Windows fails at runtime construction in
@@ -471,6 +481,26 @@ impl Drop for ResumeClaim {
             .unwrap()
             .remove(&self.session_id);
     }
+}
+
+/// Result of a `complete_mission_session_spawn` call. The
+/// background mission-spawn task uses the variant to decide whether
+/// to mark the session row stopped (cancelled mid-queue) or leave
+/// the just-installed forwarder thread to keep the row in `running`
+/// (the normal success path). `Err(_)` is reserved for genuine
+/// spawn failures (e.g., `runtime.spawn` couldn't fork the PTY) —
+/// the caller marks those rows crashed and emits `session/exit`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CompleteSpawnOutcome {
+    /// PTY came up, forwarder thread installed, session row reflects
+    /// the live runtime metadata. The session is in
+    /// `SessionManager.sessions` and behaving like any other live
+    /// session.
+    Spawned,
+    /// `kill_all_for_mission` flipped the cancel flag (Stop / Archive
+    /// / Reset). The PTY was never forked. Caller should mark the
+    /// session row stopped so the workspace UI reflects reality.
+    Cancelled,
 }
 
 /// Inputs `complete_mission_session_spawn` needs that
@@ -533,6 +563,7 @@ impl SessionManager {
             resuming_claims: Mutex::new(HashSet::new()),
             shell_env,
             claude_launch_gate: Mutex::new(None),
+            pending_mission_cancels: Mutex::new(HashMap::new()),
             runtime,
         })
     }
@@ -813,6 +844,17 @@ impl SessionManager {
     /// `CLAUDE_LAUNCH_GATE_GRACE` (1500ms) when other claude-code
     /// spawns are in flight.
     ///
+    /// `cancel` is the per-mission abort flag from
+    /// `register_pending_mission_cancel`. Checked twice: before the
+    /// gate sleep (so a cancel that fires while the slot is still
+    /// in the queue returns immediately) and after (so a cancel
+    /// that fires during sleep still skips `runtime.spawn`). A
+    /// cancelled spawn returns `Ok(CompleteSpawnOutcome::Cancelled)`
+    /// — the caller marks the row stopped and continues. Pass a
+    /// fresh `Arc::new(AtomicBool::new(false))` from the sync
+    /// `SessionManager::spawn` wrapper where there's no batch to
+    /// cancel against.
+    ///
     /// Errors leave the session row in `running` status (with no
     /// `runtime_*` metadata) so the caller can decide whether to
     /// `DELETE` (legacy sync `spawn`) or mark `crashed` (async
@@ -821,7 +863,8 @@ impl SessionManager {
         self: &Arc<Self>,
         pending: PendingMissionSpawn,
         events: Arc<dyn SessionEvents>,
-    ) -> Result<()> {
+        cancel: Arc<AtomicBool>,
+    ) -> Result<CompleteSpawnOutcome> {
         let PendingMissionSpawn {
             session_id,
             spec,
@@ -836,11 +879,41 @@ impl SessionManager {
             pool,
         } = pending;
 
+        // Pre-gate cancellation: a user who clicked Stop/Archive/Reset
+        // while this slot was sitting in the spawn queue gets the
+        // expected behavior — the queued slot never forks. Without
+        // this, the slot would sleep through the gate and spawn into
+        // a stopped mission.
+        if cancel.load(Ordering::Acquire) {
+            log::info!(
+                "mission session spawn cancelled pre-gate: mission={} session={} runner={}",
+                mission.id,
+                session_id,
+                slot_handle,
+            );
+            return Ok(CompleteSpawnOutcome::Cancelled);
+        }
+
         // Gate claude-code spawns so N parallel mission slots don't
         // race the OAuth refresh-token rotation. No-op for other
         // runtimes; zero-wait for the first claude through. See
         // `enter_claude_launch_gate` + issue #171.
         self.enter_claude_launch_gate(&session_id, &runner.runtime);
+
+        // Post-gate cancellation: covers a Stop that fires while we
+        // were asleep in the gate. The wake-up still races with the
+        // cancel — flagging it here means we observe it before the
+        // expensive `runtime.spawn`.
+        if cancel.load(Ordering::Acquire) {
+            log::info!(
+                "mission session spawn cancelled post-gate: mission={} session={} runner={}",
+                mission.id,
+                session_id,
+                slot_handle,
+            );
+            return Ok(CompleteSpawnOutcome::Cancelled);
+        }
+
         let (rt_session, output) = self
             .runtime
             .spawn(spec)
@@ -934,7 +1007,7 @@ impl SessionManager {
             pane_for_log,
         );
 
-        Ok(())
+        Ok(CompleteSpawnOutcome::Spawned)
     }
 
     /// Spawn one PTY child for `runner` as part of `mission`. Persists a
@@ -988,7 +1061,11 @@ impl SessionManager {
         let mission_id = pending.mission.id.clone();
         let runner_id = pending.runner.id.clone();
         let handle = pending.runner.handle.clone();
-        if let Err(e) = self.complete_mission_session_spawn(pending, events) {
+        // No batch context in the sync wrapper, so cancellation is
+        // never set externally — pass a fresh flag so the cancel
+        // checks are a no-op for this path.
+        let noop_cancel = Arc::new(AtomicBool::new(false));
+        if let Err(e) = self.complete_mission_session_spawn(pending, events, noop_cancel) {
             // Match the historical sync-spawn contract: if the runtime
             // can't bring the PTY up, delete the half-row so retries
             // start from a clean slate. The async mission_start path
@@ -1307,6 +1384,26 @@ impl SessionManager {
             }
         };
 
+        // Purge the prior session's output buffer up front. Two
+        // properties depend on this happening *before* any
+        // long-running step (gate, runtime.spawn, mission/runner
+        // re-lookup):
+        //
+        // 1. The frontend's resuming-pill effect calls
+        //    `session_output_snapshot` to catch a TUI-ready escape
+        //    that fired before its live listener attached. If the
+        //    purge happens after `runtime.spawn` (the original
+        //    placement), the snapshot races the resume and can
+        //    return the *old* PTY's chunks — which include the
+        //    pre-stop `\x1b[?2004h` — clearing the resuming overlay
+        //    before the new PTY exists. Purging at the top closes
+        //    that window.
+        // 2. The seq counter is intentionally retained (see
+        //    `purge_output_buffer`'s contract) so the new PTY's first
+        //    chunk continues at `last + 1` and the frontend's
+        //    `seq <= lastWrittenSeq` filter doesn't drop it.
+        self.purge_output_buffer(session_id);
+
         // Mission resume: pull the slot + mission so we can stamp the
         // in-mission env (RUNNER_HANDLE = slot_handle, RUNNER_CREW_ID,
         // RUNNER_MISSION_ID). Direct-chat rows skip this lookup —
@@ -1525,12 +1622,11 @@ impl SessionManager {
             },
         );
 
-        // Purge the prior session's output buffer just before the
-        // forwarder thread starts pumping chunks. Keeping the seq
-        // counter intact means the new chunk seq continues at
-        // `last + 1` so the frontend's seq-merge filter doesn't drop
-        // the head of post-resume output.
-        self.purge_output_buffer(session_id);
+        // (The pre-runtime.spawn purge moved up to right after
+        // snapshot collection so the frontend's snapshot fast-path
+        // can't read the stopped session's chunks during the resume
+        // window. See the call site above this function's mission
+        // lookup.)
 
         let resume_emit_ctx = mission_ctx.as_ref().and_then(|ctx| {
             open_mission_event_log(app_data_dir, &ctx.crew_id, &ctx.mission_id).map(|event_log| {
@@ -2008,10 +2104,63 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Register a fresh cancellation flag for a mission's background
+    /// PTY-spawn task. Called from `mission_start` / `mission_reset`
+    /// before dispatching `complete_mission_session_spawn`. Returns
+    /// the shared flag the dispatcher and the background task both
+    /// hold; setting it (via `cancel_pending_mission_spawns`) is
+    /// what aborts queued slots.
+    ///
+    /// A prior flag for the same mission_id (left over from an
+    /// earlier start/reset) is dropped: the new spawn batch
+    /// supersedes any stale background task, and the old task's
+    /// flag is no longer reachable from anywhere except its own
+    /// closure — when it gets cancelled it'll observe the new flag
+    /// only via the per-iteration DB lookup, which is fine because
+    /// `mission_reset` archives the old session rows up front.
+    pub fn register_pending_mission_cancel(&self, mission_id: &str) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        self.pending_mission_cancels
+            .lock()
+            .unwrap()
+            .insert(mission_id.to_string(), Arc::clone(&flag));
+        flag
+    }
+
+    /// Clear the cancellation flag for a mission once its background
+    /// spawn task drains. Idempotent: no entry == no-op. Called from
+    /// the background task itself on completion (success or failure)
+    /// so the next mission_start/reset for the same id starts with a
+    /// fresh slate.
+    pub fn drop_pending_mission_cancel(&self, mission_id: &str) {
+        self.pending_mission_cancels
+            .lock()
+            .unwrap()
+            .remove(mission_id);
+    }
+
+    /// Flip the cancellation flag for `mission_id` (if one is
+    /// registered) so any queued background spawns observe it and
+    /// abort before their PTYs come up. Safe to call when no flag
+    /// is registered. Invoked from `kill_all_for_mission`, which is
+    /// in the call path of `mission_stop`, `mission_archive`, and
+    /// `mission_reset`.
+    pub fn cancel_pending_mission_spawns(&self, mission_id: &str) {
+        if let Some(flag) = self.pending_mission_cancels.lock().unwrap().get(mission_id) {
+            flag.store(true, Ordering::Release);
+        }
+    }
+
     /// Kill every live session; used on mission_stop and at app shutdown.
     /// Returns only after all reader threads have joined — callers rely on
     /// that for the "no live sessions after we return" contract.
+    ///
+    /// Also flips the per-mission cancellation flag so any pending
+    /// `complete_mission_session_spawn` tasks abort before their PTYs
+    /// come up — without this, slots that were still asleep in the
+    /// claude-code launch gate would spawn into a now-stopped mission.
     pub fn kill_all_for_mission(&self, mission_id: &str) -> Result<()> {
+        self.cancel_pending_mission_spawns(mission_id);
         let ids: Vec<String> = {
             let sessions = self.sessions.lock().unwrap();
             sessions
