@@ -782,6 +782,14 @@ export default function MissionWorkspace() {
                   }
                   resumeLabel="Resume mission"
                   onResume={() => void resumeMission()}
+                  // Mission-level archive lives in the topbar kebab
+                  // too, but exposing it on the paused card matches
+                  // direct chat's two-button "now what?" layout and
+                  // is the right primary affordance when the user
+                  // is staring at the paused mission deciding
+                  // whether to continue or end.
+                  archiveLabel="Archive mission"
+                  onArchive={() => void archiveMission()}
                   variant="inline"
                 />
               ) : null}
@@ -802,6 +810,7 @@ export default function MissionWorkspace() {
                         forcedResuming={resumingAll && !archivingMission}
                         onError={setError}
                         onResumeMission={() => void resumeMission()}
+                        onArchiveMission={() => void archiveMission()}
                         registerTerminal={(handle) => {
                           if (handle) terminalsRef.current.set(s.id, handle);
                           else terminalsRef.current.delete(s.id);
@@ -914,6 +923,7 @@ function SlotPtyPane({
   forcedResuming,
   onError,
   onResumeMission,
+  onArchiveMission,
   registerTerminal,
 }: {
   session: SessionRow;
@@ -927,6 +937,10 @@ function SlotPtyPane({
    *  isn't a valid run, so any "Resume" affordance respawns every
    *  stopped slot via the parent. */
   onResumeMission: () => void | Promise<void>;
+  /** Mission-wide archive callback. Slot-level archive would orphan
+   *  the slot, so the paused-slot card escalates to mission archive
+   *  the same way it escalates to mission resume. */
+  onArchiveMission: () => void | Promise<void>;
   /** Hand the parent a handle to this slot's xterm so it can measure
    *  cols/rows before the resume RPC and avoid the 80×24 default. */
   registerTerminal: (handle: RunnerTerminalHandle | null) => void;
@@ -1068,6 +1082,13 @@ function SlotPtyPane({
           resumeLabel="Resume mission"
           onResume={() => {
             void onResumeMission();
+          }}
+          // Slot-level archive isn't a thing (would orphan the
+          // slot), so the secondary affordance here is mission
+          // archive — same as the mission-feed paused card.
+          archiveLabel="Archive mission"
+          onArchive={() => {
+            void onArchiveMission();
           }}
           variant="inline"
         />
