@@ -903,8 +903,11 @@ impl SessionManager {
         // Post-gate cancellation: covers a Stop that fires while we
         // were asleep in the gate. The wake-up still races with the
         // cancel — flagging it here means we observe it before the
-        // expensive `runtime.spawn`.
-        if cancel.load(Ordering::Acquire) {
+        // expensive `runtime.spawn`. Also covers the case where
+        // `runner_delete` cascade-removed the row through the FK on
+        // `sessions.runner_id` — surfaces the same way (we have no
+        // row to attach a PTY to).
+        if cancel.load(Ordering::Acquire) || !Self::session_row_exists(&pool, &session_id) {
             log::info!(
                 "mission session spawn cancelled post-gate: mission={} session={} runner={}",
                 mission.id,
@@ -919,15 +922,17 @@ impl SessionManager {
             .spawn(spec)
             .map_err(|e| Error::msg(format!("spawn {}: {e}", runner.command)))?;
 
-        // Post-spawn cancellation: a Stop that fired while the
-        // runtime was mid-fork can't reach the PTY through
-        // `kill_all_for_mission` (no `SessionHandle` in `sessions`
-        // until the insert below). Without this check, the just-
-        // spawned PTY would survive a Stop that landed at the wrong
-        // millisecond. Tear it down via the runtime's own stop hook
-        // — output stream and rt_session get dropped on return so
-        // the reader thread observes EOF and reaps the child.
-        if cancel.load(Ordering::Acquire) {
+        // Post-spawn cancellation. Two triggers reach this branch:
+        //   1. A `Stop`/`Archive`/`Reset` that fired while the
+        //      runtime was mid-fork — `kill_all_for_mission` can't
+        //      see the PTY yet (no `SessionHandle` in `sessions`
+        //      until the insert below). Flagged by `cancel`.
+        //   2. A `runner_delete` whose FK cascade dropped the row
+        //      while runtime was mid-fork. Flagged by the row check.
+        // Either way the PTY exists with no DB anchor; tear it down
+        // before any further bookkeeping. The dropped output stream
+        // triggers EOF in the reader thread and reaps the child.
+        if cancel.load(Ordering::Acquire) || !Self::session_row_exists(&pool, &session_id) {
             log::info!(
                 "mission session spawn cancelled post-runtime-spawn: \
                  mission={} session={} runner={}",
@@ -1211,6 +1216,17 @@ impl SessionManager {
         // OAuth token, so a rapid burst of new chats can race. See
         // `enter_claude_launch_gate` + issue #171.
         self.enter_claude_launch_gate(&session_id, &runner.runtime);
+
+        // Post-gate row check: `runner_delete` can cascade through
+        // `sessions.runner_id` while we were asleep in the gate. The
+        // session row is gone; spawning a PTY now would attach to
+        // nothing.
+        if !Self::session_row_exists(&pool, &session_id) {
+            return Err(Error::msg(format!(
+                "direct-chat session {session_id} row vanished before spawn — runner deleted?"
+            )));
+        }
+
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -1220,6 +1236,22 @@ impl SessionManager {
                 return Err(Error::msg(format!("spawn {}: {e}", runner.command)));
             }
         };
+
+        // Post-spawn row check: `runner_delete` can also fire while
+        // `runtime.spawn` was mid-fork. The PTY is alive; tear it
+        // down before we install a `SessionHandle` that points at a
+        // row that no longer exists.
+        if !Self::session_row_exists(&pool, &session_id) {
+            if let Err(e) = self.runtime.stop(&rt_session) {
+                log::warn!(
+                    "failed to stop just-spawned direct-chat PTY for vanished session \
+                     {session_id}: {e}"
+                );
+            }
+            return Err(Error::msg(format!(
+                "direct-chat session {session_id} row vanished mid-spawn — runner deleted?"
+            )));
+        }
 
         if let Ok(conn) = pool.get() {
             let _ = conn.execute(
@@ -2503,6 +2535,25 @@ impl SessionManager {
                 .unwrap()
                 .insert(session_id.to_string(), new_state);
         }
+    }
+
+    /// True iff the `sessions` row for `session_id` is still in the
+    /// DB. False if the row was deleted out from under an in-flight
+    /// spawn — most commonly `runner_delete` triggering the foreign
+    /// key cascade on `sessions.runner_id`, but also covers manual
+    /// DB cleanup or any other path that drops the row while a
+    /// gated spawn was asleep. Returns false on pool errors so the
+    /// caller treats "can't tell" the same as "deleted" and bails
+    /// out of the spawn — losing a session on a transient DB hiccup
+    /// is preferable to leaving an orphan PTY attached to no row.
+    fn session_row_exists(pool: &DbPool, session_id: &str) -> bool {
+        let Ok(conn) = pool.get() else { return false };
+        let count: rusqlite::Result<i64> = conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE id = ?1",
+            params![session_id],
+            |r| r.get(0),
+        );
+        count.map(|n| n > 0).unwrap_or(false)
     }
 
     fn record_output(
