@@ -2,7 +2,14 @@
 // §6.3. clap's `--help` covers the short auto-generated form; this is
 // the verbose one with examples.
 
+use runner_core::model::KnownSignalType;
+
 pub fn print() {
+    let known_signals = KnownSignalType::ALL
+        .iter()
+        .map(|k| k.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
     println!(
         r#"runner — coordinate with the rest of the crew via the mission event log.
 
@@ -18,6 +25,10 @@ ENVIRONMENT:
   Set automatically by the parent app when this binary is spawned inside
   a mission session. Direct-chat sessions intentionally don't set them;
   every verb except `help` is a no-op in that context.
+
+SIGNALS:
+  Known signal types accepted by `runner signal <type>`:
+  {known_signals}
 
 EXAMPLES:
   runner signal mission_goal --payload '{{"text":"ship v0"}}'

@@ -14,7 +14,6 @@
 //   crash); partially set → exit 2 with a precise pointer at which var
 //   is missing.
 
-mod allowlist;
 mod env;
 mod help;
 mod msg;
@@ -42,7 +41,7 @@ struct Cli {
 enum Cmd {
     /// Emit a typed signal that the parent-process router handles.
     Signal {
-        /// Signal type (must be in the crew's signal_types allowlist).
+        /// Signal type (must be a known signal type; run `runner help` for the list).
         r#type: String,
         /// Optional JSON payload object. Defaults to `{}`.
         #[arg(long)]

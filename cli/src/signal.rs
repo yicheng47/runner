@@ -7,20 +7,27 @@
 // preserves this — `--to` is intentionally not exposed for `signal`.
 
 use runner_core::event_log::EventLog;
-use runner_core::model::{EventDraft, EventKind, SignalType};
+use runner_core::model::{EventDraft, EventKind, KnownSignalType, SignalType};
 
-use crate::{allowlist, env};
+use crate::env;
+
+fn known_types_csv() -> String {
+    KnownSignalType::ALL
+        .iter()
+        .map(|k| k.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 pub fn run(ty: &str, payload: Option<&str>) -> i32 {
     let Some(env) = env::require_mission_or_handle_offbus("signal") else {
         return 0; // unreachable in practice; the helper exits or returns Some.
     };
 
-    if !allowlist::is_allowed(&env.event_log, ty) {
+    if KnownSignalType::from_name(ty).is_none() {
         eprintln!(
-            "runner signal: {ty:?} is not in the crew's signal_types allowlist. \
-             Edit the crew's signal types in the app, then re-run mission_start \
-             to refresh the sidecar."
+            "runner signal: unknown type {ty:?}. Known types: {}.",
+            known_types_csv(),
         );
         return 1;
     }
@@ -83,13 +90,6 @@ pub fn run_status(state: &str, note: Option<&str>) -> i32 {
     let Some(env) = env::require_mission_or_handle_offbus("status") else {
         return 0;
     };
-    // `runner_status` is in the default allowlist (see C1 seed) but we
-    // still go through the same check so a user who removed it sees the
-    // same rejection path as any other signal.
-    if !allowlist::is_allowed(&env.event_log, "runner_status") {
-        eprintln!("runner status: runner_status is not in the crew's signal_types allowlist.");
-        return 1;
-    }
     append(&env, "runner_status", value)
 }
 

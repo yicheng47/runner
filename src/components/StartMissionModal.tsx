@@ -339,8 +339,7 @@ export function StartMissionModal({
           </button>
           {advancedOpen ? (
             <div className="mt-3 rounded border border-line bg-panel px-3 py-2 text-[11px] text-fg-3">
-              Reserved for v0.x — per-mission signal-type allowlist
-              overrides, custom env, dry-run mode. Inert in v0 MVP.
+              Reserved for v0.x — custom env, dry-run mode. Inert in v0 MVP.
             </div>
           ) : null}
         </div>

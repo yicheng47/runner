@@ -134,11 +134,10 @@ The key insight: **a Runner is config; a Session is its runtime instance** — s
 │      │             │ composes        │    │     ▲                                   │
 │      │           Crew                │    │     │  spawned & owned by               │
 │      │             │                 │    │     │                                   │
-│      │             ├── signal        │    │     │                                   │
-│      │             │   allowlist     │    │   Mission ─── events.ndjson             │
-│      │             ├── system_prompt │    │     │              │                    │
-│      │             │   addendum      │    │     │              ├─► Signal           │
-│      │             └── default goal  │    │     │              └─► Message          │
+│      │             ├── system_prompt │    │   Mission ─── events.ndjson             │
+│      │             │   addendum      │    │     │              │                    │
+│      │             └── default goal  │    │     │              ├─► Signal           │
+│      │                               │    │     │              └─► Message          │
 │      │                               │    │     │                                   │
 │      └─ direct chat session (off-bus, no mission, no router) ◄───────────────────── │
 │                                      │    │     │                                   │
@@ -463,7 +462,7 @@ The composed launch prompt covers:
 - The mission goal (from `missions.goal_override` or `crews.goal`).
 - The roster — every crewmate's slot_handle, display name, and lead/worker tag.
 - The team-conventions addendum (Layer 2), if set.
-- The signal-type allowlist as the coordination vocabulary.
+- The known signal types (from `runner_core::model::KnownSignalType`) as the coordination vocabulary.
 - A reminder of the lead's job: dispatch via directed messages, absorb `ask_lead` traffic, escalate via `ask_human` only when needed.
 
 ## 7. Coordination bus
@@ -617,7 +616,7 @@ One binary, two real verbs (`signal`, `msg`) plus the deprecated `status` alias 
 
 - **No event-DAG flags.** No `--correlation-id`, no `--causation-id`. Causality is implicit in ULID ordering, or in-payload where it has to be explicit (e.g. `human_response.payload.question_id` matches a `human_question` card's `id` — §8.2).
 - **No daemon, no socket.** Each invocation is a one-shot process: read env, build the event, `flock` + append to `RUNNER_EVENT_LOG`, exit. The bus is the file; nothing else needs to be alive.
-- **No allowlist (planned).** Today the CLI validates the signal `<type>` against `signal_types.json` in the crew dir, but feature 20 will drop that and replace it with a code-side enum in `runner-core`. The verb shape doesn't change.
+- **No per-crew allowlist.** The CLI validates `<type>` against the closed `runner_core::model::KnownSignalType` enum — one place to add a built-in signal type, no DB column or sidecar to keep in sync (feature 20).
 
 ### 9.4 Direct chats: the CLI is absent
 
@@ -634,7 +633,6 @@ crews (
   purpose TEXT,                       -- short prose shown in Crew Detail; optional
   goal TEXT,                          -- default mission goal
   orchestrator_policy TEXT,           -- reserved for future routing policy
-  signal_types TEXT NOT NULL,         -- JSON array: allowlist
   system_prompt_addendum TEXT,        -- Layer-2 team conventions; nullable
   created_at TEXT, updated_at TEXT
 );
@@ -725,7 +723,6 @@ $APPDATA/runner/
 ├── runner.db                                 # SQLite (WAL)
 └── crews/
     └── {crew_id}/
-        ├── signal_types.json                 # CLI allowlist sidecar
         └── missions/
             └── {mission_id}/
                 └── events.ndjson             # per-mission event log

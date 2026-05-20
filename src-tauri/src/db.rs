@@ -14,26 +14,6 @@ use crate::error::Result;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-// The v0 built-in signal allowlist seeded onto every new crew row. See
-// arch §5.3 Layer 2 — the CLI reads this list (exported to a sidecar in C5)
-// and rejects unknown `type`s. In MVP this list is write-only from the DB
-// layer; users extend it in v0.x.
-pub const DEFAULT_SIGNAL_TYPES: &[&str] = &[
-    "mission_goal",
-    "human_said",
-    "ask_lead",
-    "ask_human",
-    "human_question",
-    "human_response",
-    "runner_status",
-    "inbox_read",
-];
-
-#[allow(dead_code)] // Consumed by C5 when it writes the sidecar at $APPDATA/.../signal_types.json.
-pub fn default_signal_types_json() -> String {
-    serde_json::to_string(DEFAULT_SIGNAL_TYPES).expect("static allowlist must serialize")
-}
-
 pub fn open_pool(db_path: &Path) -> Result<DbPool> {
     let manager = SqliteConnectionManager::file(db_path).with_init(init_connection);
     build_pool(manager, 8, true)
@@ -86,6 +66,9 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // Layer 2 of the system-prompt stack (#54). Spliced between
 // platform preamble and runner persona on mission spawns only.
 // No backfill; seeded Build squad rows stay NULL.
+// 0006: drops `crews.signal_types`. CLI validation is now enum-based
+// in runner-core (`KnownSignalType`); the per-crew column + sidecar
+// they used to feed no longer have a consumer. See feature 20.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -97,6 +80,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         5,
         include_str!("../migrations/0005_crew_system_prompt_addendum.sql"),
+    ),
+    (
+        6,
+        include_str!("../migrations/0006_drop_crews_signal_types.sql"),
     ),
 ];
 
@@ -192,8 +179,8 @@ fn seed_defaults(conn: &mut Connection) -> Result<()> {
 /// scattered across three INSERT statements.
 fn seed_default_crew(tx: &rusqlite::Transaction) -> Result<()> {
     tx.execute(
-        "INSERT INTO crews (id, name, purpose, goal, signal_types, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+        "INSERT INTO crews (id, name, purpose, goal, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
         params![
             SEED_CREW_ID,
             "Build squad",
@@ -202,7 +189,6 @@ fn seed_default_crew(tx: &rusqlite::Transaction) -> Result<()> {
             "Definition of done = code merged behind a green test suite and a clean \
              review pass, with a one-paragraph human-readable summary posted as a \
              broadcast.",
-            default_signal_types_json(),
             SEED_TIMESTAMP,
         ],
     )?;
@@ -410,26 +396,6 @@ mod tests {
         assert_eq!(count, 5);
     }
 
-    #[test]
-    fn new_crew_is_seeded_with_default_signal_types() {
-        let pool = open_in_memory().unwrap();
-        let conn = pool.get().unwrap();
-        insert_crew(&conn, "c1");
-        let raw: String = conn
-            .query_row("SELECT signal_types FROM crews WHERE id = 'c1'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        let parsed: Vec<String> = serde_json::from_str(&raw).unwrap();
-        assert_eq!(
-            parsed,
-            DEFAULT_SIGNAL_TYPES
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect::<Vec<_>>()
-        );
-    }
-
     // The "at most one lead per crew" invariant moves to the slot
     // commands; covered by the slot_set_lead test in commands::slot.
     // The schema no longer has the partial unique index that used to
@@ -510,10 +476,9 @@ mod tests {
         insert_crew(&conn, "c1");
 
         let policy = serde_json::json!([{"when": {"signal": "ask_lead"}, "do": "inject_stdin"}]);
-        let signals = serde_json::json!(["custom_a", "custom_b"]);
         conn.execute(
-            "UPDATE crews SET orchestrator_policy = ?1, signal_types = ?2 WHERE id = 'c1'",
-            params![policy.to_string(), signals.to_string()],
+            "UPDATE crews SET orchestrator_policy = ?1 WHERE id = 'c1'",
+            params![policy.to_string()],
         )
         .unwrap();
 
@@ -528,20 +493,16 @@ mod tests {
         )
         .unwrap();
 
-        let (policy_raw, signals_raw): (String, String) = conn
+        let policy_raw: String = conn
             .query_row(
-                "SELECT orchestrator_policy, signal_types FROM crews WHERE id = 'c1'",
+                "SELECT orchestrator_policy FROM crews WHERE id = 'c1'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| r.get(0),
             )
             .unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&policy_raw).unwrap(),
             policy
-        );
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&signals_raw).unwrap(),
-            signals
         );
 
         let (args_raw, env_raw): (String, String) = conn

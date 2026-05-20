@@ -42,10 +42,6 @@ links to its tracking issue.
   pane tree with drag-tab-to-edge splitting; render two PTYs (or
   feed + PTY) side-by-side inside one mission window; complements
   spec 12 (multi-window can't side-by-side same-mission PTYs).
-- [20 — Drop the per-crew signal allowlist](./20-drop-signal-allowlist.md)
-  — remove `crews.signal_types`, the per-crew `signal_types.json`
-  sidecar, and the CLI's file-backed validation. Replace with a
-  code-side enum in `runner-core`. Pure cleanup; no product change.
 
 ## Archive
 

@@ -39,9 +39,9 @@ pub fn load(event_log: &Path) -> Option<Vec<RosterEntry>> {
 pub const HUMAN_HANDLE: &str = "human";
 
 /// Returns true if `handle` is in the roster. Missing-sidecar is
-/// permissive for the same reason as the allowlist (a missing roster
-/// sidecar means something is broken upstream — don't strand the
-/// mission). Stderr warning surfaces the gap.
+/// treated permissively — a missing roster sidecar means something is
+/// broken upstream, but stranding the mission is worse than letting
+/// the message through. Stderr warning surfaces the gap.
 ///
 /// `HUMAN_HANDLE` always passes regardless of sidecar contents — see
 /// the doc on the constant for the rationale.

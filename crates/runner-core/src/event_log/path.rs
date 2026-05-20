@@ -25,10 +25,6 @@ pub fn events_path(app_data: &Path, crew_id: &str, mission_id: &str) -> PathBuf 
     mission_dir(app_data, crew_id, mission_id).join(EVENTS_FILENAME)
 }
 
-pub fn signal_types_path(app_data: &Path, crew_id: &str) -> PathBuf {
-    crew_dir(app_data, crew_id).join("signal_types.json")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -40,10 +36,6 @@ mod tests {
         assert_eq!(
             events_path(&root, "C", "M"),
             PathBuf::from("/tmp/rtest/crews/C/missions/M/events.ndjson")
-        );
-        assert_eq!(
-            signal_types_path(&root, "C"),
-            PathBuf::from("/tmp/rtest/crews/C/signal_types.json")
         );
     }
 }
