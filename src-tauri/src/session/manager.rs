@@ -20,10 +20,11 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::Utc;
@@ -42,6 +43,33 @@ use crate::session::runtime::{
 };
 
 const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
+
+/// Minimum spacing between consecutive `claude-code` PTY launches.
+/// Long enough for one claude's OAuth refresh round-trip (network
+/// POST to api.anthropic.com plus keychain write) to land before a
+/// sibling spawn reads the same refresh token. Refresh tokens are
+/// conventionally single-use, so concurrent refresh from N parallel
+/// claudes causes `invalid_grant` on the losers and forces relogin
+/// in those panes. See issue #171.
+///
+/// Conservative default at 1500ms — covers typical 100-500ms
+/// round-trips with margin for slow networks. A user spawning a
+/// 3-slot mission pays ~3s of wall clock for the gate (1.5s × 2
+/// post-first-spawn waits); a 7-slot werewolf pays ~9s.
+///
+/// **First spawn through pays zero**: the gate is deadline-based,
+/// not RAII-on-drop. It only sleeps when a prior claude spawned
+/// within the last GRACE — single direct chats and cold-start
+/// mission starts see ~0ms overhead. Scoped to claude-code only;
+/// codex / other runtimes bypass.
+///
+/// Zeroed under `#[cfg(test)]` so existing claude-code path tests
+/// don't pay the wall-clock tax. Pure-function `compute_gate_wait`
+/// covers the wait-math in tests with explicit grace values.
+#[cfg(not(test))]
+const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(1500);
+#[cfg(test)]
+const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(0);
 
 /// Returns the resulting alt-screen state if `bytes` contains one or
 /// more enter/exit alt-screen escapes; `None` when no such escape is
@@ -410,6 +438,22 @@ pub struct SessionManager {
     /// under `runner.env` so the child can reach the network the same
     /// way Terminal.app's children would (issues #109 / #152).
     shell_env: crate::shell_path::LoginShellEnv,
+    /// Timestamp of the most recent claude-code spawn through the
+    /// launch gate. `None` until the first claude-code spawn lands.
+    /// Each new claude-code spawn reads this, sleeps the remainder
+    /// of `CLAUDE_LAUNCH_GATE_GRACE`, then updates it. Non-claude
+    /// runtimes never touch this field. See `enter_claude_launch_gate`
+    /// + issue #171.
+    claude_launch_gate: Mutex<Option<Instant>>,
+    /// Cancellation flags for in-flight background mission spawns,
+    /// keyed by `mission_id`. `mission_start` / `mission_reset`
+    /// register a fresh flag before dispatching the
+    /// `complete_mission_session_spawn` background task;
+    /// `kill_all_for_mission` flips it; the background task checks
+    /// it around the gate sleep and at the top of each iteration so
+    /// the queued slots don't keep firing into a stopped /
+    /// archived / reset mission. See `cancel_pending_mission_spawns`.
+    pending_mission_cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// Underlying terminal runtime (Step 9 of
     /// docs/impls/0004-tmux-session-runtime.md). v1 is `TmuxRuntime`
     /// on macOS + Linux; Windows fails at runtime construction in
@@ -439,6 +483,72 @@ impl Drop for ResumeClaim {
     }
 }
 
+/// Result of a `complete_mission_session_spawn` call. The
+/// background mission-spawn task uses the variant to decide whether
+/// to mark the session row stopped (cancelled mid-queue) or leave
+/// the just-installed forwarder thread to keep the row in `running`
+/// (the normal success path). `Err(_)` is reserved for genuine
+/// spawn failures (e.g., `runtime.spawn` couldn't fork the PTY) —
+/// the caller marks those rows crashed and emits `session/exit`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CompleteSpawnOutcome {
+    /// PTY came up, forwarder thread installed, session row reflects
+    /// the live runtime metadata. The session is in
+    /// `SessionManager.sessions` and behaving like any other live
+    /// session.
+    Spawned,
+    /// `kill_all_for_mission` flipped the cancel flag (Stop / Archive
+    /// / Reset). The PTY was never forked. Caller should mark the
+    /// session row stopped so the workspace UI reflects reality.
+    Cancelled,
+}
+
+/// Inputs `complete_mission_session_spawn` needs that
+/// `register_mission_session` already computed. The two-phase split
+/// lets `commands::mission::mission_start` finish row inserts +
+/// router/bus mount synchronously and return its Tauri command in
+/// ~milliseconds, then drive the slow PTY-spawn phase in a
+/// background task. Without the split, the modal Start button
+/// blocks ~1500ms per claude-code worker (gate cost) before the
+/// workspace loads. See issue #171.
+///
+/// All fields are owned (clones / Arcs) so the value can travel
+/// across thread boundaries into a `spawn_blocking` task.
+pub struct PendingMissionSpawn {
+    pub session_id: String,
+    spec: SpawnSpec,
+    mission: Mission,
+    runner: Runner,
+    slot_handle: String,
+    plan: router::runtime::ResumePlan,
+    first_turn_delivered_via_argv: bool,
+    resolved_cwd: Option<String>,
+    started_at_dt: chrono::DateTime<Utc>,
+    app_data_dir: PathBuf,
+    pool: Arc<DbPool>,
+}
+
+/// Pure helper for `enter_claude_launch_gate`: how long to sleep
+/// before letting a new claude-code spawn proceed, given the
+/// timestamp of the most recent prior spawn.
+///
+/// - `None` last → zero (no prior claude to race against).
+/// - prior was ≥ `grace` ago → zero (refresh window already elapsed).
+/// - prior was < `grace` ago → the remainder.
+///
+/// Factored out so the wait-math has direct test coverage with
+/// explicit grace values, independent of the cfg(test)-zeroed
+/// production constant.
+fn compute_gate_wait(last: Option<Instant>, now: Instant, grace: Duration) -> Duration {
+    match last {
+        None => Duration::ZERO,
+        Some(t) => {
+            let elapsed = now.saturating_duration_since(t);
+            grace.saturating_sub(elapsed)
+        }
+    }
+}
+
 impl SessionManager {
     pub fn new(
         shell_env: crate::shell_path::LoginShellEnv,
@@ -452,8 +562,52 @@ impl SessionManager {
             alt_screen_on: Mutex::new(HashMap::new()),
             resuming_claims: Mutex::new(HashSet::new()),
             shell_env,
+            claude_launch_gate: Mutex::new(None),
+            pending_mission_cancels: Mutex::new(HashMap::new()),
             runtime,
         })
+    }
+
+    /// Gate a fresh `claude-code` spawn before calling
+    /// `runtime.spawn()`. No-op for any other runtime — those
+    /// bypass the gate.
+    ///
+    /// Only the *fresh-spawn* call sites (`spawn`, `spawn_direct`)
+    /// invoke this. The resume path is intentionally unguarded:
+    /// `claude --resume` / `--session-id` loads the local
+    /// conversation file and puts up the TUI without touching the
+    /// network until the user's next turn, so concurrent resumes
+    /// can't race on the refresh-token rotation.
+    ///
+    /// Deadline-based: reads `last_spawn_at`, sleeps the remainder
+    /// of `CLAUDE_LAUNCH_GATE_GRACE`, updates the timestamp, then
+    /// releases the mutex. The first claude-code spawn through (or
+    /// any spawn arriving after the grace window has elapsed) pays
+    /// zero — so single direct chats and cold mission starts feel
+    /// instant. Subsequent concurrent claudes serialize 1.5s apart,
+    /// which is what prevents the OAuth refresh-token race.
+    ///
+    /// The mutex is held across the sleep so concurrent callers
+    /// queue up correctly: B arrives mid-A-sleep → blocks on mutex
+    /// → after A wakes and updates `last`, B observes A's
+    /// just-recorded timestamp and waits its own full grace.
+    fn enter_claude_launch_gate(&self, session_id: &str, runtime: &str) {
+        if runtime != "claude-code" {
+            return;
+        }
+        let mut last = self
+            .claude_launch_gate
+            .lock()
+            .expect("claude_launch_gate poisoned");
+        let wait = compute_gate_wait(*last, Instant::now(), CLAUDE_LAUNCH_GATE_GRACE);
+        if !wait.is_zero() {
+            log::info!(
+                "claude-code launch gate: session={session_id} sleep_ms={}",
+                wait.as_millis()
+            );
+            thread::sleep(wait);
+        }
+        *last = Some(Instant::now());
     }
 
     /// Borrow the underlying session runtime. Held on the manager
@@ -557,26 +711,21 @@ impl SessionManager {
         delivered_via_argv
     }
 
-    /// Spawn one PTY child for `runner` as part of `mission`. Persists a
-    /// `sessions` row, starts the reader thread, and returns a summary for
-    /// the frontend.
+    /// Sync part of a mission-slot spawn: validates inputs, composes
+    /// the `SpawnSpec`, generates the session id, and INSERTs the
+    /// `sessions` row. Returns a `PendingMissionSpawn` that
+    /// `complete_mission_session_spawn` consumes (after the gate
+    /// sleep) to actually bring the PTY up.
     ///
-    /// `app_data_dir` is the root of `$APPDATA/runner/` so we can prepend
-    /// `<app_data_dir>/bin` onto the child's PATH — arch §5.3 Layer 2 and
-    /// 0001-v0-mvp.md C9 both require the bundled `runner` CLI to win over any
-    /// system binary with the same name.
-    /// `first_turn` is the composed first-user-turn body to deliver
-    /// at spawn (lead launch prompt for a lead slot, worker preamble
-    /// plus brief for a non-lead). When the runtime accepts the
-    /// positional `[PROMPT]` argv and the body fits
-    /// `FIRST_TURN_ARGV_MAX_BYTES`, it lands as the trailing
-    /// positional during process init — eliminating the post-spawn
-    /// paste race. Otherwise the body falls through to
-    /// `schedule_mission_first_prompt`'s stdin-paste path. Pass
-    /// `None` to skip first-turn delivery entirely, for tests that
-    /// don't care about boot context.
+    /// Split out of the original monolithic `spawn` so
+    /// `commands::mission::mission_start` can finish row inserts +
+    /// router/bus mount synchronously and return its Tauri command
+    /// in ~milliseconds, then drive the slow PTY-spawn phase in a
+    /// background task. Without the split, the modal Start button
+    /// blocks ~1500ms per claude-code worker (gate cost) before the
+    /// workspace loads. See issue #171.
     #[allow(clippy::too_many_arguments)]
-    pub fn spawn(
+    pub fn register_mission_session(
         self: &Arc<Self>,
         mission: &Mission,
         runner: &Runner,
@@ -584,9 +733,8 @@ impl SessionManager {
         app_data_dir: &Path,
         events_log_path: PathBuf,
         pool: Arc<DbPool>,
-        events: Arc<dyn SessionEvents>,
         first_turn: Option<String>,
-    ) -> Result<SpawnedSession> {
+    ) -> Result<PendingMissionSpawn> {
         // Agent-native session resume: this is a *fresh* session row, so
         // there's no prior key to inherit. The runtime adapter still
         // self-assigns a UUID for claude-code (`--session-id <uuid>`) so
@@ -675,16 +823,130 @@ impl SessionManager {
             )?;
         }
 
-        let (rt_session, output) = match self.runtime.spawn(spec) {
-            Ok(p) => p,
-            Err(e) => {
-                // Roll back the inserted row so a retry can proceed.
-                if let Ok(conn) = pool.get() {
-                    let _ = conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id]);
-                }
-                return Err(Error::msg(format!("spawn {}: {e}", runner.command)));
+        Ok(PendingMissionSpawn {
+            session_id,
+            spec,
+            mission: mission.clone(),
+            runner: runner.clone(),
+            slot_handle: slot.slot_handle.clone(),
+            plan,
+            first_turn_delivered_via_argv,
+            resolved_cwd,
+            started_at_dt,
+            app_data_dir: app_data_dir.to_path_buf(),
+            pool,
+        })
+    }
+
+    /// Async/blocking part of a mission-slot spawn: takes the gate,
+    /// forks the PTY, persists runtime metadata, installs the
+    /// forwarder thread, schedules first-turn delivery. May block
+    /// `CLAUDE_LAUNCH_GATE_GRACE` (1500ms) when other claude-code
+    /// spawns are in flight.
+    ///
+    /// `cancel` is the per-mission abort flag from
+    /// `register_pending_mission_cancel`. Checked twice: before the
+    /// gate sleep (so a cancel that fires while the slot is still
+    /// in the queue returns immediately) and after (so a cancel
+    /// that fires during sleep still skips `runtime.spawn`). A
+    /// cancelled spawn returns `Ok(CompleteSpawnOutcome::Cancelled)`
+    /// — the caller marks the row stopped and continues. Pass a
+    /// fresh `Arc::new(AtomicBool::new(false))` from the sync
+    /// `SessionManager::spawn` wrapper where there's no batch to
+    /// cancel against.
+    ///
+    /// Errors leave the session row in `running` status (with no
+    /// `runtime_*` metadata) so the caller can decide whether to
+    /// `DELETE` (legacy sync `spawn`) or mark `crashed` (async
+    /// `mission_start` path).
+    pub fn complete_mission_session_spawn(
+        self: &Arc<Self>,
+        pending: PendingMissionSpawn,
+        events: Arc<dyn SessionEvents>,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<CompleteSpawnOutcome> {
+        let PendingMissionSpawn {
+            session_id,
+            spec,
+            mission,
+            runner,
+            slot_handle,
+            plan,
+            first_turn_delivered_via_argv,
+            resolved_cwd,
+            started_at_dt,
+            app_data_dir,
+            pool,
+        } = pending;
+
+        // Pre-gate cancellation: a user who clicked Stop/Archive/Reset
+        // while this slot was sitting in the spawn queue gets the
+        // expected behavior — the queued slot never forks. Without
+        // this, the slot would sleep through the gate and spawn into
+        // a stopped mission.
+        if cancel.load(Ordering::Acquire) {
+            log::info!(
+                "mission session spawn cancelled pre-gate: mission={} session={} runner={}",
+                mission.id,
+                session_id,
+                slot_handle,
+            );
+            return Ok(CompleteSpawnOutcome::Cancelled);
+        }
+
+        // Gate claude-code spawns so N parallel mission slots don't
+        // race the OAuth refresh-token rotation. No-op for other
+        // runtimes; zero-wait for the first claude through. See
+        // `enter_claude_launch_gate` + issue #171.
+        self.enter_claude_launch_gate(&session_id, &runner.runtime);
+
+        // Post-gate cancellation: covers a Stop that fires while we
+        // were asleep in the gate. The wake-up still races with the
+        // cancel — flagging it here means we observe it before the
+        // expensive `runtime.spawn`. Also covers the case where
+        // `runner_delete` cascade-removed the row through the FK on
+        // `sessions.runner_id` — surfaces the same way (we have no
+        // row to attach a PTY to).
+        if cancel.load(Ordering::Acquire) || !Self::session_row_exists(&pool, &session_id) {
+            log::info!(
+                "mission session spawn cancelled post-gate: mission={} session={} runner={}",
+                mission.id,
+                session_id,
+                slot_handle,
+            );
+            return Ok(CompleteSpawnOutcome::Cancelled);
+        }
+
+        let (rt_session, output) = self
+            .runtime
+            .spawn(spec)
+            .map_err(|e| Error::msg(format!("spawn {}: {e}", runner.command)))?;
+
+        // Post-spawn cancellation. Two triggers reach this branch:
+        //   1. A `Stop`/`Archive`/`Reset` that fired while the
+        //      runtime was mid-fork — `kill_all_for_mission` can't
+        //      see the PTY yet (no `SessionHandle` in `sessions`
+        //      until the insert below). Flagged by `cancel`.
+        //   2. A `runner_delete` whose FK cascade dropped the row
+        //      while runtime was mid-fork. Flagged by the row check.
+        // Either way the PTY exists with no DB anchor; tear it down
+        // before any further bookkeeping. The dropped output stream
+        // triggers EOF in the reader thread and reaps the child.
+        if cancel.load(Ordering::Acquire) || !Self::session_row_exists(&pool, &session_id) {
+            log::info!(
+                "mission session spawn cancelled post-runtime-spawn: \
+                 mission={} session={} runner={}",
+                mission.id,
+                session_id,
+                slot_handle,
+            );
+            if let Err(e) = self.runtime.stop(&rt_session) {
+                log::warn!(
+                    "failed to stop just-spawned PTY for cancelled session {session_id}: {e}"
+                );
             }
-        };
+            return Ok(CompleteSpawnOutcome::Cancelled);
+        }
 
         // Persist the runtime-side ids so `resume` after app restart
         // can find this pane.
@@ -722,11 +984,11 @@ impl SessionManager {
             },
         );
 
-        let spawn_emit_ctx = open_mission_event_log(app_data_dir, &mission.crew_id, &mission.id)
+        let spawn_emit_ctx = open_mission_event_log(&app_data_dir, &mission.crew_id, &mission.id)
             .map(|event_log| ForwarderEmitCtx {
                 crew_id: mission.crew_id.clone(),
                 mission_id: mission.id.clone(),
-                handle: slot.slot_handle.clone(),
+                handle: slot_handle.clone(),
                 event_log,
             });
         let forwarder = self.start_forwarder_thread(
@@ -757,11 +1019,11 @@ impl SessionManager {
             }
         }
 
-        emit_runner_activity(&pool, runner, events.as_ref());
+        emit_runner_activity(&pool, &runner, events.as_ref());
         schedule_mission_first_prompt(
             self,
             session_id.clone(),
-            runner,
+            &runner,
             &plan,
             first_turn_delivered_via_argv,
         );
@@ -770,19 +1032,86 @@ impl SessionManager {
             "session spawn: mission={} session={} runner={} pane={}",
             mission.id,
             session_id,
-            slot.slot_handle,
+            slot_handle,
             pane_for_log,
         );
 
+        Ok(CompleteSpawnOutcome::Spawned)
+    }
+
+    /// Spawn one PTY child for `runner` as part of `mission`. Persists a
+    /// `sessions` row, starts the reader thread, and returns a summary for
+    /// the frontend.
+    ///
+    /// `app_data_dir` is the root of `$APPDATA/runner/` so we can prepend
+    /// `<app_data_dir>/bin` onto the child's PATH — arch §5.3 Layer 2 and
+    /// 0001-v0-mvp.md C9 both require the bundled `runner` CLI to win over any
+    /// system binary with the same name.
+    /// `first_turn` is the composed first-user-turn body to deliver
+    /// at spawn (lead launch prompt for a lead slot, worker preamble
+    /// plus brief for a non-lead). When the runtime accepts the
+    /// positional `[PROMPT]` argv and the body fits
+    /// `FIRST_TURN_ARGV_MAX_BYTES`, it lands as the trailing
+    /// positional during process init — eliminating the post-spawn
+    /// paste race. Otherwise the body falls through to
+    /// `schedule_mission_first_prompt`'s stdin-paste path. Pass
+    /// `None` to skip first-turn delivery entirely, for tests that
+    /// don't care about boot context.
+    ///
+    /// Synchronous, all-or-nothing wrapper: row insert + PTY spawn +
+    /// reader thread happen on the calling thread. Rolls back the
+    /// row if the runtime spawn fails. Used by tests and by the
+    /// resume / direct-chat paths where the caller awaits a fully
+    /// initialized session. Mission start uses the split form
+    /// (`register_mission_session` + `complete_mission_session_spawn`)
+    /// to keep the Start-mission RPC snappy.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn(
+        self: &Arc<Self>,
+        mission: &Mission,
+        runner: &Runner,
+        slot: &crate::model::Slot,
+        app_data_dir: &Path,
+        events_log_path: PathBuf,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+        first_turn: Option<String>,
+    ) -> Result<SpawnedSession> {
+        let pending = self.register_mission_session(
+            mission,
+            runner,
+            slot,
+            app_data_dir,
+            events_log_path,
+            Arc::clone(&pool),
+            first_turn,
+        )?;
+        let session_id = pending.session_id.clone();
+        let mission_id = pending.mission.id.clone();
+        let runner_id = pending.runner.id.clone();
+        let handle = pending.runner.handle.clone();
+        // No batch context in the sync wrapper, so cancellation is
+        // never set externally — pass a fresh flag so the cancel
+        // checks are a no-op for this path.
+        let noop_cancel = Arc::new(AtomicBool::new(false));
+        if let Err(e) = self.complete_mission_session_spawn(pending, events, noop_cancel) {
+            // Match the historical sync-spawn contract: if the runtime
+            // can't bring the PTY up, delete the half-row so retries
+            // start from a clean slate. The async mission_start path
+            // takes a softer line and marks the row crashed instead.
+            if let Ok(conn) = pool.get() {
+                let _ = conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id]);
+            }
+            return Err(e);
+        }
         Ok(SpawnedSession {
             id: session_id,
-            mission_id: Some(mission.id.clone()),
-            runner_id: runner.id.clone(),
-            handle: runner.handle.clone(),
-            // pane_pid is populated lazily via runtime.status()
-            // when the manager needs it; the SpawnedSession field
-            // is informational and the frontend doesn't rely on
-            // it.
+            mission_id: Some(mission_id),
+            runner_id,
+            handle,
+            // pane_pid is populated lazily via runtime.status() when
+            // the manager needs it; the SpawnedSession field is
+            // informational and the frontend doesn't rely on it.
             pid: None,
             fresh_fallback_lead: false,
         })
@@ -882,6 +1211,22 @@ impl SessionManager {
             )?;
         }
 
+        // Same gate as the mission spawn path — direct chats are
+        // also fresh claude-code spawns and proactively refresh the
+        // OAuth token, so a rapid burst of new chats can race. See
+        // `enter_claude_launch_gate` + issue #171.
+        self.enter_claude_launch_gate(&session_id, &runner.runtime);
+
+        // Post-gate row check: `runner_delete` can cascade through
+        // `sessions.runner_id` while we were asleep in the gate. The
+        // session row is gone; spawning a PTY now would attach to
+        // nothing.
+        if !Self::session_row_exists(&pool, &session_id) {
+            return Err(Error::msg(format!(
+                "direct-chat session {session_id} row vanished before spawn — runner deleted?"
+            )));
+        }
+
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -891,6 +1236,22 @@ impl SessionManager {
                 return Err(Error::msg(format!("spawn {}: {e}", runner.command)));
             }
         };
+
+        // Post-spawn row check: `runner_delete` can also fire while
+        // `runtime.spawn` was mid-fork. The PTY is alive; tear it
+        // down before we install a `SessionHandle` that points at a
+        // row that no longer exists.
+        if !Self::session_row_exists(&pool, &session_id) {
+            if let Err(e) = self.runtime.stop(&rt_session) {
+                log::warn!(
+                    "failed to stop just-spawned direct-chat PTY for vanished session \
+                     {session_id}: {e}"
+                );
+            }
+            return Err(Error::msg(format!(
+                "direct-chat session {session_id} row vanished mid-spawn — runner deleted?"
+            )));
+        }
 
         if let Ok(conn) = pool.get() {
             let _ = conn.execute(
@@ -1079,6 +1440,26 @@ impl SessionManager {
             }
         };
 
+        // Purge the prior session's output buffer up front. Two
+        // properties depend on this happening *before* any
+        // long-running step (gate, runtime.spawn, mission/runner
+        // re-lookup):
+        //
+        // 1. The frontend's resuming-pill effect calls
+        //    `session_output_snapshot` to catch a TUI-ready escape
+        //    that fired before its live listener attached. If the
+        //    purge happens after `runtime.spawn` (the original
+        //    placement), the snapshot races the resume and can
+        //    return the *old* PTY's chunks — which include the
+        //    pre-stop `\x1b[?2004h` — clearing the resuming overlay
+        //    before the new PTY exists. Purging at the top closes
+        //    that window.
+        // 2. The seq counter is intentionally retained (see
+        //    `purge_output_buffer`'s contract) so the new PTY's first
+        //    chunk continues at `last + 1` and the frontend's
+        //    `seq <= lastWrittenSeq` filter doesn't drop it.
+        self.purge_output_buffer(session_id);
+
         // Mission resume: pull the slot + mission so we can stamp the
         // in-mission env (RUNNER_HANDLE = slot_handle, RUNNER_CREW_ID,
         // RUNNER_MISSION_ID). Direct-chat rows skip this lookup —
@@ -1241,6 +1622,13 @@ impl SessionManager {
             )?;
         }
 
+        // No gate on the resume path: `claude --resume <uuid>` /
+        // `--session-id <uuid>` loads the local conversation file and
+        // puts up the TUI without touching the network until the
+        // user's next turn. No proactive OAuth refresh at resume
+        // means no concurrent refresh-token race, so Resume-all over
+        // N stopped slots can spawn as fast as the runtime allows.
+        // See issue #171.
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -1290,12 +1678,11 @@ impl SessionManager {
             },
         );
 
-        // Purge the prior session's output buffer just before the
-        // forwarder thread starts pumping chunks. Keeping the seq
-        // counter intact means the new chunk seq continues at
-        // `last + 1` so the frontend's seq-merge filter doesn't drop
-        // the head of post-resume output.
-        self.purge_output_buffer(session_id);
+        // (The pre-runtime.spawn purge moved up to right after
+        // snapshot collection so the frontend's snapshot fast-path
+        // can't read the stopped session's chunks during the resume
+        // window. See the call site above this function's mission
+        // lookup.)
 
         let resume_emit_ctx = mission_ctx.as_ref().and_then(|ctx| {
             open_mission_event_log(app_data_dir, &ctx.crew_id, &ctx.mission_id).map(|event_log| {
@@ -1773,10 +2160,68 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Register a fresh cancellation flag for a mission's background
+    /// PTY-spawn task. Called from `mission_start` / `mission_reset`
+    /// before dispatching `complete_mission_session_spawn`. Returns
+    /// the shared flag the dispatcher and the background task both
+    /// hold; setting it (via `cancel_pending_mission_spawns`) is
+    /// what aborts queued slots.
+    ///
+    /// A prior flag for the same mission_id (left over from an
+    /// earlier start/reset) is dropped: the new spawn batch
+    /// supersedes any stale background task, and the old task's
+    /// flag is no longer reachable from anywhere except its own
+    /// closure — when it gets cancelled it'll observe the new flag
+    /// only via the per-iteration DB lookup, which is fine because
+    /// `mission_reset` archives the old session rows up front.
+    pub fn register_pending_mission_cancel(&self, mission_id: &str) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        self.pending_mission_cancels
+            .lock()
+            .unwrap()
+            .insert(mission_id.to_string(), Arc::clone(&flag));
+        flag
+    }
+
+    /// Clear the cancellation flag for a mission once its background
+    /// spawn task drains. Per-batch identity-checked: only the task
+    /// that owns `expected` may unregister it. Without this guard, a
+    /// slow draining task could outlive a subsequent `mission_reset`
+    /// and remove the *new* batch's flag — leaving the next
+    /// Stop/Archive/Reset with no flag to flip and pending slots
+    /// uncancellable. Callers pass an `Arc::clone(&cancel)` of the
+    /// flag they received from `register_pending_mission_cancel`.
+    pub fn drop_pending_mission_cancel(&self, mission_id: &str, expected: &Arc<AtomicBool>) {
+        let mut map = self.pending_mission_cancels.lock().unwrap();
+        if let Some(current) = map.get(mission_id) {
+            if Arc::ptr_eq(current, expected) {
+                map.remove(mission_id);
+            }
+        }
+    }
+
+    /// Flip the cancellation flag for `mission_id` (if one is
+    /// registered) so any queued background spawns observe it and
+    /// abort before their PTYs come up. Safe to call when no flag
+    /// is registered. Invoked from `kill_all_for_mission`, which is
+    /// in the call path of `mission_stop`, `mission_archive`, and
+    /// `mission_reset`.
+    pub fn cancel_pending_mission_spawns(&self, mission_id: &str) {
+        if let Some(flag) = self.pending_mission_cancels.lock().unwrap().get(mission_id) {
+            flag.store(true, Ordering::Release);
+        }
+    }
+
     /// Kill every live session; used on mission_stop and at app shutdown.
     /// Returns only after all reader threads have joined — callers rely on
     /// that for the "no live sessions after we return" contract.
+    ///
+    /// Also flips the per-mission cancellation flag so any pending
+    /// `complete_mission_session_spawn` tasks abort before their PTYs
+    /// come up — without this, slots that were still asleep in the
+    /// claude-code launch gate would spawn into a now-stopped mission.
     pub fn kill_all_for_mission(&self, mission_id: &str) -> Result<()> {
+        self.cancel_pending_mission_spawns(mission_id);
         let ids: Vec<String> = {
             let sessions = self.sessions.lock().unwrap();
             sessions
@@ -2090,6 +2535,25 @@ impl SessionManager {
                 .unwrap()
                 .insert(session_id.to_string(), new_state);
         }
+    }
+
+    /// True iff the `sessions` row for `session_id` is still in the
+    /// DB. False if the row was deleted out from under an in-flight
+    /// spawn — most commonly `runner_delete` triggering the foreign
+    /// key cascade on `sessions.runner_id`, but also covers manual
+    /// DB cleanup or any other path that drops the row while a
+    /// gated spawn was asleep. Returns false on pool errors so the
+    /// caller treats "can't tell" the same as "deleted" and bails
+    /// out of the spawn — losing a session on a transient DB hiccup
+    /// is preferable to leaving an orphan PTY attached to no row.
+    fn session_row_exists(pool: &DbPool, session_id: &str) -> bool {
+        let Ok(conn) = pool.get() else { return false };
+        let count: rusqlite::Result<i64> = conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE id = ?1",
+            params![session_id],
+            |r| r.get(0),
+        );
+        count.map(|n| n > 0).unwrap_or(false)
     }
 
     fn record_output(
@@ -4707,6 +5171,104 @@ mod tests {
             snapshot2.first().map(|e| e.seq),
             Some(0),
             "main-screen sessions must not prepend the alt-screen enter"
+        );
+    }
+
+    // ---- claude-code launch gate (issue #171) -----------------------------
+
+    #[test]
+    fn compute_gate_wait_returns_zero_when_no_prior_spawn() {
+        // First claude through the gate — `last` is None, so the
+        // caller pays nothing. This is the property that makes
+        // single direct chats / cold mission starts feel instant.
+        let now = Instant::now();
+        assert_eq!(
+            compute_gate_wait(None, now, Duration::from_millis(1500)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn compute_gate_wait_returns_remaining_grace_when_prior_recent() {
+        // Mid-grace case: a prior claude spawned 400ms ago and the
+        // grace is 1500ms → caller waits the remaining 1100ms.
+        let now = Instant::now();
+        let last = now - Duration::from_millis(400);
+        assert_eq!(
+            compute_gate_wait(Some(last), now, Duration::from_millis(1500)),
+            Duration::from_millis(1100)
+        );
+    }
+
+    #[test]
+    fn compute_gate_wait_returns_zero_when_grace_already_elapsed() {
+        // Prior spawn is older than the grace window → no wait. This
+        // is what keeps single chats opened minutes apart from
+        // paying any tax for a long-stale prior spawn.
+        let now = Instant::now();
+        let last = now - Duration::from_millis(5000);
+        assert_eq!(
+            compute_gate_wait(Some(last), now, Duration::from_millis(1500)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn compute_gate_wait_handles_clock_skew_without_panic() {
+        // `last` being slightly in the future (Instant arithmetic
+        // shouldn't underflow). saturating_duration_since clamps to
+        // zero, so we treat a "future" last the same as "just now"
+        // and return the full grace. Defensive only — Instant is
+        // monotonic on every platform we target, so this shouldn't
+        // happen in practice.
+        let now = Instant::now();
+        let last = now + Duration::from_millis(100);
+        assert_eq!(
+            compute_gate_wait(Some(last), now, Duration::from_millis(1500)),
+            Duration::from_millis(1500)
+        );
+    }
+
+    #[test]
+    fn enter_claude_launch_gate_records_timestamp_only_for_claude_code() {
+        // Non-claude runtimes must not touch `last_spawn_at` —
+        // otherwise a codex spawn would unnecessarily delay a
+        // subsequent claude. Sanity-check that the runtime-string
+        // discriminator is wired correctly.
+        let mgr = mgr_with_fake(None, fake_runtime());
+        assert!(mgr.claude_launch_gate.lock().unwrap().is_none());
+
+        // Shell / codex / empty string: state stays None.
+        mgr.enter_claude_launch_gate("s1", "shell");
+        mgr.enter_claude_launch_gate("s2", "codex");
+        mgr.enter_claude_launch_gate("s3", "");
+        assert!(
+            mgr.claude_launch_gate.lock().unwrap().is_none(),
+            "non-claude runtimes must not advance the gate"
+        );
+
+        // claude-code stamps the field.
+        mgr.enter_claude_launch_gate("s4", "claude-code");
+        assert!(
+            mgr.claude_launch_gate.lock().unwrap().is_some(),
+            "claude-code spawn must advance the gate"
+        );
+    }
+
+    #[test]
+    fn enter_claude_launch_gate_first_claude_does_not_sleep() {
+        // First claude-code spawn through the gate (no prior) must
+        // return nearly immediately — the deadline-based design's
+        // whole point. Even at the production GRACE (1500ms), a
+        // cold start should take << 100ms here.
+        let mgr = mgr_with_fake(None, fake_runtime());
+        let started = Instant::now();
+        mgr.enter_claude_launch_gate("first", "claude-code");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "first claude must not wait — actual elapsed {}ms",
+            elapsed.as_millis()
         );
     }
 }

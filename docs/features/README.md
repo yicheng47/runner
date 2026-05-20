@@ -42,6 +42,11 @@ links to its tracking issue.
   pane tree with drag-tab-to-edge splitting; render two PTYs (or
   feed + PTY) side-by-side inside one mission window; complements
   spec 12 (multi-window can't side-by-side same-mission PTYs).
+- [21 — Resume existing sessions for the cwd](./21-resume-cwd-sessions.md)
+  — Start Chat modal surfaces recent claude-code / codex sessions
+  whose recorded cwd matches the picked working dir; selecting one
+  passes the runtime's resume flag to the spawned child so the user
+  continues their prior conversation in Runner.
 
 ## Archive
 

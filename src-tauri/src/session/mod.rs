@@ -15,4 +15,4 @@ pub mod manager;
 pub mod pty_runtime;
 pub mod runtime;
 
-pub use manager::SessionManager;
+pub use manager::{CompleteSpawnOutcome, PendingMissionSpawn, SessionManager};

@@ -642,31 +642,48 @@ pub async fn mission_start(
     // can race the watcher attachment.
     let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app.clone()));
     let mut spawned_pairs: Vec<(String, String)> = Vec::with_capacity(roster.len());
+    let mut pendings: Vec<crate::session::PendingMissionSpawn> = Vec::with_capacity(roster.len());
+    // Two-phase spawn: `register_mission_session` is the synchronous
+    // part — insert the DB row, generate the session id, compose the
+    // SpawnSpec — and runs in this loop. The slow part (gate +
+    // `runtime.spawn` + reader thread) is `complete_mission_session_spawn`
+    // and is dispatched in a background task after router + bus mount,
+    // so the Start-mission RPC returns in ~milliseconds instead of
+    // ~1.5s × (claude_workers). See issue #171.
+    //
+    // Iteration is plain position order — the modal no longer blocks
+    // on the gate, so there's no user-visible benefit to promoting
+    // the lead ahead of position-zero workers.
     for (idx, member) in roster.iter().enumerate() {
         let first_turn = first_turns.get(idx).cloned().flatten();
-        let spawn_res = state.sessions.spawn(
+        let register_res = state.sessions.register_mission_session(
             &out.mission,
             &member.runner,
             &member.slot,
             &state.app_data_dir,
             events_log_path.clone(),
             state.db.clone(),
-            Arc::clone(&emitter),
             first_turn,
         );
-        match spawn_res {
-            Ok(spawned) => {
+        match register_res {
+            Ok(pending) => {
                 // Register by slot_handle (the in-mission identity)
                 // — the router routes signals/messages by slot_handle,
                 // not by template handle.
-                spawned_pairs.push((member.slot.slot_handle.clone(), spawned.id));
+                spawned_pairs.push((member.slot.slot_handle.clone(), pending.session_id.clone()));
+                pendings.push(pending);
             }
             Err(e) => {
-                // Rollback: kill the sessions that did start, mark the
-                // mission aborted, surface the original error. Bus and
-                // router aren't mounted yet so no event-side cleanup.
-                let _ = state.sessions.kill_all_for_mission(&out.mission.id);
+                // Rollback: DELETE the session rows registered so far
+                // (no PTYs spawned yet — register is row-insert-only),
+                // mark the mission aborted, surface the original
+                // error. Bus and router aren't mounted yet so no
+                // event-side cleanup.
                 if let Ok(conn) = state.db.get() {
+                    let _ = conn.execute(
+                        "DELETE FROM sessions WHERE mission_id = ?1",
+                        rusqlite::params![out.mission.id],
+                    );
                     let _ = conn.execute(
                         "UPDATE missions
                             SET status = 'aborted', stopped_at = ?1
@@ -703,9 +720,17 @@ pub async fn mission_start(
         &roster_handles,
         composite,
     ) {
-        // Bus didn't attach — kill the sessions we spawned, abort the row.
-        let _ = state.sessions.kill_all_for_mission(&out.mission.id);
+        // Bus didn't attach — drop the pending PTY spawns, DELETE the
+        // session rows (no PTYs ever forked for them at this point),
+        // abort the mission. `pendings` going out of scope releases
+        // any held resources without ever firing
+        // `complete_mission_session_spawn`.
+        drop(pendings);
         if let Ok(conn) = state.db.get() {
+            let _ = conn.execute(
+                "DELETE FROM sessions WHERE mission_id = ?1",
+                rusqlite::params![out.mission.id],
+            );
             let _ = conn.execute(
                 "UPDATE missions
                     SET status = 'aborted', stopped_at = ?1
@@ -717,6 +742,93 @@ pub async fn mission_start(
     }
 
     state.routers.register(out.mission.id.clone(), router);
+
+    // Dispatch the gate-blocked PTY-spawn phase to a background task
+    // so this RPC returns now. The frontend already has every
+    // `sessions` row from `register_mission_session`, so the
+    // workspace mounts immediately and renders starting pills; each
+    // pill clears when its PTY emits the TUI-ready signal (see
+    // `chunkIndicatesTuiReady`). Spawns run sequentially inside the
+    // task so the claude-code launch gate's lead-first ordering is
+    // preserved.
+    //
+    // Per-mission cancel flag lets Stop / Archive / Reset abort
+    // queued slots before their PTYs fork; without it, a slot
+    // sleeping in the gate would spawn into a stopped mission. See
+    // `SessionManager::cancel_pending_mission_spawns`.
+    //
+    // On per-slot spawn failure we mark just that row crashed and
+    // emit `session/exit` so the workspace's row refresh fires and
+    // the pane flips from "starting" to "session ended" without
+    // a manual refresh. Rest of the mission proceeds — user gets a
+    // Resume button on the broken slot.
+    let manager = Arc::clone(&state.sessions);
+    let pool_for_task = state.db.clone();
+    let mission_id_for_task = out.mission.id.clone();
+    let emitter_for_task = Arc::clone(&emitter);
+    let cancel = state
+        .sessions
+        .register_pending_mission_cancel(&out.mission.id);
+    let cancel_for_drop = Arc::clone(&cancel);
+    tauri::async_runtime::spawn_blocking(move || {
+        for pending in pendings {
+            let session_id = pending.session_id.clone();
+            match manager.complete_mission_session_spawn(
+                pending,
+                Arc::clone(&emitter_for_task),
+                Arc::clone(&cancel),
+            ) {
+                Ok(crate::session::CompleteSpawnOutcome::Spawned) => {}
+                Ok(crate::session::CompleteSpawnOutcome::Cancelled) => {
+                    if let Ok(conn) = pool_for_task.get() {
+                        let _ = conn.execute(
+                            "UPDATE sessions
+                                SET status = 'stopped',
+                                    stopped_at = ?2
+                              WHERE id = ?1",
+                            rusqlite::params![session_id, Utc::now().to_rfc3339()],
+                        );
+                    }
+                    emitter_for_task.exit(&crate::session::manager::ExitEvent {
+                        session_id: session_id.clone(),
+                        mission_id: Some(mission_id_for_task.clone()),
+                        exit_code: None,
+                        success: false,
+                    });
+                }
+                Err(e) => {
+                    log::error!(
+                        "mission session spawn failed in background task: \
+                         mission={mission_id_for_task} session={session_id} error={e}"
+                    );
+                    if let Ok(conn) = pool_for_task.get() {
+                        let _ = conn.execute(
+                            "UPDATE sessions
+                                SET status = 'crashed',
+                                    stopped_at = ?2
+                              WHERE id = ?1",
+                            rusqlite::params![session_id, Utc::now().to_rfc3339()],
+                        );
+                    }
+                    // Tell the workspace the slot died so the pane
+                    // flips out of "starting" without waiting for a
+                    // manual refresh.
+                    emitter_for_task.exit(&crate::session::manager::ExitEvent {
+                        session_id: session_id.clone(),
+                        mission_id: Some(mission_id_for_task.clone()),
+                        exit_code: None,
+                        success: false,
+                    });
+                }
+            }
+        }
+        // Identity-checked drop: only remove the map entry if it's
+        // still *this* task's flag. A concurrent mission_reset that
+        // overwrote it with a fresh batch's flag must keep that flag
+        // reachable from `cancel_pending_mission_spawns`.
+        manager.drop_pending_mission_cancel(&mission_id_for_task, &cancel_for_drop);
+    });
+
     log::info!(
         "mission started: id={} sessions={}",
         out.mission.id,
@@ -1202,42 +1314,40 @@ pub async fn mission_reset(
 
     let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app.clone()));
     let mut spawned_pairs: Vec<(String, String)> = Vec::with_capacity(roster.len());
+    let mut pendings: Vec<crate::session::PendingMissionSpawn> = Vec::with_capacity(roster.len());
     let mission_for_spawn = {
         let conn = state.db.get()?;
         get(&conn, &id)?
     };
-    // All-or-nothing: same contract as `mission_start`. If any slot
-    // fails to spawn, kill the PTYs that did come up, archive the
-    // freshly-inserted session rows, flip the mission back to
-    // `aborted`, and surface the original error. Without rollback the
-    // mission would sit half-reset — old PTYs gone, some new ones
-    // alive, no bus / router mounted, and the mission row stuck in
-    // `running`.
+    // Two-phase spawn: same shape as `mission_start`. Register
+    // (synchronous, fast: DB row insert) here so router + bus mount
+    // see the full session map; the slow `complete_*` phase (gate +
+    // PTY fork + reader thread) is dispatched as a background task
+    // after bus mount succeeds. Iteration is plain position order;
+    // see the analogous block in `mission_start`. See issue #171.
     for (idx, member) in roster.iter().enumerate() {
         let first_turn = first_turns.get(idx).cloned().flatten();
-        let spawn_res = state.sessions.spawn(
+        let register_res = state.sessions.register_mission_session(
             &mission_for_spawn,
             &member.runner,
             &member.slot,
             &state.app_data_dir,
             events_log_path.clone(),
             state.db.clone(),
-            Arc::clone(&emitter),
             first_turn,
         );
-        match spawn_res {
-            Ok(spawned) => {
-                spawned_pairs.push((member.slot.slot_handle.clone(), spawned.id));
+        match register_res {
+            Ok(pending) => {
+                spawned_pairs.push((member.slot.slot_handle.clone(), pending.session_id.clone()));
+                pendings.push(pending);
             }
             Err(e) => {
-                let _ = state.sessions.kill_all_for_mission(&id);
+                // Rollback: delete the freshly-inserted session rows
+                // (no PTYs forked yet — only DB inserts so far), abort
+                // the mission. Bus / router aren't mounted yet so no
+                // event-side cleanup.
                 if let Ok(conn) = state.db.get() {
-                    let _ = conn.execute(
-                        "UPDATE sessions
-                            SET archived_at = ?1
-                          WHERE mission_id = ?2 AND archived_at IS NULL",
-                        params![now().to_rfc3339(), id],
-                    );
+                    let _ = conn.execute("DELETE FROM sessions WHERE mission_id = ?1", params![id]);
                     let _ = conn.execute(
                         "UPDATE missions
                             SET status = 'aborted', stopped_at = ?1
@@ -1262,19 +1372,13 @@ pub async fn mission_reset(
         .buses
         .mount(id.clone(), &mission_dir, &roster_handles, composite)
     {
-        // Bus didn't attach — kill the sessions we spawned, archive
-        // their rows, abort the mission. Same shape as the spawn-loop
-        // rollback above; the bus is the last gate before commit so a
-        // failure here would otherwise leave live PTYs with no router
-        // listening.
-        let _ = state.sessions.kill_all_for_mission(&id);
+        // Bus didn't attach — drop the pending PTY spawns (none have
+        // forked yet) and DELETE the inserted session rows. The bus
+        // is the last gate before commit so a failure here means
+        // mission stays aborted.
+        drop(pendings);
         if let Ok(conn) = state.db.get() {
-            let _ = conn.execute(
-                "UPDATE sessions
-                    SET archived_at = ?1
-                  WHERE mission_id = ?2 AND archived_at IS NULL",
-                params![now().to_rfc3339(), id],
-            );
+            let _ = conn.execute("DELETE FROM sessions WHERE mission_id = ?1", params![id]);
             let _ = conn.execute(
                 "UPDATE missions
                     SET status = 'aborted', stopped_at = ?1
@@ -1285,6 +1389,69 @@ pub async fn mission_reset(
         return Err(e);
     }
     state.routers.register(id.clone(), router);
+
+    // Dispatch the gate-blocked PTY-spawn phase to a background task
+    // so this RPC returns now. See the analogous block in
+    // `mission_start` for the trade-offs (cancel-flag handling,
+    // session/exit emission on failure, per-slot crashed status
+    // instead of rolling back the whole reset).
+    let manager = Arc::clone(&state.sessions);
+    let pool_for_task = state.db.clone();
+    let mission_id_for_task = id.clone();
+    let emitter_for_task = Arc::clone(&emitter);
+    let cancel = state.sessions.register_pending_mission_cancel(&id);
+    let cancel_for_drop = Arc::clone(&cancel);
+    tauri::async_runtime::spawn_blocking(move || {
+        for pending in pendings {
+            let session_id = pending.session_id.clone();
+            match manager.complete_mission_session_spawn(
+                pending,
+                Arc::clone(&emitter_for_task),
+                Arc::clone(&cancel),
+            ) {
+                Ok(crate::session::CompleteSpawnOutcome::Spawned) => {}
+                Ok(crate::session::CompleteSpawnOutcome::Cancelled) => {
+                    if let Ok(conn) = pool_for_task.get() {
+                        let _ = conn.execute(
+                            "UPDATE sessions
+                                SET status = 'stopped',
+                                    stopped_at = ?2
+                              WHERE id = ?1",
+                            params![session_id, now().to_rfc3339()],
+                        );
+                    }
+                    emitter_for_task.exit(&crate::session::manager::ExitEvent {
+                        session_id: session_id.clone(),
+                        mission_id: Some(mission_id_for_task.clone()),
+                        exit_code: None,
+                        success: false,
+                    });
+                }
+                Err(e) => {
+                    log::error!(
+                        "mission session spawn failed in background task: \
+                         mission={mission_id_for_task} session={session_id} error={e}"
+                    );
+                    if let Ok(conn) = pool_for_task.get() {
+                        let _ = conn.execute(
+                            "UPDATE sessions
+                                SET status = 'crashed',
+                                    stopped_at = ?2
+                              WHERE id = ?1",
+                            params![session_id, now().to_rfc3339()],
+                        );
+                    }
+                    emitter_for_task.exit(&crate::session::manager::ExitEvent {
+                        session_id: session_id.clone(),
+                        mission_id: Some(mission_id_for_task.clone()),
+                        exit_code: None,
+                        success: false,
+                    });
+                }
+            }
+        }
+        manager.drop_pending_mission_cancel(&mission_id_for_task, &cancel_for_drop);
+    });
 
     Ok(mission_for_spawn)
 }
