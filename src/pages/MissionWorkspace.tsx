@@ -54,6 +54,7 @@ import {
   ResumingOverlay,
   SessionEndedOverlay,
   StartingOverlay,
+  chunkIndicatesTuiReady,
   isFreshSpawn,
 } from "../components/SessionEndedOverlay";
 import {
@@ -978,10 +979,40 @@ function SlotPtyPane({
     };
     scheduleIdleTimer();
     const hardTimeout = window.setTimeout(finish, STARTING_HARD_TIMEOUT_MS);
-    void listen<{ session_id: string }>("session/output", (event) => {
-      if (event.payload.session_id !== targetId) return;
-      scheduleIdleTimer();
-    }).then((fn) => {
+    // Snapshot fast-path: mission_start can take several seconds to
+    // return (slots behind the claude-code launch gate spawn
+    // serially) so by the time this slot pane mounts, the lead's
+    // TUI has often already emitted the bracketed-paste / alt-screen
+    // ready signal. The live listener missed those bytes; the
+    // snapshot still carries them via output_buffers.
+    void api.session
+      .outputSnapshot(targetId)
+      .then((snapshot) => {
+        if (cancelled) return;
+        if (snapshot.some((ev) => chunkIndicatesTuiReady(ev.data))) {
+          finish();
+        }
+      })
+      .catch(() => {
+        // Best-effort; live listener still applies.
+      });
+    void listen<{ session_id: string; data: string }>(
+      "session/output",
+      (event) => {
+        if (event.payload.session_id !== targetId) return;
+        // Fast-path: claude-code / codex enable bracketed paste mode
+        // (`\x1b[?2004h`) as soon as their TUI is wired up to accept
+        // input, before the first-turn reply streams. Without this,
+        // slot pills hang until the agent's reply finishes — the
+        // user notices it most in missions where multiple panes are
+        // on screen at once.
+        if (chunkIndicatesTuiReady(event.payload.data)) {
+          finish();
+          return;
+        }
+        scheduleIdleTimer();
+      },
+    ).then((fn) => {
       if (cancelled) {
         fn();
         return;

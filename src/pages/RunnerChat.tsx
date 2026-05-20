@@ -36,6 +36,7 @@ import {
   ResumingOverlay,
   SessionEndedOverlay,
   StartingOverlay,
+  chunkIndicatesTuiReady,
   isFreshSpawn,
 } from "../components/SessionEndedOverlay";
 import { api, type DirectSessionEntry } from "../lib/api";
@@ -374,10 +375,37 @@ export default function RunnerChat() {
     // Hard fallback so a silent agent never strands the loader.
     const hardTimeout = window.setTimeout(finish, RESUMING_HARD_TIMEOUT_MS);
 
-    void listen<{ session_id: string }>("session/output", (event) => {
-      if (event.payload.session_id !== targetId) return;
-      scheduleIdleTimer();
-    }).then((fn) => {
+    // Catch the TUI-ready escape (typically `\x1b[?2004h` for
+    // claude-code / codex) that may have already fired before this
+    // listener attached. The backend's output_buffers retains the
+    // chunks, so the snapshot still surfaces them. See
+    // `chunkIndicatesTuiReady`.
+    void api.session
+      .outputSnapshot(targetId)
+      .then((snapshot) => {
+        if (cancelled) return;
+        if (snapshot.some((ev) => chunkIndicatesTuiReady(ev.data))) {
+          finish();
+        }
+      })
+      .catch(() => {
+        // Best-effort; live listener still applies.
+      });
+
+    void listen<{ session_id: string; data: string }>(
+      "session/output",
+      (event) => {
+        if (event.payload.session_id !== targetId) return;
+        // Clear as soon as the resumed TUI is wired up to accept
+        // input, not after first-reply silence. See
+        // `chunkIndicatesTuiReady`.
+        if (chunkIndicatesTuiReady(event.payload.data)) {
+          finish();
+          return;
+        }
+        scheduleIdleTimer();
+      },
+    ).then((fn) => {
       if (cancelled) {
         fn();
         return;
@@ -434,10 +462,34 @@ export default function RunnerChat() {
 
     const hardTimeout = window.setTimeout(finish, STARTING_HARD_TIMEOUT_MS);
 
-    void listen<{ session_id: string }>("session/output", (event) => {
-      if (event.payload.session_id !== targetId) return;
-      scheduleIdleTimer();
-    }).then((fn) => {
+    // Snapshot check covers the race where the PTY emitted its
+    // TUI-ready escape before this effect's listener attached.
+    void api.session
+      .outputSnapshot(targetId)
+      .then((snapshot) => {
+        if (cancelled) return;
+        if (snapshot.some((ev) => chunkIndicatesTuiReady(ev.data))) {
+          finish();
+        }
+      })
+      .catch(() => {
+        // Best-effort; live listener still applies.
+      });
+
+    void listen<{ session_id: string; data: string }>(
+      "session/output",
+      (event) => {
+        if (event.payload.session_id !== targetId) return;
+        // TUI mounts → ready for input. Skip the idle wait. See
+        // `chunkIndicatesTuiReady` for why this beats the 400ms
+        // debounce when the first-turn prompt is auto-delivered.
+        if (chunkIndicatesTuiReady(event.payload.data)) {
+          finish();
+          return;
+        }
+        scheduleIdleTimer();
+      },
+    ).then((fn) => {
       if (cancelled) {
         fn();
         return;

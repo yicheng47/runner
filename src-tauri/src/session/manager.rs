@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::Utc;
@@ -42,6 +42,33 @@ use crate::session::runtime::{
 };
 
 const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
+
+/// Minimum spacing between consecutive `claude-code` PTY launches.
+/// Long enough for one claude's OAuth refresh round-trip (network
+/// POST to api.anthropic.com plus keychain write) to land before a
+/// sibling spawn reads the same refresh token. Refresh tokens are
+/// conventionally single-use, so concurrent refresh from N parallel
+/// claudes causes `invalid_grant` on the losers and forces relogin
+/// in those panes. See issue #171.
+///
+/// Conservative default at 1500ms — covers typical 100-500ms
+/// round-trips with margin for slow networks. A user spawning a
+/// 3-slot mission pays ~3s of wall clock for the gate (1.5s × 2
+/// post-first-spawn waits); a 7-slot werewolf pays ~9s.
+///
+/// **First spawn through pays zero**: the gate is deadline-based,
+/// not RAII-on-drop. It only sleeps when a prior claude spawned
+/// within the last GRACE — single direct chats and cold-start
+/// mission starts see ~0ms overhead. Scoped to claude-code only;
+/// codex / other runtimes bypass.
+///
+/// Zeroed under `#[cfg(test)]` so existing claude-code path tests
+/// don't pay the wall-clock tax. Pure-function `compute_gate_wait`
+/// covers the wait-math in tests with explicit grace values.
+#[cfg(not(test))]
+const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(1500);
+#[cfg(test)]
+const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(0);
 
 /// Returns the resulting alt-screen state if `bytes` contains one or
 /// more enter/exit alt-screen escapes; `None` when no such escape is
@@ -410,6 +437,13 @@ pub struct SessionManager {
     /// under `runner.env` so the child can reach the network the same
     /// way Terminal.app's children would (issues #109 / #152).
     shell_env: crate::shell_path::LoginShellEnv,
+    /// Timestamp of the most recent claude-code spawn through the
+    /// launch gate. `None` until the first claude-code spawn lands.
+    /// Each new claude-code spawn reads this, sleeps the remainder
+    /// of `CLAUDE_LAUNCH_GATE_GRACE`, then updates it. Non-claude
+    /// runtimes never touch this field. See `enter_claude_launch_gate`
+    /// + issue #171.
+    claude_launch_gate: Mutex<Option<Instant>>,
     /// Underlying terminal runtime (Step 9 of
     /// docs/impls/0004-tmux-session-runtime.md). v1 is `TmuxRuntime`
     /// on macOS + Linux; Windows fails at runtime construction in
@@ -439,6 +473,52 @@ impl Drop for ResumeClaim {
     }
 }
 
+/// Inputs `complete_mission_session_spawn` needs that
+/// `register_mission_session` already computed. The two-phase split
+/// lets `commands::mission::mission_start` finish row inserts +
+/// router/bus mount synchronously and return its Tauri command in
+/// ~milliseconds, then drive the slow PTY-spawn phase in a
+/// background task. Without the split, the modal Start button
+/// blocks ~1500ms per claude-code worker (gate cost) before the
+/// workspace loads. See issue #171.
+///
+/// All fields are owned (clones / Arcs) so the value can travel
+/// across thread boundaries into a `spawn_blocking` task.
+pub struct PendingMissionSpawn {
+    pub session_id: String,
+    spec: SpawnSpec,
+    mission: Mission,
+    runner: Runner,
+    slot_handle: String,
+    plan: router::runtime::ResumePlan,
+    first_turn_delivered_via_argv: bool,
+    resolved_cwd: Option<String>,
+    started_at_dt: chrono::DateTime<Utc>,
+    app_data_dir: PathBuf,
+    pool: Arc<DbPool>,
+}
+
+/// Pure helper for `enter_claude_launch_gate`: how long to sleep
+/// before letting a new claude-code spawn proceed, given the
+/// timestamp of the most recent prior spawn.
+///
+/// - `None` last → zero (no prior claude to race against).
+/// - prior was ≥ `grace` ago → zero (refresh window already elapsed).
+/// - prior was < `grace` ago → the remainder.
+///
+/// Factored out so the wait-math has direct test coverage with
+/// explicit grace values, independent of the cfg(test)-zeroed
+/// production constant.
+fn compute_gate_wait(last: Option<Instant>, now: Instant, grace: Duration) -> Duration {
+    match last {
+        None => Duration::ZERO,
+        Some(t) => {
+            let elapsed = now.saturating_duration_since(t);
+            grace.saturating_sub(elapsed)
+        }
+    }
+}
+
 impl SessionManager {
     pub fn new(
         shell_env: crate::shell_path::LoginShellEnv,
@@ -452,8 +532,51 @@ impl SessionManager {
             alt_screen_on: Mutex::new(HashMap::new()),
             resuming_claims: Mutex::new(HashSet::new()),
             shell_env,
+            claude_launch_gate: Mutex::new(None),
             runtime,
         })
+    }
+
+    /// Gate a fresh `claude-code` spawn before calling
+    /// `runtime.spawn()`. No-op for any other runtime — those
+    /// bypass the gate.
+    ///
+    /// Only the *fresh-spawn* call sites (`spawn`, `spawn_direct`)
+    /// invoke this. The resume path is intentionally unguarded:
+    /// `claude --resume` / `--session-id` loads the local
+    /// conversation file and puts up the TUI without touching the
+    /// network until the user's next turn, so concurrent resumes
+    /// can't race on the refresh-token rotation.
+    ///
+    /// Deadline-based: reads `last_spawn_at`, sleeps the remainder
+    /// of `CLAUDE_LAUNCH_GATE_GRACE`, updates the timestamp, then
+    /// releases the mutex. The first claude-code spawn through (or
+    /// any spawn arriving after the grace window has elapsed) pays
+    /// zero — so single direct chats and cold mission starts feel
+    /// instant. Subsequent concurrent claudes serialize 1.5s apart,
+    /// which is what prevents the OAuth refresh-token race.
+    ///
+    /// The mutex is held across the sleep so concurrent callers
+    /// queue up correctly: B arrives mid-A-sleep → blocks on mutex
+    /// → after A wakes and updates `last`, B observes A's
+    /// just-recorded timestamp and waits its own full grace.
+    fn enter_claude_launch_gate(&self, session_id: &str, runtime: &str) {
+        if runtime != "claude-code" {
+            return;
+        }
+        let mut last = self
+            .claude_launch_gate
+            .lock()
+            .expect("claude_launch_gate poisoned");
+        let wait = compute_gate_wait(*last, Instant::now(), CLAUDE_LAUNCH_GATE_GRACE);
+        if !wait.is_zero() {
+            log::info!(
+                "claude-code launch gate: session={session_id} sleep_ms={}",
+                wait.as_millis()
+            );
+            thread::sleep(wait);
+        }
+        *last = Some(Instant::now());
     }
 
     /// Borrow the underlying session runtime. Held on the manager
@@ -557,26 +680,21 @@ impl SessionManager {
         delivered_via_argv
     }
 
-    /// Spawn one PTY child for `runner` as part of `mission`. Persists a
-    /// `sessions` row, starts the reader thread, and returns a summary for
-    /// the frontend.
+    /// Sync part of a mission-slot spawn: validates inputs, composes
+    /// the `SpawnSpec`, generates the session id, and INSERTs the
+    /// `sessions` row. Returns a `PendingMissionSpawn` that
+    /// `complete_mission_session_spawn` consumes (after the gate
+    /// sleep) to actually bring the PTY up.
     ///
-    /// `app_data_dir` is the root of `$APPDATA/runner/` so we can prepend
-    /// `<app_data_dir>/bin` onto the child's PATH — arch §5.3 Layer 2 and
-    /// 0001-v0-mvp.md C9 both require the bundled `runner` CLI to win over any
-    /// system binary with the same name.
-    /// `first_turn` is the composed first-user-turn body to deliver
-    /// at spawn (lead launch prompt for a lead slot, worker preamble
-    /// plus brief for a non-lead). When the runtime accepts the
-    /// positional `[PROMPT]` argv and the body fits
-    /// `FIRST_TURN_ARGV_MAX_BYTES`, it lands as the trailing
-    /// positional during process init — eliminating the post-spawn
-    /// paste race. Otherwise the body falls through to
-    /// `schedule_mission_first_prompt`'s stdin-paste path. Pass
-    /// `None` to skip first-turn delivery entirely, for tests that
-    /// don't care about boot context.
+    /// Split out of the original monolithic `spawn` so
+    /// `commands::mission::mission_start` can finish row inserts +
+    /// router/bus mount synchronously and return its Tauri command
+    /// in ~milliseconds, then drive the slow PTY-spawn phase in a
+    /// background task. Without the split, the modal Start button
+    /// blocks ~1500ms per claude-code worker (gate cost) before the
+    /// workspace loads. See issue #171.
     #[allow(clippy::too_many_arguments)]
-    pub fn spawn(
+    pub fn register_mission_session(
         self: &Arc<Self>,
         mission: &Mission,
         runner: &Runner,
@@ -584,9 +702,8 @@ impl SessionManager {
         app_data_dir: &Path,
         events_log_path: PathBuf,
         pool: Arc<DbPool>,
-        events: Arc<dyn SessionEvents>,
         first_turn: Option<String>,
-    ) -> Result<SpawnedSession> {
+    ) -> Result<PendingMissionSpawn> {
         // Agent-native session resume: this is a *fresh* session row, so
         // there's no prior key to inherit. The runtime adapter still
         // self-assigns a UUID for claude-code (`--session-id <uuid>`) so
@@ -675,16 +792,59 @@ impl SessionManager {
             )?;
         }
 
-        let (rt_session, output) = match self.runtime.spawn(spec) {
-            Ok(p) => p,
-            Err(e) => {
-                // Roll back the inserted row so a retry can proceed.
-                if let Ok(conn) = pool.get() {
-                    let _ = conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id]);
-                }
-                return Err(Error::msg(format!("spawn {}: {e}", runner.command)));
-            }
-        };
+        Ok(PendingMissionSpawn {
+            session_id,
+            spec,
+            mission: mission.clone(),
+            runner: runner.clone(),
+            slot_handle: slot.slot_handle.clone(),
+            plan,
+            first_turn_delivered_via_argv,
+            resolved_cwd,
+            started_at_dt,
+            app_data_dir: app_data_dir.to_path_buf(),
+            pool,
+        })
+    }
+
+    /// Async/blocking part of a mission-slot spawn: takes the gate,
+    /// forks the PTY, persists runtime metadata, installs the
+    /// forwarder thread, schedules first-turn delivery. May block
+    /// `CLAUDE_LAUNCH_GATE_GRACE` (1500ms) when other claude-code
+    /// spawns are in flight.
+    ///
+    /// Errors leave the session row in `running` status (with no
+    /// `runtime_*` metadata) so the caller can decide whether to
+    /// `DELETE` (legacy sync `spawn`) or mark `crashed` (async
+    /// `mission_start` path).
+    pub fn complete_mission_session_spawn(
+        self: &Arc<Self>,
+        pending: PendingMissionSpawn,
+        events: Arc<dyn SessionEvents>,
+    ) -> Result<()> {
+        let PendingMissionSpawn {
+            session_id,
+            spec,
+            mission,
+            runner,
+            slot_handle,
+            plan,
+            first_turn_delivered_via_argv,
+            resolved_cwd,
+            started_at_dt,
+            app_data_dir,
+            pool,
+        } = pending;
+
+        // Gate claude-code spawns so N parallel mission slots don't
+        // race the OAuth refresh-token rotation. No-op for other
+        // runtimes; zero-wait for the first claude through. See
+        // `enter_claude_launch_gate` + issue #171.
+        self.enter_claude_launch_gate(&session_id, &runner.runtime);
+        let (rt_session, output) = self
+            .runtime
+            .spawn(spec)
+            .map_err(|e| Error::msg(format!("spawn {}: {e}", runner.command)))?;
 
         // Persist the runtime-side ids so `resume` after app restart
         // can find this pane.
@@ -722,11 +882,11 @@ impl SessionManager {
             },
         );
 
-        let spawn_emit_ctx = open_mission_event_log(app_data_dir, &mission.crew_id, &mission.id)
+        let spawn_emit_ctx = open_mission_event_log(&app_data_dir, &mission.crew_id, &mission.id)
             .map(|event_log| ForwarderEmitCtx {
                 crew_id: mission.crew_id.clone(),
                 mission_id: mission.id.clone(),
-                handle: slot.slot_handle.clone(),
+                handle: slot_handle.clone(),
                 event_log,
             });
         let forwarder = self.start_forwarder_thread(
@@ -757,11 +917,11 @@ impl SessionManager {
             }
         }
 
-        emit_runner_activity(&pool, runner, events.as_ref());
+        emit_runner_activity(&pool, &runner, events.as_ref());
         schedule_mission_first_prompt(
             self,
             session_id.clone(),
-            runner,
+            &runner,
             &plan,
             first_turn_delivered_via_argv,
         );
@@ -770,19 +930,82 @@ impl SessionManager {
             "session spawn: mission={} session={} runner={} pane={}",
             mission.id,
             session_id,
-            slot.slot_handle,
+            slot_handle,
             pane_for_log,
         );
 
+        Ok(())
+    }
+
+    /// Spawn one PTY child for `runner` as part of `mission`. Persists a
+    /// `sessions` row, starts the reader thread, and returns a summary for
+    /// the frontend.
+    ///
+    /// `app_data_dir` is the root of `$APPDATA/runner/` so we can prepend
+    /// `<app_data_dir>/bin` onto the child's PATH — arch §5.3 Layer 2 and
+    /// 0001-v0-mvp.md C9 both require the bundled `runner` CLI to win over any
+    /// system binary with the same name.
+    /// `first_turn` is the composed first-user-turn body to deliver
+    /// at spawn (lead launch prompt for a lead slot, worker preamble
+    /// plus brief for a non-lead). When the runtime accepts the
+    /// positional `[PROMPT]` argv and the body fits
+    /// `FIRST_TURN_ARGV_MAX_BYTES`, it lands as the trailing
+    /// positional during process init — eliminating the post-spawn
+    /// paste race. Otherwise the body falls through to
+    /// `schedule_mission_first_prompt`'s stdin-paste path. Pass
+    /// `None` to skip first-turn delivery entirely, for tests that
+    /// don't care about boot context.
+    ///
+    /// Synchronous, all-or-nothing wrapper: row insert + PTY spawn +
+    /// reader thread happen on the calling thread. Rolls back the
+    /// row if the runtime spawn fails. Used by tests and by the
+    /// resume / direct-chat paths where the caller awaits a fully
+    /// initialized session. Mission start uses the split form
+    /// (`register_mission_session` + `complete_mission_session_spawn`)
+    /// to keep the Start-mission RPC snappy.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn(
+        self: &Arc<Self>,
+        mission: &Mission,
+        runner: &Runner,
+        slot: &crate::model::Slot,
+        app_data_dir: &Path,
+        events_log_path: PathBuf,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+        first_turn: Option<String>,
+    ) -> Result<SpawnedSession> {
+        let pending = self.register_mission_session(
+            mission,
+            runner,
+            slot,
+            app_data_dir,
+            events_log_path,
+            Arc::clone(&pool),
+            first_turn,
+        )?;
+        let session_id = pending.session_id.clone();
+        let mission_id = pending.mission.id.clone();
+        let runner_id = pending.runner.id.clone();
+        let handle = pending.runner.handle.clone();
+        if let Err(e) = self.complete_mission_session_spawn(pending, events) {
+            // Match the historical sync-spawn contract: if the runtime
+            // can't bring the PTY up, delete the half-row so retries
+            // start from a clean slate. The async mission_start path
+            // takes a softer line and marks the row crashed instead.
+            if let Ok(conn) = pool.get() {
+                let _ = conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id]);
+            }
+            return Err(e);
+        }
         Ok(SpawnedSession {
             id: session_id,
-            mission_id: Some(mission.id.clone()),
-            runner_id: runner.id.clone(),
-            handle: runner.handle.clone(),
-            // pane_pid is populated lazily via runtime.status()
-            // when the manager needs it; the SpawnedSession field
-            // is informational and the frontend doesn't rely on
-            // it.
+            mission_id: Some(mission_id),
+            runner_id,
+            handle,
+            // pane_pid is populated lazily via runtime.status() when
+            // the manager needs it; the SpawnedSession field is
+            // informational and the frontend doesn't rely on it.
             pid: None,
             fresh_fallback_lead: false,
         })
@@ -882,6 +1105,11 @@ impl SessionManager {
             )?;
         }
 
+        // Same gate as the mission spawn path — direct chats are
+        // also fresh claude-code spawns and proactively refresh the
+        // OAuth token, so a rapid burst of new chats can race. See
+        // `enter_claude_launch_gate` + issue #171.
+        self.enter_claude_launch_gate(&session_id, &runner.runtime);
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -1241,6 +1469,13 @@ impl SessionManager {
             )?;
         }
 
+        // No gate on the resume path: `claude --resume <uuid>` /
+        // `--session-id <uuid>` loads the local conversation file and
+        // puts up the TUI without touching the network until the
+        // user's next turn. No proactive OAuth refresh at resume
+        // means no concurrent refresh-token race, so Resume-all over
+        // N stopped slots can spawn as fast as the runtime allows.
+        // See issue #171.
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -4707,6 +4942,104 @@ mod tests {
             snapshot2.first().map(|e| e.seq),
             Some(0),
             "main-screen sessions must not prepend the alt-screen enter"
+        );
+    }
+
+    // ---- claude-code launch gate (issue #171) -----------------------------
+
+    #[test]
+    fn compute_gate_wait_returns_zero_when_no_prior_spawn() {
+        // First claude through the gate — `last` is None, so the
+        // caller pays nothing. This is the property that makes
+        // single direct chats / cold mission starts feel instant.
+        let now = Instant::now();
+        assert_eq!(
+            compute_gate_wait(None, now, Duration::from_millis(1500)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn compute_gate_wait_returns_remaining_grace_when_prior_recent() {
+        // Mid-grace case: a prior claude spawned 400ms ago and the
+        // grace is 1500ms → caller waits the remaining 1100ms.
+        let now = Instant::now();
+        let last = now - Duration::from_millis(400);
+        assert_eq!(
+            compute_gate_wait(Some(last), now, Duration::from_millis(1500)),
+            Duration::from_millis(1100)
+        );
+    }
+
+    #[test]
+    fn compute_gate_wait_returns_zero_when_grace_already_elapsed() {
+        // Prior spawn is older than the grace window → no wait. This
+        // is what keeps single chats opened minutes apart from
+        // paying any tax for a long-stale prior spawn.
+        let now = Instant::now();
+        let last = now - Duration::from_millis(5000);
+        assert_eq!(
+            compute_gate_wait(Some(last), now, Duration::from_millis(1500)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn compute_gate_wait_handles_clock_skew_without_panic() {
+        // `last` being slightly in the future (Instant arithmetic
+        // shouldn't underflow). saturating_duration_since clamps to
+        // zero, so we treat a "future" last the same as "just now"
+        // and return the full grace. Defensive only — Instant is
+        // monotonic on every platform we target, so this shouldn't
+        // happen in practice.
+        let now = Instant::now();
+        let last = now + Duration::from_millis(100);
+        assert_eq!(
+            compute_gate_wait(Some(last), now, Duration::from_millis(1500)),
+            Duration::from_millis(1500)
+        );
+    }
+
+    #[test]
+    fn enter_claude_launch_gate_records_timestamp_only_for_claude_code() {
+        // Non-claude runtimes must not touch `last_spawn_at` —
+        // otherwise a codex spawn would unnecessarily delay a
+        // subsequent claude. Sanity-check that the runtime-string
+        // discriminator is wired correctly.
+        let mgr = mgr_with_fake(None, fake_runtime());
+        assert!(mgr.claude_launch_gate.lock().unwrap().is_none());
+
+        // Shell / codex / empty string: state stays None.
+        mgr.enter_claude_launch_gate("s1", "shell");
+        mgr.enter_claude_launch_gate("s2", "codex");
+        mgr.enter_claude_launch_gate("s3", "");
+        assert!(
+            mgr.claude_launch_gate.lock().unwrap().is_none(),
+            "non-claude runtimes must not advance the gate"
+        );
+
+        // claude-code stamps the field.
+        mgr.enter_claude_launch_gate("s4", "claude-code");
+        assert!(
+            mgr.claude_launch_gate.lock().unwrap().is_some(),
+            "claude-code spawn must advance the gate"
+        );
+    }
+
+    #[test]
+    fn enter_claude_launch_gate_first_claude_does_not_sleep() {
+        // First claude-code spawn through the gate (no prior) must
+        // return nearly immediately — the deadline-based design's
+        // whole point. Even at the production GRACE (1500ms), a
+        // cold start should take << 100ms here.
+        let mgr = mgr_with_fake(None, fake_runtime());
+        let started = Instant::now();
+        mgr.enter_claude_launch_gate("first", "claude-code");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "first claude must not wait — actual elapsed {}ms",
+            elapsed.as_millis()
         );
     }
 }

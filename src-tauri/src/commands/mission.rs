@@ -395,6 +395,30 @@ fn write_roster_sidecar(mission_dir: &Path, roster: &[crate::model::SlotWithRunn
     Ok(())
 }
 
+/// Indices into `roster` in the order PTYs should be spawned. Lead
+/// slots come first (preserving their relative position order if
+/// there's somehow more than one), then non-lead slots in position
+/// order. Used by `mission_start` / `mission_reset` so the lead's
+/// claude-code spawn — which carries the full launch prompt and
+/// drives the mission's first turn — always wins the no-wait pass
+/// through the claude-code launch gate. Workers gate behind the
+/// lead and pay the 1500ms each. With position-order spawning the
+/// lead could land at slot N and pay (N-1) × 1500ms for no reason.
+///
+/// Non-claude crews don't take the gate at all, but lead-first
+/// still matches the natural cognitive order ("lead opens, workers
+/// follow") so we don't gate the behavior on runtime.
+///
+/// Zero leads → identity permutation (position order). Multiple
+/// leads → all leads first in position order, then non-leads in
+/// position order; both are degenerate roster shapes the editor
+/// shouldn't allow, but the function shouldn't panic on them.
+fn spawn_order_lead_first(roster: &[crate::model::SlotWithRunner]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..roster.len()).collect();
+    order.sort_by_key(|&i| (!roster[i].slot.lead, roster[i].slot.position));
+    order
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct PostHumanSignalInput {
     pub mission_id: String,
@@ -642,31 +666,52 @@ pub async fn mission_start(
     // can race the watcher attachment.
     let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app.clone()));
     let mut spawned_pairs: Vec<(String, String)> = Vec::with_capacity(roster.len());
-    for (idx, member) in roster.iter().enumerate() {
+    let mut pendings: Vec<crate::session::PendingMissionSpawn> = Vec::with_capacity(roster.len());
+    // Lead-first so the lead's claude-code spawn (which carries the
+    // launch prompt and drives the first turn) doesn't sit behind a
+    // worker in the claude-code launch gate. See
+    // `spawn_order_lead_first`. `first_turns[idx]` is paired with
+    // `roster[idx]`, so indexing through this permutation keeps the
+    // pairing intact.
+    //
+    // Two-phase spawn: `register_mission_session` is the synchronous
+    // part — insert the DB row, generate the session id, compose the
+    // SpawnSpec — and runs in this loop. The slow part (gate +
+    // `runtime.spawn` + reader thread) is `complete_mission_session_spawn`
+    // and is dispatched in a background task after router + bus mount,
+    // so the Start-mission RPC returns in ~milliseconds instead of
+    // ~1.5s × (claude_workers). See issue #171.
+    for idx in spawn_order_lead_first(&roster) {
+        let member = &roster[idx];
         let first_turn = first_turns.get(idx).cloned().flatten();
-        let spawn_res = state.sessions.spawn(
+        let register_res = state.sessions.register_mission_session(
             &out.mission,
             &member.runner,
             &member.slot,
             &state.app_data_dir,
             events_log_path.clone(),
             state.db.clone(),
-            Arc::clone(&emitter),
             first_turn,
         );
-        match spawn_res {
-            Ok(spawned) => {
+        match register_res {
+            Ok(pending) => {
                 // Register by slot_handle (the in-mission identity)
                 // — the router routes signals/messages by slot_handle,
                 // not by template handle.
-                spawned_pairs.push((member.slot.slot_handle.clone(), spawned.id));
+                spawned_pairs.push((member.slot.slot_handle.clone(), pending.session_id.clone()));
+                pendings.push(pending);
             }
             Err(e) => {
-                // Rollback: kill the sessions that did start, mark the
-                // mission aborted, surface the original error. Bus and
-                // router aren't mounted yet so no event-side cleanup.
-                let _ = state.sessions.kill_all_for_mission(&out.mission.id);
+                // Rollback: DELETE the session rows registered so far
+                // (no PTYs spawned yet — register is row-insert-only),
+                // mark the mission aborted, surface the original
+                // error. Bus and router aren't mounted yet so no
+                // event-side cleanup.
                 if let Ok(conn) = state.db.get() {
+                    let _ = conn.execute(
+                        "DELETE FROM sessions WHERE mission_id = ?1",
+                        rusqlite::params![out.mission.id],
+                    );
                     let _ = conn.execute(
                         "UPDATE missions
                             SET status = 'aborted', stopped_at = ?1
@@ -703,9 +748,17 @@ pub async fn mission_start(
         &roster_handles,
         composite,
     ) {
-        // Bus didn't attach — kill the sessions we spawned, abort the row.
-        let _ = state.sessions.kill_all_for_mission(&out.mission.id);
+        // Bus didn't attach — drop the pending PTY spawns, DELETE the
+        // session rows (no PTYs ever forked for them at this point),
+        // abort the mission. `pendings` going out of scope releases
+        // any held resources without ever firing
+        // `complete_mission_session_spawn`.
+        drop(pendings);
         if let Ok(conn) = state.db.get() {
+            let _ = conn.execute(
+                "DELETE FROM sessions WHERE mission_id = ?1",
+                rusqlite::params![out.mission.id],
+            );
             let _ = conn.execute(
                 "UPDATE missions
                     SET status = 'aborted', stopped_at = ?1
@@ -717,6 +770,48 @@ pub async fn mission_start(
     }
 
     state.routers.register(out.mission.id.clone(), router);
+
+    // Dispatch the gate-blocked PTY-spawn phase to a background task
+    // so this RPC returns now. The frontend already has every
+    // `sessions` row from `register_mission_session`, so the
+    // workspace mounts immediately and renders starting pills; each
+    // pill clears when its PTY emits the TUI-ready signal (see
+    // `chunkIndicatesTuiReady`). Spawns run sequentially inside the
+    // task so the claude-code launch gate's lead-first ordering is
+    // preserved.
+    //
+    // On per-slot spawn failure we mark just that row crashed (rather
+    // than rolling the whole mission back as the legacy sync path
+    // did) — the user gets a Resume button on the failed slot and
+    // the rest of the mission proceeds. Acceptable trade given the
+    // user-perceived latency win on the success path.
+    let manager = Arc::clone(&state.sessions);
+    let pool_for_task = state.db.clone();
+    let mission_id_for_task = out.mission.id.clone();
+    let emitter_for_task = Arc::clone(&emitter);
+    tauri::async_runtime::spawn_blocking(move || {
+        for pending in pendings {
+            let session_id = pending.session_id.clone();
+            if let Err(e) =
+                manager.complete_mission_session_spawn(pending, Arc::clone(&emitter_for_task))
+            {
+                log::error!(
+                    "mission session spawn failed in background task: \
+                     mission={mission_id_for_task} session={session_id} error={e}"
+                );
+                if let Ok(conn) = pool_for_task.get() {
+                    let _ = conn.execute(
+                        "UPDATE sessions
+                            SET status = 'crashed',
+                                stopped_at = ?2
+                          WHERE id = ?1",
+                        rusqlite::params![session_id, Utc::now().to_rfc3339()],
+                    );
+                }
+            }
+        }
+    });
+
     log::info!(
         "mission started: id={} sessions={}",
         out.mission.id,
@@ -1202,42 +1297,44 @@ pub async fn mission_reset(
 
     let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app.clone()));
     let mut spawned_pairs: Vec<(String, String)> = Vec::with_capacity(roster.len());
+    let mut pendings: Vec<crate::session::PendingMissionSpawn> = Vec::with_capacity(roster.len());
     let mission_for_spawn = {
         let conn = state.db.get()?;
         get(&conn, &id)?
     };
-    // All-or-nothing: same contract as `mission_start`. If any slot
-    // fails to spawn, kill the PTYs that did come up, archive the
-    // freshly-inserted session rows, flip the mission back to
-    // `aborted`, and surface the original error. Without rollback the
-    // mission would sit half-reset — old PTYs gone, some new ones
-    // alive, no bus / router mounted, and the mission row stuck in
-    // `running`.
-    for (idx, member) in roster.iter().enumerate() {
+    // Two-phase spawn: same shape as `mission_start`. Register
+    // (synchronous, fast: DB row insert) here so router + bus mount
+    // see the full session map; the slow `complete_*` phase (gate +
+    // PTY fork + reader thread) is dispatched as a background task
+    // after bus mount succeeds. See issue #171.
+    //
+    // Same lead-first ordering: lead's spawn is the one carrying the
+    // (re-composed) launch prompt and should win the no-wait pass
+    // through the claude-code launch gate.
+    for idx in spawn_order_lead_first(&roster) {
+        let member = &roster[idx];
         let first_turn = first_turns.get(idx).cloned().flatten();
-        let spawn_res = state.sessions.spawn(
+        let register_res = state.sessions.register_mission_session(
             &mission_for_spawn,
             &member.runner,
             &member.slot,
             &state.app_data_dir,
             events_log_path.clone(),
             state.db.clone(),
-            Arc::clone(&emitter),
             first_turn,
         );
-        match spawn_res {
-            Ok(spawned) => {
-                spawned_pairs.push((member.slot.slot_handle.clone(), spawned.id));
+        match register_res {
+            Ok(pending) => {
+                spawned_pairs.push((member.slot.slot_handle.clone(), pending.session_id.clone()));
+                pendings.push(pending);
             }
             Err(e) => {
-                let _ = state.sessions.kill_all_for_mission(&id);
+                // Rollback: delete the freshly-inserted session rows
+                // (no PTYs forked yet — only DB inserts so far), abort
+                // the mission. Bus / router aren't mounted yet so no
+                // event-side cleanup.
                 if let Ok(conn) = state.db.get() {
-                    let _ = conn.execute(
-                        "UPDATE sessions
-                            SET archived_at = ?1
-                          WHERE mission_id = ?2 AND archived_at IS NULL",
-                        params![now().to_rfc3339(), id],
-                    );
+                    let _ = conn.execute("DELETE FROM sessions WHERE mission_id = ?1", params![id]);
                     let _ = conn.execute(
                         "UPDATE missions
                             SET status = 'aborted', stopped_at = ?1
@@ -1262,19 +1359,13 @@ pub async fn mission_reset(
         .buses
         .mount(id.clone(), &mission_dir, &roster_handles, composite)
     {
-        // Bus didn't attach — kill the sessions we spawned, archive
-        // their rows, abort the mission. Same shape as the spawn-loop
-        // rollback above; the bus is the last gate before commit so a
-        // failure here would otherwise leave live PTYs with no router
-        // listening.
-        let _ = state.sessions.kill_all_for_mission(&id);
+        // Bus didn't attach — drop the pending PTY spawns (none have
+        // forked yet) and DELETE the inserted session rows. The bus
+        // is the last gate before commit so a failure here means
+        // mission stays aborted.
+        drop(pendings);
         if let Ok(conn) = state.db.get() {
-            let _ = conn.execute(
-                "UPDATE sessions
-                    SET archived_at = ?1
-                  WHERE mission_id = ?2 AND archived_at IS NULL",
-                params![now().to_rfc3339(), id],
-            );
+            let _ = conn.execute("DELETE FROM sessions WHERE mission_id = ?1", params![id]);
             let _ = conn.execute(
                 "UPDATE missions
                     SET status = 'aborted', stopped_at = ?1
@@ -1285,6 +1376,38 @@ pub async fn mission_reset(
         return Err(e);
     }
     state.routers.register(id.clone(), router);
+
+    // Dispatch the gate-blocked PTY-spawn phase to a background task
+    // so this RPC returns now. See the analogous block in
+    // `mission_start` for the trade-offs (notably: per-slot crashed
+    // status on individual spawn failure rather than rolling back
+    // the whole mission, in exchange for snappy user feedback).
+    let manager = Arc::clone(&state.sessions);
+    let pool_for_task = state.db.clone();
+    let mission_id_for_task = id.clone();
+    let emitter_for_task = Arc::clone(&emitter);
+    tauri::async_runtime::spawn_blocking(move || {
+        for pending in pendings {
+            let session_id = pending.session_id.clone();
+            if let Err(e) =
+                manager.complete_mission_session_spawn(pending, Arc::clone(&emitter_for_task))
+            {
+                log::error!(
+                    "mission session spawn failed in background task: \
+                     mission={mission_id_for_task} session={session_id} error={e}"
+                );
+                if let Ok(conn) = pool_for_task.get() {
+                    let _ = conn.execute(
+                        "UPDATE sessions
+                            SET status = 'crashed',
+                                stopped_at = ?2
+                          WHERE id = ?1",
+                        params![session_id, now().to_rfc3339()],
+                    );
+                }
+            }
+        }
+    });
 
     Ok(mission_for_spawn)
 }
@@ -2359,5 +2482,105 @@ mod tests {
             vec![m_running_first, m_running_second],
             "only non-archived running rows, ordered by started_at"
         );
+    }
+
+    // ---- spawn_order_lead_first (issue #171) ---------------------------
+
+    fn slot_member(slot_handle: &str, position: i64, lead: bool) -> crate::model::SlotWithRunner {
+        crate::model::SlotWithRunner {
+            slot: crate::model::Slot {
+                id: format!("slot-{slot_handle}"),
+                crew_id: "crew".into(),
+                runner_id: format!("runner-{slot_handle}"),
+                slot_handle: slot_handle.into(),
+                position,
+                lead,
+                added_at: Utc::now(),
+            },
+            runner: crate::model::Runner {
+                id: format!("runner-{slot_handle}"),
+                handle: slot_handle.into(),
+                display_name: slot_handle.into(),
+                runtime: "claude-code".into(),
+                command: "/bin/true".into(),
+                args: vec![],
+                working_dir: None,
+                system_prompt: None,
+                env: std::collections::HashMap::new(),
+                model: None,
+                effort: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+        }
+    }
+
+    #[test]
+    fn spawn_order_lead_first_promotes_lead_from_middle_position() {
+        // architect=lead at position 1; impl + reviewer at 0, 2. Lead
+        // must come first so it wins the no-wait pass through the
+        // claude-code launch gate.
+        let roster = vec![
+            slot_member("impl", 0, false),
+            slot_member("architect", 1, true),
+            slot_member("reviewer", 2, false),
+        ];
+        let order = spawn_order_lead_first(&roster);
+        let handles: Vec<&str> = order
+            .iter()
+            .map(|&i| roster[i].slot.slot_handle.as_str())
+            .collect();
+        assert_eq!(handles, vec!["architect", "impl", "reviewer"]);
+    }
+
+    #[test]
+    fn spawn_order_lead_first_preserves_position_order_among_non_leads() {
+        // Non-leads keep their relative position order so the user's
+        // configured slot ordering is otherwise respected.
+        let roster = vec![
+            slot_member("lead", 5, true),
+            slot_member("worker-a", 0, false),
+            slot_member("worker-b", 1, false),
+            slot_member("worker-c", 2, false),
+        ];
+        let order = spawn_order_lead_first(&roster);
+        let handles: Vec<&str> = order
+            .iter()
+            .map(|&i| roster[i].slot.slot_handle.as_str())
+            .collect();
+        assert_eq!(handles, vec!["lead", "worker-a", "worker-b", "worker-c"]);
+    }
+
+    #[test]
+    fn spawn_order_lead_first_handles_zero_or_multiple_leads() {
+        // Degenerate cases the crew editor shouldn't allow but the
+        // function must not panic on. Zero leads → identity (position
+        // order). Multiple leads → all leads first in position order,
+        // non-leads after.
+        let no_lead = vec![
+            slot_member("a", 0, false),
+            slot_member("b", 1, false),
+            slot_member("c", 2, false),
+        ];
+        let order = spawn_order_lead_first(&no_lead);
+        assert_eq!(order, vec![0, 1, 2]);
+
+        let two_leads = vec![
+            slot_member("worker", 0, false),
+            slot_member("lead-late", 3, true),
+            slot_member("lead-early", 1, true),
+        ];
+        let order = spawn_order_lead_first(&two_leads);
+        let handles: Vec<&str> = order
+            .iter()
+            .map(|&i| two_leads[i].slot.slot_handle.as_str())
+            .collect();
+        assert_eq!(handles, vec!["lead-early", "lead-late", "worker"]);
+    }
+
+    #[test]
+    fn spawn_order_lead_first_empty_roster_returns_empty() {
+        let empty: Vec<crate::model::SlotWithRunner> = Vec::new();
+        assert!(spawn_order_lead_first(&empty).is_empty());
     }
 }
