@@ -83,6 +83,70 @@ interface DirectSessionPane {
   exitCode: number | null;
 }
 
+// Render-gate companion: returns true only after `active` has held true
+// for `delayMs`. Used to suppress the navigation "Starting chat…" pill
+// on the common fast-IPC path — the gate itself still blocks the
+// terminal so archived rows never get a PTY listener; we only delay
+// the *visible* pill so chat-to-chat navigation doesn't flash cyan.
+//
+// Each fresh (active=true, resetKey) window gets its own monotonically
+// increasing generation. The timer captures the gen at schedule time;
+// the return value compares it against the *current* gen at render
+// time. Keying on a per-window gen (not the raw resetKey value)
+// matters for A→B→A: the same sessionId can start a new window after
+// active toggled off-and-on or after resetKey changed away and back,
+// and we don't want a stale fire from the first A window to match
+// the second A window's resetKey.
+//
+// Prev-value tracking lives in `useState` rather than `useRef`
+// because reading a ref during render is forbidden by our React
+// rules — state's documented "store info from prev renders" pattern
+// (setState during render → React replays the render with new state)
+// gives us the same behavior cleanly.
+function useDelayedFlag(
+  active: boolean,
+  delayMs: number,
+  resetKey?: unknown,
+): boolean {
+  const [state, setState] = useState<{
+    gen: number;
+    prevActive: boolean;
+    prevResetKey: unknown;
+    // -1 sentinel for "no timer has fired" — gen starts at 0 and
+    // only increments, so it can't collide.
+    shownGen: number;
+  }>({ gen: 0, prevActive: false, prevResetKey: undefined, shownGen: -1 });
+
+  // Detect a window transition during this render. Bumping gen
+  // synchronously is what makes a repeated resetKey value (A→B→A)
+  // get a distinct window, so a stale fire from the first A window
+  // can't match the second.
+  let currentGen = state.gen;
+  if (state.prevActive !== active || state.prevResetKey !== resetKey) {
+    if (active && (!state.prevActive || state.prevResetKey !== resetKey)) {
+      currentGen = state.gen + 1;
+    }
+    setState({
+      gen: currentGen,
+      prevActive: active,
+      prevResetKey: resetKey,
+      shownGen: state.shownGen,
+    });
+  }
+
+  useEffect(() => {
+    if (!active) return;
+    const captured = currentGen;
+    const t = window.setTimeout(
+      () => setState((s) => ({ ...s, shownGen: captured })),
+      delayMs,
+    );
+    return () => window.clearTimeout(t);
+  }, [active, delayMs, currentGen]);
+
+  return active && state.shownGen === currentGen;
+}
+
 export default function RunnerChat() {
   const { handle, sessionId: sessionIdParam } = useParams<{
     handle: string;
@@ -175,6 +239,18 @@ export default function RunnerChat() {
   // End / Archive — the row is terminal and the operator can only
   // read the meta + go back to the runner.
   const isArchived = chatMeta?.archived_at != null;
+
+  // Render-gate without the flash. The two branches below
+  // (chatMeta still loading, or terminals haven't upserted yet) gate
+  // RunnerTerminal mounting to keep archived rows off the PTY bus,
+  // but on the common fast-IPC path the gate clears in <50ms and the
+  // visible cyan pill reads as a flicker on every chat-to-chat
+  // navigation. Delay the pill render by 150ms: instant resolutions
+  // never show a pill, slow ones still get user feedback.
+  const navLoadingActive =
+    sessionId != null &&
+    (!metaLoaded || (!isArchived && directSessions.length === 0));
+  const showNavLoadingPill = useDelayedFlag(navLoadingActive, 150, sessionId);
 
   const upsertSession = useCallback((next: DirectSessionPane) => {
     setDirectSessions((prev) => {
@@ -938,8 +1014,10 @@ export default function RunnerChat() {
           // before the read-only branch takes over. The flash is short
           // but visible and contradicts the 'no PTY listener' goal.
           // Centered cyan pill mirrors the resume transitional state
-          // so any "session is coming up" moment reads consistently.
-          <StartingOverlay label="Starting chat…" />
+          // so any "session is coming up" moment reads consistently
+          // — gated on `showNavLoadingPill` so the common fast-IPC
+          // path doesn't flash on every chat-to-chat navigation.
+          showNavLoadingPill ? <StartingOverlay label="Starting chat…" /> : null
         ) : isArchived ? (
           <div className="flex h-full items-center justify-center">
             <div className="flex max-w-md flex-col items-center gap-2 rounded border border-line bg-raised px-6 py-5 text-center">
@@ -953,7 +1031,10 @@ export default function RunnerChat() {
             </div>
           </div>
         ) : directSessions.length === 0 ? (
-          <StartingOverlay label="Starting chat…" />
+          // Same delayed-pill treatment as the metaLoaded gate above —
+          // the terminal map hasn't upserted the active session pane
+          // yet but the next render almost always brings it in.
+          showNavLoadingPill ? <StartingOverlay label="Starting chat…" /> : null
         ) : (
           directSessions.map((s) => {
             const active = s.id === sessionId;
