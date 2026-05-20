@@ -771,26 +771,10 @@ export default function MissionWorkspace() {
               !resumingAll &&
               !archivingMission ? (
                 // Scrim is rendered by the overlay itself (issue #173).
-                <SessionEndedOverlay
-                  status="stopped"
-                  resumable
-                  title="Mission paused"
-                  subtitle={
-                    anySessionLive
-                      ? "One or more slots are paused. Resume the mission to respawn every paused slot — partial-mission states aren't a valid run."
-                      : "All slots are paused. Resume to respawn every slot and pick up the conversation — the event log is preserved."
-                  }
-                  resumeLabel="Resume mission"
-                  onResume={() => void resumeMission()}
-                  // Mission-level archive lives in the topbar kebab
-                  // too, but exposing it on the paused card matches
-                  // direct chat's two-button "now what?" layout and
-                  // is the right primary affordance when the user
-                  // is staring at the paused mission deciding
-                  // whether to continue or end.
-                  archiveLabel="Archive mission"
-                  onArchive={() => void archiveMission()}
-                  variant="inline"
+                <MissionPausedCard
+                  anySessionLive={anySessionLive}
+                  onResumeMission={() => void resumeMission()}
+                  onArchiveMission={() => void archiveMission()}
                 />
               ) : null}
             </Pane>
@@ -808,6 +792,7 @@ export default function MissionWorkspace() {
                         session={s}
                         active={activeTab === s.id}
                         forcedResuming={resumingAll && !archivingMission}
+                        anySessionLive={anySessionLive}
                         onError={setError}
                         onResumeMission={() => void resumeMission()}
                         onArchiveMission={() => void archiveMission()}
@@ -921,6 +906,7 @@ function SlotPtyPane({
   session,
   active,
   forcedResuming,
+  anySessionLive,
   onError,
   onResumeMission,
   onArchiveMission,
@@ -931,6 +917,11 @@ function SlotPtyPane({
   /** True when the parent's "Resume mission" button is iterating
    *  through every slot. Drives the resuming overlay in this pane. */
   forcedResuming?: boolean;
+  /** True iff at least one other slot in this mission is still
+   *  alive — selects which paused-card subtitle the shared
+   *  MissionPausedCard renders. Plumbed through so the slot card
+   *  and the mission-feed card show identical chrome. */
+  anySessionLive: boolean;
   onError: (e: string) => void;
   /** Mission-wide resume callback. The slot pane's overlay no longer
    *  resumes a single PTY in isolation — a partial mission state
@@ -1074,23 +1065,10 @@ function SlotPtyPane({
       ) : starting ? (
         <StartingOverlay label="Starting chat…" />
       ) : dead ? (
-        <SessionEndedOverlay
-          status={session.status}
-          resumable
-          title="Slot paused"
-          subtitle="This slot is paused. Resume the mission to respawn every paused slot — partial-mission states aren't a valid run."
-          resumeLabel="Resume mission"
-          onResume={() => {
-            void onResumeMission();
-          }}
-          // Slot-level archive isn't a thing (would orphan the
-          // slot), so the secondary affordance here is mission
-          // archive — same as the mission-feed paused card.
-          archiveLabel="Archive mission"
-          onArchive={() => {
-            void onArchiveMission();
-          }}
-          variant="inline"
+        <MissionPausedCard
+          anySessionLive={anySessionLive}
+          onResumeMission={onResumeMission}
+          onArchiveMission={onArchiveMission}
         />
       ) : null}
     </div>
@@ -1327,4 +1305,39 @@ function formatRelativeTime(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+/// "Mission paused" card — shown in both the mission-feed surface
+/// (when any slot is stopped) and inside a stopped slot's PTY pane.
+/// Semantically the same state in both places: the mission isn't
+/// running. Extracted so the two call sites can't drift (issue
+/// #173). `anySessionLive` swaps the subtitle between the partial-
+/// mission and all-paused variants; both call sites already compute
+/// it at the parent so we just plumb it down to the slot.
+function MissionPausedCard({
+  anySessionLive,
+  onResumeMission,
+  onArchiveMission,
+}: {
+  anySessionLive: boolean;
+  onResumeMission: () => void | Promise<void>;
+  onArchiveMission: () => void | Promise<void>;
+}) {
+  return (
+    <SessionEndedOverlay
+      status="stopped"
+      resumable
+      title="Mission paused"
+      subtitle={
+        anySessionLive
+          ? "One or more slots are paused. Resume the mission to respawn every paused slot — partial-mission states aren't a valid run."
+          : "All slots are paused. Resume to respawn every slot and pick up the conversation — the event log is preserved."
+      }
+      resumeLabel="Resume mission"
+      onResume={() => void onResumeMission()}
+      archiveLabel="Archive mission"
+      onArchive={() => void onArchiveMission()}
+      variant="inline"
+    />
+  );
 }
