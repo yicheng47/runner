@@ -306,6 +306,13 @@ export interface StartMissionOutput {
 export interface MissionSummary extends Mission {
   crew_name: string;
   pending_ask_count: number;
+  /** True iff at least one of the mission's sessions is `status =
+   *  'running'`. Drives the sidebar mission-row status dot — live
+   *  missions get the accent, paused missions (mission.status =
+   *  running but every slot is stopped/crashed) get a muted dot so
+   *  the operator can tell which workspaces accept input without
+   *  entering each one. */
+  any_session_live: boolean;
 }
 
 // Tauri payload for `event/appended` — the bus emits this on every newly

@@ -1356,9 +1356,9 @@ function MissionPausedCard({
           ? "One or more slots are paused. Resume the mission to respawn every paused slot — partial-mission states aren't a valid run."
           : "All slots are paused. Resume to respawn every slot and pick up the conversation — the event log is preserved."
       }
-      resumeLabel="Resume mission"
+      resumeLabel="Resume"
       onResume={() => void onResumeMission()}
-      archiveLabel="Archive mission"
+      archiveLabel="Archive"
       onArchive={() => void onArchiveMission()}
       variant="inline"
     />

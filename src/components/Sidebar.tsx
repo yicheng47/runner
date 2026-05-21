@@ -277,9 +277,18 @@ export function Sidebar({
     void Promise.all([
       listen("session/exit", () => {
         void refreshDirectSessions();
+        // A mission slot exiting flips `any_session_live` from true →
+        // false (if it was the last live slot). Without this, the
+        // dot stays accent until something else triggers a refresh.
+        void refreshMissions();
       }),
       listen("runner/activity", () => {
         void refreshDirectSessions();
+        // Same reason in reverse: resuming a slot flips
+        // `any_session_live` from false → true. `runner/activity`
+        // fires whenever the sessions table changes (spawn/exit),
+        // covering both directions cheaply.
+        void refreshMissions();
       }),
       listen("session/archived", () => {
         // Fired by `session_archive` after the archived_at flip. Lets
@@ -317,7 +326,7 @@ export function Sidebar({
       unlistenArchived?.();
       unlistenUpdated?.();
     };
-  }, [refreshDirectSessions]);
+  }, [refreshDirectSessions, refreshMissions]);
 
   const openMission = useCallback(
     (id: string) => {
@@ -656,6 +665,15 @@ export function Sidebar({
                         onContextMenu={(anchor) => openMissionMenu(m, anchor)}
                         title={m.crew_name || ""}
                         pinned={!!m.pinned_at}
+                        // Mute the dot when the mission has no live
+                        // session — `mission.status === "running"` is
+                        // not enough to call a workspace "live", since
+                        // a paused mission (every slot stopped) keeps
+                        // the running status until the user archives.
+                        // `any_session_live` is computed on the backend
+                        // (see `mission_list_summary`) so the sidebar
+                        // doesn't need to fetch session rows per mission.
+                        dim={!m.any_session_live}
                         renaming={renamingMissionId === m.id}
                         onRenameSubmit={(next) =>
                           void submitMissionRename(m.id, next)

@@ -75,11 +75,16 @@ export function SessionEndedOverlay({
         : "The PTY exited unexpectedly. Resume to start a fresh process — the prior agent conversation is preserved."
       : "The PTY is closed, but the conversation is preserved. Resume to pick up where you left off.";
   const finalSubtitle = subtitle ?? computedSubtitle;
+  // Short labels. The title above ("Chat paused" / "Mission paused")
+  // already names the surface, so the button just needs to name the
+  // action. Slot-level callsites still get a "Resume @handle" form
+  // when `handle` is provided — there's no enclosing title there to
+  // tell the user which slot the action targets.
   const computedResumeLabel = handle
     ? `Resume @${handle}`
     : resumable
-      ? "Resume chat"
-      : "Restart chat";
+      ? "Resume"
+      : "Restart";
   const finalResumeLabel = resumeLabel ?? computedResumeLabel;
   const finalTitle = title ?? "Chat paused";
 
