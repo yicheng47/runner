@@ -59,6 +59,7 @@ import {
   StopButton,
 } from "../components/ui/SessionControl";
 import { chunkIndicatesTuiReady, isFreshSpawn } from "../lib/sessionLifecycle";
+import { useDelayedFlag } from "../lib/useDelayedFlag";
 import { useTerminalBg } from "../lib/useTerminalBg";
 import {
   markArchivingMission,
@@ -526,6 +527,20 @@ export default function MissionWorkspace() {
     }
   }, [railView]);
 
+  // The mission-load IPC round-trip (mission.get + session.list +
+  // mission.eventsReplay) is fast in the common case but blocks the
+  // `loading` flag, so a naive `loading ? <pill /> : <content />`
+  // branch flashes the cyan "Starting mission…" pill on every click.
+  // Same trick as #179 for direct-chat nav: keep the render gate
+  // (correctness — the rail / tabs / overlays all assume `mission`
+  // is non-null) but delay the *visible* pill until the gate has
+  // been blocking for 150ms. Fast IPC never shows the pill; slow IPC
+  // (cold app start, contended SQLite) still gets user feedback.
+  // Resets per mission id so navigating between missions starts a
+  // fresh delay window.
+  const isLoading = loading || !mission;
+  const showLoadingPill = useDelayedFlag(isLoading, 150, id);
+
   return (
     // flex-row outer so the right rail becomes a top-level sibling
     // of the main column. The rail then spans the full workspace
@@ -696,13 +711,15 @@ export default function MissionWorkspace() {
         </div>
       ) : null}
 
-      {loading || !mission ? (
-        // Centered cyan pill while the mission's sessions/events/state
-        // are being fetched (and slot PTYs are still warming up after a
-        // fresh `mission_start`). Same visual vocabulary as the resume
-        // transition so every "session is coming up" moment reads
-        // consistently.
-        <StartingOverlay label="Starting mission…" inline />
+      {isLoading ? (
+        // Gate is kept (the tabs/feed/rail below assume `mission` is
+        // non-null) but the visible pill only renders after 150ms of
+        // continuous loading — see `useDelayedFlag` above. Same visual
+        // vocabulary as the resume transition so every "session is
+        // coming up" moment reads consistently.
+        showLoadingPill ? (
+          <StartingOverlay label="Starting mission…" inline />
+        ) : null
       ) : (
         <div className="flex flex-1 min-h-0 flex-col">
           <div className="flex h-[38px] items-end gap-1 border-b border-line bg-panel px-6">
