@@ -47,6 +47,11 @@ links to its tracking issue.
   whose recorded cwd matches the picked working dir; selecting one
   passes the runtime's resume flag to the spawned child so the user
   continues their prior conversation in Runner.
+- [22 — Collapsed rail mission + chat switcher](./22-collapsed-rail-mission-chat-switcher.md)
+  — pinned mission + chat slots on the 52px rail with a status dot
+  per slot and an overflow popover for everything else; hybrid
+  "at-a-glance + everything-on-click" so the collapsed rail can
+  answer "what am I working on now" without expanding.
 
 ## Archive
 
