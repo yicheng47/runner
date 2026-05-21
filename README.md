@@ -1,65 +1,101 @@
-# Runner
+<!-- LOGO -->
+<h1 align="center">
+  <img src="assets/icon.png" alt="Runner" width="128" />
+  <br />
+  Runner
+</h1>
 
-Spawn a runner. Create your crew. Ship the feature.
+<p align="center">
+  Spawn a runner. Create your crew. Ship the feature.
+  <br />
+  A local desktop app for orchestrating crews of CLI coding agents — Claude Code, Codex, and friends.
+</p>
 
-Runner is a local desktop app for assembling a crew of CLI coding agents — Claude Code, Codex, and friends — giving each runner a role and a brief, and coordinating their work from one window.
+<p align="center">
+  <a href="#about">About</a>
+  ·
+  <a href="#example-crew">Crew example</a>
+  ·
+  <a href="#download">Download</a>
+  ·
+  <a href="#documentation">Documentation</a>
+  ·
+  <a href="./AGENTS.md">Contributing</a>
+</p>
+
+---
+
+> Status: pre-alpha, actively shipping. macOS today; Linux on the way.
+
+---
+
+## About
+
+Runner is what happens when you stop juggling four terminal windows for four AI agents and put them in one workspace instead.
+
+You assemble a **Crew** — a small party of CLI agents (Claude Code, Codex, custom shells). You give each runner a role, a system prompt, and a working directory. You hit **Start mission** and Runner forks a real PTY per slot into a tabbed workspace, wires them together through an append-only event bus, and lets you watch the work unfold from one window. When an agent needs you, it fires `ask_human` and the question surfaces in the feed. When you want to talk to a single agent without the orchestration scaffolding, **Direct chat** is a one-click 1:1 PTY.
+
+The terminal is a real xterm.js + WebGL canvas — claude-code, codex, and any modern TUI render with their actual ANSI palette, mouse tracking, and live redraws. Sessions are resumable across app restarts (the event log is the source of truth). Themes are first-class: Auto / Light / Dark across four bundled palettes (Runner, Codex Light, Catppuccin Mocha, Catppuccin Latte) with a bundled font picker (Inter / Geist / Roboto / System UI) that works offline.
+
+## Download
+
+Latest macOS build (Apple Silicon + Intel `.dmg`) on the [releases page](https://github.com/yicheng47/runner/releases/latest). Linux builds coming with the v1 cut.
+
+## Demo
+
+A three-runner crew shipping a tic-tac-toe game end-to-end — `@architect` decomposes the goal, `@impl` writes the code, `@reviewer` reads the diff.
+
+https://github.com/user-attachments/assets/f02e949b-117c-4d44-980a-58a9c76c49fe
+
+## Screenshots
 
 <table>
   <tr>
-    <td width="50%"><img src="assets/crew.png" alt="Crew configuration — slots, lead, and runner runtimes" width="100%" /></td>
-    <td width="50%"><img src="assets/mission.png" alt="Mission workspace — per-slot PTY sessions, feed, and roster rail" width="100%" /></td>
+    <td width="50%"><img src="assets/mission_feed.png" alt="Mission workspace — event feed tab" width="100%" /></td>
+    <td width="50%"><img src="assets/mission_terminal.png" alt="Mission workspace — per-slot PTY terminal tab" width="100%" /></td>
   </tr>
   <tr>
-    <td align="center"><em>Crew</em></td>
-    <td align="center"><em>Mission</em></td>
+    <td align="center"><em>Mission feed — every signal between the crew + human</em></td>
+    <td align="center"><em>Mission terminal — one PTY per slot, live</em></td>
   </tr>
 </table>
-
-> Status: pre-alpha, shipping. macOS + Linux only. Crew + runner config, missions, direct chats, the event bus + signal router, the bundled `runner` CLI, and PTY-backed mission workspaces all run end-to-end. See `docs/impls/0001-v0-mvp.md` for the current plan and status.
 
 ## What it does
 
 - **Crews** — group runners with exactly one lead.
 - **Runners** — each runner is a local CLI runtime (claude, codex, …) with its own role, system prompt, and working directory.
-- **Missions** — spawn one PTY session per slot into a tabbed mission workspace.
-- **Direct chats** — quick 1:1 PTY chat with a single runner, no mission required.
-- **Event bus** — append-only NDJSON log per mission that runners read and write through.
-- **Signal router** — a deterministic parent-process bridge that routes built-in signals between runners and the human.
+- **Missions** — spawn one PTY session per slot into a tabbed workspace where the crew works toward a shared goal.
+- **Direct chats** — quick 1:1 PTY with a single runner, no mission required.
+- **Event feed** — every signal between agents and the human, persisted to disk and replayable so missions resume cleanly after a quit or crash.
 
-## Stack
+For the wire-level architecture (event bus, signal router, runtime contracts) see [`docs/`](./docs/) — start with [`docs/arch/arch.md`](./docs/arch/arch.md).
 
-- Tauri 2 + Rust backend
-- React 19 + TypeScript + Tailwind 4 frontend
-- SQLite for persistence
-- In-process `portable-pty` as the session runtime
+## Example crew
 
-## Prerequisites
+The crew in the demo above is the **default Runner shape** — a three-runner engineering party where one decomposes, one builds, one audits. Lives in [`examples/dev-crew/`](./examples/dev-crew/) — drop the system prompts into a new Crew, hand it a goal, and the three tabs work the problem in one window.
 
-Required at runtime and during development:
+| Runner | Runtime | Role | System prompt |
+| --- | --- | --- | --- |
+| **@architect** (lead) | `claude-code` | Reads the goal, decomposes into tasks, dispatches the rest. Stays out of the editor. | [`architect.md`](./examples/dev-crew/architect.md) |
+| **@impl** | `claude-code` | Picks up tasks, writes the code, runs the tests. | [`impl.md`](./examples/dev-crew/impl.md) |
+| **@reviewer** | `codex` | Reads the diff, finds regressions and missing edge cases, reports back. | [`reviewer.md`](./examples/dev-crew/reviewer.md) |
 
-- **macOS or Linux** — Windows is not supported in v1.
-- **Node ≥ 22.12** + **pnpm** — frontend build / dev server.
-- **Rust toolchain** (stable, edition 2021) — `rustup` recommended.
-- **Tauri 2 platform deps** — see <https://tauri.app/start/prerequisites/>. macOS needs Xcode Command Line Tools; Linux needs the WebKit2GTK / libsoup / build packages listed there.
+### More crews
 
-## Develop
+For weirder, more fun crew shapes, peek at [`examples/`](./examples/):
 
-```sh
-pnpm install
-pnpm tauri dev   # or: make dev
-```
+- [`dev-crew/`](./examples/dev-crew/) — the default architect / impl / reviewer trio above
+- [`tic-tac-toe/`](./examples/tic-tac-toe/) — 2 agents + 1 referee actually playing a game against each other
+- [`werewolf/`](./examples/werewolf/) — 6-player social deduction with a god moderator
+- [`tomb-raid/`](./examples/tomb-raid/) — a 4-person heist crew run by a DM
 
-Common targets:
+Each is a copy-pasteable handle + system-prompt set you can spawn into a new Crew and hit Start.
 
-```sh
-make typecheck   # tsc --noEmit
-make lint        # frontend lint
-make test-rust   # cargo test --workspace
-make test        # full local test suite
-make package     # macOS .app + .dmg under src-tauri/target/release/bundle/
-```
+## Documentation
 
-Repo-wide coding-agent and contributor conventions live in [AGENTS.md](./AGENTS.md).
+Architecture, runtime contracts, product vision, and per-feature specs live in [`docs/`](./docs/) — start with [`docs/arch/arch.md`](./docs/arch/arch.md) for the wire-level overview, or [`docs/product/vision.md`](./docs/product/vision.md) for the product direction.
+
+For dev setup, prereqs, and contributor conventions see [AGENTS.md](./AGENTS.md).
 
 ## License
 
