@@ -771,7 +771,15 @@ export default function RunnerChat() {
   return (
     <div className="flex h-full flex-1 flex-row bg-bg">
       <div className="flex min-w-0 flex-1 flex-col">
-      <header className="flex items-center justify-between gap-4 border-b border-line bg-panel px-6 pb-3.5 pt-9">
+      {/* `data-tauri-drag-region` makes the entire header strip drag
+          the window, matching macOS toolbar behavior. Interactive
+          children (Stop / Resume / kebab / panel toggle) keep their
+          click handlers — Tauri only enters drag mode on mousedowns
+          that land on the bare header, not on buttons. */}
+      <header
+        data-tauri-drag-region
+        className="flex items-center justify-between gap-4 border-b border-line bg-panel px-6 pb-3.5 pt-9"
+      >
         <div className="flex min-w-0 items-center gap-3.5">
           {/* Avatar — 36×36, matches MissionWorkspace's mission glyph
               dimensions so the chat + mission headers line up at the
@@ -1077,7 +1085,13 @@ function RunnerSidePanel({
       }`}
     >
       <div className="flex h-full w-80 flex-col">
-        <header className="flex shrink-0 items-center justify-end border-b border-line px-5 pb-3.5 pt-9">
+        {/* Side-panel header — same draggable-window rules as the
+            workspace topbar. The lone Collapse button keeps its
+            handler; everywhere else the strip drags the window. */}
+        <header
+          data-tauri-drag-region
+          className="flex shrink-0 items-center justify-end border-b border-line px-5 pb-3.5 pt-9"
+        >
           <div className="flex h-9 items-center">
             <button
               type="button"

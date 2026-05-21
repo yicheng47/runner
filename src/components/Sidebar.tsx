@@ -606,8 +606,14 @@ export function Sidebar({
           <div className="flex min-h-0 flex-1 flex-col pb-4">
             {/* Brand row — open state only. Toggle has moved to the
                 bottom Settings row, so this is brand + wordmark
-                only. */}
-            <div className="flex shrink-0 items-center gap-2 px-5 pb-5 pt-1">
+                only. `data-tauri-drag-region` extends the draggable
+                top band past the h-7 traffic-light strip above so the
+                whole header band (brand + workspace header) reads as
+                one continuous title bar. */}
+            <div
+              data-tauri-drag-region
+              className="flex shrink-0 items-center gap-2 px-5 pb-5 pt-1"
+            >
               <BrandMark />
               <span className="text-base font-semibold tracking-tight text-fg">
                 Runner
