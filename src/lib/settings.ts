@@ -15,6 +15,56 @@ export const STORAGE_TERMINAL_CURSOR_STYLE = "settings.terminalCursorStyle";
 export const STORAGE_TERMINAL_SCROLLBACK = "settings.terminalScrollback";
 export const STORAGE_TERMINAL_THEME = "settings.terminalTheme";
 export const STORAGE_DEFAULT_WORKING_DIR = "settings.defaultWorkingDir";
+export const STORAGE_APP_THEME = "settings.appTheme";
+export const STORAGE_APP_LIGHT_VARIANT = "settings.appLightVariant";
+export const STORAGE_APP_BRAND_TINT = "settings.appBrandTint";
+
+// Chrome theme — the user's *intent*, not the resolved surface.
+// `auto` defers to `prefers-color-scheme`; `light`/`dark` pin regardless
+// of the OS. Resolution happens in `applyAppTheme()`.
+export type AppTheme = "auto" | "light" | "dark";
+export const APP_THEME_OPTIONS: readonly AppTheme[] = ["auto", "light", "dark"];
+const DEFAULT_APP_THEME: AppTheme = "auto";
+
+// Light theme variant — only Codex Light in v1; Solarized Paper is
+// designed (frame `iBOyT` / `pLbNm`) but deferred to a follow-up. The
+// storage key lands now so that follow-up is a pure additive change.
+export type LightVariant = "codex";
+export const LIGHT_VARIANT_OPTIONS: readonly LightVariant[] = ["codex"];
+export const LIGHT_VARIANT_LABELS: Record<LightVariant, string> = {
+  codex: "Codex Light",
+};
+// Swatch the SettingsModal dropdown row paints next to each label.
+// Matches `--color-accent` for that variant so the picker previews
+// the accent the user is about to switch into.
+export const LIGHT_VARIANT_ACCENTS: Record<LightVariant, string> = {
+  codex: "#339CFF",
+};
+const DEFAULT_LIGHT_VARIANT: LightVariant = "codex";
+
+// Dark theme variant — Carbon & Plasma is the only option today. Lives
+// alongside `lightVariant` for symmetry; future palettes plug in here
+// without rewiring `applyAppTheme()`.
+export type DarkVariant = "carbon";
+export const DARK_VARIANT_OPTIONS: readonly DarkVariant[] = ["carbon"];
+export const DARK_VARIANT_LABELS: Record<DarkVariant, string> = {
+  carbon: "Carbon & Plasma",
+};
+export const DARK_VARIANT_ACCENTS: Record<DarkVariant, string> = {
+  carbon: "#00FF9C",
+};
+// Dark variant has no reader/writer yet — v1 ships only Carbon, so the
+// SettingsModal row is informational. When we add a second dark
+// palette, mirror `readLightVariant` / `writeLightVariant` here.
+
+// In-sidebar chevron brand mark color. When `true`, the chevron picks
+// up `var(--color-accent)` for the active theme (sky-blue in Codex
+// Light, neon-green in Carbon). When `false`, the chevron pins to
+// the Carbon green `#00FF9C` everywhere — same shade the bundled
+// `.icns` icon ships with, so the Dock badge and the in-sidebar mark
+// agree at a glance.
+const DEFAULT_APP_BRAND_TINT = true;
+export const BRAND_MARK_PINNED_COLOR = "#00FF9C";
 
 // Public domain for the App-zoom and Terminal-* controls. Kept here (not
 // in SettingsModal) so the readers can snap/clamp to the same domain the
@@ -455,4 +505,124 @@ export function writeDefaultWorkingDir(value: string): void {
   } catch {
     // best-effort
   }
+}
+
+export function readAppTheme(): AppTheme {
+  try {
+    const raw = localStorage.getItem(STORAGE_APP_THEME);
+    if (raw == null) return DEFAULT_APP_THEME;
+    return (APP_THEME_OPTIONS as readonly string[]).includes(raw)
+      ? (raw as AppTheme)
+      : DEFAULT_APP_THEME;
+  } catch {
+    return DEFAULT_APP_THEME;
+  }
+}
+
+export function writeAppTheme(value: AppTheme): void {
+  try {
+    localStorage.setItem(STORAGE_APP_THEME, value);
+  } catch {
+    // best-effort
+  }
+}
+
+export function readLightVariant(): LightVariant {
+  try {
+    const raw = localStorage.getItem(STORAGE_APP_LIGHT_VARIANT);
+    if (raw == null) return DEFAULT_LIGHT_VARIANT;
+    return (LIGHT_VARIANT_OPTIONS as readonly string[]).includes(raw)
+      ? (raw as LightVariant)
+      : DEFAULT_LIGHT_VARIANT;
+  } catch {
+    return DEFAULT_LIGHT_VARIANT;
+  }
+}
+
+export function writeLightVariant(value: LightVariant): void {
+  try {
+    localStorage.setItem(STORAGE_APP_LIGHT_VARIANT, value);
+  } catch {
+    // best-effort
+  }
+}
+
+export function readBrandTint(): boolean {
+  return readStoredBool(STORAGE_APP_BRAND_TINT, DEFAULT_APP_BRAND_TINT);
+}
+
+export function writeBrandTint(value: boolean): void {
+  writeStoredBool(STORAGE_APP_BRAND_TINT, value);
+}
+
+// Returns "light" or "dark" — the resolved surface for the user's
+// current intent. `auto` consults `prefers-color-scheme`; the explicit
+// values short-circuit. Boot code calls this once before React mounts
+// to avoid a white-flash on the first paint of dark-mode users.
+export function resolveAppSurface(intent: AppTheme): "light" | "dark" {
+  if (intent === "light") return "light";
+  if (intent === "dark") return "dark";
+  try {
+    return window.matchMedia &&
+      window.matchMedia("(prefers-color-scheme: light)").matches
+      ? "light"
+      : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
+// Reads the current intent + light-variant from storage and writes the
+// resolved `data-theme` attribute to `<html>`. Carbon (dark) is the
+// unattributed default — when the surface is dark, the attribute is
+// removed so the `@theme` block in `index.css` cascades unchanged.
+//
+// Call from `main.tsx` once at boot, and again whenever the user
+// changes Theme / Light variant in SettingsModal (handled via the
+// same `storage` event the terminal settings ride on).
+export function applyAppTheme(): void {
+  const intent = readAppTheme();
+  const surface = resolveAppSurface(intent);
+  const root = document.documentElement;
+  if (surface === "light") {
+    const variant = readLightVariant();
+    root.setAttribute("data-theme", variant);
+  } else {
+    root.removeAttribute("data-theme");
+  }
+}
+
+// Wire `prefers-color-scheme` change events to `applyAppTheme()` so
+// `auto` intent flips live when the OS theme changes. The listener
+// also re-runs for explicit Light / Dark intents (no-op there, the
+// resolved surface doesn't depend on OS pref). Returns a teardown so
+// callers can unmount it; for the app's single root listener, we
+// keep it for the lifetime of the process.
+export function subscribeOsThemeChange(): () => void {
+  let media: MediaQueryList | null = null;
+  try {
+    media = window.matchMedia("(prefers-color-scheme: light)");
+  } catch {
+    return () => {};
+  }
+  const onChange = () => {
+    applyAppTheme();
+  };
+  // Safari < 14 only supports the deprecated `addListener` form. Use
+  // `addEventListener` when available, fall back otherwise — the
+  // Tauri webview on macOS 11+ is fine with the modern API but the
+  // fallback is cheap insurance.
+  if (typeof media.addEventListener === "function") {
+    media.addEventListener("change", onChange);
+    return () => media!.removeEventListener("change", onChange);
+  }
+  // Deprecated path — `addListener` is `(listener: (e: MediaQueryListEvent) => void) => void`
+  // on older browsers; the type isn't exposed on lib.dom.d.ts in modern TS
+  // so cast through `unknown`.
+  const legacy = media as unknown as {
+    addListener: (cb: () => void) => void;
+    removeListener: (cb: () => void) => void;
+  };
+  legacy.addListener(onChange);
+  return () => legacy.removeListener(onChange);
 }

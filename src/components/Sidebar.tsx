@@ -53,6 +53,11 @@ import {
   unmarkArchivingMission,
   unmarkArchivingSession,
 } from "../lib/archivingState";
+import {
+  BRAND_MARK_PINNED_COLOR,
+  readBrandTint,
+  STORAGE_APP_BRAND_TINT,
+} from "../lib/settings";
 import type { AppendedEvent, MissionSummary } from "../lib/types";
 import { StartMissionModal } from "./StartMissionModal";
 import { StartChatModal } from "./StartChatModal";
@@ -1374,13 +1379,29 @@ function formatStartedAt(s: DirectSessionEntry): string {
 // ---- chrome ------------------------------------------------------------
 
 function BrandMark() {
+  // Brand-mark tint: when on (default), the chevron picks up the active
+  // theme's `var(--color-accent)` via `text-accent`; when off, it pins
+  // to the Carbon green `#00FF9C` so the in-sidebar mark stays aligned
+  // with the bundled `.icns` icon on Dock / Cmd+Tab / notifications.
+  // The polylines below use `stroke="currentColor"`, so this single
+  // `text-…` / `style.color` selection cascades through.
+  const [tint, setTint] = useState<boolean>(() => readBrandTint());
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== STORAGE_APP_BRAND_TINT) return;
+      setTint(readBrandTint());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   return (
     <svg
       width="32"
       height="32"
       viewBox="0 0 32 32"
       aria-hidden
-      className="shrink-0"
+      className={`shrink-0 ${tint ? "text-accent" : ""}`}
+      style={tint ? undefined : { color: BRAND_MARK_PINNED_COLOR }}
     >
       <ChevronGlyph x={3} y={3} size={9} opacity={0.4} />
       <ChevronGlyph x={9} y={9} size={14} opacity={1} />
@@ -1405,7 +1426,7 @@ function ChevronGlyph({
       <polyline
         points="9 18 15 12 9 6"
         fill="none"
-        stroke="#00FF9C"
+        stroke="currentColor"
         strokeWidth={2}
         strokeLinecap="round"
         strokeLinejoin="round"

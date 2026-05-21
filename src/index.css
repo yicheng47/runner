@@ -24,6 +24,29 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+/* Codex Light — pure-white surfaces, near-black ink, sky-blue accent.
+   Mirrors the design system frame `YFawc` in design/runners-design.pen.
+   Applied when `<html data-theme="codex">` is set by `applyAppTheme()`
+   in `src/lib/settings.ts`. Carbon stays as the unattributed default
+   so dark mode is a no-op fallback when no data-theme is present. */
+[data-theme="codex"] {
+  --color-bg: #ffffff;
+  --color-panel: #f7f7f8;
+  --color-raised: #ffffff;
+  --color-line: #e5e5e7;
+  --color-line-strong: #d1d1d6;
+
+  --color-fg: #1a1c1f;
+  --color-fg-2: #6e6e73;
+  --color-fg-3: #a0a0a8;
+
+  --color-accent: #339cff;
+  --color-accent-ink: #ffffff;
+  --color-warn: #f59e0b;
+  --color-danger: #e5484d;
+  --color-info: #0ea5e9;
+}
+
 body {
   margin: 0;
   font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",

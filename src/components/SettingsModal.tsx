@@ -22,11 +22,14 @@ import {
   Info,
   Loader2,
   Minus,
+  Monitor,
+  Moon,
   Plus,
   RefreshCw,
   RotateCcw,
   Scale,
   Settings as SettingsIcon,
+  Sun,
   Terminal,
   X,
 } from "lucide-react";
@@ -39,15 +42,28 @@ import { getVersion } from "@tauri-apps/api/app";
 import { api } from "../lib/api";
 import { applyAppZoom } from "../lib/appZoom";
 import {
+  APP_THEME_OPTIONS,
+  DARK_VARIANT_ACCENTS,
+  DARK_VARIANT_LABELS,
+  DARK_VARIANT_OPTIONS,
+  LIGHT_VARIANT_ACCENTS,
+  LIGHT_VARIANT_LABELS,
+  LIGHT_VARIANT_OPTIONS,
   notifySameWindowStorage,
+  readAppTheme,
   readAppZoom,
+  readBrandTint,
   readDefaultWorkingDir,
+  readLightVariant,
   readStoredBool,
   readTerminalCursorStyle,
   readTerminalFontFamily,
   readTerminalFontSize,
   readTerminalScrollback,
   readTerminalTheme,
+  STORAGE_APP_BRAND_TINT,
+  STORAGE_APP_LIGHT_VARIANT,
+  STORAGE_APP_THEME,
   STORAGE_APP_ZOOM,
   STORAGE_AUTO_INSTALL_UPDATES,
   STORAGE_TERMINAL_CURSOR_STYLE,
@@ -62,10 +78,15 @@ import {
   TERMINAL_SCROLLBACK_OPTIONS,
   TERMINAL_THEME_LABELS,
   TERMINAL_THEME_OPTIONS,
+  type AppTheme,
+  type LightVariant,
   type TerminalCursorStyle,
   type TerminalFontFamily,
   type TerminalTheme,
+  writeAppTheme,
+  writeBrandTint,
   writeDefaultWorkingDir,
+  writeLightVariant,
   writeStoredBool,
   writeTerminalCursorStyle,
   writeTerminalFontFamily,
@@ -83,7 +104,13 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-type Pane = "general" | "terminal" | "diagnostics" | "updates" | "about";
+type Pane =
+  | "general"
+  | "appearance"
+  | "terminal"
+  | "diagnostics"
+  | "updates"
+  | "about";
 
 const PANES: { key: Pane; label: string; subtitle: string; icon: typeof SettingsIcon }[] = [
   {
@@ -91,6 +118,12 @@ const PANES: { key: Pane; label: string; subtitle: string; icon: typeof Settings
     label: "General",
     subtitle: "Startup & defaults",
     icon: SettingsIcon,
+  },
+  {
+    key: "appearance",
+    label: "Appearance",
+    subtitle: "Theme & sidebar mark",
+    icon: Sun,
   },
   {
     key: "terminal",
@@ -198,6 +231,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             <X aria-hidden className="h-4 w-4" />
           </button>
           {pane === "general" ? <GeneralPane /> : null}
+          {pane === "appearance" ? <AppearancePane /> : null}
           {pane === "terminal" ? <TerminalPane /> : null}
           {pane === "diagnostics" ? <DiagnosticsPane /> : null}
           {pane === "updates" ? <UpdatesPane /> : null}
@@ -335,6 +369,177 @@ function GeneralPane() {
         <ZoomStepper value={appZoom} onChange={setAppZoom} />
       </Row>
     </>
+  );
+}
+
+function AppearancePane() {
+  // Theme = user *intent* (auto/light/dark). lightVariant + darkVariant
+  // are which palette to use on each side; v1 ships Codex Light + Carbon
+  // & Plasma. Writes go through `writeAppTheme` / `writeLightVariant`
+  // then fire a same-window storage event so `applyAppTheme()` in
+  // `main.tsx` flips `<html data-theme>` without a reload.
+  const [theme, setThemeState] = useState<AppTheme>(() => readAppTheme());
+  const [lightVariant, setLightVariantState] = useState<LightVariant>(() =>
+    readLightVariant(),
+  );
+  const [brandTint, setBrandTintState] = useState<boolean>(() => readBrandTint());
+  const setTheme = (next: AppTheme) => {
+    setThemeState(next);
+    writeAppTheme(next);
+    notifySameWindowStorage(STORAGE_APP_THEME, next);
+  };
+  const setLightVariant = (next: LightVariant) => {
+    setLightVariantState(next);
+    writeLightVariant(next);
+    notifySameWindowStorage(STORAGE_APP_LIGHT_VARIANT, next);
+  };
+  const setBrandTint = (next: boolean) => {
+    setBrandTintState(next);
+    writeBrandTint(next);
+    notifySameWindowStorage(STORAGE_APP_BRAND_TINT, next ? "1" : "0");
+  };
+  return (
+    <>
+      <PaneHeader
+        title="Appearance"
+        subtitle="Match the OS or pick a fixed theme. Pairs a light + dark variant from the bundled set."
+      />
+      <Row
+        label="Theme"
+        sub="Match the OS, or pin to light or dark."
+      >
+        <ThemeSegmented value={theme} onChange={setTheme} />
+      </Row>
+      <Row
+        label="Light theme"
+        sub="Picked when the OS is light or Theme = Light."
+      >
+        <StyledSelect
+          value={lightVariant}
+          options={LIGHT_VARIANT_OPTIONS.map((id) => ({
+            value: id,
+            label: LIGHT_VARIANT_LABELS[id],
+            swatchColor: LIGHT_VARIANT_ACCENTS[id],
+          }))}
+          onChange={(v) => setLightVariant(v as LightVariant)}
+          disabled={LIGHT_VARIANT_OPTIONS.length <= 1}
+        />
+      </Row>
+      <Row
+        label="Dark theme"
+        sub="Picked when the OS is dark or Theme = Dark."
+      >
+        <StyledSelect
+          value={DARK_VARIANT_OPTIONS[0]}
+          options={DARK_VARIANT_OPTIONS.map((id) => ({
+            value: id,
+            label: DARK_VARIANT_LABELS[id],
+            swatchColor: DARK_VARIANT_ACCENTS[id],
+          }))}
+          onChange={() => {
+            // No-op — Carbon is the only v1 option; the row is
+            // informational. Future dark palettes plug in by adding
+            // entries to DARK_VARIANT_OPTIONS.
+          }}
+          disabled
+        />
+      </Row>
+      <Row
+        label="Tint brand mark"
+        sub="Recolor the in-app chevron to match the active accent."
+      >
+        <Toggle on={brandTint} onChange={setBrandTint} />
+      </Row>
+      <div className="h-px w-full bg-line" />
+      <AppearancePreview lightVariant={lightVariant} />
+    </>
+  );
+}
+
+// Light-variant preview card. Mirrors the Pencil node `r7Su0` in
+// `runners-design.pen` — a section header + a mini chat-row card the
+// user can compare-shop with before committing the dropdown. The
+// inner wrapper sets `data-theme="<lightVariant>"` so the card
+// renders with the picked light tokens regardless of the surrounding
+// modal's theme, which is what the design comp shows.
+function AppearancePreview({ lightVariant }: { lightVariant: LightVariant }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
+        Preview
+      </div>
+      <div
+        data-theme={lightVariant}
+        className="flex items-center gap-3 rounded-lg border border-line bg-raised p-3"
+      >
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="truncate text-[13px] font-semibold text-fg">
+            @architect
+          </span>
+          <span className="truncate text-[11px] text-fg-2">
+            Plans features and splits work into tasks.
+          </span>
+        </div>
+        <button
+          type="button"
+          className="shrink-0 cursor-default rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-accent-ink"
+        >
+          Chat
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Segmented Auto · Light · Dark control. Mirrors the Pencil node `J0lKR`
+// in `runners-design.pen` — 3 cells inside a rounded container, active
+// cell carries the raised surface + accent label, inactive cells stay
+// muted on the bg.
+function ThemeSegmented({
+  value,
+  onChange,
+}: {
+  value: AppTheme;
+  onChange: (next: AppTheme) => void;
+}) {
+  const ICONS: Record<AppTheme, typeof Monitor> = {
+    auto: Monitor,
+    light: Sun,
+    dark: Moon,
+  };
+  const LABELS: Record<AppTheme, string> = {
+    auto: "Auto",
+    light: "Light",
+    dark: "Dark",
+  };
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Theme"
+      className="flex items-center gap-0.5 rounded-md border border-line bg-bg p-0.5"
+    >
+      {APP_THEME_OPTIONS.map((option) => {
+        const Icon = ICONS[option];
+        const active = option === value;
+        return (
+          <button
+            key={option}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            onClick={() => onChange(option)}
+            className={`flex cursor-pointer items-center gap-1.5 rounded-[4px] px-2.5 py-[5px] text-[12px] font-medium transition-colors ${
+              active
+                ? "bg-raised text-fg"
+                : "text-fg-2 hover:text-fg"
+            }`}
+          >
+            <Icon aria-hidden className="h-3 w-3" />
+            <span>{LABELS[option]}</span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

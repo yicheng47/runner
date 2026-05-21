@@ -17,6 +17,11 @@ export interface StyledSelectOption {
   /// Marks an option that's the destructive choice (e.g. Bypass) so
   /// the listbox renders it with the danger palette.
   danger?: boolean;
+  /// Optional hex color rendered as a 12×12 rounded square to the
+  /// left of the label, in both the trigger and the listbox row.
+  /// Used by the Appearance pane theme dropdowns so the user previews
+  /// the accent before committing.
+  swatchColor?: string;
 }
 
 export function StyledSelect({
@@ -25,6 +30,7 @@ export function StyledSelect({
   onChange,
   className,
   buttonLabel,
+  disabled,
 }: {
   value: string;
   options: StyledSelectOption[];
@@ -38,6 +44,10 @@ export function StyledSelect({
   /// (e.g. "Permission: …") in the trigger but plain labels in the
   /// listbox.
   buttonLabel?: string;
+  /// When true, the trigger stops being interactive (no listbox open,
+  /// muted chrome). Used by the Appearance pane for the Dark theme
+  /// dropdown — v1 ships only Carbon, so the row is informational.
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -65,12 +75,30 @@ export function StyledSelect({
     <div ref={rootRef} className={`relative ${className ?? "min-w-[160px]"}`}>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          if (disabled) return;
+          setOpen((v) => !v);
+        }}
+        disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex w-full cursor-pointer items-center justify-between gap-2 rounded-md border border-line bg-bg px-3 py-2 text-left text-[12px] text-fg transition-colors hover:border-line-strong focus:border-fg-3 focus:outline-none"
+        aria-disabled={disabled}
+        className={`flex w-full items-center justify-between gap-2 rounded-md border border-line bg-bg px-3 py-2 text-left text-[12px] text-fg transition-colors focus:outline-none ${
+          disabled
+            ? "cursor-not-allowed opacity-60"
+            : "cursor-pointer hover:border-line-strong focus:border-fg-3"
+        }`}
       >
-        <span className="truncate">{triggerLabel}</span>
+        <span className="flex min-w-0 items-center gap-2">
+          {current?.swatchColor ? (
+            <span
+              aria-hidden
+              className="h-3 w-3 shrink-0 rounded-sm"
+              style={{ backgroundColor: current.swatchColor }}
+            />
+          ) : null}
+          <span className="truncate">{triggerLabel}</span>
+        </span>
         <span
           aria-hidden
           className={`text-fg-3 transition-transform ${open ? "rotate-180" : ""}`}
@@ -107,7 +135,16 @@ export function StyledSelect({
                   className={`flex w-full cursor-pointer flex-col items-start gap-0.5 px-3 py-2 text-left text-[12px] transition-colors ${tone}`}
                 >
                   <span className="flex w-full items-center justify-between gap-2">
-                    <span className="truncate font-medium">{opt.label}</span>
+                    <span className="flex min-w-0 items-center gap-2">
+                      {opt.swatchColor ? (
+                        <span
+                          aria-hidden
+                          className="h-3 w-3 shrink-0 rounded-sm"
+                          style={{ backgroundColor: opt.swatchColor }}
+                        />
+                      ) : null}
+                      <span className="truncate font-medium">{opt.label}</span>
+                    </span>
                     {active ? (
                       <span
                         aria-hidden
