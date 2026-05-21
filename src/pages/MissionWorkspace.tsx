@@ -21,10 +21,9 @@ import {
   MoreHorizontal,
   Pin,
   PinOff,
-  PanelRightClose,
-  PanelRightOpen,
+  PanelRight,
+  PanelRightDashed,
   RotateCcw,
-  Square,
   SquarePen,
   Terminal,
   Users as UsersIcon,
@@ -54,9 +53,13 @@ import {
   ResumingOverlay,
   SessionEndedOverlay,
   StartingOverlay,
-  chunkIndicatesTuiReady,
-  isFreshSpawn,
 } from "../components/SessionEndedOverlay";
+import {
+  ResumeButton,
+  StopButton,
+} from "../components/ui/SessionControl";
+import { chunkIndicatesTuiReady, isFreshSpawn } from "../lib/sessionLifecycle";
+import { useTerminalBg } from "../lib/useTerminalBg";
 import {
   markArchivingMission,
   unmarkArchivingMission,
@@ -582,7 +585,7 @@ export default function MissionWorkspace() {
                     : display === "aborted"
                       ? "bg-danger/15 text-danger"
                       : display === "resuming"
-                        ? "bg-[#0F1E26] text-[#39E5FF]"
+                        ? "bg-info/15 text-info"
                         : "bg-raised text-fg-2";
                 const dotClass =
                   display === "running"
@@ -590,7 +593,7 @@ export default function MissionWorkspace() {
                     : display === "aborted"
                       ? "bg-danger"
                       : display === "resuming"
-                        ? "bg-[#39E5FF]"
+                        ? "bg-info"
                         : "bg-fg-3";
                 return (
                   <span
@@ -624,25 +627,17 @@ export default function MissionWorkspace() {
           {mission?.status === "running" && !resumingAll ? (
             <>
               {anySessionStopped ? (
-                <button
-                  type="button"
+                <ResumeButton
                   onClick={() => void resumeMission()}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-2.5 py-1 text-[11px] font-semibold text-accent hover:border-accent"
                   title="Respawn every stopped slot in this mission"
-                >
-                  Resume
-                </button>
+                />
               ) : null}
               {allSessionsLive ? (
-                <button
-                  type="button"
+                <StopButton
                   onClick={() => void stopMission()}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-line bg-raised px-2.5 py-1 text-[11px] font-semibold text-fg hover:border-line-strong"
                   title="Kill all PTYs; mission stays running so you can Resume"
-                >
-                  <Square aria-hidden className="h-3 w-3" />
-                  Stop
-                </button>
+                  iconTone="fg"
+                />
               ) : null}
               <MissionKebab
                 pinned={!!mission.pinned_at}
@@ -674,9 +669,9 @@ export default function MissionWorkspace() {
               onClick={() => setRailOpen(true)}
               title="Open runners panel"
               aria-label="Open runners panel"
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-fg-2 transition-colors hover:border-line hover:bg-raised hover:text-fg"
+              className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-2 transition-colors hover:bg-raised hover:text-fg"
             >
-              <PanelRightOpen aria-hidden className="h-4 w-4" />
+              <PanelRightDashed aria-hidden className="h-4 w-4" />
             </button>
           ) : null}
         </div>
@@ -858,7 +853,7 @@ export default function MissionWorkspace() {
                 aria-label="Collapse panel"
                 className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-2 hover:bg-raised hover:text-fg"
               >
-                <PanelRightClose aria-hidden className="h-4 w-4" />
+                <PanelRight aria-hidden className="h-4 w-4" />
               </button>
             </div>
           </header>
@@ -1046,9 +1041,14 @@ function SlotPtyPane({
   //   - running: 100%
   const paneOpacity =
     resuming || starting ? "opacity-0" : dead ? "opacity-45" : "";
+  // Padding frame around the xterm canvas tracks the active terminal
+  // palette's bg, same as in RunnerChat — keeps the frame and the
+  // canvas in lockstep across theme switches.
+  const terminalBg = useTerminalBg();
   return (
     <div className="relative flex flex-1 min-h-0 flex-col">
       <div
+        style={{ backgroundColor: terminalBg }}
         className={`flex flex-1 min-h-0 p-3 transition-opacity ${paneOpacity}`}
       >
         <RunnerTerminal
@@ -1082,9 +1082,15 @@ function Pane({
   active: boolean;
   children: React.ReactNode;
 }) {
+  // Pane wraps both the feed and the terminal slots. Background is
+  // `bg-panel` so the feed reads as a tinted "page" with the white
+  // event cards (`bg-bg`) lifting off it — solves the "all white,
+  // cards melt into the page" problem in Codex Light. Terminal slots
+  // cover this bg with their own `bg-terminal-chrome` wrapper, so
+  // changing it here only affects the feed pane visually.
   return (
     <div
-      className={`absolute inset-0 flex-col bg-bg ${
+      className={`absolute inset-0 flex-col bg-panel ${
         active ? "flex" : "hidden"
       }`}
     >

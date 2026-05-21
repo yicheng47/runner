@@ -13,8 +13,73 @@ export const STORAGE_TERMINAL_FONT_SIZE = "settings.terminalFontSize";
 export const STORAGE_TERMINAL_FONT_FAMILY = "settings.terminalFontFamily";
 export const STORAGE_TERMINAL_CURSOR_STYLE = "settings.terminalCursorStyle";
 export const STORAGE_TERMINAL_SCROLLBACK = "settings.terminalScrollback";
+// Terminal theme. Single setting that does not auto-swap with the app
+// theme — `runner` (dark) stays the default even in light app mode,
+// because most TUIs (claude-code, codex) assume a dark canvas. Light
+// palettes ship in the list for users who explicitly want them.
 export const STORAGE_TERMINAL_THEME = "settings.terminalTheme";
 export const STORAGE_DEFAULT_WORKING_DIR = "settings.defaultWorkingDir";
+export const STORAGE_APP_THEME = "settings.appTheme";
+export const STORAGE_APP_LIGHT_VARIANT = "settings.appLightVariant";
+export const STORAGE_APP_DARK_VARIANT = "settings.appDarkVariant";
+export const STORAGE_APP_BRAND_TINT = "settings.appBrandTint";
+export const STORAGE_APP_FONT_FAMILY = "settings.appFontFamily";
+
+// Chrome theme — the user's *intent*, not the resolved surface.
+// `auto` defers to `prefers-color-scheme`; `light`/`dark` pin regardless
+// of the OS. Resolution happens in `applyAppTheme()`.
+export type AppTheme = "auto" | "light" | "dark";
+export const APP_THEME_OPTIONS: readonly AppTheme[] = ["auto", "light", "dark"];
+const DEFAULT_APP_THEME: AppTheme = "auto";
+
+// Light theme variant — Codex Light is the v1 default; Catppuccin
+// Latte ships alongside as a warmer, more saturated alternative.
+// Solarized Paper is still designed (frame `iBOyT` / `pLbNm`) but
+// deferred; adding new variants is a pure additive change here.
+export type LightVariant = "codex" | "catppuccin-latte";
+export const LIGHT_VARIANT_OPTIONS: readonly LightVariant[] = [
+  "codex",
+  "catppuccin-latte",
+];
+export const LIGHT_VARIANT_LABELS: Record<LightVariant, string> = {
+  codex: "Codex Light",
+  "catppuccin-latte": "Catppuccin Latte",
+};
+// Swatch the SettingsModal dropdown row paints next to each label.
+// Matches `--color-accent` for that variant so the picker previews
+// the accent the user is about to switch into.
+export const LIGHT_VARIANT_ACCENTS: Record<LightVariant, string> = {
+  codex: "#339CFF",
+  "catppuccin-latte": "#8839EF",
+};
+const DEFAULT_LIGHT_VARIANT: LightVariant = "codex";
+
+// Dark theme variant — Runner (Carbon chrome, neon-green accent) is
+// the canonical dark; Catppuccin Mocha pairs symmetrically with the
+// Catppuccin Latte light variant for users who want a warmer, more
+// saturated palette across both surfaces.
+export type DarkVariant = "carbon" | "catppuccin-mocha";
+export const DARK_VARIANT_OPTIONS: readonly DarkVariant[] = [
+  "carbon",
+  "catppuccin-mocha",
+];
+export const DARK_VARIANT_LABELS: Record<DarkVariant, string> = {
+  carbon: "Runner",
+  "catppuccin-mocha": "Catppuccin Mocha",
+};
+export const DARK_VARIANT_ACCENTS: Record<DarkVariant, string> = {
+  carbon: "#00FF9C",
+  "catppuccin-mocha": "#CBA6F7",
+};
+const DEFAULT_DARK_VARIANT: DarkVariant = "carbon";
+
+// In-sidebar chevron brand mark color. Now always picks up
+// `var(--color-accent)` for the active theme (sky-blue in Codex Light,
+// neon-green in Runner). The "tint off" mode that pinned the chevron
+// to `BRAND_MARK_PINNED_COLOR` was removed from Settings; the constant
+// stays exported in case external surfaces still want to pin to the
+// `.icns` shade.
+export const BRAND_MARK_PINNED_COLOR = "#00FF9C";
 
 // Public domain for the App-zoom and Terminal-* controls. Kept here (not
 // in SettingsModal) so the readers can snap/clamp to the same domain the
@@ -40,6 +105,21 @@ export const TERMINAL_FONT_FAMILY_OPTIONS: readonly TerminalFontFamily[] = [
   "Fira Code",
 ];
 
+// App-wide UI font. "Inter" is the current default — what `body` has
+// been using since v1. "System UI" picks the OS-native font instead
+// (SF Pro on macOS, Segoe UI on Windows, system fallback on Linux),
+// for users who prefer their app to match the rest of their desktop
+// chrome. Mono is intentionally absent — that lives on the Terminal
+// font picker.
+export type AppFontFamily = "Inter" | "Geist" | "Roboto" | "System UI";
+export const APP_FONT_FAMILY_OPTIONS: readonly AppFontFamily[] = [
+  "Inter",
+  "Geist",
+  "Roboto",
+  "System UI",
+];
+const DEFAULT_APP_FONT_FAMILY: AppFontFamily = "Inter";
+
 export type TerminalCursorStyle = "block" | "underline" | "bar";
 export const TERMINAL_CURSOR_STYLE_OPTIONS: readonly TerminalCursorStyle[] = [
   "block",
@@ -53,43 +133,43 @@ export const TERMINAL_SCROLLBACK_OPTIONS: readonly number[] = [
 
 export type TerminalTheme =
   | "runner"
-  | "dracula"
-  | "tokyo-night"
-  | "nord"
-  | "gruvbox-dark"
-  | "catppuccin-mocha";
+  | "catppuccin-mocha"
+  | "solarized-dark";
 export const TERMINAL_THEME_OPTIONS: readonly TerminalTheme[] = [
   "runner",
-  "dracula",
-  "tokyo-night",
-  "nord",
-  "gruvbox-dark",
   "catppuccin-mocha",
+  "solarized-dark",
 ];
 export const TERMINAL_THEME_LABELS: Record<TerminalTheme, string> = {
   runner: "Runner",
-  dracula: "Dracula",
-  "tokyo-night": "Tokyo Night",
-  nord: "Nord",
-  "gruvbox-dark": "Gruvbox Dark",
   "catppuccin-mocha": "Catppuccin Mocha",
+  "solarized-dark": "Solarized Dark",
+};
+// Swatch color shown next to each label in the terminal-theme
+// dropdown — mirrors the Appearance dropdowns. Picks the palette's
+// most identifiable hue (Runner's neon green, Catppuccin's mauve,
+// Solarized's blue) instead of the cursor color, which is often a
+// neutral gray and wouldn't read as a brand swatch.
+export const TERMINAL_THEME_ACCENTS: Record<TerminalTheme, string> = {
+  runner: "#00FF9C",
+  "catppuccin-mocha": "#CBA6F7",
+  "solarized-dark": "#268BD2",
 };
 export const DEFAULT_TERMINAL_THEME: TerminalTheme = "runner";
 
-// Locked surfaces: every bundled theme overrides foreground + ANSI 16 +
-// cursor + selectionBackground, but background and cursorAccent are
-// pinned to the app chrome (#15161B) so the terminal stays seamless
-// with the surrounding panel. Don't unlock these per-theme — a light
-// background would flash white during a remount before the WebGL
-// renderer catches up.
-const TERMINAL_THEME_LOCKED_BG = "#15161B";
+// Each terminal theme now carries its own background — claude-code /
+// codex paint dark/light cards on top either way, so locking the
+// canvas to a single shade only flattened theme identity. The
+// surrounding workspace padding wrapper reads `resolveTerminalBg()`
+// and tracks the theme's bg so the canvas + frame stay seamless even
+// across theme switches.
 
 export const TERMINAL_THEMES: Record<TerminalTheme, ITheme> = {
   runner: {
-    background: TERMINAL_THEME_LOCKED_BG,
+    background: "#15161B",
     foreground: "#DCDCE0",
     cursor: "#00FF9C",
-    cursorAccent: TERMINAL_THEME_LOCKED_BG,
+    cursorAccent: "#15161B",
     selectionBackground: "#272930",
     black: "#15161B",
     red: "#FF4D6D",
@@ -108,103 +188,11 @@ export const TERMINAL_THEMES: Record<TerminalTheme, ITheme> = {
     brightCyan: "#89DDFF",
     brightWhite: "#FFFFFF",
   },
-  dracula: {
-    background: TERMINAL_THEME_LOCKED_BG,
-    foreground: "#F8F8F2",
-    cursor: "#F8F8F2",
-    cursorAccent: TERMINAL_THEME_LOCKED_BG,
-    selectionBackground: "#44475A",
-    black: "#21222C",
-    red: "#FF5555",
-    green: "#50FA7B",
-    yellow: "#F1FA8C",
-    blue: "#BD93F9",
-    magenta: "#FF79C6",
-    cyan: "#8BE9FD",
-    white: "#F8F8F2",
-    brightBlack: "#6272A4",
-    brightRed: "#FF6E6E",
-    brightGreen: "#69FF94",
-    brightYellow: "#FFFFA5",
-    brightBlue: "#D6ACFF",
-    brightMagenta: "#FF92DF",
-    brightCyan: "#A4FFFF",
-    brightWhite: "#FFFFFF",
-  },
-  "tokyo-night": {
-    background: TERMINAL_THEME_LOCKED_BG,
-    foreground: "#A9B1D6",
-    cursor: "#C0CAF5",
-    cursorAccent: TERMINAL_THEME_LOCKED_BG,
-    selectionBackground: "#28344A",
-    black: "#15161E",
-    red: "#F7768E",
-    green: "#9ECE6A",
-    yellow: "#E0AF68",
-    blue: "#7AA2F7",
-    magenta: "#BB9AF7",
-    cyan: "#7DCFFF",
-    white: "#A9B1D6",
-    brightBlack: "#414868",
-    brightRed: "#F7768E",
-    brightGreen: "#9ECE6A",
-    brightYellow: "#E0AF68",
-    brightBlue: "#7AA2F7",
-    brightMagenta: "#BB9AF7",
-    brightCyan: "#7DCFFF",
-    brightWhite: "#C0CAF5",
-  },
-  nord: {
-    background: TERMINAL_THEME_LOCKED_BG,
-    foreground: "#D8DEE9",
-    cursor: "#D8DEE9",
-    cursorAccent: TERMINAL_THEME_LOCKED_BG,
-    selectionBackground: "#4C566A",
-    black: "#3B4252",
-    red: "#BF616A",
-    green: "#A3BE8C",
-    yellow: "#EBCB8B",
-    blue: "#81A1C1",
-    magenta: "#B48EAD",
-    cyan: "#88C0D0",
-    white: "#E5E9F0",
-    brightBlack: "#4C566A",
-    brightRed: "#BF616A",
-    brightGreen: "#A3BE8C",
-    brightYellow: "#EBCB8B",
-    brightBlue: "#81A1C1",
-    brightMagenta: "#B48EAD",
-    brightCyan: "#8FBCBB",
-    brightWhite: "#ECEFF4",
-  },
-  "gruvbox-dark": {
-    background: TERMINAL_THEME_LOCKED_BG,
-    foreground: "#EBDBB2",
-    cursor: "#EBDBB2",
-    cursorAccent: TERMINAL_THEME_LOCKED_BG,
-    selectionBackground: "#3C3836",
-    black: "#282828",
-    red: "#CC241D",
-    green: "#98971A",
-    yellow: "#D79921",
-    blue: "#458588",
-    magenta: "#B16286",
-    cyan: "#689D6A",
-    white: "#A89984",
-    brightBlack: "#928374",
-    brightRed: "#FB4934",
-    brightGreen: "#B8BB26",
-    brightYellow: "#FABD2F",
-    brightBlue: "#83A598",
-    brightMagenta: "#D3869B",
-    brightCyan: "#8EC07C",
-    brightWhite: "#EBDBB2",
-  },
   "catppuccin-mocha": {
-    background: TERMINAL_THEME_LOCKED_BG,
+    background: "#1E1E2E",
     foreground: "#CDD6F4",
     cursor: "#F5E0DC",
-    cursorAccent: TERMINAL_THEME_LOCKED_BG,
+    cursorAccent: "#1E1E2E",
     selectionBackground: "#585B70",
     black: "#45475A",
     red: "#F38BA8",
@@ -222,6 +210,35 @@ export const TERMINAL_THEMES: Record<TerminalTheme, ITheme> = {
     brightMagenta: "#F5C2E7",
     brightCyan: "#94E2D5",
     brightWhite: "#A6ADC8",
+  },
+  // Solarized Dark — Ethan Schoonover's canonical dark palette. Bg
+  // stays locked to Carbon chrome (the official base03 #002b36 would
+  // be close to our #15161B but we keep it uniform across dark
+  // palettes for seamless terminal canvas). ANSI 16 follows the spec
+  // exactly: base02..base3 + the 6 accent hues map to black..bright
+  // white in the Solarized convention.
+  "solarized-dark": {
+    background: "#002B36",
+    foreground: "#839496",
+    cursor: "#93A1A1",
+    cursorAccent: "#002B36",
+    selectionBackground: "#073642",
+    black: "#073642",
+    red: "#DC322F",
+    green: "#859900",
+    yellow: "#B58900",
+    blue: "#268BD2",
+    magenta: "#D33682",
+    cyan: "#2AA198",
+    white: "#EEE8D5",
+    brightBlack: "#002B36",
+    brightRed: "#CB4B16",
+    brightGreen: "#586E75",
+    brightYellow: "#657B83",
+    brightBlue: "#839496",
+    brightMagenta: "#6C71C4",
+    brightCyan: "#93A1A1",
+    brightWhite: "#FDF6E3",
   },
 };
 
@@ -416,6 +433,16 @@ export function resolveTerminalTheme(id: TerminalTheme): ITheme {
   return TERMINAL_THEMES[id];
 }
 
+// Bg color for the currently-picked terminal palette. Used by the
+// workspace pane that hosts the xterm canvas so the surrounding
+// padding matches the canvas — without this the canvas would float
+// inside a `bg-terminal-chrome` frame that no longer agrees with
+// theme-native bgs (Solarized Dark #002B36, Latte #EFF1F5, etc.).
+// Falls back to Runner's bg if the stored id ever drifts.
+export function resolveTerminalBg(id: TerminalTheme): string {
+  return TERMINAL_THEMES[id].background ?? "#15161B";
+}
+
 // localStorage's `storage` event only fires in *other* windows by spec.
 // Runner is single-window, so we synthesize one ourselves after writing
 // so same-window consumers (RunnerTerminal, GeneralPane) can react via
@@ -438,6 +465,62 @@ export function resolveTerminalFontStack(label: TerminalFontFamily): string {
     : `'${label}', ${SYSTEM_FONT_STACK}`;
 }
 
+// OS-native UI stack — no Inter, no third-party fonts. SF Pro on
+// macOS, Segoe UI on Windows, and the platform default on Linux.
+// Used as the tail for "System UI" and as the fallback after every
+// named-font choice so the UI renders even when the requested face
+// isn't installed.
+const APP_OS_FONT_STACK =
+  "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif";
+
+// `@fontsource-variable/*` registers each face under a "Variable"-
+// suffixed family name (e.g. `Inter Variable`, not `Inter`). The
+// picker keeps the clean labels for users; this map routes them to
+// the real names so the CSS lookup actually finds the bundled font.
+const APP_FONT_CSS_FAMILY: Record<
+  Exclude<AppFontFamily, "System UI">,
+  string
+> = {
+  Inter: "Inter Variable",
+  Geist: "Geist Variable",
+  Roboto: "Roboto Variable",
+};
+
+export function resolveAppFontStack(label: AppFontFamily): string {
+  if (label === "System UI") return APP_OS_FONT_STACK;
+  const cssFamily = APP_FONT_CSS_FAMILY[label];
+  return `'${cssFamily}', ${APP_OS_FONT_STACK}`;
+}
+
+export function readAppFontFamily(): AppFontFamily {
+  try {
+    const raw = localStorage.getItem(STORAGE_APP_FONT_FAMILY);
+    if (raw == null) return DEFAULT_APP_FONT_FAMILY;
+    return (APP_FONT_FAMILY_OPTIONS as readonly string[]).includes(raw)
+      ? (raw as AppFontFamily)
+      : DEFAULT_APP_FONT_FAMILY;
+  } catch {
+    return DEFAULT_APP_FONT_FAMILY;
+  }
+}
+
+export function writeAppFontFamily(value: AppFontFamily): void {
+  try {
+    localStorage.setItem(STORAGE_APP_FONT_FAMILY, value);
+  } catch {
+    // best-effort
+  }
+}
+
+// Writes `--font-app` on `<html>`, picked up by the `body` rule in
+// `index.css`. Call at boot (before React mounts) so the picked font
+// is in place on first paint, and again on storage events so the
+// Settings change applies without reload.
+export function applyAppFont(): void {
+  const root = document.documentElement;
+  root.style.setProperty("--font-app", resolveAppFontStack(readAppFontFamily()));
+}
+
 export function readDefaultWorkingDir(): string {
   try {
     const raw = localStorage.getItem(STORAGE_DEFAULT_WORKING_DIR) ?? "";
@@ -455,4 +538,153 @@ export function writeDefaultWorkingDir(value: string): void {
   } catch {
     // best-effort
   }
+}
+
+export function readAppTheme(): AppTheme {
+  try {
+    const raw = localStorage.getItem(STORAGE_APP_THEME);
+    if (raw == null) return DEFAULT_APP_THEME;
+    return (APP_THEME_OPTIONS as readonly string[]).includes(raw)
+      ? (raw as AppTheme)
+      : DEFAULT_APP_THEME;
+  } catch {
+    return DEFAULT_APP_THEME;
+  }
+}
+
+export function writeAppTheme(value: AppTheme): void {
+  try {
+    localStorage.setItem(STORAGE_APP_THEME, value);
+  } catch {
+    // best-effort
+  }
+}
+
+export function readLightVariant(): LightVariant {
+  try {
+    const raw = localStorage.getItem(STORAGE_APP_LIGHT_VARIANT);
+    if (raw == null) return DEFAULT_LIGHT_VARIANT;
+    return (LIGHT_VARIANT_OPTIONS as readonly string[]).includes(raw)
+      ? (raw as LightVariant)
+      : DEFAULT_LIGHT_VARIANT;
+  } catch {
+    return DEFAULT_LIGHT_VARIANT;
+  }
+}
+
+export function writeLightVariant(value: LightVariant): void {
+  try {
+    localStorage.setItem(STORAGE_APP_LIGHT_VARIANT, value);
+  } catch {
+    // best-effort
+  }
+}
+
+export function readDarkVariant(): DarkVariant {
+  try {
+    const raw = localStorage.getItem(STORAGE_APP_DARK_VARIANT);
+    if (raw == null) return DEFAULT_DARK_VARIANT;
+    return (DARK_VARIANT_OPTIONS as readonly string[]).includes(raw)
+      ? (raw as DarkVariant)
+      : DEFAULT_DARK_VARIANT;
+  } catch {
+    return DEFAULT_DARK_VARIANT;
+  }
+}
+
+export function writeDarkVariant(value: DarkVariant): void {
+  try {
+    localStorage.setItem(STORAGE_APP_DARK_VARIANT, value);
+  } catch {
+    // best-effort
+  }
+}
+
+// Brand-mark tint is always on — the toggle was removed from Settings
+// once we decided the accent-matched chevron should be the only behavior.
+// Kept as a function (not a constant) so call sites and the storage-event
+// path in Sidebar.tsx stay intact without a wider refactor.
+export function readBrandTint(): boolean {
+  return true;
+}
+
+// Returns "light" or "dark" — the resolved surface for the user's
+// current intent. `auto` consults `prefers-color-scheme`; the explicit
+// values short-circuit. Boot code calls this once before React mounts
+// to avoid a white-flash on the first paint of dark-mode users.
+export function resolveAppSurface(intent: AppTheme): "light" | "dark" {
+  if (intent === "light") return "light";
+  if (intent === "dark") return "dark";
+  try {
+    return window.matchMedia &&
+      window.matchMedia("(prefers-color-scheme: light)").matches
+      ? "light"
+      : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
+// Reads the current intent + light-variant from storage and writes the
+// resolved `data-theme` attribute to `<html>`. Carbon (dark) is the
+// unattributed default — when the surface is dark, the attribute is
+// removed so the `@theme` block in `index.css` cascades unchanged.
+//
+// Call from `main.tsx` once at boot, and again whenever the user
+// changes Theme / Light variant in SettingsModal (handled via the
+// same `storage` event the terminal settings ride on).
+export function applyAppTheme(): void {
+  const intent = readAppTheme();
+  const surface = resolveAppSurface(intent);
+  const root = document.documentElement;
+  if (surface === "light") {
+    const variant = readLightVariant();
+    root.setAttribute("data-theme", variant);
+  } else {
+    // Dark: Carbon is the unattributed default (the `@theme` block in
+    // index.css), so we only set `data-theme` when the user picked a
+    // non-default dark variant. Keeps the cascade simple — anything
+    // without `data-theme` falls back to Carbon.
+    const variant = readDarkVariant();
+    if (variant === DEFAULT_DARK_VARIANT) {
+      root.removeAttribute("data-theme");
+    } else {
+      root.setAttribute("data-theme", variant);
+    }
+  }
+}
+
+// Wire `prefers-color-scheme` change events to `applyAppTheme()` so
+// `auto` intent flips live when the OS theme changes. The listener
+// also re-runs for explicit Light / Dark intents (no-op there, the
+// resolved surface doesn't depend on OS pref). Returns a teardown so
+// callers can unmount it; for the app's single root listener, we
+// keep it for the lifetime of the process.
+export function subscribeOsThemeChange(): () => void {
+  let media: MediaQueryList | null = null;
+  try {
+    media = window.matchMedia("(prefers-color-scheme: light)");
+  } catch {
+    return () => {};
+  }
+  const onChange = () => {
+    applyAppTheme();
+  };
+  // Safari < 14 only supports the deprecated `addListener` form. Use
+  // `addEventListener` when available, fall back otherwise — the
+  // Tauri webview on macOS 11+ is fine with the modern API but the
+  // fallback is cheap insurance.
+  if (typeof media.addEventListener === "function") {
+    media.addEventListener("change", onChange);
+    return () => media!.removeEventListener("change", onChange);
+  }
+  // Deprecated path — `addListener` is `(listener: (e: MediaQueryListEvent) => void) => void`
+  // on older browsers; the type isn't exposed on lib.dom.d.ts in modern TS
+  // so cast through `unknown`.
+  const legacy = media as unknown as {
+    addListener: (cb: () => void) => void;
+    removeListener: (cb: () => void) => void;
+  };
+  legacy.addListener(onChange);
+  return () => legacy.removeListener(onChange);
 }

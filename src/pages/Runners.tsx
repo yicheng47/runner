@@ -275,7 +275,12 @@ function RunnerCard({
             <span className="font-mono text-base font-semibold text-fg">
               @{item.handle}
             </span>
-            <span className="rounded bg-raised px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-fg-2">
+            {/* Runtime label — was an UPPERCASE pill on `bg-raised`,
+                which in Codex Light rendered as an invisible white-on-
+                white shape and felt shouty everywhere. Now a quiet
+                lowercase mono tag in the muted ink, so it reads like
+                a shell command name next to the @handle. */}
+            <span className="font-mono text-[11px] text-fg-3">
               {item.runtime}
             </span>
             <button

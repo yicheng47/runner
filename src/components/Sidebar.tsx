@@ -53,6 +53,11 @@ import {
   unmarkArchivingMission,
   unmarkArchivingSession,
 } from "../lib/archivingState";
+import {
+  BRAND_MARK_PINNED_COLOR,
+  readBrandTint,
+  STORAGE_APP_BRAND_TINT,
+} from "../lib/settings";
 import type { AppendedEvent, MissionSummary } from "../lib/types";
 import { StartMissionModal } from "./StartMissionModal";
 import { StartChatModal } from "./StartChatModal";
@@ -544,7 +549,7 @@ export function Sidebar({
     <>
       <aside
         style={{ width: collapsed ? 52 : width }}
-        className="relative flex h-full shrink-0 select-none flex-col overflow-hidden border-r border-line bg-raised transition-[width] duration-150"
+        className="relative flex h-full shrink-0 select-none flex-col overflow-hidden border-r border-line bg-sidebar transition-[width] duration-150"
       >
         <div data-tauri-drag-region className="h-7" />
 
@@ -578,7 +583,7 @@ export function Sidebar({
               onClick={() => onCollapsedChange(false)}
               title="Expand sidebar (⌘\\)"
               aria-label="Expand sidebar"
-              className="flex h-9 w-9 cursor-pointer items-center justify-center rounded border border-transparent text-fg-2 transition-colors hover:border-line hover:bg-bg hover:text-fg"
+              className="flex h-9 w-9 cursor-pointer items-center justify-center rounded text-fg-2 transition-colors hover:bg-line/50 hover:text-fg"
             >
               <ChevronsRight aria-hidden className="h-4 w-4" />
             </button>
@@ -711,7 +716,7 @@ export function Sidebar({
               <button
                 type="button"
                 onClick={() => setSettingsOpen(true)}
-                className="flex flex-1 cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-fg-2 transition-colors hover:bg-raised hover:text-fg"
+                className="flex flex-1 cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-fg-2 transition-colors hover:bg-line/50 hover:text-fg"
               >
                 <SettingsIcon aria-hidden className="h-3.5 w-3.5" />
                 <span className="text-[13px]">Settings</span>
@@ -836,8 +841,8 @@ function NavRow({
       className={({ isActive }) =>
         `flex items-center gap-2 rounded px-2.5 py-1.5 text-sm transition-colors ${
           isActive
-            ? "bg-bg font-semibold text-fg"
-            : "text-fg-2 hover:text-fg"
+            ? "bg-line font-semibold text-fg"
+            : "text-fg-2 hover:bg-line/50 hover:text-fg"
         }`
       }
     >
@@ -874,10 +879,10 @@ function RailIconLink({
       title={label}
       aria-label={label}
       className={({ isActive }) =>
-        `flex h-9 w-9 items-center justify-center rounded border transition-colors ${
+        `flex h-9 w-9 items-center justify-center rounded transition-colors ${
           isActive
-            ? "border-line bg-bg text-fg"
-            : "border-transparent text-fg-2 hover:border-line hover:bg-bg hover:text-fg"
+            ? "bg-line text-fg"
+            : "text-fg-2 hover:bg-line/50 hover:text-fg"
         }`
       }
     >
@@ -905,7 +910,7 @@ function RailIconButton({
       onClick={onClick}
       title={label}
       aria-label={label}
-      className="flex h-9 w-9 cursor-pointer items-center justify-center rounded border border-transparent text-fg-2 transition-colors hover:border-line hover:bg-bg hover:text-fg"
+      className="flex h-9 w-9 cursor-pointer items-center justify-center rounded text-fg-2 transition-colors hover:bg-line/50 hover:text-fg"
     >
       <Icon aria-hidden className="h-4 w-4" />
     </button>
@@ -1202,8 +1207,8 @@ function SessionRow({
     <div
       className={`group flex w-full items-center gap-2 rounded border px-2.5 py-1.5 text-left text-xs transition-colors ${
         selected
-          ? "border-line bg-bg text-fg"
-          : "border-transparent text-fg-2 hover:text-fg"
+          ? "border-line-strong bg-bg font-semibold text-fg shadow-sm"
+          : "border-transparent text-fg-2 hover:bg-line/40 hover:text-fg"
       }`}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -1374,13 +1379,29 @@ function formatStartedAt(s: DirectSessionEntry): string {
 // ---- chrome ------------------------------------------------------------
 
 function BrandMark() {
+  // Brand-mark tint: when on (default), the chevron picks up the active
+  // theme's `var(--color-accent)` via `text-accent`; when off, it pins
+  // to the Carbon green `#00FF9C` so the in-sidebar mark stays aligned
+  // with the bundled `.icns` icon on Dock / Cmd+Tab / notifications.
+  // The polylines below use `stroke="currentColor"`, so this single
+  // `text-…` / `style.color` selection cascades through.
+  const [tint, setTint] = useState<boolean>(() => readBrandTint());
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== STORAGE_APP_BRAND_TINT) return;
+      setTint(readBrandTint());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   return (
     <svg
       width="32"
       height="32"
       viewBox="0 0 32 32"
       aria-hidden
-      className="shrink-0"
+      className={`shrink-0 ${tint ? "text-accent" : ""}`}
+      style={tint ? undefined : { color: BRAND_MARK_PINNED_COLOR }}
     >
       <ChevronGlyph x={3} y={3} size={9} opacity={0.4} />
       <ChevronGlyph x={9} y={9} size={14} opacity={1} />
@@ -1405,7 +1426,7 @@ function ChevronGlyph({
       <polyline
         points="9 18 15 12 9 6"
         fill="none"
-        stroke="#00FF9C"
+        stroke="currentColor"
         strokeWidth={2}
         strokeLinecap="round"
         strokeLinejoin="round"

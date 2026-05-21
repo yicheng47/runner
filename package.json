@@ -18,6 +18,9 @@
     "tauri:before:build": "node scripts/stage-runner-cli.mjs && npm run build"
   },
   "dependencies": {
+    "@fontsource-variable/geist": "^5.2.9",
+    "@fontsource-variable/inter": "^5.2.8",
+    "@fontsource-variable/roboto": "^5.2.10",
     "@tailwindcss/vite": "^4.2.1",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.6.0",

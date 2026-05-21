@@ -22,11 +22,14 @@ import {
   Info,
   Loader2,
   Minus,
+  Monitor,
+  Moon,
   Plus,
   RefreshCw,
   RotateCcw,
   Scale,
   Settings as SettingsIcon,
+  Sun,
   Terminal,
   X,
 } from "lucide-react";
@@ -38,16 +41,34 @@ import { getVersion } from "@tauri-apps/api/app";
 
 import { api } from "../lib/api";
 import { applyAppZoom } from "../lib/appZoom";
+import appIcon from "../assets/app-icon.png";
 import {
+  APP_FONT_FAMILY_OPTIONS,
+  APP_THEME_OPTIONS,
+  DARK_VARIANT_ACCENTS,
+  DARK_VARIANT_LABELS,
+  DARK_VARIANT_OPTIONS,
+  LIGHT_VARIANT_ACCENTS,
+  LIGHT_VARIANT_LABELS,
+  LIGHT_VARIANT_OPTIONS,
   notifySameWindowStorage,
+  readAppFontFamily,
+  readAppTheme,
   readAppZoom,
+  readDarkVariant,
   readDefaultWorkingDir,
+  readLightVariant,
   readStoredBool,
   readTerminalCursorStyle,
   readTerminalFontFamily,
   readTerminalFontSize,
   readTerminalScrollback,
   readTerminalTheme,
+  resolveAppSurface,
+  STORAGE_APP_DARK_VARIANT,
+  STORAGE_APP_FONT_FAMILY,
+  STORAGE_APP_LIGHT_VARIANT,
+  STORAGE_APP_THEME,
   STORAGE_APP_ZOOM,
   STORAGE_AUTO_INSTALL_UPDATES,
   STORAGE_TERMINAL_CURSOR_STYLE,
@@ -60,12 +81,21 @@ import {
   TERMINAL_FONT_SIZE_MAX,
   TERMINAL_FONT_SIZE_MIN,
   TERMINAL_SCROLLBACK_OPTIONS,
+  TERMINAL_THEME_ACCENTS,
   TERMINAL_THEME_LABELS,
   TERMINAL_THEME_OPTIONS,
+  type AppFontFamily,
+  type AppTheme,
+  type DarkVariant,
+  type LightVariant,
   type TerminalCursorStyle,
   type TerminalFontFamily,
   type TerminalTheme,
+  writeAppFontFamily,
+  writeAppTheme,
+  writeDarkVariant,
   writeDefaultWorkingDir,
+  writeLightVariant,
   writeStoredBool,
   writeTerminalCursorStyle,
   writeTerminalFontFamily,
@@ -83,7 +113,13 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-type Pane = "general" | "terminal" | "diagnostics" | "updates" | "about";
+type Pane =
+  | "general"
+  | "appearance"
+  | "terminal"
+  | "diagnostics"
+  | "updates"
+  | "about";
 
 const PANES: { key: Pane; label: string; subtitle: string; icon: typeof SettingsIcon }[] = [
   {
@@ -91,6 +127,12 @@ const PANES: { key: Pane; label: string; subtitle: string; icon: typeof Settings
     label: "General",
     subtitle: "Startup & defaults",
     icon: SettingsIcon,
+  },
+  {
+    key: "appearance",
+    label: "Appearance",
+    subtitle: "Theme & sidebar mark",
+    icon: Sun,
   },
   {
     key: "terminal",
@@ -142,8 +184,12 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         ref={cardRef}
         className="flex h-[560px] w-[680px] overflow-hidden rounded-xl border border-line bg-panel shadow-[0_14px_40px_rgba(0,0,0,0.6)]"
       >
-        {/* Sidebar */}
-        <aside className="flex w-[200px] shrink-0 flex-col gap-1 border-r border-line bg-bg-2 px-3 py-4">
+        {/* Sidebar — Codex-style: secondary surface (panel) sitting
+            alongside the primary surface (bg) used for the content
+            pane. Active item is a neutral darker pill, no accent
+            tint — keeps the sidebar feeling like a flat list rather
+            than highlighting the current section in brand color. */}
+        <aside className="flex w-[200px] shrink-0 flex-col gap-1 border-r border-line bg-sidebar px-3 py-4">
           <div className="px-2 pb-2 text-[14px] font-bold text-fg">
             Settings
           </div>
@@ -157,25 +203,21 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 onClick={() => setPane(p.key)}
                 className={`flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors ${
                   active
-                    ? "bg-accent/10 text-accent"
-                    : "text-fg hover:bg-raised"
+                    ? "bg-line text-fg"
+                    : "text-fg hover:bg-line/50"
                 }`}
               >
                 <Icon
                   aria-hidden
-                  className={`h-4 w-4 ${active ? "text-accent" : "text-fg-3"}`}
+                  className={`h-4 w-4 ${active ? "text-fg" : "text-fg-2"}`}
                 />
                 <div className="flex min-w-0 flex-col gap-px">
-                  <span
-                    className={`truncate text-[12px] font-medium ${
-                      active ? "text-accent" : "text-fg"
-                    }`}
-                  >
+                  <span className="truncate text-[12px] font-medium text-fg">
                     {p.label}
                   </span>
                   <span
                     className={`truncate text-[10px] ${
-                      active ? "text-accent/70" : "text-fg-3"
+                      active ? "text-fg-2" : "text-fg-3"
                     }`}
                   >
                     {p.subtitle}
@@ -186,8 +228,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           })}
         </aside>
 
-        {/* Content */}
-        <div className="relative flex flex-1 flex-col gap-[18px] overflow-y-auto px-6 py-5">
+        {/* Content — primary surface (bg) so the sidebar's secondary
+            surface (panel) reads as the supporting nav rail. In light
+            mode this puts a white pane next to a gray rail; in dark
+            mode the content is the deeper of the two surfaces. */}
+        <div className="relative flex flex-1 flex-col gap-[18px] overflow-y-auto bg-bg px-6 py-5">
           <button
             type="button"
             onClick={onClose}
@@ -198,6 +243,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             <X aria-hidden className="h-4 w-4" />
           </button>
           {pane === "general" ? <GeneralPane /> : null}
+          {pane === "appearance" ? <AppearancePane /> : null}
           {pane === "terminal" ? <TerminalPane /> : null}
           {pane === "diagnostics" ? <DiagnosticsPane /> : null}
           {pane === "updates" ? <UpdatesPane /> : null}
@@ -338,6 +384,231 @@ function GeneralPane() {
   );
 }
 
+function AppearancePane() {
+  // Theme = user *intent* (auto/light/dark). lightVariant + darkVariant
+  // are which palette to use on each side; v1 ships Codex Light + Carbon
+  // & Plasma. Writes go through `writeAppTheme` / `writeLightVariant`
+  // then fire a same-window storage event so `applyAppTheme()` in
+  // `main.tsx` flips `<html data-theme>` without a reload.
+  const [theme, setThemeState] = useState<AppTheme>(() => readAppTheme());
+  const [lightVariant, setLightVariantState] = useState<LightVariant>(() =>
+    readLightVariant(),
+  );
+  const [darkVariant, setDarkVariantState] = useState<DarkVariant>(() =>
+    readDarkVariant(),
+  );
+  const [fontFamily, setFontFamilyState] = useState<AppFontFamily>(() =>
+    readAppFontFamily(),
+  );
+  // Surface (light/dark) tracks the same resolution `applyAppTheme()` uses,
+  // so the preview card mirrors what the app actually paints. For `auto`,
+  // we listen to `prefers-color-scheme` so OS flips refresh the preview
+  // without closing the modal.
+  const [surface, setSurface] = useState<"light" | "dark">(() =>
+    resolveAppSurface(readAppTheme()),
+  );
+  useEffect(() => {
+    setSurface(resolveAppSurface(theme));
+    if (theme !== "auto") return;
+    let media: MediaQueryList | null = null;
+    try {
+      media = window.matchMedia("(prefers-color-scheme: light)");
+    } catch {
+      return;
+    }
+    const onChange = () => setSurface(resolveAppSurface("auto"));
+    if (media.addEventListener) {
+      media.addEventListener("change", onChange);
+      return () => media!.removeEventListener("change", onChange);
+    }
+    media.addListener(onChange);
+    return () => media!.removeListener(onChange);
+  }, [theme]);
+  const setTheme = (next: AppTheme) => {
+    setThemeState(next);
+    writeAppTheme(next);
+    notifySameWindowStorage(STORAGE_APP_THEME, next);
+  };
+  const setLightVariant = (next: LightVariant) => {
+    setLightVariantState(next);
+    writeLightVariant(next);
+    notifySameWindowStorage(STORAGE_APP_LIGHT_VARIANT, next);
+  };
+  const setDarkVariant = (next: DarkVariant) => {
+    setDarkVariantState(next);
+    writeDarkVariant(next);
+    notifySameWindowStorage(STORAGE_APP_DARK_VARIANT, next);
+  };
+  const setFontFamily = (next: AppFontFamily) => {
+    setFontFamilyState(next);
+    writeAppFontFamily(next);
+    notifySameWindowStorage(STORAGE_APP_FONT_FAMILY, next);
+  };
+  return (
+    <>
+      <PaneHeader
+        title="Appearance"
+        subtitle="Theme, palette, and font."
+      />
+      <Row
+        label="Theme"
+        sub="Match the OS, or pin to light or dark."
+      >
+        <ThemeSegmented value={theme} onChange={setTheme} />
+      </Row>
+      <Row
+        label="Light theme"
+        sub="Picked when the OS is light or Theme = Light."
+      >
+        <StyledSelect
+          value={lightVariant}
+          options={LIGHT_VARIANT_OPTIONS.map((id) => ({
+            value: id,
+            label: LIGHT_VARIANT_LABELS[id],
+            swatchColor: LIGHT_VARIANT_ACCENTS[id],
+          }))}
+          onChange={(v) => setLightVariant(v as LightVariant)}
+        />
+      </Row>
+      <Row
+        label="Dark theme"
+        sub="Picked when the OS is dark or Theme = Dark."
+      >
+        <StyledSelect
+          value={darkVariant}
+          options={DARK_VARIANT_OPTIONS.map((id) => ({
+            value: id,
+            label: DARK_VARIANT_LABELS[id],
+            swatchColor: DARK_VARIANT_ACCENTS[id],
+          }))}
+          onChange={(v) => setDarkVariant(v as DarkVariant)}
+        />
+      </Row>
+      <Row
+        label="App font"
+        sub="UI typeface across the app. Doesn't apply to the embedded terminal — see Terminal pane."
+      >
+        <StyledSelect
+          value={fontFamily}
+          options={APP_FONT_FAMILY_OPTIONS.map((f) => ({
+            value: f,
+            label: f,
+          }))}
+          onChange={(v) => setFontFamily(v as AppFontFamily)}
+        />
+      </Row>
+      <div className="h-px w-full bg-line" />
+      <AppearancePreview
+        surface={surface}
+        lightVariant={lightVariant}
+        darkVariant={darkVariant}
+      />
+    </>
+  );
+}
+
+// Preview card. Mirrors the Pencil node `r7Su0` in `runners-design.pen`
+// — a section header + a mini chat-row card the user can compare-shop
+// with before committing the dropdown. The inner wrapper sets
+// `data-theme` to the active variant for the resolved surface, with
+// one exception: Carbon (the canonical dark variant) leaves the
+// attribute off so the unattributed `@theme` defaults paint through
+// — mirrors `applyAppTheme()`'s cascade.
+function AppearancePreview({
+  surface,
+  lightVariant,
+  darkVariant,
+}: {
+  surface: "light" | "dark";
+  lightVariant: LightVariant;
+  darkVariant: DarkVariant;
+}) {
+  const previewTheme: string | undefined =
+    surface === "light"
+      ? lightVariant
+      : darkVariant === "carbon"
+        ? undefined
+        : darkVariant;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
+        Preview
+      </div>
+      <div
+        data-theme={previewTheme}
+        className="flex items-center gap-3 rounded-lg border border-line bg-raised p-3"
+      >
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="truncate text-[13px] font-semibold text-fg">
+            @architect
+          </span>
+          <span className="truncate text-[11px] text-fg-2">
+            Plans features and splits work into tasks.
+          </span>
+        </div>
+        <button
+          type="button"
+          className="shrink-0 cursor-default rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-accent-ink"
+        >
+          Chat
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Segmented Auto · Light · Dark control. Mirrors the Pencil node `J0lKR`
+// in `runners-design.pen` — 3 cells inside a rounded container, active
+// cell carries the raised surface + accent label, inactive cells stay
+// muted on the bg.
+function ThemeSegmented({
+  value,
+  onChange,
+}: {
+  value: AppTheme;
+  onChange: (next: AppTheme) => void;
+}) {
+  const ICONS: Record<AppTheme, typeof Monitor> = {
+    auto: Monitor,
+    light: Sun,
+    dark: Moon,
+  };
+  const LABELS: Record<AppTheme, string> = {
+    auto: "Auto",
+    light: "Light",
+    dark: "Dark",
+  };
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Theme"
+      className="flex items-center gap-0.5 rounded-md border border-line bg-panel p-0.5"
+    >
+      {APP_THEME_OPTIONS.map((option) => {
+        const Icon = ICONS[option];
+        const active = option === value;
+        return (
+          <button
+            key={option}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            onClick={() => onChange(option)}
+            className={`flex cursor-pointer items-center gap-1.5 rounded-[4px] px-2.5 py-[5px] text-[12px] font-medium transition-colors ${
+              active
+                ? "bg-raised text-fg"
+                : "text-fg-2 hover:text-fg"
+            }`}
+          >
+            <Icon aria-hidden className="h-3 w-3" />
+            <span>{LABELS[option]}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function TerminalPane() {
   const [fontSize, setFontSizeState] = useState<number>(() =>
     readTerminalFontSize(),
@@ -387,13 +658,14 @@ function TerminalPane() {
       />
       <Row
         label="Theme"
-        sub="ANSI palette for the embedded terminal. Background stays locked to app chrome."
+        sub="ANSI palette for the embedded terminal."
       >
         <StyledSelect
           value={theme}
           options={TERMINAL_THEME_OPTIONS.map((id) => ({
             value: id,
             label: TERMINAL_THEME_LABELS[id],
+            swatchColor: TERMINAL_THEME_ACCENTS[id],
           }))}
           onChange={(v) => setTheme(v as TerminalTheme)}
         />
@@ -807,9 +1079,18 @@ function AboutPane() {
           centers the brand block instead of using a left-aligned
           h2 + subtitle. */}
       <div className="flex flex-col items-center gap-3.5 pb-2 pt-1">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-line bg-bg">
-          <RunnerGlyph />
-        </div>
+        {/* About-page icon mirrors the bundled `.icns` shipped with
+            the macOS / Windows installer instead of a stylized chevron
+            glyph, so the in-app identity matches what users see in
+            the Dock / file-explorer. Imported from `src/assets/` so
+            Vite emits a hashed URL into the bundle. */}
+        <img
+          src={appIcon}
+          alt="Runner icon"
+          width={56}
+          height={56}
+          className="h-14 w-14 rounded-2xl"
+        />
         <div className="flex flex-col items-center gap-1.5">
           <span className="text-[20px] font-bold text-fg">Runner</span>
           <span className="text-[12px] text-fg-2">
@@ -977,25 +1258,6 @@ function LinkRow({
         ) : null
       )}
     </button>
-  );
-}
-
-function RunnerGlyph() {
-  return (
-    <svg
-      width="32"
-      height="32"
-      viewBox="0 0 32 32"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="text-accent"
-      aria-hidden
-    >
-      <path d="M14 8 L22 16 L14 24" />
-    </svg>
   );
 }
 
