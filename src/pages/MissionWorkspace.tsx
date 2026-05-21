@@ -21,8 +21,8 @@ import {
   MoreHorizontal,
   Pin,
   PinOff,
-  PanelRightClose,
-  PanelRightOpen,
+  PanelRight,
+  PanelRightDashed,
   RotateCcw,
   SquarePen,
   Terminal,
@@ -53,13 +53,12 @@ import {
   ResumingOverlay,
   SessionEndedOverlay,
   StartingOverlay,
-  chunkIndicatesTuiReady,
-  isFreshSpawn,
 } from "../components/SessionEndedOverlay";
 import {
   ResumeButton,
   StopButton,
 } from "../components/ui/SessionControl";
+import { chunkIndicatesTuiReady, isFreshSpawn } from "../lib/sessionLifecycle";
 import { useTerminalBg } from "../lib/useTerminalBg";
 import {
   markArchivingMission,
@@ -670,9 +669,9 @@ export default function MissionWorkspace() {
               onClick={() => setRailOpen(true)}
               title="Open runners panel"
               aria-label="Open runners panel"
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-fg-2 transition-colors hover:border-line hover:bg-raised hover:text-fg"
+              className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-2 transition-colors hover:bg-raised hover:text-fg"
             >
-              <PanelRightOpen aria-hidden className="h-4 w-4" />
+              <PanelRightDashed aria-hidden className="h-4 w-4" />
             </button>
           ) : null}
         </div>
@@ -854,7 +853,7 @@ export default function MissionWorkspace() {
                 aria-label="Collapse panel"
                 className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-2 hover:bg-raised hover:text-fg"
               >
-                <PanelRightClose aria-hidden className="h-4 w-4" />
+                <PanelRight aria-hidden className="h-4 w-4" />
               </button>
             </div>
           </header>

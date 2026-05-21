@@ -81,6 +81,7 @@ import {
   TERMINAL_FONT_SIZE_MAX,
   TERMINAL_FONT_SIZE_MIN,
   TERMINAL_SCROLLBACK_OPTIONS,
+  TERMINAL_THEME_ACCENTS,
   TERMINAL_THEME_LABELS,
   TERMINAL_THEME_OPTIONS,
   type AppFontFamily,
@@ -188,7 +189,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             pane. Active item is a neutral darker pill, no accent
             tint — keeps the sidebar feeling like a flat list rather
             than highlighting the current section in brand color. */}
-        <aside className="flex w-[200px] shrink-0 flex-col gap-1 border-r border-line bg-panel px-3 py-4">
+        <aside className="flex w-[200px] shrink-0 flex-col gap-1 border-r border-line bg-sidebar px-3 py-4">
           <div className="px-2 pb-2 text-[14px] font-bold text-fg">
             Settings
           </div>
@@ -664,6 +665,7 @@ function TerminalPane() {
           options={TERMINAL_THEME_OPTIONS.map((id) => ({
             value: id,
             label: TERMINAL_THEME_LABELS[id],
+            swatchColor: TERMINAL_THEME_ACCENTS[id],
           }))}
           onChange={(v) => setTheme(v as TerminalTheme)}
         />

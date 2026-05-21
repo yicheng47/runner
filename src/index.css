@@ -10,6 +10,13 @@
   --color-raised: #272930;
   --color-line: #272930;
   --color-line-strong: #2a2c33;
+  /* Dedicated sidebar surface — sits between `panel` and `raised` in
+     Carbon so the left rail clearly lifts off the content area
+     (#15161b) without becoming as bright as a raised card. Light
+     variants override this to a panel-gray that pairs with their
+     bright bg, since "raised" in light themes is pure white and
+     wouldn't read as a sidebar. */
+  --color-sidebar: #272930;
 
   --color-fg: #dcdce0;
   --color-fg-2: #9a9ba5;
@@ -35,6 +42,7 @@
   --color-raised: #ffffff;
   --color-line: #e5e5e7;
   --color-line-strong: #d1d1d6;
+  --color-sidebar: #f7f7f8;
 
   --color-fg: #1a1c1f;
   --color-fg-2: #6e6e73;
@@ -59,6 +67,7 @@
   --color-raised: #45475a;
   --color-line: #45475a;
   --color-line-strong: #585b70;
+  --color-sidebar: #313244;
 
   --color-fg: #cdd6f4;
   --color-fg-2: #a6adc8;
@@ -86,6 +95,7 @@
   --color-raised: #ffffff;
   --color-line: #ccd0da;
   --color-line-strong: #bcc0cc;
+  --color-sidebar: #e6e9ef;
 
   --color-fg: #4c4f69;
   --color-fg-2: #6c6f85;

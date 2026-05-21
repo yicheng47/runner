@@ -61,6 +61,11 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   );
 }
 
+// Co-located with the provider so a single import gives consumers
+// the full context surface. The Fast-Refresh rule wants components
+// and non-components in separate files; splitting them here would
+// just create a one-liner module for the hook, so disable instead.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useUpdate(): UpdateState {
   const ctx = useContext(UpdateContext);
   if (!ctx) throw new Error("useUpdate must be used within UpdateProvider");

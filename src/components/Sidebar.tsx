@@ -549,7 +549,7 @@ export function Sidebar({
     <>
       <aside
         style={{ width: collapsed ? 52 : width }}
-        className="relative flex h-full shrink-0 select-none flex-col overflow-hidden border-r border-line bg-panel transition-[width] duration-150"
+        className="relative flex h-full shrink-0 select-none flex-col overflow-hidden border-r border-line bg-sidebar transition-[width] duration-150"
       >
         <div data-tauri-drag-region className="h-7" />
 

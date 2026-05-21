@@ -16,8 +16,8 @@ import { listen } from "@tauri-apps/api/event";
 import {
   Archive,
   MoreHorizontal,
-  PanelRightClose,
-  PanelRightOpen,
+  PanelRight,
+  PanelRightDashed,
   Pin,
   PinOff,
   SquarePen,
@@ -39,10 +39,9 @@ import {
   ResumingOverlay,
   SessionEndedOverlay,
   StartingOverlay,
-  chunkIndicatesTuiReady,
-  isFreshSpawn,
 } from "../components/SessionEndedOverlay";
 import { api, type DirectSessionEntry } from "../lib/api";
+import { chunkIndicatesTuiReady, isFreshSpawn } from "../lib/sessionLifecycle";
 import { useTerminalBg } from "../lib/useTerminalBg";
 import {
   markArchivingSession,
@@ -950,9 +949,13 @@ export default function RunnerChat() {
               onClick={() => setPanelOpen(true)}
               title="Open side panel"
               aria-label="Open side panel"
-              className="flex h-7 w-7 cursor-pointer items-center justify-center rounded border border-line bg-bg text-fg-2 hover:border-fg-3 hover:text-fg"
+              className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-2 hover:bg-raised hover:text-fg"
             >
-              <PanelRightOpen aria-hidden className="h-4 w-4" />
+              {/* Dashed-bar variant = "panel exists but is collapsed";
+                  flips to the solid `PanelRight` when the panel is
+                  open. Two clearly distinct states, both Obsidian-
+                  flavored (no chevrons). */}
+              <PanelRightDashed aria-hidden className="h-4 w-4" />
             </button>
           ) : null}
         </div>
@@ -1146,7 +1149,7 @@ function RunnerSidePanel({
               aria-label="Collapse panel"
               className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-2 hover:bg-raised hover:text-fg"
             >
-              <PanelRightClose aria-hidden className="h-4 w-4" />
+              <PanelRight aria-hidden className="h-4 w-4" />
             </button>
           </div>
         </header>

@@ -134,22 +134,26 @@ export const TERMINAL_SCROLLBACK_OPTIONS: readonly number[] = [
 export type TerminalTheme =
   | "runner"
   | "catppuccin-mocha"
-  | "solarized-dark"
-  | "catppuccin-latte"
-  | "solarized-light";
+  | "solarized-dark";
 export const TERMINAL_THEME_OPTIONS: readonly TerminalTheme[] = [
   "runner",
   "catppuccin-mocha",
   "solarized-dark",
-  "catppuccin-latte",
-  "solarized-light",
 ];
 export const TERMINAL_THEME_LABELS: Record<TerminalTheme, string> = {
   runner: "Runner",
   "catppuccin-mocha": "Catppuccin Mocha",
   "solarized-dark": "Solarized Dark",
-  "catppuccin-latte": "Catppuccin Latte",
-  "solarized-light": "Solarized Light",
+};
+// Swatch color shown next to each label in the terminal-theme
+// dropdown — mirrors the Appearance dropdowns. Picks the palette's
+// most identifiable hue (Runner's neon green, Catppuccin's mauve,
+// Solarized's blue) instead of the cursor color, which is often a
+// neutral gray and wouldn't read as a brand swatch.
+export const TERMINAL_THEME_ACCENTS: Record<TerminalTheme, string> = {
+  runner: "#00FF9C",
+  "catppuccin-mocha": "#CBA6F7",
+  "solarized-dark": "#268BD2",
 };
 export const DEFAULT_TERMINAL_THEME: TerminalTheme = "runner";
 
@@ -235,56 +239,6 @@ export const TERMINAL_THEMES: Record<TerminalTheme, ITheme> = {
     brightMagenta: "#6C71C4",
     brightCyan: "#93A1A1",
     brightWhite: "#FDF6E3",
-  },
-  // Light-surface palettes — bg locked to #FFFFFF so the canvas blends
-  // into Codex Light's `--color-bg`. Foreground + ANSI are tuned for
-  // legibility on white; selectionBackground uses a tint of the theme's
-  // accent so the highlight reads without going too dark.
-  "solarized-light": {
-    background: "#FDF6E3",
-    foreground: "#657B83",
-    cursor: "#586E75",
-    cursorAccent: "#FDF6E3",
-    selectionBackground: "#EEE8D5",
-    black: "#073642",
-    red: "#DC322F",
-    green: "#859900",
-    yellow: "#B58900",
-    blue: "#268BD2",
-    magenta: "#D33682",
-    cyan: "#2AA198",
-    white: "#EEE8D5",
-    brightBlack: "#002B36",
-    brightRed: "#CB4B16",
-    brightGreen: "#586E75",
-    brightYellow: "#657B83",
-    brightBlue: "#839496",
-    brightMagenta: "#6C71C4",
-    brightCyan: "#93A1A1",
-    brightWhite: "#FDF6E3",
-  },
-  "catppuccin-latte": {
-    background: "#EFF1F5",
-    foreground: "#4C4F69",
-    cursor: "#DC8A78",
-    cursorAccent: "#EFF1F5",
-    selectionBackground: "#CCD0DA",
-    black: "#5C5F77",
-    red: "#D20F39",
-    green: "#40A02B",
-    yellow: "#DF8E1D",
-    blue: "#1E66F5",
-    magenta: "#EA76CB",
-    cyan: "#179299",
-    white: "#ACB0BE",
-    brightBlack: "#6C6F85",
-    brightRed: "#D20F39",
-    brightGreen: "#40A02B",
-    brightYellow: "#DF8E1D",
-    brightBlue: "#1E66F5",
-    brightMagenta: "#EA76CB",
-    brightCyan: "#179299",
-    brightWhite: "#BCC0CC",
   },
 };
 
