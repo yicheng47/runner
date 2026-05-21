@@ -775,8 +775,8 @@ export function Sidebar({
       />
 
       {sessionMenu ? (
-        <SessionContextMenu
-          session={sessionMenu.session}
+        <RowContextMenu
+          pinned={sessionMenu.session.pinned}
           anchorX={sessionMenu.x}
           anchorY={sessionMenu.y}
           onClose={closeSessionMenu}
@@ -796,7 +796,7 @@ export function Sidebar({
       ) : null}
 
       {missionMenu ? (
-        <MissionContextMenu
+        <RowContextMenu
           pinned={!!missionMenu.mission.pinned_at}
           anchorX={missionMenu.x}
           anchorY={missionMenu.y}
@@ -1245,79 +1245,6 @@ function SessionRow({
   );
 }
 
-// Floating action menu anchored at (anchorX, anchorY). Mirrors the
-// Pencil design `P5CLA`: 140px wide, 6px padding, 1px gap, lucide
-// icons, dark surface with a subtle drop shadow. Closes on outside
-// click, Escape, or any of its actions firing.
-function SessionContextMenu({
-  session,
-  anchorX,
-  anchorY,
-  onClose,
-  onPin,
-  onRename,
-  onArchive,
-}: {
-  session: DirectSessionEntry;
-  anchorX: number;
-  anchorY: number;
-  onClose: () => void;
-  onPin: () => void;
-  onRename: () => void;
-  onArchive: () => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ x: anchorX, y: anchorY });
-
-  // Clamp to viewport so the menu doesn't run off the right or bottom
-  // edge. Measure after mount, then translate if needed.
-  useEffect(() => {
-    if (!ref.current) return;
-    const rect = ref.current.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const margin = 4;
-    const x = Math.min(anchorX, vw - rect.width - margin);
-    const y = Math.min(anchorY, vh - rect.height - margin);
-    setPos({ x: Math.max(margin, x), y: Math.max(margin, y) });
-  }, [anchorX, anchorY]);
-
-  // Outside-click + Escape close.
-  useEffect(() => {
-    const onMouseDown = (e: MouseEvent) => {
-      if (!ref.current) return;
-      if (!ref.current.contains(e.target as Node)) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
-
-  const isPinned = session.pinned;
-  return (
-    <div
-      ref={ref}
-      role="menu"
-      style={{ position: "fixed", left: pos.x, top: pos.y, width: 140 }}
-      className="z-50 flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
-    >
-      <ContextMenuItem
-        icon={isPinned ? PinOff : Pin}
-        label={isPinned ? "Unpin" : "Pin"}
-        onClick={onPin}
-      />
-      <ContextMenuItem icon={SquarePen} label="Rename" onClick={onRename} />
-      <ContextMenuItem icon={Archive} label="Archive" onClick={onArchive} />
-    </div>
-  );
-}
-
 function ContextMenuItem({
   icon: Icon,
   label,
@@ -1350,9 +1277,11 @@ function ContextMenuItem({
   );
 }
 
-/// Mission row context menu — Pin, Rename, Archive. Layout matches
-/// Pencil node `EWpGa` in `runners-design.pen`.
-function MissionContextMenu({
+// Floating Pin / Rename / Archive menu shared by mission rows and
+// direct chat rows. Layout matches Pencil node `EWpGa`: 160px wide,
+// 6px padding, lucide icons, dark surface with a subtle drop shadow.
+// Closes on outside click, Escape, or any action firing.
+function RowContextMenu({
   pinned,
   anchorX,
   anchorY,
