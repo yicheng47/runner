@@ -242,8 +242,13 @@ export function chunkIndicatesTuiReady(base64: string): boolean {
 }
 
 function LoadingPill({ label }: { label: string }) {
+  // Resume / Starting pill — info-toned ("transitional / waiting"
+  // semantic). Was hardcoded to Carbon's #39E5FF + matching tints;
+  // now routed through `--color-info` so the pill picks the right
+  // hue per active theme (cyan in Carbon, sapphire in Codex Light,
+  // sky in Catppuccin Mocha/Latte).
   return (
-    <div className="pointer-events-auto flex items-center gap-2.5 rounded-full border border-[#1F3D4D] bg-[#0F1E26] px-4 py-2 text-[13px] font-medium text-[#39E5FF] shadow-[0_8px_30px_rgba(0,0,0,0.5)]">
+    <div className="pointer-events-auto flex items-center gap-2.5 rounded-full border border-info/40 bg-info/10 px-4 py-2 text-[13px] font-medium text-info shadow-[0_8px_30px_rgba(0,0,0,0.5)]">
       <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
       {label}
     </div>
@@ -257,16 +262,20 @@ function LoadingPill({ label }: { label: string }) {
 /// variant — the chat body dims behind the pill so the terminal
 /// stays faintly visible.
 export function ArchivingOverlay({ withScrim = false }: { withScrim?: boolean }) {
+  // Archiving pill — warn-toned (destructive transition). The scrim
+  // + pill chrome were Carbon-only hexes (#15161B for the bg, #FFB020
+  // for the amber). Now routed through `--color-bg` and `--color-warn`
+  // so the dim + pill colors track the active theme on both surfaces.
   return (
     <>
       {withScrim ? (
-        <div className="pointer-events-none absolute inset-0 bg-[#15161BF2]" />
+        <div className="pointer-events-none absolute inset-0 bg-bg/95" />
       ) : null}
       <div className="pointer-events-none absolute inset-4 flex items-center justify-center">
         <div
-          className="pointer-events-auto flex h-[30px] items-center gap-2 rounded-[15px] border border-[#FFB02055] bg-[#FFB02022] px-3 font-mono text-[13px] font-semibold tracking-[0.5px] text-[#FFB020]"
+          className="pointer-events-auto flex h-[30px] items-center gap-2 rounded-[15px] border border-warn/40 bg-warn/15 px-3 font-mono text-[13px] font-semibold tracking-[0.5px] text-warn"
         >
-          <span className="h-2 w-2 animate-pulse rounded-[4px] bg-[#FFB020]" />
+          <span className="h-2 w-2 animate-pulse rounded-[4px] bg-warn" />
           Archiving…
         </div>
       </div>

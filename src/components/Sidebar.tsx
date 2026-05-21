@@ -549,7 +549,7 @@ export function Sidebar({
     <>
       <aside
         style={{ width: collapsed ? 52 : width }}
-        className="relative flex h-full shrink-0 select-none flex-col overflow-hidden border-r border-line bg-raised transition-[width] duration-150"
+        className="relative flex h-full shrink-0 select-none flex-col overflow-hidden border-r border-line bg-panel transition-[width] duration-150"
       >
         <div data-tauri-drag-region className="h-7" />
 
@@ -583,7 +583,7 @@ export function Sidebar({
               onClick={() => onCollapsedChange(false)}
               title="Expand sidebar (⌘\\)"
               aria-label="Expand sidebar"
-              className="flex h-9 w-9 cursor-pointer items-center justify-center rounded border border-transparent text-fg-2 transition-colors hover:border-line hover:bg-bg hover:text-fg"
+              className="flex h-9 w-9 cursor-pointer items-center justify-center rounded text-fg-2 transition-colors hover:bg-line/50 hover:text-fg"
             >
               <ChevronsRight aria-hidden className="h-4 w-4" />
             </button>
@@ -716,7 +716,7 @@ export function Sidebar({
               <button
                 type="button"
                 onClick={() => setSettingsOpen(true)}
-                className="flex flex-1 cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-fg-2 transition-colors hover:bg-raised hover:text-fg"
+                className="flex flex-1 cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-fg-2 transition-colors hover:bg-line/50 hover:text-fg"
               >
                 <SettingsIcon aria-hidden className="h-3.5 w-3.5" />
                 <span className="text-[13px]">Settings</span>
@@ -841,8 +841,8 @@ function NavRow({
       className={({ isActive }) =>
         `flex items-center gap-2 rounded px-2.5 py-1.5 text-sm transition-colors ${
           isActive
-            ? "bg-bg font-semibold text-fg"
-            : "text-fg-2 hover:text-fg"
+            ? "bg-line font-semibold text-fg"
+            : "text-fg-2 hover:bg-line/50 hover:text-fg"
         }`
       }
     >
@@ -879,10 +879,10 @@ function RailIconLink({
       title={label}
       aria-label={label}
       className={({ isActive }) =>
-        `flex h-9 w-9 items-center justify-center rounded border transition-colors ${
+        `flex h-9 w-9 items-center justify-center rounded transition-colors ${
           isActive
-            ? "border-line bg-bg text-fg"
-            : "border-transparent text-fg-2 hover:border-line hover:bg-bg hover:text-fg"
+            ? "bg-line text-fg"
+            : "text-fg-2 hover:bg-line/50 hover:text-fg"
         }`
       }
     >
@@ -910,7 +910,7 @@ function RailIconButton({
       onClick={onClick}
       title={label}
       aria-label={label}
-      className="flex h-9 w-9 cursor-pointer items-center justify-center rounded border border-transparent text-fg-2 transition-colors hover:border-line hover:bg-bg hover:text-fg"
+      className="flex h-9 w-9 cursor-pointer items-center justify-center rounded text-fg-2 transition-colors hover:bg-line/50 hover:text-fg"
     >
       <Icon aria-hidden className="h-4 w-4" />
     </button>
@@ -1207,8 +1207,8 @@ function SessionRow({
     <div
       className={`group flex w-full items-center gap-2 rounded border px-2.5 py-1.5 text-left text-xs transition-colors ${
         selected
-          ? "border-line bg-bg text-fg"
-          : "border-transparent text-fg-2 hover:text-fg"
+          ? "border-line-strong bg-bg font-semibold text-fg shadow-sm"
+          : "border-transparent text-fg-2 hover:bg-line/40 hover:text-fg"
       }`}
       onContextMenu={(e) => {
         e.preventDefault();

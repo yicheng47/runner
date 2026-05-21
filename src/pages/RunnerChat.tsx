@@ -15,14 +15,11 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import {
   Archive,
-  Loader2,
   MoreHorizontal,
   PanelRightClose,
   PanelRightOpen,
   Pin,
   PinOff,
-  Play,
-  Square,
   SquarePen,
   Terminal,
 } from "lucide-react";
@@ -32,6 +29,12 @@ import {
   type RunnerTerminalHandle,
 } from "../components/RunnerTerminal";
 import {
+  BackButton,
+  ResumeButton,
+  ResumingButton,
+  StopButton,
+} from "../components/ui/SessionControl";
+import {
   ArchivingOverlay,
   ResumingOverlay,
   SessionEndedOverlay,
@@ -40,6 +43,7 @@ import {
   isFreshSpawn,
 } from "../components/SessionEndedOverlay";
 import { api, type DirectSessionEntry } from "../lib/api";
+import { useTerminalBg } from "../lib/useTerminalBg";
 import {
   markArchivingSession,
   unmarkArchivingSession,
@@ -802,7 +806,7 @@ export default function RunnerChat() {
       : chatState === "crashed"
         ? "bg-danger/10 text-danger"
         : chatState === "resuming"
-          ? "bg-[#0F1E26] text-[#39E5FF]"
+          ? "bg-info/15 text-info"
           : "bg-line-strong text-fg-2";
   const statusDotClass =
     chatState === "running"
@@ -810,11 +814,15 @@ export default function RunnerChat() {
       : chatState === "crashed"
         ? "bg-danger"
         : chatState === "resuming"
-          ? "bg-[#39E5FF]"
+          ? "bg-info"
           : "bg-fg-3";
   const statusLabel = chatState === "resuming" ? "resuming…" : status;
   const titleLabel =
     chatMeta?.title ?? (handle ? `@${handle}` : "chat");
+  // Padding wrapper around the xterm canvas tracks the current
+  // terminal palette's background so the canvas + frame stay
+  // seamless across theme switches.
+  const terminalBg = useTerminalBg();
   const metaParts = [
     runner ? `${runner.runtime}-${runner.handle}` : null,
     chatMeta?.started_at
@@ -829,20 +837,23 @@ export default function RunnerChat() {
       <div className="flex min-w-0 flex-1 flex-col">
       <header className="flex items-center justify-between gap-4 border-b border-line bg-panel px-6 pb-3.5 pt-9">
         <div className="flex min-w-0 items-center gap-3.5">
-          {/* Avatar — Pencil node `dnPId`. 36×36 with `bg`, `border-line`
-              stroke; the terminal glyph carries the accent fill. */}
+          {/* Avatar — 36×36, matches MissionWorkspace's mission glyph
+              dimensions so the chat + mission headers line up at the
+              same baseline. */}
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-bg">
             <Terminal aria-hidden className="h-[18px] w-[18px] text-accent" />
           </div>
-          <div className="flex min-w-0 flex-col gap-[3px]">
-            <div className="flex items-center gap-2.5">
-              {/* Title — JetBrains Mono 15/600 per node `U9Fx8f`.
-                  Falls back to `@handle` when the row has no custom
-                  title; both render in mono since either way it's an
-                  identifier-shaped string. */}
-              <span className="truncate font-mono text-[15px] font-semibold text-fg">
+          {/* Title block — typography + gaps mirror
+              MissionWorkspace's header so the bottom border lands at
+              the same y on both pages. Title was previously
+              font-mono text-[15px] which made chat's title row
+              ~2px taller, pushing its meta row down and offsetting
+              the divider visually. */}
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <div className="flex items-center gap-2">
+              <h1 className="truncate text-[14px] font-semibold leading-tight text-fg">
                 {titleLabel}
-              </span>
+              </h1>
               <span className="rounded bg-line-strong px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-fg-2">
                 Chat
               </span>
@@ -852,7 +863,7 @@ export default function RunnerChat() {
                   current state, and a pill at the same edge read
                   redundant. */}
               <span
-                className={`flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${statusBadgeClass}`}
+                className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${statusBadgeClass}`}
                 title={`session ${sessionId ? sessionId.slice(-6) : "—"}`}
               >
                 <span className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass}`} />
@@ -865,7 +876,7 @@ export default function RunnerChat() {
               ) : null}
             </div>
             {metaParts.length > 0 ? (
-              <div className="flex min-w-0 items-center gap-2 text-[11px] text-fg-2">
+              <div className="flex min-w-0 items-center gap-2 text-[11px] leading-tight text-fg-3">
                 {metaParts.map((part, i) => (
                   <span
                     key={i}
@@ -884,32 +895,11 @@ export default function RunnerChat() {
           {isArchived ? (
             // Archived rows are terminal: no Resume / Stop / Archive.
             // Only surface the navigation escape hatch.
-            <button
-              onClick={() => navigate(`/runners/${handle}`)}
-              className="cursor-pointer rounded border border-line bg-raised px-2.5 py-1.5 text-xs text-fg hover:border-fg-3"
-            >
-              Back to runner
-            </button>
+            <BackButton onClick={() => navigate(`/runners/${handle}`)} />
           ) : chatState === "resuming" ? (
-            <button
-              type="button"
-              disabled
-              className="flex cursor-not-allowed items-center gap-1.5 rounded border border-[#1F3D4D] bg-[#0F1E26] px-2.5 py-1.5 text-xs text-[#39E5FF]"
-            >
-              <Loader2
-                aria-hidden
-                className="h-3 w-3 animate-spin text-[#39E5FF]"
-              />
-              Resuming…
-            </button>
+            <ResumingButton />
           ) : chatState === "running" && sessionId ? (
-            <button
-              onClick={() => void endChat()}
-              className="flex cursor-pointer items-center gap-1.5 rounded border border-line bg-raised px-2.5 py-1.5 text-xs text-fg hover:border-fg-3"
-            >
-              <Square aria-hidden className="h-3 w-3 text-danger" />
-              Stop
-            </button>
+            <StopButton onClick={() => void endChat()} />
           ) : sessionId && (chatMeta?.resumable ?? true) ? (
             // Stopped/crashed with a resumable row → Resume, matching
             // Pencil node `HLXK6` in `vS5ce`. Same action the inline
@@ -918,22 +908,11 @@ export default function RunnerChat() {
             // bottom of the feed. `chatMeta?.resumable` falls back to
             // true while the row is still loading so we don't briefly
             // misrender as "Back to runner."
-            <button
-              onClick={() => void resumeChat()}
-              className="flex cursor-pointer items-center gap-1.5 rounded border border-[#1F4D33] bg-[#0F2418] px-2.5 py-1.5 text-xs font-medium text-accent hover:border-accent"
-            >
-              <Play aria-hidden className="h-3 w-3" />
-              Resume
-            </button>
+            <ResumeButton onClick={() => void resumeChat()} />
           ) : (
             // Last-resort fallback: no session yet, or the row is
             // genuinely non-resumable (no agent_session_key on file).
-            <button
-              onClick={() => navigate(`/runners/${handle}`)}
-              className="cursor-pointer rounded border border-line bg-raised px-2.5 py-1.5 text-xs text-fg hover:border-fg-3"
-            >
-              Back to runner
-            </button>
+            <BackButton onClick={() => navigate(`/runners/${handle}`)} />
           )}
           {/* Topbar overflow menu — Pin / Rename / Archive, matching
               the design's `session_ctx_menu` (`P5CLA` / `L31Zb`) and
@@ -1053,7 +1032,15 @@ export default function RunnerChat() {
             return (
               <div
                 key={s.id}
-                className={`absolute inset-4 ${active ? "block" : "hidden"} ${paneOpacity} transition-opacity`}
+                // Wrapper is full-bleed (inset-0) with internal p-4
+                // padding around the canvas. `backgroundColor` is
+                // inlined from `useTerminalBg()` so the frame tracks
+                // the active terminal palette (Runner #15161B,
+                // Solarized Dark #002B36, Catppuccin Latte #EFF1F5,
+                // etc.). No CSS-class lock means a theme switch flips
+                // the frame + canvas in lockstep.
+                style={{ backgroundColor: terminalBg }}
+                className={`absolute inset-0 p-4 ${active ? "block" : "hidden"} ${paneOpacity} transition-opacity`}
               >
                 <RunnerTerminal
                   ref={(handle) => {
