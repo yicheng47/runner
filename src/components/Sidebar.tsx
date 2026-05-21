@@ -277,9 +277,18 @@ export function Sidebar({
     void Promise.all([
       listen("session/exit", () => {
         void refreshDirectSessions();
+        // A mission slot exiting flips `any_session_live` from true →
+        // false (if it was the last live slot). Without this, the
+        // dot stays accent until something else triggers a refresh.
+        void refreshMissions();
       }),
       listen("runner/activity", () => {
         void refreshDirectSessions();
+        // Same reason in reverse: resuming a slot flips
+        // `any_session_live` from false → true. `runner/activity`
+        // fires whenever the sessions table changes (spawn/exit),
+        // covering both directions cheaply.
+        void refreshMissions();
       }),
       listen("session/archived", () => {
         // Fired by `session_archive` after the archived_at flip. Lets
@@ -317,7 +326,7 @@ export function Sidebar({
       unlistenArchived?.();
       unlistenUpdated?.();
     };
-  }, [refreshDirectSessions]);
+  }, [refreshDirectSessions, refreshMissions]);
 
   const openMission = useCallback(
     (id: string) => {
@@ -597,8 +606,14 @@ export function Sidebar({
           <div className="flex min-h-0 flex-1 flex-col pb-4">
             {/* Brand row — open state only. Toggle has moved to the
                 bottom Settings row, so this is brand + wordmark
-                only. */}
-            <div className="flex shrink-0 items-center gap-2 px-5 pb-5 pt-1">
+                only. `data-tauri-drag-region` extends the draggable
+                top band past the h-7 traffic-light strip above so the
+                whole header band (brand + workspace header) reads as
+                one continuous title bar. */}
+            <div
+              data-tauri-drag-region
+              className="flex shrink-0 items-center gap-2 px-5 pb-5 pt-1"
+            >
               <BrandMark />
               <span className="text-base font-semibold tracking-tight text-fg">
                 Runner
@@ -656,6 +671,15 @@ export function Sidebar({
                         onContextMenu={(anchor) => openMissionMenu(m, anchor)}
                         title={m.crew_name || ""}
                         pinned={!!m.pinned_at}
+                        // Mute the dot when the mission has no live
+                        // session — `mission.status === "running"` is
+                        // not enough to call a workspace "live", since
+                        // a paused mission (every slot stopped) keeps
+                        // the running status until the user archives.
+                        // `any_session_live` is computed on the backend
+                        // (see `mission_list_summary`) so the sidebar
+                        // doesn't need to fetch session rows per mission.
+                        dim={!m.any_session_live}
                         renaming={renamingMissionId === m.id}
                         onRenameSubmit={(next) =>
                           void submitMissionRename(m.id, next)

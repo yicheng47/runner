@@ -144,6 +144,13 @@ pub struct MissionSummary {
     pub mission: Mission,
     pub crew_name: String,
     pub pending_ask_count: usize,
+    /// True iff at least one of the mission's session rows is `status =
+    /// 'running'`. Drives the sidebar mission-row status dot: live
+    /// missions paint with the accent, "paused" missions (status =
+    /// running but every slot is stopped/crashed) mute the dot so the
+    /// human can tell which workspaces will accept input at a glance,
+    /// without entering each one.
+    pub any_session_live: bool,
 }
 
 pub fn get(conn: &Connection, id: &str) -> Result<Mission> {
@@ -1562,10 +1569,23 @@ pub async fn mission_list_summary(
                 count_pending_asks_from_log(&mission_dir)
             }
         };
+        // Cheap EXISTS — the sessions table is small and the mission_id
+        // column is indexed. Returns 1 if any slot is `running`, else 0;
+        // a missing row (mission with zero seeded sessions) also reads
+        // as 0, which is correct ("no live PTY").
+        let any_session_live: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions
+                                WHERE mission_id = ?1 AND status = 'running')",
+                params![m.id],
+                |row| row.get::<_, i64>(0).map(|n| n != 0),
+            )
+            .unwrap_or(false);
         summaries.push(MissionSummary {
             mission: m,
             crew_name,
             pending_ask_count,
+            any_session_live,
         });
     }
     Ok(summaries)

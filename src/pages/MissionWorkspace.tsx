@@ -548,7 +548,15 @@ export default function MissionWorkspace() {
     // across the divider — same layout shape as RunnerChat.
     <div className="flex h-full flex-1 flex-row bg-bg">
       <div className="flex min-w-0 flex-1 flex-col">
-      <header className="flex items-center justify-between gap-4 border-b border-line bg-panel px-6 pb-3.5 pt-9">
+      {/* `data-tauri-drag-region` makes the entire header strip drag
+          the window, matching macOS toolbar behavior. Buttons inside
+          (Resume / Stop / kebab / panel toggle) keep their click
+          handlers — Tauri only enters drag mode on mousedowns that
+          land on the bare header, not on interactive children. */}
+      <header
+        data-tauri-drag-region
+        className="flex items-center justify-between gap-4 border-b border-line bg-panel px-6 pb-3.5 pt-9"
+      >
         <div className="flex min-w-0 items-center gap-3.5">
           {/* Mission glyph — matches Pencil node `nEpyL`: a 36×36
               rounded square with a lucide `flag` icon at 18px in the
@@ -846,8 +854,14 @@ export default function MissionWorkspace() {
               rhythm as the workspace topbar so the divider lines up
               across the column boundary. The icon strip on the left
               flips between Runners (roster) and Mission (meta); the
-              collapse button stays on the right. */}
-          <header className="flex shrink-0 items-center justify-between gap-2 border-b border-line px-5 pb-3.5 pt-9">
+              collapse button stays on the right.
+              `data-tauri-drag-region` keeps the rail header in the
+              same draggable band as the workspace topbar — anywhere
+              not on a button drags the window. */}
+          <header
+            data-tauri-drag-region
+            className="flex shrink-0 items-center justify-between gap-2 border-b border-line px-5 pb-3.5 pt-9"
+          >
             <div className="flex h-9 items-center gap-0.5">
               <RailViewButton
                 icon={UsersIcon}
@@ -1356,9 +1370,9 @@ function MissionPausedCard({
           ? "One or more slots are paused. Resume the mission to respawn every paused slot — partial-mission states aren't a valid run."
           : "All slots are paused. Resume to respawn every slot and pick up the conversation — the event log is preserved."
       }
-      resumeLabel="Resume mission"
+      resumeLabel="Resume"
       onResume={() => void onResumeMission()}
-      archiveLabel="Archive mission"
+      archiveLabel="Archive"
       onArchive={() => void onArchiveMission()}
       variant="inline"
     />
