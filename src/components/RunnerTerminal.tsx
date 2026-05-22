@@ -683,24 +683,60 @@ export const RunnerTerminal = forwardRef<
         t.focus();
         const cols = t.cols;
         const rows = t.rows;
-        // Single resize is enough once xterm enters alt-screen at attach
-        // time (see docs/impls/0009). The earlier cols-1 → cols dance was
-        // there to coax claude-code into a repaint that would land where
-        // the user could see it; with the alt-screen state correct, the
-        // agent's single SIGWINCH redraw lands in the right buffer.
-        // Dedupe against the last value pushSize sent — common when this
-        // effect fires immediately after the mount-time fit pushed the
-        // same dims.
-        if (
-          cols !== lastPushedColsRef.current ||
-          rows !== lastPushedRowsRef.current
-        ) {
-          lastPushedColsRef.current = cols;
-          lastPushedRowsRef.current = rows;
-          void api.session.resize(sessionId, cols, rows).catch(() => {
-            // session may have exited
-          });
+        // Force the agent into a full redraw on every activation.
+        // While the pane was hidden, live PTY bytes wrote into
+        // xterm's buffer (the session-effect's "session/output"
+        // listener doesn't gate on active), so the buffer may be
+        // mid-frame (agent halfway through a redraw at switch
+        // time) or dim-mismatched (window / panel resize while
+        // hidden moved the container without us refitting). The
+        // refresh() above only repaints that broken state — we
+        // need the *agent* to redraw, which means a SIGWINCH.
+        //
+        // Both Linux (tty_do_resize) and macOS (TIOCSWINSZ in
+        // ttioctl) compare the incoming winsize against the cached
+        // value and only signal SIGWINCH when the bytes differ —
+        // a same-size resize is a kernel no-op. So a single
+        // unconditional api.session.resize wouldn't be enough on
+        // its own. We dance through (cols, rows-1) → (cols, rows)
+        // so both ioctls produce a SIGWINCH and the agent repaints
+        // at the final dims.
+        //
+        // Perturb *rows*, not cols. An earlier draft used cols-1
+        // and corrupted scrollback: claude-code (and similar TUIs)
+        // wrap their own text by emitting explicit `\n` at the
+        // computed cols boundary, so any intermediate paint at
+        // cols-1 deposits hard-wrapped narrow lines into xterm's
+        // buffer. xterm can only soft-reflow width-wrapped lines;
+        // explicit newlines stick. Every tab return then left a
+        // layer of narrower lines above the current paint, visible
+        // on scroll-up. Row perturbation keeps content width at
+        // cols throughout — the (rows-1) intermediate is just one
+        // line shorter, and the second SIGWINCH's `\x1b[2J`-led
+        // repaint at the final rows count cleans up.
+        //
+        // For TUI runtimes, wipe the viewport first so the user
+        // sees a clean black canvas during the brief gap before
+        // the redraw lands instead of the scattered mid-frame
+        // mess (#177). Plain shells skip the wipe — matches
+        // pushSize's behavior above (runtimeClearsOnResize), they
+        // keep their history and don't repaint on SIGWINCH.
+        if (runtimeClearsOnResize(runnerRuntimeRef.current)) {
+          t.write("\x1b[2J\x1b[H");
         }
+        lastPushedColsRef.current = cols;
+        lastPushedRowsRef.current = rows;
+        // Guard the pathological 1-row case so we never ioctl to
+        // 0 rows. portable-pty would reject it, but more importantly
+        // we want both directions of the dance to produce a real
+        // winsize-diff and therefore SIGWINCH.
+        const nudgedRows = rows > 1 ? rows - 1 : rows + 1;
+        void api.session
+          .resize(sessionId, cols, nudgedRows)
+          .then(() => api.session.resize(sessionId, cols, rows))
+          .catch(() => {
+            // session may have exited between the two ioctls
+          });
       } catch {
         // Layout not ready yet — the next activation / resize will drive it.
       }
@@ -726,7 +762,20 @@ export const RunnerTerminal = forwardRef<
         const node = containerRef.current;
         if (!t || !fit || !node) return null;
         const rect = node.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) return null;
+        if (rect.width <= 0 || rect.height <= 0) {
+          // Hidden pane (display:none via MissionWorkspace's Pane
+          // wrapper) — no rect to fit against. If a prior activation
+          // already fit this terminal, t.cols/t.rows still hold those
+          // dims, and they're far more useful at resume time than
+          // returning null (which forces the resume RPC to pass null
+          // → backend defaults to 80×24 → agent paints its `--resume`
+          // conversation history at 80 cols, and for main-screen TUIs
+          // those hard-wrapped lines stick in scrollback). 80×24 is
+          // the constructor default / "never fit" sentinel; treat it
+          // the same as null so callers can still fall back.
+          if (t.cols === 80 && t.rows === 24) return null;
+          return { cols: t.cols, rows: t.rows };
+        }
         try {
           // Force a fit before reading dims: stopped tabs gate their
           // resize listeners on activeRef, so cols/rows can be stale

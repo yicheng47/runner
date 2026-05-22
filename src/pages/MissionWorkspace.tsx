@@ -383,13 +383,30 @@ export default function MissionWorkspace() {
     setResumingAll(true);
     let firstErr: string | null = null;
     try {
+      // Pre-walk for a shared fallback dim. Hidden tabs (display:none
+      // Pane wrappers) have 0×0 rects so their `measure()` may return
+      // null; without a fallback the resume RPC sends (null, null),
+      // backend spawns at 80×24, and the agent paints its `--resume`
+      // conversation history at 80 cols. For main-screen TUIs those
+      // hard-wrapped narrow lines stick in scrollback. Every Pane in
+      // the workspace shares the same container rect, so any one
+      // tab's measurable dims work as the fallback for every stopped
+      // tab.
+      let sharedDims: { cols: number; rows: number } | null = null;
+      for (const s of sessions) {
+        const d = terminalsRef.current.get(s.id)?.measure();
+        if (d) {
+          sharedDims = d;
+          break;
+        }
+      }
       // Best-effort over every stopped slot. Don't bail on the first
       // failure — earlier slots may have already resumed, and the
       // user wants the UI to reflect whatever actually came up.
       // Errors are collected and surfaced after the refresh.
       for (const s of sessions) {
         if (s.status === "running") continue;
-        const dims = terminalsRef.current.get(s.id)?.measure() ?? null;
+        const dims = terminalsRef.current.get(s.id)?.measure() ?? sharedDims;
         try {
           await api.session.resume(
             s.id,
