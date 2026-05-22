@@ -52,6 +52,11 @@ links to its tracking issue.
   per slot and an overflow popover for everything else; hybrid
   "at-a-glance + everything-on-click" so the collapsed rail can
   answer "what am I working on now" without expanding.
+- [23 — Drag-to-reorder chats and missions](./23-drag-reorder-chats-missions.md)
+  — manual reorder via drag-and-drop (and `Cmd+Shift+↑/↓`) in the
+  sidebar's mission + chat lists; cross-pinned-boundary drag also
+  pins/unpins; fractional `sort_index` so each drop is one UPDATE.
+  Follow-up to spec 22's deferred "manual reorder".
 
 ## Archive
 
