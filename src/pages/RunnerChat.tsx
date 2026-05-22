@@ -43,6 +43,7 @@ import {
 import { api, type DirectSessionEntry } from "../lib/api";
 import { chunkIndicatesTuiReady, isFreshSpawn } from "../lib/sessionLifecycle";
 import { useDelayedFlag } from "../lib/useDelayedFlag";
+import { useResizableWidth } from "../hooks/useResizableWidth";
 import { useTerminalBg } from "../lib/useTerminalBg";
 import {
   markArchivingSession,
@@ -79,6 +80,10 @@ interface RunnerChatLocationState {
 }
 
 const STORAGE_PANEL_OPEN = "runner.chat.panel.open";
+const STORAGE_PANEL_WIDTH = "runner.chat.panel.width";
+const PANEL_MIN = 200;
+const PANEL_MAX = 480;
+const PANEL_DEFAULT = 320;
 
 interface DirectSessionPane {
   id: string;
@@ -1065,9 +1070,11 @@ export default function RunnerChat() {
 // column to its left, not above it). The panel-header strip mirrors
 // the topbar's pt-9 + h-9 + pb-3.5 structure so the bottom divider
 // lines up across both columns. The whole aside slides via a
-// CSS width transition: open = w-80, closed = w-0 (with the inner
-// w-80 wrapper kept intact and clipped by overflow-hidden so layout
-// doesn't reflow during the animation).
+// CSS width transition: open = persisted width, closed = 0 (with the
+// inner wrapper kept at the persisted width and clipped by
+// overflow-hidden so content doesn't reflow during the animation).
+// A 4px drag strip on the left edge resizes the panel, mirroring the
+// left sidebar's right-edge handle.
 function RunnerSidePanel({
   runner,
   open,
@@ -1077,14 +1084,26 @@ function RunnerSidePanel({
   open: boolean;
   onClose: () => void;
 }) {
+  const asideRef = useRef<HTMLElement>(null);
+  const innerRef = useRef<HTMLDivElement>(null);
+  const { width, onResizeStart } = useResizableWidth({
+    storageKey: STORAGE_PANEL_WIDTH,
+    defaultWidth: PANEL_DEFAULT,
+    min: PANEL_MIN,
+    max: PANEL_MAX,
+    edge: "left",
+    targets: [asideRef, innerRef],
+  });
   return (
     <aside
+      ref={asideRef}
       aria-hidden={!open}
-      className={`flex shrink-0 flex-col overflow-hidden bg-panel transition-[width,border-left-width] duration-200 ease-in-out ${
-        open ? "w-80 border-l border-line" : "w-0 border-l-0"
+      style={{ width: open ? width : 0 }}
+      className={`relative flex shrink-0 flex-col overflow-hidden bg-panel transition-[width,border-left-width] duration-200 ease-in-out ${
+        open ? "border-l border-line" : "border-l-0"
       }`}
     >
-      <div className="flex h-full w-80 flex-col">
+      <div ref={innerRef} style={{ width }} className="flex h-full flex-col">
         {/* Side-panel header — same draggable-window rules as the
             workspace topbar. The lone Collapse button keeps its
             handler; everywhere else the strip drags the window. */}
@@ -1160,6 +1179,20 @@ function RunnerSidePanel({
           )}
         </div>
       </div>
+      {/* Drag-to-resize strip on the left edge — mirrors the left
+          sidebar's right-edge handle. Inert when collapsed: the
+          aside's overflow-hidden + width:0 already hides it, but we
+          also skip the mousedown binding so the cursor doesn't
+          briefly read as resizable inside the chat column. */}
+      <div
+        onPointerDown={open ? onResizeStart : undefined}
+        title={open ? "Drag to resize" : undefined}
+        className={
+          open
+            ? "absolute left-0 top-0 z-20 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-accent/40"
+            : "absolute left-0 top-0 z-20 h-full w-1 bg-transparent"
+        }
+      />
     </aside>
   );
 }

@@ -60,12 +60,18 @@ import {
 } from "../components/ui/SessionControl";
 import { chunkIndicatesTuiReady, isFreshSpawn } from "../lib/sessionLifecycle";
 import { useDelayedFlag } from "../lib/useDelayedFlag";
+import { useResizableWidth } from "../hooks/useResizableWidth";
 import { useTerminalBg } from "../lib/useTerminalBg";
 import {
   markArchivingMission,
   unmarkArchivingMission,
   useArchivingMission,
 } from "../lib/archivingState";
+
+const RAIL_STORAGE_WIDTH = "runner.mission.rail.width";
+const RAIL_MIN = 200;
+const RAIL_MAX = 480;
+const RAIL_DEFAULT = 288;
 
 export default function MissionWorkspace() {
   const { id } = useParams<{ id: string }>();
@@ -510,6 +516,22 @@ export default function MissionWorkspace() {
       // ignore storage errors
     }
   }, [railOpen]);
+  // Drag-to-resize width for the rail. Persisted separately from the
+  // open/closed flag so collapse → expand restores the last dragged
+  // width instead of the hardcoded default. The hook writes
+  // style.width directly through the refs during drag — avoids the
+  // RunnersRail / MissionMetaPanel subtree re-rendering per frame.
+  const railAsideRef = useRef<HTMLElement>(null);
+  const railInnerRef = useRef<HTMLDivElement>(null);
+  const { width: railWidth, onResizeStart: onRailResizeStart } =
+    useResizableWidth({
+      storageKey: RAIL_STORAGE_WIDTH,
+      defaultWidth: RAIL_DEFAULT,
+      min: RAIL_MIN,
+      max: RAIL_MAX,
+      edge: "left",
+      targets: [railAsideRef, railInnerRef],
+    });
   // Right rail content toggle — Runners roster vs Mission meta. Persists
   // per-app (not per-mission): the user's preference for which view to
   // see on entry is consistent across missions.
@@ -840,16 +862,24 @@ export default function MissionWorkspace() {
       </div>
       {/* Collapsible right rail — top-level sibling of the main
           column so it spans the full workspace height (header
-          included). Mirrors the RunnerChat pattern: the inner w-72
-          wrapper stays mounted and clipped by overflow-hidden so
-          width animates without reflowing the children. */}
+          included). Mirrors the RunnerChat pattern: the inner
+          wrapper stays mounted at the persisted width and clipped
+          by overflow-hidden so width animates without reflowing
+          the children. A 4px drag strip on the left edge resizes
+          the rail. */}
       <aside
+        ref={railAsideRef}
         aria-hidden={!railOpen}
-        className={`flex shrink-0 flex-col overflow-hidden bg-panel transition-[width,border-left-width] duration-200 ease-in-out ${
-          railOpen ? "w-72 border-l border-line" : "w-0 border-l-0"
+        style={{ width: railOpen ? railWidth : 0 }}
+        className={`relative flex shrink-0 flex-col overflow-hidden bg-panel transition-[width,border-left-width] duration-200 ease-in-out ${
+          railOpen ? "border-l border-line" : "border-l-0"
         }`}
       >
-        <div className="flex h-full w-72 flex-col">
+        <div
+          ref={railInnerRef}
+          style={{ width: railWidth }}
+          className="flex h-full flex-col"
+        >
           {/* Rail header — same px-5 / pt-9 / pb-3.5 / border-b
               rhythm as the workspace topbar so the divider lines up
               across the column boundary. The icon strip on the left
@@ -906,6 +936,17 @@ export default function MissionWorkspace() {
             ) : null}
           </div>
         </div>
+        {/* Drag-to-resize strip on the left edge — mirrors the left
+            sidebar's right-edge handle. Inert when collapsed. */}
+        <div
+          onPointerDown={railOpen ? onRailResizeStart : undefined}
+          title={railOpen ? "Drag to resize" : undefined}
+          className={
+            railOpen
+              ? "absolute left-0 top-0 z-20 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-accent/40"
+              : "absolute left-0 top-0 z-20 h-full w-1 bg-transparent"
+          }
+        />
       </aside>
       <MissionResetConfirm
         open={resetConfirmOpen && mission !== null}
