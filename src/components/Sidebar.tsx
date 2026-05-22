@@ -53,6 +53,7 @@ import {
   unmarkArchivingMission,
   unmarkArchivingSession,
 } from "../lib/archivingState";
+import { useResizableWidth } from "../hooks/useResizableWidth";
 import {
   BRAND_MARK_PINNED_COLOR,
   readBrandTint,
@@ -70,16 +71,6 @@ const SIDEBAR_DEFAULT = 240;
 const STORAGE_WIDTH = "runner.sidebar.width";
 const STORAGE_MISSION_OPEN = "runner.sidebar.mission.open";
 const STORAGE_SESSION_OPEN = "runner.sidebar.session.open";
-
-function getStoredWidth(): number {
-  if (typeof localStorage === "undefined") return SIDEBAR_DEFAULT;
-  const stored = localStorage.getItem(STORAGE_WIDTH);
-  if (stored) {
-    const n = parseInt(stored, 10);
-    if (!Number.isNaN(n) && n >= SIDEBAR_MIN && n <= SIDEBAR_MAX) return n;
-  }
-  return SIDEBAR_DEFAULT;
-}
 
 function getStoredFlag(key: string, fallback: boolean): boolean {
   if (typeof localStorage === "undefined") return fallback;
@@ -121,8 +112,20 @@ export function Sidebar({
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Width + resize state.
-  const [width, setWidth] = useState<number>(getStoredWidth);
+  // Width + resize state. The right-edge handle below grows the
+  // sidebar when dragged rightward. The aside ref lets the hook
+  // write style.width directly during drag instead of going through
+  // setState per mousemove (avoids re-rendering the whole sidebar
+  // subtree per frame).
+  const asideRef = useRef<HTMLElement>(null);
+  const { width, onResizeStart: handleResizeStart } = useResizableWidth({
+    storageKey: STORAGE_WIDTH,
+    defaultWidth: SIDEBAR_DEFAULT,
+    min: SIDEBAR_MIN,
+    max: SIDEBAR_MAX,
+    edge: "right",
+    targets: [asideRef],
+  });
 
   // Runtime state.
   const [missions, setMissions] = useState<MissionSummary[]>([]);
@@ -519,44 +522,10 @@ export function Sidebar({
     });
   }, []);
 
-  // Drag-to-resize handle on the right edge — same logic as before.
-  const handleResizeStart = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      const startX = e.clientX;
-      const startWidth = width;
-      const onMouseMove = (ev: MouseEvent) => {
-        const next = Math.min(
-          SIDEBAR_MAX,
-          Math.max(SIDEBAR_MIN, startWidth + ev.clientX - startX),
-        );
-        setWidth(next);
-      };
-      const onMouseUp = () => {
-        document.removeEventListener("mousemove", onMouseMove);
-        document.removeEventListener("mouseup", onMouseUp);
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-        setWidth((w) => {
-          try {
-            localStorage.setItem(STORAGE_WIDTH, String(w));
-          } catch {
-            // ignore quota / disabled-storage errors
-          }
-          return w;
-        });
-      };
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-      document.addEventListener("mousemove", onMouseMove);
-      document.addEventListener("mouseup", onMouseUp);
-    },
-    [width],
-  );
-
   return (
     <>
       <aside
+        ref={asideRef}
         style={{ width: collapsed ? 52 : width }}
         className="relative flex h-full shrink-0 select-none flex-col overflow-hidden border-r border-line bg-sidebar transition-[width] duration-150"
       >
@@ -762,7 +731,7 @@ export function Sidebar({
             render a noop placeholder so the DOM stays stable, just
             without the col-resize cursor / mousedown handler. */}
         <div
-          onMouseDown={collapsed ? undefined : handleResizeStart}
+          onPointerDown={collapsed ? undefined : handleResizeStart}
           title={collapsed ? undefined : "Drag to resize"}
           className={
             collapsed
