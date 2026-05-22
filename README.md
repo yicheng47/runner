@@ -85,6 +85,7 @@ The crew in the demo above is the **default Runner shape** — a three-runner en
 For weirder, more fun crew shapes, peek at [`examples/`](./examples/):
 
 - [`dev-crew/`](./examples/dev-crew/) — the default architect / impl / reviewer trio above
+- [`docs-crew/`](./examples/docs-crew/) — architect partitions a complex repo, 2+ writers draft per-module docs in parallel, editor harmonizes
 - [`tic-tac-toe/`](./examples/tic-tac-toe/) — 2 agents + 1 referee actually playing a game against each other
 - [`werewolf/`](./examples/werewolf/) — 6-player social deduction with a god moderator
 - [`tomb-raid/`](./examples/tomb-raid/) — a 4-person heist crew run by a DM
