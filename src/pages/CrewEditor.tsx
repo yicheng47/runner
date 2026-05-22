@@ -1,7 +1,8 @@
 // Crew detail — matches design/runners-design.pen frame `CUKjM`.
 //
 // Layout: top toolbar (back to Crews + inline name field + Save + Start
-// mission) above a two-section body (Purpose, Slots).
+// mission) above a body of sections: Purpose, Default goal, Team
+// conventions, Slots.
 
 import {
   useCallback,
@@ -36,6 +37,9 @@ export default function CrewEditor() {
   const [addendumEditing, setAddendumEditing] = useState(false);
   const [addendumDraft, setAddendumDraft] = useState("");
   const [savingAddendum, setSavingAddendum] = useState(false);
+  const [goalEditing, setGoalEditing] = useState(false);
+  const [goalDraft, setGoalDraft] = useState("");
+  const [savingGoal, setSavingGoal] = useState(false);
   const [reordering, setReordering] = useState(false);
   const reorderInFlight = useRef(false);
   const navigate = useNavigate();
@@ -103,6 +107,34 @@ export default function CrewEditor() {
       setError(String(e));
     } finally {
       setSavingAddendum(false);
+    }
+  };
+
+  const onStartGoalEdit = () => {
+    setGoalDraft(crew?.goal ?? "");
+    setGoalEditing(true);
+  };
+
+  const onCancelGoalEdit = () => {
+    setGoalEditing(false);
+    setGoalDraft("");
+  };
+
+  const onSaveGoal = async () => {
+    if (!crewId) return;
+    const trimmed = goalDraft.trim();
+    setSavingGoal(true);
+    try {
+      await api.crew.update(crewId, {
+        goal: trimmed.length > 0 ? trimmed : null,
+      });
+      setGoalEditing(false);
+      setGoalDraft("");
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSavingGoal(false);
     }
   };
 
@@ -258,6 +290,63 @@ export default function CrewEditor() {
                 <p className="text-sm text-fg">{crew.purpose}</p>
               ) : (
                 <p className="text-sm italic text-fg-3">No purpose set.</p>
+              )}
+            </section>
+
+            <section className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
+                  Default goal
+                </div>
+                {!goalEditing && crew.goal ? (
+                  <button
+                    type="button"
+                    onClick={onStartGoalEdit}
+                    className="text-xs text-fg-2 transition-colors hover:text-fg"
+                  >
+                    Edit
+                  </button>
+                ) : null}
+              </div>
+              {goalEditing ? (
+                <div className="flex flex-col gap-2">
+                  <textarea
+                    value={goalDraft}
+                    onChange={(e) => setGoalDraft(e.target.value)}
+                    placeholder="Pre-fills the Start Mission goal."
+                    rows={4}
+                    className="w-full rounded border border-line bg-bg px-3 py-2 text-sm text-fg focus:border-fg-3 focus:outline-none"
+                  />
+                  <div className="flex items-center gap-2">
+                    <Button onClick={onSaveGoal} disabled={savingGoal}>
+                      {savingGoal ? "Saving..." : "Save"}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={onCancelGoalEdit}
+                      disabled={savingGoal}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : crew.goal ? (
+                <p className="whitespace-pre-wrap text-sm text-fg">
+                  {crew.goal}
+                </p>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  <button
+                    type="button"
+                    onClick={onStartGoalEdit}
+                    className="self-start text-sm text-fg-2 transition-colors hover:text-fg"
+                  >
+                    + Add default goal
+                  </button>
+                  <p className="text-xs text-fg-3">
+                    Pre-fills the Start Mission goal. Optional.
+                  </p>
+                </div>
               )}
             </section>
 

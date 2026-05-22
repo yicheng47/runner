@@ -59,6 +59,11 @@ import {
   StopButton,
 } from "../components/ui/SessionControl";
 import { chunkIndicatesTuiReady, isFreshSpawn } from "../lib/sessionLifecycle";
+import {
+  readTerminalFontFamily,
+  readTerminalFontSize,
+  resolveTerminalFontStack,
+} from "../lib/settings";
 import { useDelayedFlag } from "../lib/useDelayedFlag";
 import { useResizableWidth } from "../hooks/useResizableWidth";
 import { useTerminalBg } from "../lib/useTerminalBg";
@@ -72,6 +77,55 @@ const RAIL_STORAGE_WIDTH = "runner.mission.rail.width";
 const RAIL_MIN = 200;
 const RAIL_MAX = 480;
 const RAIL_DEFAULT = 288;
+
+/// Compute cols/rows for the would-be terminal area from the Pane
+/// container's bounding rect + a one-shot DOM cell-size measurement
+/// using the user's current terminal font settings. Returns null if
+/// the container has no rect (workspace not mounted yet) or the
+/// measurement span fails.
+///
+/// Used by `resumeMission`'s fallback chain when no individual slot
+/// terminal is measurable — e.g. the user clicked Resume from the
+/// feed tab and no slot was ever activated, so every slot pane is
+/// still `display:none` and every `RunnerTerminal.measure()` returns
+/// null. The cell size we compute here is close to but not exactly
+/// xterm's CharSizeService output (we don't account for renderer
+/// padding); a small drift is acceptable because the agent paints at
+/// whatever cols we pass and xterm soft-wraps from there if needed.
+/// "Approximately correct" beats "spawn at 80×24."
+function workspaceDimsFromContainer(
+  container: HTMLElement,
+): { cols: number; rows: number } | null {
+  const rect = container.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  const fontFamily = resolveTerminalFontStack(readTerminalFontFamily());
+  const fontSize = readTerminalFontSize();
+  const span = document.createElement("span");
+  span.style.position = "absolute";
+  span.style.visibility = "hidden";
+  span.style.top = "-9999px";
+  span.style.fontFamily = fontFamily;
+  span.style.fontSize = `${fontSize}px`;
+  span.style.lineHeight = "1";
+  span.style.whiteSpace = "pre";
+  // 100 chars to average out subpixel widths.
+  span.textContent = "M".repeat(100);
+  document.body.appendChild(span);
+  let cellWidth: number;
+  let cellHeight: number;
+  try {
+    const spanRect = span.getBoundingClientRect();
+    if (spanRect.width <= 0 || spanRect.height <= 0) return null;
+    cellWidth = spanRect.width / 100;
+    cellHeight = spanRect.height;
+  } finally {
+    document.body.removeChild(span);
+  }
+  return {
+    cols: Math.max(1, Math.floor(rect.width / cellWidth)),
+    rows: Math.max(1, Math.floor(rect.height / cellHeight)),
+  };
+}
 
 export default function MissionWorkspace() {
   const { id } = useParams<{ id: string }>();
@@ -98,6 +152,14 @@ export default function MissionWorkspace() {
   // backend so the new PTY is forked at the right size instead of
   // pty_runtime's 80×24 fallback (#resume-pty-size-mismatch).
   const terminalsRef = useRef<Map<string, RunnerTerminalHandle>>(new Map());
+  // Wrapping element around every Pane (feed + per-slot PTY panes).
+  // Used by `resumeMission` as a last-resort source for cols/rows when
+  // no individual terminal is measurable — every Pane is
+  // `absolute inset-0` inside this container, so its rect is the size
+  // any pane *would* have if activated. See `resumeMission` for the
+  // fallback chain and `workspaceDimsFromContainer` for the cell-size
+  // measurement step.
+  const paneContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Combined: subscribe to `event/appended` BEFORE running the
   // events_replay query, then merge both into a single ULID-deduped
@@ -383,13 +445,41 @@ export default function MissionWorkspace() {
     setResumingAll(true);
     let firstErr: string | null = null;
     try {
+      // Pre-walk for a shared fallback dim. Hidden tabs (display:none
+      // Pane wrappers) have 0×0 rects so their `measure()` may return
+      // null; without a fallback the resume RPC sends (null, null),
+      // backend spawns at 80×24, and the agent paints its `--resume`
+      // conversation history at 80 cols. For main-screen TUIs those
+      // hard-wrapped narrow lines stick in scrollback. Three-tier
+      // fallback:
+      //   1. The clicked-from tab's own `measure()` (always works when
+      //      a slot tab is active).
+      //   2. Any other slot terminal that has been activated before
+      //      and remembers its last-fit dims (every Pane shares the
+      //      same container rect, so any one's dims work for all).
+      //   3. A direct measurement of the Pane container + DOM cell-
+      //      size probe. This catches the "Resume clicked from the
+      //      feed tab with no slot ever activated" path — every slot
+      //      terminal is still at the 80×24 sentinel so (1)/(2) both
+      //      return null.
+      let sharedDims: { cols: number; rows: number } | null = null;
+      for (const s of sessions) {
+        const d = terminalsRef.current.get(s.id)?.measure();
+        if (d) {
+          sharedDims = d;
+          break;
+        }
+      }
+      if (!sharedDims && paneContainerRef.current) {
+        sharedDims = workspaceDimsFromContainer(paneContainerRef.current);
+      }
       // Best-effort over every stopped slot. Don't bail on the first
       // failure — earlier slots may have already resumed, and the
       // user wants the UI to reflect whatever actually came up.
       // Errors are collected and surfaced after the refresh.
       for (const s of sessions) {
         if (s.status === "running") continue;
-        const dims = terminalsRef.current.get(s.id)?.measure() ?? null;
+        const dims = terminalsRef.current.get(s.id)?.measure() ?? sharedDims;
         try {
           await api.session.resume(
             s.id,
@@ -778,7 +868,10 @@ export default function MissionWorkspace() {
               : null}
           </div>
 
-          <div className="relative flex flex-1 min-h-0 flex-col">
+          <div
+            ref={paneContainerRef}
+            className="relative flex flex-1 min-h-0 flex-col"
+          >
             {/* All panes stay mounted so xterm's in-memory scrollback
                 survives tab switches. Inactive panes use display:none:
                 that keeps the React/xterm instances alive while making
