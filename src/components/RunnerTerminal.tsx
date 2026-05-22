@@ -681,6 +681,13 @@ export const RunnerTerminal = forwardRef<
         webglRef.current?.clearTextureAtlas();
         t.refresh(0, t.rows - 1);
         t.focus();
+        // No agent to dance with for stopped/crashed/resuming/starting
+        // sessions — the wipe would clear the last-paint behind the
+        // SessionEndedOverlay (the scrollback the `disabled` prop is
+        // meant to preserve) and the resize ioctls would reject. Keep
+        // the fit + refresh + focus above (correct for any active
+        // pane) but bail before the wipe + dance.
+        if (disabledRef.current) return;
         const cols = t.cols;
         const rows = t.rows;
         // Force the agent into a full redraw on every activation.
