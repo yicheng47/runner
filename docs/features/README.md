@@ -58,6 +58,11 @@ links to its tracking issue.
   pins/unpins; fractional `sort_index` so each drop is one UPDATE.
   Follow-up to spec 22's deferred "manual reorder".
 
+- [24 — Cronjobs](./24-cronjobs.md)
+  — scheduled recurring missions dispatched to a crew on a cron
+  expression; in-process Tokio scheduler, skip-on-overlap, one
+  missed-tick catch-up; new sidebar section between MISSION and CHAT.
+
 ## Archive
 
 Shipped specs live in [`archive/`](./archive/), in spec-number order.
