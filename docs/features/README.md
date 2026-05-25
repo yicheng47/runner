@@ -63,6 +63,11 @@ links to its tracking issue.
   expression; in-process Tokio scheduler, skip-on-overlap, one
   missed-tick catch-up; new sidebar section between MISSION and CHAT.
 
+- [25 — Direct chat runtime picker](./25-direct-chat-runtime-picker.md)
+  — Start Chat modal gains a "Runtime" mode alongside the existing
+  "Runner" mode: pick a runtime (claude-code, codex) + cwd and go,
+  no runner template required. Nullable `runner_id` on sessions.
+
 ## Archive
 
 Shipped specs live in [`archive/`](./archive/), in spec-number order.
