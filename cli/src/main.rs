@@ -16,6 +16,7 @@
 
 mod env;
 mod help;
+mod mcp;
 mod msg;
 mod roster;
 mod signal;
@@ -60,6 +61,8 @@ enum Cmd {
         #[arg(long)]
         note: Option<String>,
     },
+    /// Serve MCP over stdio, bridging to the running Runner app.
+    Mcp,
     /// Print usage help.
     Help,
 }
@@ -86,6 +89,7 @@ enum MsgCmd {
 fn main() {
     let cli = Cli::parse();
     let code = match cli.cmd {
+        Cmd::Mcp => mcp::run(),
         Cmd::Help => {
             help::print();
             0

@@ -6,6 +6,7 @@
 
 pub mod app;
 pub mod crew;
+pub mod mcp;
 pub mod mission;
 pub mod runner;
 pub mod runtime;
