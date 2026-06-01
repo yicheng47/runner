@@ -68,6 +68,8 @@ links to its tracking issue.
   "Runner" mode: pick a runtime (claude-code, codex) + cwd and go,
   no runner template required. Nullable `runner_id` on sessions.
 
+- [26 — Update check in the Apple menu](./26-update-check-apple-menu.md) — remove the Settings Updates pane and move manual "Check for Updates..." into the native app menu, following Quill's pattern while preserving the existing update toast feedback.
+
 ## Archive
 
 Shipped specs live in [`archive/`](./archive/), in spec-number order.
