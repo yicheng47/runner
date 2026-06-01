@@ -60,9 +60,8 @@ export function RunnerEditDrawer({
   // visible Args field strips them on display so the user sees only
   // their extra flags, and the backend re-applies the canonical pair
   // on save (see `commands::runner::update` →
-  // `router::runtime::apply_permission_mode`). Defaults to
-  // `accept_edits` to match the seed and the backend's
-  // `default_permission_mode()`.
+  // `router::runtime::apply_permission_mode`). The value is replaced
+  // from the row's stored args whenever a runner is loaded.
   const [permissionMode, setPermissionMode] =
     useState<PermissionMode>("accept_edits");
   const [submitting, setSubmitting] = useState(false);

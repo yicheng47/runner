@@ -18,16 +18,16 @@ export interface RuntimeOption {
 // they become first-class.
 export const RUNTIME_OPTIONS: RuntimeOption[] = [
   {
-    value: "claude-code",
-    label: "claude-code",
-    defaultCommand: "claude",
-    description: "Anthropic Claude Code CLI",
-  },
-  {
     value: "codex",
     label: "codex",
     defaultCommand: "codex",
     description: "OpenAI Codex CLI",
+  },
+  {
+    value: "claude-code",
+    label: "claude-code",
+    defaultCommand: "claude",
+    description: "Anthropic Claude Code CLI",
   },
 ];
 

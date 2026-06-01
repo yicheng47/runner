@@ -181,7 +181,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
       <div
         ref={cardRef}
-        className="flex h-[560px] max-h-full w-[680px] max-w-full overflow-hidden rounded-xl border border-line bg-panel shadow-[0_14px_40px_rgba(0,0,0,0.6)]"
+        className="flex h-[85vh] max-h-[640px] w-[90vw] max-w-[760px] overflow-hidden rounded-xl border border-line bg-panel shadow-[0_14px_40px_rgba(0,0,0,0.6)]"
       >
         {/* Sidebar — Codex-style: secondary surface (panel) sitting
             alongside the primary surface (bg) used for the content
