@@ -7,8 +7,6 @@
 
 import { useEffect, useState } from "react";
 
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-
 import { api } from "../lib/api";
 import type {
   PermissionMode,
@@ -18,7 +16,9 @@ import type {
 import { Button } from "./ui/Button";
 import { Drawer } from "./ui/Overlay";
 import { Field, Input, Textarea } from "./ui/Field";
+import { ModelField } from "./ui/ModelField";
 import { RuntimeSelect } from "./ui/RuntimeSelect";
+import { WorkingDirField } from "./ui/WorkingDirField";
 import { StyledSelect } from "./ui/StyledSelect";
 import {
   EFFORT_OPTIONS_BY_RUNTIME,
@@ -60,9 +60,8 @@ export function RunnerEditDrawer({
   // visible Args field strips them on display so the user sees only
   // their extra flags, and the backend re-applies the canonical pair
   // on save (see `commands::runner::update` →
-  // `router::runtime::apply_permission_mode`). Defaults to
-  // `accept_edits` to match the seed and the backend's
-  // `default_permission_mode()`.
+  // `router::runtime::apply_permission_mode`). The value is replaced
+  // from the row's stored args whenever a runner is loaded.
   const [permissionMode, setPermissionMode] =
     useState<PermissionMode>("accept_edits");
   const [submitting, setSubmitting] = useState(false);
@@ -98,18 +97,6 @@ export function RunnerEditDrawer({
     displayName.trim().length > 0 &&
     !submitting;
 
-  const browseWorkingDir = async () => {
-    try {
-      const picked = await openDialog({
-        directory: true,
-        multiple: false,
-        title: "Pick a working directory",
-      });
-      if (typeof picked === "string") setWorkingDir(picked);
-    } catch (e) {
-      setError(String(e));
-    }
-  };
 
   const submit = async () => {
     if (!runner || !canSubmit) return;
@@ -123,8 +110,13 @@ export function RunnerEditDrawer({
         args: argsText.trim() ? argsText.trim().split(/\s+/) : [],
         working_dir: workingDir.trim() || null,
         system_prompt: systemPrompt.trim() || null,
-        model: model.trim() || null,
-        effort: effort.trim() || null,
+        // Send the trimmed string (empty when cleared/“default”), not
+        // null: the backend collapses a blank string to NULL, but an
+        // explicit JSON null deserializes to the outer `None` (= "leave
+        // unchanged"), so null could never clear a previously-pinned
+        // value. See commands::runner::update.
+        model: model.trim(),
+        effort: effort.trim(),
         // Send the mode only for runtimes that support it —
         // otherwise the backend's permission-flag helper is a no-op
         // anyway, but keeping the field undefined for shell/unknown
@@ -210,11 +202,7 @@ export function RunnerEditDrawer({
           />
         </Field>
 
-        <Field
-          id="edit-command"
-          label="Command"
-          hint="resolved from runtime · PATH lookup"
-        >
+        <Field id="edit-command" label="Command">
           <Input id="edit-command" value={command} disabled readOnly />
         </Field>
 
@@ -234,13 +222,13 @@ export function RunnerEditDrawer({
         <Field
           id="edit-model"
           label="Model"
-          hint="optional · claude-code / codex: e.g. claude-opus-4-7"
+          hint="optional · blank uses the runtime's own model · type a name or pick an alias"
         >
-          <Input
+          <ModelField
             id="edit-model"
-            value={model}
-            placeholder="claude-opus-4-7"
-            onChange={(e) => setModel(e.target.value)}
+            runtime={runtime}
+            model={model}
+            onModelChange={setModel}
           />
         </Field>
 
@@ -286,58 +274,36 @@ export function RunnerEditDrawer({
             : "default";
           const current = modeOptions.find((o) => o.value === safeValue);
           return (
-            <div className="flex items-start justify-between gap-6">
-              <div className="flex min-w-0 flex-col gap-0.5">
-                <span className="text-[13px] font-medium text-fg">
-                  Permission mode
-                </span>
-                <span className="text-[11px] text-fg-2">
-                  {current?.description}
-                </span>
-              </div>
-              <div className="shrink-0 pt-0.5">
-                <StyledSelect
-                  className="min-w-[180px]"
-                  value={safeValue}
-                  options={modeOptions.map((o) => ({
-                    value: o.value,
-                    label: o.label,
-                    description: o.description,
-                    danger: o.danger,
-                  }))}
-                  onChange={(v) => setPermissionMode(v as PermissionMode)}
-                />
-              </div>
-            </div>
+            <Field
+              id="edit-permission-mode"
+              label="Permission mode"
+              hint={current?.description}
+            >
+              <StyledSelect
+                className="w-full"
+                value={safeValue}
+                options={modeOptions.map((o) => ({
+                  value: o.value,
+                  label: o.label,
+                  description: o.description,
+                  danger: o.danger,
+                }))}
+                onChange={(v) => setPermissionMode(v as PermissionMode)}
+              />
+            </Field>
           );
         })() : null}
 
-        <Field
-          id="edit-working-dir"
-          label="Working directory"
-          hint="optional"
-        >
-          <div className="flex items-center gap-2">
-            <Input
-              id="edit-working-dir"
-              value={workingDir}
-              onChange={(e) => setWorkingDir(e.target.value)}
-              className="min-w-0 flex-1"
-            />
-            <Button
-              onClick={() => void browseWorkingDir()}
-              disabled={submitting}
-            >
-              Browse…
-            </Button>
-          </div>
+        <Field id="edit-working-dir" label="Working directory">
+          <WorkingDirField
+            id="edit-working-dir"
+            value={workingDir}
+            onChange={setWorkingDir}
+            disabled={submitting}
+          />
         </Field>
 
-        <Field
-          id="edit-system-prompt"
-          label="System prompt"
-          hint="optional"
-        >
+        <Field id="edit-system-prompt" label="System prompt">
           <Textarea
             id="edit-system-prompt"
             rows={6}

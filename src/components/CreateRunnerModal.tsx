@@ -6,8 +6,6 @@
 
 import { useEffect, useState } from "react";
 
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-
 import { api } from "../lib/api";
 import { readDefaultWorkingDir } from "../lib/settings";
 import type {
@@ -18,8 +16,10 @@ import type {
 import { Button } from "./ui/Button";
 import { Modal } from "./ui/Overlay";
 import { Field, Input, Textarea } from "./ui/Field";
+import { ModelField } from "./ui/ModelField";
 import { RuntimeSelect } from "./ui/RuntimeSelect";
 import { StyledSelect } from "./ui/StyledSelect";
+import { WorkingDirField } from "./ui/WorkingDirField";
 import {
   PERMISSION_MODES_BY_RUNTIME,
   RUNTIME_OPTIONS,
@@ -42,16 +42,16 @@ export function CreateRunnerModal({
   const [displayName, setDisplayName] = useState("");
   const [runtime, setRuntime] = useState<string>(RUNTIME_OPTIONS[0].value);
   const [argsText, setArgsText] = useState("");
+  const [model, setModel] = useState("");
   const [workingDir, setWorkingDir] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
-  // "Permission mode" dropdown — defaults to AcceptEdits, matching
-  // the backend's `default_permission_mode()` and the seed's args.
-  // The backend writes the runtime's canonical mode flags onto the
-  // stored args column at create time (see commands::runner::create
-  // → router::runtime::apply_permission_mode), so the user never
-  // has to type the flags themselves.
+  // "Permission mode" dropdown — defaults to Auto. The form always
+  // sends an explicit mode, and the backend writes the runtime's
+  // canonical mode flags onto the stored args column at create time
+  // (see commands::runner::create → router::runtime::apply_permission_mode),
+  // so the user never has to type the flags themselves.
   const [permissionMode, setPermissionMode] =
-    useState<PermissionMode>("accept_edits");
+    useState<PermissionMode>("auto");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -61,9 +61,10 @@ export function CreateRunnerModal({
       setDisplayName("");
       setRuntime(RUNTIME_OPTIONS[0].value);
       setArgsText("");
+      setModel("");
       setWorkingDir(readDefaultWorkingDir());
       setSystemPrompt("");
-      setPermissionMode("accept_edits");
+      setPermissionMode("auto");
       setError(null);
     }
   }, [open]);
@@ -88,19 +89,6 @@ export function CreateRunnerModal({
     displayName.trim().length > 0 &&
     !submitting;
 
-  const browseWorkingDir = async () => {
-    try {
-      const picked = await openDialog({
-        directory: true,
-        multiple: false,
-        title: "Pick a working directory",
-      });
-      if (typeof picked === "string") setWorkingDir(picked);
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
   const submit = async () => {
     if (!canSubmit) return;
     setSubmitting(true);
@@ -113,6 +101,7 @@ export function CreateRunnerModal({
       args: argsText.trim() ? argsText.trim().split(/\s+/) : [],
       working_dir: workingDir.trim() || null,
       system_prompt: systemPrompt.trim() || null,
+      model: model.trim() || null,
       // Send the mode only for runtimes that support it — keeps the
       // contract explicit for shell / unknown (where the backend
       // helper is a no-op anyway).
@@ -161,12 +150,7 @@ export function CreateRunnerModal({
           void submit();
         }}
       >
-        <Field
-          id="new-runner-handle"
-          label="Handle"
-          hint="lowercase slug, globally unique, immutable after creation"
-          error={handleError}
-        >
+        <Field id="new-runner-handle" label="Handle" error={handleError}>
           <div className="flex items-center rounded border border-line-strong bg-bg px-2.5 py-1.5 text-sm focus-within:border-fg-3">
             <span className="select-none pr-1 font-mono font-semibold text-fg-3">
               @
@@ -182,11 +166,7 @@ export function CreateRunnerModal({
           </div>
         </Field>
 
-        <Field
-          id="new-runner-display-name"
-          label="Display name"
-          hint="optional, shown in cards alongside the handle"
-        >
+        <Field id="new-runner-display-name" label="Display name">
           <Input
             id="new-runner-display-name"
             value={displayName}
@@ -195,11 +175,7 @@ export function CreateRunnerModal({
           />
         </Field>
 
-        <Field
-          id="new-runner-runtime"
-          label="Runtime"
-          hint="picks the binary spawned for this runner"
-        >
+        <Field id="new-runner-runtime" label="Runtime">
           <RuntimeSelect
             id="new-runner-runtime"
             value={runtime}
@@ -207,11 +183,7 @@ export function CreateRunnerModal({
           />
         </Field>
 
-        <Field
-          id="new-runner-command"
-          label="Command"
-          hint="resolved from runtime · PATH lookup"
-        >
+        <Field id="new-runner-command" label="Command">
           <Input
             id="new-runner-command"
             value={command}
@@ -233,6 +205,19 @@ export function CreateRunnerModal({
           />
         </Field>
 
+        <Field
+          id="new-runner-model"
+          label="Model"
+          hint="optional · blank uses the runtime's own model · type a name or pick an alias"
+        >
+          <ModelField
+            id="new-runner-model"
+            runtime={runtime}
+            model={model}
+            onModelChange={setModel}
+          />
+        </Field>
+
         {runtimeSupportsPermissionMode(runtime) ? (() => {
           const modeOptions = PERMISSION_MODES_BY_RUNTIME[runtime] ?? [];
           // Mode space is per-runtime: a mode picked under one runtime
@@ -244,59 +229,36 @@ export function CreateRunnerModal({
             : "default";
           const current = modeOptions.find((o) => o.value === safeValue);
           return (
-            <div className="flex items-start justify-between gap-6">
-              <div className="flex min-w-0 flex-col gap-0.5">
-                <span className="text-[13px] font-medium text-fg">
-                  Permission mode
-                </span>
-                <span className="text-[11px] text-fg-2">
-                  {current?.description}
-                </span>
-              </div>
-              <div className="shrink-0 pt-0.5">
-                <StyledSelect
-                  className="min-w-[180px]"
-                  value={safeValue}
-                  options={modeOptions.map((o) => ({
-                    value: o.value,
-                    label: o.label,
-                    description: o.description,
-                    danger: o.danger,
-                  }))}
-                  onChange={(v) => setPermissionMode(v as PermissionMode)}
-                />
-              </div>
-            </div>
+            <Field
+              id="new-runner-permission-mode"
+              label="Permission mode"
+              hint={current?.description}
+            >
+              <StyledSelect
+                className="w-full"
+                value={safeValue}
+                options={modeOptions.map((o) => ({
+                  value: o.value,
+                  label: o.label,
+                  description: o.description,
+                  danger: o.danger,
+                }))}
+                onChange={(v) => setPermissionMode(v as PermissionMode)}
+              />
+            </Field>
           );
         })() : null}
 
-        <Field
-          id="new-runner-working-dir"
-          label="Working directory"
-          hint="optional fallback when no mission/session specifies one"
-        >
-          <div className="flex items-center gap-2">
-            <Input
-              id="new-runner-working-dir"
-              value={workingDir}
-              placeholder="/absolute/path"
-              onChange={(e) => setWorkingDir(e.target.value)}
-              className="min-w-0 flex-1"
-            />
-            <Button
-              onClick={() => void browseWorkingDir()}
-              disabled={submitting}
-            >
-              Browse…
-            </Button>
-          </div>
+        <Field id="new-runner-working-dir" label="Working directory">
+          <WorkingDirField
+            id="new-runner-working-dir"
+            value={workingDir}
+            onChange={setWorkingDir}
+            disabled={submitting}
+          />
         </Field>
 
-        <Field
-          id="new-runner-system-prompt"
-          label="Default system prompt"
-          hint="used whenever this runner spawns. Per-slot overrides land in v0.x"
-        >
+        <Field id="new-runner-system-prompt" label="Default system prompt">
           <Textarea
             id="new-runner-system-prompt"
             rows={5}

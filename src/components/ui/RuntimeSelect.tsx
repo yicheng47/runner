@@ -3,8 +3,9 @@
 // system control renders as a chrome-gradient button regardless of
 // CSS).
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
+import { PopoverMenu } from "./PopoverMenu";
 import { RUNTIME_OPTIONS, type RuntimeOption } from "./runtimes";
 
 export function RuntimeSelect({
@@ -21,26 +22,10 @@ export function RuntimeSelect({
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("mousedown", onDoc);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onDoc);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
   const current = options.find((o) => o.value === value) ?? options[0];
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef}>
       <button
         id={id}
         type="button"
@@ -58,10 +43,10 @@ export function RuntimeSelect({
         </span>
       </button>
 
-      {open ? (
+      <PopoverMenu open={open} anchorRef={rootRef} onClose={() => setOpen(false)}>
         <ul
           role="listbox"
-          className="absolute left-0 right-0 top-full z-30 mt-1 flex flex-col overflow-hidden rounded border border-line-strong bg-panel py-1 shadow-xl"
+          className="flex w-full max-h-[260px] flex-col overflow-y-auto rounded border border-line-strong bg-panel py-1 shadow-xl"
         >
           {options.map((opt) => {
             const active = opt.value === value;
@@ -95,7 +80,7 @@ export function RuntimeSelect({
             );
           })}
         </ul>
-      ) : null}
+      </PopoverMenu>
     </div>
   );
 }

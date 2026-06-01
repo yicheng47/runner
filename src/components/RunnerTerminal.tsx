@@ -224,8 +224,10 @@ export const RunnerTerminal = forwardRef<
       // handled by xterm natively, not by WebLinksAddon. The default activator
       // calls window.open() which is a silent no-op in WKWebView/Tauri, so we
       // route them through the same plugin-opener path as regex-detected URLs.
+      // Gated on Cmd/Ctrl to match standard terminal behaviour.
       linkHandler: {
-        activate: (_event, uri) => {
+        activate: (event, uri) => {
+          if (!event.metaKey && !event.ctrlKey) return;
           void openUrl(uri).catch((err) => {
             console.error("[terminal] OSC 8 openUrl failed:", err);
           });
@@ -234,12 +236,11 @@ export const RunnerTerminal = forwardRef<
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    const webLinks = new WebLinksAddon((_event, uri) => {
-      // Plain click opens, matching the feed's link behavior. xterm's link
-      // service only fires `activate` on a click that lands inside a detected
-      // URL (with cursor=pointer), so drag-to-select doesn't accidentally
-      // trigger this — the iTerm Cmd+click parity wasn't worth the
-      // discoverability cost.
+    const webLinks = new WebLinksAddon((event, uri) => {
+      // Standard terminal behaviour: only open on Cmd+click (macOS) /
+      // Ctrl+click (other platforms). A plain click does nothing, so a
+      // click that lands on a URL while selecting text can't open it.
+      if (!event.metaKey && !event.ctrlKey) return;
       void openUrl(uri).catch((err) => {
         console.error("[terminal] openUrl failed:", err);
       });

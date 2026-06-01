@@ -48,15 +48,15 @@ export function Modal({
       onMouseDown={onClose}
     >
       <div
-        className={`${widthClass} overflow-hidden rounded-lg border border-line-strong bg-panel shadow-2xl`}
+        className={`${widthClass} flex max-h-[85vh] flex-col overflow-hidden rounded-lg border border-line-strong bg-panel shadow-2xl`}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="border-b border-line px-6 py-4 text-sm font-semibold text-fg">
+        <div className="shrink-0 border-b border-line px-6 py-4 text-sm font-semibold text-fg">
           {title}
         </div>
-        <div className="px-6 py-5">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">{children}</div>
         {footer ? (
-          <div className="flex items-center justify-end gap-2 border-t border-line bg-bg/40 px-6 py-4">
+          <div className="flex shrink-0 items-center justify-end gap-2 border-t border-line bg-bg/40 px-6 py-4">
             {footer}
           </div>
         ) : null}

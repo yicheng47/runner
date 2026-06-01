@@ -117,14 +117,12 @@ const SEED_IMPL_RUNNER_ID: &str = "01K000DEFAULT000RUNNERIMPL01";
 const SEED_REVIEWER_RUNNER_ID: &str = "01K000DEFAULT000RUNNERREVW01";
 const SEED_TIMESTAMP: &str = "2026-05-03T00:00:00Z";
 
-// Auto permission mode args — `claude --permission-mode acceptEdits`.
-// Auto-approves edits but still asks for blast-radius operations
-// (shell commands outside the workspace, network calls). Crucially
-// does NOT trigger claude-code's one-time bypass-permissions consent
-// dialog, which used to break first-mission injection. Users can
-// flip individual runners to Bypass via the runner-edit form's
-// segmented control if they want the more aggressive default.
-const SEED_RUNNER_ARGS_JSON: &str = r#"["--permission-mode","acceptEdits"]"#;
+// Auto permission mode args for the default Codex seed:
+// `codex --ask-for-approval on-request --sandbox workspace-write`.
+// This matches the new-runner form's default runtime + permission
+// mode without relying on claude-code's plan-gated Auto mode.
+const SEED_RUNNER_ARGS_JSON: &str =
+    r#"["--ask-for-approval","on-request","--sandbox","workspace-write"]"#;
 
 // Persona-only system prompts shared with `tests/fixtures/system-prompts/*.md`.
 // Keeping a single source of truth means the migration 0002 UPDATE
@@ -258,8 +256,8 @@ fn insert_seed_runner(
         "INSERT INTO runners (
             id, handle, display_name, runtime, command, args_json,
             system_prompt, model, effort, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, 'claude-code', 'claude', ?4, ?5,
-                   'claude-opus-4-7', 'xhigh', ?6, ?6)",
+         ) VALUES (?1, ?2, ?3, 'codex', 'codex', ?4, ?5,
+                   NULL, NULL, ?6, ?6)",
         params![
             id,
             handle,
@@ -576,6 +574,23 @@ mod tests {
             })
             .unwrap();
         assert_eq!(lead_handle, "architect");
+
+        let codex_seed_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM runners
+                  WHERE runtime = 'codex'
+                    AND command = 'codex'
+                    AND args_json = ?1
+                    AND model IS NULL
+                    AND effort IS NULL",
+                params![SEED_RUNNER_ARGS_JSON],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            codex_seed_count, 3,
+            "all seeded runners should use codex Auto with inherited model/effort",
+        );
     }
 
     /// Verbatim copy of the pre-#51 architect `system_prompt`
