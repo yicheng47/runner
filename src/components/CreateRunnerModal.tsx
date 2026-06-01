@@ -6,8 +6,6 @@
 
 import { useEffect, useState } from "react";
 
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-
 import { api } from "../lib/api";
 import { readDefaultWorkingDir } from "../lib/settings";
 import type {
@@ -21,6 +19,7 @@ import { Field, Input, Textarea } from "./ui/Field";
 import { ModelField } from "./ui/ModelField";
 import { RuntimeSelect } from "./ui/RuntimeSelect";
 import { StyledSelect } from "./ui/StyledSelect";
+import { WorkingDirField } from "./ui/WorkingDirField";
 import {
   PERMISSION_MODES_BY_RUNTIME,
   RUNTIME_OPTIONS,
@@ -89,19 +88,6 @@ export function CreateRunnerModal({
     handleError === null &&
     displayName.trim().length > 0 &&
     !submitting;
-
-  const browseWorkingDir = async () => {
-    try {
-      const picked = await openDialog({
-        directory: true,
-        multiple: false,
-        title: "Pick a working directory",
-      });
-      if (typeof picked === "string") setWorkingDir(picked);
-    } catch (e) {
-      setError(String(e));
-    }
-  };
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -264,22 +250,12 @@ export function CreateRunnerModal({
         })() : null}
 
         <Field id="new-runner-working-dir" label="Working directory">
-          <div className="flex items-start gap-2">
-            <Textarea
-              id="new-runner-working-dir"
-              rows={2}
-              value={workingDir}
-              placeholder="/absolute/path"
-              onChange={(e) => setWorkingDir(e.target.value)}
-              className="min-w-0 flex-1 resize-y break-all"
-            />
-            <Button
-              onClick={() => void browseWorkingDir()}
-              disabled={submitting}
-            >
-              Browse…
-            </Button>
-          </div>
+          <WorkingDirField
+            id="new-runner-working-dir"
+            value={workingDir}
+            onChange={setWorkingDir}
+            disabled={submitting}
+          />
         </Field>
 
         <Field id="new-runner-system-prompt" label="Default system prompt">

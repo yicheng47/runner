@@ -7,8 +7,6 @@
 
 import { useEffect, useState } from "react";
 
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-
 import { api } from "../lib/api";
 import type {
   PermissionMode,
@@ -20,6 +18,7 @@ import { Drawer } from "./ui/Overlay";
 import { Field, Input, Textarea } from "./ui/Field";
 import { ModelField } from "./ui/ModelField";
 import { RuntimeSelect } from "./ui/RuntimeSelect";
+import { WorkingDirField } from "./ui/WorkingDirField";
 import { StyledSelect } from "./ui/StyledSelect";
 import {
   EFFORT_OPTIONS_BY_RUNTIME,
@@ -99,18 +98,6 @@ export function RunnerEditDrawer({
     displayName.trim().length > 0 &&
     !submitting;
 
-  const browseWorkingDir = async () => {
-    try {
-      const picked = await openDialog({
-        directory: true,
-        multiple: false,
-        title: "Pick a working directory",
-      });
-      if (typeof picked === "string") setWorkingDir(picked);
-    } catch (e) {
-      setError(String(e));
-    }
-  };
 
   const submit = async () => {
     if (!runner || !canSubmit) return;
@@ -309,21 +296,12 @@ export function RunnerEditDrawer({
         })() : null}
 
         <Field id="edit-working-dir" label="Working directory">
-          <div className="flex items-start gap-2">
-            <Textarea
-              id="edit-working-dir"
-              rows={2}
-              value={workingDir}
-              onChange={(e) => setWorkingDir(e.target.value)}
-              className="min-w-0 flex-1 resize-y break-all"
-            />
-            <Button
-              onClick={() => void browseWorkingDir()}
-              disabled={submitting}
-            >
-              Browse…
-            </Button>
-          </div>
+          <WorkingDirField
+            id="edit-working-dir"
+            value={workingDir}
+            onChange={setWorkingDir}
+            disabled={submitting}
+          />
         </Field>
 
         <Field id="edit-system-prompt" label="System prompt">

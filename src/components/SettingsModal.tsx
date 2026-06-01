@@ -35,7 +35,6 @@ import {
 } from "lucide-react";
 
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getVersion } from "@tauri-apps/api/app";
 
@@ -105,8 +104,8 @@ import {
   ZOOM_STEPS,
 } from "../lib/settings";
 import { useUpdate } from "../contexts/UpdateContext";
-import { Button } from "./ui/Button";
 import { StyledSelect } from "./ui/StyledSelect";
+import { WorkingDirField } from "./ui/WorkingDirField";
 
 interface SettingsModalProps {
   open: boolean;
@@ -179,10 +178,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
       <div
         ref={cardRef}
-        className="flex h-[560px] w-[680px] overflow-hidden rounded-xl border border-line bg-panel shadow-[0_14px_40px_rgba(0,0,0,0.6)]"
+        className="flex h-[560px] max-h-full w-[680px] max-w-full overflow-hidden rounded-xl border border-line bg-panel shadow-[0_14px_40px_rgba(0,0,0,0.6)]"
       >
         {/* Sidebar — Codex-style: secondary surface (panel) sitting
             alongside the primary surface (bg) used for the content
@@ -369,7 +368,8 @@ function GeneralPane() {
         label="Default working directory"
         sub="Cwd new chats inherit unless overridden."
       >
-        <WorkingDirInput
+        <WorkingDirField
+          className="w-[280px]"
           value={defaultWorkingDir}
           onChange={setDefaultWorkingDir}
         />
@@ -1181,48 +1181,6 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
 // surfaces feel like one family. Typing an empty string flows
 // through `writeDefaultWorkingDir` (which removes the key); the
 // Browse button overlays Tauri's native directory dialog.
-function WorkingDirInput({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (path: string) => void;
-}) {
-  const [picking, setPicking] = useState(false);
-  const choose = async () => {
-    if (picking) return;
-    setPicking(true);
-    try {
-      const result = await openDialog({
-        directory: true,
-        multiple: false,
-        defaultPath: value || undefined,
-      });
-      if (typeof result === "string" && result) {
-        onChange(result);
-      }
-    } catch {
-      // best-effort — the dialog plugin can throw on backend mis-
-      // configuration; cancel is silent rather than a stack trace.
-    } finally {
-      setPicking(false);
-    }
-  };
-  return (
-    <div className="flex w-[260px] items-center gap-2">
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="/Users/you/projects/foo"
-        className="min-w-0 flex-1 rounded-md border border-line bg-bg px-3 py-2 font-mono text-xs text-fg placeholder:text-fg-3 focus:border-fg-3 focus:outline-none"
-      />
-      <Button onClick={() => void choose()} disabled={picking}>
-        Browse…
-      </Button>
-    </div>
-  );
-}
-
 function LinkRow({
   icon,
   label,
