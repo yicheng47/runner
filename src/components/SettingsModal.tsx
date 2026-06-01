@@ -369,6 +369,7 @@ function GeneralPane() {
         sub="Cwd new chats inherit unless overridden."
       >
         <WorkingDirField
+          singleLine
           className="w-[280px]"
           value={defaultWorkingDir}
           onChange={setDefaultWorkingDir}
