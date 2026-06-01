@@ -216,11 +216,7 @@ export function RunnerEditDrawer({
           />
         </Field>
 
-        <Field
-          id="edit-command"
-          label="Command"
-          hint="resolved from runtime · PATH lookup"
-        >
+        <Field id="edit-command" label="Command">
           <Input id="edit-command" value={command} disabled readOnly />
         </Field>
 
@@ -313,12 +309,13 @@ export function RunnerEditDrawer({
         })() : null}
 
         <Field id="edit-working-dir" label="Working directory">
-          <div className="flex items-center gap-2">
-            <Input
+          <div className="flex items-start gap-2">
+            <Textarea
               id="edit-working-dir"
+              rows={2}
               value={workingDir}
               onChange={(e) => setWorkingDir(e.target.value)}
-              className="min-w-0 flex-1"
+              className="min-w-0 flex-1 resize-y break-all"
             />
             <Button
               onClick={() => void browseWorkingDir()}

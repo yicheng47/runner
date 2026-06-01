@@ -164,12 +164,7 @@ export function CreateRunnerModal({
           void submit();
         }}
       >
-        <Field
-          id="new-runner-handle"
-          label="Handle"
-          hint="lowercase slug, globally unique, immutable after creation"
-          error={handleError}
-        >
+        <Field id="new-runner-handle" label="Handle" error={handleError}>
           <div className="flex items-center rounded border border-line-strong bg-bg px-2.5 py-1.5 text-sm focus-within:border-fg-3">
             <span className="select-none pr-1 font-mono font-semibold text-fg-3">
               @
@@ -185,11 +180,7 @@ export function CreateRunnerModal({
           </div>
         </Field>
 
-        <Field
-          id="new-runner-display-name"
-          label="Display name"
-          hint="optional, shown in cards alongside the handle"
-        >
+        <Field id="new-runner-display-name" label="Display name">
           <Input
             id="new-runner-display-name"
             value={displayName}
@@ -198,11 +189,7 @@ export function CreateRunnerModal({
           />
         </Field>
 
-        <Field
-          id="new-runner-runtime"
-          label="Runtime"
-          hint="picks the binary spawned for this runner"
-        >
+        <Field id="new-runner-runtime" label="Runtime">
           <RuntimeSelect
             id="new-runner-runtime"
             value={runtime}
@@ -210,11 +197,7 @@ export function CreateRunnerModal({
           />
         </Field>
 
-        <Field
-          id="new-runner-command"
-          label="Command"
-          hint="resolved from runtime · PATH lookup"
-        >
+        <Field id="new-runner-command" label="Command">
           <Input
             id="new-runner-command"
             value={command}
@@ -281,13 +264,14 @@ export function CreateRunnerModal({
         })() : null}
 
         <Field id="new-runner-working-dir" label="Working directory">
-          <div className="flex items-center gap-2">
-            <Input
+          <div className="flex items-start gap-2">
+            <Textarea
               id="new-runner-working-dir"
+              rows={2}
               value={workingDir}
               placeholder="/absolute/path"
               onChange={(e) => setWorkingDir(e.target.value)}
-              className="min-w-0 flex-1"
+              className="min-w-0 flex-1 resize-y break-all"
             />
             <Button
               onClick={() => void browseWorkingDir()}
