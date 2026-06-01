@@ -96,6 +96,48 @@ export function runtimeSupportsEffort(runtime: string): boolean {
   return runtime in EFFORT_OPTIONS_BY_RUNTIME;
 }
 
+export interface ModelOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+// "default" maps to the empty value: an empty field stores NULL and
+// `model_effort_args` emits no `--model` flag, so the runtime uses its
+// own default. Listed explicitly (not just reachable by clearing the
+// field) so it can be re-picked after selecting another model.
+const MODEL_DEFAULT: ModelOption = {
+  value: "",
+  label: "default",
+  description: "Use the runtime's own default model.",
+};
+
+// Curated model suggestions surfaced in the Model combobox's dropdown.
+// They're shortcuts, not a closed set — the field is a free-text input,
+// so any model name can be typed.
+//
+// claude-code's `--model` accepts version-stable aliases (`opus` always
+// resolves to the latest Opus), so suggesting them never goes stale.
+// codex has no alias scheme — it takes full names like `gpt-5-codex`
+// that rot every release — so it offers only `default` and lets the
+// user type any full name.
+export const MODEL_SUGGESTIONS_BY_RUNTIME: Record<
+  string,
+  ReadonlyArray<ModelOption>
+> = {
+  "claude-code": [
+    MODEL_DEFAULT,
+    { value: "opus", label: "opus", description: "Latest Claude Opus." },
+    { value: "sonnet", label: "sonnet", description: "Latest Claude Sonnet." },
+    { value: "haiku", label: "haiku", description: "Latest Claude Haiku." },
+  ],
+  codex: [MODEL_DEFAULT],
+};
+
+export function modelSuggestions(runtime: string): ReadonlyArray<ModelOption> {
+  return MODEL_SUGGESTIONS_BY_RUNTIME[runtime] ?? [];
+}
+
 export interface PermissionModeOption {
   value: PermissionMode;
   label: string;

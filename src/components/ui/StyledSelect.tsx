@@ -60,10 +60,13 @@ export function StyledSelect({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
     };
-    window.addEventListener("mousedown", onDoc);
+    // Capture phase: Modal/Drawer panels stopPropagation on bubbling
+    // mousedown (so backdrop-click doesn't close them), which would
+    // otherwise swallow this outside-click detection.
+    window.addEventListener("mousedown", onDoc, true);
     window.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("mousedown", onDoc, true);
       window.removeEventListener("keydown", onKey);
     };
   }, [open]);
@@ -83,10 +86,10 @@ export function StyledSelect({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-disabled={disabled}
-        className={`flex w-full items-center justify-between gap-2 rounded-md border border-line bg-bg px-3 py-2 text-left text-[12px] text-fg transition-colors focus:outline-none ${
+        className={`flex w-full items-center justify-between gap-2 rounded border border-line-strong bg-bg px-2.5 py-1.5 text-left text-sm text-fg transition-colors focus:outline-none ${
           disabled
             ? "cursor-not-allowed opacity-60"
-            : "cursor-pointer hover:border-line-strong focus:border-fg-3"
+            : "cursor-pointer hover:border-fg-3 focus:border-fg-3"
         }`}
       >
         <span className="flex min-w-0 items-center gap-2">
@@ -109,7 +112,7 @@ export function StyledSelect({
       {open ? (
         <ul
           role="listbox"
-          className="absolute right-0 top-full z-30 mt-1 flex max-h-[260px] w-[280px] flex-col overflow-y-auto rounded-md border border-line bg-panel py-1 shadow-[0_8px_24px_rgba(0,0,0,0.5)]"
+          className="absolute left-0 top-full z-30 mt-1 flex max-h-[260px] w-full min-w-[240px] flex-col overflow-y-auto rounded border border-line-strong bg-panel py-1 shadow-xl"
         >
           {options.map((opt) => {
             const active = opt.value === value;
@@ -132,7 +135,7 @@ export function StyledSelect({
                     onChange(opt.value);
                     setOpen(false);
                   }}
-                  className={`flex w-full cursor-pointer flex-col items-start gap-0.5 px-3 py-2 text-left text-[12px] transition-colors ${tone}`}
+                  className={`flex w-full cursor-pointer flex-col items-start gap-0.5 px-3 py-2 text-left text-sm transition-colors ${tone}`}
                 >
                   <span className="flex w-full items-center justify-between gap-2">
                     <span className="flex min-w-0 items-center gap-2">

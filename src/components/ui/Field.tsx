@@ -1,5 +1,9 @@
 import type { InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from "react";
 
+import { Info } from "lucide-react";
+
+import { Tooltip } from "./Tooltip";
+
 export function Label({
   htmlFor,
   children,
@@ -9,13 +13,22 @@ export function Label({
   children: ReactNode;
   hint?: ReactNode;
 }) {
+  // Hints render as an info icon with a hover/focus tooltip rather than
+  // inline text: long hints used to wrap and collide with the label.
+  const hintLabel = typeof hint === "string" ? hint : undefined;
   return (
     <label
       htmlFor={htmlFor}
-      className="flex items-baseline justify-between text-xs font-medium text-fg-2"
+      className="flex items-center gap-1.5 text-xs font-medium text-fg-2"
     >
       <span>{children}</span>
-      {hint ? <span className="text-fg-3">{hint}</span> : null}
+      {hint ? (
+        <Tooltip content={hint}>
+          <span className="inline-flex text-fg-3" aria-label={hintLabel}>
+            <Info className="h-3.5 w-3.5" aria-hidden />
+          </span>
+        </Tooltip>
+      ) : null}
     </label>
   );
 }

@@ -29,10 +29,13 @@ export function RuntimeSelect({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
     };
-    window.addEventListener("mousedown", onDoc);
+    // Capture phase: Modal/Drawer panels stopPropagation on bubbling
+    // mousedown (so backdrop-click doesn't close them), which would
+    // otherwise swallow this outside-click detection.
+    window.addEventListener("mousedown", onDoc, true);
     window.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("mousedown", onDoc, true);
       window.removeEventListener("keydown", onKey);
     };
   }, [open]);
