@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
+import { PopoverMenu } from "./PopoverMenu";
 import { modelSuggestions } from "./runtimes";
 
 // Model picker shared by the create modal and edit drawer. An editable
@@ -9,9 +10,8 @@ import { modelSuggestions } from "./runtimes";
 // `--model <name>`, so there's no closed set and no separate "custom"
 // mode — picking a suggestion just fills the input.
 //
-// Dropdown mechanics mirror StyledSelect (absolute panel,
-// window-mousedown + Escape to close) for visual and behavioural
-// consistency.
+// The suggestion list is a PopoverMenu (portaled, like StyledSelect) so
+// it can't be clipped by the modal/drawer scroll body.
 export function ModelField({
   id,
   runtime,
@@ -26,25 +26,6 @@ export function ModelField({
   const suggestions = modelSuggestions(runtime);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    // Capture phase: Modal/Drawer panels stopPropagation on bubbling
-    // mousedown (so backdrop-click doesn't close them), which would
-    // otherwise swallow this outside-click detection.
-    window.addEventListener("mousedown", onDoc, true);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onDoc, true);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
 
   const hasSuggestions = suggestions.length > 0;
 
@@ -86,10 +67,14 @@ export function ModelField({
           </span>
         </button>
       ) : null}
-      {open && hasSuggestions ? (
+      <PopoverMenu
+        open={open && hasSuggestions}
+        anchorRef={rootRef}
+        onClose={() => setOpen(false)}
+      >
         <ul
           role="listbox"
-          className="absolute left-0 right-0 top-full z-30 mt-1 flex max-h-[260px] flex-col overflow-y-auto rounded border border-line-strong bg-panel py-1 shadow-xl"
+          className="flex max-h-[260px] w-full flex-col overflow-y-auto rounded border border-line-strong bg-panel py-1 shadow-xl"
         >
           {suggestions.map((opt) => {
             const active = opt.value === model;
@@ -123,7 +108,7 @@ export function ModelField({
             );
           })}
         </ul>
-      ) : null}
+      </PopoverMenu>
     </div>
   );
 }

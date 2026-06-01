@@ -5,7 +5,9 @@
 // `SettingsModal.tsx` so the runner-edit forms can reuse it for the
 // Permission mode picker.
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
+
+import { PopoverMenu } from "./PopoverMenu";
 
 export interface StyledSelectOption {
   value: string;
@@ -52,30 +54,11 @@ export function StyledSelect({
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    // Capture phase: Modal/Drawer panels stopPropagation on bubbling
-    // mousedown (so backdrop-click doesn't close them), which would
-    // otherwise swallow this outside-click detection.
-    window.addEventListener("mousedown", onDoc, true);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onDoc, true);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
   const current = options.find((o) => o.value === value) ?? options[0];
   const triggerLabel = buttonLabel ?? current?.label ?? "";
 
   return (
-    <div ref={rootRef} className={`relative ${className ?? "min-w-[160px]"}`}>
+    <div ref={rootRef} className={className ?? "min-w-[160px]"}>
       <button
         type="button"
         onClick={() => {
@@ -109,10 +92,15 @@ export function StyledSelect({
           ▾
         </span>
       </button>
-      {open ? (
+      <PopoverMenu
+        open={open}
+        anchorRef={rootRef}
+        onClose={() => setOpen(false)}
+        minWidth={240}
+      >
         <ul
           role="listbox"
-          className="absolute left-0 top-full z-30 mt-1 flex max-h-[260px] w-full min-w-[240px] flex-col overflow-y-auto rounded border border-line-strong bg-panel py-1 shadow-xl"
+          className="flex max-h-[260px] w-full flex-col overflow-y-auto rounded border border-line-strong bg-panel py-1 shadow-xl"
         >
           {options.map((opt) => {
             const active = opt.value === value;
@@ -167,7 +155,7 @@ export function StyledSelect({
             );
           })}
         </ul>
-      ) : null}
+      </PopoverMenu>
     </div>
   );
 }
