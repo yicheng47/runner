@@ -90,6 +90,19 @@ export function PopoverMenu({
     };
   }, [open, anchorRef, onClose]);
 
+  // Stop mousedown inside the (portaled) menu from bubbling to document
+  // /window listeners that implement their own outside-click close —
+  // e.g. SettingsModal closes on any document mousedown outside its
+  // card, and the portaled menu lives outside that card in the DOM, so
+  // selecting an option would otherwise close the modal mid-click.
+  useEffect(() => {
+    const node = menuRef.current;
+    if (!open || !pos || !node) return;
+    const stop = (e: Event) => e.stopPropagation();
+    node.addEventListener("mousedown", stop);
+    return () => node.removeEventListener("mousedown", stop);
+  }, [open, pos]);
+
   if (!open || !pos) return null;
   return createPortal(
     <div

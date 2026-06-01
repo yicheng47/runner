@@ -24,7 +24,14 @@ export function Label({
       <span>{children}</span>
       {hint ? (
         <Tooltip content={hint}>
-          <span className="inline-flex text-fg-3" aria-label={hintLabel}>
+          {/* tabIndex makes the trigger focusable so the tooltip shows
+              on keyboard focus, not just hover. */}
+          <span
+            tabIndex={0}
+            role="img"
+            aria-label={hintLabel}
+            className="inline-flex rounded-sm text-fg-3 outline-none focus-visible:ring-1 focus-visible:ring-fg-3"
+          >
             <Info className="h-3.5 w-3.5" aria-hidden />
           </span>
         </Tooltip>
