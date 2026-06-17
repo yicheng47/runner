@@ -14,6 +14,8 @@ import { useEffect, useRef, useState } from "react";
 
 import { api } from "../lib/api";
 
+const MAX_TEXTAREA_HEIGHT = 240;
+
 interface MissionInputProps {
   missionId: string;
   /** Stable lead handle — default recipient. */
@@ -38,6 +40,7 @@ export function MissionInput({
   const [target, setTarget] = useState<string>(leadHandle);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [textareaScrollable, setTextareaScrollable] = useState(false);
   const pickerRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -52,7 +55,8 @@ export function MissionInput({
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
+    el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
+    setTextareaScrollable(el.scrollHeight > MAX_TEXTAREA_HEIGHT);
   }, [text]);
 
   useEffect(() => {
@@ -151,8 +155,10 @@ export function MissionInput({
           }
           disabled={disabled}
           rows={1}
-          className="flex-1 resize-none overflow-y-auto bg-transparent text-[13px] text-fg placeholder:text-fg-3 focus:outline-none disabled:cursor-not-allowed"
-          style={{ minHeight: "24px", maxHeight: "240px" }}
+          className={`flex-1 resize-none overflow-x-hidden bg-transparent text-[13px] text-fg placeholder:text-fg-3 focus:outline-none disabled:cursor-not-allowed ${
+            textareaScrollable ? "overflow-y-auto pr-2" : "overflow-y-hidden"
+          }`}
+          style={{ minHeight: "24px", maxHeight: `${MAX_TEXTAREA_HEIGHT}px` }}
         />
         <button
           type="button"
