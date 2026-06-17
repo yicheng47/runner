@@ -52,13 +52,13 @@ export function AppShell({ children }: { children?: ReactNode }) {
     return () => window.removeEventListener(SIDEBAR_TOGGLE_EVENT, onToggle);
   }, []);
 
-  // Cmd+S (mac) / Ctrl+S (others) toggles the sidebar. Skip real text
-  // fields, but let xterm's hidden textarea through so terminal focus
-  // doesn't swallow the app-level shortcut. Cmd+\ remains as a legacy
-  // alias for anyone who picked it up during development.
+  // Cmd+S toggles the sidebar. Skip real text fields, but let xterm's
+  // hidden textarea through so terminal focus doesn't swallow the
+  // app-level shortcut. Cmd+\ remains as a legacy alias for anyone who
+  // picked it up during development.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
+      if (!e.metaKey) return;
       const key = e.key.toLowerCase();
       if (key !== "s" && e.key !== "\\") return;
       const target = e.target as HTMLElement | null;

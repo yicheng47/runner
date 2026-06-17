@@ -307,7 +307,8 @@ export const RunnerTerminal = forwardRef<
       });
     });
 
-    // App-level shortcuts that should win even while xterm owns focus.
+    // App-level Command shortcuts that should win even while xterm owns
+    // focus. Ctrl shortcuts are left to the PTY/TUI.
     // WKWebView/xterm can keep these from reaching AppShell's global
     // keydown listener, so dispatch the same shell event from here and
     // return false to keep the shortcut out of the PTY.
@@ -321,7 +322,7 @@ export const RunnerTerminal = forwardRef<
     // emit \r (same as plain Enter) unless this handler also returns
     // false for that event (see #99).
     term.attachCustomKeyEventHandler((e) => {
-      if (e.type === "keydown" && (e.metaKey || e.ctrlKey)) {
+      if (e.type === "keydown" && e.metaKey) {
         const key = e.key.toLowerCase();
         if (key === "s" || e.key === "\\") {
           e.preventDefault();
