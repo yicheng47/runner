@@ -27,17 +27,20 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use super::launch;
 use super::runtime::{
-    OutputStream, RuntimeError, RuntimeOutput, RuntimeResult, RuntimeSession, SessionRuntime,
-    SessionStatus, SpawnSpec,
+    OutputStream, RunnerStatus, RuntimeError, RuntimeOutput, RuntimeResult, RuntimeSession,
+    SessionRuntime, SessionStatus, SpawnSpec,
 };
 
 const RUNTIME_LABEL: &str = "native-pty";
 const READ_BUF: usize = 8 * 1024;
+const DEFAULT_IDLE_THRESHOLD: Duration = Duration::from_millis(750);
+const IDLE_MONITOR_POLL: Duration = Duration::from_millis(50);
 
 /// Public constructor. Holds no external state — the runtime is purely
 /// in-memory and the per-session resources tear down with their handles.
@@ -286,13 +289,113 @@ impl SessionRuntime for PtyRuntime {
 
 // --- Reader thread ------------------------------------------------------
 
+struct IdleDetector {
+    last_byte: Instant,
+    current: RunnerStatus,
+    threshold: Duration,
+}
+
+impl IdleDetector {
+    fn new(threshold: Duration) -> Self {
+        Self::new_at(threshold, Instant::now())
+    }
+
+    fn new_at(threshold: Duration, now: Instant) -> Self {
+        Self {
+            last_byte: now,
+            current: RunnerStatus::Busy,
+            threshold,
+        }
+    }
+
+    fn on_bytes(&mut self, n: usize) -> Option<RunnerStatus> {
+        self.on_bytes_at(n, Instant::now())
+    }
+
+    fn on_bytes_at(&mut self, n: usize, now: Instant) -> Option<RunnerStatus> {
+        if n == 0 {
+            return None;
+        }
+        self.last_byte = now;
+        if self.current == RunnerStatus::Idle {
+            self.current = RunnerStatus::Busy;
+            Some(RunnerStatus::Busy)
+        } else {
+            None
+        }
+    }
+
+    fn tick(&mut self) -> Option<RunnerStatus> {
+        self.tick_at(Instant::now())
+    }
+
+    fn tick_at(&mut self, now: Instant) -> Option<RunnerStatus> {
+        if self.current == RunnerStatus::Busy
+            && now.duration_since(self.last_byte) >= self.threshold
+        {
+            self.current = RunnerStatus::Idle;
+            Some(RunnerStatus::Idle)
+        } else {
+            None
+        }
+    }
+}
+
+fn idle_monitor_thread(
+    detector: Arc<Mutex<IdleDetector>>,
+    tx: mpsc::Sender<RuntimeOutput>,
+    stop: Arc<AtomicBool>,
+    done: Arc<AtomicBool>,
+) {
+    loop {
+        if stop.load(Ordering::Acquire) || done.load(Ordering::Acquire) {
+            break;
+        }
+        let transition = {
+            let mut detector = detector.lock().expect("idle detector poisoned");
+            detector.tick()
+        };
+        if let Some(state) = transition {
+            if tx
+                .send(RuntimeOutput::StatusTransition {
+                    state,
+                    source: "forwarder",
+                })
+                .is_err()
+            {
+                break;
+            }
+        }
+        thread::sleep(IDLE_MONITOR_POLL);
+    }
+}
+
 fn reader_thread(
     mut reader: Box<dyn Read + Send>,
     tx: mpsc::Sender<RuntimeOutput>,
     stop: Arc<AtomicBool>,
     handle: Arc<SessionHandle>,
-    _session_id: String,
+    session_id: String,
 ) {
+    let detector = Arc::new(Mutex::new(IdleDetector::new(DEFAULT_IDLE_THRESHOLD)));
+    let monitor_done = Arc::new(AtomicBool::new(false));
+    let monitor = thread::Builder::new()
+        .name(format!("pty-idle-{session_id}"))
+        .spawn({
+            let detector = Arc::clone(&detector);
+            let tx = tx.clone();
+            let stop = Arc::clone(&stop);
+            let done = Arc::clone(&monitor_done);
+            move || idle_monitor_thread(detector, tx, stop, done)
+        });
+    let monitor = match monitor {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            log::error!("spawn idle monitor thread for {session_id}: {e}");
+            None
+        }
+    };
+
     let mut buf = vec![0u8; READ_BUF];
     loop {
         if stop.load(Ordering::Acquire) {
@@ -301,6 +404,21 @@ fn reader_thread(
         match reader.read(&mut buf) {
             Ok(0) => break, // EOF
             Ok(n) => {
+                let transition = {
+                    let mut detector = detector.lock().expect("idle detector poisoned");
+                    detector.on_bytes(n)
+                };
+                if let Some(state) = transition {
+                    if tx
+                        .send(RuntimeOutput::StatusTransition {
+                            state,
+                            source: "forwarder",
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
                 if tx.send(RuntimeOutput::Stream(buf[..n].to_vec())).is_err() {
                     // Receiver dropped (manager's forwarder gone).
                     break;
@@ -309,6 +427,11 @@ fn reader_thread(
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
             Err(_) => break,
         }
+    }
+
+    monitor_done.store(true, Ordering::Release);
+    if let Some(monitor) = monitor {
+        let _ = monitor.join();
     }
 
     handle.alive.store(false, Ordering::Release);
@@ -479,6 +602,46 @@ mod tests {
     }
 
     #[test]
+    fn idle_detector_flips_to_idle_after_silence() {
+        let threshold = Duration::from_millis(750);
+        let start = Instant::now();
+        let mut detector = IdleDetector::new_at(threshold, start);
+
+        assert_eq!(
+            detector.tick_at(start + threshold - Duration::from_millis(1)),
+            None
+        );
+        assert_eq!(
+            detector.tick_at(start + threshold),
+            Some(RunnerStatus::Idle)
+        );
+        assert_eq!(
+            detector.tick_at(start + threshold + Duration::from_secs(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn idle_detector_wakes_on_first_byte_after_idle() {
+        let threshold = Duration::from_millis(750);
+        let start = Instant::now();
+        let mut detector = IdleDetector::new_at(threshold, start);
+
+        assert_eq!(
+            detector.tick_at(start + threshold),
+            Some(RunnerStatus::Idle)
+        );
+        assert_eq!(
+            detector.on_bytes_at(1, start + threshold + Duration::from_millis(1)),
+            Some(RunnerStatus::Busy)
+        );
+        assert_eq!(
+            detector.on_bytes_at(1, start + threshold + Duration::from_millis(2)),
+            None
+        );
+    }
+
+    #[test]
     fn spawn_cat_pipes_bytes_back() {
         let rt = PtyRuntime::new();
         let (sess, stream) = rt.spawn(spec("test-cat", "/bin/cat", &[])).unwrap();
@@ -506,6 +669,47 @@ mod tests {
             String::from_utf8_lossy(&collected)
         );
         rt.stop(&sess).unwrap();
+    }
+
+    #[test]
+    fn spawn_emits_idle_after_silence_and_busy_on_more_output() {
+        let rt = PtyRuntime::new();
+        let (sess, stream) = rt
+            .spawn(spec(
+                "test-idle-detector",
+                "/bin/sh",
+                &["-c", "printf first; sleep 1; printf second; sleep 0.1"],
+            ))
+            .unwrap();
+
+        let mut statuses = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < deadline {
+            match stream.recv_timeout(Duration::from_millis(100)) {
+                Ok(RuntimeOutput::StatusTransition { state, source }) => {
+                    assert_eq!(source, "forwarder");
+                    statuses.push(state);
+                    if statuses
+                        .windows(2)
+                        .any(|w| w == [RunnerStatus::Idle, RunnerStatus::Busy])
+                    {
+                        break;
+                    }
+                }
+                Ok(RuntimeOutput::Stream(_)) => {}
+                Ok(RuntimeOutput::Replay(_)) => panic!("pty runtime must not emit Replay"),
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        assert!(
+            statuses
+                .windows(2)
+                .any(|w| w == [RunnerStatus::Idle, RunnerStatus::Busy]),
+            "expected idle then busy transition, got {statuses:?}"
+        );
+        let _ = rt.stop(&sess);
     }
 
     #[test]
