@@ -307,6 +307,11 @@ export const RunnerTerminal = forwardRef<
       });
     });
 
+    // App-level shortcuts that should win even while xterm owns focus.
+    // WKWebView/xterm can keep these from reaching AppShell's global
+    // keydown listener, so dispatch the same shell event from here and
+    // return false to keep the shortcut out of the PTY.
+    //
     // Shift+Enter → ESC+CR so claude-code/codex insert a newline in their
     // input frame instead of submitting. Plain Enter falls through to the
     // default \r emission via onData above.
@@ -316,6 +321,14 @@ export const RunnerTerminal = forwardRef<
     // emit \r (same as plain Enter) unless this handler also returns
     // false for that event (see #99).
     term.attachCustomKeyEventHandler((e) => {
+      if (e.type === "keydown" && (e.metaKey || e.ctrlKey)) {
+        const key = e.key.toLowerCase();
+        if (key === "s" || e.key === "\\") {
+          e.preventDefault();
+          window.dispatchEvent(new Event("runner:toggle-sidebar"));
+          return false;
+        }
+      }
       if (
         e.key === "Enter" &&
         e.shiftKey &&

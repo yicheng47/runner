@@ -18,6 +18,8 @@ import {
   writeStoredBool,
 } from "../lib/settings";
 
+const SIDEBAR_TOGGLE_EVENT = "runner:toggle-sidebar";
+
 export function AppShell({ children }: { children?: ReactNode }) {
   // Settings modal state hoisted here so both the Sidebar's bottom
   // Settings row and the UpdateToast's "Update" button can open it.
@@ -44,10 +46,16 @@ export function AppShell({ children }: { children?: ReactNode }) {
     if (!collapsed) setSidebarPreviewOpen(false);
   }, [collapsed]);
 
-  // Cmd+S (mac) / Ctrl+S (others) toggles the sidebar. Mirrors the
-  // input-tag skip used by the ⌘K palette shortcut in Sidebar so we
-  // don't hijack editing inside text fields. Cmd+\ remains as a
-  // legacy alias for anyone who picked it up during development.
+  useEffect(() => {
+    const onToggle = () => setCollapsed((prev) => !prev);
+    window.addEventListener(SIDEBAR_TOGGLE_EVENT, onToggle);
+    return () => window.removeEventListener(SIDEBAR_TOGGLE_EVENT, onToggle);
+  }, []);
+
+  // Cmd+S (mac) / Ctrl+S (others) toggles the sidebar. Skip real text
+  // fields, but let xterm's hidden textarea through so terminal focus
+  // doesn't swallow the app-level shortcut. Cmd+\ remains as a legacy
+  // alias for anyone who picked it up during development.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
@@ -55,12 +63,16 @@ export function AppShell({ children }: { children?: ReactNode }) {
       if (key !== "s" && e.key !== "\\") return;
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName?.toLowerCase();
-      if (tag === "input" || tag === "textarea") return;
+      const isTextInput =
+        tag === "input" || tag === "textarea" || !!target?.isContentEditable;
+      const isXtermInput = !!target?.closest(".xterm");
+      if (isTextInput && !isXtermInput) return;
       e.preventDefault();
-      setCollapsed((prev) => !prev);
+      e.stopPropagation();
+      window.dispatchEvent(new Event(SIDEBAR_TOGGLE_EVENT));
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
   }, []);
 
   return (
@@ -69,7 +81,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
         <div
           aria-hidden
           onMouseEnter={() => setSidebarPreviewOpen(true)}
-          className="absolute left-0 top-0 z-30 h-full w-1"
+          className="absolute left-0 top-0 z-30 h-full w-4"
         />
       ) : null}
       <Sidebar

@@ -975,12 +975,13 @@ function RuntimeRow({
             dim ? "bg-fg-3" : "bg-accent"
           }`}
         />
-        <span className={`truncate flex-1 ${mono ? "font-mono" : ""}`}>
-          {label}
-        </span>
         {pinned ? (
-          <Pin aria-hidden className="h-3 w-3 shrink-0 text-fg-3" />
+          <Pin
+            aria-hidden
+            className="h-2.5 w-2.5 shrink-0 -rotate-45 text-fg-3"
+          />
         ) : null}
+        <span className={`truncate ${mono ? "font-mono" : ""}`}>{label}</span>
       </button>
       {/* Kebab anchor for the same context menu the row's
           right-click triggers. Mirrors SessionRow's affordance so
