@@ -95,12 +95,14 @@ interface SidebarProps {
   // outsiders trigger it.
   settingsOpen: boolean;
   onSettingsOpenChange: (open: boolean) => void;
-  // Collapsed/expanded state lives in AppShell so the global cmd+\
+  // Collapsed/expanded state lives in AppShell so the global Cmd+S
   // shortcut can toggle it. The `width` resize state stays local —
   // it's preserved across collapse/expand cycles so users get their
   // last full width back when they re-open.
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
+  previewOpen: boolean;
+  onPreviewOpenChange: (open: boolean) => void;
 }
 
 export function Sidebar({
@@ -108,6 +110,8 @@ export function Sidebar({
   onSettingsOpenChange,
   collapsed,
   onCollapsedChange,
+  previewOpen,
+  onPreviewOpenChange,
 }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -522,63 +526,34 @@ export function Sidebar({
     });
   }, []);
 
+  const sidebarVisible = !collapsed || previewOpen;
+  const sidebarPreview = collapsed && previewOpen;
+
   return (
     <>
       <aside
         ref={asideRef}
-        style={{ width: collapsed ? 52 : width }}
-        className="relative flex h-full shrink-0 select-none flex-col overflow-hidden border-r border-line bg-sidebar transition-[width] duration-150"
+        onMouseLeave={
+          sidebarPreview ? () => onPreviewOpenChange(false) : undefined
+        }
+        style={{ width: sidebarVisible ? width : 0 }}
+        className={`${
+          collapsed
+            ? "absolute left-0 top-0 z-40"
+            : "relative"
+        } ${
+          sidebarPreview ? "shadow-2xl shadow-black/40" : ""
+        } flex h-full shrink-0 select-none flex-col overflow-hidden transition-[width] duration-150 ${
+          sidebarVisible ? "border-r border-line bg-sidebar" : "bg-transparent"
+        }`}
       >
-        <div data-tauri-drag-region className="h-7" />
-
-        {collapsed ? (
-          // Rail body: single flex column. The h-7 drag strip above
-          // already contributes 28px of top padding; pt-2 brings the
-          // brand to y=36 to match the .pen frame's [36, 0, 16, 0]
-          // padding. gap-1 (4px) between siblings; explicit h-2
-          // spacer adds the 8px gap below the divider that the
-          // designer called for.
-          <div className="flex min-h-0 flex-1 flex-col items-center gap-1 pb-4 pt-2">
-            <BrandMark />
-            <div className="h-px w-full bg-line" />
-            <div className="h-2 w-full" />
-            <RailIconButton
-              icon={Search}
-              label="Search"
-              onClick={() => setPaletteOpen(true)}
-            />
-            <RailIconLink icon={Terminal} to="/runners" label="runner" />
-            <RailIconLink icon={Users} to="/crews" label="crew" />
-            {/* Archived rail icon — slot reserved for feature #31.
-                When the archived nav lands, render a RailIconLink
-                here pointing at its route (icon: lucide Archive).
-                Leaving this as a clearly-marked placeholder so the
-                merge with #31 is mechanical. */}
-            <div className="w-full flex-1" />
-            <div className="h-px w-full bg-line" />
-            <button
-              type="button"
-              onClick={() => onCollapsedChange(false)}
-              title="Expand sidebar (⌘\\)"
-              aria-label="Expand sidebar"
-              className="flex h-9 w-9 cursor-pointer items-center justify-center rounded text-fg-2 transition-colors hover:bg-line/50 hover:text-fg"
-            >
-              <ChevronsRight aria-hidden className="h-4 w-4" />
-            </button>
-            <RailIconButton
-              icon={SettingsIcon}
-              label="Settings"
-              onClick={() => setSettingsOpen(true)}
-            />
-          </div>
-        ) : (
+        {sidebarVisible ? (
           <div className="flex min-h-0 flex-1 flex-col pb-4">
-            {/* Brand row — open state only. Toggle has moved to the
-                bottom Settings row, so this is brand + wordmark
-                only. `data-tauri-drag-region` extends the draggable
-                top band past the h-7 traffic-light strip above so the
-                whole header band (brand + workspace header) reads as
-                one continuous title bar. */}
+            <div data-tauri-drag-region className="h-8 shrink-0" />
+
+            {/* Brand row — open state only. The drag region extends
+                below the traffic-light strip so the header band reads
+                as one continuous title bar. */}
             <div
               data-tauri-drag-region
               className="flex shrink-0 items-center gap-2 px-5 pb-5 pt-1"
@@ -701,10 +676,8 @@ export function Sidebar({
 
             {/* Settings row — pinned at the bottom of the sidebar
                 column. Mirrors Pencil node `IJsUO` (sidebar settings).
-                The collapse toggle now lives on the right of this
-                row (24×24, ChevronsLeft) — see frame s31wik. The
-                Settings button keeps the rest of the row width via
-                flex-1 so its hit target stays large. */}
+                The chevron points toward the action: left collapses
+                an open sidebar, right pins a hover-preview sidebar. */}
             <div className="flex shrink-0 items-center gap-2 border-t border-line px-3 pt-2">
               <button
                 type="button"
@@ -716,29 +689,39 @@ export function Sidebar({
               </button>
               <button
                 type="button"
-                onClick={() => onCollapsedChange(true)}
-                title="Collapse sidebar (⌘\\)"
-                aria-label="Collapse sidebar"
+                onClick={() => {
+                  if (sidebarPreview) {
+                    onCollapsedChange(false);
+                    onPreviewOpenChange(false);
+                    return;
+                  }
+                  onCollapsedChange(true);
+                }}
+                title={
+                  sidebarPreview ? "Keep sidebar open" : "Collapse sidebar (⌘S)"
+                }
+                aria-label={
+                  sidebarPreview ? "Keep sidebar open" : "Collapse sidebar"
+                }
                 className="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-fg-3 transition-colors hover:bg-bg hover:text-fg"
               >
-                <ChevronsLeft aria-hidden className="h-3.5 w-3.5" />
+                {sidebarPreview ? (
+                  <ChevronsRight aria-hidden className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronsLeft aria-hidden className="h-3.5 w-3.5" />
+                )}
               </button>
             </div>
           </div>
-        )}
+        ) : null}
 
-        {/* Resize handle is inert in rail mode (no width to drag). We
-            render a noop placeholder so the DOM stays stable, just
-            without the col-resize cursor / mousedown handler. */}
-        <div
-          onPointerDown={collapsed ? undefined : handleResizeStart}
-          title={collapsed ? undefined : "Drag to resize"}
-          className={
-            collapsed
-              ? "absolute right-0 top-0 z-20 h-full w-1 bg-transparent"
-              : "absolute right-0 top-0 z-20 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-accent/40"
-          }
-        />
+        {sidebarVisible ? (
+          <div
+            onPointerDown={handleResizeStart}
+            title="Drag to resize"
+            className="absolute right-0 top-0 z-20 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-accent/40"
+          />
+        ) : null}
       </aside>
 
       <SettingsModal
@@ -849,64 +832,6 @@ function NavRow({
         </>
       )}
     </NavLink>
-  );
-}
-
-// Icon-only nav row used in the collapsed rail. Reuses NavLink for
-// the active-state styling so the rail and full sidebar agree on
-// what's selected. The label is exposed via a native `title`
-// tooltip — there is no in-tree tooltip primitive, so we keep this
-// lightweight rather than introduce one for v1.
-function RailIconLink({
-  icon: Icon,
-  to,
-  label,
-}: {
-  icon: ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
-  to: string;
-  label: string;
-}) {
-  return (
-    <NavLink
-      to={to}
-      title={label}
-      aria-label={label}
-      className={({ isActive }) =>
-        `flex h-9 w-9 items-center justify-center rounded transition-colors ${
-          isActive
-            ? "bg-line text-fg"
-            : "text-fg-2 hover:bg-line/50 hover:text-fg"
-        }`
-      }
-    >
-      <Icon aria-hidden className="h-4 w-4" />
-    </NavLink>
-  );
-}
-
-// Icon-only button variant for non-routing actions in the rail
-// (search palette, settings). Border-transparent → border-line on
-// hover keeps the layout stable while matching the active treatment
-// on the link variant.
-function RailIconButton({
-  icon: Icon,
-  label,
-  onClick,
-}: {
-  icon: ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={label}
-      aria-label={label}
-      className="flex h-9 w-9 cursor-pointer items-center justify-center rounded text-fg-2 transition-colors hover:bg-line/50 hover:text-fg"
-    >
-      <Icon aria-hidden className="h-4 w-4" />
-    </button>
   );
 }
 
@@ -1050,12 +975,13 @@ function RuntimeRow({
             dim ? "bg-fg-3" : "bg-accent"
           }`}
         />
-        <span className={`truncate flex-1 ${mono ? "font-mono" : ""}`}>
-          {label}
-        </span>
         {pinned ? (
-          <Pin aria-hidden className="h-3 w-3 shrink-0 text-fg-3" />
+          <Pin
+            aria-hidden
+            className="h-2.5 w-2.5 shrink-0 -rotate-45 text-fg-3"
+          />
         ) : null}
+        <span className={`truncate ${mono ? "font-mono" : ""}`}>{label}</span>
       </button>
       {/* Kebab anchor for the same context menu the row's
           right-click triggers. Mirrors SessionRow's affordance so
