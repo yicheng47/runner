@@ -580,7 +580,7 @@ export default function RunnerChat() {
       attach(
         sessionId,
         chatMeta.handle ? `@${chatMeta.handle}` : chatMeta.display_name,
-        state?.sessionStatus ?? chatMeta.status,
+        chatMeta.status,
         isFreshSpawn(chatMeta?.started_at),
       );
     }
