@@ -17,6 +17,8 @@
      bright bg, since "raised" in light themes is pure white and
      wouldn't read as a sidebar. */
   --color-sidebar: #272930;
+  --color-sidebar-selected: #333640;
+  --color-sidebar-selected-border: #3b3e49;
 
   --color-fg: #dcdce0;
   --color-fg-2: #9a9ba5;
@@ -43,6 +45,8 @@
   --color-line: #e5e5e7;
   --color-line-strong: #d1d1d6;
   --color-sidebar: #f7f7f8;
+  --color-sidebar-selected: #eaeaed;
+  --color-sidebar-selected-border: #d8d8de;
 
   --color-fg: #1a1c1f;
   --color-fg-2: #6e6e73;
@@ -68,6 +72,8 @@
   --color-line: #45475a;
   --color-line-strong: #585b70;
   --color-sidebar: #313244;
+  --color-sidebar-selected: #3b3d52;
+  --color-sidebar-selected-border: #51546b;
 
   --color-fg: #cdd6f4;
   --color-fg-2: #a6adc8;
@@ -96,6 +102,8 @@
   --color-line: #ccd0da;
   --color-line-strong: #bcc0cc;
   --color-sidebar: #e6e9ef;
+  --color-sidebar-selected: #dce0ea;
+  --color-sidebar-selected-border: #c8ccda;
 
   --color-fg: #4c4f69;
   --color-fg-2: #6c6f85;

@@ -21,6 +21,7 @@ import {
   FolderOpen,
   Info,
   Loader2,
+  MessageSquare,
   Minus,
   Monitor,
   Moon,
@@ -55,6 +56,7 @@ import {
   readAppTheme,
   readAppZoom,
   readDarkVariant,
+  readDefaultChatRuntime,
   readDefaultWorkingDir,
   readLightVariant,
   readStoredBool,
@@ -93,6 +95,7 @@ import {
   writeAppFontFamily,
   writeAppTheme,
   writeDarkVariant,
+  writeDefaultChatRuntime,
   writeDefaultWorkingDir,
   writeLightVariant,
   writeStoredBool,
@@ -114,6 +117,7 @@ interface SettingsModalProps {
 
 type Pane =
   | "general"
+  | "chat"
   | "appearance"
   | "terminal"
   | "diagnostics"
@@ -126,6 +130,12 @@ const PANES: { key: Pane; label: string; subtitle: string; icon: typeof Settings
     label: "General",
     subtitle: "Startup & defaults",
     icon: SettingsIcon,
+  },
+  {
+    key: "chat",
+    label: "Chat",
+    subtitle: "Direct chat defaults",
+    icon: MessageSquare,
   },
   {
     key: "appearance",
@@ -242,6 +252,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             <X aria-hidden className="h-4 w-4" />
           </button>
           {pane === "general" ? <GeneralPane /> : null}
+          {pane === "chat" ? <ChatPane /> : null}
           {pane === "appearance" ? <AppearancePane /> : null}
           {pane === "terminal" ? <TerminalPane /> : null}
           {pane === "diagnostics" ? <DiagnosticsPane /> : null}
@@ -380,6 +391,63 @@ function GeneralPane() {
         sub="Whole-app scale. Doesn't apply to the runner terminal canvas — see Terminal pane."
       >
         <ZoomStepper value={appZoom} onChange={setAppZoom} />
+      </Row>
+    </>
+  );
+}
+
+function ChatPane() {
+  const [runtimes, setRuntimes] = useState<
+    { name: string; display_name: string; command: string }[]
+  >([]);
+  const [defaultRuntime, setDefaultRuntimeState] = useState<string>(() =>
+    readDefaultChatRuntime(),
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    void api.runtime
+      .list()
+      .then((rows) => {
+        if (cancelled) return;
+        setRuntimes(rows);
+        const stored = readDefaultChatRuntime();
+        if (stored && !rows.some((runtime) => runtime.name === stored)) {
+          setDefaultRuntimeState("");
+          writeDefaultChatRuntime("");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setRuntimes([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const setDefaultRuntime = (runtime: string) => {
+    setDefaultRuntimeState(runtime);
+    writeDefaultChatRuntime(runtime);
+  };
+
+  return (
+    <>
+      <PaneHeader title="Chat" subtitle="Defaults for direct chats." />
+      <Row
+        label="Default runtime"
+        sub="Pre-selected in Start Chat's Direct mode."
+      >
+        <StyledSelect
+          value={defaultRuntime}
+          options={[
+            { value: "", label: "First available" },
+            ...runtimes.map((runtime) => ({
+              value: runtime.name,
+              label: runtime.display_name,
+            })),
+          ]}
+          onChange={setDefaultRuntime}
+        />
       </Row>
     </>
   );

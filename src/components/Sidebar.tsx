@@ -35,6 +35,7 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  MessageSquarePlus,
   MoreHorizontal,
   Pin,
   PinOff,
@@ -187,7 +188,7 @@ export function Sidebar({
   // sidebar row. `useMatch` returns null when the URL doesn't match.
   const missionMatch = useMatch("/missions/:id");
   const currentMissionId = missionMatch?.params.id ?? null;
-  const chatMatch = useMatch("/runners/:handle/chat/:sessionId");
+  const chatMatch = useMatch("/chats/:sessionId");
   // Which direct-chat session is currently in view. The chat route
   // encodes the session id in the URL (a runner can host multiple
   // chats — see docs/impls/0003-direct-chats.md), so we match by
@@ -211,18 +212,29 @@ export function Sidebar({
     void refreshMissions();
   }, [refreshMissions]);
 
-  // ⌘K / Ctrl+K opens the command palette from anywhere in the app.
-  // Skip when the user is editing inside an <input> or <textarea>
-  // so the shortcut doesn't hijack normal text input.
+  // ⌘K / Ctrl+K opens the command palette. ⌘N / Ctrl+N opens the
+  // Start Chat modal. Skip while editing text controls so shortcuts
+  // don't hijack form input.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "k" && e.key !== "K") return;
       if (!(e.metaKey || e.ctrlKey)) return;
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName?.toLowerCase();
-      if (tag === "input" || tag === "textarea") return;
-      e.preventDefault();
-      setPaletteOpen(true);
+      if (
+        tag === "input" ||
+        tag === "textarea" ||
+        tag === "select" ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+      if (e.key === "k" || e.key === "K") {
+        e.preventDefault();
+        setPaletteOpen(true);
+      } else if (e.key === "n" || e.key === "N") {
+        e.preventDefault();
+        setCreatingChat(true);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -442,12 +454,19 @@ export function Sidebar({
       // the user explicitly chose Archive on a live row.
       try {
         if (session.status === "running") {
-          await api.session.kill(session.session_id);
+          try {
+            await api.session.kill(session.session_id);
+          } catch (e) {
+            // The sidebar row can be stale for a beat after the PTY
+            // exits. Continue to archive; the backend still refuses
+            // rows that are genuinely running.
+            console.warn("sidebar: session_kill before archive failed", e);
+          }
         }
         await api.session.archive(session.session_id);
         await refreshDirectSessions();
         if (currentChatSessionId === session.session_id) {
-          navigate(`/runners/${session.handle}`);
+          navigate(session.handle ? `/runners/${session.handle}` : "/runners");
         }
       } catch (e) {
         console.error("sidebar: session_archive failed", e);
@@ -496,7 +515,7 @@ export function Sidebar({
   // longer in the live map → "session not found" banner.
   const openDirectChat = useCallback(
     (entry: DirectSessionEntry) => {
-      const target = `/runners/${entry.handle}/chat/${entry.session_id}`;
+      const target = `/chats/${entry.session_id}`;
       navigate(target, {
         state: { sessionStatus: entry.status },
         replace: location.pathname === target,
@@ -563,11 +582,12 @@ export function Sidebar({
                 Runner
               </span>
             </div>
-            {/* WORKSPACE keeps natural height; doesn't compete for the
-                flex-share allotted to MISSION + SESSION. */}
+            {/* WORKSPACE keeps natural height; it doesn't compete
+                with the scrollable Mission/Chat region below. */}
             <div className="shrink-0">
               <SectionHeader>WORKSPACE</SectionHeader>
               <nav className="flex flex-col gap-0.5 px-3 pb-1">
+                <NewChatNavRow onOpen={handleNewDirectChat} />
                 {/* Search opens a command-palette modal — matches design
                     `Fkoe8`. Default interaction is click-to-callout, not
                     type-in-place, so this lives as a nav row alongside
@@ -583,96 +603,90 @@ export function Sidebar({
 
             <div className="h-5 shrink-0" />
 
-            {/* MISSION + SESSION always split the remaining vertical
-                space 1:2 (mission takes 1 share, session takes 2),
-                regardless of expand/collapse state. Collapsing a
-                section just hides its body — the section still claims
-                its share of height so the column rhythm doesn't jump
-                when toggling. Each expanded body scrolls independently
-                so a long SESSION list can't push MISSION off-screen. */}
-            <section className="flex min-h-0 flex-[1] basis-0 flex-col">
-              <CollapsibleSectionHeader
-                label="MISSION"
-                count={missions.length}
-                open={missionsOpen}
-                onToggle={toggleMissions}
-                onPlus={() => setCreatingMission(true)}
-                plusTitle="Start mission"
-              />
-              {missionsOpen ? (
-                <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1">
-                  {missions.length === 0 ? (
-                    <p className="px-2.5 py-1 text-xs text-fg-3">
-                      No live missions.
-                    </p>
-                  ) : (
-                    missions.map((m) => (
-                      <RuntimeRow
-                        key={m.id}
-                        selected={m.id === currentMissionId}
-                        label={m.title}
-                        onClick={() => openMission(m.id)}
-                        onContextMenu={(anchor) => openMissionMenu(m, anchor)}
-                        title={m.crew_name || ""}
-                        pinned={!!m.pinned_at}
-                        // Mute the dot when the mission has no live
-                        // session — `mission.status === "running"` is
-                        // not enough to call a workspace "live", since
-                        // a paused mission (every slot stopped) keeps
-                        // the running status until the user archives.
-                        // `any_session_live` is computed on the backend
-                        // (see `mission_list_summary`) so the sidebar
-                        // doesn't need to fetch session rows per mission.
-                        dim={!m.any_session_live}
-                        renaming={renamingMissionId === m.id}
-                        onRenameSubmit={(next) =>
-                          void submitMissionRename(m.id, next)
-                        }
-                        onRenameCancel={() => setRenamingMissionId(null)}
-                      />
-                    ))
-                  )}
-                </div>
-              ) : null}
-            </section>
+            {/* Codex-desktop style: Mission and Chat live in one
+                natural scroll column. Sections stack by content
+                height; no pane reserves empty space. */}
+            <div className="min-h-0 flex-1 overflow-y-auto pb-3">
+              <section className="flex flex-col">
+                <CollapsibleSectionHeader
+                  label="MISSION"
+                  open={missionsOpen}
+                  onToggle={toggleMissions}
+                  onPlus={() => setCreatingMission(true)}
+                  plusTitle="Start mission"
+                />
+                {missionsOpen ? (
+                  <div className="flex flex-col gap-0.5 px-3 pt-1">
+                    {missions.length === 0 ? (
+                      <p className="px-2.5 py-1 text-xs text-fg-3">
+                        No live missions.
+                      </p>
+                    ) : (
+                      missions.map((m) => (
+                        <SidebarListRow
+                          key={m.id}
+                          selected={m.id === currentMissionId}
+                          label={m.title}
+                          onClick={() => openMission(m.id)}
+                          onContextMenu={(anchor) => openMissionMenu(m, anchor)}
+                          title={m.crew_name || ""}
+                          pinned={!!m.pinned_at}
+                          // Mute the dot when the mission has no live
+                          // session — `mission.status === "running"` is
+                          // not enough to call a workspace "live", since
+                          // a paused mission (every slot stopped) keeps
+                          // the running status until the user archives.
+                          // `any_session_live` is computed on the backend
+                          // (see `mission_list_summary`) so the sidebar
+                          // doesn't need to fetch session rows per mission.
+                          dim={!m.any_session_live}
+                          renaming={renamingMissionId === m.id}
+                          onRenameSubmit={(next) =>
+                            void submitMissionRename(m.id, next)
+                          }
+                          onRenameCancel={() => setRenamingMissionId(null)}
+                        />
+                      ))
+                    )}
+                  </div>
+                ) : null}
+              </section>
 
-            <div className="h-8 shrink-0" />
-
-            <section className="flex min-h-0 flex-[2] basis-0 flex-col">
-              <CollapsibleSectionHeader
-                label="CHAT"
-                count={directSessions.length}
-                open={sessionsOpen}
-                onToggle={toggleSessions}
-                onPlus={handleNewDirectChat}
-                plusTitle="Start a chat"
-                plusExpanded={creatingChat}
-              />
-              {sessionsOpen ? (
-                <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1">
-                  {directSessions.length === 0 ? (
-                    <p className="px-2.5 py-1 text-xs text-fg-3">
-                      No chats yet.
-                    </p>
-                  ) : (
-                    directSessions.map((s) => (
-                      <SessionRow
-                        key={s.session_id}
-                        session={s}
-                        selected={s.session_id === currentChatSessionId}
-                        renaming={renamingId === s.session_id}
-                        onClick={() => openDirectChat(s)}
-                        onContextMenu={(anchor) => openSessionMenu(s, anchor)}
-                        onRenameSubmit={(nextTitle) =>
-                          void submitRename(s.session_id, nextTitle)
-                        }
-                        onRenameCancel={() => setRenamingId(null)}
-                      />
-                    ))
-                  )}
-                </div>
-              ) : null}
-            </section>
+              <section className="mt-5 flex flex-col">
+                <CollapsibleSectionHeader
+                  label="CHAT"
+                  open={sessionsOpen}
+                  onToggle={toggleSessions}
+                  onPlus={handleNewDirectChat}
+                  plusTitle="Start a chat"
+                  plusExpanded={creatingChat}
+                />
+                {sessionsOpen ? (
+                  <div className="flex flex-col gap-0.5 px-3 pt-1">
+                    {directSessions.length === 0 ? (
+                      <p className="px-2.5 py-1 text-xs text-fg-3">
+                        No chats yet.
+                      </p>
+                    ) : (
+                      directSessions.map((s) => (
+                        <SessionRow
+                          key={s.session_id}
+                          session={s}
+                          selected={s.session_id === currentChatSessionId}
+                          renaming={renamingId === s.session_id}
+                          onClick={() => openDirectChat(s)}
+                          onContextMenu={(anchor) => openSessionMenu(s, anchor)}
+                          onRenameSubmit={(nextTitle) =>
+                            void submitRename(s.session_id, nextTitle)
+                          }
+                          onRenameCancel={() => setRenamingId(null)}
+                        />
+                      ))
+                    )}
+                  </div>
+                ) : null}
+              </section>
+            </div>
 
             {/* Settings row — pinned at the bottom of the sidebar
                 column. Mirrors Pencil node `IJsUO` (sidebar settings).
@@ -747,9 +761,9 @@ export function Sidebar({
       <StartChatModal
         open={creatingChat}
         onClose={() => setCreatingChat(false)}
-        onStarted={(spawned, handle) => {
+        onStarted={(spawned) => {
           setCreatingChat(false);
-          navigate(`/runners/${handle}/chat/${spawned.id}`, {
+          navigate(`/chats/${spawned.id}`, {
             state: { sessionStatus: "running" },
           });
         }}
@@ -815,10 +829,10 @@ function NavRow({
     <NavLink
       to={to}
       className={({ isActive }) =>
-        `flex items-center gap-2 rounded px-2.5 py-1.5 text-sm transition-colors ${
+        `flex items-center gap-2 rounded border px-2.5 py-1.5 text-sm transition-colors ${
           isActive
-            ? "bg-line font-semibold text-fg"
-            : "text-fg-2 hover:bg-line/50 hover:text-fg"
+            ? "border-sidebar-selected-border bg-sidebar-selected font-semibold text-fg shadow-sm"
+            : "border-transparent text-fg-2 hover:bg-sidebar-selected/60 hover:text-fg"
         }`
       }
     >
@@ -835,20 +849,40 @@ function NavRow({
   );
 }
 
+function NewChatNavRow({ onOpen }: { onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      title="New chat"
+      onClick={onOpen}
+      className="group flex w-full cursor-pointer items-center gap-2 rounded border border-transparent px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
+    >
+      <MessageSquarePlus aria-hidden className="h-3 w-3 text-fg-2" />
+      <span className="min-w-0 flex-1 truncate">new chat</span>
+      <span className="shrink-0 rounded border border-line bg-bg px-1.5 py-px font-mono text-[10px] leading-tight text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus:opacity-100">
+        ⌘N
+      </span>
+    </button>
+  );
+}
+
 /// Search nav row — visually indistinguishable from runner/crew rows
 /// but opens the CommandPalette modal instead of routing. The ⌘K
 /// keyboard binding (registered above) still works; the shortcut
-/// hint just isn't displayed in the UI.
+/// hint appears on hover/focus.
 function SearchNavRow({ onOpen }: { onOpen: () => void }) {
   return (
     <button
       type="button"
       title="Search"
       onClick={onOpen}
-      className="flex w-full cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:text-fg"
+      className="group flex w-full cursor-pointer items-center gap-2 rounded border border-transparent px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
     >
       <Search aria-hidden className="h-3 w-3 text-fg-2" />
-      <span>search</span>
+      <span className="min-w-0 flex-1 truncate">search</span>
+      <span className="shrink-0 rounded border border-line bg-bg px-1.5 py-px font-mono text-[10px] leading-tight text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus:opacity-100">
+        ⌘K
+      </span>
     </button>
   );
 }
@@ -857,7 +891,6 @@ function SearchNavRow({ onOpen }: { onOpen: () => void }) {
 
 function CollapsibleSectionHeader({
   label,
-  count,
   open,
   onToggle,
   onPlus,
@@ -865,7 +898,6 @@ function CollapsibleSectionHeader({
   plusExpanded,
 }: {
   label: string;
-  count: number;
   open: boolean;
   onToggle: () => void;
   onPlus: () => void;
@@ -884,11 +916,6 @@ function CollapsibleSectionHeader({
       >
         <Chevron aria-hidden className="h-2.5 w-2.5" />
         <span>{label}</span>
-        {count > 0 ? (
-          <span className="ml-1 rounded-full bg-bg px-1.5 py-px font-mono text-[10px] font-semibold text-fg-3">
-            {count}
-          </span>
-        ) : null}
       </button>
       <button
         type="button"
@@ -905,9 +932,9 @@ function CollapsibleSectionHeader({
   );
 }
 
-// ---- runtime row (mission or direct-session) --------------------------
+// ---- sidebar list rows ------------------------------------------------
 
-function RuntimeRow({
+function SidebarListRow({
   selected,
   label,
   onClick,
@@ -917,6 +944,8 @@ function RuntimeRow({
   dim,
   pinned,
   renaming,
+  renameValue,
+  renamePlaceholder,
   onRenameSubmit,
   onRenameCancel,
 }: {
@@ -935,14 +964,21 @@ function RuntimeRow({
   pinned?: boolean;
   /** When true, replaces the label with an inline rename input. */
   renaming?: boolean;
+  /** Current editable value. Defaults to `label`. */
+  renameValue?: string;
+  /** Placeholder shown while the editable value is empty. */
+  renamePlaceholder?: string;
   onRenameSubmit?: (next: string) => void;
   onRenameCancel?: () => void;
 }) {
   if (renaming && onRenameSubmit && onRenameCancel) {
     return (
-      <RowRenameInput
-        initial={label}
+      <SidebarRowRenameInput
+        initial={renameValue ?? label}
+        placeholder={renamePlaceholder ?? label}
+        title={title}
         mono={mono}
+        dim={dim}
         onSubmit={onRenameSubmit}
         onCancel={onRenameCancel}
       />
@@ -960,8 +996,8 @@ function RuntimeRow({
       }
       className={`group flex w-full items-center gap-2 rounded border px-2.5 py-1.5 text-left text-xs transition-colors ${
         selected
-          ? "border-line bg-bg text-fg"
-          : "border-transparent text-fg-2 hover:text-fg"
+          ? "border-sidebar-selected-border bg-sidebar-selected font-semibold text-fg shadow-sm"
+          : "border-transparent text-fg-2 hover:bg-sidebar-selected/60 hover:text-fg"
       }`}
     >
       <button
@@ -1005,14 +1041,20 @@ function RuntimeRow({
   );
 }
 
-function RowRenameInput({
+function SidebarRowRenameInput({
   initial,
+  placeholder,
+  title,
   mono,
+  dim,
   onSubmit,
   onCancel,
 }: {
   initial: string;
+  placeholder: string;
+  title?: string;
   mono?: boolean;
+  dim?: boolean;
   onSubmit: (next: string) => void;
   onCancel: () => void;
 }) {
@@ -1023,16 +1065,24 @@ function RowRenameInput({
     inputRef.current?.select();
   }, []);
   return (
-    <div className="flex w-full items-center gap-2 rounded border border-line bg-bg px-2.5 py-1 text-xs">
-      <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+    <div
+      className="flex w-full items-center gap-2 rounded border border-sidebar-selected-border bg-sidebar-selected px-2.5 py-1.5 text-xs shadow-sm"
+      title={title}
+    >
+      <span
+        className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${
+          dim ? "bg-fg-3" : "bg-accent"
+        }`}
+      />
       <input
         ref={inputRef}
         value={draft}
+        placeholder={placeholder}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();
-            onSubmit(draft);
+            onSubmit(draft.trim());
           } else if (e.key === "Escape") {
             e.preventDefault();
             onCancel();
@@ -1040,9 +1090,9 @@ function RowRenameInput({
         }}
         onBlur={() => {
           if (draft.trim() === initial.trim()) onCancel();
-          else onSubmit(draft);
+          else onSubmit(draft.trim());
         }}
-        className={`min-w-0 flex-1 bg-transparent text-fg outline-none placeholder:text-fg-3 ${
+        className={`min-w-0 flex-1 bg-transparent text-xs text-fg outline-none placeholder:text-fg-3 ${
           mono ? "font-mono" : ""
         }`}
       />
@@ -1050,11 +1100,9 @@ function RowRenameInput({
   );
 }
 
-// SESSION row: thin wrapper around RuntimeRow that adds (a) a trailing
-// ellipsis button to open the per-row context menu, (b) right-click on
-// the whole row as the same affordance, (c) an inline rename input
-// that swaps in for the label while editing, and (d) a pin glyph for
-// pinned rows. Mirrors the Pencil design `P5CLA` inside `u6woG`.
+// SESSION row: adapter from DirectSessionEntry to the shared sidebar
+// row shell. Keeps chat-specific label and rename-null semantics out
+// of the generic visual component.
 function SessionRow({
   session,
   selected,
@@ -1072,100 +1120,33 @@ function SessionRow({
   onRenameSubmit: (nextTitle: string | null) => void;
   onRenameCancel: () => void;
 }) {
-  const defaultLabel = `@${session.handle} · ${formatStartedAt(session)}`;
+  const defaultLabel = session.handle
+    ? `@${session.handle} · ${formatStartedAt(session)}`
+    : `${session.display_name} · ${formatStartedAt(session)}`;
   const label = session.title ?? defaultLabel;
   const dim = session.status !== "running";
-  const tooltip = `@${session.handle} · ${session.status}${
+  const tooltip = `${session.handle ? `@${session.handle}` : session.display_name} · ${session.status}${
     session.status !== "running" && session.resumable ? " · resumable" : ""
   }${session.pinned ? " · pinned" : ""}`;
 
-  if (renaming) {
-    // Inline rename input: pre-fills with the current label, submits
-    // on Enter, cancels on Escape or blur. Empty input means clear back
-    // to the auto-derived label.
-    return (
-      <div
-        className="flex items-center gap-2 rounded border border-line bg-bg px-2.5 py-1.5"
-        title={tooltip}
-      >
-        <span
-          className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${
-            dim ? "bg-fg-3" : "bg-accent"
-          }`}
-        />
-        <input
-          autoFocus
-          defaultValue={session.title ?? ""}
-          placeholder={defaultLabel}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              const next = (e.target as HTMLInputElement).value.trim();
-              onRenameSubmit(next.length === 0 ? null : next);
-            } else if (e.key === "Escape") {
-              e.preventDefault();
-              onRenameCancel();
-            }
-          }}
-          onBlur={(e) => {
-            const next = e.target.value.trim();
-            const prior = session.title ?? "";
-            if (next === prior.trim()) {
-              onRenameCancel();
-            } else {
-              onRenameSubmit(next.length === 0 ? null : next);
-            }
-          }}
-          className="flex-1 truncate bg-transparent font-mono text-xs text-fg outline-none placeholder:text-fg-3"
-        />
-      </div>
-    );
-  }
-
   return (
-    <div
-      className={`group flex w-full items-center gap-2 rounded border px-2.5 py-1.5 text-left text-xs transition-colors ${
-        selected
-          ? "border-line-strong bg-bg font-semibold text-fg shadow-sm"
-          : "border-transparent text-fg-2 hover:bg-line/40 hover:text-fg"
-      }`}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        onContextMenu({ x: e.clientX, y: e.clientY });
+    <SidebarListRow
+      selected={selected}
+      label={label}
+      onClick={onClick}
+      onContextMenu={onContextMenu}
+      title={tooltip}
+      mono={!!session.handle}
+      dim={dim}
+      pinned={session.pinned}
+      renaming={renaming}
+      renameValue={session.title ?? ""}
+      renamePlaceholder={defaultLabel}
+      onRenameSubmit={(next) => {
+        onRenameSubmit(next.length === 0 ? null : next);
       }}
-    >
-      <button
-        type="button"
-        onClick={onClick}
-        title={tooltip}
-        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2"
-      >
-        <span
-          className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${
-            dim ? "bg-fg-3" : "bg-accent"
-          }`}
-        />
-        {session.pinned ? (
-          <Pin
-            aria-hidden
-            className="h-2.5 w-2.5 shrink-0 -rotate-45 text-fg-3"
-          />
-        ) : null}
-        <span className="truncate font-mono">{label}</span>
-      </button>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          onContextMenu({ x: e.clientX, y: e.clientY });
-        }}
-        title="More actions"
-        aria-label="More actions"
-        className="cursor-pointer rounded p-0.5 text-fg-3 opacity-0 transition-opacity hover:bg-raised hover:text-fg group-hover:opacity-100 focus:opacity-100"
-      >
-        <MoreHorizontal aria-hidden className="h-3 w-3" />
-      </button>
-    </div>
+      onRenameCancel={onRenameCancel}
+    />
   );
 }
 

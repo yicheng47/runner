@@ -20,7 +20,9 @@ use crate::{
     commands::runner,
     error::{Error, Result},
     model::{Session, SessionStatus, Timestamp},
-    session::manager::{OutputEvent, SessionEvents, SpawnedSession, TauriSessionEvents},
+    session::manager::{
+        runtime_direct_runner, OutputEvent, SessionEvents, SpawnedSession, TauriSessionEvents,
+    },
     AppState,
 };
 
@@ -245,8 +247,11 @@ pub async fn session_paste_image(bytes: Vec<u8>) -> Result<()> {
 #[derive(Debug, Clone, Serialize)]
 pub struct DirectSessionEntry {
     pub session_id: String,
-    pub runner_id: String,
-    pub handle: String,
+    pub runner_id: Option<String>,
+    pub handle: Option<String>,
+    pub agent_runtime: String,
+    pub agent_command: String,
+    pub display_name: String,
     pub status: SessionStatus,
     /// User-authored label. NULL → frontend derives a default from
     /// handle + start time. Set via `session_rename`.
@@ -273,6 +278,55 @@ pub struct DirectSessionEntry {
     pub archived_at: Option<Timestamp>,
 }
 
+fn direct_entry_from_row(row: &Row<'_>) -> rusqlite::Result<DirectSessionEntry> {
+    let status: String = row.get("status")?;
+    let status = match status.as_str() {
+        "running" => SessionStatus::Running,
+        "stopped" => SessionStatus::Stopped,
+        "crashed" => SessionStatus::Crashed,
+        other => {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                format!("unknown session status {other:?}").into(),
+            ))
+        }
+    };
+    let parse_ts = |s: String| -> rusqlite::Result<Timestamp> {
+        s.parse().map_err(|e: chrono::ParseError| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+        })
+    };
+    let started_at: Option<String> = row.get("started_at")?;
+    let stopped_at: Option<String> = row.get("stopped_at")?;
+    let archived_at: Option<String> = row.get("archived_at")?;
+    let resumable: i64 = row.get("resumable")?;
+    let pinned: i64 = row.get("pinned")?;
+    let handle: Option<String> = row.get("handle")?;
+    let agent_runtime: String = row.get("agent_runtime")?;
+    let agent_command: String = row.get("agent_command")?;
+    let runner_display_name: Option<String> = row.get("runner_display_name")?;
+    let display_name = runner_display_name
+        .filter(|_| handle.is_some())
+        .unwrap_or_else(|| crate::router::runtime::runtime_display_name(&agent_runtime));
+    Ok(DirectSessionEntry {
+        session_id: row.get("session_id")?,
+        runner_id: row.get("runner_id")?,
+        handle,
+        agent_runtime,
+        agent_command,
+        display_name,
+        status,
+        title: row.get("title")?,
+        cwd: row.get("cwd")?,
+        started_at: started_at.map(parse_ts).transpose()?,
+        stopped_at: stopped_at.map(parse_ts).transpose()?,
+        resumable: resumable != 0,
+        pinned: pinned != 0,
+        archived_at: archived_at.map(parse_ts).transpose()?,
+    })
+}
+
 #[tauri::command]
 pub async fn session_list_recent_direct(
     state: State<'_, AppState>,
@@ -287,6 +341,9 @@ pub async fn session_list_recent_direct(
         "SELECT s.id        AS session_id,
                 s.runner_id AS runner_id,
                 r.handle    AS handle,
+                r.display_name AS runner_display_name,
+                COALESCE(s.agent_runtime, r.runtime) AS agent_runtime,
+                COALESCE(s.agent_command, r.command) AS agent_command,
                 s.status    AS status,
                 s.title     AS title,
                 s.cwd       AS cwd,
@@ -296,55 +353,14 @@ pub async fn session_list_recent_direct(
                 CASE WHEN s.agent_session_key IS NOT NULL THEN 1 ELSE 0 END AS resumable,
                 CASE WHEN s.pinned_at         IS NOT NULL THEN 1 ELSE 0 END AS pinned
            FROM sessions s
-           JOIN runners r ON r.id = s.runner_id
+           LEFT JOIN runners r ON r.id = s.runner_id
           WHERE s.mission_id IS NULL
             AND s.archived_at IS NULL
           ORDER BY CASE WHEN s.pinned_at IS NOT NULL THEN 0 ELSE 1 END,
                    CASE WHEN s.status = 'running'    THEN 0 ELSE 1 END,
                    COALESCE(s.stopped_at, s.started_at) DESC",
     )?;
-    let rows = stmt.query_map([], |row| {
-        let status: String = row.get("status")?;
-        let status = match status.as_str() {
-            "running" => SessionStatus::Running,
-            "stopped" => SessionStatus::Stopped,
-            "crashed" => SessionStatus::Crashed,
-            other => {
-                return Err(rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    format!("unknown session status {other:?}").into(),
-                ))
-            }
-        };
-        let parse_ts = |s: String| -> rusqlite::Result<Timestamp> {
-            s.parse().map_err(|e: chrono::ParseError| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })
-        };
-        let started_at: Option<String> = row.get("started_at")?;
-        let stopped_at: Option<String> = row.get("stopped_at")?;
-        let archived_at: Option<String> = row.get("archived_at")?;
-        let resumable: i64 = row.get("resumable")?;
-        let pinned: i64 = row.get("pinned")?;
-        Ok(DirectSessionEntry {
-            session_id: row.get("session_id")?,
-            runner_id: row.get("runner_id")?,
-            handle: row.get("handle")?,
-            status,
-            title: row.get("title")?,
-            cwd: row.get("cwd")?,
-            started_at: started_at.map(parse_ts).transpose()?,
-            stopped_at: stopped_at.map(parse_ts).transpose()?,
-            resumable: resumable != 0,
-            pinned: pinned != 0,
-            archived_at: archived_at.map(parse_ts).transpose()?,
-        })
-    })?;
+    let rows = stmt.query_map([], direct_entry_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
 }
@@ -382,6 +398,9 @@ fn get_direct(conn: &rusqlite::Connection, session_id: &str) -> Result<Option<Di
         "SELECT s.id        AS session_id,
                 s.runner_id AS runner_id,
                 r.handle    AS handle,
+                r.display_name AS runner_display_name,
+                COALESCE(s.agent_runtime, r.runtime) AS agent_runtime,
+                COALESCE(s.agent_command, r.command) AS agent_command,
                 s.status    AS status,
                 s.title     AS title,
                 s.cwd       AS cwd,
@@ -391,53 +410,12 @@ fn get_direct(conn: &rusqlite::Connection, session_id: &str) -> Result<Option<Di
                 CASE WHEN s.agent_session_key IS NOT NULL THEN 1 ELSE 0 END AS resumable,
                 CASE WHEN s.pinned_at         IS NOT NULL THEN 1 ELSE 0 END AS pinned
            FROM sessions s
-           JOIN runners r ON r.id = s.runner_id
+           LEFT JOIN runners r ON r.id = s.runner_id
           WHERE s.id = ?1
             AND s.mission_id IS NULL",
     )?;
     let row = stmt
-        .query_row(params![session_id], |row| {
-            let status: String = row.get("status")?;
-            let status = match status.as_str() {
-                "running" => SessionStatus::Running,
-                "stopped" => SessionStatus::Stopped,
-                "crashed" => SessionStatus::Crashed,
-                other => {
-                    return Err(rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        format!("unknown session status {other:?}").into(),
-                    ))
-                }
-            };
-            let parse_ts = |s: String| -> rusqlite::Result<Timestamp> {
-                s.parse().map_err(|e: chrono::ParseError| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })
-            };
-            let started_at: Option<String> = row.get("started_at")?;
-            let stopped_at: Option<String> = row.get("stopped_at")?;
-            let archived_at: Option<String> = row.get("archived_at")?;
-            let resumable: i64 = row.get("resumable")?;
-            let pinned: i64 = row.get("pinned")?;
-            Ok(DirectSessionEntry {
-                session_id: row.get("session_id")?,
-                runner_id: row.get("runner_id")?,
-                handle: row.get("handle")?,
-                status,
-                title: row.get("title")?,
-                cwd: row.get("cwd")?,
-                started_at: started_at.map(parse_ts).transpose()?,
-                stopped_at: stopped_at.map(parse_ts).transpose()?,
-                resumable: resumable != 0,
-                pinned: pinned != 0,
-                archived_at: archived_at.map(parse_ts).transpose()?,
-            })
-        })
+        .query_row(params![session_id], direct_entry_from_row)
         .optional()?;
     Ok(row)
 }
@@ -574,7 +552,7 @@ pub async fn session_resume(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
-    let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app));
+    let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app.clone()));
     let spawned = state
         .sessions
         .resume(
@@ -599,6 +577,10 @@ pub async fn session_resume(
             }
         }
     }
+    let _ = app.emit(
+        "session/updated",
+        serde_json::json!({ "session_id": session_id }),
+    );
     Ok(spawned)
 }
 
@@ -653,6 +635,36 @@ pub async fn session_start_direct(
     Ok(spawned)
 }
 
+#[tauri::command]
+pub async fn session_start_runtime(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    runtime: String,
+    cwd: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<SpawnedSession> {
+    let runner = runtime_direct_runner(&runtime, None)?;
+    let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app.clone()));
+    let spawned = state
+        .sessions
+        .spawn_runtime_direct(
+            &runner,
+            cwd.as_deref(),
+            cols,
+            rows,
+            &state.app_data_dir,
+            state.db.clone(),
+            emitter,
+        )
+        .map_err(|e| Error::msg(format!("session_start_runtime: {e}")))?;
+    let _ = app.emit(
+        "session/updated",
+        serde_json::json!({ "session_id": spawned.id }),
+    );
+    Ok(spawned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,7 +680,7 @@ mod tests {
                 "SELECT s.id, s.status,
                         CASE WHEN s.pinned_at IS NOT NULL THEN 1 ELSE 0 END AS pinned
                    FROM sessions s
-                   JOIN runners r ON r.id = s.runner_id
+                   LEFT JOIN runners r ON r.id = s.runner_id
                   WHERE s.mission_id IS NULL
                     AND s.archived_at IS NULL
                   ORDER BY CASE WHEN s.pinned_at IS NOT NULL THEN 0 ELSE 1 END,

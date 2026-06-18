@@ -29,6 +29,43 @@
 // handler already owns prompt composition; the runtime adapter is the
 // related "how do we hand prompts and identity to a real CLI" piece.
 
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct RuntimeDefinition {
+    pub name: &'static str,
+    pub display_name: &'static str,
+    pub command: &'static str,
+}
+
+const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
+    RuntimeDefinition {
+        name: "codex",
+        display_name: "Codex",
+        command: "codex",
+    },
+    RuntimeDefinition {
+        name: "claude-code",
+        display_name: "Claude Code",
+        command: "claude",
+    },
+];
+
+pub fn runtime_definitions() -> &'static [RuntimeDefinition] {
+    RUNTIME_DEFINITIONS
+}
+
+pub fn runtime_definition(name: &str) -> Option<RuntimeDefinition> {
+    RUNTIME_DEFINITIONS
+        .iter()
+        .copied()
+        .find(|runtime| runtime.name == name)
+}
+
+pub fn runtime_display_name(name: &str) -> String {
+    runtime_definition(name)
+        .map(|runtime| runtime.display_name.to_string())
+        .unwrap_or_else(|| name.to_string())
+}
+
 /// Compute the extra args (in declaration order) to append after the
 /// runner's configured `args` so the child receives the pinned model
 /// and thinking effort via the runtime's native flags. Returns an

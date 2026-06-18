@@ -250,6 +250,7 @@ pub fn run() {
             commands::runner::runner_update,
             commands::runner::runner_delete,
             commands::runner::runner_activity,
+            commands::runtime::runtime_list,
             commands::slot::slot_list,
             commands::slot::runner_crews_list,
             commands::slot::slot_create,
@@ -282,6 +283,7 @@ pub fn run() {
             commands::session::session_output_snapshot,
             commands::session::session_paste_image,
             commands::session::session_start_direct,
+            commands::session::session_start_runtime,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -119,7 +119,7 @@ export interface WarningEvent {
 export interface SpawnedSession {
   id: string;
   mission_id: string | null;
-  runner_id: string;
+  runner_id: string | null;
   handle: string;
   pid: number | null;
 }

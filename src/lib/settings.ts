@@ -19,6 +19,7 @@ export const STORAGE_TERMINAL_SCROLLBACK = "settings.terminalScrollback";
 // palettes ship in the list for users who explicitly want them.
 export const STORAGE_TERMINAL_THEME = "settings.terminalTheme";
 export const STORAGE_DEFAULT_WORKING_DIR = "settings.defaultWorkingDir";
+export const STORAGE_DEFAULT_CHAT_RUNTIME = "settings.defaultChatRuntime";
 export const STORAGE_APP_THEME = "settings.appTheme";
 export const STORAGE_APP_LIGHT_VARIANT = "settings.appLightVariant";
 export const STORAGE_APP_DARK_VARIANT = "settings.appDarkVariant";
@@ -535,6 +536,24 @@ export function writeDefaultWorkingDir(value: string): void {
     const trimmed = value.trim();
     if (trimmed) localStorage.setItem(STORAGE_DEFAULT_WORKING_DIR, trimmed);
     else localStorage.removeItem(STORAGE_DEFAULT_WORKING_DIR);
+  } catch {
+    // best-effort
+  }
+}
+
+export function readDefaultChatRuntime(): string {
+  try {
+    return (localStorage.getItem(STORAGE_DEFAULT_CHAT_RUNTIME) ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+export function writeDefaultChatRuntime(value: string): void {
+  try {
+    const trimmed = value.trim();
+    if (trimmed) localStorage.setItem(STORAGE_DEFAULT_CHAT_RUNTIME, trimmed);
+    else localStorage.removeItem(STORAGE_DEFAULT_CHAT_RUNTIME);
   } catch {
     // best-effort
   }

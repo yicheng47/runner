@@ -1,4 +1,4 @@
-// Direct-chat pane (C8.5) — `/runners/:handle/chat`.
+// Direct-chat pane (C8.5) — `/chats/:sessionId`.
 //
 // One-on-one PTY between the human and the runner's CLI. No mission, no
 // orchestrator, no event bus. Each direct session gets its own mounted
@@ -66,7 +66,7 @@ interface ExitEvent {
 // Removing in-effect spawning was the cleanest fix for the StrictMode
 // double-mount race that left two visible sessions per click.
 //
-// The session id rides on the URL itself (`/runners/:handle/chat/:sessionId`),
+// The session id rides on the URL itself (`/chats/:sessionId`),
 // so refresh / back-forward / paste all attach to the right chat.
 // `location.state.sessionStatus` is an optional optimistic seed that
 // avoids a one-tick "running" flicker when the originating row is
@@ -87,14 +87,13 @@ const PANEL_DEFAULT = 320;
 
 interface DirectSessionPane {
   id: string;
-  handle: string;
+  label: string;
   status: SessionStatus;
   exitCode: number | null;
 }
 
 export default function RunnerChat() {
-  const { handle, sessionId: sessionIdParam } = useParams<{
-    handle: string;
+  const { sessionId: sessionIdParam } = useParams<{
     sessionId: string;
   }>();
   const location = useLocation();
@@ -171,14 +170,16 @@ export default function RunnerChat() {
   // because SIGKILL bubbles up as a non-zero exit.
   const killedSessionsRef = useRef<Set<string>>(new Set());
   // Last route/session request this component attached for. React
-  // Router reuses RunnerChat when moving between
-  // `/runners/:handle/chat/:sessionId` routes, so this must be keyed
-  // by the URL params instead of a one-shot boolean.
+  // Router reuses RunnerChat when moving between `/chats/:sessionId`
+  // routes, so this must be keyed by the URL param instead of a
+  // one-shot boolean.
   const startedKeyRef = useRef<string | null>(null);
 
   const activeSession = directSessions.find((s) => s.id === sessionId) ?? null;
   const status = activeSession?.status ?? "running";
   const exitCode = activeSession?.exitCode ?? null;
+  const backTarget = chatMeta?.handle ? `/runners/${chatMeta.handle}` : "/runners";
+  const backLabel = chatMeta?.handle ? "Back to runner" : "Back to runners";
   // Archived rows can be reached by direct URL but render read-only.
   // We don't attach a PTY, mount RunnerTerminal, or expose Resume /
   // End / Archive — the row is terminal and the operator can only
@@ -205,7 +206,7 @@ export default function RunnerChat() {
         s.id === next.id
           ? {
               ...s,
-              handle: next.handle,
+              label: next.label,
               status: next.status,
               exitCode: next.exitCode,
             }
@@ -217,14 +218,14 @@ export default function RunnerChat() {
   const attach = useCallback(
     (
       id: string,
-      sessionHandle: string,
+      label: string,
       status: SessionStatus = "running",
       freshSpawn = false,
     ) => {
       setErr(null);
       upsertSession({
         id,
-        handle: sessionHandle,
+        label,
         status,
         exitCode: null,
       });
@@ -253,17 +254,16 @@ export default function RunnerChat() {
     );
   }, []);
 
-  // Pull the runner config so the header can show the runtime
-  // (`claude-code`, `codex`, …) next to the @handle. One-shot per
-  // handle change.
+  // Pull runner config only for runner-backed chats. Runtime-only
+  // chats render from chatMeta.agent_* instead.
   useEffect(() => {
-    if (!handle) {
+    if (!chatMeta?.runner_id) {
       setRunner(null);
       return;
     }
     let cancelled = false;
     void api.runner
-      .getByHandle(handle)
+      .get(chatMeta.runner_id)
       .then((r) => {
         if (!cancelled) setRunner(r);
       })
@@ -273,7 +273,7 @@ export default function RunnerChat() {
     return () => {
       cancelled = true;
     };
-  }, [handle]);
+  }, [chatMeta?.runner_id]);
 
   // Pull this chat's metadata (started_at, cwd, title) for the header.
   // Refetched on session/exit so status changes flip the pill.
@@ -557,7 +557,7 @@ export default function RunnerChat() {
   // navigate here with the URL-encoded `sessionId`, so this effect only
   // ever runs the deterministic attach path.
   useEffect(() => {
-    const requestKey = [handle ?? "", sessionId ?? ""].join(" ");
+    const requestKey = sessionId ?? "";
     if (startedKeyRef.current === requestKey) return;
     // Wait for chatMeta to resolve before attaching. Without this
     // gate, the brief window between mount and the first
@@ -571,7 +571,7 @@ export default function RunnerChat() {
     // Skip attach for archived rows: the workspace renders read-only,
     // so mounting RunnerTerminal would spawn a PTY listener for a row
     // that's terminal by definition.
-    if (sessionId && handle && !isArchived) {
+    if (sessionId && chatMeta && !isArchived) {
       // `freshSpawn` is the only signal that distinguishes "user just
       // clicked Chat now and we're navigating into the spawn" from
       // "user clicked an existing chat row in the sidebar." We key
@@ -579,23 +579,23 @@ export default function RunnerChat() {
       // pill only fires on rows whose PTY was born seconds ago.
       attach(
         sessionId,
-        handle,
-        state?.sessionStatus ?? "stopped",
+        chatMeta.handle ? `@${chatMeta.handle}` : chatMeta.display_name,
+        chatMeta.status,
         isFreshSpawn(chatMeta?.started_at),
       );
     }
   }, [
     attach,
-    handle,
     sessionId,
     state?.sessionStatus,
     isArchived,
     metaLoaded,
+    chatMeta,
     chatMeta?.started_at,
   ]);
 
   async function endChat() {
-    if (!sessionId || !handle) return;
+    if (!sessionId) return;
     const targetId = sessionId;
     killedSessionsRef.current.add(targetId);
     try {
@@ -633,7 +633,7 @@ export default function RunnerChat() {
   //      `resuming` flag waits for chatMeta.status to confirm the
   //      DB-backed truth (the sync effect drives that).
   async function resumeChat() {
-    if (!sessionId || !handle) return;
+    if (!sessionId) return;
     const targetId = sessionId;
     setResuming(true);
     setErr(null);
@@ -679,7 +679,9 @@ export default function RunnerChat() {
   // still owns the inline-rename affordance for power users.
   const renameChatPrompt = useCallback(async () => {
     if (!sessionId) return;
-    const current = chatMeta?.title ?? (handle ? `@${handle}` : "");
+    const current =
+      chatMeta?.title ??
+      (chatMeta?.handle ? `@${chatMeta.handle}` : (chatMeta?.display_name ?? ""));
     const next = window.prompt("Rename chat", current);
     if (next === null) return; // cancelled
     const trimmed = next.trim();
@@ -690,32 +692,38 @@ export default function RunnerChat() {
     } catch (e) {
       setErr(String(e));
     }
-  }, [sessionId, chatMeta, handle, refreshChatMeta]);
+  }, [sessionId, chatMeta, refreshChatMeta]);
 
   // Archive: hide this chat from the sidebar's SESSION tray. The row
   // stays in the DB so a future Archived workspace surface can list
   // it, but it's gone from the live tray. We navigate back to the
-  // runner detail since this chat surface no longer maps to anything
-  // discoverable. Mirrors `Sidebar.archiveSession`: the backend
+  // appropriate parent surface. Mirrors `Sidebar.archiveSession`: the backend
   // refuses to archive a running row (`commands::session::session_archive`
   // → "kill before archiving"), so kill first when the row is live.
   async function archiveChat() {
-    if (!sessionId || !handle) return;
+    if (!sessionId) return;
     const targetId = sessionId;
-    const targetHandle = handle;
-    const wasRunning = chatMeta?.status === "running";
+    const effectiveStatus = activeSession?.status ?? chatMeta?.status;
     markArchivingSession(targetId);
     try {
-      if (wasRunning) {
+      if (effectiveStatus === "running") {
         // Mark the kill as user-initiated so the exit handler reads it
         // as "stopped" rather than "crashed" (matches endChat's
         // pattern). Without this the sidebar would briefly show a
         // crashed row before the archive RPC removes it.
         killedSessionsRef.current.add(targetId);
-        await api.session.kill(targetId);
+        try {
+          await api.session.kill(targetId);
+        } catch (e) {
+          // The terminal exit event can beat the SQLite metadata
+          // refresh. If the process is already gone, archive can
+          // still succeed; if it is truly running, the backend
+          // archive call below remains the guardrail.
+          console.warn("RunnerChat: session_kill before archive failed", e);
+        }
       }
       await api.session.archive(targetId);
-      navigate(`/runners/${targetHandle}`);
+      navigate(backTarget);
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -759,13 +767,20 @@ export default function RunnerChat() {
           : "bg-fg-3";
   const statusLabel = chatState === "resuming" ? "resuming…" : status;
   const titleLabel =
-    chatMeta?.title ?? (handle ? `@${handle}` : "chat");
+    chatMeta?.title ??
+    (chatMeta?.handle
+      ? `@${chatMeta.handle}`
+      : (chatMeta?.display_name ?? "chat"));
   // Padding wrapper around the xterm canvas tracks the current
   // terminal palette's background so the canvas + frame stay
   // seamless across theme switches.
   const terminalBg = useTerminalBg();
   const metaParts = [
-    runner ? `${runner.runtime}-${runner.handle}` : null,
+    chatMeta
+      ? chatMeta.handle
+        ? `${chatMeta.agent_runtime}-${chatMeta.handle}`
+        : chatMeta.agent_runtime
+      : null,
     chatMeta?.started_at
       ? `started ${formatRelative(chatMeta.started_at)}`
       : null,
@@ -844,24 +859,24 @@ export default function RunnerChat() {
           {isArchived ? (
             // Archived rows are terminal: no Resume / Stop / Archive.
             // Only surface the navigation escape hatch.
-            <BackButton onClick={() => navigate(`/runners/${handle}`)} />
+            <BackButton onClick={() => navigate(backTarget)}>{backLabel}</BackButton>
           ) : chatState === "resuming" ? (
             <ResumingButton />
           ) : chatState === "running" && sessionId ? (
             <StopButton onClick={() => void endChat()} />
-          ) : sessionId && (chatMeta?.resumable ?? true) ? (
-            // Stopped/crashed with a resumable row → Resume, matching
+          ) : sessionId ? (
+            // Stopped/crashed → Resume, matching
             // Pencil node `HLXK6` in `vS5ce`. Same action the inline
             // SessionEndedOverlay card fires; mirroring it in the
             // topbar lets the user recover without scrolling to the
-            // bottom of the feed. `chatMeta?.resumable` falls back to
-            // true while the row is still loading so we don't briefly
-            // misrender as "Back to runner."
+            // bottom of the feed. If `agent_session_key` is missing,
+            // the backend resume path starts a fresh agent process
+            // for the same row; the overlay subtitle explains that
+            // history is unavailable.
             <ResumeButton onClick={() => void resumeChat()} />
           ) : (
-            // Last-resort fallback: no session yet, or the row is
-            // genuinely non-resumable (no agent_session_key on file).
-            <BackButton onClick={() => navigate(`/runners/${handle}`)} />
+            // Last-resort fallback: no session yet.
+            <BackButton onClick={() => navigate(backTarget)}>{backLabel}</BackButton>
           )}
           {/* Topbar overflow menu — Pin / Rename / Archive, matching
               the design's `session_ctx_menu` (`P5CLA` / `L31Zb`) and
@@ -1001,7 +1016,7 @@ export default function RunnerChat() {
                     else terminalsRef.current.delete(s.id);
                   }}
                   sessionId={s.id}
-                  runnerRuntime={runner?.runtime ?? ""}
+                  runnerRuntime={chatMeta?.agent_runtime ?? runner?.runtime ?? ""}
                   // While the loader is up the canvas is hidden, so
                   // we want xterm to behave as inactive (no resize
                   // pushes, no focus). When `resuming`/`starting`
@@ -1054,6 +1069,7 @@ export default function RunnerChat() {
       </div>
       <RunnerSidePanel
         runner={runner}
+        chatMeta={chatMeta}
         open={panelOpen}
         onClose={() => setPanelOpen(false)}
       />
@@ -1077,10 +1093,12 @@ export default function RunnerChat() {
 // left sidebar's right-edge handle.
 function RunnerSidePanel({
   runner,
+  chatMeta,
   open,
   onClose,
 }: {
   runner: Runner | null;
+  chatMeta: DirectSessionEntry | null;
   open: boolean;
   onClose: () => void;
 }) {
@@ -1174,8 +1192,39 @@ function RunnerSidePanel({
                 </section>
               ) : null}
             </>
+          ) : chatMeta ? (
+            <section className="flex flex-col gap-2.5">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
+                Runtime
+              </span>
+              <div className="flex flex-col gap-2.5 rounded-lg border border-line-strong bg-bg p-3.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-[14px] font-semibold text-fg">
+                    {chatMeta.display_name}
+                  </span>
+                  <span className="rounded bg-line-strong px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-fg-2">
+                    {chatMeta.agent_runtime}
+                  </span>
+                </div>
+                <div className="h-px w-full bg-line" />
+                <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-[11px]">
+                  <dt className="text-fg-3">cmd</dt>
+                  <dd className="break-all font-mono text-fg-2">
+                    {chatMeta.agent_command}
+                  </dd>
+                  {chatMeta.cwd ? (
+                    <>
+                      <dt className="text-fg-3">cwd</dt>
+                      <dd className="break-all font-mono text-fg-2">
+                        {chatMeta.cwd}
+                      </dd>
+                    </>
+                  ) : null}
+                </dl>
+              </div>
+            </section>
           ) : (
-            <p className="text-xs text-fg-3">Loading runner…</p>
+            <p className="text-xs text-fg-3">Loading chat…</p>
           )}
         </div>
       </div>

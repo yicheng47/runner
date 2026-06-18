@@ -349,7 +349,7 @@ pub struct WarningEvent {
 pub struct SpawnedSession {
     pub id: String,
     pub mission_id: Option<String>,
-    pub runner_id: String,
+    pub runner_id: Option<String>,
     pub handle: String,
     pub pid: Option<u32>,
     /// True iff this resume detected a missing claude-code
@@ -376,7 +376,7 @@ struct SessionHandle {
     /// The runner this session is an instance of. `kill_all_for_runner`
     /// filters on this so deleting a runner can reap its live PTY
     /// children before the cascade nukes the DB rows underneath.
-    runner_id: String,
+    runner_id: Option<String>,
     /// Runtime-side identifiers (tmux session/window/pane) returned
     /// from `SessionRuntime::spawn`. The manager passes this back
     /// to `runtime.send_bytes` / `runtime.paste` / `runtime.resize`
@@ -977,7 +977,7 @@ impl SessionManager {
             SessionHandle {
                 id: session_id.clone(),
                 mission_id: Some(mission.id.clone()),
-                runner_id: runner.id.clone(),
+                runner_id: Some(runner.id.clone()),
                 runtime_session: rt_session.clone(),
                 forwarder: None,
                 stop,
@@ -1000,6 +1000,7 @@ impl SessionManager {
             Arc::clone(&events),
             runner.clone(),
             plan.resuming,
+            true,
             spawn_emit_ctx,
         );
         if let Some(h) = self.sessions.lock().unwrap().get_mut(&session_id) {
@@ -1107,7 +1108,7 @@ impl SessionManager {
         Ok(SpawnedSession {
             id: session_id,
             mission_id: Some(mission_id),
-            runner_id,
+            runner_id: Some(runner_id),
             handle,
             // pane_pid is populated lazily via runtime.status() when
             // the manager needs it; the SpawnedSession field is
@@ -1155,6 +1156,59 @@ impl SessionManager {
         events: Arc<dyn SessionEvents>,
         first_turn: Option<String>,
     ) -> Result<SpawnedSession> {
+        self.spawn_direct_inner(
+            runner,
+            Some(runner.id.as_str()),
+            cwd,
+            cols,
+            rows,
+            app_data_dir,
+            pool,
+            events,
+            first_turn,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_runtime_direct(
+        self: &Arc<Self>,
+        runner: &Runner,
+        cwd: Option<&str>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        app_data_dir: &Path,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+    ) -> Result<SpawnedSession> {
+        self.spawn_direct_inner(
+            runner,
+            None,
+            cwd,
+            cols,
+            rows,
+            app_data_dir,
+            pool,
+            events,
+            None,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_direct_inner(
+        self: &Arc<Self>,
+        runner: &Runner,
+        persisted_runner_id: Option<&str>,
+        cwd: Option<&str>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        app_data_dir: &Path,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+        first_turn: Option<String>,
+        emit_activity: bool,
+    ) -> Result<SpawnedSession> {
         let _ = app_data_dir; // direct chats don't get the bundled CLI on PATH
 
         // Agent-native session resume: `spawn_direct` always opens a *new*
@@ -1199,14 +1253,24 @@ impl SessionManager {
             conn.execute(
                 "INSERT INTO sessions
                     (id, mission_id, runner_id, cwd, status, pid, started_at,
-                     agent_session_key)
-                 VALUES (?1, NULL, ?2, ?3, 'running', NULL, ?4, ?5)",
+                     agent_session_key, agent_runtime, agent_command)
+                 VALUES (?1, NULL, ?2, ?3, 'running', NULL, ?4, ?5, ?6, ?7)",
                 params![
                     session_id,
-                    runner.id,
+                    persisted_runner_id,
                     resolved_cwd,
                     started_at,
-                    plan.assigned_key
+                    plan.assigned_key,
+                    if persisted_runner_id.is_none() {
+                        Some(runner.runtime.as_str())
+                    } else {
+                        None
+                    },
+                    if persisted_runner_id.is_none() {
+                        Some(runner.command.as_str())
+                    } else {
+                        None
+                    },
                 ],
             )?;
         }
@@ -1278,7 +1342,7 @@ impl SessionManager {
             SessionHandle {
                 id: session_id.clone(),
                 mission_id: None,
-                runner_id: runner.id.clone(),
+                runner_id: persisted_runner_id.map(str::to_string),
                 runtime_session: rt_session.clone(),
                 forwarder: None,
                 stop: output.stop_flag(),
@@ -1294,6 +1358,7 @@ impl SessionManager {
             Arc::clone(&events),
             runner.clone(),
             plan.resuming,
+            emit_activity,
             None, // direct chats are off-bus — no log to append runner_status to
         );
         if let Some(h) = self.sessions.lock().unwrap().get_mut(&session_id) {
@@ -1317,7 +1382,9 @@ impl SessionManager {
             }
         }
 
-        emit_runner_activity(&pool, runner, events.as_ref());
+        if emit_activity {
+            emit_runner_activity(&pool, runner, events.as_ref());
+        }
         schedule_direct_first_prompt(
             self,
             session_id.clone(),
@@ -1329,7 +1396,7 @@ impl SessionManager {
         Ok(SpawnedSession {
             id: session_id,
             mission_id: None,
-            runner_id: runner.id.clone(),
+            runner_id: persisted_runner_id.map(str::to_string),
             handle: runner.handle.clone(),
             pid: None,
             fresh_fallback_lead: false,
@@ -1389,28 +1456,32 @@ impl SessionManager {
         // across the spawn (which itself grabs a pool slot for the
         // status update).
         struct Snapshot {
-            runner_id: String,
+            runner_id: Option<String>,
             mission_id: Option<String>,
             slot_id: Option<String>,
             cwd: Option<String>,
+            agent_runtime: Option<String>,
+            agent_command: Option<String>,
             agent_session_key: Option<String>,
         }
         let snap = {
             let conn = pool.get()?;
             let mut stmt = conn.prepare(
                 "SELECT runner_id, mission_id, slot_id, cwd, status, archived_at,
-                        agent_session_key
+                        agent_runtime, agent_command, agent_session_key
                    FROM sessions WHERE id = ?1",
             )?;
             let row = stmt
                 .query_row(params![session_id], |r| {
                     Ok((
-                        r.get::<_, String>("runner_id")?,
+                        r.get::<_, Option<String>>("runner_id")?,
                         r.get::<_, Option<String>>("mission_id")?,
                         r.get::<_, Option<String>>("slot_id")?,
                         r.get::<_, Option<String>>("cwd")?,
                         r.get::<_, String>("status")?,
                         r.get::<_, Option<String>>("archived_at")?,
+                        r.get::<_, Option<String>>("agent_runtime")?,
+                        r.get::<_, Option<String>>("agent_command")?,
                         r.get::<_, Option<String>>("agent_session_key")?,
                     ))
                 })
@@ -1420,7 +1491,17 @@ impl SessionManager {
                     }
                     other => other.into(),
                 })?;
-            let (runner_id, mission_id, slot_id, cwd, status, archived_at, agent_session_key) = row;
+            let (
+                runner_id,
+                mission_id,
+                slot_id,
+                cwd,
+                status,
+                archived_at,
+                agent_runtime,
+                agent_command,
+                agent_session_key,
+            ) = row;
             if status == "running" {
                 return Err(Error::msg(format!(
                     "session {session_id} is already running — attach instead"
@@ -1436,6 +1517,8 @@ impl SessionManager {
                 mission_id,
                 slot_id,
                 cwd,
+                agent_runtime,
+                agent_command,
                 agent_session_key,
             }
         };
@@ -1500,12 +1583,18 @@ impl SessionManager {
                 _ => None,
             };
 
-        // Pull the runner config fresh — the user may have edited it
-        // since the session last ran, and we want the current command /
-        // args / env on respawn.
-        let runner = {
+        // Pull the runner config fresh for runner-backed rows; rebuild
+        // the default runtime config for runtime-only direct chats.
+        let runner = if let Some(runner_id) = snap.runner_id.as_deref() {
             let conn = pool.get()?;
-            crate::commands::runner::get(&conn, &snap.runner_id)?
+            crate::commands::runner::get(&conn, runner_id)?
+        } else {
+            let runtime = snap.agent_runtime.as_deref().ok_or_else(|| {
+                Error::msg(format!(
+                    "runtime-only session {session_id} missing agent_runtime"
+                ))
+            })?;
+            runtime_direct_runner(runtime, snap.agent_command.as_deref())?
         };
 
         // Resume plan: hand the prior agent_session_key back to the
@@ -1517,8 +1606,11 @@ impl SessionManager {
         // print "No conversation found" and leave the TUI half-broken.
         // Detect the missing file up front and degrade to a fresh
         // spawn that *keeps* the same uuid via `--session-id`.
-        let resolved_cwd_for_check: Option<String> =
-            snap.cwd.clone().or_else(|| runner.working_dir.clone());
+        let resolved_cwd_for_check: Option<String> = snap.cwd.clone().or_else(|| {
+            snap.runner_id
+                .as_ref()
+                .and_then(|_| runner.working_dir.clone())
+        });
         let is_lead_slot = mission_ctx.as_ref().is_some_and(|c| c.lead);
         let conversation_missing = matches!(
             (runner.runtime.as_str(), snap.agent_session_key.as_deref()),
@@ -1539,7 +1631,11 @@ impl SessionManager {
         // Working directory: same precedence as `spawn_direct` — the
         // row's stored cwd wins; otherwise fall back to the runner's
         // current `working_dir`.
-        let resolved_cwd: Option<String> = snap.cwd.clone().or_else(|| runner.working_dir.clone());
+        let resolved_cwd: Option<String> = snap.cwd.clone().or_else(|| {
+            snap.runner_id
+                .as_ref()
+                .and_then(|_| runner.working_dir.clone())
+        });
 
         // Refresh the per-slot runner shim before composing PATH —
         // mission cwd may have been edited since the last spawn.
@@ -1671,7 +1767,7 @@ impl SessionManager {
             SessionHandle {
                 id: session_id.to_string(),
                 mission_id: snap.mission_id.clone(),
-                runner_id: runner.id.clone(),
+                runner_id: snap.runner_id.clone(),
                 runtime_session: rt_session.clone(),
                 forwarder: None,
                 stop: output.stop_flag(),
@@ -1703,6 +1799,7 @@ impl SessionManager {
             Arc::clone(&events),
             runner.clone(),
             plan.resuming,
+            snap.runner_id.is_some(),
             resume_emit_ctx,
         );
         if let Some(h) = self.sessions.lock().unwrap().get_mut(session_id) {
@@ -1725,7 +1822,9 @@ impl SessionManager {
             }
         }
 
-        emit_runner_activity(&pool, &runner, events.as_ref());
+        if snap.runner_id.is_some() {
+            emit_runner_activity(&pool, &runner, events.as_ref());
+        }
 
         // First-turn injection for fresh claude-code / codex spawns.
         // `plan.resuming` is true on any resume against a real
@@ -1763,7 +1862,7 @@ impl SessionManager {
         Ok(SpawnedSession {
             id: session_id.to_string(),
             mission_id: snap.mission_id.clone(),
-            runner_id: runner.id.clone(),
+            runner_id: snap.runner_id.clone(),
             handle: resumed_handle,
             pid: None,
             fresh_fallback_lead,
@@ -1795,6 +1894,7 @@ impl SessionManager {
         events: Arc<dyn SessionEvents>,
         runner: Runner,
         resuming: bool,
+        emit_activity: bool,
         emit_ctx: Option<ForwarderEmitCtx>,
     ) -> thread::JoinHandle<()> {
         let manager_t: Arc<SessionManager> = Arc::clone(self);
@@ -1931,7 +2031,9 @@ impl SessionManager {
                     ),
                 });
             }
-            emit_runner_activity(&pool, &runner, events.as_ref());
+            if emit_activity {
+                emit_runner_activity(&pool, &runner, events.as_ref());
+            }
             events.exit(&ExitEvent {
                 session_id,
                 mission_id,
@@ -2245,7 +2347,7 @@ impl SessionManager {
             let sessions = self.sessions.lock().unwrap();
             sessions
                 .values()
-                .filter(|s| s.runner_id == runner_id)
+                .filter(|s| s.runner_id.as_deref() == Some(runner_id))
                 .map(|s| s.id.clone())
                 .collect()
         };
@@ -2431,11 +2533,19 @@ impl SessionManager {
         events: &Arc<dyn SessionEvents>,
         app_data_dir: &Path,
     ) -> Result<()> {
-        // Pull the runner row so the forwarder thread can fire
-        // `runner/activity` events with the right handle.
-        let runner = {
+        // Pull or reconstruct the runner-shaped launch config so the
+        // forwarder has the runtime name for resume-failure warnings.
+        let runner = if let Some(runner_id) = row.runner_id.as_deref() {
             let conn = pool.get()?;
-            crate::commands::runner::get(&conn, &row.runner_id)?
+            crate::commands::runner::get(&conn, runner_id)?
+        } else {
+            let runtime = row.agent_runtime.as_deref().ok_or_else(|| {
+                Error::msg(format!(
+                    "runtime-only session {} missing agent_runtime",
+                    row.id
+                ))
+            })?;
+            runtime_direct_runner(runtime, row.agent_command.as_deref())?
         };
         // For mission rows, resolve the crew_id + slot_handle from
         // the same DB lookups the original spawn used so the
@@ -2457,13 +2567,14 @@ impl SessionManager {
         );
         let forwarder = self.start_forwarder_thread(
             row.id.clone(),
-            row.mission_id,
+            row.mission_id.clone(),
             rt_session,
             output,
             Arc::clone(pool),
             Arc::clone(events),
             runner,
             false, // resuming flag — re-attach to a live pane is not a resume_plan resume
+            row.runner_id.is_some(),
             emit_ctx,
         );
         if let Some(h) = self.sessions.lock().unwrap().get_mut(&row.id) {
@@ -2600,8 +2711,10 @@ impl SessionManager {
 #[derive(Debug, Clone)]
 struct RowSnap {
     id: String,
-    runner_id: String,
+    runner_id: Option<String>,
     mission_id: Option<String>,
+    agent_runtime: Option<String>,
+    agent_command: Option<String>,
     runtime: Option<String>,
     runtime_socket: Option<String>,
     runtime_session: Option<String>,
@@ -2628,7 +2741,7 @@ impl RowSnap {
 fn collect_running_rows(pool: &DbPool) -> Result<Vec<RowSnap>> {
     let conn = pool.get()?;
     let mut stmt = conn.prepare(
-        "SELECT id, runner_id, mission_id,
+        "SELECT id, runner_id, mission_id, agent_runtime, agent_command,
                 runtime, runtime_socket, runtime_session,
                 runtime_window, runtime_pane
            FROM sessions
@@ -2640,6 +2753,8 @@ fn collect_running_rows(pool: &DbPool) -> Result<Vec<RowSnap>> {
                 id: r.get("id")?,
                 runner_id: r.get("runner_id")?,
                 mission_id: r.get("mission_id")?,
+                agent_runtime: r.get("agent_runtime")?,
+                agent_command: r.get("agent_command")?,
                 runtime: r.get("runtime")?,
                 runtime_socket: r.get("runtime_socket")?,
                 runtime_session: r.get("runtime_session")?,
@@ -2682,6 +2797,41 @@ fn capture_cwd(explicit: Option<String>) -> Option<String> {
     std::env::current_dir()
         .ok()
         .and_then(|p| p.into_os_string().into_string().ok())
+}
+
+pub(crate) fn runtime_direct_runner(runtime: &str, command: Option<&str>) -> Result<Runner> {
+    let runtime = runtime.trim();
+    if runtime.is_empty() {
+        return Err(Error::msg("runtime is required"));
+    }
+    let registry = router::runtime::runtime_definition(runtime);
+    let command = command
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| registry.map(|r| r.command))
+        .ok_or_else(|| Error::msg(format!("unknown runtime: {runtime}")))?;
+    let now = Utc::now();
+    Ok(Runner {
+        id: format!("runtime:{runtime}"),
+        handle: runtime.to_string(),
+        display_name: registry
+            .map(|r| r.display_name.to_string())
+            .unwrap_or_else(|| runtime.to_string()),
+        runtime: runtime.to_string(),
+        command: command.to_string(),
+        args: router::runtime::apply_permission_mode(
+            runtime,
+            &[],
+            crate::commands::runner::default_permission_mode(),
+        ),
+        working_dir: None,
+        system_prompt: None,
+        env: HashMap::new(),
+        model: None,
+        effort: None,
+        created_at: now,
+        updated_at: now,
+    })
 }
 
 // The first-prompt readback machinery (FirstPromptConfig,
@@ -4151,7 +4301,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(spawned.mission_id, None);
-        assert_eq!(spawned.runner_id, runner_id);
+        assert_eq!(spawned.runner_id, Some(runner_id.clone()));
 
         // Direct chat must NOT have a mission-side shim or
         // bundled-bin in its SpawnSpec — the off-bus invariant.

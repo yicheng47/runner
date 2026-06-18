@@ -639,17 +639,10 @@ export default function MissionWorkspace() {
     }
   }, [railView]);
 
-  // The mission-load IPC round-trip (mission.get + session.list +
-  // mission.eventsReplay) is fast in the common case but blocks the
-  // `loading` flag, so a naive `loading ? <pill /> : <content />`
-  // branch flashes the cyan "Starting mission…" pill on every click.
-  // Same trick as #179 for direct-chat nav: keep the render gate
-  // (correctness — the rail / tabs / overlays all assume `mission`
-  // is non-null) but delay the *visible* pill until the gate has
-  // been blocking for 150ms. Fast IPC never shows the pill; slow IPC
-  // (cold app start, contended SQLite) still gets user feedback.
-  // Resets per mission id so navigating between missions starts a
-  // fresh delay window.
+  // Keep a render gate while mission/session/event data loads: the
+  // tabs/feed/rail below assume `mission` is non-null. Show only a
+  // neutral delayed loading pill here; route switching is not a start
+  // or resume action.
   const isLoading = loading || !mission;
   const showLoadingPill = useDelayedFlag(isLoading, 150, id);
 
@@ -832,14 +825,11 @@ export default function MissionWorkspace() {
       ) : null}
 
       {isLoading ? (
-        // Gate is kept (the tabs/feed/rail below assume `mission` is
-        // non-null) but the visible pill only renders after 150ms of
-        // continuous loading — see `useDelayedFlag` above. Same visual
-        // vocabulary as the resume transition so every "session is
-        // coming up" moment reads consistently.
         showLoadingPill ? (
-          <StartingOverlay label="Starting mission…" inline />
-        ) : null
+          <StartingOverlay label="Loading mission…" inline />
+        ) : (
+          <div className="flex flex-1 min-h-0" />
+        )
       ) : (
         <div className="flex flex-1 min-h-0 flex-col">
           <div className="flex h-[38px] items-end gap-1 border-b border-line bg-panel px-6">
