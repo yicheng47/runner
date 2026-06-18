@@ -23,7 +23,7 @@ export interface SessionEndedOverlayProps {
   resumable: boolean;
   /** Friendly label for the runner / slot ("@architect"). When set,
    *  the resume button reads "Resume @architect"; falls back to
-   *  generic "Resume chat" / "Restart chat" wording. */
+   *  generic "Resume" wording. */
   handle?: string;
   onResume: () => void;
   /** Optional. RunnerChat surfaces an Archive option (calls
@@ -80,11 +80,7 @@ export function SessionEndedOverlay({
   // action. Slot-level callsites still get a "Resume @handle" form
   // when `handle` is provided — there's no enclosing title there to
   // tell the user which slot the action targets.
-  const computedResumeLabel = handle
-    ? `Resume @${handle}`
-    : resumable
-      ? "Resume"
-      : "Restart";
+  const computedResumeLabel = handle ? `Resume @${handle}` : "Resume";
   const finalResumeLabel = resumeLabel ?? computedResumeLabel;
   const finalTitle = title ?? "Chat paused";
 

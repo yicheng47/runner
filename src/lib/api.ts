@@ -51,8 +51,11 @@ export interface SessionRow extends Session {
  */
 export interface DirectSessionEntry {
   session_id: string;
-  runner_id: string;
-  handle: string;
+  runner_id: string | null;
+  handle: string | null;
+  agent_runtime: string;
+  agent_command: string;
+  display_name: string;
   status: "running" | "stopped" | "crashed";
   title: string | null;
   cwd: string | null;
@@ -66,6 +69,12 @@ export interface DirectSessionEntry {
   // to detect an archived direct-URL navigation and lock the
   // workspace read-only.
   archived_at: string | null;
+}
+
+export interface RuntimeDefinition {
+  name: string;
+  display_name: string;
+  command: string;
 }
 
 export const api = {
@@ -106,6 +115,9 @@ export const api = {
     activity: (id: string) => invoke<RunnerActivity>("runner_activity", { id }),
     crews: (runnerId: string) =>
       invoke<CrewMembership[]>("runner_crews_list", { runnerId }),
+  },
+  runtime: {
+    list: () => invoke<RuntimeDefinition[]>("runtime_list"),
   },
   mission: {
     list: (crewId?: string) =>
@@ -192,6 +204,18 @@ export const api = {
     ) =>
       invoke<SpawnedSession>("session_start_direct", {
         runnerId,
+        cwd,
+        cols,
+        rows,
+      }),
+    startRuntime: (
+      runtime: string,
+      cwd: string | null,
+      cols: number | null,
+      rows: number | null,
+    ) =>
+      invoke<SpawnedSession>("session_start_runtime", {
+        runtime,
         cwd,
         cols,
         rows,

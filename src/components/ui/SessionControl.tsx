@@ -95,9 +95,8 @@ export function StopButton({
 }
 
 // Back — neutral chrome pill without an icon. Used as the escape
-// hatch for archived rows or non-resumable sessions ("Back to
-// runner"). Same shape as Stop so the buttons align visually when
-// they share a row.
+// hatch for archived rows or routes without a live session target.
+// Same shape as Stop so the buttons align visually when they share a row.
 export function BackButton({
   onClick,
   title,

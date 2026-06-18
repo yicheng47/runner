@@ -12,19 +12,26 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, X } from "lucide-react";
 
-import { api } from "../lib/api";
-import { readDefaultWorkingDir } from "../lib/settings";
+import { api, type RuntimeDefinition } from "../lib/api";
+import {
+  readDefaultChatRuntime,
+  readDefaultWorkingDir,
+} from "../lib/settings";
 import type { Runner, SpawnedSession } from "../lib/types";
 import { Button } from "./ui/Button";
 import { Modal } from "./ui/Overlay";
+import { StyledSelect } from "./ui/StyledSelect";
 
 interface StartChatModalProps {
   open: boolean;
   onClose: () => void;
   /** Called after spawn (and rename if title was provided). Caller owns
    *  navigation to the spawned chat URL. */
-  onStarted: (spawned: SpawnedSession, runnerHandle: string) => void;
+  onStarted: (spawned: SpawnedSession) => void;
 }
+
+type ChatMode = "runner" | "runtime";
+const STORAGE_START_CHAT_MODE = "runner.startChat.mode";
 
 export function StartChatModal({
   open,
@@ -32,7 +39,10 @@ export function StartChatModal({
   onStarted,
 }: StartChatModalProps) {
   const [runners, setRunners] = useState<Runner[]>([]);
+  const [runtimes, setRuntimes] = useState<RuntimeDefinition[]>([]);
+  const [mode, setModeState] = useState<ChatMode>(() => readStartChatMode());
   const [runnerId, setRunnerId] = useState<string>("");
+  const [runtimeName, setRuntimeName] = useState<string>("");
   const [runnerPickerOpen, setRunnerPickerOpen] = useState(false);
   const [title, setTitle] = useState("");
   // Tracks whether the user has typed in the title field. While false
@@ -57,8 +67,11 @@ export function StartChatModal({
   useEffect(() => {
     if (open) return;
     setRunners([]);
+    setRuntimes([]);
     setRunnerId("");
+    setRuntimeName("");
     setRunnerPickerOpen(false);
+    setModeState(readStartChatMode());
     setTitle("");
     setTitleEdited(false);
     titleEditedRef.current = false;
@@ -86,7 +99,7 @@ export function StartChatModal({
         // Atomic initial title fill — the ref is the authoritative
         // signal here, since a keystroke during the pre-load window
         // would have flipped it true synchronously.
-        if (first && !titleEditedRef.current) {
+        if (first && mode === "runner" && !titleEditedRef.current) {
           setTitle(defaultTitleFor(first));
         }
       })
@@ -97,7 +110,32 @@ export function StartChatModal({
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, mode]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void api.runtime
+      .list()
+      .then((rows) => {
+        if (cancelled) return;
+        const preferred = readDefaultChatRuntime();
+        const selected =
+          rows.find((runtime) => runtime.name === preferred) ?? rows[0] ?? null;
+        setRuntimes(rows);
+        setRuntimeName(selected?.name ?? "");
+        if (selected && !titleEditedRef.current && mode === "runtime") {
+          setTitle(defaultTitleForRuntime(selected));
+        }
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, mode]);
 
   // Inner dropdown's own dismiss handlers. The Modal shell handles
   // Escape/backdrop for the dialog itself; this scopes to the
@@ -124,6 +162,18 @@ export function StartChatModal({
     () => runners.find((r) => r.id === runnerId) ?? null,
     [runners, runnerId],
   );
+  const selectedRuntime = useMemo(
+    () => runtimes.find((runtime) => runtime.name === runtimeName) ?? null,
+    [runtimes, runtimeName],
+  );
+
+  const setMode = (next: ChatMode) => {
+    setModeState(next);
+    writeStartChatMode(next);
+    if (titleEditedRef.current) return;
+    if (next === "runner") setTitle(defaultTitleFor(selectedRunner));
+    else setTitle(defaultTitleForRuntime(selectedRuntime));
+  };
 
   // Follow runner-picker changes: while the user hasn't typed in the
   // title field, re-derive the title from the currently-picked runner.
@@ -133,9 +183,9 @@ export function StartChatModal({
   useEffect(() => {
     if (!open) return;
     if (titleEdited) return;
-    if (!selectedRunner) return;
-    setTitle(defaultTitleFor(selectedRunner));
-  }, [open, selectedRunner, titleEdited]);
+    if (mode === "runner") setTitle(defaultTitleFor(selectedRunner));
+    else setTitle(defaultTitleForRuntime(selectedRuntime));
+  }, [open, mode, selectedRunner, selectedRuntime, titleEdited]);
 
   const browseCwd = async () => {
     try {
@@ -151,7 +201,8 @@ export function StartChatModal({
   };
 
   const start = async () => {
-    if (!selectedRunner) return;
+    if (mode === "runner" && !selectedRunner) return;
+    if (mode === "runtime" && !selectedRuntime) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -165,18 +216,24 @@ export function StartChatModal({
       // what blank-leave will produce, so we don't have to thread a
       // separate "edited" flag for this field.
       const trimmedCwd = cwd.trim();
-      const effectiveCwd =
-        trimmedCwd.length > 0
-          ? trimmedCwd
-          : selectedRunner.working_dir
-            ? null
-            : (readDefaultWorkingDir() || null);
-      const spawned = await api.session.startDirect(
-        selectedRunner.id,
-        effectiveCwd,
-        null,
-        null,
-      );
+      const spawned =
+        mode === "runner" && selectedRunner
+          ? await api.session.startDirect(
+              selectedRunner.id,
+              trimmedCwd.length > 0
+                ? trimmedCwd
+                : selectedRunner.working_dir
+                  ? null
+                  : (readDefaultWorkingDir() || null),
+              null,
+              null,
+            )
+          : await api.session.startRuntime(
+              selectedRuntime!.name,
+              trimmedCwd.length > 0 ? trimmedCwd : (readDefaultWorkingDir() || null),
+              null,
+              null,
+            );
       const trimmedTitle = title.trim();
       if (trimmedTitle.length > 0) {
         try {
@@ -187,7 +244,7 @@ export function StartChatModal({
           console.error("StartChatModal: session_rename failed", e);
         }
       }
-      onStarted(spawned, selectedRunner.handle);
+      onStarted(spawned);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -206,7 +263,7 @@ export function StartChatModal({
               Start a chat
             </span>
             <span className="text-xs font-normal text-fg-2">
-              Spawns a direct PTY with the selected runner.
+              Spawns a direct PTY in the selected directory.
             </span>
           </div>
           <button
@@ -229,7 +286,11 @@ export function StartChatModal({
           <Button
             variant="primary"
             onClick={() => void start()}
-            disabled={submitting || !runnerId || runners.length === 0}
+            disabled={
+              submitting ||
+              (mode === "runner" && (!runnerId || runners.length === 0)) ||
+              (mode === "runtime" && (!runtimeName || runtimes.length === 0))
+            }
           >
             {submitting ? "Starting…" : "Start chat"}
           </Button>
@@ -243,68 +304,101 @@ export function StartChatModal({
           </div>
         ) : null}
 
-        <Field label="Runner">
-          <div ref={runnerPickerRef} className="relative">
+        <div className="grid grid-cols-2 rounded-md border border-line bg-bg p-0.5">
+          {(["runner", "runtime"] as const).map((option) => (
             <button
+              key={option}
               type="button"
-              disabled={submitting || runners.length === 0}
-              onClick={() => setRunnerPickerOpen((v) => !v)}
-              className="flex w-full cursor-pointer items-center gap-3 rounded-md border border-line bg-bg px-3 py-2.5 text-left transition-colors hover:border-line-strong focus:border-fg-3 focus:outline-none disabled:cursor-default disabled:opacity-60"
-              aria-haspopup="listbox"
-              aria-expanded={runnerPickerOpen}
+              role="tab"
+              aria-selected={mode === option}
+              onClick={() => setMode(option)}
+              disabled={submitting}
+              className={`cursor-pointer rounded px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-default disabled:opacity-60 ${
+                mode === option
+                  ? "bg-raised text-fg"
+                  : "text-fg-2 hover:text-fg"
+              }`}
             >
-              <span className="min-w-0 flex-1">
-                <span className="block truncate font-mono text-[13px] font-semibold text-fg">
-                  {selectedRunner ? `@${selectedRunner.handle}` : "No runners yet"}
-                </span>
-                <span className="block truncate text-[11px] text-fg-2">
-                  {summarizeRunner(selectedRunner)}
-                </span>
-              </span>
-              <ChevronDown aria-hidden className="h-3.5 w-3.5 text-fg-3" />
+              {option === "runner" ? "Runner" : "Direct"}
             </button>
-            {runnerPickerOpen ? (
-              <div
-                role="listbox"
-                className="absolute left-0 right-0 top-full z-30 mt-1 max-h-56 overflow-y-auto rounded-md border border-line bg-panel p-1 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
+          ))}
+        </div>
+
+        {mode === "runner" ? (
+          <Field label="Runner">
+            <div ref={runnerPickerRef} className="relative">
+              <button
+                type="button"
+                disabled={submitting || runners.length === 0}
+                onClick={() => setRunnerPickerOpen((v) => !v)}
+                className="flex w-full cursor-pointer items-center gap-3 rounded-md border border-line bg-bg px-3 py-2.5 text-left transition-colors hover:border-line-strong focus:border-fg-3 focus:outline-none disabled:cursor-default disabled:opacity-60"
+                aria-haspopup="listbox"
+                aria-expanded={runnerPickerOpen}
               >
-                {runners.map((r) => (
-                  <button
-                    key={r.id}
-                    type="button"
-                    role="option"
-                    aria-selected={r.id === runnerId}
-                    onClick={() => {
-                      setRunnerId(r.id);
-                      setRunnerPickerOpen(false);
-                    }}
-                    className={`flex w-full cursor-pointer items-center justify-between gap-3 rounded px-2.5 py-2 text-left transition-colors hover:bg-raised ${
-                      r.id === runnerId ? "bg-raised" : ""
-                    }`}
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate font-mono text-[13px] font-semibold text-fg">
-                        @{r.handle}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-mono text-[13px] font-semibold text-fg">
+                    {selectedRunner ? `@${selectedRunner.handle}` : "No runners yet"}
+                  </span>
+                  <span className="block truncate text-[11px] text-fg-2">
+                    {summarizeRunner(selectedRunner)}
+                  </span>
+                </span>
+                <ChevronDown aria-hidden className="h-3.5 w-3.5 text-fg-3" />
+              </button>
+              {runnerPickerOpen ? (
+                <div
+                  role="listbox"
+                  className="absolute left-0 right-0 top-full z-30 mt-1 max-h-56 overflow-y-auto rounded-md border border-line bg-panel p-1 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
+                >
+                  {runners.map((r) => (
+                    <button
+                      key={r.id}
+                      type="button"
+                      role="option"
+                      aria-selected={r.id === runnerId}
+                      onClick={() => {
+                        setRunnerId(r.id);
+                        setRunnerPickerOpen(false);
+                      }}
+                      className={`flex w-full cursor-pointer items-center justify-between gap-3 rounded px-2.5 py-2 text-left transition-colors hover:bg-raised ${
+                        r.id === runnerId ? "bg-raised" : ""
+                      }`}
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate font-mono text-[13px] font-semibold text-fg">
+                          @{r.handle}
+                        </span>
+                        <span className="block truncate text-[11px] text-fg-2">
+                          {summarizeRunner(r)}
+                        </span>
                       </span>
-                      <span className="block truncate text-[11px] text-fg-2">
-                        {summarizeRunner(r)}
-                      </span>
-                    </span>
-                  </button>
-                ))}
-              </div>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            {runners.length === 0 ? (
+              <p className="mt-1 text-[11px] text-warn">
+                No runners yet. Create one from the runner page first.
+              </p>
             ) : null}
-          </div>
-          {runners.length === 0 ? (
-            <p className="mt-1 text-[11px] text-warn">
-              No runners yet. Create one from the runner page first.
-            </p>
-          ) : null}
-        </Field>
+          </Field>
+        ) : (
+          <Field label="Agent runtime">
+            <StyledSelect
+              value={runtimeName}
+              options={runtimes.map((runtime) => ({
+                value: runtime.name,
+                label: runtime.display_name,
+              }))}
+              onChange={(next) => setRuntimeName(next)}
+            />
+          </Field>
+        )}
 
         <Field
           label="Chat name"
-          subtitle="Optional. Leave blank to use the runner's default label."
+          subtitle="Optional. Leave blank to use the default label."
         >
           <input
             value={title}
@@ -324,7 +418,11 @@ export function StartChatModal({
             <input
               value={cwd}
               onChange={(e) => setCwd(e.target.value)}
-              placeholder={cwdPlaceholderFor(selectedRunner)}
+              placeholder={
+                mode === "runner"
+                  ? cwdPlaceholderFor(selectedRunner)
+                  : cwdPlaceholderForRuntime()
+              }
               disabled={submitting}
               className="min-w-0 flex-1 rounded-md border border-line bg-bg px-3 py-2 font-mono text-xs text-fg placeholder:text-fg-3 focus:border-fg-3 focus:outline-none"
             />
@@ -333,7 +431,7 @@ export function StartChatModal({
             </Button>
           </div>
           <p className="text-[11px] text-fg-2">
-            Leave blank to use the runner&apos;s working directory.
+            Leave blank to use the default working directory.
           </p>
         </Field>
       </div>
@@ -375,6 +473,11 @@ function defaultTitleFor(runner: Runner | null): string {
   return `Chat with @${runner.handle}`;
 }
 
+function defaultTitleForRuntime(runtime: RuntimeDefinition | null): string {
+  if (!runtime) return "";
+  return `Chat with ${runtime.display_name}`;
+}
+
 // Dynamic placeholder for the working-directory input. Shows what
 // blank-leave will produce: the runner's own working_dir if set,
 // else the global settings default, else a parenthetical hint that
@@ -384,4 +487,28 @@ function cwdPlaceholderFor(runner: Runner | null): string {
   const fallback = readDefaultWorkingDir();
   if (fallback) return fallback;
   return "(no working directory)";
+}
+
+function cwdPlaceholderForRuntime(): string {
+  const fallback = readDefaultWorkingDir();
+  if (fallback) return fallback;
+  return "(no working directory)";
+}
+
+function readStartChatMode(): ChatMode {
+  try {
+    return localStorage.getItem(STORAGE_START_CHAT_MODE) === "runtime"
+      ? "runtime"
+      : "runner";
+  } catch {
+    return "runner";
+  }
+}
+
+function writeStartChatMode(mode: ChatMode): void {
+  try {
+    localStorage.setItem(STORAGE_START_CHAT_MODE, mode);
+  } catch {
+    // best-effort
+  }
 }

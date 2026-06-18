@@ -106,7 +106,7 @@ export default function RunnerDetail() {
         null,
         null,
       );
-      navigate(`/runners/${runner.handle}/chat/${spawned.id}`, {
+      navigate(`/chats/${spawned.id}`, {
         state: { sessionStatus: "running" },
       });
     } catch (e) {

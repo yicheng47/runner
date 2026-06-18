@@ -55,7 +55,7 @@ pub struct CreateRunnerInput {
 /// Default permission mode for new runners — `Auto`. Matches the
 /// frontend's dropdown default and the seed's runner args.
 /// Pulled out so serde's `#[serde(default = "...")]` can name it.
-fn default_permission_mode() -> crate::router::runtime::PermissionMode {
+pub(crate) fn default_permission_mode() -> crate::router::runtime::PermissionMode {
     crate::router::runtime::PermissionMode::Auto
 }
 

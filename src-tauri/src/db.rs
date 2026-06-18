@@ -69,6 +69,9 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // 0006: drops `crews.signal_types`. CLI validation is now enum-based
 // in runner-core (`KnownSignalType`); the per-crew column + sidecar
 // they used to feed no longer have a consumer. See feature 20.
+// 0007: makes direct-chat `sessions.runner_id` nullable and adds
+// `agent_runtime` / `agent_command` so runtime-only chats can resume
+// without a persisted runner template (#195).
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -84,6 +87,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         6,
         include_str!("../migrations/0006_drop_crews_signal_types.sql"),
+    ),
+    (
+        7,
+        include_str!("../migrations/0007_direct_runtime_sessions.sql"),
     ),
 ];
 

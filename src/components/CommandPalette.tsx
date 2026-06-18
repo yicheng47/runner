@@ -81,12 +81,12 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
         next.push({
           kind: "chat",
           id: c.session_id,
-          label: c.title ?? `@${c.handle}`,
+          label: c.title ?? (c.handle ? `@${c.handle}` : c.display_name),
           navigate: () =>
-            navigate(`/runners/${c.handle}/chat/${c.session_id}`, {
+            navigate(`/chats/${c.session_id}`, {
               state: { sessionStatus: c.status },
             }),
-          searchText: `${c.handle} ${c.title ?? ""} ${c.cwd ?? ""}`.toLowerCase(),
+          searchText: `${c.handle ?? c.display_name} ${c.title ?? ""} ${c.cwd ?? ""}`.toLowerCase(),
           order: i,
         }),
       );
