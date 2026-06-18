@@ -610,7 +610,6 @@ export function Sidebar({
               <section className="flex flex-col">
                 <CollapsibleSectionHeader
                   label="MISSION"
-                  count={missions.length}
                   open={missionsOpen}
                   onToggle={toggleMissions}
                   onPlus={() => setCreatingMission(true)}
@@ -656,7 +655,6 @@ export function Sidebar({
               <section className="mt-5 flex flex-col">
                 <CollapsibleSectionHeader
                   label="CHAT"
-                  count={directSessions.length}
                   open={sessionsOpen}
                   onToggle={toggleSessions}
                   onPlus={handleNewDirectChat}
@@ -893,7 +891,6 @@ function SearchNavRow({ onOpen }: { onOpen: () => void }) {
 
 function CollapsibleSectionHeader({
   label,
-  count,
   open,
   onToggle,
   onPlus,
@@ -901,7 +898,6 @@ function CollapsibleSectionHeader({
   plusExpanded,
 }: {
   label: string;
-  count: number;
   open: boolean;
   onToggle: () => void;
   onPlus: () => void;
@@ -920,11 +916,6 @@ function CollapsibleSectionHeader({
       >
         <Chevron aria-hidden className="h-2.5 w-2.5" />
         <span>{label}</span>
-        {count > 0 ? (
-          <span className="ml-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-line bg-line-strong px-1 font-mono text-[9px] font-semibold leading-none text-fg-3">
-            {count}
-          </span>
-        ) : null}
       </button>
       <button
         type="button"
