@@ -15,7 +15,7 @@ use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use tauri::menu::{AboutMetadataBuilder, PredefinedMenuItem};
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-use tauri::{AppHandle, Manager, Wry};
+use tauri::{AppHandle, Emitter, Manager, Wry};
 use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
 
 /// Bundle identifier as declared in `tauri.conf.json`. Used by:
@@ -297,8 +297,14 @@ pub fn run() {
             // runtime this still demotes DB rows cleanly. We
             // tolerate kill failures: best-effort path, and the
             // startup cleanup is the safety net on next launch.
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                stop_running_sessions_on_quit(app_handle);
+            match event {
+                tauri::RunEvent::ExitRequested { .. } => {
+                    stop_running_sessions_on_quit(app_handle);
+                }
+                tauri::RunEvent::Resumed => {
+                    let _ = app_handle.emit("app/resumed", ());
+                }
+                _ => {}
             }
         });
 }

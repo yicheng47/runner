@@ -8,9 +8,16 @@
 // raw bytes, backend snapshot replay for late attach, and SIGWINCH dance on
 // attach so claude-code/codex repaint onto a fresh grid.
 
-import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+} from "react";
 
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -205,6 +212,56 @@ export const RunnerTerminal = forwardRef<
   useEffect(() => {
     activeRef.current = active ?? false;
   }, [active]);
+
+  const refreshActiveTerminal = useCallback(
+    ({
+      focus = false,
+      forceResizeDance = false,
+    }: {
+      focus?: boolean;
+      forceResizeDance?: boolean;
+    } = {}) => {
+      if (!activeRef.current) return;
+      const t = termRef.current;
+      const fit = fitRef.current;
+      const node = containerRef.current;
+      if (!t || !fit || !node) return;
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      try {
+        fit.fit();
+        tryDrainReplayRef.current?.();
+        webglRef.current?.clearTextureAtlas();
+        t.refresh(0, t.rows - 1);
+        if (focus) t.focus();
+        if (!forceResizeDance || disabledRef.current) return;
+        const sid = sessionIdRef.current;
+        if (!sid) return;
+        const cols = t.cols;
+        const rows = t.rows;
+        // Force a full TUI redraw even when the final geometry
+        // matches the backend's cached winsize. Same-size TIOCSWINSZ
+        // calls are kernel no-ops on macOS/Linux, so we perturb rows
+        // only: width stays constant, avoiding hard-wrapped narrow
+        // lines in scrollback, while both ioctls still emit SIGWINCH.
+        if (runtimeClearsOnResize(runnerRuntimeRef.current)) {
+          t.write("\x1b[2J\x1b[H");
+        }
+        lastPushedColsRef.current = cols;
+        lastPushedRowsRef.current = rows;
+        const nudgedRows = rows > 1 ? rows - 1 : rows + 1;
+        void api.session
+          .resize(sid, cols, nudgedRows)
+          .then(() => api.session.resize(sid, cols, rows))
+          .catch(() => {
+            // session may have exited between the two ioctls
+          });
+      } catch {
+        // Layout not ready yet — the next activation / resize will drive it.
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -463,29 +520,81 @@ export const RunnerTerminal = forwardRef<
     const ro = new ResizeObserver(() => refitAndPush());
     ro.observe(containerRef.current);
 
-    const refreshTerm = () => {
-      const t = termRef.current;
-      if (!t) return;
-      try {
-        // Rebuild the WebGL glyph atlas before the redraw. The atlas
-        // occasionally desyncs while the app is backgrounded (other
-        // GL apps stealing the GPU, OS compositor recycling, dev HMR
-        // re-running effects), and the symptom is plain ASCII
-        // codepoints rendering with the wrong glyph until a resize
-        // forces a refit. Clearing the atlas here costs one frame's
-        // worth of glyph re-rasterization on focus / tab-visible /
-        // font-change and eliminates the "resize-to-fix" workaround.
-        webglRef.current?.clearTextureAtlas();
-        t.refresh(0, t.rows - 1);
-      } catch {
-        // teardown
-      }
-    };
     const onVisibility = () => {
-      if (document.visibilityState === "visible") refreshTerm();
+      if (document.visibilityState === "visible") scheduleWakeRefit();
     };
-    window.addEventListener("focus", refreshTerm);
+    const wakeRafs = new Set<number>();
+    const wakeTimers = new Set<number>();
+    let wakeRefitScheduled = false;
+    const scheduleWakeRaf = (cb: () => void) => {
+      const id = window.requestAnimationFrame(() => {
+        wakeRafs.delete(id);
+        cb();
+      });
+      wakeRafs.add(id);
+      return id;
+    };
+    const scheduleWakeTimer = (cb: () => void, delay: number) => {
+      const id = window.setTimeout(() => {
+        wakeTimers.delete(id);
+        cb();
+      }, delay);
+      wakeTimers.add(id);
+      return id;
+    };
+    function scheduleWakeRefit() {
+      if (wakeRefitScheduled) return;
+      wakeRefitScheduled = true;
+      scheduleWakeRaf(() => {
+        scheduleWakeRaf(() =>
+          refreshActiveTerminal({ forceResizeDance: true }),
+        );
+      });
+      // macOS wake can fire focus before WKWebView has settled its
+      // final layout rect. Run one delayed pass so the PTY winsize
+      // lands on the post-wake container width even when ResizeObserver
+      // / browser focus events are skipped.
+      scheduleWakeTimer(
+        () => refreshActiveTerminal({ forceResizeDance: true }),
+        250,
+      );
+      scheduleWakeTimer(() => {
+        wakeRefitScheduled = false;
+      }, 300);
+    }
+    window.addEventListener("focus", scheduleWakeRefit);
     document.addEventListener("visibilitychange", onVisibility);
+    let unlistenAppResumed: (() => void) | null = null;
+    let appResumedCancelled = false;
+    void listen("app/resumed", () => {
+      scheduleWakeRefit();
+    }).then((fn) => {
+      if (appResumedCancelled) {
+        fn();
+        return;
+      }
+      unlistenAppResumed = fn;
+    });
+    let unlistenFocus: (() => void) | null = null;
+    let focusCancelled = false;
+    try {
+      void getCurrentWindow()
+        .onFocusChanged(({ payload: focused }) => {
+          if (focused) scheduleWakeRefit();
+        })
+        .then((fn) => {
+          if (focusCancelled) {
+            fn();
+            return;
+          }
+          unlistenFocus = fn;
+        })
+        .catch(() => {
+          // Browser-level focus/visibility listeners still apply.
+        });
+    } catch {
+      // No Tauri runtime (dev browser preview).
+    }
 
     // Live updates from SettingsModal. localStorage's `storage` event
     // doesn't fire in the originating window, so the modal dispatches a
@@ -532,16 +641,22 @@ export const RunnerTerminal = forwardRef<
     return () => {
       ro.disconnect();
       window.removeEventListener("resize", refitAndPush);
-      window.removeEventListener("focus", refreshTerm);
+      window.removeEventListener("focus", scheduleWakeRefit);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("storage", onStorage);
+      appResumedCancelled = true;
+      unlistenAppResumed?.();
+      focusCancelled = true;
+      unlistenFocus?.();
+      wakeRafs.forEach((id) => window.cancelAnimationFrame(id));
+      wakeTimers.forEach((id) => window.clearTimeout(id));
       textarea?.removeEventListener("paste", onPaste, { capture: true });
       onDataDisposable.dispose();
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
     };
-  }, []);
+  }, [refreshActiveTerminal]);
 
   // Subscribe to the bound session's output + exit. The listener is registered
   // before snapshot replay so live chunks that arrive during the command round
@@ -670,98 +785,7 @@ export const RunnerTerminal = forwardRef<
 
     const activate = () => {
       if (cancelled) return;
-      const t = termRef.current;
-      const fit = fitRef.current;
-      const node = containerRef.current;
-      if (!t || !fit || !node) return;
-      const rect = node.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      try {
-        fit.fit();
-        // Drain any pending snapshot replay now that we have a real
-        // cols/rows — this is the path that fires when mission slot
-        // tabs (mounted hidden by default, snapshot already fetched
-        // into pendingSnapshotRef) finally come to the front.
-        tryDrainReplayRef.current?.();
-        // Drop the WebGL glyph atlas before the refresh: in-app tab /
-        // route switches (Mission ↔ Chat, mission tab switches) keep
-        // hidden terminals mounted, and the atlas can desync while a
-        // pane is off-screen (other panes painting into the same GL
-        // context, OS compositor recycling, dev HMR). Without this,
-        // coming back to a hidden pane shows mis-rendered glyphs until
-        // a resize forces a refit — the bug `refreshTerm`'s atlas
-        // clear was meant to prevent, but `refreshTerm` is wired to
-        // `focus` / `visibilitychange` and those don't fire on in-app
-        // tab switches.
-        webglRef.current?.clearTextureAtlas();
-        t.refresh(0, t.rows - 1);
-        t.focus();
-        // No agent to dance with for stopped/crashed/resuming/starting
-        // sessions — the wipe would clear the last-paint behind the
-        // SessionEndedOverlay (the scrollback the `disabled` prop is
-        // meant to preserve) and the resize ioctls would reject. Keep
-        // the fit + refresh + focus above (correct for any active
-        // pane) but bail before the wipe + dance.
-        if (disabledRef.current) return;
-        const cols = t.cols;
-        const rows = t.rows;
-        // Force the agent into a full redraw on every activation.
-        // While the pane was hidden, live PTY bytes wrote into
-        // xterm's buffer (the session-effect's "session/output"
-        // listener doesn't gate on active), so the buffer may be
-        // mid-frame (agent halfway through a redraw at switch
-        // time) or dim-mismatched (window / panel resize while
-        // hidden moved the container without us refitting). The
-        // refresh() above only repaints that broken state — we
-        // need the *agent* to redraw, which means a SIGWINCH.
-        //
-        // Both Linux (tty_do_resize) and macOS (TIOCSWINSZ in
-        // ttioctl) compare the incoming winsize against the cached
-        // value and only signal SIGWINCH when the bytes differ —
-        // a same-size resize is a kernel no-op. So a single
-        // unconditional api.session.resize wouldn't be enough on
-        // its own. We dance through (cols, rows-1) → (cols, rows)
-        // so both ioctls produce a SIGWINCH and the agent repaints
-        // at the final dims.
-        //
-        // Perturb *rows*, not cols. An earlier draft used cols-1
-        // and corrupted scrollback: claude-code (and similar TUIs)
-        // wrap their own text by emitting explicit `\n` at the
-        // computed cols boundary, so any intermediate paint at
-        // cols-1 deposits hard-wrapped narrow lines into xterm's
-        // buffer. xterm can only soft-reflow width-wrapped lines;
-        // explicit newlines stick. Every tab return then left a
-        // layer of narrower lines above the current paint, visible
-        // on scroll-up. Row perturbation keeps content width at
-        // cols throughout — the (rows-1) intermediate is just one
-        // line shorter, and the second SIGWINCH's `\x1b[2J`-led
-        // repaint at the final rows count cleans up.
-        //
-        // For TUI runtimes, wipe the viewport first so the user
-        // sees a clean black canvas during the brief gap before
-        // the redraw lands instead of the scattered mid-frame
-        // mess (#177). Plain shells skip the wipe — matches
-        // pushSize's behavior above (runtimeClearsOnResize), they
-        // keep their history and don't repaint on SIGWINCH.
-        if (runtimeClearsOnResize(runnerRuntimeRef.current)) {
-          t.write("\x1b[2J\x1b[H");
-        }
-        lastPushedColsRef.current = cols;
-        lastPushedRowsRef.current = rows;
-        // Guard the pathological 1-row case so we never ioctl to
-        // 0 rows. portable-pty would reject it, but more importantly
-        // we want both directions of the dance to produce a real
-        // winsize-diff and therefore SIGWINCH.
-        const nudgedRows = rows > 1 ? rows - 1 : rows + 1;
-        void api.session
-          .resize(sessionId, cols, nudgedRows)
-          .then(() => api.session.resize(sessionId, cols, rows))
-          .catch(() => {
-            // session may have exited between the two ioctls
-          });
-      } catch {
-        // Layout not ready yet — the next activation / resize will drive it.
-      }
+      refreshActiveTerminal({ focus: true, forceResizeDance: true });
     };
 
     raf1 = window.requestAnimationFrame(() => {
@@ -773,7 +797,7 @@ export const RunnerTerminal = forwardRef<
       window.cancelAnimationFrame(raf1);
       window.cancelAnimationFrame(raf2);
     };
-  }, [active, sessionId]);
+  }, [active, sessionId, refreshActiveTerminal]);
 
   useImperativeHandle(
     ref,
