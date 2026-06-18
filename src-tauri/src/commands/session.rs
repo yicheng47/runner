@@ -552,7 +552,7 @@ pub async fn session_resume(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
-    let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app));
+    let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app.clone()));
     let spawned = state
         .sessions
         .resume(
@@ -577,6 +577,10 @@ pub async fn session_resume(
             }
         }
     }
+    let _ = app.emit(
+        "session/updated",
+        serde_json::json!({ "session_id": session_id }),
+    );
     Ok(spawned)
 }
 
@@ -641,7 +645,7 @@ pub async fn session_start_runtime(
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
     let runner = runtime_direct_runner(&runtime, None)?;
-    let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app));
+    let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app.clone()));
     let spawned = state
         .sessions
         .spawn_runtime_direct(
@@ -654,6 +658,10 @@ pub async fn session_start_runtime(
             emitter,
         )
         .map_err(|e| Error::msg(format!("session_start_runtime: {e}")))?;
+    let _ = app.emit(
+        "session/updated",
+        serde_json::json!({ "session_id": spawned.id }),
+    );
     Ok(spawned)
 }
 
