@@ -577,20 +577,24 @@ export const RunnerTerminal = forwardRef<
     });
     let unlistenFocus: (() => void) | null = null;
     let focusCancelled = false;
-    void getCurrentWindow()
-      .onFocusChanged(({ payload: focused }) => {
-        if (focused) scheduleWakeRefit();
-      })
-      .then((fn) => {
-        if (focusCancelled) {
-          fn();
-          return;
-        }
-        unlistenFocus = fn;
-      })
-      .catch(() => {
-        // Browser-level focus/visibility listeners still apply.
-      });
+    try {
+      void getCurrentWindow()
+        .onFocusChanged(({ payload: focused }) => {
+          if (focused) scheduleWakeRefit();
+        })
+        .then((fn) => {
+          if (focusCancelled) {
+            fn();
+            return;
+          }
+          unlistenFocus = fn;
+        })
+        .catch(() => {
+          // Browser-level focus/visibility listeners still apply.
+        });
+    } catch {
+      // No Tauri runtime (dev browser preview).
+    }
 
     // Live updates from SettingsModal. localStorage's `storage` event
     // doesn't fire in the originating window, so the modal dispatches a
