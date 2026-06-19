@@ -77,6 +77,7 @@ const RAIL_STORAGE_WIDTH = "runner.mission.rail.width";
 const RAIL_MIN = 200;
 const RAIL_MAX = 480;
 const RAIL_DEFAULT = 288;
+const SLOT_TERMINAL_FRAME_PADDING_PX = 12; // matches SlotPtyPane's p-3 wrapper
 
 /// Compute cols/rows for the would-be terminal area from the Pane
 /// container's bounding rect + a one-shot DOM cell-size measurement
@@ -89,15 +90,18 @@ const RAIL_DEFAULT = 288;
 /// feed tab and no slot was ever activated, so every slot pane is
 /// still `display:none` and every `RunnerTerminal.measure()` returns
 /// null. The cell size we compute here is close to but not exactly
-/// xterm's CharSizeService output (we don't account for renderer
-/// padding); a small drift is acceptable because the agent paints at
-/// whatever cols we pass and xterm soft-wraps from there if needed.
-/// "Approximately correct" beats "spawn at 80×24."
+/// xterm's CharSizeService output; a small drift is acceptable because
+/// the agent paints at whatever cols we pass and xterm soft-wraps from
+/// there if needed. "Approximately correct" beats "spawn at 80×24."
 function workspaceDimsFromContainer(
   container: HTMLElement,
+  framePaddingPx = SLOT_TERMINAL_FRAME_PADDING_PX,
 ): { cols: number; rows: number } | null {
   const rect = container.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return null;
+  const width = Math.max(0, rect.width - framePaddingPx * 2);
+  const height = Math.max(0, rect.height - framePaddingPx * 2);
+  if (width <= 0 || height <= 0) return null;
   const fontFamily = resolveTerminalFontStack(readTerminalFontFamily());
   const fontSize = readTerminalFontSize();
   const span = document.createElement("span");
@@ -122,8 +126,8 @@ function workspaceDimsFromContainer(
     document.body.removeChild(span);
   }
   return {
-    cols: Math.max(1, Math.floor(rect.width / cellWidth)),
-    rows: Math.max(1, Math.floor(rect.height / cellHeight)),
+    cols: Math.max(1, Math.floor(width / cellWidth)),
+    rows: Math.max(1, Math.floor(height / cellHeight)),
   };
 }
 
@@ -863,10 +867,10 @@ export default function MissionWorkspace() {
             className="relative flex flex-1 min-h-0 flex-col"
           >
             {/* All panes stay mounted so xterm's in-memory scrollback
-                survives tab switches. Inactive panes use display:none:
-                that keeps the React/xterm instances alive while making
-                the visible session unambiguous. The terminal activation
-                effect refits + repaints after the pane is shown. */}
+                survives tab switches. Inactive panes stay invisible
+                instead of display:none so hidden PTYs still have real
+                dimensions; RunnerTerminal can fit/replay Codex's first
+                frame before the user opens the tab. */}
             <Pane active={activeTab === "feed"}>
               <EventFeed
                 missionId={mission.id}
@@ -1237,16 +1241,16 @@ function Pane({
   active: boolean;
   children: React.ReactNode;
 }) {
-  // Pane wraps both the feed and the terminal slots. Background is
-  // `bg-panel` so the feed reads as a tinted "page" with the white
-  // event cards (`bg-bg`) lifting off it — solves the "all white,
-  // cards melt into the page" problem in Codex Light. Terminal slots
-  // cover this bg with their own `bg-terminal-chrome` wrapper, so
-  // changing it here only affects the feed pane visually.
+  // Pane wraps both the feed and the terminal slots. Inactive panes
+  // stay in layout (`visibility:hidden`, not `display:none`) so xterm
+  // can measure, fit, and replay buffered TUI bytes while hidden.
+  // Background is `bg-panel` so the feed reads as a tinted "page" with
+  // the white event cards (`bg-bg`) lifting off it.
   return (
     <div
-      className={`absolute inset-0 flex-col bg-panel ${
-        active ? "flex" : "hidden"
+      aria-hidden={!active}
+      className={`absolute inset-0 flex flex-col bg-panel ${
+        active ? "visible z-10" : "invisible z-0 pointer-events-none"
       }`}
     >
       {children}

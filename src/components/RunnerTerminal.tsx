@@ -164,16 +164,13 @@ export const RunnerTerminal = forwardRef<
   // lengthen the redraw window the user perceives.
   const lastPushedColsRef = useRef(0);
   const lastPushedRowsRef = useRef(0);
-  // Snapshot replay is deferred until the pane is both active and
-  // measurable. Mission workspaces mount every slot's RunnerTerminal
-  // at once with `activeTab="feed"` by default — every slot pane is
-  // `display:none`, the mount-effect's `fit.fit()` is skipped (zero-
-  // size rect), and xterm sits at the constructor default 80×24.
-  // Replaying snapshot bytes into that 80-col grid bakes wrong cell
-  // positions into the buffer, and a later `fit.fit()` on tab focus
-  // can't move them. So we cache the fetched bytes here and drain
-  // them only once the pane has come to the front and fit at real
-  // cols. See #mission-tab-return-drift.
+  // Snapshot replay is deferred until the pane is measurable. Mission
+  // workspaces mount every slot's RunnerTerminal at once while the
+  // feed tab is active; inactive panes stay invisible but measurable
+  // so xterm can fit and build terminal state before the user opens
+  // that tab. If a pane ever has a 0×0 rect, keep the bytes cached
+  // until activation/resize gives us real cols. See
+  // #mission-tab-return-drift.
   const pendingSnapshotRef = useRef<OutputEvent[] | null>(null);
   const pendingLiveRef = useRef<OutputEvent[]>([]);
   const lastWrittenSeqRef = useRef(0);
@@ -546,18 +543,13 @@ export const RunnerTerminal = forwardRef<
       if (wakeRefitScheduled) return;
       wakeRefitScheduled = true;
       scheduleWakeRaf(() => {
-        scheduleWakeRaf(() =>
-          refreshActiveTerminal({ forceResizeDance: true }),
-        );
+        scheduleWakeRaf(() => refreshActiveTerminal());
       });
-      // macOS wake can fire focus before WKWebView has settled its
-      // final layout rect. Run one delayed pass so the PTY winsize
-      // lands on the post-wake container width even when ResizeObserver
-      // / browser focus events are skipped.
-      scheduleWakeTimer(
-        () => refreshActiveTerminal({ forceResizeDance: true }),
-        250,
-      );
+      // macOS wake/focus can fire before WKWebView has settled its
+      // final layout rect. Run one delayed renderer refresh for the
+      // WebGL atlas without forcing a PTY SIGWINCH; ResizeObserver's
+      // normal refit path still pushes real cols/rows changes.
+      scheduleWakeTimer(() => refreshActiveTerminal(), 250);
       scheduleWakeTimer(() => {
         wakeRefitScheduled = false;
       }, 300);
@@ -677,15 +669,14 @@ export const RunnerTerminal = forwardRef<
       termRef.current?.write(decodeBase64Chunk(ev.data));
     };
 
-    // Replay drains only when (a) the snapshot RPC has returned,
-    // (b) the pane is currently active, and (c) the container has a
-    // measurable rect so the in-line fit gives us real cols/rows.
+    // Replay drains only when (a) the snapshot RPC has returned and
+    // (b) the container has a measurable rect so the in-line fit gives
+    // us real cols/rows.
     // Until all three line up we keep the bytes parked on
     // pendingSnapshotRef and pendingLiveRef; activation / resize
     // observers re-call this helper as conditions change.
     const tryDrainReplay = () => {
       if (replayDoneRef.current) return;
-      if (!activeRef.current) return;
       const t = termRef.current;
       const fit = fitRef.current;
       const node = containerRef.current;
