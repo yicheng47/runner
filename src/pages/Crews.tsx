@@ -6,6 +6,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
+import { listen } from "@tauri-apps/api/event";
+
 import { api } from "../lib/api";
 import type { CrewListItem } from "../lib/types";
 import { Button } from "../components/ui/Button";
@@ -36,6 +38,40 @@ export default function Crews() {
 
   useEffect(() => {
     void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    let unlistenCrew: (() => void) | null = null;
+    let unlistenRunner: (() => void) | null = null;
+    let unlistenSlot: (() => void) | null = null;
+    let cancelled = false;
+    void Promise.all([
+      listen("crew/changed", () => {
+        void refresh();
+      }),
+      listen("runner/changed", () => {
+        void refresh();
+      }),
+      listen("slot/changed", () => {
+        void refresh();
+      }),
+    ]).then(([fnCrew, fnRunner, fnSlot]) => {
+      if (cancelled) {
+        fnCrew();
+        fnRunner();
+        fnSlot();
+        return;
+      }
+      unlistenCrew = fnCrew;
+      unlistenRunner = fnRunner;
+      unlistenSlot = fnSlot;
+    });
+    return () => {
+      cancelled = true;
+      unlistenCrew?.();
+      unlistenRunner?.();
+      unlistenSlot?.();
+    };
   }, [refresh]);
 
   const onDelete = async (id: string, name: string) => {

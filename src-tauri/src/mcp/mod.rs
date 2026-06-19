@@ -2,6 +2,7 @@ mod server;
 pub(crate) mod state;
 pub(crate) mod tools;
 
+use std::os::unix::net::UnixListener as StdUnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -34,15 +35,7 @@ impl McpHandle {
             return Ok(());
         }
 
-        // Remove stale socket from a prior crash.
-        let _ = std::fs::remove_file(socket_path);
-
-        let listener = UnixListener::bind(socket_path).map_err(|e| {
-            crate::error::Error::msg(format!(
-                "mcp: failed to bind {}: {e}",
-                socket_path.display()
-            ))
-        })?;
+        let listener = bind_listener(socket_path)?;
         log::info!("mcp: listening on {}", socket_path.display());
 
         let cancel = CancellationToken::new();
@@ -50,6 +43,14 @@ impl McpHandle {
         let socket_path_owned = socket_path.to_path_buf();
 
         let handle = tauri::async_runtime::spawn(async move {
+            let listener = match UnixListener::from_std(listener) {
+                Ok(listener) => listener,
+                Err(e) => {
+                    log::error!("mcp: failed to attach listener to tokio runtime: {e}");
+                    return;
+                }
+            };
+
             loop {
                 tokio::select! {
                     result = listener.accept() => {
@@ -92,5 +93,43 @@ impl McpHandle {
     pub(crate) fn socket_path(&self) -> Option<PathBuf> {
         let guard = self.inner.lock().unwrap();
         guard.as_ref().map(|r| r.socket_path.clone())
+    }
+}
+
+fn bind_listener(socket_path: &Path) -> crate::error::Result<StdUnixListener> {
+    // Remove stale socket from a prior crash.
+    let _ = std::fs::remove_file(socket_path);
+
+    let listener = StdUnixListener::bind(socket_path).map_err(|e| {
+        crate::error::Error::msg(format!(
+            "mcp: failed to bind {}: {e}",
+            socket_path.display()
+        ))
+    })?;
+    listener.set_nonblocking(true).map_err(|e| {
+        crate::error::Error::msg(format!(
+            "mcp: failed to set {} nonblocking: {e}",
+            socket_path.display()
+        ))
+    })?;
+    Ok(listener)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::ErrorKind;
+
+    use super::*;
+
+    #[test]
+    fn bind_listener_does_not_require_tokio_reactor() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("mcp.sock");
+
+        let listener = bind_listener(&socket_path).unwrap();
+
+        assert!(socket_path.exists());
+        let err = listener.accept().expect_err("empty nonblocking listener");
+        assert_eq!(err.kind(), ErrorKind::WouldBlock);
     }
 }
