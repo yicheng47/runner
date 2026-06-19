@@ -299,6 +299,8 @@ pub fn run() {
             commands::session::session_paste_image,
             commands::session::session_start_direct,
             commands::session::session_start_runtime,
+            commands::mcp::mcp_integration_status,
+            commands::mcp::mcp_set_integration,
             commands::mcp::mcp_config_snippet,
         ])
         .build(tauri::generate_context!())

@@ -696,7 +696,7 @@ export function Sidebar({
               <button
                 type="button"
                 onClick={() => setSettingsOpen(true)}
-                className="flex flex-1 cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-fg-2 transition-colors hover:bg-line/50 hover:text-fg"
+                className="flex flex-1 cursor-pointer items-center gap-2.5 rounded border border-transparent px-2.5 py-2 text-left text-fg-2 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
               >
                 <SettingsIcon aria-hidden className="h-3.5 w-3.5" />
                 <span className="text-[13px]">Settings</span>
@@ -717,7 +717,7 @@ export function Sidebar({
                 aria-label={
                   sidebarPreview ? "Keep sidebar open" : "Collapse sidebar"
                 }
-                className="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-fg-3 transition-colors hover:bg-bg hover:text-fg"
+                className="flex h-6 w-6 cursor-pointer items-center justify-center rounded border border-transparent text-fg-3 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
               >
                 {sidebarPreview ? (
                   <ChevronsRight aria-hidden className="h-3.5 w-3.5" />

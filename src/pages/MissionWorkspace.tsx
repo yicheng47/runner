@@ -995,7 +995,7 @@ export default function MissionWorkspace() {
                 onClick={() => setRailOpen(false)}
                 title="Collapse panel"
                 aria-label="Collapse panel"
-                className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-2 hover:bg-raised hover:text-fg"
+                className="flex h-7 w-7 cursor-pointer items-center justify-center rounded border border-transparent text-fg-2 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
               >
                 <PanelRight aria-hidden className="h-4 w-4" />
               </button>
@@ -1441,10 +1441,10 @@ function RailViewButton({
       title={label}
       aria-label={label}
       aria-pressed={active}
-      className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded border transition-colors ${
+      className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded border border-transparent transition-colors focus:outline-none ${
         active
-          ? "border-line bg-bg text-fg"
-          : "border-transparent text-fg-2 hover:bg-raised hover:text-fg"
+          ? "bg-sidebar-selected/60 text-fg"
+          : "text-fg-2 hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg"
       }`}
     >
       <Icon aria-hidden className="h-3.5 w-3.5" />
