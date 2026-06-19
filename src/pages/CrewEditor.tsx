@@ -13,6 +13,8 @@ import {
   type DragEvent,
 } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+
+import { listen } from "@tauri-apps/api/event";
 import { MoreHorizontal, SquarePen, Star, Trash2 } from "lucide-react";
 
 import { api } from "../lib/api";
@@ -57,7 +59,19 @@ export default function CrewEditor() {
       setNameDraft(c.name);
       setLoaded(true);
     } catch (e) {
-      setError(String(e));
+      const message = String(e);
+      setError(message);
+      if (message.toLowerCase().includes("not found")) {
+        setCrew(null);
+        setSlots([]);
+        setEditing(null);
+        setNameDraft("");
+        setGoalEditing(false);
+        setGoalDraft("");
+        setAddendumEditing(false);
+        setAddendumDraft("");
+        setLoaded(true);
+      }
     } finally {
       setLoading(false);
     }
@@ -65,6 +79,40 @@ export default function CrewEditor() {
 
   useEffect(() => {
     void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    let unlistenCrew: (() => void) | null = null;
+    let unlistenRunner: (() => void) | null = null;
+    let unlistenSlot: (() => void) | null = null;
+    let cancelled = false;
+    void Promise.all([
+      listen("crew/changed", () => {
+        void refresh();
+      }),
+      listen("runner/changed", () => {
+        void refresh();
+      }),
+      listen("slot/changed", () => {
+        void refresh();
+      }),
+    ]).then(([fnCrew, fnRunner, fnSlot]) => {
+      if (cancelled) {
+        fnCrew();
+        fnRunner();
+        fnSlot();
+        return;
+      }
+      unlistenCrew = fnCrew;
+      unlistenRunner = fnRunner;
+      unlistenSlot = fnSlot;
+    });
+    return () => {
+      cancelled = true;
+      unlistenCrew?.();
+      unlistenRunner?.();
+      unlistenSlot?.();
+    };
   }, [refresh]);
 
   const onSaveName = async () => {

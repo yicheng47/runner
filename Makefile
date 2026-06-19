@@ -1,4 +1,4 @@
-.PHONY: dev dev-web build package install lint lint-frontend lint-rust typecheck test test-rust test-ts check fmt fmt-check ci clean clean-all
+.PHONY: dev dev-web build package install lint lint-frontend lint-rust typecheck test test-rust test-ts check fmt fmt-check ci clean clean-all stage-runner-cli-binaries
 
 # Start Tauri app (frontend + Rust backend) in dev mode
 dev:
@@ -36,7 +36,7 @@ lint-frontend:
 # Backend: cargo fmt --check + clippy -D warnings. Both gates from the
 # `backend` CI job (cargo check + cargo test are separate, run via
 # `make check` / `make test-rust` or `make ci`).
-lint-rust:
+lint-rust: stage-runner-cli-binaries
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
 
@@ -46,7 +46,7 @@ typecheck:
 	pnpm exec tsc --noEmit
 
 # Rust unit + integration tests (whole workspace — app crate + runners-core)
-test-rust:
+test-rust: stage-runner-cli-binaries
 	cargo test --workspace
 
 # Frontend typecheck (v0 has no JS tests yet)
@@ -56,8 +56,20 @@ test-ts: typecheck
 test: test-rust test-ts
 
 # Rust compile-only
-check:
+check: stage-runner-cli-binaries
 	cargo check --workspace
+
+# Tauri's build script validates `bundle.externalBin` during cargo metadata
+# even for check/clippy/test. Stage real debug binaries so the Tauri copy
+# step cannot overwrite Cargo's CLI test binaries with placeholders.
+stage-runner-cli-binaries:
+	@triple=$$(rustc -vV | sed -n 's/^host: //p'); \
+	cargo build -p runner-cli --bins; \
+	mkdir -p src-tauri/binaries; \
+	for bin in runner-agent-cli runner-mcp; do \
+		cp "target/debug/$$bin" "src-tauri/binaries/$$bin-$$triple"; \
+		chmod +x "src-tauri/binaries/$$bin-$$triple"; \
+	done
 
 # Rust format (rewrites files)
 fmt:

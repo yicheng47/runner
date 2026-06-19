@@ -70,6 +70,7 @@ links to its tracking issue.
 
 - [26 — Update check in the Apple menu](./26-update-check-apple-menu.md) — remove the Settings Updates pane and move manual "Check for Updates..." into the native app menu, following Quill's pattern while preserving the existing update toast feedback.
 - [27 — Tokyo Night dark theme](./27-tokyo-night-theme.md) — add Tokyo Night as a third dark Appearance palette while keeping Catppuccin Latte on light and Catppuccin Mocha on dark.
+- [28 — Mission MCP tools](./28-mission-mcp-tools.md) — add mission lifecycle tools plus status/feed monitoring so external agents can operate and inspect live Runner missions.
 
 ## Archive
 

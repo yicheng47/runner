@@ -70,7 +70,7 @@ agent.
   allow-lists (e.g. "let CC create runners but not delete them")
   would be useful but doubles the settings UI; defer.
 - **Stdio MCP transport.** Some Codex setups prefer stdio. Possible to
-  add a `runner mcp serve` subcommand on the bundled CLI later if
+  add a dedicated `runner-mcp` stdio sidecar later if
   there's demand. Not v1.
 - **Resource / prompt support.** MCP also supports `resources` (read
   arbitrary URIs) and `prompts` (canned prompt templates). Tools alone

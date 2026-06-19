@@ -1,24 +1,19 @@
-// Install the bundled CLI as `$APPDATA/runner/bin/runner` at app
-// startup so child PTYs find it on PATH (arch §5.3 Layer 2).
+// Install Runner's bundled CLI sidecars under `$APPDATA/runner/bin/`.
+// Child PTYs get `runner` on PATH for mission coordination, while MCP
+// clients launch `runner-mcp` directly from their config files.
 //
 // Naming. The Tauri app crate also produces a binary called `runner`,
 // which would collide if the CLI used the same name in the same
-// `target/` dir. The CLI source-side binary is therefore `runner-cli`
-// (`cli/Cargo.toml`'s `[[bin]] name`). This installer copies the
-// `runner-cli` artifact and renames it to `runner` at the destination
-// — so the file on PATH (which is what spawned PTYs invoke) keeps the
-// intended user-facing name without colliding at build time.
+// `target/` dir. The source-side agent binary is therefore
+// `runner-agent-cli`; this installer renames it to `runner` in app data
+// so spawned PTYs get the intended user-facing command. The MCP proxy is
+// a separate `runner-mcp` binary and is installed without renaming.
 //
-// Source resolution. In dev (`cargo run`), the CLI lives next to the
-// Tauri exe under `target/{debug,release}/runner-cli`. In production,
-// the Tauri bundler ships the same artifact alongside the app's main
-// executable via `bundle.externalBin: ["binaries/runner-cli"]` in
-// `tauri.conf.json` — `scripts/stage-runner-cli.mjs` (run from
-// `tauri:before:build`) cross-builds the CLI for the active triple
-// and stages it at `src-tauri/binaries/runner-cli-<triple>` where the
-// bundler picks it up and drops it into `Runner.app/Contents/MacOS/
-// runner-cli`. Either path leaves a `runner-cli` sibling next to
-// `current_exe`, which is what `locate_source` looks for.
+// Source resolution. In dev (`tauri dev`), the staging script builds
+// both source binaries and stages them for Tauri's externalBin copy. In
+// production, the same script cross-builds the release binaries for the
+// active triple. Either path leaves `runner-agent-cli` and `runner-mcp`
+// next to `current_exe`, which `locate_source` resolves by name.
 //
 // Skip-if-current optimization. Compare (size, mtime) — if the source
 // file's mtime is `<=` the destination's AND sizes match, skip the
@@ -29,44 +24,63 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-/// On-disk name of the CLI source artifact (set in `cli/Cargo.toml`).
-/// Different from the Tauri app crate's binary so they coexist in the
-/// same `target/` dir without overwriting each other.
-const SOURCE_BIN_NAME: &str = if cfg!(windows) {
-    "runner-cli.exe"
+/// Source-side agent CLI artifact. Installed into app data as `runner`.
+const AGENT_SOURCE_BIN_NAME: &str = if cfg!(windows) {
+    "runner-agent-cli.exe"
 } else {
-    "runner-cli"
+    "runner-agent-cli"
 };
 
-/// Name of the file we drop into `$APPDATA/runner/bin/`. Must match what
+/// Source-side MCP proxy artifact. Installed into app data as `runner-mcp`.
+const MCP_SOURCE_BIN_NAME: &str = if cfg!(windows) {
+    "runner-mcp.exe"
+} else {
+    "runner-mcp"
+};
+
+/// Name of the agent CLI we drop into `$APPDATA/runner/bin/`. Must match what
 /// `SessionManager::spawn` puts on PATH — arch §5.3 Layer 2 has the
 /// CLI being invoked as bare `runner` from inside spawned PTYs.
-const DEST_BIN_NAME: &str = if cfg!(windows) {
+const AGENT_DEST_BIN_NAME: &str = if cfg!(windows) {
     "runner.exe"
 } else {
     "runner"
 };
 
+/// Name of the MCP proxy binary registered with Claude Code / Codex.
+pub const MCP_DEST_BIN_NAME: &str = if cfg!(windows) {
+    "runner-mcp.exe"
+} else {
+    "runner-mcp"
+};
+
 pub fn install_runner_cli(app_data_dir: &Path) -> Result<()> {
-    let Some(source) = locate_source()? else {
+    install_binary(app_data_dir, AGENT_SOURCE_BIN_NAME, AGENT_DEST_BIN_NAME)
+}
+
+pub fn install_mcp_cli(app_data_dir: &Path) -> Result<()> {
+    install_binary(app_data_dir, MCP_SOURCE_BIN_NAME, MCP_DEST_BIN_NAME)
+}
+
+fn install_binary(app_data_dir: &Path, source_name: &str, dest_name: &str) -> Result<()> {
+    let Some(source) = locate_source(source_name)? else {
         log::warn!(
-            "bundled CLI ({SOURCE_BIN_NAME}) not found next to current_exe; \
-             skipping install. Sessions that invoke `runner` will error until the \
-             binary is on PATH. Build the CLI with `cargo build -p runner-cli` and \
+            "bundled CLI sidecar ({source_name}) not found next to current_exe; \
+             skipping install of {dest_name}. Build the CLI sidecars and \
              relaunch."
         );
         return Ok(());
     };
     let dest_dir = app_data_dir.join("bin");
     std::fs::create_dir_all(&dest_dir)?;
-    let dest = dest_dir.join(DEST_BIN_NAME);
+    let dest = dest_dir.join(dest_name);
 
     if up_to_date(&source, &dest)? {
         return Ok(());
     }
 
     // Copy via tempfile + rename to keep the swap atomic — a half-written
-    // file would crash the next agent that runs `runner help`.
+    // file would crash the next process that runs this sidecar.
     let tmp = tempfile::NamedTempFile::new_in(&dest_dir)?;
     std::fs::copy(&source, tmp.path())?;
     tmp.persist(&dest).map_err(|e| Error::Io(e.error))?;
@@ -113,7 +127,7 @@ pub fn install_session_runner_shim(
         .join("bin");
     std::fs::create_dir_all(&shim_dir)?;
     let shim_path = shim_dir.join("runner");
-    let real_runner = app_data_dir.join("bin").join(DEST_BIN_NAME);
+    let real_runner = app_data_dir.join("bin").join(AGENT_DEST_BIN_NAME);
 
     let event_log_str = event_log.to_string_lossy();
     let mut script = String::new();
@@ -158,14 +172,14 @@ fn sh_escape(s: &str) -> String {
     s.replace('\'', "'\\''")
 }
 
-fn locate_source() -> Result<Option<PathBuf>> {
+fn locate_source(source_name: &str) -> Result<Option<PathBuf>> {
     let exe = std::env::current_exe()?;
     let dir = exe
         .parent()
         .ok_or_else(|| Error::msg("current_exe has no parent"))?;
-    let candidate = dir.join(SOURCE_BIN_NAME);
-    // The Tauri exe itself is `runner` (different basename from
-    // `runner-cli`), so the equality guard is belt-and-suspenders for
+    let candidate = dir.join(source_name);
+    // The Tauri exe itself is `runner` (different basename from the
+    // source names), so the equality guard is belt-and-suspenders for
     // future renames; it still gates on existence.
     if candidate.exists() && candidate != exe {
         return Ok(Some(candidate));
@@ -205,7 +219,7 @@ mod tests {
         fs::create_dir_all(&exe_dir).unwrap();
 
         // Fake the CLI artifact next to the (would-be) current_exe.
-        let source = exe_dir.join(SOURCE_BIN_NAME);
+        let source = exe_dir.join(AGENT_SOURCE_BIN_NAME);
         {
             let mut f = fs::File::create(&source).unwrap();
             writeln!(f, "#!/bin/sh\necho fake").unwrap();
@@ -221,7 +235,7 @@ mod tests {
         let app_data = tempfile::tempdir().unwrap();
         let bin_dir = app_data.path().join("bin");
         fs::create_dir_all(&bin_dir).unwrap();
-        let dest = bin_dir.join(DEST_BIN_NAME);
+        let dest = bin_dir.join(AGENT_DEST_BIN_NAME);
 
         // First copy: dest doesn't exist, must be replaced.
         assert!(!up_to_date(&source, &dest).unwrap());
@@ -257,7 +271,7 @@ mod tests {
         // path.
         let bin_dir = app_data.path().join("bin");
         std::fs::create_dir_all(&bin_dir).unwrap();
-        std::fs::write(bin_dir.join(DEST_BIN_NAME), "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::write(bin_dir.join(AGENT_DEST_BIN_NAME), "#!/bin/sh\nexit 0\n").unwrap();
 
         let dir_a = install_session_runner_shim(
             app_data.path(),

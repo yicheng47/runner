@@ -40,6 +40,15 @@ tempfile = "3"
 # `macos_fsevent` backend is the default on macOS; on Linux it falls back to
 # inotify, on Windows to ReadDirectoryChangesW.
 notify = "6"
+# MCP server (impl 0013): Unix socket listener for external clients.
+# The `runner-mcp` sidecar bridges stdio ↔ this socket.
+rmcp = { version = "1.7", features = ["server"] }
+schemars = "1"
+tokio = { version = "1", features = ["net", "rt", "io-util"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+# Codex MCP config lives in ~/.codex/config.toml; toml_edit preserves
+# user-authored comments + formatting on round-trip writes.
+toml_edit = "0.25"
 
 # Unix-only deps:
 #  - libc: FIFO mkfifo + poll() inside session::tmux_runtime.

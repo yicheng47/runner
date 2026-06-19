@@ -1,12 +1,10 @@
 #!/usr/bin/env node
-// Build `runner-cli` for the active Tauri target triple and stage the
-// artifact at `src-tauri/binaries/runner-cli-<triple>` — the path
-// `tauri.conf.json`'s `bundle.externalBin: ["binaries/runner-cli"]`
-// resolves at bundle time. Tauri's bundler then drops it into
-// `Runner.app/Contents/MacOS/runner-cli` (renamed without the suffix),
-// where `cli_install::install_runner_cli` finds it next to
-// `current_exe` on first launch and copies it into
-// `<app_data>/bin/runner` for child PTYs to spawn.
+// Build Runner's CLI sidecars for the active Tauri target triple and
+// stage them at `src-tauri/binaries/<name>-<triple>` — the paths
+// `tauri.conf.json`'s `bundle.externalBin` entries resolve at bundle
+// time. Tauri's bundler then drops them next to the app binary, where
+// `cli_install` copies them into `<app_data>/bin/` with product-facing
+// names: `runner` for mission agents and `runner-mcp` for MCP clients.
 //
 // Why a build-time stage instead of a runtime fetch:
 //   - Single bundle ships everything; no first-launch download.
@@ -29,6 +27,21 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
+const bins = ["runner-agent-cli", "runner-mcp"];
+
+function resolveProfile() {
+  const profileArg = process.argv.find((a) => a.startsWith("--profile="));
+  if (!profileArg) {
+    return "release";
+  }
+  const profile = profileArg.slice("--profile=".length);
+  if (profile !== "debug" && profile !== "release") {
+    throw new Error(
+      `stage-runner-cli: --profile must be "debug" or "release", got ${profile}`,
+    );
+  }
+  return profile;
+}
 
 function resolveTargetTriple() {
   if (process.env.TAURI_ENV_TARGET_TRIPLE) {
@@ -50,16 +63,12 @@ function resolveTargetTriple() {
   return hostLine.slice("host:".length).trim();
 }
 
-function buildCli(triple) {
-  console.log(`stage-runner-cli: building runner-cli for ${triple}…`);
-  const args = [
-    "build",
-    "-p",
-    "runner-cli",
-    "--release",
-    "--target",
-    triple,
-  ];
+function buildCli(triple, profile) {
+  console.log(`stage-runner-cli: building CLI sidecars for ${triple} (${profile})…`);
+  const args = ["build", "-p", "runner-cli", "--bins"];
+  if (profile === "release") {
+    args.push("--release", "--target", triple);
+  }
   const result = spawnSync("cargo", args, {
     cwd: repoRoot,
     stdio: "inherit",
@@ -69,38 +78,39 @@ function buildCli(triple) {
   }
 }
 
-function stageArtifact(triple) {
+function stageArtifacts(triple, profile) {
   // Workspace `Cargo.toml` sets `target/` at the repo root, so the
   // artifact lives there regardless of which crate triggered the build.
   const ext = process.platform === "win32" ? ".exe" : "";
-  const source = path.join(
-    repoRoot,
-    "target",
-    triple,
-    "release",
-    `runner-cli${ext}`,
-  );
-  if (!existsSync(source)) {
-    throw new Error(
-      `stage-runner-cli: built artifact missing at ${source}. Did the cargo build silently emit elsewhere?`,
-    );
-  }
-  // Tauri's externalBin convention: `<declared-path>-<triple>[.exe]`.
-  // Declared path is `binaries/runner-cli` (relative to `src-tauri/`).
+  const sourceDir =
+    profile === "release"
+      ? path.join(repoRoot, "target", triple, "release")
+      : path.join(repoRoot, "target", "debug");
   const destDir = path.join(repoRoot, "src-tauri", "binaries");
   mkdirSync(destDir, { recursive: true });
-  const dest = path.join(destDir, `runner-cli-${triple}${ext}`);
-  copyFileSync(source, dest);
-  if (process.platform !== "win32") {
-    chmodSync(dest, 0o755);
+
+  for (const bin of bins) {
+    const source = path.join(sourceDir, `${bin}${ext}`);
+    if (!existsSync(source)) {
+      throw new Error(
+        `stage-runner-cli: built artifact missing at ${source}. Did the cargo build silently emit elsewhere?`,
+      );
+    }
+    // Tauri's externalBin convention: `<declared-path>-<triple>[.exe]`.
+    const dest = path.join(destDir, `${bin}-${triple}${ext}`);
+    copyFileSync(source, dest);
+    if (process.platform !== "win32") {
+      chmodSync(dest, 0o755);
+    }
+    console.log(`stage-runner-cli: staged ${dest}`);
   }
-  console.log(`stage-runner-cli: staged ${dest}`);
 }
 
 function main() {
   const triple = resolveTargetTriple();
-  buildCli(triple);
-  stageArtifact(triple);
+  const profile = resolveProfile();
+  buildCli(triple, profile);
+  stageArtifacts(triple, profile);
 }
 
 main();

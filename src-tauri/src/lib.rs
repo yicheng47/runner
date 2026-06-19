@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod error;
 mod event_bus;
+mod mcp;
 mod model;
 mod panic_hook;
 mod router;
@@ -46,6 +47,9 @@ pub struct AppState {
     /// router observes the bootstrap `mission_goal` event during initial
     /// replay and pushes the launch prompt into the lead's stdin.
     pub routers: Arc<router::RouterRegistry>,
+    /// MCP server lifecycle handle (impl 0013). Unix socket listener
+    /// that external clients connect to via the `runner-mcp` bridge.
+    pub mcp: Arc<mcp::McpHandle>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -132,14 +136,15 @@ pub fn run() {
             // design (`exit-empty off` in the generated tmux
             // config); the prior portable-pty-era bulk UPDATE
             // would have killed that survival path.
-            // Drop the bundled `runner` CLI into $APPDATA/runner/bin/ so
-            // child PTYs find it on PATH (arch §5.3 Layer 2). Best-effort:
-            // a copy failure is logged and the app keeps running. Sessions
-            // spawned with no CLI on PATH will simply error out when they
-            // try to invoke `runner` — surfaced as a runtime stderr from
-            // the agent rather than a startup hang.
+            // Drop the bundled agent/MCP CLIs into $APPDATA/runner/bin/.
+            // Child PTYs find `runner` on PATH (arch §5.3 Layer 2), while
+            // Claude/Codex configs point at `runner-mcp`. Best-effort: a
+            // copy failure is logged and the app keeps running.
             if let Err(e) = cli_install::install_runner_cli(&app_data_dir) {
-                log::error!("failed to install bundled CLI: {e}");
+                log::error!("failed to install bundled agent CLI: {e}");
+            }
+            if let Err(e) = cli_install::install_mcp_cli(&app_data_dir) {
+                log::error!("failed to install bundled MCP CLI: {e}");
             }
 
             // Snapshot the user's login-shell env once at startup so
@@ -177,12 +182,23 @@ pub fn run() {
             // reattach (next block) has access to the bus + router
             // registries it needs to mount. The session-side reattach
             // still runs from the local `sessions` Arc handle.
+            let mcp_handle = Arc::new(mcp::McpHandle::new());
+            let mcp_state = mcp::state::McpState {
+                db: Arc::clone(&pool),
+                sessions: Arc::clone(&sessions),
+                app_handle: app.handle().clone(),
+            };
+            if let Err(e) = mcp_handle.start(&app_data_dir.join("mcp.sock"), mcp_state) {
+                log::error!("mcp: failed to start listener: {e}");
+            }
+
             let state = AppState {
                 db: Arc::clone(&pool),
                 app_data_dir,
                 sessions: Arc::clone(&sessions),
                 buses: event_bus::BusRegistry::new(),
                 routers: router::RouterRegistry::new(),
+                mcp: mcp_handle,
             };
 
             // Mount router + bus for every `running` mission BEFORE
@@ -284,6 +300,9 @@ pub fn run() {
             commands::session::session_paste_image,
             commands::session::session_start_direct,
             commands::session::session_start_runtime,
+            commands::mcp::mcp_integration_status,
+            commands::mcp::mcp_set_integration,
+            commands::mcp::mcp_config_snippet,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -300,6 +319,9 @@ pub fn run() {
             match event {
                 tauri::RunEvent::ExitRequested { .. } => {
                     stop_running_sessions_on_quit(app_handle);
+                    if let Some(state) = app_handle.try_state::<AppState>() {
+                        state.mcp.stop();
+                    }
                 }
                 tauri::RunEvent::Resumed => {
                     let _ = app_handle.emit("app/resumed", ());
