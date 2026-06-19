@@ -214,9 +214,11 @@ export const RunnerTerminal = forwardRef<
     ({
       focus = false,
       forceResizeDance = false,
+      pushBackendSize = false,
     }: {
       focus?: boolean;
       forceResizeDance?: boolean;
+      pushBackendSize?: boolean;
     } = {}) => {
       if (!activeRef.current) return;
       const t = termRef.current;
@@ -231,11 +233,27 @@ export const RunnerTerminal = forwardRef<
         webglRef.current?.clearTextureAtlas();
         t.refresh(0, t.rows - 1);
         if (focus) t.focus();
-        if (!forceResizeDance || disabledRef.current) return;
+        if ((!forceResizeDance && !pushBackendSize) || disabledRef.current) {
+          return;
+        }
         const sid = sessionIdRef.current;
         if (!sid) return;
         const cols = t.cols;
         const rows = t.rows;
+        if (!forceResizeDance) {
+          if (
+            cols === lastPushedColsRef.current &&
+            rows === lastPushedRowsRef.current
+          ) {
+            return;
+          }
+          lastPushedColsRef.current = cols;
+          lastPushedRowsRef.current = rows;
+          void api.session.resize(sid, cols, rows).catch(() => {
+            // session may have exited
+          });
+          return;
+        }
         // Force a full TUI redraw even when the final geometry
         // matches the backend's cached winsize. Same-size TIOCSWINSZ
         // calls are kernel no-ops on macOS/Linux, so we perturb rows
@@ -543,13 +561,13 @@ export const RunnerTerminal = forwardRef<
       if (wakeRefitScheduled) return;
       wakeRefitScheduled = true;
       scheduleWakeRaf(() => {
-        scheduleWakeRaf(() => refreshActiveTerminal());
+        scheduleWakeRaf(() => refreshActiveTerminal({ pushBackendSize: true }));
       });
       // macOS wake/focus can fire before WKWebView has settled its
       // final layout rect. Run one delayed renderer refresh for the
       // WebGL atlas without forcing a PTY SIGWINCH; ResizeObserver's
       // normal refit path still pushes real cols/rows changes.
-      scheduleWakeTimer(() => refreshActiveTerminal(), 250);
+      scheduleWakeTimer(() => refreshActiveTerminal({ pushBackendSize: true }), 250);
       scheduleWakeTimer(() => {
         wakeRefitScheduled = false;
       }, 300);
