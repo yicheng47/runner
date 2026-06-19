@@ -184,6 +184,7 @@ pub fn run() {
             let mcp_handle = Arc::new(mcp::McpHandle::new());
             let mcp_state = mcp::state::McpState {
                 db: Arc::clone(&pool),
+                sessions: Arc::clone(&sessions),
                 app_handle: app.handle().clone(),
             };
             if let Err(e) = mcp_handle.start(&app_data_dir.join("mcp.sock"), mcp_state) {

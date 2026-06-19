@@ -177,7 +177,9 @@ pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str
 ///   exposed here.)
 /// - **Bypass** — `--ask-for-approval never --sandbox
 ///   workspace-write`. Never ask.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionMode {
     Default,

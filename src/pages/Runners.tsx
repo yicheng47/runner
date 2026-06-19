@@ -48,6 +48,33 @@ export default function Runners() {
   }, [refresh]);
 
   useEffect(() => {
+    let unlistenRunner: (() => void) | null = null;
+    let unlistenSlot: (() => void) | null = null;
+    let cancelled = false;
+    void Promise.all([
+      listen("runner/changed", () => {
+        void refresh();
+      }),
+      listen("slot/changed", () => {
+        void refresh();
+      }),
+    ]).then(([fnRunner, fnSlot]) => {
+      if (cancelled) {
+        fnRunner();
+        fnSlot();
+        return;
+      }
+      unlistenRunner = fnRunner;
+      unlistenSlot = fnSlot;
+    });
+    return () => {
+      cancelled = true;
+      unlistenRunner?.();
+      unlistenSlot?.();
+    };
+  }, [refresh]);
+
+  useEffect(() => {
     const state = location.state as { createRunner?: boolean } | null;
     if (!state?.createRunner) return;
     setCreating(true);

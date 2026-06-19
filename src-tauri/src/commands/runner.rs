@@ -13,6 +13,7 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Row};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use ulid::Ulid as UlidGen;
@@ -23,7 +24,7 @@ use crate::{
     AppState,
 };
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct CreateRunnerInput {
     pub handle: String,
     pub display_name: String,
@@ -66,7 +67,7 @@ pub(crate) fn default_permission_mode() -> crate::router::runtime::PermissionMod
 // Users who want a different handle delete the runner and create a
 // new one. (Per-slot in-crew identity lives on `slots.slot_handle`
 // and is renameable.)
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct UpdateRunnerInput {
     pub display_name: Option<String>,
     pub runtime: Option<String>,

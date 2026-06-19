@@ -20,6 +20,7 @@
 
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use ulid::Ulid as UlidGen;
@@ -46,7 +47,7 @@ pub struct CrewMembership {
     pub added_at: Timestamp,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct UpdateSlotInput {
     pub slot_handle: Option<String>,
 }
@@ -440,7 +441,7 @@ pub async fn runner_crews_list(
     list_crews_for_runner(&conn, &runner_id)
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct CreateSlotInput {
     pub crew_id: String,
     pub runner_id: String,

@@ -7,6 +7,7 @@
 
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Row};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use ulid::Ulid as UlidGen;
@@ -17,7 +18,7 @@ use crate::{
     AppState,
 };
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct CreateCrewInput {
     pub name: String,
     pub purpose: Option<String>,
@@ -29,7 +30,7 @@ pub struct CreateCrewInput {
     pub system_prompt_addendum: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct UpdateCrewInput {
     pub name: Option<String>,
     pub purpose: Option<Option<String>>,
