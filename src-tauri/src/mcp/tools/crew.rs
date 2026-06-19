@@ -127,7 +127,7 @@ impl RunnerMcpHandler {
         self.state.app_handle.emit("crew/changed", ()).ok();
         self.state.app_handle.emit("slot/changed", ()).ok();
         Ok(CallToolResult::success(vec![Content::json(
-            &serde_json::json!({ "deleted": true, "id": id }),
+            serde_json::json!({ "deleted": true, "id": id }),
         )?]))
     }
 }

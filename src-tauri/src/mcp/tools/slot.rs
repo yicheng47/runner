@@ -104,7 +104,7 @@ impl RunnerMcpHandler {
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         self.state.app_handle.emit("slot/changed", ()).ok();
         Ok(CallToolResult::success(vec![Content::json(
-            &serde_json::json!({ "deleted": true, "slot_id": slot_id }),
+            serde_json::json!({ "deleted": true, "slot_id": slot_id }),
         )?]))
     }
 
