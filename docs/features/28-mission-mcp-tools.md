@@ -65,7 +65,7 @@ This makes Runner MCP useful for the main loop: "start the Build squad on this g
 ### Phase 4 — Smoke tests and docs
 
 - Add a short MCP smoke-test section for mission tools: start a mission, read status, read feed, stop/archive.
-- Verify the resilient `runner mcp` proxy still advertises the new mission tools when Runner.app is closed.
+- Verify the resilient `runner-mcp` proxy still advertises the new mission tools when Runner.app is closed.
 - Update any MCP feature docs that enumerate the full tool list.
 
 ## Verification

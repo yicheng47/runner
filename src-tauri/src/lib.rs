@@ -48,7 +48,7 @@ pub struct AppState {
     /// replay and pushes the launch prompt into the lead's stdin.
     pub routers: Arc<router::RouterRegistry>,
     /// MCP server lifecycle handle (impl 0013). Unix socket listener
-    /// that external agents connect to via the `runner mcp` bridge.
+    /// that external clients connect to via the `runner-mcp` bridge.
     pub mcp: Arc<mcp::McpHandle>,
 }
 
@@ -136,14 +136,15 @@ pub fn run() {
             // design (`exit-empty off` in the generated tmux
             // config); the prior portable-pty-era bulk UPDATE
             // would have killed that survival path.
-            // Drop the bundled `runner` CLI into $APPDATA/runner/bin/ so
-            // child PTYs find it on PATH (arch §5.3 Layer 2). Best-effort:
-            // a copy failure is logged and the app keeps running. Sessions
-            // spawned with no CLI on PATH will simply error out when they
-            // try to invoke `runner` — surfaced as a runtime stderr from
-            // the agent rather than a startup hang.
+            // Drop the bundled agent/MCP CLIs into $APPDATA/runner/bin/.
+            // Child PTYs find `runner` on PATH (arch §5.3 Layer 2), while
+            // Claude/Codex configs point at `runner-mcp`. Best-effort: a
+            // copy failure is logged and the app keeps running.
             if let Err(e) = cli_install::install_runner_cli(&app_data_dir) {
-                log::error!("failed to install bundled CLI: {e}");
+                log::error!("failed to install bundled agent CLI: {e}");
+            }
+            if let Err(e) = cli_install::install_mcp_cli(&app_data_dir) {
+                log::error!("failed to install bundled MCP CLI: {e}");
             }
 
             // Snapshot the user's login-shell env once at startup so

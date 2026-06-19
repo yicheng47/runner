@@ -17,13 +17,13 @@ The original spec called for HTTP on a TCP port. This has a practical problem: p
 **Solution**: Unix domain socket + stdio bridge binary.
 
 ```
-Claude Code ←stdio→ runner mcp (bundled CLI) ←Unix socket→ Runner.app
+Claude Code ←stdio→ runner-mcp ←Unix socket→ Runner.app
 ```
 
 - **Runner.app** listens on a Unix socket at `$APPDATA/runner/mcp.sock` — deterministic path, no port, no conflicts.
-- **`runner mcp`** subcommand (bundled CLI, already shipped in `cli/`) bridges stdio ↔ Unix socket. Claude Code spawns it as a subprocess.
+- **`runner-mcp`** sidecar bridges stdio ↔ Unix socket. Claude Code and Codex spawn it as a subprocess.
 - The app handles all MCP requests in-process with full `AppState` access, so Tauri event emission works.
-- User config is just `"command": "runner", "args": ["mcp"]` — no URL to copy.
+- User config is just `"command": "<app_data>/bin/runner-mcp"` — no URL or args to copy.
 
 ## Architecture
 
@@ -44,7 +44,9 @@ src-tauri/src/mcp/
     └── slot.rs     — 6 slot CRUD tools
 
 cli/src/
-└── mcp.rs          — `runner mcp` subcommand: stdio ↔ Unix socket bridge
+├── main.rs         — mission-only `runner` agent CLI
+├── mcp_main.rs     — `runner-mcp` binary entrypoint
+└── mcp.rs          — stdio ↔ Unix socket bridge
 ```
 
 **State flow**: MCP tool → `self.state.db.get()` → call existing pure function from `commands::*` → emit `*/changed` Tauri event via `self.state.app_handle` → return JSON result.
@@ -106,7 +108,7 @@ pub struct McpHandle { ... }
 
 ### `cli/src/mcp.rs` — stdio ↔ Unix socket bridge
 
-The `runner mcp` subcommand:
+The `runner-mcp` sidecar:
 1. Resolves the socket path: `$APPDATA/runner/mcp.sock` (same path the app writes to).
 2. Connects to the Unix socket via `UnixStream::connect`.
 3. Bridges stdin/stdout ↔ the socket stream (bidirectional byte copy).
@@ -114,26 +116,24 @@ The `runner mcp` subcommand:
 
 This is a thin pipe — no MCP parsing, no state. The rmcp protocol flows end-to-end through the bridge transparently.
 
-### `cli/src/main.rs` changes
+### `cli/src/mcp_main.rs` changes
 
-Add `Mcp` variant to the `Cmd` enum:
+Add a dedicated MCP binary entrypoint:
 ```rust
-/// Serve MCP over stdio, bridging to the running Runner app.
-Mcp,
-```
+mod mcp;
 
-Dispatch in `main()`:
-```rust
-Cmd::Mcp => mcp::run(),
+fn main() {
+    std::process::exit(mcp::run());
+}
 ```
 
 ### Verification (Phase 1)
 
 - App boots; log shows `mcp: listening on /path/to/mcp.sock`
-- `runner mcp` connects and completes the MCP handshake over stdio
-- `echo '<initialize JSON>' | runner-cli mcp` returns a valid handshake response
+- `runner-mcp` connects and completes the MCP handshake over stdio
+- `echo '<initialize JSON>' | runner-mcp` returns a valid handshake response
 - App quit removes the socket file
-- Adding `{"command": "runner", "args": ["mcp"]}` to `~/.claude.json` → `claude mcp list runner` shows empty tool list
+- Adding `{"command": "<app_data>/bin/runner-mcp"}` to `~/.claude.json` → `claude mcp list runner` shows empty tool list
 
 ## Phase 2 — CRUD tools
 
@@ -254,7 +254,7 @@ Phase 4 implements the approved design.
 Add `"mcp"` to the `Pane` union and `PANES` array. Implement to match the Phase 3 Pencil design.
 
 Pane contents:
-- **Copy buttons**: "Copy Claude Code config" and "Copy Codex config" — copy the snippet to clipboard. The snippet points at the bundled `runner` binary path with `["mcp"]` args.
+- **Copy buttons**: "Copy Claude Code config" and "Copy Codex config" — copy the snippet to clipboard. The snippet points at the bundled `runner-mcp` binary path with no args.
 - **Status indicator**: shows whether the socket listener is active.
 
 ### Verification
@@ -272,7 +272,7 @@ Pane contents:
 | `src-tauri/src/mcp/tools/crew.rs` | 5 crew tools |
 | `src-tauri/src/mcp/tools/runner.rs` | 6 runner tools |
 | `src-tauri/src/mcp/tools/slot.rs` | 6 slot tools |
-| `cli/src/mcp.rs` | `runner mcp` stdio ↔ Unix socket bridge |
+| `cli/src/mcp.rs` | `runner-mcp` stdio ↔ Unix socket bridge |
 
 ## Files to modify
 
@@ -286,7 +286,7 @@ Pane contents:
 | `src-tauri/src/commands/runner.rs` | Add `JsonSchema` derive to input types |
 | `src-tauri/src/commands/slot.rs` | Add `JsonSchema` derive to input types |
 | `cli/Cargo.toml` | Add tokio dep |
-| `cli/src/main.rs` | Add `Mcp` subcommand variant + dispatch |
+| `cli/src/mcp_main.rs` | Add dedicated `runner-mcp` binary entrypoint |
 | `src/components/SettingsModal.tsx` | New MCP pane |
 | `src/lib/settings.ts` | MCP storage keys + helpers |
 | Pages showing crews/runners/slots | Event listeners for live refresh |

@@ -4,15 +4,22 @@ version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
 description = "Bundled `runner` CLI agents use to append signals/messages to a mission's NDJSON event log."
+autobins = false
 
-# Source-side bin name is `runner-cli` so it doesn't collide with the
-# Tauri app crate, which also produces a `runner` binary in the same
-# workspace `target/` dir. `cli_install` renames it to `runner` when
-# copying into `$APPDATA/runner/bin/` so the on-disk file at the PATH
-# expectation matches what `SessionManager::spawn` looks for.
+# Source-side agent binary. `cli_install` renames this to `runner` when
+# copying into `$APPDATA/runner/bin/` so spawned agents get the compact
+# mission-communication command on PATH without colliding with the Tauri
+# app crate's `runner` binary in the shared workspace `target/` dir.
 [[bin]]
-name = "runner-cli"
+name = "runner-agent-cli"
 path = "src/main.rs"
+
+# Source-side MCP proxy binary. AI clients launch the installed
+# `$APPDATA/runner/bin/runner-mcp` directly; mission agents should not
+# see MCP as a `runner` subcommand.
+[[bin]]
+name = "runner-mcp"
+path = "src/mcp_main.rs"
 
 [dependencies]
 runner-core = { path = "../crates/runner-core" }

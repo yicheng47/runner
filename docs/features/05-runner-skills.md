@@ -255,7 +255,7 @@ on-disk files are the "survive any compaction" layer.
   layer.
 - **Auto-discovery of installed MCPs.** No "scan your `~/.claude.json`
   and import existing servers." User adds entries explicitly. (A
-  one-shot `runner mcp import` CLI subcommand is a clean follow-up.)
+  one-shot `runner-mcp import` CLI command is a clean follow-up.)
 - **Live-reload of agent_home mid-session.** Editing a skill
   doesn't propagate to a running agent — the next spawn picks it
   up. Hot-reload would need claude-code/codex cooperation we don't

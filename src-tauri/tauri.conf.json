@@ -38,7 +38,7 @@
     "active": true,
     "createUpdaterArtifacts": true,
     "targets": ["dmg", "app"],
-    "externalBin": ["binaries/runner-cli"],
+    "externalBin": ["binaries/runner-agent-cli", "binaries/runner-mcp"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

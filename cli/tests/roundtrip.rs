@@ -12,13 +12,14 @@ use std::process::Command;
 use runner_core::event_log::EventLog;
 use runner_core::model::EventKind;
 
-/// Locate the CLI binary. The source-side name is `runner-cli` (so it
-/// doesn't collide with the Tauri app's `runner` binary in the shared
-/// workspace target dir). At runtime, `cli_install` renames it to
-/// `runner` when copying into `$APPDATA/runner/bin/`. Integration tests
-/// invoke the source artifact directly via `CARGO_BIN_EXE_runner-cli`.
+/// Locate the agent CLI binary. The source-side name is
+/// `runner-agent-cli` (so it doesn't collide with the Tauri app's
+/// `runner` binary in the shared workspace target dir). At runtime,
+/// `cli_install` renames it to `runner` when copying into
+/// `$APPDATA/runner/bin/`. Integration tests invoke the source artifact
+/// directly via `CARGO_BIN_EXE_runner-agent-cli`.
 fn runner_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_runner-cli"))
+    PathBuf::from(env!("CARGO_BIN_EXE_runner-agent-cli"))
 }
 
 struct Fixture {

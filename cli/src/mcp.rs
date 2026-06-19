@@ -26,9 +26,9 @@ fn socket_path() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     let base = home.join("Library/Application Support");
     #[cfg(target_os = "linux")]
-    let base = std::env::var_os("XDG_CONFIG_HOME")
+    let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".config"));
+        .unwrap_or_else(|| home.join(".local/share"));
     Some(base.join(app_data_segment()).join("mcp.sock"))
 }
 
@@ -39,7 +39,7 @@ pub fn run() -> i32 {
     {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("runner mcp: failed to start runtime: {e}");
+            eprintln!("runner-mcp: failed to start runtime: {e}");
             return 1;
         }
     };
@@ -51,12 +51,12 @@ pub fn run() -> i32 {
             Ok(server) => match server.waiting().await {
                 Ok(_) => 0,
                 Err(e) => {
-                    eprintln!("runner mcp: stdio session ended with error: {e}");
+                    eprintln!("runner-mcp: stdio session ended with error: {e}");
                     1
                 }
             },
             Err(e) => {
-                eprintln!("runner mcp: failed to initialize stdio MCP server: {e}");
+                eprintln!("runner-mcp: failed to initialize stdio MCP server: {e}");
                 1
             }
         }

@@ -83,11 +83,11 @@ fn codex_path() -> Result<PathBuf> {
     Ok(home_dir()?.join(".codex").join("config.toml"))
 }
 
-fn runner_binary_path(state: &AppState) -> String {
+fn mcp_binary_path(state: &AppState) -> String {
     state
         .app_data_dir
         .join("bin")
-        .join("runner")
+        .join(crate::cli_install::MCP_DEST_BIN_NAME)
         .to_string_lossy()
         .to_string()
 }
@@ -109,14 +109,13 @@ fn environment_label() -> String {
 }
 
 fn args_match_current(args: &[String]) -> bool {
-    args == ["mcp"]
+    args.is_empty()
 }
 
 fn claude_code_entry(binary_path: &str) -> serde_json::Value {
     json!({
         "type": "stdio",
-        "command": binary_path,
-        "args": ["mcp"]
+        "command": binary_path
     })
 }
 
@@ -283,9 +282,6 @@ pub(crate) fn codex_write_at(path: &Path, enabled: bool, binary_path: &str) -> R
             .ok_or_else(|| Error::msg("mcp_servers is not a table"))?;
         let mut entry = toml_edit::Table::new();
         entry["command"] = toml_edit::value(binary_path);
-        let mut args = toml_edit::Array::new();
-        args.push("mcp");
-        entry["args"] = toml_edit::value(args);
         servers["runner"] = toml_edit::Item::Table(entry);
     } else if let Some(servers) = doc
         .get_mut("mcp_servers")
@@ -301,7 +297,7 @@ pub(crate) fn codex_write_at(path: &Path, enabled: bool, binary_path: &str) -> R
 
 #[tauri::command]
 pub async fn mcp_integration_status(state: State<'_, AppState>) -> Result<McpIntegrationStatus> {
-    let binary_path = runner_binary_path(&state);
+    let binary_path = mcp_binary_path(&state);
     let claude_code_path = claude_code_path()?;
     let codex_path = codex_path()?;
     let claude_code = claude_code_status_at(&claude_code_path, &binary_path)
@@ -323,7 +319,7 @@ pub async fn mcp_set_integration(
     client: String,
     enabled: bool,
 ) -> Result<()> {
-    let binary_path = runner_binary_path(&state);
+    let binary_path = mcp_binary_path(&state);
     match Client::parse(&client)? {
         Client::ClaudeCode => claude_code_write_at(&claude_code_path()?, enabled, &binary_path),
         Client::Codex => codex_write_at(&codex_path()?, enabled, &binary_path),
@@ -332,7 +328,7 @@ pub async fn mcp_set_integration(
 
 #[tauri::command]
 pub async fn mcp_config_snippet(state: State<'_, AppState>) -> Result<McpConfigSnippet> {
-    let runner_bin = runner_binary_path(&state);
+    let runner_bin = mcp_binary_path(&state);
 
     let claude_code = json!({
         "mcpServers": {
@@ -340,7 +336,7 @@ pub async fn mcp_config_snippet(state: State<'_, AppState>) -> Result<McpConfigS
         }
     });
 
-    let codex = format!("[mcp_servers.runner]\ncommand = \"{runner_bin}\"\nargs = [\"mcp\"]\n");
+    let codex = format!("[mcp_servers.runner]\ncommand = \"{runner_bin}\"\n");
 
     Ok(McpConfigSnippet {
         claude_code: serde_json::to_string_pretty(&claude_code).unwrap_or_default(),
@@ -369,20 +365,20 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(".claude.json");
 
-        claude_code_write_at(&path, true, "/test/runner").unwrap();
+        claude_code_write_at(&path, true, "/test/runner-mcp").unwrap();
 
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(value["mcpServers"]["runner"]["type"], json!("stdio"));
         assert_eq!(
             value["mcpServers"]["runner"]["command"],
-            json!("/test/runner")
+            json!("/test/runner-mcp")
         );
-        assert_eq!(value["mcpServers"]["runner"]["args"], json!(["mcp"]));
-        let status = claude_code_status_at(&path, "/test/runner").unwrap();
+        assert!(value["mcpServers"]["runner"].get("args").is_none());
+        let status = claude_code_status_at(&path, "/test/runner-mcp").unwrap();
         assert!(status.registered);
         assert!(status.matches_current);
-        let other_status = claude_code_status_at(&path, "/other/runner").unwrap();
+        let other_status = claude_code_status_at(&path, "/other/runner-mcp").unwrap();
         assert!(other_status.registered);
         assert!(!other_status.matches_current);
     }
@@ -397,12 +393,12 @@ mod tests {
         )
         .unwrap();
 
-        claude_code_write_at(&path, true, "/test/runner").unwrap();
+        claude_code_write_at(&path, true, "/test/runner-mcp").unwrap();
         let after_enable: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
             after_enable["mcpServers"]["runner"]["command"],
-            json!("/test/runner")
+            json!("/test/runner-mcp")
         );
         assert_eq!(
             after_enable["mcpServers"]["github"]["command"],
@@ -410,7 +406,7 @@ mod tests {
         );
         assert_eq!(after_enable["theme"], json!("dark"));
 
-        claude_code_write_at(&path, false, "/test/runner").unwrap();
+        claude_code_write_at(&path, false, "/test/runner-mcp").unwrap();
         let after_disable: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(after_disable["mcpServers"].get("runner").is_none());
@@ -427,7 +423,7 @@ mod tests {
         let path = dir.path().join(".claude.json");
         std::fs::write(&path, "{ not valid json").unwrap();
 
-        let err = claude_code_write_at(&path, true, "/test/runner").unwrap_err();
+        let err = claude_code_write_at(&path, true, "/test/runner-mcp").unwrap_err();
 
         assert!(err.to_string().contains("parse"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not valid json");
@@ -437,7 +433,11 @@ mod tests {
     fn codex_status_false_when_file_missing() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(".codex").join("config.toml");
-        assert!(!codex_status_at(&path, "/test/runner").unwrap().registered);
+        assert!(
+            !codex_status_at(&path, "/test/runner-mcp")
+                .unwrap()
+                .registered
+        );
     }
 
     #[test]
@@ -445,17 +445,18 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(".codex").join("config.toml");
 
-        codex_write_at(&path, true, "/test/runner").unwrap();
+        codex_write_at(&path, true, "/test/runner-mcp").unwrap();
 
         let doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(
             doc["mcp_servers"]["runner"]["command"].as_str(),
-            Some("/test/runner")
+            Some("/test/runner-mcp")
         );
-        let status = codex_status_at(&path, "/test/runner").unwrap();
+        assert!(doc["mcp_servers"]["runner"].get("args").is_none());
+        let status = codex_status_at(&path, "/test/runner-mcp").unwrap();
         assert!(status.registered);
         assert!(status.matches_current);
-        let other_status = codex_status_at(&path, "/other/runner").unwrap();
+        let other_status = codex_status_at(&path, "/other/runner-mcp").unwrap();
         assert!(other_status.registered);
         assert!(!other_status.matches_current);
     }
@@ -470,7 +471,7 @@ mod tests {
         )
         .unwrap();
 
-        codex_write_at(&path, true, "/test/runner").unwrap();
+        codex_write_at(&path, true, "/test/runner-mcp").unwrap();
         let after: toml_edit::DocumentMut =
             std::fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(after["model"].as_str(), Some("gpt-5"));
@@ -480,10 +481,10 @@ mod tests {
         );
         assert_eq!(
             after["mcp_servers"]["runner"]["command"].as_str(),
-            Some("/test/runner")
+            Some("/test/runner-mcp")
         );
 
-        codex_write_at(&path, false, "/test/runner").unwrap();
+        codex_write_at(&path, false, "/test/runner-mcp").unwrap();
         let after_disable: toml_edit::DocumentMut =
             std::fs::read_to_string(&path).unwrap().parse().unwrap();
         assert!(after_disable["mcp_servers"].get("runner").is_none());
@@ -500,7 +501,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[unclosed-table").unwrap();
 
-        let err = codex_write_at(&path, true, "/test/runner").unwrap_err();
+        let err = codex_write_at(&path, true, "/test/runner-mcp").unwrap_err();
 
         assert!(err.to_string().contains("parse"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[unclosed-table");
@@ -512,7 +513,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "mcp_servers = \"bad\"\n").unwrap();
 
-        let err = codex_write_at(&path, true, "/test/runner").unwrap_err();
+        let err = codex_write_at(&path, true, "/test/runner-mcp").unwrap_err();
 
         assert!(err.to_string().contains("mcp_servers is not a table"));
         assert_eq!(
