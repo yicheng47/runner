@@ -59,7 +59,19 @@ export default function CrewEditor() {
       setNameDraft(c.name);
       setLoaded(true);
     } catch (e) {
-      setError(String(e));
+      const message = String(e);
+      setError(message);
+      if (message.toLowerCase().includes("not found")) {
+        setCrew(null);
+        setSlots([]);
+        setEditing(null);
+        setNameDraft("");
+        setGoalEditing(false);
+        setGoalDraft("");
+        setAddendumEditing(false);
+        setAddendumDraft("");
+        setLoaded(true);
+      }
     } finally {
       setLoading(false);
     }

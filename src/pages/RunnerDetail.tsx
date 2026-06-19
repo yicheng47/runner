@@ -47,7 +47,15 @@ export default function RunnerDetail() {
       setActivity(act);
       setCrews(crewList);
     } catch (e) {
-      setError(String(e));
+      const message = String(e);
+      setError(message);
+      if (message.toLowerCase().includes("not found")) {
+        setRunner(null);
+        setActivity(null);
+        setCrews([]);
+        setEditing(false);
+        setOpeningChat(false);
+      }
     } finally {
       setLoading(false);
     }
