@@ -893,6 +893,7 @@ export default function MissionWorkspace() {
             <TabButton
               active={activeTab === "feed"}
               onClick={() => setActiveTab("feed")}
+              shortcut="⌘1"
             >
               feed
             </TabButton>
@@ -903,13 +904,14 @@ export default function MissionWorkspace() {
               ? openTabs
                   .map((tabId) => sessions.find((s) => s.id === tabId))
                   .filter((s): s is SessionRow => s !== undefined)
-                  .map((s) => (
+                  .map((s, index) => (
                     <PtyTabButton
                       key={s.id}
                       handle={s.handle}
                       active={activeTab === s.id}
                       onClick={() => setActiveTab(s.id)}
                       onClose={() => onCloseTab(s.id)}
+                      shortcut={index < 8 ? `⌘${index + 2}` : undefined}
                     />
                   ))
               : null}
@@ -1315,10 +1317,12 @@ function TabButton({
   active,
   onClick,
   children,
+  shortcut,
 }: {
   active: boolean;
   onClick: () => void;
   children: React.ReactNode;
+  shortcut?: string;
 }) {
   return (
     <button
@@ -1331,6 +1335,11 @@ function TabButton({
       }`}
     >
       {children}
+      {shortcut ? (
+        <span className="ml-2 font-mono text-[11px] font-normal text-fg-3">
+          {shortcut}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -1344,11 +1353,13 @@ function PtyTabButton({
   active,
   onClick,
   onClose,
+  shortcut,
 }: {
   handle: string;
   active: boolean;
   onClick: () => void;
   onClose: () => void;
+  shortcut?: string;
 }) {
   return (
     <button
@@ -1363,6 +1374,11 @@ function PtyTabButton({
     >
       <Terminal aria-hidden className="h-3 w-3 shrink-0" />
       <span className="max-w-[140px] truncate font-mono">@{handle}</span>
+      {shortcut ? (
+        <span className="font-mono text-[11px] font-normal text-fg-3">
+          {shortcut}
+        </span>
+      ) : null}
       <span
         role="button"
         aria-label={`Close @${handle} tab`}
