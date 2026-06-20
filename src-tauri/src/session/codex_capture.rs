@@ -23,7 +23,7 @@
 
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -34,15 +34,6 @@ use crate::db::DbPool;
 
 const CAPTURE_TIMEOUT_SECS: u64 = 30;
 const POLL_INTERVAL_MS: u64 = 400;
-/// Slack between the row's `started_at` and the rollout's
-/// `payload.timestamp`. Codex stamps `payload.timestamp` slightly
-/// AFTER our spawn returns, so under normal conditions the rollout
-/// is always >= our `started_at`. We allow a small negative window
-/// (1s) to absorb minor clock skew between the spawn-time
-/// `Utc::now()` call and codex's. A wider window risks two chats
-/// started in the same cwd within seconds of each other capturing
-/// each other's id — see `claimed_rollouts` below.
-const TIMESTAMP_SLACK_MS: i64 = 1000;
 
 /// Process-shared set of rollout paths that some watcher has already
 /// captured. Two concurrent watchers polling the same date dir might
@@ -103,6 +94,7 @@ fn run(session_id: String, spawn_cwd: String, started_at: DateTime<Utc>, pool: A
                 Ok(e) => e,
                 Err(_) => continue,
             };
+            let mut matches: Vec<(DateTime<Utc>, PathBuf, String)> = Vec::new();
             for entry in entries.flatten() {
                 let path = entry.path();
                 if done.contains(&path) {
@@ -121,31 +113,8 @@ fn run(session_id: String, spawn_cwd: String, started_at: DateTime<Utc>, pool: A
                     continue;
                 }
                 match parse_session_meta(&path, &spawn_cwd, started_at) {
-                    ParseVerdict::Match(id) => {
-                        // Race guard: another watcher may have
-                        // already captured this rollout (sibling chat
-                        // in the same cwd). The first to insert into
-                        // the process-shared set wins — losers fall
-                        // through to the next file.
-                        let claimed = claimed_rollouts().lock().unwrap().insert(path.clone());
-                        if !claimed {
-                            done.insert(path);
-                            continue;
-                        }
-                        if let Ok(conn) = pool.get() {
-                            // Guard with `agent_session_key IS NULL`
-                            // so we don't clobber a key that a
-                            // concurrent path (resume that already
-                            // had a key) wrote first.
-                            let _ = conn.execute(
-                                "UPDATE sessions
-                                    SET agent_session_key = ?2
-                                  WHERE id = ?1
-                                    AND agent_session_key IS NULL",
-                                params![session_id, id],
-                            );
-                        }
-                        return;
+                    ParseVerdict::Match(meta) => {
+                        matches.push((meta.timestamp, path, meta.id));
                     }
                     ParseVerdict::NotOurs => {
                         // Definitively not this spawn's rollout
@@ -162,6 +131,31 @@ fn run(session_id: String, spawn_cwd: String, started_at: DateTime<Utc>, pool: A
                     }
                 }
             }
+            matches.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+            for (_, path, id) in matches {
+                // Race guard: another watcher may have already
+                // captured this rollout (sibling chat in the same cwd).
+                // The first to insert into the process-shared set wins;
+                // losers fall through to the next earliest candidate.
+                let claimed = claimed_rollouts().lock().unwrap().insert(path.clone());
+                if !claimed {
+                    done.insert(path);
+                    continue;
+                }
+                if let Ok(conn) = pool.get() {
+                    // Guard with `agent_session_key IS NULL` so we
+                    // don't clobber a key that a concurrent path
+                    // (resume that already had a key) wrote first.
+                    let _ = conn.execute(
+                        "UPDATE sessions
+                            SET agent_session_key = ?2
+                          WHERE id = ?1
+                            AND agent_session_key IS NULL",
+                        params![session_id, id],
+                    );
+                }
+                return;
+            }
         }
         if Instant::now() > deadline {
             return;
@@ -170,11 +164,16 @@ fn run(session_id: String, spawn_cwd: String, started_at: DateTime<Utc>, pool: A
     }
 }
 
+struct MatchedSessionMeta {
+    id: String,
+    timestamp: DateTime<Utc>,
+}
+
 /// Outcome of inspecting one rollout file.
 enum ParseVerdict {
     /// First line is a complete `session_meta` envelope whose cwd
     /// and timestamp match our spawn — capture this id.
-    Match(String),
+    Match(MatchedSessionMeta),
     /// First line parsed cleanly as JSON but is from a different
     /// codex run (cwd/timestamp mismatch, missing fields, or the
     /// envelope isn't `session_meta`). Won't ever match — skip on
@@ -186,11 +185,7 @@ enum ParseVerdict {
     NotReady,
 }
 
-fn parse_session_meta(
-    path: &PathBuf,
-    want_cwd: &str,
-    started_after: DateTime<Utc>,
-) -> ParseVerdict {
+fn parse_session_meta(path: &Path, want_cwd: &str, started_after: DateTime<Utc>) -> ParseVerdict {
     // File opens often race the writer. Treat open errors as
     // transient so a future poll can retry.
     let file = match std::fs::File::open(path) {
@@ -234,12 +229,81 @@ fn parse_session_meta(
     let Ok(ts) = ts_str.parse::<DateTime<Utc>>() else {
         return ParseVerdict::NotOurs;
     };
-    if ts + chrono::Duration::milliseconds(TIMESTAMP_SLACK_MS) < started_after {
+    if ts < started_after {
         // Older rollout sitting in the same dir.
         return ParseVerdict::NotOurs;
     }
     match payload.get("id").and_then(|v| v.as_str()) {
-        Some(id) => ParseVerdict::Match(id.to_string()),
+        Some(id) => ParseVerdict::Match(MatchedSessionMeta {
+            id: id.to_string(),
+            timestamp: ts,
+        }),
         None => ParseVerdict::NotOurs,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_meta(
+        dir: &tempfile::TempDir,
+        name: &str,
+        id: &str,
+        cwd: &str,
+        timestamp: DateTime<Utc>,
+    ) -> PathBuf {
+        let path = dir.path().join(name);
+        let mut file = std::fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "session_meta",
+                "payload": {
+                    "id": id,
+                    "cwd": cwd,
+                    "timestamp": timestamp.to_rfc3339(),
+                }
+            })
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn parse_session_meta_rejects_rollout_before_spawn_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let started_at = "2026-06-20T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let older = started_at - chrono::Duration::milliseconds(1);
+        let path = write_meta(
+            &dir,
+            "rollout-before.jsonl",
+            "019ee58f-fb81-7d53-ab71-06b471bb4247",
+            "/repo",
+            older,
+        );
+
+        assert!(matches!(
+            parse_session_meta(&path, "/repo", started_at),
+            ParseVerdict::NotOurs
+        ));
+    }
+
+    #[test]
+    fn parse_session_meta_returns_timestamp_for_matching_rollout() {
+        let dir = tempfile::tempdir().unwrap();
+        let started_at = "2026-06-20T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let id = "019ee58f-fb81-7d53-ab71-06b471bb4247";
+        let path = write_meta(&dir, "rollout-match.jsonl", id, "/repo", started_at);
+
+        match parse_session_meta(&path, "/repo", started_at) {
+            ParseVerdict::Match(meta) => {
+                assert_eq!(meta.id, id);
+                assert_eq!(meta.timestamp, started_at);
+            }
+            _ => panic!("expected matching session_meta"),
+        }
     }
 }
