@@ -65,7 +65,7 @@ This makes Runner MCP useful for the main loop: "start the Build squad on this g
 ### Phase 4 — Smoke tests and docs
 
 - Add a short MCP smoke-test section for mission tools: start a mission, read status, read feed, stop/archive.
-- Verify the resilient `runner-mcp` proxy still advertises the new mission tools when Runner.app is closed.
+- Verify `runner-mcp` reports the same connection error for tool listing and tool calls when Runner.app is closed.
 - Update any MCP feature docs that enumerate the full tool list.
 
 ## MCP smoke flow
@@ -78,7 +78,7 @@ With Runner.app open and a launchable crew ID available:
 4. `mission_stop` with `{ "id": "<mission-id>" }` kills live mission sessions while leaving the mission row running and visible as paused.
 5. `mission_archive` with `{ "id": "<mission-id>" }` appends `mission_stopped`, marks the mission completed/archived, and removes it from active mission lists.
 
-With Runner.app closed, `runner-mcp` should still list all mission tools through its fallback registry, while mission tool calls return the existing retryable "Open Runner.app" MCP error.
+With Runner.app closed, `runner-mcp` should return the existing retryable "Open Runner.app" MCP error for both tool listing and tool calls.
 
 ## Verification
 
@@ -88,6 +88,6 @@ With Runner.app closed, `runner-mcp` should still list all mission tools through
 - [ ] `mission_start` from MCP creates a mission, spawns sessions, and the open UI updates without refresh.
 - [ ] `mission_stop` from MCP stops the mission and app UI reflects the paused/stopped state.
 - [ ] `mission_archive` from MCP removes the mission from active lists and does not leave live sessions behind.
-- [ ] When Runner.app is closed, the resilient MCP proxy still lists the mission tools and mission tool calls return a retryable "open Runner" MCP error.
+- [ ] When Runner.app is closed, MCP tool listing and mission tool calls return a retryable "open Runner" MCP error.
 - [ ] `cargo test -p runner commands::mcp` and mission MCP tests pass.
 - [ ] `pnpm exec tsc --noEmit` and `pnpm run lint` pass if frontend docs/settings copy changes.
