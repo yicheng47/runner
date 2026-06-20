@@ -1232,7 +1232,7 @@ function SlotPtyPane({
           sessionId={session.id}
           runnerRuntime={session.runtime}
           onError={onError}
-          active={active && !dead && !resuming && !starting}
+          active={active && !resuming && !starting}
           disabled={dead || resuming || starting}
         />
       </div>

@@ -55,6 +55,8 @@ interface ExitEvent {
   success: boolean;
 }
 
+const MAX_PENDING_LIVE_EVENTS = 4096;
+
 interface RunnerTerminalProps {
   sessionId: string;
   /** Runtime kind of the runner driving this session (e.g.
@@ -69,10 +71,9 @@ interface RunnerTerminalProps {
   onExit?: (ev: ExitEvent) => void;
   /** Surface terminal-side errors (stdin push failures, resize errors). */
   onError?: (msg: string) => void;
-  /** True while this terminal's tab is the foremost one in the workspace.
-   *  Every terminal stays mounted (z-stacked) so each PTY's xterm
-   *  scrollback survives tab-switching, but only the active one needs to
-   *  refresh + claim focus when the user comes back to it. */
+  /** True while this terminal's pane is visible/measurable. A visible
+   *  terminal may still be disabled, e.g. a stopped mission slot that
+   *  should replay dimmed scrollback without accepting input. */
   active?: boolean;
   /** Stop forwarding keystrokes / resize events to the backend.
    *  Set by the parent when the bound session has exited so stray
@@ -186,6 +187,8 @@ export const RunnerTerminal = forwardRef<
   const tryDrainReplayRef = useRef<(() => boolean) | null>(null);
   const replayFlushPendingRef = useRef(false);
   const replayAfterFlushRef = useRef<Array<() => void>>([]);
+  const pendingLiveOverflowRef = useRef(false);
+  const snapshotRefreshPendingRef = useRef(false);
   // A just-replayed snapshot already paints the current TUI frame,
   // including SGR-dependent background cells. The activation resize
   // dance should still wake the backend PTY, but must not locally
@@ -242,7 +245,7 @@ export const RunnerTerminal = forwardRef<
         fit.fit();
         tryDrainReplayRef.current?.();
         if (replayFlushPendingRef.current) {
-          if (focus) t.focus();
+          if (focus && !disabledRef.current) t.focus();
           replayAfterFlushRef.current.push(() => {
             window.requestAnimationFrame(() => {
               refreshActiveTerminal({
@@ -256,7 +259,7 @@ export const RunnerTerminal = forwardRef<
         }
         webglRef.current?.clearTextureAtlas();
         t.refresh(0, t.rows - 1);
-        if (focus) t.focus();
+        if (focus && !disabledRef.current) t.focus();
         if ((!forceResizeDance && !pushBackendSize) || disabledRef.current) {
           return;
         }
@@ -712,6 +715,8 @@ export const RunnerTerminal = forwardRef<
     replayDoneRef.current = false;
     replayFlushPendingRef.current = false;
     replayAfterFlushRef.current = [];
+    pendingLiveOverflowRef.current = false;
+    snapshotRefreshPendingRef.current = false;
     replayJustDrainedRef.current = false;
 
     const writeOutput = (ev: OutputEvent) => {
@@ -734,6 +739,40 @@ export const RunnerTerminal = forwardRef<
       const rect = node.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return false;
       if (pendingSnapshotRef.current === null) return false;
+      if (pendingLiveOverflowRef.current) {
+        if (!snapshotRefreshPendingRef.current) {
+          snapshotRefreshPendingRef.current = true;
+          const refreshSessionId = sessionIdRef.current;
+          let refreshed = false;
+          void api.session
+            .outputSnapshot(refreshSessionId)
+            .then((snapshot) => {
+              if (cancelled || sessionIdRef.current !== refreshSessionId) {
+                return;
+              }
+              const maxSnapshotSeq = snapshot.reduce(
+                (max, ev) => Math.max(max, ev.seq),
+                0,
+              );
+              pendingSnapshotRef.current = snapshot;
+              pendingLiveRef.current = pendingLiveRef.current.filter(
+                (ev) => ev.seq > maxSnapshotSeq,
+              );
+              pendingLiveOverflowRef.current = false;
+              refreshed = true;
+            })
+            .catch((e) => {
+              if (!cancelled) onErrorRef.current?.(String(e));
+            })
+            .finally(() => {
+              if (sessionIdRef.current === refreshSessionId) {
+                snapshotRefreshPendingRef.current = false;
+                if (refreshed) tryDrainReplayRef.current?.();
+              }
+            });
+        }
+        return false;
+      }
 
       try {
         fit.fit();
@@ -789,6 +828,13 @@ export const RunnerTerminal = forwardRef<
           if (event.payload.session_id !== sessionId) return;
           if (!replayDoneRef.current) {
             pendingLiveRef.current.push(event.payload);
+            if (pendingLiveRef.current.length > MAX_PENDING_LIVE_EVENTS) {
+              pendingLiveRef.current.splice(
+                0,
+                pendingLiveRef.current.length - MAX_PENDING_LIVE_EVENTS,
+              );
+              pendingLiveOverflowRef.current = true;
+            }
             // The snapshot may have already arrived and be waiting
             // on activation; nudge the drain in case the live event
             // arrived after the user just brought the pane forward.
