@@ -128,8 +128,15 @@ export const api = {
         crewId ? { crewId } : {},
       ),
     get: (id: string) => invoke<Mission>("mission_get", { id }),
-    start: (input: StartMissionInput) =>
-      invoke<StartMissionOutput>("mission_start", { input }),
+    start: (
+      input: StartMissionInput,
+      initialSize?: { cols: number; rows: number } | null,
+    ) =>
+      invoke<StartMissionOutput>("mission_start", {
+        input,
+        initialCols: initialSize?.cols ?? null,
+        initialRows: initialSize?.rows ?? null,
+      }),
     /** Re-mount router/bus on workspace mount; idempotent. After app restart
      *  the in-memory router/bus need to be rebuilt from the persisted log
      *  before stdin pushes can land on resumed slot PTYs. */

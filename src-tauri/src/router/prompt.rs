@@ -58,10 +58,7 @@ pub struct LaunchPromptInput<'a> {
 /// is always present).
 ///
 /// Delivered as the trailing positional `[PROMPT]` argv at spawn time
-/// when the runtime accepts it (see `router::runtime::first_turn_argv`);
-/// callers that can't use argv inject the same body via stdin paste.
-/// Source of truth lives here so both delivery paths use byte-identical
-/// content.
+/// when the runtime accepts it (see `router::runtime::first_turn_argv`).
 pub fn compose_worker_first_turn(
     system_prompt: Option<&str>,
     crew_addendum: Option<&str>,
