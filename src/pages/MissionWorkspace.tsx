@@ -59,11 +59,7 @@ import {
   StopButton,
 } from "../components/ui/SessionControl";
 import { chunkIndicatesTuiReady, isFreshSpawn } from "../lib/sessionLifecycle";
-import {
-  readTerminalFontFamily,
-  readTerminalFontSize,
-  resolveTerminalFontStack,
-} from "../lib/settings";
+import { terminalGridFromElement } from "../lib/terminalSizing";
 import { useDelayedFlag } from "../lib/useDelayedFlag";
 import { useResizableWidth } from "../hooks/useResizableWidth";
 import { useTerminalBg } from "../lib/useTerminalBg";
@@ -77,13 +73,11 @@ const RAIL_STORAGE_WIDTH = "runner.mission.rail.width";
 const RAIL_MIN = 200;
 const RAIL_MAX = 480;
 const RAIL_DEFAULT = 288;
-const SLOT_TERMINAL_FRAME_PADDING_PX = 12; // matches SlotPtyPane's p-3 wrapper
 
 /// Compute cols/rows for the would-be terminal area from the Pane
-/// container's bounding rect + a one-shot DOM cell-size measurement
-/// using the user's current terminal font settings. Returns null if
-/// the container has no rect (workspace not mounted yet) or the
-/// measurement span fails.
+/// container's bounding rect + xterm/FitAddon using the user's current
+/// terminal font settings. Returns null if the container has no rect
+/// (workspace not mounted yet) or xterm cannot measure.
 ///
 /// Used by `resumeMission`'s fallback chain when no individual slot
 /// terminal is measurable — e.g. the user clicked Resume from the
@@ -95,40 +89,8 @@ const SLOT_TERMINAL_FRAME_PADDING_PX = 12; // matches SlotPtyPane's p-3 wrapper
 /// there if needed. "Approximately correct" beats "spawn at 80×24."
 function workspaceDimsFromContainer(
   container: HTMLElement,
-  framePaddingPx = SLOT_TERMINAL_FRAME_PADDING_PX,
 ): { cols: number; rows: number } | null {
-  const rect = container.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return null;
-  const width = Math.max(0, rect.width - framePaddingPx * 2);
-  const height = Math.max(0, rect.height - framePaddingPx * 2);
-  if (width <= 0 || height <= 0) return null;
-  const fontFamily = resolveTerminalFontStack(readTerminalFontFamily());
-  const fontSize = readTerminalFontSize();
-  const span = document.createElement("span");
-  span.style.position = "absolute";
-  span.style.visibility = "hidden";
-  span.style.top = "-9999px";
-  span.style.fontFamily = fontFamily;
-  span.style.fontSize = `${fontSize}px`;
-  span.style.lineHeight = "1";
-  span.style.whiteSpace = "pre";
-  // 100 chars to average out subpixel widths.
-  span.textContent = "M".repeat(100);
-  document.body.appendChild(span);
-  let cellWidth: number;
-  let cellHeight: number;
-  try {
-    const spanRect = span.getBoundingClientRect();
-    if (spanRect.width <= 0 || spanRect.height <= 0) return null;
-    cellWidth = spanRect.width / 100;
-    cellHeight = spanRect.height;
-  } finally {
-    document.body.removeChild(span);
-  }
-  return {
-    cols: Math.max(1, Math.floor(width / cellWidth)),
-    rows: Math.max(1, Math.floor(height / cellHeight)),
-  };
+  return terminalGridFromElement(container);
 }
 
 export default function MissionWorkspace() {
@@ -922,10 +884,10 @@ export default function MissionWorkspace() {
             className="relative flex flex-1 min-h-0 flex-col"
           >
             {/* All panes stay mounted so xterm's in-memory scrollback
-                survives tab switches. Inactive panes stay invisible
-                instead of display:none so hidden PTYs still have real
-                dimensions; RunnerTerminal can fit/replay Codex's first
-                frame before the user opens the tab. */}
+                survives tab switches. Inactive panes use display:none:
+                that keeps the React/xterm instances alive while making
+                the visible session unambiguous. The terminal activation
+                effect refits + replays after the pane is shown. */}
             <Pane active={activeTab === "feed"}>
               <EventFeed
                 missionId={mission.id}
@@ -1296,16 +1258,14 @@ function Pane({
   active: boolean;
   children: React.ReactNode;
 }) {
-  // Pane wraps both the feed and the terminal slots. Inactive panes
-  // stay in layout (`visibility:hidden`, not `display:none`) so xterm
-  // can measure, fit, and replay buffered TUI bytes while hidden.
-  // Background is `bg-panel` so the feed reads as a tinted "page" with
-  // the white event cards (`bg-bg`) lifting off it.
+  // Pane wraps both the feed and the terminal slots. Background is
+  // `bg-panel` so the feed reads as a tinted "page" with the white
+  // event cards (`bg-bg`) lifting off it. Terminal slots cover this bg
+  // with their own terminal palette wrapper.
   return (
     <div
-      aria-hidden={!active}
-      className={`absolute inset-0 flex flex-col bg-panel ${
-        active ? "visible z-10" : "invisible z-0 pointer-events-none"
+      className={`absolute inset-0 flex-col bg-panel ${
+        active ? "flex" : "hidden"
       }`}
     >
       {children}

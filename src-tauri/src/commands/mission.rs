@@ -492,6 +492,15 @@ pub(crate) async fn mission_start_impl(
     app: &tauri::AppHandle,
     input: StartMissionInput,
 ) -> Result<StartMissionOutput> {
+    mission_start_impl_with_size(state, app, input, None).await
+}
+
+async fn mission_start_impl_with_size(
+    state: &AppState,
+    app: &tauri::AppHandle,
+    input: StartMissionInput,
+    initial_size: Option<(u16, u16)>,
+) -> Result<StartMissionOutput> {
     use crate::event_bus::{BusEmitter, TauriBusEvents};
     use crate::router::{
         open_log_for_mission, CompositeBusEmitter, Router, RouterSubscriber, StdinInjector,
@@ -678,6 +687,7 @@ pub(crate) async fn mission_start_impl(
             events_log_path.clone(),
             state.db.clone(),
             first_turn,
+            initial_size,
         );
         match register_res {
             Ok(pending) => {
@@ -856,8 +866,13 @@ pub async fn mission_start(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     input: StartMissionInput,
+    initial_cols: Option<u16>,
+    initial_rows: Option<u16>,
 ) -> Result<StartMissionOutput> {
-    mission_start_impl(&state, &app, input).await
+    let initial_size = initial_cols
+        .zip(initial_rows)
+        .filter(|(cols, rows)| *cols > 0 && *rows > 0);
+    mission_start_impl_with_size(&state, &app, input, initial_size).await
 }
 
 /// Re-attach a mission's router + bus after app restart. The mission row
@@ -1377,6 +1392,7 @@ pub(crate) async fn mission_reset_impl(
             events_log_path.clone(),
             state.db.clone(),
             first_turn,
+            None,
         );
         match register_res {
             Ok(pending) => {

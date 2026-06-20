@@ -164,13 +164,16 @@ export const RunnerTerminal = forwardRef<
   // lengthen the redraw window the user perceives.
   const lastPushedColsRef = useRef(0);
   const lastPushedRowsRef = useRef(0);
-  // Snapshot replay is deferred until the pane is measurable. Mission
-  // workspaces mount every slot's RunnerTerminal at once while the
-  // feed tab is active; inactive panes stay invisible but measurable
-  // so xterm can fit and build terminal state before the user opens
-  // that tab. If a pane ever has a 0×0 rect, keep the bytes cached
-  // until activation/resize gives us real cols. See
-  // #mission-tab-return-drift.
+  // Snapshot replay is deferred until the pane is both active and
+  // measurable. Mission workspaces mount every slot's RunnerTerminal
+  // at once with `activeTab="feed"` by default — every slot pane is
+  // `display:none`, the mount-effect's `fit.fit()` is skipped (zero-
+  // size rect), and xterm sits at the constructor default 80×24.
+  // Replaying snapshot bytes into that 80-col grid bakes wrong cell
+  // positions into the buffer, and a later `fit.fit()` on tab focus
+  // can't move them. So we cache the fetched bytes here and drain
+  // them only once the pane has come to the front and fit at real
+  // cols. See #mission-tab-return-drift.
   const pendingSnapshotRef = useRef<OutputEvent[] | null>(null);
   const pendingLiveRef = useRef<OutputEvent[]>([]);
   const lastWrittenSeqRef = useRef(0);
@@ -180,7 +183,15 @@ export const RunnerTerminal = forwardRef<
   // without lifting the whole closure into module scope. Cleared on
   // sessionId change so a stale closure can't keep writing into the
   // previous session's xterm grid.
-  const tryDrainReplayRef = useRef<(() => void) | null>(null);
+  const tryDrainReplayRef = useRef<(() => boolean) | null>(null);
+  const replayFlushPendingRef = useRef(false);
+  const replayAfterFlushRef = useRef<Array<() => void>>([]);
+  // A just-replayed snapshot already paints the current TUI frame,
+  // including SGR-dependent background cells. The activation resize
+  // dance should still wake the backend PTY, but must not locally
+  // clear those cells first or Codex can repaint text without the
+  // gray input background.
+  const replayJustDrainedRef = useRef(false);
 
   // Keep the latest sessionId visible to the data/resize callbacks without
   // re-creating the terminal on prop change. The session listener below
@@ -230,6 +241,19 @@ export const RunnerTerminal = forwardRef<
       try {
         fit.fit();
         tryDrainReplayRef.current?.();
+        if (replayFlushPendingRef.current) {
+          if (focus) t.focus();
+          replayAfterFlushRef.current.push(() => {
+            window.requestAnimationFrame(() => {
+              refreshActiveTerminal({
+                focus,
+                forceResizeDance,
+                pushBackendSize,
+              });
+            });
+          });
+          return;
+        }
         webglRef.current?.clearTextureAtlas();
         t.refresh(0, t.rows - 1);
         if (focus) t.focus();
@@ -259,9 +283,11 @@ export const RunnerTerminal = forwardRef<
         // calls are kernel no-ops on macOS/Linux, so we perturb rows
         // only: width stays constant, avoiding hard-wrapped narrow
         // lines in scrollback, while both ioctls still emit SIGWINCH.
-        if (runtimeClearsOnResize(runnerRuntimeRef.current)) {
+        const skipLocalClear = replayJustDrainedRef.current;
+        if (runtimeClearsOnResize(runnerRuntimeRef.current) && !skipLocalClear) {
           t.write("\x1b[2J\x1b[H");
         }
+        replayJustDrainedRef.current = false;
         lastPushedColsRef.current = cols;
         lastPushedRowsRef.current = rows;
         const nudgedRows = rows > 1 ? rows - 1 : rows + 1;
@@ -501,11 +527,13 @@ export const RunnerTerminal = forwardRef<
       // intact. Plain shells skip the wipe entirely and keep their
       // history. See docs/impls/0011-pty-host-terminal-runtime.md
       // §"Per-runtime clear-on-resize".
-      if (runtimeClearsOnResize(runnerRuntimeRef.current)) {
+      const skipLocalClear = replayJustDrainedRef.current;
+      if (runtimeClearsOnResize(runnerRuntimeRef.current) && !skipLocalClear) {
         // ESC[2J — erase visible region
         // ESC[H  — cursor home
         t.write("\x1b[2J\x1b[H");
       }
+      replayJustDrainedRef.current = false;
       void api.session.resize(sid, t.cols, t.rows).catch(() => {
         // session may have exited
       });
@@ -682,37 +710,42 @@ export const RunnerTerminal = forwardRef<
     pendingLiveRef.current = [];
     lastWrittenSeqRef.current = 0;
     replayDoneRef.current = false;
+    replayFlushPendingRef.current = false;
+    replayAfterFlushRef.current = [];
+    replayJustDrainedRef.current = false;
 
     const writeOutput = (ev: OutputEvent) => {
       termRef.current?.write(decodeBase64Chunk(ev.data));
     };
 
-    // Replay drains only when (a) the snapshot RPC has returned and
-    // (b) the container has a measurable rect so the in-line fit gives
-    // us real cols/rows.
+    // Replay drains only when (a) the snapshot RPC has returned,
+    // (b) the pane is currently active, and (c) the container has a
+    // measurable rect so the in-line fit gives us real cols/rows.
     // Until all three line up we keep the bytes parked on
     // pendingSnapshotRef and pendingLiveRef; activation / resize
     // observers re-call this helper as conditions change.
     const tryDrainReplay = () => {
-      if (replayDoneRef.current) return;
+      if (replayDoneRef.current) return false;
+      if (!activeRef.current) return false;
       const t = termRef.current;
       const fit = fitRef.current;
       const node = containerRef.current;
-      if (!t || !fit || !node) return;
+      if (!t || !fit || !node) return false;
       const rect = node.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      if (pendingSnapshotRef.current === null) return;
+      if (rect.width <= 0 || rect.height <= 0) return false;
+      if (pendingSnapshotRef.current === null) return false;
 
       try {
         fit.fit();
       } catch {
         // teardown in progress
-        return;
+        return false;
       }
 
       t.reset();
+      const queued: OutputEvent[] = [];
       for (const ev of pendingSnapshotRef.current) {
-        writeOutput(ev);
+        queued.push(ev);
         lastWrittenSeqRef.current = Math.max(
           lastWrittenSeqRef.current,
           ev.seq,
@@ -721,11 +754,32 @@ export const RunnerTerminal = forwardRef<
       pendingSnapshotRef.current = null;
       for (const ev of pendingLiveRef.current) {
         if (ev.seq <= lastWrittenSeqRef.current) continue;
-        writeOutput(ev);
+        queued.push(ev);
         lastWrittenSeqRef.current = ev.seq;
       }
       pendingLiveRef.current = [];
       replayDoneRef.current = true;
+
+      if (queued.length === 0) {
+        return true;
+      }
+
+      replayFlushPendingRef.current = true;
+      const onReplayFlushed = () => {
+        replayFlushPendingRef.current = false;
+        replayJustDrainedRef.current = true;
+        const callbacks = replayAfterFlushRef.current.splice(0);
+        for (const cb of callbacks) cb();
+      };
+
+      queued.forEach((ev, index) => {
+        const isLast = index === queued.length - 1;
+        termRef.current?.write(
+          decodeBase64Chunk(ev.data),
+          isLast ? onReplayFlushed : undefined,
+        );
+      });
+      return true;
     };
     tryDrainReplayRef.current = tryDrainReplay;
 
@@ -777,10 +831,11 @@ export const RunnerTerminal = forwardRef<
     return () => {
       cancelled = true;
       tryDrainReplayRef.current = null;
+      replayAfterFlushRef.current = [];
       unlistenOutput?.();
       unlistenExit?.();
     };
-  }, [sessionId]);
+  }, [sessionId, refreshActiveTerminal]);
 
   // Activation effect: when this tab moves to the front, wait for the pane
   // to become measurable, fit to its container, repaint the WebGL/canvas

@@ -7,13 +7,9 @@
 //      CLI via its native argv hook, when one exists. claude-code's
 //      `--append-system-prompt` / `--system-prompt` are SDK-only
 //      (require `-p` / print mode); the interactive TUI silently
-//      ignores them. So claude-code returns no argv from this
-//      function — the prompt is delivered via stdin as a first user
-//      turn instead, by `SessionManager::schedule_first_prompt`.
-//      Codex follows the same stdin path: a startup permission /
-//      approval dialog can swallow or misorder the positional
-//      `[PROMPT]` argv, so codex also returns empty here and the
-//      brief lands via stdin once the TUI has settled.
+//      ignores them. Codex has no equivalent system-prompt flag.
+//      Both return no args here; callers deliver persona/brief text
+//      through the separate first-turn path instead.
 //      arch §4.2 / §4.3.
 //
 //   2. `resume_plan` — pass the agent CLI's *own* resumable
@@ -28,6 +24,8 @@
 // of drift. Lives under router/ because the router's `mission_goal`
 // handler already owns prompt composition; the runtime adapter is the
 // related "how do we hand prompts and identity to a real CLI" piece.
+
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct RuntimeDefinition {
@@ -438,7 +436,7 @@ fn flag_value_matches(args: &[String], flag: &str, expected: Option<&str>) -> bo
 /// Compute the extra args (in declaration order) to append after the
 /// runner's configured `args` so the child receives `system_prompt` via the
 /// runtime's native flag. Returns an empty Vec when no prompt is set or
-/// when the runtime delivers prompts through stdin instead of argv.
+/// when the runtime has no native system-prompt flag.
 pub fn system_prompt_args(runtime: &str, system_prompt: Option<&str>) -> Vec<String> {
     let prompt = match system_prompt {
         Some(p) if !p.trim().is_empty() => p,
@@ -450,20 +448,12 @@ pub fn system_prompt_args(runtime: &str, system_prompt: Option<&str>) -> Vec<Str
         // are documented as SDK-only — they require `-p` (print
         // mode), which is incompatible with our interactive TUI
         // launches. Passing them in interactive mode is silently
-        // dropped. Workaround: the call site delivers the prompt via
-        // stdin once the TUI is up (see
-        // SessionManager::schedule_first_prompt).
+        // dropped. Workaround: call sites fold persona/brief text
+        // into a first user turn instead.
         "claude-code" => Vec::new(),
         // codex has no system-prompt flag (we tried `--instructions` and
         // it's rejected; `~/.codex/config.toml` doesn't expose one
-        // either). Codex's positional `[PROMPT]` argv was the closest
-        // available hook, but it loses races with codex's startup
-        // permission / approval dialog: when the TUI shows that
-        // dialog before hitting its main loop, the positional prompt
-        // is swallowed, replayed stale, or misordered. So we fall
-        // through to the same stdin-injection path claude-code uses —
-        // see `SessionManager::schedule_first_prompt`, which waits
-        // for the TUI to settle and then types the brief + Enter.
+        // either). First-turn delivery is handled separately.
         "codex" => Vec::new(),
         // shell / unknown — no prompt mechanism.
         _ => Vec::new(),
@@ -487,9 +477,8 @@ pub const FIRST_TURN_ARGV_MAX_BYTES: usize = 32 * 1024;
 /// (verified against claude-code and codex-cli 0.130.0). Delivering
 /// the first turn at spawn-time eliminates the post-spawn paste race
 /// the original `inject_paste_with_verify` machinery was working
-/// around: the agent reads its argv during init, before the TUI binds
-/// raw input, before any trust-folder dialog, before the input editor
-/// even exists. See `docs/impls/0007-spawn-time-prompt-delivery.md`.
+/// around: if the child starts, the prompt is already part of its
+/// argv.
 ///
 /// Returns empty when:
 ///   - the body is None or blank,
@@ -500,11 +489,6 @@ pub const FIRST_TURN_ARGV_MAX_BYTES: usize = 32 * 1024;
 /// persist-time validation upstream. Release builds silently truncate
 /// the argv to empty to fail safe.
 ///
-/// The old comment block in `system_prompt_args` claiming codex's
-/// positional gets swallowed by a startup approval dialog was stale
-/// (likely pre-0.130.0); modern codex has no startup dialog by
-/// default. `--ask-for-approval` modes gate in-session *command*
-/// approvals, not boot.
 pub fn first_turn_argv(runtime: &str, body: Option<&str>) -> Vec<String> {
     let body = match body {
         Some(s) if !s.trim().is_empty() => s,
@@ -556,6 +540,17 @@ pub fn trailing_runtime_args(
     let first_turn_for_argv = if plan_resuming { None } else { first_turn };
     out.extend(first_turn_argv(runtime, first_turn_for_argv));
     out
+}
+
+/// Extra sandbox roots Runner must grant to agent runtimes for mission-bus
+/// operations. Codex's `workspace-write` sandbox only allows writes under the
+/// workspace by default, while `runner signal/msg` appends to the mission log
+/// under app data. Scope the grant to the single mission directory.
+pub fn mission_bus_sandbox_args(runtime: &str, mission_dir: Option<&Path>) -> Vec<String> {
+    match (runtime, mission_dir) {
+        ("codex", Some(dir)) => vec!["--add-dir".into(), dir.to_string_lossy().to_string()],
+        _ => Vec::new(),
+    }
 }
 
 /// Output of `resume_plan` — the args to layer onto the spawn command plus
@@ -625,7 +620,7 @@ pub fn resume_plan(runtime: &str, prior_key: Option<&str>) -> ResumePlan {
                 // use") — it treats `--session-id` as fresh-only. The
                 // edge case `--resume` exposes ("session not found"
                 // when the conversation file was never persisted)
-                // is now masked by `schedule_first_prompt`, which
+                // is now masked by spawn-time first-turn delivery, which
                 // always sends a first user turn to claude-code on
                 // fresh spawn so the conversation file lands on disk
                 // before any future resume tries to load it. If a
@@ -675,8 +670,8 @@ fn is_uuid(s: &str) -> bool {
 
 /// True iff claude-code's conversation file for `(cwd, uuid)` exists on
 /// disk. Used by `SessionManager::resume` to skip `--resume <uuid>` when
-/// the agent never persisted a turn (lead PTYs reset within the
-/// schedule_first_prompt window, fast Stop after spawn) — passing
+/// the agent never persisted a turn (for example, fast Stop after
+/// spawn before a first response persists) — passing
 /// `--resume` against a missing file makes claude-code print
 /// "No conversation found with session ID …" and leave the TUI sitting
 /// in a half-initialised state. Path scheme:
@@ -736,25 +731,21 @@ mod tests {
     fn claude_code_returns_no_argv_for_system_prompt() {
         // claude-code's --append-system-prompt is SDK-only; the
         // interactive TUI ignores it. The argv path returns empty,
-        // and SessionManager::schedule_first_prompt delivers the
-        // prompt as a first user turn via stdin instead.
+        // and call sites fold the prompt into first-turn delivery
+        // instead.
         let args = system_prompt_args("claude-code", Some("be helpful"));
         assert!(args.is_empty());
     }
 
     #[test]
     fn codex_runtime_returns_no_argv_for_system_prompt() {
-        // Codex's positional `[PROMPT]` argv races codex's startup
-        // permission / approval dialog (the prompt gets swallowed,
-        // replayed stale, or misordered when the TUI shows the dialog
-        // before hitting its main loop). The brief is now delivered via
-        // stdin once the TUI has settled — see
-        // `SessionManager::schedule_first_prompt` — so the argv path
-        // returns empty for codex too.
+        // Codex has no dedicated system-prompt flag. Persona/brief
+        // delivery is handled through first-turn plumbing, not
+        // `system_prompt_args`.
         let args = system_prompt_args("codex", Some("be helpful"));
         assert!(
             args.is_empty(),
-            "codex system_prompt is delivered via stdin, not positional argv: {args:?}",
+            "codex has no native system_prompt argv flag: {args:?}",
         );
     }
 
@@ -798,9 +789,8 @@ mod tests {
     fn claude_code_resumes_with_prior_uuid() {
         // `--resume <uuid>` is the right flag. `--session-id` would
         // be rejected as "already in use" because claude-code treats
-        // it as fresh-only. `schedule_first_prompt` ensures the
-        // conversation file exists before any resume attempt by
-        // pushing a first user turn on initial spawn.
+        // it as fresh-only. Fresh-spawn first-turn delivery ensures
+        // the conversation file exists before any resume attempt.
         let prior = uuid::Uuid::new_v4().to_string();
         let plan = resume_plan("claude-code", Some(&prior));
         assert!(plan.resuming);
@@ -908,6 +898,18 @@ mod tests {
     }
 
     #[test]
+    fn codex_mission_bus_sandbox_args_grants_only_mission_dir() {
+        let dir = std::path::PathBuf::from("/tmp/runner/crews/c/missions/m");
+        assert_eq!(
+            mission_bus_sandbox_args("codex", Some(&dir)),
+            vec!["--add-dir".to_string(), dir.to_string_lossy().to_string()],
+        );
+        assert!(mission_bus_sandbox_args("codex", None).is_empty());
+        assert!(mission_bus_sandbox_args("claude-code", Some(&dir)).is_empty());
+        assert!(mission_bus_sandbox_args("shell", Some(&dir)).is_empty());
+    }
+
+    #[test]
     fn claude_code_forwards_effort_verbatim() {
         // Asymmetric on purpose: claude-code's `--effort` is case-
         // insensitive (accepts `High`), so we forward the row's
@@ -923,19 +925,10 @@ mod tests {
 
     #[test]
     fn codex_trailing_args_omit_positional_prompt() {
-        // Codex's positional `[PROMPT]` argv races codex's startup
-        // permission / approval dialog, so we deliver the brief via
-        // stdin instead (see `SessionManager::schedule_first_prompt`).
-        // The trailing args MUST NOT include the brief as positional
-        // argv on either fresh or resume spawns. Model/effort flags
-        // still ride along so the runner row's pinned settings reach
-        // the spawned CLI.
+        // `system_prompt` is not a positional first turn. Model/effort
+        // flags still ride along so the runner row's pinned settings
+        // reach the spawned CLI.
         for plan_resuming in [false, true] {
-            // `system_prompt` (the role/persona stub) still rides via
-            // stdin for both runtimes — `system_prompt_args` returns
-            // empty. The first-user-turn body is delivered separately
-            // via `first_turn` (spawn-time positional argv) per
-            // `docs/impls/0007-spawn-time-prompt-delivery.md`.
             let args = trailing_runtime_args(
                 "codex",
                 plan_resuming,

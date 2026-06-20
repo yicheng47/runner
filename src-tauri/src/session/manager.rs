@@ -678,14 +678,15 @@ impl SessionManager {
     /// persona for direct chats). When the runtime accepts the
     /// positional `[PROMPT]` argv and the body fits in
     /// `FIRST_TURN_ARGV_MAX_BYTES`, the body lands as the trailing
-    /// positional and the caller skips post-spawn paste injection.
-    /// Returns whether the body was delivered via argv — the caller
-    /// uses this to decide whether to schedule the paste fallback.
+    /// positional. Returns whether the body was delivered via argv
+    /// so the caller can warn if a supported runtime somehow missed
+    /// the deterministic path.
     fn apply_runtime_args(
         spec: &mut SpawnSpec,
         runner: &Runner,
         plan: &router::runtime::ResumePlan,
         first_turn: Option<&str>,
+        mission_bus_dir: Option<&Path>,
     ) -> bool {
         let mut composed: Vec<String> = Vec::new();
         if plan.prepend {
@@ -697,6 +698,10 @@ impl SessionManager {
         }
         let first_turn_for_argv = router::runtime::first_turn_argv(&runner.runtime, first_turn);
         let delivered_via_argv = !first_turn_for_argv.is_empty();
+        composed.extend(router::runtime::mission_bus_sandbox_args(
+            &runner.runtime,
+            mission_bus_dir,
+        ));
         for extra in router::runtime::trailing_runtime_args(
             &runner.runtime,
             plan.resuming,
@@ -734,6 +739,7 @@ impl SessionManager {
         events_log_path: PathBuf,
         pool: Arc<DbPool>,
         first_turn: Option<String>,
+        initial_size: Option<(u16, u16)>,
     ) -> Result<PendingMissionSpawn> {
         // Agent-native session resume: this is a *fresh* session row, so
         // there's no prior key to inherit. The runtime adapter still
@@ -792,11 +798,18 @@ impl SessionManager {
             true,
             shim_dir,
             bundled_bin_dir,
-            None, // mission spawn doesn't yet receive cols/rows from the caller
+            initial_size,
             mission_env,
         );
-        let first_turn_delivered_via_argv =
-            Self::apply_runtime_args(&mut spec, runner, &plan, first_turn.as_deref());
+        let mission_bus_dir =
+            runner_core::event_log::path::mission_dir(app_data_dir, &mission.crew_id, &mission.id);
+        let first_turn_delivered_via_argv = Self::apply_runtime_args(
+            &mut spec,
+            runner,
+            &plan,
+            first_turn.as_deref(),
+            Some(&mission_bus_dir),
+        );
 
         // Insert the row first (status=running with no runtime_*
         // metadata yet) so a fast-failing runtime spawn doesn't leave
@@ -1053,11 +1066,9 @@ impl SessionManager {
     /// plus brief for a non-lead). When the runtime accepts the
     /// positional `[PROMPT]` argv and the body fits
     /// `FIRST_TURN_ARGV_MAX_BYTES`, it lands as the trailing
-    /// positional during process init — eliminating the post-spawn
-    /// paste race. Otherwise the body falls through to
-    /// `schedule_mission_first_prompt`'s stdin-paste path. Pass
-    /// `None` to skip first-turn delivery entirely, for tests that
-    /// don't care about boot context.
+    /// positional during process init. Pass `None` to skip
+    /// first-turn delivery entirely, for tests that don't care about
+    /// boot context.
     ///
     /// Synchronous, all-or-nothing wrapper: row insert + PTY spawn +
     /// reader thread happen on the calling thread. Rolls back the
@@ -1086,6 +1097,7 @@ impl SessionManager {
             events_log_path,
             Arc::clone(&pool),
             first_turn,
+            None,
         )?;
         let session_id = pending.session_id.clone();
         let mission_id = pending.mission.id.clone();
@@ -1140,10 +1152,9 @@ impl SessionManager {
     /// `first_turn` is the composed persona body for the direct chat
     /// (no preamble — direct chats are off-bus). When the runtime
     /// supports argv-based delivery the persona lands as the
-    /// trailing positional at spawn; otherwise the body falls
-    /// through to `schedule_direct_first_prompt`'s stdin-paste
-    /// path. Pass `None` when there's no persona to deliver, or for
-    /// tests that don't care about boot context.
+    /// trailing positional at spawn. Pass `None` when there's no
+    /// persona to deliver, or for tests that don't care about boot
+    /// context.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_direct(
         self: &Arc<Self>,
@@ -1244,7 +1255,7 @@ impl SessionManager {
             direct_env,
         );
         let first_turn_delivered_via_argv =
-            Self::apply_runtime_args(&mut spec, runner, &plan, first_turn.as_deref());
+            Self::apply_runtime_args(&mut spec, runner, &plan, first_turn.as_deref(), None);
 
         // Insert the row first so a fast-failing spawn doesn't leave
         // a half-row.
@@ -1692,13 +1703,17 @@ impl SessionManager {
             initial_size,
             env_extra,
         );
+        let mission_bus_dir = mission_ctx.as_ref().map(|ctx| {
+            runner_core::event_log::path::mission_dir(app_data_dir, &ctx.crew_id, &ctx.mission_id)
+        });
         // Resume never delivers a first-turn via argv: a real resume
         // restores prior context via the agent CLI's own session
         // resume, and the rare fresh-fallback case routes its launch
         // prompt through paste-and-verify via the caller in
         // `commands::session::session_resume`. `first_turn = None`
         // here so the argv path stays inert.
-        let _ = Self::apply_runtime_args(&mut spec, &runner, &plan, None);
+        let _ =
+            Self::apply_runtime_args(&mut spec, &runner, &plan, None, mission_bus_dir.as_deref());
 
         let started_at_dt = Utc::now();
         let started_at = started_at_dt.to_rfc3339();
@@ -2078,23 +2093,14 @@ impl SessionManager {
     }
 
     /// Paste a multi-line prompt block into the session, then submit
-    /// with Enter. Uses tmux `paste-buffer -p -r -d` semantics so
-    /// the agent's TUI sees the whole block as one bracketed-paste
-    /// event (LF stays literal — the runtime would otherwise
-    /// translate LF → CR and submit per line).
+    /// with Enter. Uses the runtime's paste primitive so LF stays
+    /// literal instead of becoming one submit per line.
     ///
     /// Sleeps 120ms between paste and Enter. Without this gap,
     /// Claude Code v2.1.x's input editor sometimes leaves pasted
-    /// content sitting in the input box unsubmitted — the
-    /// bracketed-paste end marker (`\e[201~`) and the trailing
-    /// Enter arrive too close together for the TUI to transition
-    /// out of paste mode before interpreting the keystroke.
-    /// (Observed live, fix-port of the prior portable-pty path's
-    /// 80ms gap between body-bytes and `\r` writes; tmux adds a
-    /// little server-side queueing latency on top, hence the
-    /// slightly larger 120ms.) `cfg(test)` keeps the same
-    /// constant — fake runtimes complete instantly so the wait
-    /// is harmless.
+    /// content sitting in the input box unsubmitted. `cfg(test)`
+    /// keeps the same constant — fake runtimes complete instantly so
+    /// the wait is harmless.
     pub fn inject_paste(&self, session_id: &str, payload: &[u8]) -> Result<()> {
         let rt_session = self
             .sessions
@@ -2849,23 +2855,16 @@ pub(crate) fn runtime_direct_runner(runtime: &str, command: Option<&str>) -> Res
 /// adds the "how to talk to the rest of the crew" layer
 /// automatically.
 ///
-/// `suppress_lead_preamble` is set by the initial mission_start
-/// spawn path: there, the bus's `mission_goal` handler injects a
-/// richer launch prompt with `system_prompt` embedded in its "Your
-/// brief" section, so a separate first-turn injection would race the
-/// launch prompt and waste a turn. On a resume that degrades to a
-/// fresh spawn (claude-code conversation file went missing — see
-/// `claude_code_conversation_exists`) the bus does NOT replay
-/// `mission_goal`, so the lead would otherwise come up with no
-/// system context; the resume path passes `false` here so the
-/// preamble + system_prompt land via this stdin-injection route
-/// instead.
+/// Fresh mission starts deliver the composed first user turn through
+/// the runtime's positional argv when available. That keeps delivery
+/// deterministic: if the process starts, the prompt is already in the
+/// CLI's argv instead of depending on a later readiness/paste path.
 ///
 /// Skipped on resume against a real prior conversation (the agent
 /// already has its system context) and on runtimes that have no
 /// concept of a first-turn prompt (shell).
 fn schedule_mission_first_prompt(
-    mgr: &Arc<SessionManager>,
+    _mgr: &Arc<SessionManager>,
     session_id: String,
     runner: &Runner,
     plan: &router::runtime::ResumePlan,
@@ -2877,23 +2876,13 @@ fn schedule_mission_first_prompt(
     if plan.resuming {
         return;
     }
-    // Spawn-time argv is the only first-turn delivery path on a
-    // fresh mission (plan 0007). The caller in
-    // `commands::mission::mission_start` always passes the composed
-    // body; persistence-layer validation caps `system_prompt` and
-    // `goal` so the body never exceeds the runtime's argv slot.
-    // If we reach this point with `delivered_via_argv == false`,
-    // either the runtime doesn't support argv (`shell`, future
-    // adapters) or the body slipped past validation — log and skip
-    // rather than re-introducing the paste race the plan got rid
-    // of.
-    if !delivered_via_argv {
-        log::warn!(
-            "first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",
-            runner.runtime,
-        );
+    if delivered_via_argv {
+        return;
     }
-    let _ = mgr;
+    log::warn!(
+        "first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",
+        runner.runtime,
+    );
 }
 
 /// Direct-chat-flavored first-turn injection: types just
@@ -2940,10 +2929,8 @@ fn schedule_direct_first_prompt(
 
 // `WORKER_COORDINATION_PREAMBLE` and the per-runtime first-turn
 // composition helpers (`compose_worker_first_turn`,
-// `compose_direct_first_turn`) live in `router::prompt` — both the
-// spawn-time argv path (here) and any post-spawn paste fallback
-// pull from the same composers so the delivered body is byte-
-// identical regardless of route.
+// `compose_direct_first_turn`) live in `router::prompt`; the spawn
+// paths here only decide how to hand that composed text to the CLI.
 
 fn emit_runner_activity(pool: &DbPool, runner: &Runner, events: &dyn SessionEvents) {
     let Ok(conn) = pool.get() else { return };
@@ -3415,6 +3402,10 @@ mod tests {
 
     fn capture() -> Arc<Capture> {
         Arc::new(Capture::default())
+    }
+
+    fn has_arg_pair(args: &[String], flag: &str, value: &str) -> bool {
+        args.windows(2).any(|w| w[0] == flag && w[1] == value)
     }
 
     fn pool_with_schema() -> Arc<DbPool> {
@@ -3981,6 +3972,131 @@ mod tests {
         );
 
         mgr.kill(&spawned.id).unwrap();
+    }
+
+    #[test]
+    fn codex_mission_spawn_grants_event_log_dir_to_sandbox() {
+        // Codex's workspace-write sandbox cannot append to Runner's
+        // app-data mission log unless we grant the mission directory.
+        let pool = pool_with_schema();
+        let mission_base = Mission {
+            crew_id: "c".into(),
+            ..mission()
+        };
+        let mut runner = runner(
+            "codex",
+            &[
+                "--ask-for-approval",
+                "on-request",
+                "--sandbox",
+                "workspace-write",
+            ],
+        );
+        runner.runtime = "codex".into();
+        runner.handle = "codex-worker".into();
+        let slot_id = insert_crew_runner(&pool, &mission_base.id, &runner.id);
+        let fresh_mission_id: String = {
+            let conn = pool.get().unwrap();
+            conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
+                .unwrap()
+        };
+        let mission = Mission {
+            id: fresh_mission_id,
+            ..mission_base
+        };
+        let mut slot = slot_for(&runner);
+        slot.id = slot_id;
+
+        let app_data = tempfile::tempdir().unwrap();
+        let mission_dir = runner_core::event_log::path::mission_dir(
+            app_data.path(),
+            &mission.crew_id,
+            &mission.id,
+        );
+        let events_log_path = runner_core::event_log::path::events_path(
+            app_data.path(),
+            &mission.crew_id,
+            &mission.id,
+        );
+
+        let fake = fake_runtime();
+        let mgr = mgr_with_fake(None, Arc::clone(&fake));
+        let first_turn = "mission first turn".to_string();
+        let spawned = mgr
+            .spawn(
+                &mission,
+                &runner,
+                &slot,
+                app_data.path(),
+                events_log_path,
+                Arc::clone(&pool),
+                capture(),
+                Some(first_turn.clone()),
+            )
+            .unwrap();
+
+        let spec = fake.last_spawn_spec().expect("spawn was called");
+        let mission_dir_arg = mission_dir.to_string_lossy().to_string();
+        assert!(
+            has_arg_pair(&spec.args, "--add-dir", &mission_dir_arg),
+            "codex mission spawn must grant mission dir with --add-dir; args = {:?}",
+            spec.args,
+        );
+        assert!(
+            spec.args.iter().any(|arg| arg == &first_turn),
+            "codex mission first turn must ride argv; args = {:?}",
+            spec.args,
+        );
+        assert!(
+            fake.pastes().is_empty(),
+            "argv delivery must not schedule paste injection; got {:?}",
+            fake.pastes(),
+        );
+        assert!(
+            fake.keys().is_empty(),
+            "argv delivery must not schedule submit key injection; got {:?}",
+            fake.keys(),
+        );
+
+        mgr.kill(&spawned.id).unwrap();
+    }
+
+    #[test]
+    fn mission_registration_preserves_initial_terminal_size() {
+        let pool = pool_with_schema();
+        let mission_base = Mission {
+            crew_id: "c".into(),
+            ..mission()
+        };
+        let runner = runner("/bin/cat", &[]);
+        let slot_id = insert_crew_runner(&pool, &mission_base.id, &runner.id);
+        let fresh_mission_id: String = {
+            let conn = pool.get().unwrap();
+            conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
+                .unwrap()
+        };
+        let mission = Mission {
+            id: fresh_mission_id,
+            ..mission_base
+        };
+        let mut slot = slot_for(&runner);
+        slot.id = slot_id;
+
+        let mgr = mgr_with_fake(None, fake_runtime());
+        let pending = mgr
+            .register_mission_session(
+                &mission,
+                &runner,
+                &slot,
+                std::path::Path::new("/tmp"),
+                PathBuf::from("/dev/null"),
+                Arc::clone(&pool),
+                None,
+                Some((132, 41)),
+            )
+            .unwrap();
+
+        assert_eq!(pending.spec.initial_size, Some((132, 41)));
     }
 
     #[test]
@@ -4795,6 +4911,86 @@ mod tests {
         );
 
         mgr.kill("mr-sid").unwrap();
+    }
+
+    #[test]
+    fn codex_mission_resume_grants_event_log_dir_to_sandbox() {
+        let pool = pool_with_schema();
+        let now = Utc::now().to_rfc3339();
+        let runner_id = ulid::Ulid::new().to_string();
+        let mission_id = ulid::Ulid::new().to_string();
+        let slot_id = ulid::Ulid::new().to_string();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO crews (id, name, created_at, updated_at)
+                 VALUES ('c-codex-resume', 'c', ?1, ?1)",
+                params![now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, created_at, updated_at)
+                 VALUES (?1, 'codex-template', 'Codex', 'codex', 'codex',
+                         '[\"--ask-for-approval\",\"on-request\",\"--sandbox\",\"workspace-write\"]',
+                         ?2, ?2)",
+                params![runner_id, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO slots
+                    (id, crew_id, runner_id, slot_handle, position, lead, added_at)
+                 VALUES (?1, 'c-codex-resume', ?2, 'impl', 0, 1, ?3)",
+                params![slot_id, runner_id, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO missions
+                    (id, crew_id, title, status, started_at)
+                 VALUES (?1, 'c-codex-resume', 't', 'running', ?2)",
+                params![mission_id, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions
+                    (id, mission_id, runner_id, slot_id, status, started_at)
+                 VALUES ('codex-resume-sid', ?1, ?2, ?3, 'stopped', ?4)",
+                params![mission_id, runner_id, slot_id, now],
+            )
+            .unwrap();
+        }
+
+        let app_data = tempfile::tempdir().unwrap();
+        let mission_dir = runner_core::event_log::path::mission_dir(
+            app_data.path(),
+            "c-codex-resume",
+            &mission_id,
+        );
+        let fake = fake_runtime();
+        let mgr = mgr_with_fake(None, Arc::clone(&fake));
+        let spawned = mgr
+            .resume(
+                "codex-resume-sid",
+                None,
+                None,
+                app_data.path(),
+                Arc::clone(&pool),
+                capture(),
+            )
+            .unwrap();
+
+        let spec = fake
+            .last_spawn_spec()
+            .expect("resume should have called spawn");
+        let mission_dir_arg = mission_dir.to_string_lossy().to_string();
+        assert!(
+            has_arg_pair(&spec.args, "--add-dir", &mission_dir_arg),
+            "codex mission resume must grant mission dir with --add-dir; args = {:?}",
+            spec.args,
+        );
+
+        mgr.kill(&spawned.id).unwrap();
     }
 
     /// Helper: insert a runner row + a `running` direct-chat

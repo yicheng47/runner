@@ -13,6 +13,7 @@ import { ChevronDown, ChevronRight, X } from "lucide-react";
 
 import { api } from "../lib/api";
 import { readDefaultWorkingDir } from "../lib/settings";
+import { estimateMissionTerminalGrid } from "../lib/terminalSizing";
 import type { CrewListItem, Mission, SlotWithRunner } from "../lib/types";
 import { Button } from "./ui/Button";
 import { Modal } from "./ui/Overlay";
@@ -143,7 +144,7 @@ export function StartMissionModal({
         title: title.trim(),
         goal_override: goal.trim() ? goal.trim() : null,
         cwd: cwd.trim() ? cwd.trim() : null,
-      });
+      }, estimateMissionTerminalGrid());
       onStarted(out.mission);
     } catch (e) {
       setError(String(e));

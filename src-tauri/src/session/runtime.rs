@@ -298,13 +298,10 @@ pub trait SessionRuntime: Send + Sync {
     /// this method only signals.
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()>;
 
-    /// Multi-line prompt paste. Runtime applies bracketed-paste
-    /// (`paste-buffer -p -r -d`); LF stays literal so the agent
-    /// sees one paste, not one submit per line. The runtime does
-    /// **not** submit — the manager follows up with `send_key`
-    /// when it wants the agent to act, so the timing is explicit
-    /// (Step 7's `paste_after` readiness wait lives on the
-    /// manager).
+    /// Multi-line prompt paste. Runtime keeps LF literal so the
+    /// agent sees one paste, not one submit per line. The runtime
+    /// does **not** submit — the manager follows up with `send_key`
+    /// when it wants the agent to act.
     fn paste(&self, session: &RuntimeSession, payload: &[u8]) -> RuntimeResult<()>;
 
     /// Literal byte stream from xterm.js passthrough — the user is
