@@ -1336,7 +1336,7 @@ function TabButton({
     >
       {children}
       {shortcut ? (
-        <span className="ml-2 font-mono text-[11px] font-normal leading-none text-fg-3">
+        <span className="ml-3 font-mono text-[11px] font-normal leading-none text-fg-3">
           {shortcut}
         </span>
       ) : null}
@@ -1375,7 +1375,7 @@ function PtyTabButton({
       <Terminal aria-hidden className="h-3 w-3 shrink-0" />
       <span className="max-w-[140px] truncate font-mono">@{handle}</span>
       {shortcut ? (
-        <span className="font-mono text-[11px] font-normal leading-none text-fg-3">
+        <span className="ml-1 font-mono text-[11px] font-normal leading-none text-fg-3">
           {shortcut}
         </span>
       ) : null}
