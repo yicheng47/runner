@@ -182,10 +182,16 @@ pub fn run() {
             // reattach (next block) has access to the bus + router
             // registries it needs to mount. The session-side reattach
             // still runs from the local `sessions` Arc handle.
+            let buses = event_bus::BusRegistry::new();
+            let routers = router::RouterRegistry::new();
             let mcp_handle = Arc::new(mcp::McpHandle::new());
             let mcp_state = mcp::state::McpState {
                 db: Arc::clone(&pool),
+                app_data_dir: app_data_dir.clone(),
                 sessions: Arc::clone(&sessions),
+                buses: Arc::clone(&buses),
+                routers: Arc::clone(&routers),
+                mcp: Arc::clone(&mcp_handle),
                 app_handle: app.handle().clone(),
             };
             if let Err(e) = mcp_handle.start(&app_data_dir.join("mcp.sock"), mcp_state) {
@@ -196,8 +202,8 @@ pub fn run() {
                 db: Arc::clone(&pool),
                 app_data_dir,
                 sessions: Arc::clone(&sessions),
-                buses: event_bus::BusRegistry::new(),
-                routers: router::RouterRegistry::new(),
+                buses,
+                routers,
                 mcp: mcp_handle,
             };
 

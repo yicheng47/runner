@@ -74,7 +74,7 @@ impl ServerHandler for RunnerMcpProxy {
             .with_protocol_version(ProtocolVersion::LATEST)
             .with_server_info(implementation)
             .with_instructions(
-                "Runner MCP proxy. Open Runner.app to execute crew, runner, and slot tools.",
+                "Runner MCP proxy. Open Runner.app to execute workspace and mission tools.",
             )
     }
 
@@ -231,6 +231,86 @@ fn fallback_tools() -> Vec<Tool> {
                 false,
             ),
         ),
+        (
+            "mission_list",
+            "List non-archived missions, optionally filtered by crew.",
+            object_schema(&[("crew_id", string_schema("Optional crew ID filter."))], &[], false),
+        ),
+        (
+            "mission_get",
+            "Fetch one mission by ID, including archived missions.",
+            id_schema("id", "Mission ID."),
+        ),
+        (
+            "mission_list_summary",
+            "Return sidebar-style mission summaries with crew name, pending asks, and live-session flag.",
+            object_schema(&[("crew_id", string_schema("Optional crew ID filter."))], &[], false),
+        ),
+        (
+            "mission_feed",
+            "Read mission events from the NDJSON feed with optional offset cursor.",
+            mission_feed_schema(),
+        ),
+        (
+            "mission_status",
+            "Return an operational snapshot: mission, crew, sessions, latest runner status, pending asks, live counts, and recent warnings.",
+            id_schema("id", "Mission ID."),
+        ),
+        (
+            "mission_start",
+            "Start a mission for a crew using the same semantics as the app.",
+            open_schema(),
+        ),
+        (
+            "mission_stop",
+            "Stop a running mission's live sessions without archiving it.",
+            id_schema("id", "Mission ID."),
+        ),
+        (
+            "mission_archive",
+            "Archive a mission, stopping live sessions and hiding it from active lists.",
+            id_schema("id", "Mission ID."),
+        ),
+        (
+            "mission_pin",
+            "Pin or unpin a mission.",
+            object_schema(
+                &[
+                    ("id", string_schema("Mission ID.")),
+                    (
+                        "pinned",
+                        serde_json::json!({
+                            "type": "boolean",
+                            "description": "True pins the mission; false unpins it."
+                        }),
+                    ),
+                ],
+                &["id", "pinned"],
+                false,
+            ),
+        ),
+        (
+            "mission_rename",
+            "Rename a mission.",
+            object_schema(
+                &[
+                    ("id", string_schema("Mission ID.")),
+                    ("title", string_schema("New mission title.")),
+                ],
+                &["id", "title"],
+                false,
+            ),
+        ),
+        (
+            "mission_reset",
+            "Reset and restart a mission using the same guarded behavior as the UI.",
+            id_schema("id", "Mission ID."),
+        ),
+        (
+            "mission_post_human_signal",
+            "Post a human-originated signal into a mission feed.",
+            open_schema(),
+        ),
     ]
     .into_iter()
     .map(|(name, description, input_schema)| {
@@ -269,6 +349,40 @@ fn id_input_schema(id_name: &'static str, id_description: &'static str) -> Arc<J
     )
 }
 
+fn mission_feed_schema() -> Arc<JsonObject> {
+    object_schema(
+        &[
+            ("mission_id", string_schema("Mission ID.")),
+            (
+                "limit",
+                serde_json::json!({
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Maximum number of events to return. Defaults to 50 and is capped at 500."
+                }),
+            ),
+            (
+                "order",
+                serde_json::json!({
+                    "type": "string",
+                    "enum": ["newest_first", "oldest_first"],
+                    "description": "Sort order for returned events."
+                }),
+            ),
+            (
+                "since_offset",
+                serde_json::json!({
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Optional byte offset into events.ndjson."
+                }),
+            ),
+        ],
+        &["mission_id"],
+        false,
+    )
+}
+
 fn string_schema(description: &'static str) -> serde_json::Value {
     serde_json::json!({ "type": "string", "description": description })
 }
@@ -297,4 +411,34 @@ fn object_schema(
         schema.insert("required".to_string(), serde_json::json!(required));
     }
     Arc::new(schema)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_tools_include_mission_surface() {
+        let names: std::collections::BTreeSet<_> = fallback_tools()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+
+        for name in [
+            "mission_list",
+            "mission_get",
+            "mission_list_summary",
+            "mission_feed",
+            "mission_status",
+            "mission_start",
+            "mission_stop",
+            "mission_archive",
+            "mission_pin",
+            "mission_rename",
+            "mission_reset",
+            "mission_post_human_signal",
+        ] {
+            assert!(names.contains(name), "missing fallback MCP tool {name}");
+        }
+    }
 }

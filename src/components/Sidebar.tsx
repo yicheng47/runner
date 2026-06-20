@@ -241,31 +241,40 @@ export function Sidebar({
   }, []);
 
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
+    let unlistenEvents: (() => void) | null = null;
+    let unlistenChanged: (() => void) | null = null;
     let cancelled = false;
-    void listen<AppendedEvent>("event/appended", (msg) => {
-      const t = msg.payload.event.type;
-      if (
-        t === "mission_start" ||
-        t === "mission_stopped" ||
-        t === "ask_human" ||
-        t === "human_question" ||
-        t === "human_response"
-      ) {
-        // ask_human/human_question/human_response refresh the pending-ask
-        // count badge. Cheap query; fires only on these signal types.
+    void Promise.all([
+      listen<AppendedEvent>("event/appended", (msg) => {
+        const t = msg.payload.event.type;
+        if (
+          t === "mission_start" ||
+          t === "mission_stopped" ||
+          t === "ask_human" ||
+          t === "human_question" ||
+          t === "human_response"
+        ) {
+          // ask_human/human_question/human_response refresh the pending-ask
+          // count badge. Cheap query; fires only on these signal types.
+          void refreshMissions();
+        }
+      }),
+      listen("mission/changed", () => {
         void refreshMissions();
-      }
-    }).then((fn) => {
+      }),
+    ]).then(([fnEvents, fnChanged]) => {
       if (cancelled) {
-        fn();
+        fnEvents();
+        fnChanged();
         return;
       }
-      unlisten = fn;
+      unlistenEvents = fnEvents;
+      unlistenChanged = fnChanged;
     });
     return () => {
       cancelled = true;
-      unlisten?.();
+      unlistenEvents?.();
+      unlistenChanged?.();
     };
   }, [refreshMissions]);
 

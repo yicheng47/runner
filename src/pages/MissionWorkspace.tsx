@@ -260,6 +260,36 @@ export default function MissionWorkspace() {
     };
   }, [id]);
 
+  // MCP mutations (pin, rename, archive, reset) don't have a direct
+  // invoke response in this webview. Refresh the mission row when the
+  // backend announces that mission metadata changed.
+  useEffect(() => {
+    if (!id) return;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void listen("mission/changed", () => {
+      void Promise.all([api.mission.get(id), api.session.list(id)])
+        .then(([m, ss]) => {
+          if (cancelled) return;
+          setMission(m);
+          setSessions(ss);
+        })
+        .catch(() => {
+          // best-effort; the next workspace reload or bus event will retry
+        });
+    }).then((fn) => {
+      if (cancelled) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [id]);
+
   // Surface non-fatal session warnings (today: agent-resume fallback).
   // Filter on mission_id so warnings from other workspaces don't leak.
   useEffect(() => {

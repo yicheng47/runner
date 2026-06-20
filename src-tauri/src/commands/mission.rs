@@ -18,6 +18,7 @@ use chrono::Utc;
 use runner_core::event_log::{self, EventLog};
 use runner_core::model::{EventDraft, EventKind, KnownSignalType, SignalType};
 use rusqlite::{params, Connection, OptionalExtension, Row};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use ulid::Ulid as UlidGen;
@@ -29,7 +30,7 @@ use crate::{
     AppState,
 };
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct StartMissionInput {
     pub crew_id: String,
     pub title: String,
@@ -402,7 +403,7 @@ fn write_roster_sidecar(mission_dir: &Path, roster: &[crate::model::SlotWithRunn
     Ok(())
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct PostHumanSignalInput {
     pub mission_id: String,
     /// Signal type — restricted to the human-originated ones the workspace
@@ -437,9 +438,8 @@ pub async fn mission_events_replay(
     read_events(&state.app_data_dir, &conn, &mission_id)
 }
 
-#[tauri::command]
-pub async fn mission_post_human_signal(
-    state: State<'_, AppState>,
+pub(crate) async fn mission_post_human_signal_impl(
+    state: &AppState,
     input: PostHumanSignalInput,
 ) -> Result<runner_core::model::Event> {
     // Whitelist: only the two signal types the workspace UI is supposed
@@ -480,9 +480,16 @@ pub async fn mission_post_human_signal(
 }
 
 #[tauri::command]
-pub async fn mission_start(
+pub async fn mission_post_human_signal(
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    input: PostHumanSignalInput,
+) -> Result<runner_core::model::Event> {
+    mission_post_human_signal_impl(&state, input).await
+}
+
+pub(crate) async fn mission_start_impl(
+    state: &AppState,
+    app: &tauri::AppHandle,
     input: StartMissionInput,
 ) -> Result<StartMissionOutput> {
     use crate::event_bus::{BusEmitter, TauriBusEvents};
@@ -844,6 +851,15 @@ pub async fn mission_start(
     Ok(out)
 }
 
+#[tauri::command]
+pub async fn mission_start(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    input: StartMissionInput,
+) -> Result<StartMissionOutput> {
+    mission_start_impl(&state, &app, input).await
+}
+
 /// Re-attach a mission's router + bus after app restart. The mission row
 /// stays `running` across restarts but the in-memory Router/Bus die with
 /// the old process. The frontend calls this on workspace mount; if the
@@ -1061,20 +1077,27 @@ fn list_running_mission_ids(conn: &Connection) -> rusqlite::Result<Vec<String>> 
 ///
 /// Use this for "I want to stop the agents but might come back later."
 /// For end-of-mission, see `mission_archive`.
-#[tauri::command]
-pub async fn mission_stop(state: State<'_, AppState>, id: String) -> Result<Mission> {
+pub(crate) async fn mission_stop_impl(state: &AppState, id: String) -> Result<Mission> {
     log::info!("mission stop: id={id}");
     state.sessions.kill_all_for_mission(&id)?;
     let conn = state.db.get()?;
     get(&conn, &id)
 }
 
+#[tauri::command]
+pub async fn mission_stop(state: State<'_, AppState>, id: String) -> Result<Mission> {
+    mission_stop_impl(&state, id).await
+}
+
 /// Toggle a mission's pin. Pinned missions float to the top of the
 /// sidebar's MISSION list (sort key: `pinned_at IS NULL, pinned_at
 /// DESC, started_at DESC`). Setting `pinned = false` clears the
 /// timestamp.
-#[tauri::command]
-pub async fn mission_pin(state: State<'_, AppState>, id: String, pinned: bool) -> Result<Mission> {
+pub(crate) async fn mission_pin_impl(
+    state: &AppState,
+    id: String,
+    pinned: bool,
+) -> Result<Mission> {
     let conn = state.db.get()?;
     let pinned_at: Option<String> = if pinned {
         Some(now().to_rfc3339())
@@ -1091,12 +1114,16 @@ pub async fn mission_pin(state: State<'_, AppState>, id: String, pinned: bool) -
     get(&conn, &id)
 }
 
+#[tauri::command]
+pub async fn mission_pin(state: State<'_, AppState>, id: String, pinned: bool) -> Result<Mission> {
+    mission_pin_impl(&state, id, pinned).await
+}
+
 /// Rename a mission. Title is trimmed; empty values are rejected so
 /// the sidebar never renders a blank row. The mission's event log is
 /// untouched — the title only ever lived on the row.
-#[tauri::command]
-pub async fn mission_rename(
-    state: State<'_, AppState>,
+pub(crate) async fn mission_rename_impl(
+    state: &AppState,
     id: String,
     title: String,
 ) -> Result<Mission> {
@@ -1115,15 +1142,23 @@ pub async fn mission_rename(
     get(&conn, &id)
 }
 
+#[tauri::command]
+pub async fn mission_rename(
+    state: State<'_, AppState>,
+    id: String,
+    title: String,
+) -> Result<Mission> {
+    mission_rename_impl(&state, id, title).await
+}
+
 /// Reset a mission: wipe the run context (event log, agent session
 /// keys, router state) and respawn every slot fresh against the same
 /// mission row. Mostly for testing — gives you a clean slate without
 /// having to rebuild the crew + start a new mission. Preserves the
 /// mission's id, title, crew, cwd, and goal so links/bookmarks survive.
-#[tauri::command]
-pub async fn mission_reset(
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
+pub(crate) async fn mission_reset_impl(
+    state: &AppState,
+    app: &tauri::AppHandle,
     id: String,
 ) -> Result<Mission> {
     use crate::event_bus::{BusEmitter, TauriBusEvents};
@@ -1463,19 +1498,32 @@ pub async fn mission_reset(
     Ok(mission_for_spawn)
 }
 
+#[tauri::command]
+pub async fn mission_reset(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<Mission> {
+    mission_reset_impl(&state, &app, id).await
+}
+
 /// Terminal end-of-mission. Kills every live PTY, writes the
 /// `mission_stopped` event, flips the mission row to `completed`, and
 /// drops the router + bus. Mirrors what `mission_stop` used to do
 /// before the lifecycle split — preserved as a separate command so
 /// the workspace UI can guard it behind an explicit confirm.
-#[tauri::command]
-pub async fn mission_archive(state: State<'_, AppState>, id: String) -> Result<Mission> {
+pub(crate) async fn mission_archive_impl(state: &AppState, id: String) -> Result<Mission> {
     state.sessions.kill_all_for_mission(&id)?;
     let mut conn = state.db.get()?;
     let mission = stop(&mut conn, &state.app_data_dir, &id)?;
     state.buses.unmount(&id);
     state.routers.unregister(&id);
     Ok(mission)
+}
+
+#[tauri::command]
+pub async fn mission_archive(state: State<'_, AppState>, id: String) -> Result<Mission> {
+    mission_archive_impl(&state, id).await
 }
 
 #[tauri::command]
@@ -1537,9 +1585,8 @@ fn count_pending_asks_from_log(mission_dir: &Path) -> usize {
     pending.len()
 }
 
-#[tauri::command]
-pub async fn mission_list_summary(
-    state: State<'_, AppState>,
+pub(crate) async fn mission_list_summary_impl(
+    state: &AppState,
     crew_id: Option<String>,
 ) -> Result<Vec<MissionSummary>> {
     let conn = state.db.get()?;
@@ -1589,6 +1636,14 @@ pub async fn mission_list_summary(
         });
     }
     Ok(summaries)
+}
+
+#[tauri::command]
+pub async fn mission_list_summary(
+    state: State<'_, AppState>,
+    crew_id: Option<String>,
+) -> Result<Vec<MissionSummary>> {
+    mission_list_summary_impl(&state, crew_id).await
 }
 
 #[cfg(test)]

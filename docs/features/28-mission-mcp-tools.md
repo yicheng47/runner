@@ -68,6 +68,18 @@ This makes Runner MCP useful for the main loop: "start the Build squad on this g
 - Verify the resilient `runner-mcp` proxy still advertises the new mission tools when Runner.app is closed.
 - Update any MCP feature docs that enumerate the full tool list.
 
+## MCP smoke flow
+
+With Runner.app open and a launchable crew ID available:
+
+1. `mission_start` with `{ "crew_id": "<crew-id>", "title": "MCP smoke", "goal_override": "verify mission MCP tools" }` creates a running mission and returns `{ mission, goal }`.
+2. `mission_status` with `{ "id": "<mission-id>" }` returns the mission row, crew row, session rows, live/stopped counts, pending asks, latest runner status by handle, recent warnings, and the latest feed offset.
+3. `mission_feed` with `{ "mission_id": "<mission-id>", "order": "oldest_first", "limit": 10 }` includes the opening `mission_start` and `mission_goal` events.
+4. `mission_stop` with `{ "id": "<mission-id>" }` kills live mission sessions while leaving the mission row running and visible as paused.
+5. `mission_archive` with `{ "id": "<mission-id>" }` appends `mission_stopped`, marks the mission completed/archived, and removes it from active mission lists.
+
+With Runner.app closed, `runner-mcp` should still list all mission tools through its fallback registry, while mission tool calls return the existing retryable "Open Runner.app" MCP error.
+
 ## Verification
 
 - [ ] With Runner open, `mission_list` returns the same non-archived missions as the app sidebar/Missions list.

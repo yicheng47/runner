@@ -83,11 +83,7 @@ fn row_to_session(row: &Row<'_>) -> rusqlite::Result<SessionRow> {
     })
 }
 
-#[tauri::command]
-pub async fn session_list(
-    state: State<'_, AppState>,
-    mission_id: String,
-) -> Result<Vec<SessionRow>> {
+pub fn list_for_mission(conn: &rusqlite::Connection, mission_id: &str) -> Result<Vec<SessionRow>> {
     // Order by the slot-scoped position within this mission's crew so
     // the UI renders sessions in the same slot order as the Crew
     // Detail roster. The session's `slot_id` is the direct join key
@@ -95,7 +91,6 @@ pub async fn session_list(
     // template handle is no longer used in mission contexts.
     // `r.handle` (template) is kept on the row for fallback display
     // (legacy mission sessions before 0006 have no slot_id).
-    let conn = state.db.get()?;
     // archived_at IS NULL filters out the dead session rows that
     // `mission_reset` (and any future archive path) leaves behind: a
     // reset wipes the run context and inserts fresh PTY rows for the
@@ -118,6 +113,15 @@ pub async fn session_list(
     let rows = stmt.query_map(params![mission_id], row_to_session)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn session_list(
+    state: State<'_, AppState>,
+    mission_id: String,
+) -> Result<Vec<SessionRow>> {
+    let conn = state.db.get()?;
+    list_for_mission(&conn, &mission_id)
 }
 
 #[tauri::command]

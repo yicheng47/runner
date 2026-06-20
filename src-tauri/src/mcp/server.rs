@@ -22,6 +22,7 @@ impl RunnerMcpHandler {
         r.merge(Self::crew_router());
         r.merge(Self::runner_router());
         r.merge(Self::slot_router());
+        r.merge(Self::mission_router());
         r
     }
 }
@@ -35,8 +36,8 @@ impl ServerHandler for RunnerMcpHandler {
             .with_protocol_version(ProtocolVersion::LATEST)
             .with_server_info(implementation)
             .with_instructions(
-                "Runner MCP server. CRUD access to crews, runners, and slots — \
-                 the building blocks of a Runner workspace.",
+                "Runner MCP server. Access crews, runners, slots, and mission \
+                 lifecycle/status tools for operating a Runner workspace.",
             )
     }
 }
@@ -62,7 +63,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_router_registers_phase_2_crud_tools() {
+    fn tool_router_registers_workspace_and_mission_tools() {
         let router = RunnerMcpHandler::tool_router();
         let names: std::collections::BTreeSet<_> = router
             .list_all()
@@ -87,6 +88,18 @@ mod tests {
             "slot_delete",
             "slot_set_lead",
             "slot_reorder",
+            "mission_list",
+            "mission_get",
+            "mission_list_summary",
+            "mission_feed",
+            "mission_status",
+            "mission_start",
+            "mission_stop",
+            "mission_archive",
+            "mission_pin",
+            "mission_rename",
+            "mission_reset",
+            "mission_post_human_signal",
         ]
         .iter()
         .map(|s| s.to_string())
