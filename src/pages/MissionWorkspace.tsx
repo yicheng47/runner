@@ -1328,7 +1328,7 @@ function TabButton({
     <button
       type="button"
       onClick={onClick}
-      className={`-mb-px border-b-2 px-3.5 py-2.5 text-[13px] transition-colors ${
+      className={`-mb-px flex items-center border-b-2 px-3.5 py-2.5 text-[13px] leading-none transition-colors ${
         active
           ? "border-accent font-medium text-fg"
           : "border-transparent text-fg-2 hover:text-fg"
@@ -1336,7 +1336,7 @@ function TabButton({
     >
       {children}
       {shortcut ? (
-        <span className="ml-2 font-mono text-[11px] font-normal text-fg-3">
+        <span className="ml-2 font-mono text-[11px] font-normal leading-none text-fg-3">
           {shortcut}
         </span>
       ) : null}
@@ -1366,7 +1366,7 @@ function PtyTabButton({
       type="button"
       onClick={onClick}
       title={`@${handle}`}
-      className={`-mb-px flex items-center gap-2 border-b-2 px-3.5 py-2.5 text-[13px] transition-colors ${
+      className={`-mb-px flex items-center gap-2 border-b-2 px-3.5 py-2.5 text-[13px] leading-none transition-colors ${
         active
           ? "border-accent font-medium text-fg"
           : "border-transparent text-fg-2 hover:text-fg"
@@ -1375,7 +1375,7 @@ function PtyTabButton({
       <Terminal aria-hidden className="h-3 w-3 shrink-0" />
       <span className="max-w-[140px] truncate font-mono">@{handle}</span>
       {shortcut ? (
-        <span className="font-mono text-[11px] font-normal text-fg-3">
+        <span className="font-mono text-[11px] font-normal leading-none text-fg-3">
           {shortcut}
         </span>
       ) : null}
