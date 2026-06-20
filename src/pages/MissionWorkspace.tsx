@@ -566,6 +566,29 @@ export default function MissionWorkspace() {
   // any UX off `status === 'completed'` because the migration may
   // later widen archive to include other terminal states.
   const isArchived = mission?.archived_at != null;
+  const shortcutTabs = useMemo<Array<"feed" | string>>(() => {
+    if (isArchived) return ["feed"];
+    const slotTabs = openTabs
+      .map((tabId) => sessions.find((s) => s.id === tabId))
+      .filter((s): s is SessionRow => s !== undefined)
+      .map((s) => s.id);
+    return ["feed", ...slotTabs].slice(0, 9);
+  }, [isArchived, openTabs, sessions]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      if (!/^[1-9]$/.test(e.key)) return;
+      const target = shortcutTabs[Number(e.key) - 1];
+      if (!target) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setActiveTab(target);
+    };
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, [shortcutTabs]);
 
   // Project ask_human → human_question pairings + human_response
   // resolutions out of the feed. Mirrors the router's reconstruct_from_log
