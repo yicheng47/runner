@@ -60,7 +60,12 @@ import {
   readBrandTint,
   STORAGE_APP_BRAND_TINT,
 } from "../lib/settings";
-import type { AppendedEvent, MissionSummary } from "../lib/types";
+import type {
+  AppendedEvent,
+  MissionSummary,
+  SessionActivityEvent,
+  SessionActivityState,
+} from "../lib/types";
 import { StartMissionModal } from "./StartMissionModal";
 import { StartChatModal } from "./StartChatModal";
 import { SettingsModal } from "./SettingsModal";
@@ -140,6 +145,9 @@ export function Sidebar({
   const [directSessions, setDirectSessions] = useState<DirectSessionEntry[]>(
     [],
   );
+  const [directSessionActivity, setDirectSessionActivity] = useState<
+    Record<string, SessionActivityState | undefined>
+  >({});
 
   // Section toggles, persisted so users don't have to re-expand each visit.
   const [missionsOpen, setMissionsOpen] = useState<boolean>(() =>
@@ -293,6 +301,22 @@ export function Sidebar({
     void refreshDirectSessions();
   }, [refreshDirectSessions]);
 
+  useEffect(() => {
+    const visibleIds = new Set(directSessions.map((s) => s.session_id));
+    setDirectSessionActivity((prev) => {
+      let changed = false;
+      const next: Record<string, SessionActivityState | undefined> = {};
+      for (const [id, state] of Object.entries(prev)) {
+        if (!visibleIds.has(id)) {
+          changed = true;
+          continue;
+        }
+        next[id] = state;
+      }
+      return changed ? next : prev;
+    });
+  }, [directSessions]);
+
   // session/exit fires when a running PTY reaps (live → stopped flip).
   // runner/activity fires on every spawn/reap and is our cue that a
   // new direct chat row may have appeared. Both refresh the same list.
@@ -301,9 +325,17 @@ export function Sidebar({
     let unlistenActivity: (() => void) | null = null;
     let unlistenArchived: (() => void) | null = null;
     let unlistenUpdated: (() => void) | null = null;
+    let unlistenStatus: (() => void) | null = null;
     let cancelled = false;
     void Promise.all([
-      listen("session/exit", () => {
+      listen<{ session_id: string }>("session/exit", (event) => {
+        const sessionId = event.payload.session_id;
+        setDirectSessionActivity((prev) => {
+          if (prev[sessionId] == null) return prev;
+          const next = { ...prev };
+          delete next[sessionId];
+          return next;
+        });
         void refreshDirectSessions();
         // A mission slot exiting flips `any_session_live` from true →
         // false (if it was the last live slot). Without this, the
@@ -334,18 +366,26 @@ export function Sidebar({
         // refresh.
         void refreshDirectSessions();
       }),
-    ]).then(([fnExit, fnActivity, fnArchived, fnUpdated]) => {
+      listen<SessionActivityEvent>("session/status", (event) => {
+        setDirectSessionActivity((prev) => ({
+          ...prev,
+          [event.payload.session_id]: event.payload.state,
+        }));
+      }),
+    ]).then(([fnExit, fnActivity, fnArchived, fnUpdated, fnStatus]) => {
       if (cancelled) {
         fnExit();
         fnActivity();
         fnArchived();
         fnUpdated();
+        fnStatus();
         return;
       }
       unlistenExit = fnExit;
       unlistenActivity = fnActivity;
       unlistenArchived = fnArchived;
       unlistenUpdated = fnUpdated;
+      unlistenStatus = fnStatus;
     });
     return () => {
       cancelled = true;
@@ -353,6 +393,7 @@ export function Sidebar({
       unlistenActivity?.();
       unlistenArchived?.();
       unlistenUpdated?.();
+      unlistenStatus?.();
     };
   }, [refreshDirectSessions, refreshMissions]);
 
@@ -681,6 +722,7 @@ export function Sidebar({
                         <SessionRow
                           key={s.session_id}
                           session={s}
+                          activity={directSessionActivity[s.session_id]}
                           selected={s.session_id === currentChatSessionId}
                           renaming={renamingId === s.session_id}
                           onClick={() => openDirectChat(s)}
@@ -951,6 +993,7 @@ function SidebarListRow({
   title,
   mono,
   dim,
+  dotClassName,
   pinned,
   renaming,
   renameValue,
@@ -969,6 +1012,8 @@ function SidebarListRow({
    *  direct chat that can be resumed). Mutes the status dot so the user
    *  can tell which sessions are live at a glance. */
   dim?: boolean;
+  /** Optional explicit status-dot color for rows with richer live state. */
+  dotClassName?: string;
   /** Pinned rows show a Pin icon next to the label. */
   pinned?: boolean;
   /** When true, replaces the label with an inline rename input. */
@@ -988,6 +1033,7 @@ function SidebarListRow({
         title={title}
         mono={mono}
         dim={dim}
+        dotClassName={dotClassName}
         onSubmit={onRenameSubmit}
         onCancel={onRenameCancel}
       />
@@ -1017,7 +1063,7 @@ function SidebarListRow({
       >
         <span
           className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${
-            dim ? "bg-fg-3" : "bg-accent"
+            dotClassName ?? (dim ? "bg-fg-3" : "bg-accent")
           }`}
         />
         {pinned ? (
@@ -1056,6 +1102,7 @@ function SidebarRowRenameInput({
   title,
   mono,
   dim,
+  dotClassName,
   onSubmit,
   onCancel,
 }: {
@@ -1064,6 +1111,7 @@ function SidebarRowRenameInput({
   title?: string;
   mono?: boolean;
   dim?: boolean;
+  dotClassName?: string;
   onSubmit: (next: string) => void;
   onCancel: () => void;
 }) {
@@ -1080,7 +1128,7 @@ function SidebarRowRenameInput({
     >
       <span
         className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${
-          dim ? "bg-fg-3" : "bg-accent"
+          dotClassName ?? (dim ? "bg-fg-3" : "bg-accent")
         }`}
       />
       <input
@@ -1112,8 +1160,34 @@ function SidebarRowRenameInput({
 // SESSION row: adapter from DirectSessionEntry to the shared sidebar
 // row shell. Keeps chat-specific label and rename-null semantics out
 // of the generic visual component.
+type DirectChatDisplayStatus = SessionActivityState | "stopped" | "crashed";
+
+function directChatDisplayStatus(
+  session: DirectSessionEntry,
+  activity: SessionActivityState | undefined,
+): DirectChatDisplayStatus {
+  if (session.status === "stopped" || session.status === "crashed") {
+    return session.status;
+  }
+  return activity === "busy" ? "busy" : "idle";
+}
+
+function directChatDotClassName(status: DirectChatDisplayStatus): string {
+  switch (status) {
+    case "busy":
+      return "bg-accent";
+    case "idle":
+      return "bg-accent/30";
+    case "crashed":
+      return "bg-danger";
+    case "stopped":
+      return "bg-fg-3";
+  }
+}
+
 function SessionRow({
   session,
+  activity,
   selected,
   renaming,
   onClick,
@@ -1122,6 +1196,7 @@ function SessionRow({
   onRenameCancel,
 }: {
   session: DirectSessionEntry;
+  activity: SessionActivityState | undefined;
   selected: boolean;
   renaming: boolean;
   onClick: () => void;
@@ -1134,7 +1209,8 @@ function SessionRow({
     : `${session.display_name} · ${formatStartedAt(session)}`;
   const label = session.title ?? defaultLabel;
   const dim = session.status !== "running";
-  const tooltip = `${session.handle ? `@${session.handle}` : session.display_name} · ${session.status}${
+  const displayStatus = directChatDisplayStatus(session, activity);
+  const tooltip = `${session.handle ? `@${session.handle}` : session.display_name} · ${displayStatus}${
     session.status !== "running" && session.resumable ? " · resumable" : ""
   }${session.pinned ? " · pinned" : ""}`;
 
@@ -1147,6 +1223,7 @@ function SessionRow({
       title={tooltip}
       mono={!!session.handle}
       dim={dim}
+      dotClassName={directChatDotClassName(displayStatus)}
       pinned={session.pinned}
       renaming={renaming}
       renameValue={session.title ?? ""}
