@@ -528,7 +528,7 @@ export const RunnerTerminal = forwardRef<
       // wipe alone is enough to prevent the duplicated-frame artifact,
       // and any older scrollback the user had accumulated stays
       // intact. Plain shells skip the wipe entirely and keep their
-      // history. See docs/impls/0011-pty-host-terminal-runtime.md
+      // history. See docs/impls/archive/0011-pty-host-terminal-runtime.md
       // §"Per-runtime clear-on-resize".
       const skipLocalClear = replayJustDrainedRef.current;
       if (runtimeClearsOnResize(runnerRuntimeRef.current) && !skipLocalClear) {

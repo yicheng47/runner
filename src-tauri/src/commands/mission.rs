@@ -547,7 +547,7 @@ async fn mission_start_impl_with_size(
     // Used here to compose the lead's launch prompt before the spawn
     // loop, so the body can land via the positional `[PROMPT]` argv
     // at process boot rather than racing the post-spawn paste path.
-    // See `docs/impls/0007-spawn-time-prompt-delivery.md`.
+    // See `docs/impls/archive/0007-spawn-time-prompt-delivery.md`.
     let goal_text: String = out
         .mission
         .goal_override

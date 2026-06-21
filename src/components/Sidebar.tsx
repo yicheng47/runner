@@ -141,7 +141,7 @@ export function Sidebar({
   const [missions, setMissions] = useState<MissionSummary[]>([]);
   // Flat list of un-archived direct chats. Running ones first, then
   // stopped/crashed ordered by recency. Refreshed on session/exit and
-  // runner/activity events. See docs/impls/0003-direct-chats.md.
+  // runner/activity events. See docs/impls/archive/0003-direct-chats.md.
   const [directSessions, setDirectSessions] = useState<DirectSessionEntry[]>(
     [],
   );
@@ -199,7 +199,7 @@ export function Sidebar({
   const chatMatch = useMatch("/chats/:sessionId");
   // Which direct-chat session is currently in view. The chat route
   // encodes the session id in the URL (a runner can host multiple
-  // chats — see docs/impls/0003-direct-chats.md), so we match by
+  // chats — see docs/impls/archive/0003-direct-chats.md), so we match by
   // session id rather than handle.
   const currentChatSessionId = chatMatch?.params.sessionId ?? null;
 

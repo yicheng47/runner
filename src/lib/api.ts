@@ -38,14 +38,14 @@ export interface SessionRow extends Session {
   handle: string;
   /** Runner-side `runtime` kind, denormalized onto the row for
    *  per-runtime UX decisions (e.g. clear-on-resize for full-screen
-   *  TUI agents). See docs/impls/0011 §"Per-runtime clear-on-resize". */
+   *  TUI agents). See docs/impls/archive/0011 §"Per-runtime clear-on-resize". */
   runtime: string;
   lead: boolean;
 }
 
 /**
  * Sidebar SESSION row: one entry per un-archived direct session. Multi
- * chat per runner — see docs/impls/0003-direct-chats.md — so the list is
+ * chat per runner — see docs/impls/archive/0003-direct-chats.md — so the list is
  * flat. Stopped/crashed sessions stay listed because they can be
  * resumed via session_resume (which respawns the same row's PTY).
  */

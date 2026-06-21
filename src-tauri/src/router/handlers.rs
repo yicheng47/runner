@@ -22,7 +22,7 @@ use super::{Router, RunnerStatus};
 // imports lived here previously. The mission_goal handler no longer
 // drives launch-prompt delivery — that path moved to spawn-time
 // positional argv in `commands::mission::mission_start` per
-// `docs/impls/0007-spawn-time-prompt-delivery.md`. The resume-fresh-
+// `docs/impls/archive/0007-spawn-time-prompt-delivery.md`. The resume-fresh-
 // fallback (`Router::fire_lead_launch_prompt`) keeps the paste path
 // alive but composes the prompt and selects its own delay internally.
 
@@ -39,7 +39,7 @@ fn submit_body(text: &str) -> Vec<u8> {
 pub(super) fn mission_goal(router: &Router, event: &Event) {
     // Fresh-mission delivery moved to the spawn-time positional
     // `[PROMPT]` argv path (see
-    // `docs/impls/0007-spawn-time-prompt-delivery.md` and
+    // `docs/impls/archive/0007-spawn-time-prompt-delivery.md` and
     // `router::runtime::first_turn_argv`). `commands::mission::
     // mission_start` composes the lead's launch prompt before the
     // spawn loop and passes it to `SessionManager::spawn`; the

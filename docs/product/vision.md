@@ -28,7 +28,7 @@ These are the words the product surfaces to the user; they also map 1:1 to the a
 - **Crew** — a named set of runner *slots* with exactly one lead.
 - **Slot** — a position inside a crew, filled by a runner template. The slot carries the per-crew handle (`@impl`, `@reviewer`, …) and the lead flag. Two slots in different crews can both be filled by the same runner template.
 - **Mission** — one live activation of a crew. Everyone spawns together, shares a coordination bus, ends together.
-- **Session** — the live PTY process for one slot inside a mission (or one runner inside a direct chat).
+- **Session** — the live PTY process for one slot inside a mission, one runner-backed direct chat, or one runtime-only direct chat.
 - **Signal** — a typed notification runners emit for the router to handle. Verb grammar (`ask_lead`, `ask_human`, `mission_goal`, `runner_status`).
 - **Message** — prose posted to the mission. Broadcast or directed (`--to <handle>`).
 - **Inbox** — each runner's projection of the mission: broadcasts plus directs addressed to me. Pull-based — runners check it on convention; nothing auto-interrupts a working runner.
@@ -50,8 +50,9 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 - One-click **Start Mission** on a crew. The mission spawns one session per slot and opens the mission workspace.
 - A mission has its own goal (optional override of the crew default) and its own working directory — the mission cwd is the authoritative working dir for every spawned slot, overriding the runner template's `working_dir`.
 - Concurrent missions on the same crew are allowed; each one is fully namespaced (its own session set, event log, router state).
-- **End Mission** terminates all sessions, archives the workspace read-only, and parks the mission in history.
-- **Sessions outlive the UI window and the app process.** Closing the mission control window does not kill sessions. Quitting and re-launching the app re-mounts live missions from disk and re-attaches to their running PTYs.
+- **Stop Mission** kills the live PTYs but keeps the mission row running and resumable. Resume respawns stopped/crashed slots from their persisted session rows.
+- **Archive Mission** is the terminal end state: it appends `mission_stopped`, marks the mission completed, sets `archived_at`, hides it from active lists, and leaves the workspace read-only by direct URL.
+- **Sessions outlive the UI window, not the app process.** Closing or navigating away from the mission workspace does not kill sessions. Quitting Runner kills the in-process PTYs; on next launch, stale running rows are demoted to stopped and the user resumes them explicitly.
 
 ### 4.3 Live per-runner terminals (with human takeover)
 
@@ -69,7 +70,7 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 
 - Right-rail panel showing all pending `ask_human` cards. Each card shows the triggering signal, the prompt, the choices, and optional `on_behalf_of` attribution when the lead is escalating on a worker's behalf.
 - Click a choice → answer flows back to the asker's stdin.
-- macOS system notification when an agent posts to `@human` or fires `ask_human`, suppressed when the relevant mission/chat is already foregrounded. *(planned — feature 14)*
+- In-app attention is the current contract: pending cards, sidebar/workspace indicators, and feed updates. Native OS notifications are not part of the shipped surface.
 
 ### 4.6 Mission workspace UI
 
@@ -81,14 +82,18 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 
 ### 4.7 Direct chats
 
-- Start a chat with any runner from the Runners page. No mission, no router, no bus — it's just a PTY between the human and the runner's CLI. Useful for quick one-shots.
-- Direct chats persist across app restarts the same way missions do.
+- Start a chat with a runner template or directly with a runtime (`claude-code`, `codex`) plus a working directory. No mission, no router, no bus — it's just a PTY between the human and the agent CLI. Useful for quick one-shots.
+- Direct chat rows persist across app restarts. The live PTY does not; stopped rows can be resumed, and runtime-only chats reconstruct their ephemeral runner config from `agent_runtime` / `agent_command`.
 
 ### 4.8 App life
 
-- **Auto-update** — a toast surfaces when a new release is available; it stays visible through download → ready, with an explicit Restart button.
+- **Auto-update** — the native app menu owns manual "Check for Updates..."; the toast surfaces available/downloading/ready states, with an explicit Restart button once installed.
 - **Logging + crash reporting** — `tauri-plugin-log` writes to the OS log dir for the bundle; a panic hook captures backtraces; Help → Reveal Logs in Finder.
-- **Theming** — Carbon dark by default; a Codex Light variant is available via Settings → Theme. Full Auto/Light/Dark with a Solarized Light surface is planned (feature 15).
+- **Theming** — Settings exposes Auto / Light / Dark appearance, light variants (Codex, Catppuccin Latte), dark variants (Carbon, Catppuccin Mocha), and separate terminal themes.
+
+### 4.9 External control
+
+- **MCP** — external Claude Code / Codex sessions can inspect and operate Runner through the bundled `runner-mcp` bridge: crew/runner/slot CRUD plus mission lifecycle, feed, and status tools. Runner.app remains the state owner; MCP is a local control surface, not a remote server.
 
 ## 5. The demo loop
 
@@ -106,7 +111,7 @@ The concrete user flow the product must support end-to-end:
 6. Reviewer signals `changes_requested` and posts specific feedback as a directed message to `coder`.
 7. Coder responds; cycle continues until Reviewer signals `approved`.
 8. If at any point a worker needs human input, it emits `ask_lead`. The lead can answer from context or escalate via `ask_human` (carrying `on_behalf_of: "@coder"`). The HITL card pops; user clicks a choice; router injects the answer into the lead's stdin; lead forwards via a directed message.
-9. User clicks **End Mission**. Sessions terminate, mission marks `completed`, mission appears in the crew's history.
+9. User clicks **Stop** when pausing work, or **Archive** when the mission is done. Archive terminates the run, marks the mission `completed`, and removes it from active mission lists while keeping a read-only record.
 
 If this loop doesn't work end-to-end without the user touching a terminal outside the app, the product hasn't shipped.
 

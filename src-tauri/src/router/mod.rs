@@ -7,7 +7,7 @@
 // `mission_goal`), cross-process stdin push (`ask_lead`, `human_said`,
 // `human_response`), the UI bridge (`ask_human` → `human_question` event),
 // and the runner-availability map (`runner_status`). See arch §5.5 and
-// docs/impls/0001-v0-mvp.md `C8 — Signal router v0`.
+// docs/impls/archive/0001-v0-mvp.md `C8 — Signal router v0`.
 //
 // What this is not. There is no policy engine, no rule abstraction, no
 // per-crew config in MVP. Handlers are a flat `match signal_type { … }`.
@@ -47,7 +47,7 @@ pub trait StdinInjector: Send + Sync + 'static {
     /// submits with Enter. Earlier versions verified the paste
     /// landed by capturing the pane post-paste — that verification
     /// path was tmux-shaped and went away with the runtime
-    /// migration (docs/impls/0011); under the in-process PtyRuntime
+    /// migration (docs/impls/archive/0011); under the in-process PtyRuntime
     /// xterm.js owns the terminal model and the host has nothing
     /// to capture against. Callers MUST NOT sleep before calling.
     fn inject_paste_with_verify(&self, session_id: &str, body: &[u8]) -> Result<()>;

@@ -19,7 +19,7 @@ Runner is a local desktop app. A user configures a **crew** of CLI coding agents
 │                        │                          │                          │
 │                        │  - mission lifecycle     │                          │
 │                        │  - compose prompts       │                          │
-│                        │  - reattach on restart   │                          │
+│                        │  - remount on restart    │                          │
 │                        └────────────┬─────────────┘                          │
 │                                     │  spawns sessions + mounts router/bus   │
 │                                     ▼                                        │
@@ -31,7 +31,7 @@ Runner is a local desktop app. A user configures a **crew** of CLI coding agents
 │   │  - PTY spawn / kill     │               │  - tail NDJSON          │      │
 │   │  - reader threads       │               │  - notify watch         │      │
 │   │  - scrollback rings     │               │  - projections          │      │
-│   │  - reattach by PID      │               │                         │      │
+│   │  - resume stopped rows  │               │                         │      │
 │   └────────────┬────────────┘               └────────────┬────────────┘      │
 │                │                                         │                   │
 │                │                                         ▼                   │
@@ -75,11 +75,11 @@ Runner is a local desktop app. A user configures a **crew** of CLI coding agents
 
 *Orchestration (top of the picture, lifecycle only).*
 
-- **MissionManager** — mission lifecycle (start / end / archive), composes the per-runner system prompt at spawn, and re-mounts live missions on app restart. On launch it reads `missions WHERE status = 'running'` from SQLite, re-opens each mission's NDJSON log, and asks SessionManager to re-attach to running children by PID. Once a mission is up, MissionManager goes quiet until the next lifecycle event — it is *not* in the runtime data path.
+- **MissionManager** — mission lifecycle (start / stop / archive / reset), composes the per-runner system prompt at spawn, and re-mounts router + bus state for `running` missions on app restart. Under the in-process PTY runtime, child agents die with the app process; startup cleanup demotes stale `running` session rows to `stopped` so the UI can offer Resume. Once a mission is up, MissionManager goes quiet until the next lifecycle event — it is *not* in the runtime data path.
 
 *Runtime (the hot path — the row below MissionManager).*
 
-- **SessionManager** — the per-session PTY runtime. Holds each PTY master, runs the blocking reader thread, keeps the scrollback ring, and serializes writes through a tokio mutex. "Reattach by PID" is the cross-restart re-attach path: the runtime metadata on the `sessions` row (PID, codex `agent_session_key`, runtime kind) lets it re-acquire a running child instead of spawning a new one.
+- **SessionManager** — the per-session PTY runtime. Holds each PTY master, runs the blocking reader thread, keeps the scrollback ring, and serializes writes. Resume is a fresh spawn against the same session row; for claude-code/codex, `agent_session_key` lets the agent CLI continue its own conversation when supported.
 - **EventBus** — tails the per-mission NDJSON file with `notify`, parses each new line, and republishes it as Tauri events the webview and the router can subscribe to. "Projections" are the in-memory rollups it computes on the fly — inbox, pending HITL cards, status map — all derived from the same event stream.
 
 **The Signal router** sits downstream of the EventBus. When a parsed line is a built-in signal type, the router runs a fixed handler. The "inject_stdin / human_question / status" arrow into SessionManager covers the three things a handler can do: write bytes into a specific session's PTY master (`inject_stdin` — launch prompt to lead on `mission_goal`, human choice on `human_response`, worker question on `ask_lead`), append a new event back to the NDJSON log so the UI renders a HITL card (`human_question`), or update the in-memory status map (`runner_status` events from the forwarder feed this).
@@ -92,16 +92,16 @@ Runner is a local desktop app. A user configures a **crew** of CLI coding agents
 
 **What's not in the picture.** The SQLite DB. That's deliberate — SQLite holds configuration and session-lifecycle metadata only (runners, crews, slots, mission rows, session rows with PID + runtime metadata). It is not on the runtime hot path. All live coordination state lives in the NDJSON file or in the router's in-memory map.
 
-**The invariant this picture encodes.** There is exactly one piece of mutable shared state per mission: `events.ndjson`. Every other component is either a writer to it (the `runner` CLI; the router for `human_question`), a reader of it (EventBus → router + UI), or a per-session PTY pipeline that doesn't touch it directly. That's what makes the system crash-durable and replayable — on restart, MissionManager re-opens the file, re-spawns the router with replay, re-attaches the PTYs, and the picture is whole again without any in-memory state having survived.
+**The invariant this picture encodes.** There is exactly one piece of mutable shared state per mission: `events.ndjson`. Every other component is either a writer to it (the `runner` CLI; the router for `human_question`), a reader of it (EventBus → router + UI), or a per-session PTY pipeline that doesn't touch it directly. That's what makes mission coordination crash-durable and replayable — on restart, Runner re-opens the file and reconstructs router/feed projections from replay. PTY children themselves do not survive app restart under the in-process runtime; their rows become resumable stopped sessions.
 
 ## 2. Tech stack
 
 | Layer | Choice | Why |
 |---|---|---|
-| Desktop shell | **Tauri 2** | Native binary + WebKit2 webview. Smaller than Electron, Rust-native plugin surface, ships dmg/AppImage/msi cleanly. |
+| Desktop shell | **Tauri 2** | Native binary + WebKit2 webview. Smaller than Electron, Rust-native plugin surface, ships dmg/AppImage cleanly. |
 | Backend language | **Rust** | One language for the PTY layer, the NDJSON writer, the router, and the Tauri commands. No FFI churn. |
 | Frontend | **React 19 + TypeScript** | Familiar, fast, no SSR concerns inside Tauri. |
-| Styling | **Tailwind 4** + tokenized CSS variables | Design palette lives in `:root` vars; `<html data-theme>` swaps Carbon variants. |
+| Styling | **Tailwind 4** + tokenized CSS variables | Design palette lives in `:root` vars; `<html data-theme>` swaps the active appearance variant. Terminal themes are separate from app chrome themes. |
 | Terminal emulator | **xterm.js** (+ `xterm-addon-webgl`, fit, search, hyperlinks) | Mature, accurate ANSI/alt-screen rendering. WebGL backend keeps redraws cheap. |
 | PTY runtime | **`portable-pty`** (in-process) | One OS thread per session reads bytes off the PTY master; writes go back through a tokio-mutex-guarded writer. Earlier tmux-backed runtime retired (see `docs/impls/archive/0011-pty-host-terminal-runtime.md`). |
 | Persistence | **SQLite via `rusqlite`** (WAL mode) | Config + session lifecycle only; coordination state lives in the NDJSON event log. |
@@ -110,6 +110,7 @@ Runner is a local desktop app. A user configures a **crew** of CLI coding agents
 | Bundled CLI | **`runner` binary** | The agents talk to the bus through this — `runner signal …`, `runner msg post …`, `runner msg read`. Bundled with the app, dropped at `$APPDATA/runner/bin/runner` on first run, PATH-prepended per spawn. |
 | Logging | **`tauri-plugin-log`** + a Rust panic hook | Writes to the OS log dir for the bundle; backtraces captured to the same file. |
 | Auto-update | **`tauri-plugin-updater`** | Signed updates from the GitHub Releases manifest; UI surfaces the toast through download → ready. |
+| MCP | **`rmcp` + Unix socket + `runner-mcp` bridge** | Runner.app owns stateful tool execution; external MCP clients spawn `runner-mcp`, which bridges stdio to the app's local Unix socket. |
 
 **Platform targets.** macOS (Apple Silicon + x64) primary; Linux (x64) best-effort. Windows is deferred — `portable-pty` works there but no one is on the validation loop.
 
@@ -187,7 +188,8 @@ A mission is the only runtime container in the system. Everything alive at runti
 
 Lifecycle:
 - **Start**: user clicks Start Mission on a crew. A mission row is created (with its own `cwd` and an optional per-mission `goal_override`), one session is spawned per slot, the router boots with fresh state, and an NDJSON file is opened.
-- **End**: explicit stop, or all sessions exited. Every session is killed, the router stops, the mission row is closed out.
+- **Stop**: user pauses the mission. Live PTYs are killed, but the mission row remains `running`; router/bus state stays mounted and stopped slots can be resumed.
+- **Archive**: user ends the mission. Runner appends `mission_stopped`, marks the row `completed`, sets `archived_at`, kills any live PTYs, and unmounts router/bus state. Archived missions are hidden from active lists and render read-only by direct URL.
 
 **Mission cwd is authoritative.** Each mission carries its own `cwd` column. Spawned slots inherit `mission.cwd` regardless of what the runner template's `working_dir` says — that field is only used in direct chats (where there is no mission). This makes "start two missions on the same crew but in different repos" trivial.
 
@@ -195,18 +197,18 @@ Concurrent missions on the same crew are allowed — a crew is a reusable templa
 
 ### 3.5 Session — *one slot's PTY process*
 
-The runtime instance of a slot inside a mission, or of a runner in a direct chat. A Session is to a slot/runner what a Mission is to a Crew: the *run* of a *configuration*.
+The runtime instance of a slot inside a mission, a runner-backed direct chat, or a runtime-only direct chat. A Session is to a slot/runner/runtime what a Mission is to a Crew: the *run* of a *configuration*.
 
 Two flavors, distinguished by whether `mission_id` is set on the session row:
 
 - **Mission session** — spawned when a mission starts; one session per slot. It dies with the mission. The session participates in the crew's coordination bus, sees broadcasts, can receive `inject_stdin` from the router. The `RUNNER_HANDLE` env var carries the *slot* handle, not the runner template's global handle — so a runner template used as `@impl` in one crew sees `RUNNER_HANDLE=impl` there.
-- **Direct-chat session** — spawned ad-hoc from the Runners page without a parent mission. `mission_id` is null and the working directory lives on the session row directly. The runner is **not on any coordination bus** — there's no event log, no router, no inbox; it's just a one-on-one PTY between the human and the runner's CLI. `RUNNER_HANDLE` here is the runner template's globally-unique handle.
+- **Direct-chat session** — spawned ad-hoc without a parent mission. It can be backed by a runner template or by a bare runtime selection. `mission_id` is null and the working directory lives on the session row directly. The agent is **not on any coordination bus** — there's no event log, no router, no inbox; it's just a one-on-one PTY between the human and the agent CLI. Runner-backed chats keep `runner_id`; runtime-only chats store `runner_id = NULL` plus `agent_runtime` / `agent_command`.
 
 A session owns:
 - A PTY master handle (the only object in the system with a file descriptor to a running child process).
 - A blocking reader thread that drains the PTY and pushes bytes to the scrollback ring + a Tauri event stream.
 - A writer for stdin injection (used by the human and by the router's fixed handlers), serialized through a tokio mutex.
-- A scrollback ring (~10k lines) that survives frontend tab-switches and app restarts within the mission.
+- A bounded scrollback ring that survives frontend tab switches and route changes while the app process is alive.
 - An exit status once the child has terminated.
 
 A session is the only object in the system that actually *executes* code — everything else is metadata, a coordination channel, or a projection over the event log.
@@ -384,13 +386,13 @@ System prompt content is delivered to the runtime via its native flag for the le
 
 The xterm pane is a real terminal, not a log viewer. Special keys (arrows, Enter, Ctrl-C) pass through untouched. The agent on the other end can't tell whether the bytes came from the router, the human, or its normal terminal input — which is the point.
 
-### 5.5 Sessions outlive the UI *and* the app process
+### 5.5 Sessions outlive the UI, not the app process
 
 Sessions live in the Rust backend and belong to the mission, not to any webview or tab. Closing the mission control window does *not* kill the sessions — the agents keep running, events keep flowing into the NDJSON file, and the router keeps handling live signals. Re-opening the window re-attaches: the frontend fetches each session's scrollback ring to rebuild xterm state, then subscribes to live output from wherever it was.
 
-**Sessions also persist across app restart.** When the user quits Runner, child processes keep running because they are session-leaders in their own process groups. On next launch, MissionManager re-mounts every mission row with status `running` from SQLite, re-opens its NDJSON event log, restarts the router with a replay over the existing log, and the session runtime re-attaches to each running PTY child by PID. The frontend sees a fully live mission the moment the workspace opens. The runtime metadata stored on the `sessions` row (`runtime`, `pid`, `agent_session_key` for codex resume, …) is what makes the reattach possible.
+**Rows persist across app restart; PTY children do not.** With the in-process `portable-pty` runtime, child agents die with Runner. On next launch, Runner re-mounts router/bus state for `running` missions, replays the NDJSON log, then demotes stale `running` session rows to `stopped`. The workspace can still show durable mission context and Resume controls, but Resume spawns a fresh PTY against the same session row.
 
-The only things that end a session are: user clicks End Mission, the child process exits, or the app explicitly kills the process tree.
+The things that end a live PTY are: user clicks Stop/Archive, the child process exits, the app quits, or Runner explicitly kills the process tree.
 
 ### 5.6 Writer serialization
 
@@ -402,7 +404,7 @@ The PTY master writer is shared between the human (via `send_input` command) and
 
 ### 5.8 Scrollback
 
-`VecDeque<String>` ring (~10k lines) per session in SessionManager. Survives tab-switches and app restarts within the mission. Overflow lines append to `missions/{mission_id}/sessions/{session_id}.log`. The ring sees raw bytes including alt-screen toggles — acceptable because the frontend replays through xterm.js which can absorb them.
+Bounded raw-byte ring per session in SessionManager. It survives tab switches, route changes, and late workspace attachment while the app process is alive. It does not survive app restart, and there is no on-disk scrollback overflow today. The ring sees raw bytes including alt-screen toggles — acceptable because the frontend replays through xterm.js which can absorb them.
 
 ### 5.9 Death and kill
 
@@ -690,22 +692,25 @@ sessions (
   -- For mission sessions, deleting the mission detaches the session
   -- (SET NULL) so historical session rows survive for stats.
   mission_id TEXT REFERENCES missions(id) ON DELETE SET NULL,
-  runner_id TEXT NOT NULL REFERENCES runners(id) ON DELETE CASCADE,
+  runner_id TEXT REFERENCES runners(id) ON DELETE CASCADE,
   slot_id TEXT,                       -- back-reference to the slot a mission session filled
   cwd TEXT,                           -- direct-chat working dir
   status TEXT NOT NULL,               -- running | stopped | crashed
   pid INTEGER,
   started_at TEXT, stopped_at TEXT,
-  -- Runtime reattach metadata. NULL = legacy / no longer reattachable.
-  runtime TEXT,                       -- which runtime owns the PID (pty | tmux-legacy)
+  -- Runtime metadata for the live in-process PTY handle. The legacy
+  -- socket/window/pane columns are retained but not written by new rows.
+  runtime TEXT,                       -- which runtime owns the live handle (native-pty)
   runtime_socket TEXT,
   runtime_session TEXT,
   runtime_window TEXT,
   runtime_pane TEXT,
   runtime_cursor INTEGER,
-  -- Agent-side resume key (e.g. codex --last UUID) captured at spawn so
-  -- a cross-restart remount can resume the agent's prior session.
+  -- Agent-side resume key captured at spawn so Resume can ask the CLI to
+  -- continue the prior conversation after a stop or app restart.
   agent_session_key TEXT,
+  agent_runtime TEXT,                 -- runtime-only direct chat identity
+  agent_command TEXT,
   archived_at TEXT,
   title TEXT,                         -- direct-chat title; null for mission sessions
   pinned_at TEXT
@@ -719,7 +724,9 @@ Migrations live in `src-tauri/migrations/`. Schema changes are forward-only — 
 ```
 $APPDATA/runner/
 ├── bin/
-│   └── runner                                # bundled CLI (signal + msg)
+│   ├── runner                                # bundled agent CLI (signal + msg)
+│   └── runner-mcp                            # stdio MCP bridge
+├── mcp.sock                                  # local MCP socket while app is running
 ├── runner.db                                 # SQLite (WAL)
 └── crews/
     └── {crew_id}/
@@ -782,7 +789,7 @@ The write side stays async. Writes are short (keystrokes, stdin pushes are tens 
 | Per live mission | One EventBus tailer task + one Signal router task + the `notify` watcher feeding them, all wired to that mission's NDJSON file. |
 | Per active session | One blocking OS thread (the PTY reader) + the per-session writer mutex + the scrollback ring. |
 
-The "per live mission" tasks come up at mission start (or app restart for missions in `status='running'`) and shut down at mission end. Direct chats don't have these — they have only the per-session thread + writer + ring.
+The "per live mission" tasks come up at mission start (or app restart for missions in `status='running'`) and shut down when the mission is archived. A reversible Stop kills PTYs but leaves router/bus state mounted. Direct chats don't have these — they have only the per-session thread + writer + ring while their PTY is live.
 
 ### 11.4 Cost model
 
@@ -805,14 +812,14 @@ A panic in a PTY reader thread only affects that one session — the reader thre
 2. **Slot is the indirection** that lets one runner template participate in many crews and direct chats without duplication.
 3. **PTY in-process via `portable-pty`, not pipes, not tmux.** TUI fidelity is non-negotiable; the multiplexer adds operational surface area we no longer need.
 4. **NDJSON file per mission, not a broker.** Debuggable and crash-durable.
-5. **CLI wrapper, not MCP.** Works with every agent today.
+5. **CLI wrapper for spawned agents; MCP for external controllers.** Mission agents communicate through the bundled `runner` CLI on PATH. Outside agents/tools use the MCP bridge to inspect and operate Runner itself.
 6. **Signals and messages as distinct primitives.** Keeps the router simple and prose natural.
 7. **The signal router is the only urgent wake-up path.** Runners stay decoupled.
 8. **Prompt composition at spawn time (Layer 1/2/3).** Replaces runtime handshakes.
 9. **Incremental vocabulary.** Today = signals + messages; next = threads + facts; later = mentions + reactions.
 10. **xterm.js for rendering.** Don't reinvent the terminal emulator.
 11. **ULID for event IDs.** Sortable, monotonic within ms.
-12. **Sessions outlive the UI and the app process.** Mission state on disk is the authoritative continuation point.
+12. **Mission state outlives the app process; PTYs do not.** The event log and session rows are the authoritative continuation point, and Resume creates fresh child processes.
 
 ## 13. What would break this architecture
 

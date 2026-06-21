@@ -1749,7 +1749,7 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
     // `agent_session_key`. After exit, resume respawns the
     // *same* row (same id, same agent_session_key column
     // populated) and flips status back to running. See
-    // docs/impls/0003-direct-chats.md.
+    // docs/impls/archive/0003-direct-chats.md.
     let pool = pool_with_schema();
     let now = Utc::now().to_rfc3339();
     let runner_id = ulid::Ulid::new().to_string();
@@ -2114,7 +2114,7 @@ fn codex_mission_resume_grants_event_log_dir_to_sandbox() {
 // (`first_prompt_landed_first_try`, `*_after_retry`,
 // `*_gives_up_after_max_attempts`,
 // `continue_resume_rejects_stale_placeholder`) lived here
-// before docs/impls/0011 retired the readback verify path. The
+// before docs/impls/archive/0011 retired the readback verify path. The
 // post-spawn "continue" auto-paste on resume that
 // also lived here has been removed — Resume just respawns the
 // PTY with no stdin injection, so the helper that synthesized

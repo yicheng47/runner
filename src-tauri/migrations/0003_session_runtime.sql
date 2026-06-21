@@ -1,5 +1,5 @@
 -- Adds runtime metadata columns to sessions for the tmux runtime
--- migration (docs/impls/0004-tmux-session-runtime.md, Step 3).
+-- migration (docs/impls/archive/0004-tmux-session-runtime.md, Step 3).
 --
 -- All columns nullable so existing rows survive the migration with
 -- NULL meaning "legacy portable-pty session — runtime layer can't

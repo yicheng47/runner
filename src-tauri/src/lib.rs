@@ -155,7 +155,7 @@ pub fn run() {
             let login_shell_env = shell_path::resolve_login_shell_env();
 
             // Construct the in-process PTY runtime
-            // (docs/impls/0011). v1 is unix-only — Windows fails at
+            // (docs/impls/archive/0011). v1 is unix-only — Windows fails at
             // startup with a clear error.
             let runtime: Arc<dyn session::runtime::SessionRuntime> = {
                 #[cfg(unix)]

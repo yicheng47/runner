@@ -37,7 +37,7 @@ pub struct SessionRow {
     /// `"shell"`, …). Denormalized onto SessionRow so the frontend's
     /// terminal pane can gate per-runtime UX decisions
     /// (clear-on-resize for full-screen TUIs, etc.) without a second
-    /// runner lookup. See docs/impls/0011 §"Per-runtime clear-on-resize".
+    /// runner lookup. See docs/impls/archive/0011 §"Per-runtime clear-on-resize".
     pub runtime: String,
     /// Whether this runner is the lead for the mission's crew.
     pub lead: bool,
@@ -238,7 +238,7 @@ pub async fn session_paste_image(bytes: Vec<u8>) -> Result<()> {
 
 /// One row per direct-chat *session* in the sidebar SESSION tray. Each
 /// runner can host multiple parallel chats — see
-/// docs/impls/0003-direct-chats.md — so the tray is flat (not collapsed per
+/// docs/impls/archive/0003-direct-chats.md — so the tray is flat (not collapsed per
 /// runner). Stopped/crashed rows stay listed because they can be
 /// resumed via `session_resume`, which preserves the row's id and
 /// `agent_session_key`.
@@ -619,7 +619,7 @@ pub async fn session_start_direct(
     // verify loop was working around. Direct chats are off-bus, so
     // the body is just the runner's `system_prompt` (no worker
     // coordination preamble). See
-    // `docs/impls/0007-spawn-time-prompt-delivery.md`.
+    // `docs/impls/archive/0007-spawn-time-prompt-delivery.md`.
     let first_turn =
         crate::router::prompt::compose_direct_first_turn(runner.system_prompt.as_deref());
     let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app));

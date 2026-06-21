@@ -131,7 +131,7 @@ fn now() -> Timestamp {
 /// `system_prompt` ≤ 16 KB plus `mission_goal` ≤ 8 KB leaves the
 /// composed body well under that ceiling so spawn-time argv
 /// delivery is guaranteed to fit. See
-/// `docs/impls/0007-spawn-time-prompt-delivery.md`.
+/// `docs/impls/archive/0007-spawn-time-prompt-delivery.md`.
 pub const MAX_SYSTEM_PROMPT_BYTES: usize = 16 * 1024;
 
 /// Reject `system_prompt` payloads that would exceed the

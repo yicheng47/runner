@@ -703,7 +703,7 @@ pub(crate) fn runtime_direct_runner(runtime: &str, command: Option<&str>) -> Res
 
 // The first-prompt readback machinery (FirstPromptConfig,
 // FIRST_PROMPT_CONFIG, PLACEHOLDER_MIN_BODY_LEN) lived here before
-// docs/impls/0011 retired the verify-and-retry loop it tuned;
+// docs/impls/archive/0011 retired the verify-and-retry loop it tuned;
 // `inject_paste` is now a single write-then-Enter and the previous
 // "schedule continue on resume" auto-nudge has been removed — Resume
 // now just respawns the PTY and lets the user drive the agent.
