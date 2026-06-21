@@ -53,11 +53,11 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // runners on existing installs are unaffected. (Was 0003 pre-rename
 // — the freed 0002 slot used to hold the default-crew SQL seed,
 // which now lives in `seed_default_crew` below.)
-// 0003: nullable runtime_* columns on `sessions` for the tmux
-// runtime migration (docs/impls/0004-tmux-session-runtime.md). Pure
-// schema add — no data backfill, existing rows keep NULL runtime
-// metadata, which the manager (post-Step 9) treats as "legacy
-// portable-pty session, can't reattach."
+// 0003: nullable runtime_* columns on `sessions` from the old
+// runtime migration. `runtime` + `runtime_session` still identify
+// the live PTY runtime session while the app is running;
+// `runtime_socket`, `runtime_window`, and `runtime_pane` are legacy
+// and unused by new PTY-runtime writes.
 // 0004: adds `archived_at` to missions so the workspace can filter
 // archived missions out of search/list surfaces without conflating
 // them with `status = 'completed'`. Backfills existing completed
@@ -761,8 +761,8 @@ Talking to the human:
         // Regression guard for #51: the seed system_prompts must be
         // persona-only — the bus contract (runner msg post / runner
         // msg read / ask_lead, plus @<handle> framing) is now the
-        // job of WORKER_COORDINATION_PREAMBLE in
-        // session::manager::schedule_mission_first_prompt. If a
+        // job of WORKER_COORDINATION_PREAMBLE in the runtime prompt
+        // composer for mission first-turn argv delivery. If a
         // future drift adds bus verbs back into the seed prompts,
         // direct chats would surface verbs that don't work
         // (RUNNER_CREW_ID / RUNNER_MISSION_ID / RUNNER_EVENT_LOG are
@@ -913,10 +913,10 @@ Talking to the human:
 
     #[test]
     fn sessions_has_runtime_columns_after_migration() {
-        // Defensive: the tmux runtime layer (Step 5+) reads /
-        // writes these columns by name. If a future migration
-        // ever renames or drops one, this test fails before
-        // anything panics at runtime.
+        // Defensive: keep the legacy runtime columns present for
+        // existing databases. New PTY-runtime writes use only
+        // `runtime` + `runtime_session`; socket/window/pane are
+        // legacy and unused since the PTY migration.
         use tempfile::tempdir;
         let dir = tempdir().unwrap();
         let path = dir.path().join("runner.db");

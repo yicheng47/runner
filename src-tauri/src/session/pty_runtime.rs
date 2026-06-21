@@ -1,5 +1,4 @@
 // In-process `SessionRuntime` implementation over `portable-pty`.
-// Replaces the tmux runtime in `session::tmux_runtime` per impl 0011.
 //
 // One PtyRuntime instance owns a HashMap of session_id → SessionHandle.
 // Per session: PTY master fd, child handle, writer mutex, killer
@@ -10,12 +9,6 @@
 // consumes. There is no host-side terminal model; xterm.js on the
 // frontend is the only emulator. See plan §"Why no headless emulator"
 // for the trade-offs.
-//
-// `resume(...)` is intentionally defensive: under the in-process model
-// the manager's `reattach_running_sessions` is short-circuited at app
-// start (DB cleanup demotes any prior `running` rows to `stopped`), so
-// this trait method is never reached on the live path. If it does fire,
-// erroring loud is better than returning a half-initialized stream.
 //
 // The `#[cfg(unix)]` gate is applied at the parent `session/mod.rs`
 // when this module is registered, so no inner attribute is needed
@@ -96,11 +89,9 @@ const EXIT_UNSET: i32 = i32::MIN;
 
 impl SessionRuntime for PtyRuntime {
     fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
-        // Compose PATH the same way the tmux runtime does so direct-chat
-        // sessions get identical shell-resolution behavior across the
-        // cutover. `launch::compose_path` is the canonical place for
-        // shim_dir / bundled_bin_dir / shell_path / HOME / inherited
-        // PATH precedence rules.
+        // `launch::compose_path` is the canonical place for shim_dir /
+        // bundled_bin_dir / shell_path / HOME / inherited PATH
+        // precedence rules.
         let inherited_path = std::env::var("PATH").ok();
         let home_path: Option<PathBuf> = std::env::var_os("HOME").map(PathBuf::from);
         let composed_path = launch::compose_path(
@@ -134,7 +125,7 @@ impl SessionRuntime for PtyRuntime {
         }
 
         // Reserved env names (PATH) come from the composed result, not
-        // from spec.env — same precedence as the tmux launch script.
+        // from spec.env.
         for (k, v) in &spec.env {
             if launch::is_reserved_env_name(k) {
                 continue;
@@ -148,7 +139,7 @@ impl SessionRuntime for PtyRuntime {
         }
         cmd.env("PATH", &composed_path);
         // COLUMNS/LINES so Node-based TUIs pick up the initial grid
-        // before SIGWINCH lands — same hint the tmux launcher injects.
+        // before SIGWINCH lands.
         cmd.env("COLUMNS", cols.to_string());
         cmd.env("LINES", rows.to_string());
 
@@ -214,29 +205,14 @@ impl SessionRuntime for PtyRuntime {
 
         let rt_session = RuntimeSession {
             runtime: RUNTIME_LABEL.to_string(),
-            socket: String::new(),
-            session_name: spec.session_id.clone(),
-            window: "main".to_string(),
-            pane: spec.session_id,
+            session_id: spec.session_id,
         };
         let stream = OutputStream::new(rx, stop);
         Ok((rt_session, stream))
     }
 
-    fn resume(&self, session: &RuntimeSession) -> RuntimeResult<OutputStream> {
-        // Under the in-process model the manager's reattach pass is
-        // short-circuited at startup, so this is only reachable via a
-        // legacy code path. Failing loud beats handing back a stream
-        // that drops the bytes a still-alive session is producing.
-        Err(RuntimeError::Msg(format!(
-            "pty runtime: resume() is not used in-process; \
-             session {} should be respawned via SessionManager::resume",
-            session.session_name
-        )))
-    }
-
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
-        let handle = lookup(self, &session.session_name)?;
+        let handle = lookup(self, &session.session_id)?;
         let mut killer = handle.killer.lock().expect("killer poisoned");
         killer
             .kill()
@@ -244,25 +220,17 @@ impl SessionRuntime for PtyRuntime {
         Ok(())
     }
 
-    fn paste(&self, session: &RuntimeSession, payload: &[u8]) -> RuntimeResult<()> {
-        // xterm.js handles bracketed-paste wrapping on the user-input
-        // path. Rust-side callers (manager's `inject_paste`) that want
-        // bracketing also prefix it themselves before calling — see
-        // `manager::inject_paste`. The runtime just writes the bytes.
-        write_to(self, &session.session_name, payload)
-    }
-
     fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
-        write_to(self, &session.session_name, bytes)
+        write_to(self, &session.session_id, bytes)
     }
 
     fn send_key(&self, session: &RuntimeSession, key: &str) -> RuntimeResult<()> {
         let bytes = translate_key(key)?;
-        write_to(self, &session.session_name, &bytes)
+        write_to(self, &session.session_id, &bytes)
     }
 
     fn resize(&self, session: &RuntimeSession, cols: u16, rows: u16) -> RuntimeResult<()> {
-        let handle = lookup(self, &session.session_name)?;
+        let handle = lookup(self, &session.session_id)?;
         let master = handle.master.lock().expect("master poisoned");
         master
             .resize(PtySize {
@@ -280,7 +248,7 @@ impl SessionRuntime for PtyRuntime {
             .sessions
             .lock()
             .expect("PtyRuntime.sessions poisoned")
-            .get(&session.session_name)
+            .get(&session.session_id)
         {
             Some(h) => Arc::clone(h),
             None => return Ok(None),
@@ -640,15 +608,12 @@ fn format_command_summary(command: &str, args: &[String]) -> String {
 
 /// Demote any rows still marked `running` in the DB to `stopped`. Run
 /// once at app startup before `SessionManager` accepts work, so the
-/// sidebar reflects "agent died with prior app process" reality
-/// without trying to reattach to a PTY that doesn't exist anymore.
+/// sidebar reflects "agent died with prior app process" reality.
 ///
-/// Matches the legacy reattach pass's behavior on a dead pane: status
-/// flips to `stopped`, `stopped_at` records the wall-clock at cleanup
-/// time, `pid` is left as the prior value for diagnostics. Mission
-/// rows are demoted alongside direct chats — the router will need
-/// re-mount on next user interaction, same as today's tmux flow when
-/// reattach fails.
+/// Status flips to `stopped`, `stopped_at` records the wall-clock at
+/// cleanup time, and `pid` is left as the prior value for diagnostics.
+/// Mission rows are demoted alongside direct chats; users can resume
+/// them by spawning a fresh PTY through `SessionManager::resume`.
 pub fn cleanup_stale_running_rows_on_startup(
     pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
 ) -> rusqlite::Result<usize> {
@@ -813,7 +778,6 @@ mod tests {
         while std::time::Instant::now() < deadline {
             match stream.recv_timeout(std::time::Duration::from_millis(200)) {
                 Ok(RuntimeOutput::Stream(bytes)) => collected.extend_from_slice(&bytes),
-                Ok(RuntimeOutput::Replay(_)) => panic!("pty runtime must not emit Replay"),
                 Ok(RuntimeOutput::StatusTransition { .. }) => {}
                 Err(_) => {}
             }
@@ -855,7 +819,6 @@ mod tests {
                     }
                 }
                 Ok(RuntimeOutput::Stream(_)) => {}
-                Ok(RuntimeOutput::Replay(_)) => panic!("pty runtime must not emit Replay"),
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
@@ -905,10 +868,7 @@ mod tests {
         let rt = PtyRuntime::new();
         let phantom = RuntimeSession {
             runtime: RUNTIME_LABEL.into(),
-            socket: String::new(),
-            session_name: "nonexistent".into(),
-            window: "main".into(),
-            pane: "nonexistent".into(),
+            session_id: "nonexistent".into(),
         };
         assert!(rt.status(&phantom).unwrap().is_none());
     }
@@ -921,18 +881,5 @@ mod tests {
             .unwrap();
         rt.resize(&sess, 120, 40).expect("resize should succeed");
         rt.stop(&sess).unwrap();
-    }
-
-    #[test]
-    fn resume_returns_error_under_pty_runtime() {
-        let rt = PtyRuntime::new();
-        let phantom = RuntimeSession {
-            runtime: RUNTIME_LABEL.into(),
-            socket: String::new(),
-            session_name: "phantom".into(),
-            window: "main".into(),
-            pane: "phantom".into(),
-        };
-        assert!(matches!(rt.resume(&phantom), Err(RuntimeError::Msg(_))));
     }
 }

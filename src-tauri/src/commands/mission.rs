@@ -11,7 +11,6 @@
 // human's intent, which the orchestrator routes to the lead via the
 // built-in rule in C8).
 
-use std::collections::HashSet;
 use std::path::Path;
 
 use chrono::Utc;
@@ -910,9 +909,9 @@ pub async fn mission_attach(
 ///  * `mission_attach` — workspace UI mount path; runs on every
 ///    workspace navigation. After the startup reconciler runs, this is
 ///    almost always a no-op.
-///  * `reattach_all_running_missions` — app startup path; runs once
-///    per running mission before session reattach so forwarder threads
-///    don't emit `mission_*` events into a non-existent subscriber.
+///  * `mount_all_running_mission_routers` — app startup path; runs once
+///    per running mission so router/event-bus fanout is restored for
+///    missions that remain marked running in the DB.
 ///
 /// Returns `Ok(())` (no-op) when the mission's router is already
 /// registered, or when the mission isn't in the `running` state.
@@ -1024,52 +1023,41 @@ pub(crate) async fn ensure_mission_router_mounted(
 
 /// Walk every `running` mission and mount its Router + EventBus.
 ///
-/// Runs once at app startup, before `SessionManager::reattach_running_sessions`,
-/// so the bus is in place when forwarder threads start emitting
-/// `mission_*` events. The NDJSON log is the source of truth; this
-/// just re-wires the in-memory fanout layer that died with the old
-/// process.
+/// Runs once at app startup. The NDJSON log is the source of truth;
+/// this just re-wires the in-memory fanout layer that died with the
+/// old process. The PTY startup cleanup later demotes stale running
+/// session rows; it does not reattach child processes from the prior
+/// app process.
 ///
 /// Per-mission isolation: if one mission's mount fails (corrupt log,
 /// missing crew row, etc.), it gets logged and the loop continues.
-/// The returned set lists every mission whose mount failed —
-/// callers pass it to `SessionManager::reattach_running_sessions`
-/// so those missions' alive panes are stopped instead of reattached
-/// (preserving the pre-eager-mount safety property that mission
-/// bytes never stream into a non-existent bus).
-pub(crate) async fn reattach_all_running_missions(
-    state: &AppState,
-    app: &tauri::AppHandle,
-) -> HashSet<String> {
+pub(crate) async fn mount_all_running_mission_routers(state: &AppState, app: &tauri::AppHandle) {
     let mission_ids = match state.db.get() {
         Ok(conn) => list_running_mission_ids(&conn).unwrap_or_else(|e| {
-            log::error!("reattach_all_running_missions query failed: {e}");
+            log::error!("mount_all_running_mission_routers query failed: {e}");
             Vec::new()
         }),
         Err(e) => {
-            log::error!("reattach_all_running_missions db pool unavailable: {e}");
+            log::error!("mount_all_running_mission_routers db pool unavailable: {e}");
             Vec::new()
         }
     };
 
-    let mut failed = HashSet::new();
     for mission_id in mission_ids {
         match ensure_mission_router_mounted(state, app, &mission_id).await {
             Ok(()) => {
-                log::info!("mission reattach: id={mission_id} action=mounted");
+                log::info!("mission startup mount: id={mission_id} action=mounted");
             }
             Err(e) => {
-                log::info!("mission reattach: id={mission_id} action=mount_failed → stop");
-                log::warn!("mission {mission_id} mount-failed reattach: {e}");
-                failed.insert(mission_id);
+                log::info!("mission startup mount: id={mission_id} action=mount_failed");
+                log::warn!("mission {mission_id} startup mount failed: {e}");
             }
         }
     }
-    failed
 }
 
 /// Return the ids of every mission that's currently `running` and not
-/// archived. Factored out of `reattach_all_running_missions` so the
+/// archived. Factored out of `mount_all_running_mission_routers` so the
 /// filter logic is unit-testable without an `AppHandle`.
 fn list_running_mission_ids(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare(
