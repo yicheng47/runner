@@ -16,7 +16,7 @@
 // Startup cleanup demotes stale running DB rows to stopped; user-facing
 // resume respawns a fresh PTY with the same session row id.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
@@ -361,34 +361,33 @@ struct SessionHandle {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+#[derive(Default)]
+struct SessionState {
+    handle: Option<SessionHandle>,
+    output_buffer: VecDeque<OutputEvent>,
+    output_seq: u64,
+    alt_screen_on: bool,
+    resuming: bool,
+    killed: bool,
+}
+
+impl SessionState {
+    fn is_empty(&self) -> bool {
+        self.handle.is_none()
+            && self.output_buffer.is_empty()
+            && self.output_seq == 0
+            && !self.alt_screen_on
+            && !self.resuming
+            && !self.killed
+    }
+}
+
 pub struct SessionManager {
-    sessions: Mutex<HashMap<String, SessionHandle>>,
-    output_buffers: Mutex<HashMap<String, VecDeque<OutputEvent>>>,
-    output_seq: Mutex<HashMap<String, u64>>,
-    /// Whether each session is currently inside an alt-screen
-    /// (`\x1b[?1049h` / `\x1b[?47h`). Maintained by scanning every
-    /// runtime chunk in the reader thread; consumed by
-    /// `output_snapshot` so re-attaches that hit a long-running
-    /// session (the original mode-switch escape has rolled off the
-    /// 4096-chunk buffer) get the right buffer prepended. Absent ==
-    /// main-screen, the safe default.
-    alt_screen_on: Mutex<HashMap<String, bool>>,
-    /// Session ids currently inside `resume()`, between the
-    /// validation read and the live-map insert. A second concurrent
-    /// `resume` call for the same id refuses on insert collision so
-    /// two PTYs can't end up racing against the same row (e.g. fast
-    /// double-click on the Resume button, or two windows both
-    /// driving resume).
-    resuming_claims: Mutex<HashSet<String>>,
-    /// Session ids the user explicitly killed via `kill()` /
-    /// `kill_all_for_mission()`. The reader thread checks this set
-    /// when the child exits: a session in it ends as `stopped`
-    /// (intentional), not `crashed` (which is reserved for an
-    /// unexpected non-zero exit). Without this distinction, clicking
-    /// Stop in the workspace would mark every slot crashed because
-    /// SIGTERM produces a non-zero exit code. Entries are cleared by
-    /// the reader after the DB row is updated.
-    killed: Mutex<HashSet<String>>,
+    /// Per-session state. The outer map lock protects membership only;
+    /// each session's hot mutable state lives behind its own mutex so
+    /// PTY output for one busy session does not block lifecycle work on
+    /// other sessions.
+    sessions: Mutex<HashMap<String, Arc<Mutex<SessionState>>>>,
     /// User's login-shell env snapshot, captured once at app start by
     /// `shell_path::resolve_login_shell_env`. Empty when the resolve
     /// failed/timed out, when running on Windows, or in tests.
@@ -423,7 +422,7 @@ pub struct SessionManager {
     runtime: Arc<dyn SessionRuntime>,
 }
 
-/// RAII guard that releases a `resuming_claims` entry on drop. The
+/// RAII guard that releases a session state's `resuming` flag on drop. The
 /// entry is inserted at the start of `resume()`; the guard's Drop
 /// removes it on every exit path (Ok, Err, panic), so a failed
 /// resume doesn't leave the session permanently locked out from
@@ -435,11 +434,7 @@ struct ResumeClaim {
 
 impl Drop for ResumeClaim {
     fn drop(&mut self) {
-        self.mgr
-            .resuming_claims
-            .lock()
-            .unwrap()
-            .remove(&self.session_id);
+        self.mgr.release_resume_claim(&self.session_id);
     }
 }
 
@@ -515,16 +510,96 @@ impl SessionManager {
     ) -> Arc<Self> {
         Arc::new(Self {
             sessions: Mutex::new(HashMap::new()),
-            killed: Mutex::new(HashSet::new()),
-            output_buffers: Mutex::new(HashMap::new()),
-            output_seq: Mutex::new(HashMap::new()),
-            alt_screen_on: Mutex::new(HashMap::new()),
-            resuming_claims: Mutex::new(HashSet::new()),
             shell_env,
             claude_launch_gate: Mutex::new(None),
             pending_mission_cancels: Mutex::new(HashMap::new()),
             runtime,
         })
+    }
+
+    fn session_state(&self, session_id: &str) -> Option<Arc<Mutex<SessionState>>> {
+        self.sessions.lock().unwrap().get(session_id).cloned()
+    }
+
+    fn session_state_or_insert(&self, session_id: &str) -> Arc<Mutex<SessionState>> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(SessionState::default())))
+            .clone()
+    }
+
+    fn prune_empty_session_state(&self, session_id: &str) {
+        let mut sessions = self.sessions.lock().unwrap();
+        let should_remove = sessions
+            .get(session_id)
+            .map(|state| state.lock().unwrap().is_empty())
+            .unwrap_or(false);
+        if should_remove {
+            sessions.remove(session_id);
+        }
+    }
+
+    fn install_handle(&self, session_id: &str, handle: SessionHandle) {
+        let state = self.session_state_or_insert(session_id);
+        let mut state = state.lock().unwrap();
+        state.handle = Some(handle);
+        state.killed = false;
+    }
+
+    fn install_forwarder(&self, session_id: &str, forwarder: thread::JoinHandle<()>) {
+        if let Some(state) = self.session_state(session_id) {
+            if let Some(handle) = state.lock().unwrap().handle.as_mut() {
+                handle.forwarder = Some(forwarder);
+            }
+        }
+    }
+
+    fn live_runtime_session(&self, session_id: &str) -> Result<RuntimeSession> {
+        let Some(state) = self.session_state(session_id) else {
+            return Err(Error::msg(format!("session not found: {session_id}")));
+        };
+        let rt_session = state
+            .lock()
+            .unwrap()
+            .handle
+            .as_ref()
+            .map(|h| h.runtime_session.clone())
+            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+        Ok(rt_session)
+    }
+
+    fn release_resume_claim(&self, session_id: &str) {
+        if let Some(state) = self.session_state(session_id) {
+            state.lock().unwrap().resuming = false;
+        }
+        self.prune_empty_session_state(session_id);
+    }
+
+    fn take_killed(&self, session_id: &str) -> bool {
+        let Some(state) = self.session_state(session_id) else {
+            return false;
+        };
+        let was_killed = {
+            let mut state = state.lock().unwrap();
+            let was_killed = state.killed;
+            state.killed = false;
+            was_killed
+        };
+        self.prune_empty_session_state(session_id);
+        was_killed
+    }
+
+    fn clear_killed(&self, session_id: &str) {
+        if let Some(state) = self.session_state(session_id) {
+            state.lock().unwrap().killed = false;
+        }
+        self.prune_empty_session_state(session_id);
+    }
+
+    fn runtime_session_matches(a: &RuntimeSession, b: &RuntimeSession) -> bool {
+        a.runtime == b.runtime && a.session_id == b.session_id
     }
 
     /// Gate a fresh `claude-code` spawn before calling
@@ -933,8 +1008,8 @@ impl SessionManager {
 
         let stop = output.stop_flag();
         let runtime_session_for_log = rt_session.session_id.clone();
-        self.sessions.lock().unwrap().insert(
-            session_id.clone(),
+        self.install_handle(
+            &session_id,
             SessionHandle {
                 id: session_id.clone(),
                 mission_id: Some(mission.id.clone()),
@@ -964,9 +1039,7 @@ impl SessionManager {
             true,
             spawn_emit_ctx,
         );
-        if let Some(h) = self.sessions.lock().unwrap().get_mut(&session_id) {
-            h.forwarder = Some(forwarder);
-        }
+        self.install_forwarder(&session_id, forwarder);
 
         // Mirror the codex rollout capture from spawn_direct / resume so
         // mission-slot spawns also populate agent_session_key for restart.
@@ -1289,8 +1362,8 @@ impl SessionManager {
             );
         }
 
-        self.sessions.lock().unwrap().insert(
-            session_id.clone(),
+        self.install_handle(
+            &session_id,
             SessionHandle {
                 id: session_id.clone(),
                 mission_id: None,
@@ -1313,9 +1386,7 @@ impl SessionManager {
             emit_activity,
             None, // direct chats are off-bus — no log to append runner_status to
         );
-        if let Some(h) = self.sessions.lock().unwrap().get_mut(&session_id) {
-            h.forwarder = Some(forwarder);
-        }
+        self.install_forwarder(&session_id, forwarder);
 
         // Codex doesn't accept a caller-assigned session id at spawn,
         // so the runtime adapter leaves `assigned_key = None` for
@@ -1393,12 +1464,14 @@ impl SessionManager {
         // the same row. The claim guard releases on every exit path
         // via Drop.
         let _claim = {
-            let mut set = self.resuming_claims.lock().unwrap();
-            if !set.insert(session_id.to_string()) {
+            let state = self.session_state_or_insert(session_id);
+            let mut state = state.lock().unwrap();
+            if state.resuming {
                 return Err(Error::msg(format!(
                     "session {session_id} is already being resumed"
                 )));
             }
+            state.resuming = true;
             ResumeClaim {
                 mgr: Arc::clone(self),
                 session_id: session_id.to_string(),
@@ -1711,8 +1784,8 @@ impl SessionManager {
             );
         }
 
-        self.sessions.lock().unwrap().insert(
-            session_id.to_string(),
+        self.install_handle(
+            session_id,
             SessionHandle {
                 id: session_id.to_string(),
                 mission_id: snap.mission_id.clone(),
@@ -1751,9 +1824,7 @@ impl SessionManager {
             snap.runner_id.is_some(),
             resume_emit_ctx,
         );
-        if let Some(h) = self.sessions.lock().unwrap().get_mut(session_id) {
-            h.forwarder = Some(forwarder);
-        }
+        self.install_forwarder(session_id, forwarder);
 
         // Same codex post-spawn capture as `spawn_direct`: when we
         // respawn a codex chat that has no agent_session_key on the
@@ -1822,8 +1893,8 @@ impl SessionManager {
     /// Forwarder thread shared by `spawn`, `spawn_direct`, and `resume`.
     /// Drains the runtime's `OutputStream` into `session/output`
     /// events, then on channel close queries the runtime for the
-    /// final exit code, flips the DB row, removes the live-map
-    /// entry, and emits `session/exit`. `kill` joins this handle so
+    /// final exit code, flips the DB row, emits `session/exit`, and
+    /// clears the live handle. `kill` joins this handle so
     /// `mission_stop` gets the no-lying-about-termination contract.
     // The thread genuinely needs every one of these — session_id /
     // mission_id for event payloads, runtime_session for status
@@ -1936,8 +2007,7 @@ impl SessionManager {
             // output channel closed. Skipped if `kill` already did it.
             let _ = manager_t.runtime.stop(&rt_session);
 
-            let _ = manager_t.forget(&session_id);
-            let was_killed = manager_t.killed.lock().unwrap().remove(&session_id);
+            let was_killed = manager_t.take_killed(&session_id);
             // Resume failure heuristic: prior conversation rejected
             // and the agent died fast.
             let resume_failed = resuming
@@ -1982,11 +2052,12 @@ impl SessionManager {
                 emit_runner_activity(&pool, &runner, events.as_ref());
             }
             events.exit(&ExitEvent {
-                session_id,
+                session_id: session_id.clone(),
                 mission_id,
                 exit_code,
                 success,
             });
+            let _ = manager_t.forget_runtime_handle(&session_id, &rt_session);
         })
     }
 
@@ -2001,13 +2072,7 @@ impl SessionManager {
     /// keystrokes that might trigger an early submit on the first
     /// `\n`.
     pub fn inject_stdin(&self, session_id: &str, bytes: &[u8]) -> Result<()> {
-        let rt_session = self
-            .sessions
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .map(|h| h.runtime_session.clone())
-            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+        let rt_session = self.live_runtime_session(session_id)?;
         // ASCII CR (0x0D) is what claude-code's TUI editor reads as
         // "Enter" — bare-byte writes that just contain `\r` map to
         // `send_key("Enter")`. Everything else routes as a literal
@@ -2033,13 +2098,7 @@ impl SessionManager {
     /// keeps the same constant — fake runtimes complete instantly so
     /// the wait is harmless.
     pub fn inject_paste(&self, session_id: &str, payload: &[u8]) -> Result<()> {
-        let rt_session = self
-            .sessions
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .map(|h| h.runtime_session.clone())
-            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+        let rt_session = self.live_runtime_session(session_id)?;
         self.runtime.send_bytes(&rt_session, payload)?;
         std::thread::sleep(std::time::Duration::from_millis(120));
         self.runtime
@@ -2061,13 +2120,7 @@ impl SessionManager {
     /// the spawn-time grid regardless of how big the visible grid
     /// is.
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<()> {
-        let rt_session = self
-            .sessions
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .map(|h| h.runtime_session.clone())
-            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+        let rt_session = self.live_runtime_session(session_id)?;
         self.runtime
             .resize(&rt_session, cols, rows)
             .map_err(Into::into)
@@ -2081,13 +2134,11 @@ impl SessionManager {
     /// webview reloads / chat switching for live sessions without turning the
     /// sessions table into a PTY transcript store.
     pub fn output_snapshot(&self, session_id: &str) -> Vec<OutputEvent> {
-        let mut events: Vec<OutputEvent> = self
-            .output_buffers
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .map(|chunks| chunks.iter().cloned().collect())
-            .unwrap_or_default();
+        let Some(state) = self.session_state(session_id) else {
+            return Vec::new();
+        };
+        let state = state.lock().unwrap();
+        let mut events: Vec<OutputEvent> = state.output_buffer.iter().cloned().collect();
         // For sessions currently inside an alt-screen, prepend a
         // synthetic chunk carrying the `\x1b[?1049h` enter escape.
         // Long-running TUI sessions (claude-code, codex) lose the
@@ -2099,14 +2150,7 @@ impl SessionManager {
         // seq=0 sits below every real event's
         // monotonic seq so the frontend's `seq <= lastWrittenSeq`
         // filter doesn't drop it on re-replay.
-        let alt = self
-            .alt_screen_on
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .copied()
-            .unwrap_or(false);
-        if alt {
+        if state.alt_screen_on {
             events.insert(
                 0,
                 OutputEvent {
@@ -2123,13 +2167,12 @@ impl SessionManager {
     /// Kill the child and wait for the reader thread to reap it.
     ///
     /// Sequence:
-    ///   1. Remove the handle from the live map (no further `inject_stdin` /
-    ///      `kill` can target it).
-    ///   2. Drop the master PTY — the child receives SIGHUP and well-behaved
-    ///      programs exit; the reader thread's `read()` returns 0.
-    ///   3. On Unix, belt-and-suspenders: signal SIGTERM (then SIGKILL after
-    ///      200 ms) so a child that ignores SIGHUP can't stall the reader.
-    ///   4. Join the reader thread. It waits the child, updates the DB row
+    ///   1. Mark the session intentionally killed and clone the runtime handle.
+    ///   2. Ask the runtime to stop the child. If this fails, leave the live
+    ///      handle installed so the caller can retry.
+    ///   3. After `runtime.stop` succeeds, clear only the live handle and flip
+    ///      the forwarder's stop flag.
+    ///   4. Join the forwarder thread. It waits the child, updates the DB row
     ///      to stopped/crashed, emits `session/exit`. Only after this
     ///      returns is the caller allowed to consider the session dead —
     ///      which is what `mission_stop` needs in order to flip the mission
@@ -2139,26 +2182,27 @@ impl SessionManager {
         // classifies the upcoming non-zero exit as `stopped`, not
         // `crashed`. We roll this back below if `runtime.stop`
         // fails so a future successful kill applies cleanly.
-        self.killed.lock().unwrap().insert(session_id.to_string());
-
+        //
         // Look up the rt_session WITHOUT removing the handle yet.
-        // The handle stays in the live map until we know
+        // The handle stays present until we know
         // `runtime.stop` succeeded. If it fails (child survived the
         // stop request), bailing here leaves the live handle intact
         // and the caller can retry; if we'd already removed the
         // handle + flipped the cancellation flag, the forwarder
         // thread would reconcile the DB row to `stopped` even
         // though the child is still alive.
+        let Some(state) = self.session_state(session_id) else {
+            return Ok(());
+        };
         let rt_session = {
-            let sessions = self.sessions.lock().unwrap();
-            match sessions.get(session_id) {
-                Some(h) => h.runtime_session.clone(),
+            let mut state = state.lock().unwrap();
+            match state.handle.as_ref().map(|h| h.runtime_session.clone()) {
+                Some(rt_session) => {
+                    state.killed = true;
+                    rt_session
+                }
                 None => {
-                    // Already gone — clear the killed marker we
-                    // just set so subsequent spawns of the same
-                    // id (resume cycles) don't inherit a stale
-                    // intentional flag.
-                    self.killed.lock().unwrap().remove(session_id);
+                    // Already gone.
                     return Ok(());
                 }
             }
@@ -2170,14 +2214,14 @@ impl SessionManager {
             // Roll back: child is alive, the handle stays
             // in the map, the killed marker is cleared. The
             // caller sees the error.
-            self.killed.lock().unwrap().remove(session_id);
+            state.lock().unwrap().killed = false;
             return Err(e.into());
         }
 
         // Stop succeeded. Now tear down the handle and reconcile.
         let (stop, forwarder) = {
-            let mut sessions = self.sessions.lock().unwrap();
-            match sessions.remove(session_id) {
+            let mut state = state.lock().unwrap();
+            match state.handle.take() {
                 Some(mut h) => (h.stop.clone(), h.forwarder.take()),
                 None => return Ok(()), // raced with another caller; no-op
             }
@@ -2194,6 +2238,7 @@ impl SessionManager {
         if let Some(h) = forwarder {
             let _ = h.join();
         }
+        self.clear_killed(session_id);
         Ok(())
     }
 
@@ -2263,8 +2308,11 @@ impl SessionManager {
             let sessions = self.sessions.lock().unwrap();
             sessions
                 .values()
-                .filter(|s| s.mission_id.as_deref() == Some(mission_id))
-                .map(|s| s.id.clone())
+                .filter_map(|state| {
+                    let state = state.lock().unwrap();
+                    let handle = state.handle.as_ref()?;
+                    (handle.mission_id.as_deref() == Some(mission_id)).then(|| handle.id.clone())
+                })
                 .collect()
         };
         for id in ids {
@@ -2282,8 +2330,11 @@ impl SessionManager {
             let sessions = self.sessions.lock().unwrap();
             sessions
                 .values()
-                .filter(|s| s.runner_id.as_deref() == Some(runner_id))
-                .map(|s| s.id.clone())
+                .filter_map(|state| {
+                    let state = state.lock().unwrap();
+                    let handle = state.handle.as_ref()?;
+                    (handle.runner_id.as_deref() == Some(runner_id)).then(|| handle.id.clone())
+                })
                 .collect()
         };
         for id in ids {
@@ -2292,9 +2343,13 @@ impl SessionManager {
         Ok(())
     }
 
-    fn forget(&self, session_id: &str) -> Result<()> {
+    fn forget_runtime_handle(
+        &self,
+        session_id: &str,
+        runtime_session: &RuntimeSession,
+    ) -> Result<()> {
         // Only the live PTY handle is dropped here. We deliberately keep
-        // `output_buffers` and `output_seq` alive so that:
+        // retained output and seq state alive so that:
         //   - `session_output_snapshot` still returns the dead session's
         //     scrollback after kill, so navigating off the chat and
         //     coming back doesn't blank the terminal.
@@ -2305,7 +2360,17 @@ impl SessionManager {
         //     drop, losing the entire post-resume head of output.
         // Use `purge_session_buffers` for explicit cleanup paths
         // (archive, runner delete).
-        self.sessions.lock().unwrap().remove(session_id);
+        if let Some(state) = self.session_state(session_id) {
+            let mut state = state.lock().unwrap();
+            if state
+                .handle
+                .as_ref()
+                .is_some_and(|h| Self::runtime_session_matches(&h.runtime_session, runtime_session))
+            {
+                state.handle = None;
+            }
+        }
+        self.prune_empty_session_state(session_id);
         Ok(())
     }
 
@@ -2314,9 +2379,13 @@ impl SessionManager {
     /// delete) so the bounded ring buffer doesn't accumulate forever.
     /// Safe to call on a session that's never written output.
     pub fn purge_session_buffers(&self, session_id: &str) {
-        self.output_buffers.lock().unwrap().remove(session_id);
-        self.output_seq.lock().unwrap().remove(session_id);
-        self.alt_screen_on.lock().unwrap().remove(session_id);
+        if let Some(state) = self.session_state(session_id) {
+            let mut state = state.lock().unwrap();
+            state.output_buffer.clear();
+            state.output_seq = 0;
+            state.alt_screen_on = false;
+        }
+        self.prune_empty_session_state(session_id);
     }
 
     /// Drop only the output buffer for a session, keeping the seq
@@ -2327,12 +2396,16 @@ impl SessionManager {
     /// `1` — which the frontend's `seq <= lastWrittenSeq` filter
     /// would otherwise drop.
     pub fn purge_output_buffer(&self, session_id: &str) {
-        self.output_buffers.lock().unwrap().remove(session_id);
-        // Resume forks a new child; whether it'll be in alt-screen
-        // depends on the new process's own startup. Clear the state
-        // so it re-derives from the new child's emitted bytes
-        // instead of inheriting the prior child's mode.
-        self.alt_screen_on.lock().unwrap().remove(session_id);
+        if let Some(state) = self.session_state(session_id) {
+            let mut state = state.lock().unwrap();
+            state.output_buffer.clear();
+            // Resume forks a new child; whether it'll be in alt-screen
+            // depends on the new process's own startup. Clear the state
+            // so it re-derives from the new child's emitted bytes
+            // instead of inheriting the prior child's mode.
+            state.alt_screen_on = false;
+        }
+        self.prune_empty_session_state(session_id);
     }
 
     /// Update the per-session alt-screen flag from a raw runtime
@@ -2350,10 +2423,10 @@ impl SessionManager {
     /// matter we can carry a small tail buffer across chunks.
     fn update_alt_screen_state(&self, session_id: &str, bytes: &[u8]) {
         if let Some(new_state) = scan_alt_screen_transition(bytes) {
-            self.alt_screen_on
+            self.session_state_or_insert(session_id)
                 .lock()
                 .unwrap()
-                .insert(session_id.to_string(), new_state);
+                .alt_screen_on = new_state;
         }
     }
 
@@ -2382,12 +2455,10 @@ impl SessionManager {
         mission_id: Option<&str>,
         data: String,
     ) -> OutputEvent {
-        let seq = {
-            let mut seqs = self.output_seq.lock().unwrap();
-            let next = seqs.entry(session_id.to_string()).or_insert(0);
-            *next += 1;
-            *next
-        };
+        let state = self.session_state_or_insert(session_id);
+        let mut state = state.lock().unwrap();
+        state.output_seq += 1;
+        let seq = state.output_seq;
 
         let ev = OutputEvent {
             session_id: session_id.into(),
@@ -2396,11 +2467,9 @@ impl SessionManager {
             data,
         };
 
-        let mut buffers = self.output_buffers.lock().unwrap();
-        let chunks = buffers.entry(session_id.to_string()).or_default();
-        chunks.push_back(ev.clone());
-        while chunks.len() > MAX_OUTPUT_BUFFER_CHUNKS {
-            chunks.pop_front();
+        state.output_buffer.push_back(ev.clone());
+        while state.output_buffer.len() > MAX_OUTPUT_BUFFER_CHUNKS {
+            state.output_buffer.pop_front();
         }
         ev
     }
@@ -3002,13 +3071,20 @@ mod tests {
         // Both sessions live in the SessionManager's map at this point
         // — /bin/cat reads stdin until EOF, so neither has exited yet.
         {
-            let sessions = mgr.sessions.lock().unwrap();
             assert!(
-                sessions.contains_key(&spawned_a.id),
+                mgr.session_state(&spawned_a.id).is_some_and(|state| state
+                    .lock()
+                    .unwrap()
+                    .handle
+                    .is_some()),
                 "session A must be live"
             );
             assert!(
-                sessions.contains_key(&spawned_b.id),
+                mgr.session_state(&spawned_b.id).is_some_and(|state| state
+                    .lock()
+                    .unwrap()
+                    .handle
+                    .is_some()),
                 "session B must be live"
             );
         }
@@ -3032,13 +3108,20 @@ mod tests {
         assert_ne!(status_a, "running", "mission A's session must be reaped");
 
         {
-            let sessions = mgr.sessions.lock().unwrap();
             assert!(
-                !sessions.contains_key(&spawned_a.id),
-                "mission A's session must be removed from the live map",
+                mgr.session_state(&spawned_a.id).is_none_or(|state| state
+                    .lock()
+                    .unwrap()
+                    .handle
+                    .is_none()),
+                "mission A's live handle must be cleared",
             );
             assert!(
-                sessions.contains_key(&spawned_b.id),
+                mgr.session_state(&spawned_b.id).is_some_and(|state| state
+                    .lock()
+                    .unwrap()
+                    .handle
+                    .is_some()),
                 "mission B's session must survive kill_all_for_mission(A)",
             );
         }
@@ -3740,7 +3823,11 @@ mod tests {
             "unexpected error: {err}"
         );
         // No live session left behind.
-        assert!(mgr.sessions.lock().unwrap().is_empty());
+        assert!(mgr.sessions.lock().unwrap().values().all(|state| state
+            .lock()
+            .unwrap()
+            .handle
+            .is_none()));
     }
 
     #[test]
@@ -3799,7 +3886,7 @@ mod tests {
             status != "running",
             "kill returned while session still running: {status}"
         );
-        // killed-set caused the forwarder to classify as `stopped`
+        // The killed flag caused the forwarder to classify as `stopped`
         // even though FakeRuntime returns exit_code=0.
         assert_eq!(status, "stopped");
         // The runtime should have observed at least one stop call
@@ -3813,7 +3900,7 @@ mod tests {
     fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
         // C8.5: a "Chat now" session lives outside any mission. Verify the
         // sessions row has mission_id IS NULL, the session lands in the
-        // live map, and the runner_activity emission fires on spawn.
+        // live state, and the runner_activity emission fires on spawn.
         let pool = pool_with_schema();
         // We don't go through `insert_crew_runner` here because direct
         // chat doesn't need a crew or mission — only a runner row.
