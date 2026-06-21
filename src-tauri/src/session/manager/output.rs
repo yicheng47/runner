@@ -40,8 +40,8 @@ impl SessionManager {
             // Drain PTY output until the runtime closes the channel
             // OR `kill` flips the stop flag. Stream chunks flow as
             // `session/output` events. StatusTransition is routed
-            // into the mission event log so the router / workspace
-            // rail see the busy/idle flip (issue #124).
+            // into either the mission event log or a direct-chat
+            // live status event so the UI sees busy/idle flips.
             //
             // Failure bookkeeping for `runner_status` emission lives
             // here on the consumer's stack — single-threaded access,
@@ -69,11 +69,6 @@ impl SessionManager {
                         events.output(&ev);
                     }
                     Ok(RuntimeOutput::StatusTransition { state, source }) => {
-                        // Direct chats are off-bus; no event log to
-                        // append to. The IdleDetector still runs in
-                        // the forwarder for free — we just drop the
-                        // emission here (see recon notes in issue
-                        // #124).
                         if let Some(ctx) = emit_ctx.as_ref() {
                             let outcome = ctx.try_append_runner_status(state, source);
                             match outcome {
@@ -99,6 +94,12 @@ impl SessionManager {
                                     }
                                 }
                             }
+                        } else {
+                            events.status(&SessionActivityEvent {
+                                session_id: session_id.clone(),
+                                state: state.into(),
+                                source: source.to_string(),
+                            });
                         }
                     }
                     Err(RecvTimeoutError::Timeout) => continue,
