@@ -1,4 +1,4 @@
-// Router unit tests. The list mirrors docs/tests/v0-mvp-tests.md C8.
+// Router unit tests. The list mirrors docs/tests/archive/v0-mvp-tests.md C8.
 //
 // We bypass the event bus entirely here — the router exposes
 // `handle_event(&Event)` synchronously so we can drive it with hand-crafted

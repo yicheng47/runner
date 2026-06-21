@@ -1,7 +1,7 @@
 # MCP Server
 
 > Implements [#40](https://github.com/yicheng47/runner/issues/40).
-> Spec: [docs/features/03-mcp-server.md](../features/03-mcp-server.md).
+> Spec: [docs/features/archive/03-mcp-server.md](../../features/archive/03-mcp-server.md).
 > Reference: [quill PR #211](https://github.com/yicheng47/quill/pull/211) — rmcp 1.7 MCP implementation in a Tauri app.
 
 ## Context
@@ -233,7 +233,7 @@ The existing `CreateCrewInput`, `UpdateCrewInput`, `CreateRunnerInput`, `UpdateR
 
 ### Verification
 
-- `claude mcp list runner` shows the 17 CRUD tools from this phase; mission lifecycle/status tools are tracked in [feature 28](../features/28-mission-mcp-tools.md)
+- `claude mcp list runner` shows the 17 CRUD tools from this phase; mission lifecycle/status tools are tracked in [feature 28](../../features/archive/28-mission-mcp-tools.md)
 - `claude mcp call runner crew_create '{"name":"test"}'` creates crew; Runner sidebar updates live
 - `cargo test --workspace` covers tool wrappers
 - `pnpm exec tsc --noEmit` and `pnpm run lint` clean

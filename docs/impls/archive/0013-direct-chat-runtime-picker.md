@@ -1,6 +1,6 @@
 # Direct Chat Runtime Picker
 
-> Implements [#195](https://github.com/yicheng47/runner/issues/195). Product spec: [docs/features/25-direct-chat-runtime-picker.md](../features/25-direct-chat-runtime-picker.md).
+> Implements [#195](https://github.com/yicheng47/runner/issues/195). Product spec: [docs/features/archive/25-direct-chat-runtime-picker.md](../../features/archive/25-direct-chat-runtime-picker.md).
 
 ## Context
 

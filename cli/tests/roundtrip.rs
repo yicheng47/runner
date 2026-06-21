@@ -1,5 +1,5 @@
 // I2 — `runner` CLI ↔ event log roundtrip.
-// Mirrors docs/tests/v0-mvp-tests.md `## I2`.
+// Mirrors docs/tests/archive/v0-mvp-tests.md `## I2`.
 //
 // Each test sets up a tempdir mission directory, seeds the roster
 // sidecar (the part `mission_start` still writes), spawns the

@@ -868,7 +868,7 @@ mod tests {
 
     #[test]
     fn malformed_line_is_skipped_with_warning() {
-        // Regression for the v0-mvp-tests.md C7 contract: one bad line
+        // Regression for the docs/tests/archive/v0-mvp-tests.md C7 contract: one bad line
         // doesn't poison the bus. Without `read_from_lossy`, the consumer
         // would re-tick the same offset forever and never deliver the good
         // event after the corruption.
