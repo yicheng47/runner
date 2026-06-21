@@ -1,11 +1,11 @@
-#![allow(dead_code)] // Wired into TmuxRuntime in Step 5; foundation now.
+#![allow(dead_code)] // Script renderer retained for tests/future launcher reuse.
 
-//! Per-session launcher script generator (Step 4 of
-//! docs/impls/0004-tmux-session-runtime.md).
+//! Per-session launch/path helpers.
 //!
-//! The tmux runtime invokes
-//! `tmux new-session … -- '<path-to-this-script>'` to spawn the
-//! agent. The script:
+//! The current PTY runtime uses the PATH/env composition helpers
+//! directly before spawning the agent with `portable-pty`. The script
+//! renderer is retained as a small, tested utility for any caller that
+//! needs a shell wrapper. The rendered script:
 //!
 //!   1. Exports the composed PATH so the agent CLI can resolve
 //!      regardless of launchd's stripped GUI PATH.
@@ -15,13 +15,9 @@
 //!   3. cds to the working directory.
 //!   4. execs the agent command + argv.
 //!
-//! Why a script instead of letting tmux invoke argv directly: tmux's
-//! trailing positional argument to `new-session` is a
-//! `shell-command` string, not argv — tmux passes it through the
-//! user's `default-shell -c`. Once we're crossing that boundary,
-//! owning the script (with controlled quoting in Rust, written to
-//! disk under our per-session runtime dir) is safer than building
-//! a single shell string out of user-supplied env values and argv.
+//! Why a script helper at all: if a caller crosses a shell boundary,
+//! owning the script with controlled quoting in Rust is safer than
+//! building one shell string out of user-supplied env values and argv.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -52,7 +48,7 @@ pub struct LaunchScript {
     /// rendered.
     pub args: Vec<String>,
     /// Working directory. None ⇒ omit the `cd` line entirely; the
-    /// agent inherits whatever cwd the tmux server runs in.
+    /// agent inherits the caller's cwd.
     pub cwd: Option<PathBuf>,
     /// Per-session env vars. PATH must NOT be in here — pass it via
     /// `path` so we can be explicit that PATH is not user-supplied.
@@ -209,8 +205,7 @@ pub fn render_launch_script(script: &LaunchScript) -> RuntimeResult<String> {
 
     let mut out = String::new();
     out.push_str("#!/usr/bin/env bash\n");
-    out.push_str("# Runner-generated session launcher — see\n");
-    out.push_str("# docs/impls/0004-tmux-session-runtime.md (Step 4).\n");
+    out.push_str("# Runner-generated session launcher.\n");
     out.push_str("# Do not hand-edit; regenerated on every session spawn.\n");
     out.push_str("set -e\n");
     out.push_str(&format!("export PATH={}\n", shell_quote(&script.path)));
@@ -251,9 +246,9 @@ pub fn render_launch_script(script: &LaunchScript) -> RuntimeResult<String> {
 }
 
 /// Write the rendered launcher to `dir/launch.sh` and chmod 700.
-/// Returns the absolute path so the runtime can pass it to tmux.
-/// Idempotent: rewrites every spawn so a stale script from a
-/// crashed prior session doesn't get reused with the wrong env.
+/// Returns the absolute path so a caller can execute it. Idempotent:
+/// rewrites every spawn so a stale script from a crashed prior
+/// session doesn't get reused with the wrong env.
 pub fn write_launch_script(dir: &Path, script: &LaunchScript) -> RuntimeResult<PathBuf> {
     let body = render_launch_script(script)?;
     std::fs::create_dir_all(dir)?;
@@ -436,10 +431,8 @@ mod tests {
 
     #[test]
     fn render_launch_script_quotes_command_with_spaces() {
-        // Defensive: tmux's shell-command boundary means an
-        // unquoted command path with spaces would break. Step 4
-        // tests this even though the runner row is unlikely to
-        // ever have such a path.
+        // Defensive: if a caller executes through a shell wrapper, an
+        // unquoted command path with spaces would break.
         let script = LaunchScript {
             command: "/Applications/Weird App/bin/agent".into(),
             args: vec![],

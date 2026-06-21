@@ -35,7 +35,7 @@ pub struct AppState {
     /// installs, a tempdir in tests. Mission commands resolve event-log paths
     /// relative to this via `runner_core::event_log::path`.
     pub app_data_dir: PathBuf,
-    /// Live per-mission session manager (tmux-backed). Created at app
+    /// Live per-mission session manager. Created at app
     /// start, shared across all Tauri commands and the per-session
     /// forwarder threads it spawns.
     pub sessions: Arc<session::SessionManager>,
@@ -128,14 +128,10 @@ pub fn run() {
 
             let db_path = app_data_dir.join("runner.db");
             let pool = Arc::new(db::open_pool(&db_path)?);
-            // Session reconciliation now happens AFTER the
-            // runtime is constructed (below) — for tmux-runtime
-            // rows we need to query the runtime's view of the
-            // pane before deciding whether to mark the row
-            // stopped. Live panes survive Runner restart by
-            // design (`exit-empty off` in the generated tmux
-            // config); the prior portable-pty-era bulk UPDATE
-            // would have killed that survival path.
+            // Session startup cleanup happens after the runtime is
+            // constructed. Under the in-process PTY runtime, child
+            // processes die with the prior app process, so stale
+            // `running` rows are demoted below.
             // Drop the bundled agent/MCP CLIs into $APPDATA/runner/bin/.
             // Child PTYs find `runner` on PATH (arch §5.3 Layer 2), while
             // Claude/Codex configs point at `runner-mcp`. Best-effort: a
@@ -178,10 +174,9 @@ pub fn run() {
 
             let sessions = session::SessionManager::new(login_shell_env, runtime);
 
-            // Build the AppState up front so the mission-side
-            // reattach (next block) has access to the bus + router
-            // registries it needs to mount. The session-side reattach
-            // still runs from the local `sessions` Arc handle.
+            // Build the AppState up front so the startup mission-bus
+            // remount has access to the bus + router registries it
+            // needs.
             let buses = event_bus::BusRegistry::new();
             let routers = router::RouterRegistry::new();
             let mcp_handle = Arc::new(mcp::McpHandle::new());
@@ -207,29 +202,21 @@ pub fn run() {
                 mcp: mcp_handle,
             };
 
-            // Mount router + bus for every `running` mission BEFORE
-            // session reattach starts. Forwarder threads begin
-            // emitting `mission_*` events as soon as `pipe-pane` is
-            // installed; if the bus isn't mounted yet, those events
-            // get fanout-dropped. The NDJSON log is unaffected (the
-            // agent writes straight through the bundled CLI) — this
-            // is purely about the in-memory fanout layer.
-            //
-            // Returns the set of mission ids whose mount FAILED;
-            // session reattach uses it to fall back to the
-            // stop+mark-stopped path for those missions' alive
-            // panes (matches the pre-eager-mount safety property).
+            // Mount router + bus for every `running` mission before
+            // stale session rows are demoted. The NDJSON log is the
+            // durable source of truth; this is purely about restoring
+            // the in-memory fanout layer for mission events.
             let app_handle = app.handle().clone();
-            let failed_mission_ids = tauri::async_runtime::block_on(
-                commands::mission::reattach_all_running_missions(&state, &app_handle),
-            );
+            tauri::async_runtime::block_on(commands::mission::mount_all_running_mission_routers(
+                &state,
+                &app_handle,
+            ));
 
             // Agents die with this Tauri process under the pty
             // runtime — any `running` row in the DB at this point
             // is from a prior process. Demote them to `stopped`
             // so the sidebar surfaces them with a Resume
             // affordance (impl 0011 §"Tauri startup").
-            let _ = failed_mission_ids;
             #[cfg(unix)]
             {
                 if let Err(e) = session::pty_runtime::cleanup_stale_running_rows_on_startup(&pool) {
@@ -318,10 +305,9 @@ pub fn run() {
             // runtime, this fires SIGTERM-via-ChildKiller so
             // children get a chance to flush conversation state
             // (claude-code session file, etc.) before the
-            // master-fd-close SIGHUP cascade lands. Under the tmux
-            // runtime this still demotes DB rows cleanly. We
-            // tolerate kill failures: best-effort path, and the
-            // startup cleanup is the safety net on next launch.
+            // master-fd-close SIGHUP cascade lands. We tolerate kill
+            // failures: best-effort path, and the startup cleanup is
+            // the safety net on next launch.
             match event {
                 tauri::RunEvent::ExitRequested { .. } => {
                     stop_running_sessions_on_quit(app_handle);

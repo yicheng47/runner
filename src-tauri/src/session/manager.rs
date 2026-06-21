@@ -1,22 +1,20 @@
 // Per-runner session manager.
 //
-// One `Session` = one tmux pane running the runner's CLI agent (via the
-// `SessionRuntime` trait → `TmuxRuntime`). The SessionManager holds the
-// map of live sessions so Tauri commands can look them up by id (for
-// stdin injection, pause/resume, kill). Each session owns:
+// One `Session` = one child process attached to an in-process PTY via
+// `SessionRuntime`. The SessionManager holds the map of live sessions
+// so Tauri commands can look them up by id (for stdin injection,
+// resume, kill). Each session owns:
 //
-//   - A `RuntimeSession` (tmux session/window/pane ids) that the manager
-//     hands back to the runtime for every operation.
+//   - A `RuntimeSession` that the manager hands back to the runtime
+//     for every operation.
 //   - A forwarder thread that drains the runtime's `OutputStream` into
-//     `session/output` Tauri events. When the channel closes (pane died
-//     or we killed it), the thread queries the runtime for final exit
-//     code, emits `session/exit`, and updates the DB row.
+//     `session/output` Tauri events. When the channel closes, the
+//     thread queries the runtime for final exit code, emits
+//     `session/exit`, and updates the DB row.
 //
-// Drop behavior: tmux server stays alive across app restart by design
-// (`exit-empty off` in the generated config). Reattach uses the
-// runtime_* columns persisted on each session row to find the pane and
-// re-establish the output stream. Step 9 of
-// docs/impls/0004-tmux-session-runtime.md.
+// At app restart, in-process PTYs are gone with the prior app process.
+// Startup cleanup demotes stale running DB rows to stopped; user-facing
+// resume respawns a fresh PTY with the same session row id.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -136,14 +134,14 @@ pub(crate) struct ForwarderEmitCtx {
     /// not by session id.
     pub handle: String,
     /// Cached event-log handle. Constructed via `EventLog::open` on
-    /// the spawn/resume/reattach path; the forwarder consumer
+    /// the spawn/resume path; the forwarder consumer
     /// reuses it for every `try_append` so it never blocks on the
     /// open-time tail-repair flock.
     pub event_log: Arc<EventLog>,
 }
 
 /// Open the mission's event log on the calling (non-forwarder)
-/// thread. Used by spawn / resume / reattach to construct a
+/// thread. Used by spawn / resume to construct a
 /// `ForwarderEmitCtx`. Logs at WARN and returns `None` if the open
 /// fails — the forwarder still runs the detector for free; we just
 /// can't surface its events.
@@ -163,40 +161,6 @@ fn open_mission_event_log(
             None
         }
     }
-}
-
-/// Boot-time reattach helper: build the per-session
-/// `ForwarderEmitCtx` from the persisted session row. Pulls the
-/// mission's `crew_id` and the slot's `slot_handle` from the DB so
-/// the post-reattach forwarder emits the same `runner_status`
-/// shape a fresh spawn would. Returns `None` for direct chats and
-/// for any mission row missing its slot row (the row gets reaped
-/// elsewhere; we just don't emit for it here).
-fn mission_emit_ctx_for_row(
-    pool: &Arc<DbPool>,
-    row: &RowSnap,
-    app_data_dir: &Path,
-) -> Option<ForwarderEmitCtx> {
-    let mission_id = row.mission_id.as_deref()?;
-    let conn = pool.get().ok()?;
-    let (crew_id, slot_handle): (String, String) = conn
-        .query_row(
-            "SELECT m.crew_id, s.slot_handle
-               FROM sessions sess
-               JOIN missions m ON m.id = sess.mission_id
-               JOIN slots    s ON s.id = sess.slot_id
-              WHERE sess.id = ?1",
-            params![row.id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .ok()?;
-    let event_log = open_mission_event_log(app_data_dir, &crew_id, mission_id)?;
-    Some(ForwarderEmitCtx {
-        crew_id,
-        mission_id: mission_id.to_string(),
-        handle: slot_handle,
-        event_log,
-    })
 }
 
 /// Outcome of a single forwarder-side `try_append` attempt. Drives
@@ -377,10 +341,10 @@ struct SessionHandle {
     /// filters on this so deleting a runner can reap its live PTY
     /// children before the cascade nukes the DB rows underneath.
     runner_id: Option<String>,
-    /// Runtime-side identifiers (tmux session/window/pane) returned
-    /// from `SessionRuntime::spawn`. The manager passes this back
-    /// to `runtime.send_bytes` / `runtime.paste` / `runtime.resize`
-    /// / `runtime.stop` for every operation on the live session.
+    /// Runtime-side identity returned from `SessionRuntime::spawn`.
+    /// The manager passes this back to `runtime.send_bytes` /
+    /// `runtime.resize` / `runtime.stop` for every operation on the
+    /// live session.
     runtime_session: RuntimeSession,
     /// Forwarder thread that drains the runtime's `OutputStream`
     /// into `session/output` events. `kill` joins on this so callers
@@ -389,13 +353,11 @@ struct SessionHandle {
     forwarder: Option<thread::JoinHandle<()>>,
     /// Cancellation flag the forwarder thread polls between
     /// `recv_timeout` calls. `kill` flips it so the consumer
-    /// breaks out within ~500ms regardless of whether tmux's
-    /// pipe-pane cleanup chain (kill-session → cat dies → FIFO
-    /// POLLHUP → forward_fifo exits → tx drops → Disconnected)
-    /// has completed. Without this, kill could hang waiting on
-    /// the channel-disconnect path if anything in that chain
-    /// stalled — observed live as a stuck "Archiving…" pill on
-    /// the chat page.
+    /// breaks out within ~500ms regardless of whether the PTY reader
+    /// has observed EOF and dropped the channel sender. Without this,
+    /// kill could hang waiting on the channel-disconnect path if that
+    /// cleanup stalled — observed live as a stuck "Archiving…" pill
+    /// on the chat page.
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -454,12 +416,10 @@ pub struct SessionManager {
     /// the queued slots don't keep firing into a stopped /
     /// archived / reset mission. See `cancel_pending_mission_spawns`.
     pending_mission_cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
-    /// Underlying terminal runtime (Step 9 of
-    /// docs/impls/0004-tmux-session-runtime.md). v1 is `TmuxRuntime`
-    /// on macOS + Linux; Windows fails at runtime construction in
-    /// `lib.rs::run`. Every spawn / resume / kill / inject_stdin /
-    /// resize routes through this trait — the manager owns DB +
-    /// event-buffer state but never reads/writes a PTY directly.
+    /// Underlying terminal runtime. Every spawn / resume / kill /
+    /// inject_stdin / resize routes through this trait — the manager
+    /// owns DB + event-buffer state but never reads/writes a PTY
+    /// directly.
     runtime: Arc<dyn SessionRuntime>,
 }
 
@@ -959,30 +919,20 @@ impl SessionManager {
             return Ok(CompleteSpawnOutcome::Cancelled);
         }
 
-        // Persist the runtime-side ids so `resume` after app restart
-        // can find this pane.
+        // Persist the runtime-side identity for diagnostics and for
+        // the current runtime session row.
         if let Ok(conn) = pool.get() {
             let _ = conn.execute(
                 "UPDATE sessions
                     SET runtime = ?2,
-                        runtime_socket = ?3,
-                        runtime_session = ?4,
-                        runtime_window = ?5,
-                        runtime_pane = ?6
+                        runtime_session = ?3
                   WHERE id = ?1",
-                params![
-                    session_id,
-                    rt_session.runtime,
-                    rt_session.socket,
-                    rt_session.session_name,
-                    rt_session.window,
-                    rt_session.pane,
-                ],
+                params![session_id, rt_session.runtime, rt_session.session_id],
             );
         }
 
         let stop = output.stop_flag();
-        let pane_for_log = rt_session.pane.clone();
+        let runtime_session_for_log = rt_session.session_id.clone();
         self.sessions.lock().unwrap().insert(
             session_id.clone(),
             SessionHandle {
@@ -1032,20 +982,22 @@ impl SessionManager {
         }
 
         emit_runner_activity(&pool, &runner, events.as_ref());
-        schedule_mission_first_prompt(
-            self,
-            session_id.clone(),
-            &runner,
-            &plan,
-            first_turn_delivered_via_argv,
-        );
+        if matches!(runner.runtime.as_str(), "claude-code" | "codex")
+            && !plan.resuming
+            && !first_turn_delivered_via_argv
+        {
+            log::warn!(
+                "first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",
+                runner.runtime,
+            );
+        }
 
         log::info!(
-            "session spawn: mission={} session={} runner={} pane={}",
+            "session spawn: mission={} session={} runner={} runtime_session={}",
             mission.id,
             session_id,
             slot_handle,
-            pane_for_log,
+            runtime_session_for_log,
         );
 
         Ok(CompleteSpawnOutcome::Spawned)
@@ -1120,8 +1072,8 @@ impl SessionManager {
             mission_id: Some(mission_id),
             runner_id: Some(runner_id),
             handle,
-            // pane_pid is populated lazily via runtime.status() when
-            // the manager needs it; the SpawnedSession field is
+            // PTY child pid is populated lazily via runtime.status()
+            // when the manager needs it; the SpawnedSession field is
             // informational and the frontend doesn't rely on it.
             pid: None,
             fresh_fallback_lead: false,
@@ -1331,19 +1283,9 @@ impl SessionManager {
             let _ = conn.execute(
                 "UPDATE sessions
                     SET runtime = ?2,
-                        runtime_socket = ?3,
-                        runtime_session = ?4,
-                        runtime_window = ?5,
-                        runtime_pane = ?6
+                        runtime_session = ?3
                   WHERE id = ?1",
-                params![
-                    session_id,
-                    rt_session.runtime,
-                    rt_session.socket,
-                    rt_session.session_name,
-                    rt_session.window,
-                    rt_session.pane,
-                ],
+                params![session_id, rt_session.runtime, rt_session.session_id],
             );
         }
 
@@ -1395,13 +1337,15 @@ impl SessionManager {
         if emit_activity {
             emit_runner_activity(&pool, runner, events.as_ref());
         }
-        schedule_direct_first_prompt(
-            self,
-            session_id.clone(),
-            runner,
-            &plan,
-            first_turn_delivered_via_argv,
-        );
+        if matches!(runner.runtime.as_str(), "claude-code" | "codex")
+            && !plan.resuming
+            && !first_turn_delivered_via_argv
+        {
+            log::warn!(
+                "first-turn argv not delivered for direct chat {session_id} (runtime {}); skipping post-spawn injection",
+                runner.runtime,
+            );
+        }
 
         Ok(SpawnedSession {
             id: session_id,
@@ -1761,19 +1705,9 @@ impl SessionManager {
             let _ = conn.execute(
                 "UPDATE sessions
                     SET runtime = ?2,
-                        runtime_socket = ?3,
-                        runtime_session = ?4,
-                        runtime_window = ?5,
-                        runtime_pane = ?6
+                        runtime_session = ?3
                   WHERE id = ?1",
-                params![
-                    session_id,
-                    rt_session.runtime,
-                    rt_session.socket,
-                    rt_session.session_name,
-                    rt_session.window,
-                    rt_session.pane,
-                ],
+                params![session_id, rt_session.runtime, rt_session.session_id],
             );
         }
 
@@ -1841,7 +1775,7 @@ impl SessionManager {
             emit_runner_activity(&pool, &runner, events.as_ref());
         }
 
-        // First-turn injection for fresh claude-code / codex spawns.
+        // First-turn warning for fresh claude-code / codex spawns.
         // `plan.resuming` is true on any resume against a real
         // prior_key — those skip naturally (the agent already has its
         // system context). For mission resume, the lead always
@@ -1852,19 +1786,20 @@ impl SessionManager {
         // inject — the commands::session::session_resume caller fires
         // that path when it sees `fresh_fallback_lead = true` on the
         // returned SpawnedSession. For direct-chat resume there's no
-        // slot/lead concept, and the off-bus persona-only injection
-        // (`schedule_direct_first_prompt`) is the right shape if the
-        // resume happens to degrade to fresh.
-        if mission_ctx.is_some() {
-            // Resume path: agent CLI restores prior conversation
-            // context via its own session resume. The
-            // `plan.resuming` guard inside the function makes this
-            // a no-op for the dominant case (a real resume). The
-            // resume-fresh-fallback case is handled separately by
-            // `Router::fire_lead_launch_prompt` via paste-verify.
-            schedule_mission_first_prompt(self, session_id.to_string(), &runner, &plan, false);
-        } else {
-            schedule_direct_first_prompt(self, session_id.to_string(), &runner, &plan, false);
+        // slot/lead concept; if that degrades to fresh and argv
+        // delivery was unavailable, we log the skipped injection.
+        if matches!(runner.runtime.as_str(), "claude-code" | "codex") && !plan.resuming {
+            if mission_ctx.is_some() {
+                log::warn!(
+                    "first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",
+                    runner.runtime,
+                );
+            } else {
+                log::warn!(
+                    "first-turn argv not delivered for direct chat {session_id} (runtime {}); skipping post-spawn injection",
+                    runner.runtime,
+                );
+            }
         }
 
         // Return the slot's in-mission identity for mission rows so the
@@ -1916,18 +1851,15 @@ impl SessionManager {
         let started_at = std::time::Instant::now();
         // Capture the cancellation flag before moving `output` into
         // the thread. `kill` flips this flag so the consumer
-        // breaks out within ~500ms even if the channel-disconnect
-        // path stalls (tmux's pipe-pane cleanup chain has been
-        // observed hanging in the field, leaving the chat's
-        // "Archiving…" pill stuck).
+        // breaks out within ~500ms even if the reader/EOF
+        // disconnect path stalls.
         let stop = output.stop_flag();
         thread::spawn(move || {
-            // Drain pane output until the runtime closes the
-            // channel OR `kill` flips the stop flag. Replay and
-            // Stream both flow as `session/output` events — xterm.js
-            // appends sequentially regardless. StatusTransition is
-            // routed into the mission event log so the router /
-            // workspace rail see the busy/idle flip (issue #124).
+            // Drain PTY output until the runtime closes the channel
+            // OR `kill` flips the stop flag. Stream chunks flow as
+            // `session/output` events. StatusTransition is routed
+            // into the mission event log so the router / workspace
+            // rail see the busy/idle flip (issue #124).
             //
             // Failure bookkeeping for `runner_status` emission lives
             // here on the consumer's stack — single-threaded access,
@@ -1941,7 +1873,7 @@ impl SessionManager {
                     break;
                 }
                 match output.recv_timeout(Duration::from_millis(500)) {
-                    Ok(RuntimeOutput::Replay(bytes)) | Ok(RuntimeOutput::Stream(bytes)) => {
+                    Ok(RuntimeOutput::Stream(bytes)) => {
                         // Track alt-screen mode before recording so
                         // that the very next `output_snapshot` (if
                         // one races in here) reflects the latest
@@ -1992,16 +1924,16 @@ impl SessionManager {
                 }
             }
 
-            // Channel closed — query the runtime for the final pane
+            // Channel closed — query the runtime for the final child
             // status to recover an exit code. `Ok(None)` means the
-            // pane is gone (terminal-unavailable); we still need to
-            // flip the DB row, just without an exit code.
+            // runtime session is gone; we still need to flip the DB
+            // row, just without an exit code.
             let status = manager_t.runtime.status(&rt_session).ok().flatten();
             let exit_code = status.as_ref().and_then(|s| s.exit_code);
             let success = exit_code == Some(0);
 
-            // Best-effort: tear down the tmux session now that the
-            // pane is dead. Skipped if `kill` already did it.
+            // Best-effort: tear down the PTY child now that the
+            // output channel closed. Skipped if `kill` already did it.
             let _ = manager_t.runtime.stop(&rt_session);
 
             let _ = manager_t.forget(&session_id);
@@ -2060,9 +1992,8 @@ impl SessionManager {
 
     /// Write raw bytes to the session's stdin. Used for keystroke
     /// passthrough from xterm.js — small chunks, no embedded
-    /// newlines. Routed through `runtime.send_bytes` which uses
-    /// `tmux send-keys -l --` so each character lands as a
-    /// keystroke without bracketed-paste markers.
+    /// newlines. Routed through `runtime.send_bytes` so each byte
+    /// lands without bracketed-paste markers.
     ///
     /// Multi-line prompt blocks (the system_prompt injection on
     /// fresh spawn) should go through `inject_paste` instead so the
@@ -2079,8 +2010,8 @@ impl SessionManager {
             .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
         // ASCII CR (0x0D) is what claude-code's TUI editor reads as
         // "Enter" — bare-byte writes that just contain `\r` map to
-        // `send_key("Enter")` so tmux's key-name lookup runs.
-        // Everything else routes as a literal byte stream.
+        // `send_key("Enter")`. Everything else routes as a literal
+        // byte stream.
         if bytes == b"\r" {
             self.runtime
                 .send_key(&rt_session, "Enter")
@@ -2093,8 +2024,8 @@ impl SessionManager {
     }
 
     /// Paste a multi-line prompt block into the session, then submit
-    /// with Enter. Uses the runtime's paste primitive so LF stays
-    /// literal instead of becoming one submit per line.
+    /// with Enter. This preserves the old runtime paste behavior:
+    /// write the payload bytes unchanged, then send Enter.
     ///
     /// Sleeps 120ms between paste and Enter. Without this gap,
     /// Claude Code v2.1.x's input editor sometimes leaves pasted
@@ -2109,7 +2040,7 @@ impl SessionManager {
             .get(session_id)
             .map(|h| h.runtime_session.clone())
             .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
-        self.runtime.paste(&rt_session, payload)?;
+        self.runtime.send_bytes(&rt_session, payload)?;
         std::thread::sleep(std::time::Duration::from_millis(120));
         self.runtime
             .send_key(&rt_session, "Enter")
@@ -2164,9 +2095,8 @@ impl SessionManager {
         // 4096-chunk buffer over time, so a re-attach that just
         // replays the remaining chunks lands mid-alt-screen content
         // into xterm's main screen — visible as stacked redraws in
-        // scrollback and a blank alt-screen pane on route remount
-        // (docs/impls/archive/0009 has the tmux-era analysis of the
-        // same failure mode). seq=0 sits below every real event's
+        // scrollback and a blank alt-screen pane on route remount.
+        // seq=0 sits below every real event's
         // monotonic seq so the frontend's `seq <= lastWrittenSeq`
         // filter doesn't drop it on re-replay.
         let alt = self
@@ -2213,12 +2143,12 @@ impl SessionManager {
 
         // Look up the rt_session WITHOUT removing the handle yet.
         // The handle stays in the live map until we know
-        // `runtime.stop` succeeded. If it fails (pane survived
-        // kill-session), bailing here leaves the live handle
-        // intact and the caller can retry; if we'd already
-        // removed the handle + flipped the cancellation flag,
-        // the forwarder thread would reconcile the DB row to
-        // `stopped` even though the pane is still alive.
+        // `runtime.stop` succeeded. If it fails (child survived the
+        // stop request), bailing here leaves the live handle intact
+        // and the caller can retry; if we'd already removed the
+        // handle + flipped the cancellation flag, the forwarder
+        // thread would reconcile the DB row to `stopped` even
+        // though the child is still alive.
         let rt_session = {
             let sessions = self.sessions.lock().unwrap();
             match sessions.get(session_id) {
@@ -2234,10 +2164,10 @@ impl SessionManager {
             }
         };
 
-        // Stop verifies via has-session that the pane is actually
-        // gone. Returns Err if tmux refuses to reap.
+        // Stop verifies that the child was signaled. Returns Err if
+        // the runtime refuses to reap it.
         if let Err(e) = self.runtime.stop(&rt_session) {
-            // Roll back: pane is alive, the handle stays
+            // Roll back: child is alive, the handle stays
             // in the map, the killed marker is cleared. The
             // caller sees the error.
             self.killed.lock().unwrap().remove(session_id);
@@ -2254,9 +2184,8 @@ impl SessionManager {
         };
 
         // Flip the explicit cancellation flag so the consumer
-        // breaks out within ~500ms regardless of how the
-        // pipe-pane → FIFO POLLHUP → channel-disconnect chain
-        // progresses.
+        // breaks out within ~500ms regardless of how the reader EOF
+        // and channel-disconnect path progresses.
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
 
         // Wait for the forwarder to drain + reconcile so the
@@ -2359,232 +2288,6 @@ impl SessionManager {
         };
         for id in ids {
             self.kill(&id)?;
-        }
-        Ok(())
-    }
-
-    /// App-startup reconciliation: for every `sessions` row still
-    /// marked `running`, ask the runtime whether the pane is alive.
-    /// If yes, reattach (rebuild the SessionHandle + forwarder
-    /// thread) so Tauri commands can target the surviving pane. If
-    /// the pane is gone or has exited, flip the row to
-    /// stopped/crashed using the captured exit code.
-    ///
-    /// This replaces the prior portable-pty-era logic that
-    /// indiscriminately marked every running row stopped on
-    /// startup — that was correct when the manager owned the PTY
-    /// lifecycle (process death = PTY death), but with tmux the
-    /// pane survives Runner's process and we'd lose live agent
-    /// sessions on every restart. Step 9 cutover follow-up.
-    ///
-    /// Best-effort. Errors per-row are logged to stderr; the
-    /// overall reattach loop never fails the caller (app startup
-    /// must not block on a transient runtime hiccup).
-    pub fn reattach_running_sessions(
-        self: &Arc<Self>,
-        pool: Arc<DbPool>,
-        events: Arc<dyn SessionEvents>,
-        failed_mission_ids: &HashSet<String>,
-        app_data_dir: &Path,
-    ) {
-        let now = Utc::now().to_rfc3339();
-        let rows: Vec<RowSnap> = match collect_running_rows(&pool) {
-            Ok(rows) => rows,
-            Err(e) => {
-                log::warn!("reattach query failed: {e}");
-                return;
-            }
-        };
-        for row in rows {
-            self.reattach_one(row, &now, &pool, &events, failed_mission_ids, app_data_dir);
-        }
-    }
-
-    fn reattach_one(
-        self: &Arc<Self>,
-        row: RowSnap,
-        now: &str,
-        pool: &Arc<DbPool>,
-        events: &Arc<dyn SessionEvents>,
-        failed_mission_ids: &HashSet<String>,
-        app_data_dir: &Path,
-    ) {
-        // No runtime metadata persisted (legacy row, or a row
-        // that crashed before we got a chance to write the
-        // runtime_* columns) → mark stopped and move on.
-        let Some(rt_session) = row.runtime_session() else {
-            mark_session_stopped(pool, &row.id, now);
-            return;
-        };
-
-        // Query status so we can apply the dead-pane crash
-        // discrimination uniformly across mission and direct rows.
-        let status = self.runtime.status(&rt_session);
-
-        // Mission rows whose router+bus mount failed earlier in
-        // startup must not have their alive panes reattached —
-        // forwarder bytes would land on no subscriber and
-        // mission_* events appended in the window before workspace
-        // mount would be silently dropped. Fall back to the
-        // pre-eager-mount path: stop the pane, mark the row
-        // stopped, let the user resume from the workspace
-        // (mission_attach on workspace mount retries the bus mount).
-        let mission_mount_failed = row
-            .mission_id
-            .as_ref()
-            .map(|m| failed_mission_ids.contains(m))
-            .unwrap_or(false);
-
-        match status {
-            Ok(Some(s)) if s.alive && mission_mount_failed => {
-                if let Err(e) = self.runtime.stop(&rt_session) {
-                    // Pane refused to die; leave the row alone
-                    // (still `running`) so the user's eventual
-                    // `mission_attach` from the workspace can find
-                    // it via the existing reconcile path. Marking
-                    // it stopped here would create a UI/DB-vs-tmux
-                    // mismatch.
-                    log::warn!(
-                        "reattach failed to stop mission session {} \
-                         after mount failure: {e}",
-                        row_dbg(&row.id)
-                    );
-                    return;
-                }
-                mark_session_stopped(pool, &row.id, now);
-                // Decision INFO fires only on the happy path —
-                // stop succeeded AND the row was actually marked.
-                // The Err branch above already returns without
-                // marking; a top-of-branch INFO would have lied.
-                log::info!(
-                    "session reattach: id={} action=stopped reason=mission_mount_failed",
-                    row_dbg(&row.id)
-                );
-            }
-            Ok(Some(s)) if s.alive => {
-                // Mission and direct rows take the same alive-pane
-                // path: rebuild the SessionHandle + forwarder. For
-                // mission rows the bus + router are mounted earlier
-                // in startup by `mission::reattach_all_running_missions`,
-                // so `mission_*` events emitted between pipe-pane
-                // install and workspace mount reach Tauri subscribers.
-                // On failure, try to kill the orphan pane before
-                // marking the row stopped — but only mark stopped if
-                // the kill actually succeeded; otherwise the agent
-                // is still running and lying in the DB would strand
-                // it.
-                let id = row.id.clone();
-                let pane_for_log = rt_session.pane.clone();
-                let rt_for_cleanup = rt_session.clone();
-                if let Err(e) = self.attach_existing(row, rt_session, pool, events, app_data_dir) {
-                    log::warn!("reattach session {} failed: {e}", row_dbg(&id));
-                    match self.runtime.stop(&rt_for_cleanup) {
-                        Ok(()) => mark_session_stopped(pool, &id, now),
-                        Err(e) => log::warn!(
-                            "reattach orphan-stop for {} failed: {e}; \
-                             leaving row as running",
-                            row_dbg(&id)
-                        ),
-                    }
-                } else {
-                    log::info!(
-                        "session reattach: id={} action=resumed pane={}",
-                        row_dbg(&id),
-                        pane_for_log,
-                    );
-                }
-            }
-            Ok(Some(status)) => {
-                // Pane is dead but tmux is still holding it
-                // (remain-on-exit). Capture the exit code, mark the
-                // row, then tear down the dead pane.
-                let final_status = if status.exit_code == Some(0) {
-                    "stopped"
-                } else {
-                    "crashed"
-                };
-                let exit_code = status.exit_code;
-                let _ = self.runtime.stop(&rt_session);
-                if let Ok(conn) = pool.get() {
-                    let _ = conn.execute(
-                        "UPDATE sessions
-                            SET status = ?2,
-                                stopped_at = COALESCE(stopped_at, ?3)
-                          WHERE id = ?1",
-                        params![row.id, final_status, now],
-                    );
-                }
-                log::info!(
-                    "session reattach: id={} action=stopped reason=pane_exited code={:?}",
-                    row_dbg(&row.id),
-                    exit_code,
-                );
-            }
-            Ok(None) | Err(_) => {
-                // tmux can't find the pane — terminal-unavailable.
-                mark_session_stopped(pool, &row.id, now);
-                log::info!(
-                    "session reattach: id={} action=stopped reason=pane_gone",
-                    row_dbg(&row.id)
-                );
-            }
-        }
-    }
-
-    fn attach_existing(
-        self: &Arc<Self>,
-        row: RowSnap,
-        rt_session: RuntimeSession,
-        pool: &Arc<DbPool>,
-        events: &Arc<dyn SessionEvents>,
-        app_data_dir: &Path,
-    ) -> Result<()> {
-        // Pull or reconstruct the runner-shaped launch config so the
-        // forwarder has the runtime name for resume-failure warnings.
-        let runner = if let Some(runner_id) = row.runner_id.as_deref() {
-            let conn = pool.get()?;
-            crate::commands::runner::get(&conn, runner_id)?
-        } else {
-            let runtime = row.agent_runtime.as_deref().ok_or_else(|| {
-                Error::msg(format!(
-                    "runtime-only session {} missing agent_runtime",
-                    row.id
-                ))
-            })?;
-            runtime_direct_runner(runtime, row.agent_command.as_deref())?
-        };
-        // For mission rows, resolve the crew_id + slot_handle from
-        // the same DB lookups the original spawn used so the
-        // forwarder can emit `runner_status` events post-reboot.
-        // Direct chats stay off-bus (None).
-        let emit_ctx = mission_emit_ctx_for_row(pool, &row, app_data_dir);
-        let output = self.runtime.resume(&rt_session)?;
-        let stop = output.stop_flag();
-        self.sessions.lock().unwrap().insert(
-            row.id.clone(),
-            SessionHandle {
-                id: row.id.clone(),
-                mission_id: row.mission_id.clone(),
-                runner_id: row.runner_id.clone(),
-                runtime_session: rt_session.clone(),
-                forwarder: None,
-                stop,
-            },
-        );
-        let forwarder = self.start_forwarder_thread(
-            row.id.clone(),
-            row.mission_id.clone(),
-            rt_session,
-            output,
-            Arc::clone(pool),
-            Arc::clone(events),
-            runner,
-            false, // resuming flag — re-attach to a live pane is not a resume_plan resume
-            row.runner_id.is_some(),
-            emit_ctx,
-        );
-        if let Some(h) = self.sessions.lock().unwrap().get_mut(&row.id) {
-            h.forwarder = Some(forwarder);
         }
         Ok(())
     }
@@ -2711,89 +2414,6 @@ impl SessionManager {
 /// falling back to the parent process's cwd when the spawn didn't
 /// set one (the child inherits parent's cwd, which is what codex
 /// stamps into the rollout's `payload.cwd`).
-/// Subset of the `sessions` row needed to reattach to a live pane
-/// at app startup. Pulled all-at-once so the conn drops before we
-/// start hitting the runtime layer per row.
-#[derive(Debug, Clone)]
-struct RowSnap {
-    id: String,
-    runner_id: Option<String>,
-    mission_id: Option<String>,
-    agent_runtime: Option<String>,
-    agent_command: Option<String>,
-    runtime: Option<String>,
-    runtime_socket: Option<String>,
-    runtime_session: Option<String>,
-    runtime_window: Option<String>,
-    runtime_pane: Option<String>,
-}
-
-impl RowSnap {
-    /// Reconstruct the `RuntimeSession` that the original spawn
-    /// persisted into the runtime_* columns. Returns `None` for
-    /// any row missing pieces — the caller treats that as a
-    /// legacy row and marks it stopped.
-    fn runtime_session(&self) -> Option<RuntimeSession> {
-        Some(RuntimeSession {
-            runtime: self.runtime.clone()?,
-            socket: self.runtime_socket.clone()?,
-            session_name: self.runtime_session.clone()?,
-            window: self.runtime_window.clone()?,
-            pane: self.runtime_pane.clone()?,
-        })
-    }
-}
-
-fn collect_running_rows(pool: &DbPool) -> Result<Vec<RowSnap>> {
-    let conn = pool.get()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, runner_id, mission_id, agent_runtime, agent_command,
-                runtime, runtime_socket, runtime_session,
-                runtime_window, runtime_pane
-           FROM sessions
-          WHERE status = 'running'",
-    )?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok(RowSnap {
-                id: r.get("id")?,
-                runner_id: r.get("runner_id")?,
-                mission_id: r.get("mission_id")?,
-                agent_runtime: r.get("agent_runtime")?,
-                agent_command: r.get("agent_command")?,
-                runtime: r.get("runtime")?,
-                runtime_socket: r.get("runtime_socket")?,
-                runtime_session: r.get("runtime_session")?,
-                runtime_window: r.get("runtime_window")?,
-                runtime_pane: r.get("runtime_pane")?,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
-}
-
-fn mark_session_stopped(pool: &DbPool, id: &str, now: &str) {
-    if let Ok(conn) = pool.get() {
-        let _ = conn.execute(
-            "UPDATE sessions
-                SET status = 'stopped',
-                    stopped_at = COALESCE(stopped_at, ?2)
-              WHERE id = ?1",
-            params![id, now],
-        );
-    }
-}
-
-/// Trim a session id for stderr logging — show just enough to
-/// identify the row without dumping a full ULID into the log line.
-fn row_dbg(id: &str) -> &str {
-    if id.len() <= 8 {
-        id
-    } else {
-        &id[id.len() - 8..]
-    }
-}
-
 fn capture_cwd(explicit: Option<String>) -> Option<String> {
     if let Some(cwd) = explicit {
         if !cwd.is_empty() {
@@ -2841,86 +2461,11 @@ pub(crate) fn runtime_direct_runner(runtime: &str, command: Option<&str>) -> Res
 }
 
 // The first-prompt readback machinery (FirstPromptConfig,
-// FIRST_PROMPT_CONFIG, PLACEHOLDER_MIN_BODY_LEN) lived here under the
-// tmux runtime. docs/impls/0011 retired the verify-and-retry loop it
-// tuned; `inject_paste` is now a single paste-then-Enter and the
-// previous "schedule continue on resume" auto-nudge has been removed —
-// Resume now just respawns the PTY and lets the user drive the agent.
-
-/// Mission-flavored first-turn injection. Composes the platform
-/// coordination preamble (bus mechanics, --to human convention,
-/// signal verbs) followed by the user-authored brief on the runner
-/// template. Keeping bus protocol out of the user's system_prompt
-/// means template authors can focus on persona/role; the runtime
-/// adds the "how to talk to the rest of the crew" layer
-/// automatically.
-///
-/// Fresh mission starts deliver the composed first user turn through
-/// the runtime's positional argv when available. That keeps delivery
-/// deterministic: if the process starts, the prompt is already in the
-/// CLI's argv instead of depending on a later readiness/paste path.
-///
-/// Skipped on resume against a real prior conversation (the agent
-/// already has its system context) and on runtimes that have no
-/// concept of a first-turn prompt (shell).
-fn schedule_mission_first_prompt(
-    _mgr: &Arc<SessionManager>,
-    session_id: String,
-    runner: &Runner,
-    plan: &router::runtime::ResumePlan,
-    delivered_via_argv: bool,
-) {
-    if runner.runtime != "claude-code" && runner.runtime != "codex" {
-        return;
-    }
-    if plan.resuming {
-        return;
-    }
-    if delivered_via_argv {
-        return;
-    }
-    log::warn!(
-        "first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",
-        runner.runtime,
-    );
-}
-
-/// Direct-chat-flavored first-turn injection: types just
-/// `runner.system_prompt` (the persona) into stdin, with NO
-/// `WORKER_COORDINATION_PREAMBLE` wrapper. Direct chats are off-bus —
-/// `runner msg post`, `runner status idle`, etc. wouldn't resolve to
-/// anything useful here (no `RUNNER_CREW_ID` / `RUNNER_MISSION_ID`
-/// set, the bundled CLI is not even on PATH). Adding the preamble
-/// would tell the agent to use verbs that don't exist in this
-/// context, which is worse than no instructions at all.
-///
-/// If `runner.system_prompt` is empty / None, no injection happens —
-/// claude-code direct chat then boots vanilla, which is the
-/// honest fallback for that edge case.
-///
-/// Skipped on resume (the agent already has its prior conversation)
-/// and on runtimes without a first-turn-prompt concept (shell).
-fn schedule_direct_first_prompt(
-    mgr: &Arc<SessionManager>,
-    session_id: String,
-    runner: &Runner,
-    plan: &router::runtime::ResumePlan,
-    delivered_via_argv: bool,
-) {
-    if runner.runtime != "claude-code" && runner.runtime != "codex" {
-        return;
-    }
-    if plan.resuming {
-        return;
-    }
-    if !delivered_via_argv {
-        log::warn!(
-            "first-turn argv not delivered for direct chat {session_id} (runtime {}); skipping post-spawn injection",
-            runner.runtime,
-        );
-    }
-    let _ = mgr;
-}
+// FIRST_PROMPT_CONFIG, PLACEHOLDER_MIN_BODY_LEN) lived here before
+// docs/impls/0011 retired the verify-and-retry loop it tuned;
+// `inject_paste` is now a single write-then-Enter and the previous
+// "schedule continue on resume" auto-nudge has been removed — Resume
+// now just respawns the PTY and lets the user drive the agent.
 
 // Pre-#88 `inject_first_turn` (the paste-fallback orchestrator) was
 // removed when first-turn delivery moved to spawn-time argv. The
@@ -3004,14 +2549,9 @@ mod tests {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
-    /// Test stand-in for `SessionRuntime`. Step 9 wires
-    /// `SessionManager` to hold an `Arc<dyn SessionRuntime>` so the
-    /// runtime layer is always present, but most legacy tests
-    /// exercise the portable-pty path through the manager and never
-    /// touch the runtime field. This stub errors on every method —
-    /// any test that *does* land in the runtime layer would surface
-    /// it, and intentional runtime tests live in
-    /// `session::tmux_runtime::tests` instead.
+    /// Test stand-in for `SessionRuntime`. Most legacy tests exercise
+    /// paths that should not touch the runtime field. This stub
+    /// errors on every method so any accidental runtime call surfaces.
     struct InertRuntime;
     impl SessionRuntime for InertRuntime {
         fn spawn(&self, _: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
@@ -3019,14 +2559,8 @@ mod tests {
                 "InertRuntime: spawn unsupported in unit tests".into(),
             ))
         }
-        fn resume(&self, _: &RuntimeSession) -> RuntimeResult<OutputStream> {
-            Err(RuntimeError::Msg("InertRuntime: resume unsupported".into()))
-        }
         fn stop(&self, _: &RuntimeSession) -> RuntimeResult<()> {
             Err(RuntimeError::Msg("InertRuntime: stop unsupported".into()))
-        }
-        fn paste(&self, _: &RuntimeSession, _: &[u8]) -> RuntimeResult<()> {
-            Err(RuntimeError::Msg("InertRuntime: paste unsupported".into()))
         }
         fn send_bytes(&self, _: &RuntimeSession, _: &[u8]) -> RuntimeResult<()> {
             Err(RuntimeError::Msg(
@@ -3052,12 +2586,11 @@ mod tests {
 
     /// Test stand-in that captures every call so assertions can read
     /// back what the manager handed to the runtime layer (env vars,
-    /// argv, paste payloads, key names, resize dimensions). Lets
+    /// argv, byte writes, key names, resize dimensions). Lets
     /// tests that depend on runtime-side behavior — DB writes after
     /// spawn, output buffer machinery, kill semantics, first-prompt
     /// scheduling, agent_session_key resume preservation — run
-    /// without a real tmux server. Real tmux interaction lives in
-    /// `session::tmux_runtime::tests::integration_*`.
+    /// without forking a real PTY.
     #[derive(Default)]
     struct FakeRuntime {
         spawns: std::sync::Mutex<Vec<FakeSpawn>>,
@@ -3069,22 +2602,6 @@ mod tests {
         /// wants exit_code=143 (SIGTERM) to verify the
         /// stop-vs-crash discrimination still flips correctly.
         status_response: std::sync::Mutex<SessionStatus>,
-        /// What `capture_visible` returns BEFORE the paste-count
-        /// crosses `acknowledge_after`. Empty by default — fresh
-        /// spawns have a blank pane, and the count-delta check
-        /// reduces to "any non-zero count in `after` accepts".
-        pane_pre_paste: std::sync::Mutex<Vec<u8>>,
-        /// What `capture_visible` returns AFTER the paste-count
-        /// has reached `acknowledge_after`. Default mirrors the
-        /// expected paste body so tests that don't override it
-        /// observe acknowledgement on attempt 1.
-        pane_post_paste: std::sync::Mutex<Vec<u8>>,
-        /// Number of `paste` calls before `capture_visible` flips
-        /// from `pane_pre_paste` to `pane_post_paste`. Default 0 ⇒
-        /// even the FIRST capture (`before`, taken before any paste)
-        /// returns `pane_post_paste`. Most tests rely on this and
-        /// don't touch it; retry/give-up tests bump it.
-        acknowledge_after: std::sync::Mutex<usize>,
     }
 
     /// One spawn/resume capture. `tx` is the live channel the
@@ -3098,9 +2615,8 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum FakeInput {
-        Paste { pane: String, payload: Vec<u8> },
-        Bytes { pane: String, bytes: Vec<u8> },
-        Key { pane: String, key: String },
+        Bytes { session_id: String, bytes: Vec<u8> },
+        Key { session_id: String, key: String },
     }
 
     impl FakeRuntime {
@@ -3112,46 +2628,8 @@ mod tests {
                     pid: Some(99999),
                     command: Some("/bin/sh".into()),
                 }),
-                // Default `pane_post_paste` is intentionally empty —
-                // empty acts as a sentinel that triggers
-                // `capture_visible` to synthesize a snapshot
-                // containing the most recent paste body, which means
-                // any test that doesn't configure post-paste content
-                // sees the verify loop accept on attempt 1 (the
-                // marker the verifier extracts from the body is
-                // present in the pasted body verbatim). Tests that
-                // need stale-content scenarios call
-                // `set_pane_post_paste` directly.
                 ..Default::default()
             }
-        }
-
-        /// Override what `capture_visible` returns once
-        /// `acknowledge_after` pastes have happened. Tests use this
-        /// to set the canned post-paste pane content (typically
-        /// containing the marker the verify loop expects to find).
-        #[allow(dead_code)]
-        fn set_pane_post_paste(&self, bytes: &[u8]) {
-            *self.pane_post_paste.lock().unwrap() = bytes.to_vec();
-        }
-
-        /// Override what `capture_visible` returns BEFORE
-        /// `acknowledge_after` pastes have happened. Stale-content
-        /// resume scenarios use this to seed the baseline capture
-        /// with old `[Pasted text #N]` placeholders.
-        #[allow(dead_code)]
-        fn set_pane_pre_paste(&self, bytes: &[u8]) {
-            *self.pane_pre_paste.lock().unwrap() = bytes.to_vec();
-        }
-
-        /// Number of paste calls that must elapse before
-        /// `capture_visible` switches from pre- to post-paste
-        /// content. Use to simulate "agent didn't see paste #1, did
-        /// see paste #2" retry scenarios, or "agent never sees
-        /// paste" give-up scenarios (set to a large value).
-        #[allow(dead_code)]
-        fn set_acknowledge_after(&self, n: usize) {
-            *self.acknowledge_after.lock().unwrap() = n;
         }
 
         /// Push a `Stream` event through the forwarder channel for
@@ -3192,25 +2670,13 @@ mod tests {
             self.spawns.lock().unwrap().last().map(|s| s.spec.clone())
         }
 
-        fn pastes(&self) -> Vec<(String, Vec<u8>)> {
-            self.inputs
-                .lock()
-                .unwrap()
-                .iter()
-                .filter_map(|i| match i {
-                    FakeInput::Paste { pane, payload } => Some((pane.clone(), payload.clone())),
-                    _ => None,
-                })
-                .collect()
-        }
-
         fn keys(&self) -> Vec<(String, String)> {
             self.inputs
                 .lock()
                 .unwrap()
                 .iter()
                 .filter_map(|i| match i {
-                    FakeInput::Key { pane, key } => Some((pane.clone(), key.clone())),
+                    FakeInput::Key { session_id, key } => Some((session_id.clone(), key.clone())),
                     _ => None,
                 })
                 .collect()
@@ -3222,7 +2688,9 @@ mod tests {
                 .unwrap()
                 .iter()
                 .filter_map(|i| match i {
-                    FakeInput::Bytes { pane, bytes } => Some((pane.clone(), bytes.clone())),
+                    FakeInput::Bytes { session_id, bytes } => {
+                        Some((session_id.clone(), bytes.clone()))
+                    }
                     _ => None,
                 })
                 .collect()
@@ -3235,10 +2703,7 @@ mod tests {
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let rt_session = RuntimeSession {
                 runtime: "fake".into(),
-                socket: "fake".into(),
-                session_name: format!("runner-{}", spec.session_id),
-                window: "main".into(),
-                pane: format!("%{}", spec.session_id),
+                session_id: spec.session_id.clone(),
             };
             self.spawns.lock().unwrap().push(FakeSpawn {
                 spec: spec.clone(),
@@ -3248,51 +2713,22 @@ mod tests {
             Ok((rt_session, OutputStream::new(rx, stop)))
         }
 
-        fn resume(&self, session: &RuntimeSession) -> RuntimeResult<OutputStream> {
-            let (tx, rx) = std::sync::mpsc::channel::<RuntimeOutput>();
-            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            self.spawns.lock().unwrap().push(FakeSpawn {
-                spec: SpawnSpec {
-                    session_id: session
-                        .session_name
-                        .strip_prefix("runner-")
-                        .unwrap_or("")
-                        .to_string(),
-                    ..Default::default()
-                },
-                rt_session: session.clone(),
-                tx: Some(tx),
-            });
-            Ok(OutputStream::new(rx, stop))
-        }
-
         fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
-            self.stops
-                .lock()
-                .unwrap()
-                .push(session.session_name.clone());
+            self.stops.lock().unwrap().push(session.session_id.clone());
             // Drop the matching tx so the forwarder sees Disconnected.
-            let target_pane = session.pane.clone();
+            let target_session_id = session.session_id.clone();
             let mut spawns = self.spawns.lock().unwrap();
             for s in spawns.iter_mut() {
-                if s.rt_session.pane == target_pane {
+                if s.rt_session.session_id == target_session_id {
                     s.tx = None;
                 }
             }
             Ok(())
         }
 
-        fn paste(&self, session: &RuntimeSession, payload: &[u8]) -> RuntimeResult<()> {
-            self.inputs.lock().unwrap().push(FakeInput::Paste {
-                pane: session.pane.clone(),
-                payload: payload.to_vec(),
-            });
-            Ok(())
-        }
-
         fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
             self.inputs.lock().unwrap().push(FakeInput::Bytes {
-                pane: session.pane.clone(),
+                session_id: session.session_id.clone(),
                 bytes: bytes.to_vec(),
             });
             Ok(())
@@ -3300,7 +2736,7 @@ mod tests {
 
         fn send_key(&self, session: &RuntimeSession, key: &str) -> RuntimeResult<()> {
             self.inputs.lock().unwrap().push(FakeInput::Key {
-                pane: session.pane.clone(),
+                session_id: session.session_id.clone(),
                 key: key.to_string(),
             });
             Ok(())
@@ -3310,7 +2746,7 @@ mod tests {
             self.resizes
                 .lock()
                 .unwrap()
-                .push((session.session_name.clone(), cols, rows));
+                .push((session.session_id.clone(), cols, rows));
             Ok(())
         }
 
@@ -3875,9 +3311,9 @@ mod tests {
             "direct chat must NOT ship the worker coordination preamble in argv: {trailing:?}",
         );
         assert!(
-            fake.pastes().is_empty(),
-            "argv delivery must suppress the post-spawn paste fallback; got pastes = {:?}",
-            fake.pastes()
+            fake.bytes_writes().is_empty(),
+            "argv delivery must suppress the post-spawn byte injection fallback; got writes = {:?}",
+            fake.bytes_writes()
         );
 
         mgr.kill(&spawned.id).unwrap();
@@ -3966,9 +3402,9 @@ mod tests {
             "worker argv must ship the brief"
         );
         assert!(
-            fake.pastes().is_empty(),
-            "argv delivery must suppress the post-spawn paste fallback; got = {:?}",
-            fake.pastes()
+            fake.bytes_writes().is_empty(),
+            "argv delivery must suppress the post-spawn byte injection fallback; got = {:?}",
+            fake.bytes_writes()
         );
 
         mgr.kill(&spawned.id).unwrap();
@@ -4048,9 +3484,9 @@ mod tests {
             spec.args,
         );
         assert!(
-            fake.pastes().is_empty(),
-            "argv delivery must not schedule paste injection; got {:?}",
-            fake.pastes(),
+            fake.bytes_writes().is_empty(),
+            "argv delivery must not schedule byte injection; got {:?}",
+            fake.bytes_writes(),
         );
         assert!(
             fake.keys().is_empty(),
@@ -4237,18 +3673,18 @@ mod tests {
             .unwrap();
 
         // FIRST_PROMPT_DELAY = ZERO under cfg(test); a would-be
-        // injection would already be visible in fake.pastes() by
+        // injection would already be visible in fake.bytes_writes() by
         // the time resume() returns. The contract: codex resume
-        // MUST NOT paste anything containing the brief.
-        let pasted: String = fake
-            .pastes()
+        // MUST NOT write anything containing the brief.
+        let written: String = fake
+            .bytes_writes()
             .iter()
             .map(|(_, p)| String::from_utf8_lossy(p).to_string())
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            !pasted.contains("CODEX_BRIEF_TOKEN_RESUME"),
-            "codex resume must NOT paste the brief; got = {pasted:?}"
+            !written.contains("CODEX_BRIEF_TOKEN_RESUME"),
+            "codex resume must NOT write the brief; got = {written:?}"
         );
 
         mgr.kill(&resumed.id).unwrap();
@@ -4993,364 +4429,12 @@ mod tests {
         mgr.kill(&spawned.id).unwrap();
     }
 
-    /// Helper: insert a runner row + a `running` direct-chat
-    /// session row with the runtime_* columns populated as if a
-    /// prior Runner process had spawned the session through tmux.
-    fn insert_running_row_with_runtime_meta(pool: &Arc<DbPool>) -> (String, String) {
-        let now = Utc::now().to_rfc3339();
-        let runner_id = ulid::Ulid::new().to_string();
-        let session_id = ulid::Ulid::new().to_string();
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                (id, handle, display_name, runtime, command,
-                 args_json, working_dir, system_prompt, env_json,
-                 created_at, updated_at)
-             VALUES (?1, 'reattach', 'R', 'shell', '/bin/sh',
-                     NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO sessions
-                (id, mission_id, runner_id, cwd, status, started_at,
-                 runtime, runtime_socket, runtime_session,
-                 runtime_window, runtime_pane)
-             VALUES (?1, NULL, ?2, '/tmp', 'running', ?3,
-                     'tmux', 'runner', ?4, 'main', ?5)",
-            params![
-                session_id,
-                runner_id,
-                now,
-                format!("runner-{session_id}"),
-                format!("%{session_id}"),
-            ],
-        )
-        .unwrap();
-        (session_id, runner_id)
-    }
-
-    #[test]
-    fn reattach_running_sessions_recovers_live_pane() {
-        // Simulate "Runner restarted while a tmux pane survived":
-        // a sessions row is `running` with runtime_* populated.
-        // FakeRuntime's status() returns alive=true by default,
-        // so reattach should rebuild the SessionHandle (the row
-        // stays running) and the manager's sessions map gains
-        // an entry.
-        let pool = pool_with_schema();
-        let (session_id, _runner_id) = insert_running_row_with_runtime_meta(&pool);
-
-        let fake = fake_runtime();
-        // Override status: alive (the default exit_code=0 still
-        // applies but alive=true takes precedence).
-        {
-            let mut s = fake.status_response.lock().unwrap();
-            s.alive = true;
-            s.exit_code = None;
-        }
-        let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        mgr.reattach_running_sessions(
-            Arc::clone(&pool),
-            capture(),
-            &HashSet::new(),
-            std::path::Path::new("."),
-        );
-
-        // Row should still be running.
-        let status: String = pool
-            .get()
-            .unwrap()
-            .query_row(
-                "SELECT status FROM sessions WHERE id = ?1",
-                params![session_id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(status, "running");
-        // Manager should have the session in its live map.
-        assert!(mgr.sessions.lock().unwrap().contains_key(&session_id));
-
-        // Cleanup so the forwarder thread doesn't leak.
-        mgr.kill(&session_id).unwrap();
-    }
-
-    #[test]
-    fn reattach_running_sessions_marks_dead_pane_with_exit_code() {
-        // Pane is gone-but-flagged-dead: tmux still has the
-        // remain-on-exit row and reports pane_dead=1 with a
-        // non-zero exit code. Reattach should mark the row
-        // crashed (non-zero) and tear down the dead pane.
-        let pool = pool_with_schema();
-        let (session_id, _runner_id) = insert_running_row_with_runtime_meta(&pool);
-
-        let fake = fake_runtime();
-        {
-            let mut s = fake.status_response.lock().unwrap();
-            s.alive = false;
-            s.exit_code = Some(42);
-        }
-        let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        mgr.reattach_running_sessions(
-            Arc::clone(&pool),
-            capture(),
-            &HashSet::new(),
-            std::path::Path::new("."),
-        );
-
-        let status: String = pool
-            .get()
-            .unwrap()
-            .query_row(
-                "SELECT status FROM sessions WHERE id = ?1",
-                params![session_id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(status, "crashed");
-        // The row must NOT be in the live map — there's no live
-        // pane to attach to.
-        assert!(!mgr.sessions.lock().unwrap().contains_key(&session_id));
-    }
-
-    #[test]
-    fn reattach_running_sessions_reattaches_live_mission_panes() {
-        // Mission sessions take the same alive-pane path as direct
-        // chats. The bus + router are mounted earlier in startup by
-        // `mission::reattach_all_running_missions`, so the pane is
-        // safe to reattach: events emitted between pipe-pane install
-        // and workspace mount land on the already-live bus.
-        let pool = pool_with_schema();
-        let now = Utc::now().to_rfc3339();
-        let runner_id = ulid::Ulid::new().to_string();
-        let session_id = ulid::Ulid::new().to_string();
-        let crew_id = "c-mission-reattach".to_string();
-        let mission_id = ulid::Ulid::new().to_string();
-        {
-            let conn = pool.get().unwrap();
-            conn.execute(
-                "INSERT INTO crews (id, name, created_at, updated_at)
-                 VALUES (?1, 'c', ?2, ?2)",
-                params![crew_id, now],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'mr', 'M', 'shell', '/bin/sh',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-                params![runner_id, now],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO missions (id, crew_id, title, status, started_at)
-                 VALUES (?1, ?2, 't', 'running', ?3)",
-                params![mission_id, crew_id, now],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO sessions
-                    (id, mission_id, runner_id, status, started_at,
-                     runtime, runtime_socket, runtime_session,
-                     runtime_window, runtime_pane)
-                 VALUES (?1, ?2, ?3, 'running', ?4,
-                         'tmux', 'runner', ?5, 'main', ?6)",
-                params![
-                    session_id,
-                    mission_id,
-                    runner_id,
-                    now,
-                    format!("runner-{session_id}"),
-                    format!("%{session_id}"),
-                ],
-            )
-            .unwrap();
-        }
-
-        let fake = fake_runtime();
-        // Pane is alive — reattach should rebuild the SessionHandle.
-        {
-            let mut s = fake.status_response.lock().unwrap();
-            s.alive = true;
-            s.exit_code = None;
-        }
-        let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        mgr.reattach_running_sessions(
-            Arc::clone(&pool),
-            capture(),
-            &HashSet::new(),
-            std::path::Path::new("."),
-        );
-
-        // Row stays `running` — the pane is alive and the manager
-        // has rebuilt its handle for it.
-        let status: String = pool
-            .get()
-            .unwrap()
-            .query_row(
-                "SELECT status FROM sessions WHERE id = ?1",
-                params![session_id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(status, "running");
-        // Manager has the session in its live map again.
-        assert!(mgr.sessions.lock().unwrap().contains_key(&session_id));
-        // Nothing was stopped — the pane keeps running.
-        assert_eq!(fake.stops.lock().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn reattach_running_sessions_stops_live_mission_panes_when_mount_failed() {
-        // If `mission::reattach_all_running_missions` failed to
-        // mount a mission's router+bus (corrupt log, missing crew,
-        // etc.), reattaching its alive panes would stream forwarder
-        // bytes into a non-existent subscriber and silently drop
-        // mission_* events. Fall back to the pre-eager-mount safety
-        // path: stop the pane and mark the row stopped so the user
-        // can resume from the workspace, where mission_attach will
-        // retry the mount.
-        let pool = pool_with_schema();
-        let now = Utc::now().to_rfc3339();
-        let runner_id = ulid::Ulid::new().to_string();
-        let session_id = ulid::Ulid::new().to_string();
-        let crew_id = "c-mount-failed".to_string();
-        let mission_id = ulid::Ulid::new().to_string();
-        {
-            let conn = pool.get().unwrap();
-            conn.execute(
-                "INSERT INTO crews (id, name, created_at, updated_at)
-                 VALUES (?1, 'c', ?2, ?2)",
-                params![crew_id, now],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'mr', 'M', 'shell', '/bin/sh',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-                params![runner_id, now],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO missions (id, crew_id, title, status, started_at)
-                 VALUES (?1, ?2, 't', 'running', ?3)",
-                params![mission_id, crew_id, now],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO sessions
-                    (id, mission_id, runner_id, status, started_at,
-                     runtime, runtime_socket, runtime_session,
-                     runtime_window, runtime_pane)
-                 VALUES (?1, ?2, ?3, 'running', ?4,
-                         'tmux', 'runner', ?5, 'main', ?6)",
-                params![
-                    session_id,
-                    mission_id,
-                    runner_id,
-                    now,
-                    format!("runner-{session_id}"),
-                    format!("%{session_id}"),
-                ],
-            )
-            .unwrap();
-        }
-
-        let fake = fake_runtime();
-        // Pane is alive — the failed-mount carve-out must override
-        // the uniform reattach and stop it.
-        {
-            let mut s = fake.status_response.lock().unwrap();
-            s.alive = true;
-            s.exit_code = None;
-        }
-        let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        let mut failed = HashSet::new();
-        failed.insert(mission_id.clone());
-        mgr.reattach_running_sessions(
-            Arc::clone(&pool),
-            capture(),
-            &failed,
-            std::path::Path::new("."),
-        );
-
-        // Row flips to stopped — workspace mount path will retry
-        // and resume spawns a fresh pane.
-        let status: String = pool
-            .get()
-            .unwrap()
-            .query_row(
-                "SELECT status FROM sessions WHERE id = ?1",
-                params![session_id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(status, "stopped");
-        // Manager must NOT hold a live handle for this session.
-        assert!(!mgr.sessions.lock().unwrap().contains_key(&session_id));
-        // Exactly one stop call — the safety carve-out tearing down
-        // the pane so it stops streaming bytes.
-        assert_eq!(fake.stops.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn reattach_running_sessions_marks_terminal_unavailable_stopped() {
-        // Pane is gone entirely (tmux returns Ok(None) — no such
-        // session). Mark the row stopped without inventing exit
-        // info.
-        let pool = pool_with_schema();
-        let (session_id, _runner_id) = insert_running_row_with_runtime_meta(&pool);
-
-        // FakeRuntime's status() always returns Ok(Some(...)) by
-        // default, so we can't easily express terminal-unavailable
-        // through the canned response. Instead, blank out the
-        // runtime_* columns to simulate a row that has no usable
-        // metadata — the reattach code path goes through
-        // `runtime_session()` returning None and immediately marks
-        // stopped.
-        pool.get()
-            .unwrap()
-            .execute(
-                "UPDATE sessions
-                    SET runtime = NULL, runtime_socket = NULL, runtime_session = NULL,
-                        runtime_window = NULL, runtime_pane = NULL
-                  WHERE id = ?1",
-                params![session_id],
-            )
-            .unwrap();
-
-        let fake = fake_runtime();
-        let mgr = mgr_with_fake(None, Arc::clone(&fake));
-        mgr.reattach_running_sessions(
-            Arc::clone(&pool),
-            capture(),
-            &HashSet::new(),
-            std::path::Path::new("."),
-        );
-
-        let status: String = pool
-            .get()
-            .unwrap()
-            .query_row(
-                "SELECT status FROM sessions WHERE id = ?1",
-                params![session_id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(status, "stopped");
-    }
-
     // The verify-and-retry first-prompt readback tests
     // (`first_prompt_landed_first_try`, `*_after_retry`,
     // `*_gives_up_after_max_attempts`,
     // `continue_resume_rejects_stale_placeholder`) lived here
-    // before docs/impls/0011 retired tmux's capture-pane verify
-    // path. The post-spawn "continue" auto-paste on resume that
+    // before docs/impls/0011 retired the readback verify path. The
+    // post-spawn "continue" auto-paste on resume that
     // also lived here has been removed — Resume just respawns the
     // PTY with no stdin injection, so the helper that synthesized
     // a FakeRuntime SessionHandle for those tests is gone too.

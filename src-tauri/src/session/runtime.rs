@@ -1,10 +1,7 @@
-#![allow(dead_code)] // Wired into SessionManager in Step 5+; foundation now.
-
-// Internal runtime abstraction for the session layer (impl plan
-// docs/impls/0004-tmux-session-runtime.md, Step 1). The trait is the
-// seam between the command layer and whoever owns the terminal —
-// `TmuxRuntime` for v1 (Step 5+); a future `NativePtyRuntime` slots
-// in here for Windows or for the no-dependency mode without
+// Internal runtime abstraction for the session layer. The trait is the
+// seam between the manager and whoever owns the terminal process. The
+// current implementation is the in-process portable-pty runtime; a
+// future platform-specific implementation can slot in without
 // rewriting commands/frontend.
 //
 // Intentionally small. Add methods only when a caller needs them;
@@ -64,56 +61,38 @@ pub struct SpawnSpec {
     pub initial_size: Option<(u16, u16)>,
 }
 
-/// What `spawn`/`resume` returns: the runtime-side identifiers we
-/// persist on the `sessions` row so a future process can reattach.
-/// Everything is opaque to the caller; the runtime owns the schema.
+/// What `spawn` returns: the runtime-side identity persisted on the
+/// `sessions` row. Under the in-process PTY runtime this is just the
+/// runtime discriminator plus the session id used to look up the
+/// live handle while the app process is running.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeSession {
     /// Discriminator for the runtime that produced this row.
-    /// Currently always `"tmux"`. A future `NativePtyRuntime` would
-    /// emit `"native-pty"`.
+    /// Currently `"native-pty"` for the portable-pty implementation.
     pub runtime: String,
-    /// `-L` label (tmux) — distinct sockets let the dev / test
-    /// harness coexist with the production server. Persisted so
-    /// reattach knows which socket to talk to.
-    pub socket: String,
-    /// `-s` session name. Always `runner-<SpawnSpec.session_id>` for
-    /// the tmux runtime.
-    pub session_name: String,
-    /// Window id within the tmux session. The first window is
-    /// `main`; we don't yet create others, but the column is here
-    /// so the schema doesn't need to grow when we do.
-    pub window: String,
-    /// Pane id (e.g. `%3`). Pane ids survive index reshuffles —
-    /// always persist these, never `:0.0`-style indexes.
-    pub pane: String,
+    /// Session row id and key into the runtime's live-handle map.
+    pub session_id: String,
 }
 
 /// Liveness snapshot of a runtime session. Returned by
-/// `SessionRuntime::status` so the manager (Step 9) can reconcile
-/// the DB row against what the runtime knows: a live pane stays
-/// `running`; a dead pane with a captured exit code becomes
-/// `stopped` (status 0) or `crashed` (non-zero); a missing pane
+/// `SessionRuntime::status` so the manager can reconcile the DB row
+/// against what the runtime knows: a live child stays
+/// `running`; a dead child with a captured exit code becomes
+/// `stopped` (status 0) or `crashed` (non-zero); a missing session
 /// (the runtime returns `Ok(None)`) is treated as
 /// terminal-unavailable.
 #[derive(Debug, Clone, Default)]
 pub struct SessionStatus {
-    /// `true` while the agent process is still attached to the
-    /// pane. Once the agent exits and tmux flags `pane_dead=1`,
-    /// this flips to `false`.
+    /// `true` while the agent process is still attached to the PTY.
+    /// Once the agent exits and the reader observes EOF, this flips
+    /// to `false`.
     pub alive: bool,
-    /// Exit code captured from `pane_dead_status` once the agent
-    /// has exited. Only populated when `alive == false` AND the
-    /// runtime config has `remain-on-exit on` so tmux retains the
-    /// dead pane long enough for the manager to read it.
+    /// Exit code captured from the child process once the agent has
+    /// exited. Only populated when `alive == false`.
     pub exit_code: Option<i32>,
-    /// Process id of the most-recent foreground program in the
-    /// pane (`pane_pid` in tmux). Useful for "kill the bare pid"
-    /// flows from the manager.
+    /// Process id of the child process when available.
     pub pid: Option<i32>,
-    /// Name of the foreground command (`pane_current_command`).
-    /// Useful for diagnostics — "is this still claude or has it
-    /// fallen back to the shell?".
+    /// Name of the spawned command. Useful for diagnostics.
     pub command: Option<String>,
 }
 
@@ -129,23 +108,14 @@ pub enum RunnerStatus {
     Idle,
 }
 
-/// One unit of output produced by a runtime session. The manager
-/// forwards `Replay` / `Stream` to xterm.js with **distinct
-/// semantics** for each variant — collapsing them back into a
-/// single byte stream is the duplicated-cells bug the plan calls
-/// out (Step 6: snapshot ≠ stream). `StatusTransition` is the
-/// forwarder's busy/idle signal (issue #124) and never reaches
-/// xterm.js; the SessionManager consumer routes it to the event
-/// log.
+/// One unit of output produced by a runtime session. Raw stream bytes
+/// are appended to xterm.js; `StatusTransition` is the forwarder's
+/// busy/idle signal (issue #124) and never reaches xterm.js; the
+/// SessionManager consumer routes it to the event log.
 #[derive(Debug, Clone)]
 pub enum RuntimeOutput {
-    /// Attach-time snapshot. xterm.js **resets** its buffer to this
-    /// content. Includes alternate-screen handling — for a
-    /// Claude/Codex pane in alternate-screen mode, this is the
-    /// current TUI render, not the pre-TUI scrollback.
-    Replay(Vec<u8>),
-    /// Live PTY bytes the agent wrote since the last `Stream`
-    /// chunk. xterm.js **appends**. Sourced from `pipe-pane`.
+    /// Live PTY bytes the agent wrote since the last `Stream` chunk.
+    /// xterm.js **appends**.
     Stream(Vec<u8>),
     /// Forwarder-inferred busy/idle transition. `source` is
     /// `"forwarder"` for these synthetic events (the CLI's
@@ -159,7 +129,7 @@ pub enum RuntimeOutput {
 }
 
 /// Receiver half of a runtime session's output channel. Returned
-/// from `spawn` / `resume`; the runtime is the sender. Backed by a
+/// from `spawn`; the runtime is the sender. Backed by a
 /// blocking `std::sync::mpsc` because the manager already runs
 /// reader threads off `std::thread`; matching that avoids dragging
 /// in a tokio runtime for the session layer.
@@ -169,15 +139,13 @@ pub enum RuntimeOutput {
 /// polls — without that, dropping the receiver while no bytes are
 /// arriving leaves the forwarder blocked forever in `read()`,
 /// which leaks one OS thread per detach. The wrapper trades the
-/// `Receiver` API for explicit `recv_timeout` / `try_recv`
-/// methods; callers that want the full receiver surface can take
-/// `&self.inner` via the `as_receiver` accessor.
+/// `Receiver` API for explicit `recv_timeout`.
 pub struct OutputStream {
     inner: std::sync::mpsc::Receiver<RuntimeOutput>,
     /// Set to true when this `OutputStream` is dropped. The
-    /// runtime's forwarder thread polls this flag every tick and
-    /// exits when it flips, releasing its FIFO read fd and
-    /// `Sender` half of the channel.
+    /// runtime's reader thread polls this flag every tick and exits
+    /// when it flips, releasing the PTY reader and `Sender` half of
+    /// the channel.
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -185,7 +153,7 @@ impl OutputStream {
     /// Construct from a `Receiver` plus the stop flag the runtime
     /// already gave to its forwarder thread. Internal — only the
     /// runtime impl wires this; manager code drops in via
-    /// `recv_timeout` / `try_recv`.
+    /// `recv_timeout`.
     pub(crate) fn new(
         inner: std::sync::mpsc::Receiver<RuntimeOutput>,
         stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -203,26 +171,14 @@ impl OutputStream {
         self.inner.recv_timeout(dur)
     }
 
-    /// Mirrors `Receiver::try_recv`.
-    pub fn try_recv(&self) -> Result<RuntimeOutput, std::sync::mpsc::TryRecvError> {
-        self.inner.try_recv()
-    }
-
-    /// Borrow the inner receiver for callers that need the full
-    /// surface (iterator chains, select-style multiplexing).
-    pub fn as_receiver(&self) -> &std::sync::mpsc::Receiver<RuntimeOutput> {
-        &self.inner
-    }
-
     /// Clone of the cancellation flag. Set this from outside the
     /// consumer thread to break it out of `recv_timeout` on the
     /// next tick, regardless of whether the channel has
     /// disconnected. Used by `SessionManager::kill` so kill
-    /// doesn't hang waiting on tmux's pipe-pane cleanup chain
-    /// (kill-session → cat dies → FIFO POLLHUP → forward_fifo
-    /// exits → tx drops → Disconnected) — that chain is normally
-    /// fast but can stall under load, and `kill` must not block
-    /// the calling Tauri command indefinitely.
+    /// doesn't hang waiting on the reader thread to observe EOF and
+    /// drop its sender. That path is normally fast but can stall
+    /// under load, and `kill` must not block the calling Tauri
+    /// command indefinitely.
     pub fn stop_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
         std::sync::Arc::clone(&self.stop)
     }
@@ -244,10 +200,7 @@ impl Drop for OutputStream {
 /// `crate::error::Error` via the `From` impl so command code can `?`
 /// across the boundary. v1 keeps the surface narrow: I/O failures
 /// (from the master fd / writer half) and free-form `Msg(...)` for
-/// every other condition the runtime wants to name. Earlier
-/// drafts had tmux-specific variants (`TmuxRequiresUnix`,
-/// `TmuxNotFound`, `TmuxFailed`); those went away when the tmux
-/// runtime was retired (docs/impls/0011).
+/// every other condition the runtime wants to name.
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
     #[error("io: {0}")]
@@ -268,65 +221,40 @@ impl From<RuntimeError> for crate::error::Error {
 
 pub type RuntimeResult<T> = std::result::Result<T, RuntimeError>;
 
-/// The session runtime trait. `TmuxRuntime` (Step 5) is the only
-/// implementer right now. Frontend / Tauri commands never touch
+/// The session runtime trait. Frontend / Tauri commands never touch
 /// this — they go through `SessionManager`, which in turn delegates
-/// to a `dyn SessionRuntime` for the per-pane work.
-///
-/// Output / input are split into distinct shapes by intent so
-/// callers can't accidentally collapse a snapshot into the live
-/// stream (Step 6 anti-pattern) or send a literal byte payload as a
-/// paste (Step 7 anti-pattern).
+/// to a `dyn SessionRuntime` for the per-session PTY work.
 pub trait SessionRuntime: Send + Sync {
     /// Start a fresh session. Returns the runtime-side ids to
     /// persist on the `sessions` row, plus the output channel the
-    /// runtime will write `RuntimeOutput::Replay` (once) and
-    /// `RuntimeOutput::Stream` (indefinitely) into.
+    /// runtime will write `RuntimeOutput::Stream` into.
     fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)>;
-
-    /// Re-establish liveness for a session that already has runtime
-    /// metadata persisted (app restart, route switch, etc.). Errors
-    /// out if the underlying pane is gone — the manager treats that
-    /// as `terminal-unavailable` and marks the session stopped.
-    /// Returns a fresh output channel: a `Replay` snapshot of the
-    /// pane's current state arrives first, then live `Stream`
-    /// events resume.
-    fn resume(&self, session: &RuntimeSession) -> RuntimeResult<OutputStream>;
 
     /// Best-effort terminate. The runtime is responsible for
     /// triggering whatever exit-status capture the manager needs;
     /// this method only signals.
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()>;
 
-    /// Multi-line prompt paste. Runtime keeps LF literal so the
-    /// agent sees one paste, not one submit per line. The runtime
-    /// does **not** submit — the manager follows up with `send_key`
-    /// when it wants the agent to act.
-    fn paste(&self, session: &RuntimeSession, payload: &[u8]) -> RuntimeResult<()>;
-
     /// Literal byte stream from xterm.js passthrough — the user is
-    /// typing directly into the foreground terminal. Runtime uses
-    /// `send-keys -l -- <bytes>` so the bytes arrive as keystrokes
-    /// without bracketed-paste markers.
+    /// typing directly into the foreground terminal, or the manager
+    /// is preserving the old paste path by writing prompt bytes
+    /// unchanged before sending Enter.
     fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()>;
 
     /// Named key. Examples: `"Enter"`, `"C-c"`, `"Up"`,
-    /// `"Escape"`. Runtime uses `send-keys -t=<pane> <key>` (no
-    /// `-l`, no `--`, so tmux's key-name lookup runs). Caller is
-    /// responsible for using a name tmux understands; the runtime
-    /// validates the name shape but does not enumerate every
-    /// possible key.
+    /// `"Escape"`. The runtime translates names to PTY byte
+    /// sequences. Caller is responsible for using a supported key
+    /// name.
     fn send_key(&self, session: &RuntimeSession, key: &str) -> RuntimeResult<()>;
 
     /// Frontend resize event. The runtime is expected to debounce
     /// internally if multiple `resize` calls land back-to-back.
     fn resize(&self, session: &RuntimeSession, cols: u16, rows: u16) -> RuntimeResult<()>;
 
-    /// Liveness probe used by the manager's reconciliation loop
-    /// (Step 8). `Ok(None)` means the runtime can't find the
-    /// session — treat as terminal-unavailable. `Ok(Some(_))`
-    /// means the pane exists; the caller branches on
-    /// `SessionStatus.alive` and `exit_code`. Errors are reserved
-    /// for transport failures (tmux daemon gone, etc.).
+    /// Liveness probe used by the manager's exit reconciliation.
+    /// `Ok(None)` means the runtime can't find the session — treat
+    /// as terminal-unavailable. `Ok(Some(_))` means the PTY child is
+    /// known; the caller branches on `SessionStatus.alive` and
+    /// `exit_code`. Errors are reserved for transport failures.
     fn status(&self, session: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>>;
 }
