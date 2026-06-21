@@ -523,7 +523,6 @@ pub struct PendingMissionSpawn {
     plan: router::runtime::ResumePlan,
     first_turn_delivered_via_argv: bool,
     resolved_cwd: Option<String>,
-    started_at_dt: chrono::DateTime<Utc>,
     app_data_dir: PathBuf,
     pool: Arc<DbPool>,
 }
@@ -845,7 +844,6 @@ impl SessionManager {
             plan,
             first_turn_delivered_via_argv,
             resolved_cwd,
-            started_at_dt,
             app_data_dir: app_data_dir.to_path_buf(),
             pool,
         })
@@ -887,7 +885,6 @@ impl SessionManager {
             plan,
             first_turn_delivered_via_argv,
             resolved_cwd,
-            started_at_dt,
             app_data_dir,
             pool,
         } = pending;
@@ -930,6 +927,7 @@ impl SessionManager {
             return Ok(CompleteSpawnOutcome::Cancelled);
         }
 
+        let spawn_started_at_dt = Utc::now();
         let (rt_session, output) = self
             .runtime
             .spawn(spec)
@@ -1027,7 +1025,7 @@ impl SessionManager {
                 crate::session::codex_capture::spawn_capture(
                     session_id.clone(),
                     cwd,
-                    started_at_dt,
+                    spawn_started_at_dt,
                     Arc::clone(&pool),
                 );
             }
@@ -1302,6 +1300,7 @@ impl SessionManager {
             )));
         }
 
+        let spawn_started_at_dt = Utc::now();
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -1387,7 +1386,7 @@ impl SessionManager {
                 crate::session::codex_capture::spawn_capture(
                     session_id.clone(),
                     cwd,
-                    started_at_dt,
+                    spawn_started_at_dt,
                     Arc::clone(&pool),
                 );
             }
@@ -1740,6 +1739,7 @@ impl SessionManager {
         // means no concurrent refresh-token race, so Resume-all over
         // N stopped slots can spawn as fast as the runtime allows.
         // See issue #171.
+        let spawn_started_at_dt = Utc::now();
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -1831,7 +1831,7 @@ impl SessionManager {
                 crate::session::codex_capture::spawn_capture(
                     session_id.to_string(),
                     cwd,
-                    started_at_dt,
+                    spawn_started_at_dt,
                     Arc::clone(&pool),
                 );
             }
