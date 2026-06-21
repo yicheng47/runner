@@ -222,6 +222,9 @@ fn drop_streak_is_loggable(streak: u64) -> bool {
 pub trait SessionEvents: Send + Sync + 'static {
     fn output(&self, ev: &OutputEvent);
     fn exit(&self, ev: &ExitEvent);
+    /// Live direct-chat activity projection. Mission sessions keep using
+    /// `runner_status` rows in the mission log instead.
+    fn status(&self, _ev: &SessionActivityEvent) {}
     /// Live activity counter for a runner — emitted on every spawn/reap so
     /// the Runners list can update its "N sessions / M missions" badges
     /// without polling. Default no-op so test fakes don't have to opt in.
@@ -247,6 +250,31 @@ pub struct RunnerActivityEvent {
     pub direct_session_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionActivityState {
+    Busy,
+    Idle,
+}
+
+impl From<RunnerStatus> for SessionActivityState {
+    fn from(state: RunnerStatus) -> Self {
+        match state {
+            RunnerStatus::Busy => Self::Busy,
+            RunnerStatus::Idle => Self::Idle,
+        }
+    }
+}
+
+/// Payload for `session/status`. Emitted only for direct chats, where
+/// busy/idle is a live UI projection rather than persisted DB state.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionActivityEvent {
+    pub session_id: String,
+    pub state: SessionActivityState,
+    pub source: String,
+}
+
 /// Emitter for the real Tauri app — emits `session/output`, `session/exit`,
 /// and `runner/activity`.
 pub struct TauriSessionEvents(pub tauri::AppHandle);
@@ -259,6 +287,10 @@ impl SessionEvents for TauriSessionEvents {
     fn exit(&self, ev: &ExitEvent) {
         use tauri::Emitter;
         let _ = self.0.emit("session/exit", ev);
+    }
+    fn status(&self, ev: &SessionActivityEvent) {
+        use tauri::Emitter;
+        let _ = self.0.emit("session/status", ev);
     }
     fn runner_activity(&self, ev: &RunnerActivityEvent) {
         use tauri::Emitter;

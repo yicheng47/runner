@@ -131,6 +131,14 @@ export interface SessionOutputEvent {
   data: string;
 }
 
+export type SessionActivityState = "busy" | "idle";
+
+export interface SessionActivityEvent {
+  session_id: string;
+  state: SessionActivityState;
+  source: string;
+}
+
 export type MissionStatus = "running" | "completed" | "aborted";
 
 export interface Mission {

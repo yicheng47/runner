@@ -50,7 +50,13 @@ import {
   unmarkArchivingSession,
   useArchivingSession,
 } from "../lib/archivingState";
-import type { Runner, SessionStatus, WarningEvent } from "../lib/types";
+import type {
+  Runner,
+  SessionActivityEvent,
+  SessionActivityState,
+  SessionStatus,
+  WarningEvent,
+} from "../lib/types";
 
 interface ExitEvent {
   session_id: string;
@@ -92,6 +98,8 @@ interface DirectSessionPane {
   exitCode: number | null;
 }
 
+type DirectChatDisplayStatus = SessionActivityState | "stopped" | "crashed";
+
 export default function RunnerChat() {
   const { sessionId: sessionIdParam } = useParams<{
     sessionId: string;
@@ -119,6 +127,9 @@ export default function RunnerChat() {
   // meta line. Pulled from session_list_recent_direct so the chat
   // surface and the sidebar agree on the truth.
   const [chatMeta, setChatMeta] = useState<DirectSessionEntry | null>(null);
+  const [activityBySession, setActivityBySession] = useState<
+    Record<string, SessionActivityState | undefined>
+  >({});
   // chatMeta is async (listRecentDirect → session_get fallback) and is
   // the only source of `archived_at`. Until it resolves we don't know
   // whether the URL points at an archived row, and we can't safely
@@ -176,7 +187,14 @@ export default function RunnerChat() {
   const startedKeyRef = useRef<string | null>(null);
 
   const activeSession = directSessions.find((s) => s.id === sessionId) ?? null;
-  const status = activeSession?.status ?? "running";
+  const status = activeSession?.status ?? chatMeta?.status ?? "running";
+  const latestActivity = sessionId ? activityBySession[sessionId] : undefined;
+  const displayStatus: DirectChatDisplayStatus =
+    status === "stopped" || status === "crashed"
+      ? status
+      : latestActivity === "busy"
+        ? "busy"
+        : "idle";
   const exitCode = activeSession?.exitCode ?? null;
   const backTarget = chatMeta?.handle ? `/runners/${chatMeta.handle}` : "/runners";
   const backLabel = chatMeta?.handle ? "Back to runner" : "Back to runners";
@@ -215,6 +233,15 @@ export default function RunnerChat() {
     });
   }, []);
 
+  const clearActivity = useCallback((id: string) => {
+    setActivityBySession((prev) => {
+      if (prev[id] == null) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }, []);
+
   const attach = useCallback(
     (
       id: string,
@@ -241,18 +268,22 @@ export default function RunnerChat() {
     [upsertSession],
   );
 
-  const onTerminalExit = useCallback((ev: ExitEvent) => {
-    const userEnded = killedSessionsRef.current.has(ev.session_id);
-    const nextStatus = ev.success || userEnded ? "stopped" : "crashed";
-    killedSessionsRef.current.delete(ev.session_id);
-    setDirectSessions((prev) =>
-      prev.map((s) =>
-        s.id === ev.session_id
-          ? { ...s, status: nextStatus, exitCode: ev.exit_code }
-          : s,
-      ),
-    );
-  }, []);
+  const onTerminalExit = useCallback(
+    (ev: ExitEvent) => {
+      const userEnded = killedSessionsRef.current.has(ev.session_id);
+      const nextStatus = ev.success || userEnded ? "stopped" : "crashed";
+      killedSessionsRef.current.delete(ev.session_id);
+      clearActivity(ev.session_id);
+      setDirectSessions((prev) =>
+        prev.map((s) =>
+          s.id === ev.session_id
+            ? { ...s, status: nextStatus, exitCode: ev.exit_code }
+            : s,
+        ),
+      );
+    },
+    [clearActivity],
+  );
 
   // Pull runner config only for runner-backed chats. Runtime-only
   // chats render from chatMeta.agent_* instead.
@@ -336,6 +367,34 @@ export default function RunnerChat() {
     };
   }, [sessionId, refreshChatMeta]);
 
+  useEffect(() => {
+    setActivityBySession({});
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || isArchived) {
+      setActivityBySession({});
+      return;
+    }
+    const targetId = sessionId;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void listen<SessionActivityEvent>("session/status", (event) => {
+      if (event.payload.session_id !== targetId) return;
+      setActivityBySession({ [targetId]: event.payload.state });
+    }).then((fn) => {
+      if (cancelled) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [sessionId, isArchived]);
+
   // Sync the active pane's status from the DB-backed chatMeta. attach()
   // seeds new panes with `status: "running"` because the spawn path is
   // its primary caller, but the sidebar's attach path can land on a
@@ -352,6 +411,7 @@ export default function RunnerChat() {
   // agent, which is the right signal that the canvas is live again.
   useEffect(() => {
     if (!chatMeta) return;
+    if (chatMeta.status !== "running") clearActivity(chatMeta.session_id);
     setDirectSessions((prev) =>
       prev.map((s) =>
         s.id === chatMeta.session_id
@@ -359,7 +419,7 @@ export default function RunnerChat() {
           : s,
       ),
     );
-  }, [chatMeta]);
+  }, [chatMeta, clearActivity]);
 
   // Clear `resuming` once the agent has settled on a steady frame.
   // Heuristic: wait for the first output chunk, then for output to
@@ -598,6 +658,7 @@ export default function RunnerChat() {
     if (!sessionId) return;
     const targetId = sessionId;
     killedSessionsRef.current.add(targetId);
+    clearActivity(targetId);
     try {
       // session_kill blocks until the reader thread reaps the child
       // and emits session/exit. The exit listener should flip the
@@ -637,6 +698,7 @@ export default function RunnerChat() {
     const targetId = sessionId;
     setResuming(true);
     setErr(null);
+    clearActivity(targetId);
     try {
       const dims = terminalsRef.current.get(targetId)?.measure() ?? null;
       await api.session.resume(
@@ -705,6 +767,7 @@ export default function RunnerChat() {
     const targetId = sessionId;
     const effectiveStatus = activeSession?.status ?? chatMeta?.status;
     markArchivingSession(targetId);
+    clearActivity(targetId);
     try {
       if (effectiveStatus === "running") {
         // Mark the kill as user-initiated so the exit handler reads it
@@ -736,36 +799,31 @@ export default function RunnerChat() {
   // Header layout mirrors Pencil node `NLa0k` inside `u6woG`:
   // 36px terminal-icon avatar, vertical title stack (handle + DIRECT
   // chip + meta line), and a right cluster of status pill + Stop +
-  // kebab. Status colors come from the runner-status semantics.
-  // 3-way derived state: "resuming" overrides whatever the row says
-  // because it's the user-driven transitional state. Mirrors the
-  // three Pencil frames (running u6woG / stopped vS5ce / resuming
-  // GZhHO).
-  type ChatState = "running" | "stopped" | "crashed" | "resuming";
-  const chatState: ChatState = resuming
-    ? "resuming"
-    : status === "running"
-      ? "running"
-      : status === "crashed"
-        ? "crashed"
-        : "stopped";
+  // kebab. `resuming` is a transitional control state; the steady
+  // display model is busy / idle / stopped / crashed.
+  type ChatState = DirectChatDisplayStatus | "resuming";
+  const chatState: ChatState = resuming ? "resuming" : displayStatus;
   const statusBadgeClass =
-    chatState === "running"
+    chatState === "busy"
       ? "bg-accent/10 text-accent"
-      : chatState === "crashed"
-        ? "bg-danger/10 text-danger"
-        : chatState === "resuming"
-          ? "bg-info/15 text-info"
-          : "bg-line-strong text-fg-2";
+      : chatState === "idle"
+        ? "bg-accent/5 text-fg-2"
+        : chatState === "crashed"
+          ? "bg-danger/10 text-danger"
+          : chatState === "resuming"
+            ? "bg-info/15 text-info"
+            : "bg-line-strong text-fg-2";
   const statusDotClass =
-    chatState === "running"
+    chatState === "busy"
       ? "bg-accent"
-      : chatState === "crashed"
-        ? "bg-danger"
-        : chatState === "resuming"
-          ? "bg-info"
-          : "bg-fg-3";
-  const statusLabel = chatState === "resuming" ? "resuming…" : status;
+      : chatState === "idle"
+        ? "bg-accent/35"
+        : chatState === "crashed"
+          ? "bg-danger"
+          : chatState === "resuming"
+            ? "bg-info"
+            : "bg-fg-3";
+  const statusLabel = chatState === "resuming" ? "resuming…" : displayStatus;
   const titleLabel =
     chatMeta?.title ??
     (chatMeta?.handle
@@ -862,7 +920,7 @@ export default function RunnerChat() {
             <BackButton onClick={() => navigate(backTarget)}>{backLabel}</BackButton>
           ) : chatState === "resuming" ? (
             <ResumingButton />
-          ) : chatState === "running" && sessionId ? (
+          ) : status === "running" && sessionId ? (
             <StopButton onClick={() => void endChat()} />
           ) : sessionId ? (
             // Stopped/crashed → Resume, matching
@@ -1047,7 +1105,7 @@ export default function RunnerChat() {
           // boots. The terminal underneath is hidden via
           // `opacity-0` above so the pill reads on a clean canvas.
           <StartingOverlay label="Starting chat…" />
-        ) : activeSession && chatState !== "running" ? (
+        ) : activeSession && status !== "running" ? (
           <SessionEndedOverlay
             status={status}
             exitCode={exitCode}

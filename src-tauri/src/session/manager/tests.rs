@@ -109,6 +109,16 @@ impl FakeRuntime {
         }
     }
 
+    fn push_status(&self, i: usize, state: RunnerStatus) {
+        let spawns = self.spawns.lock().unwrap();
+        if let Some(tx) = spawns.get(i).and_then(|s| s.tx.as_ref()) {
+            let _ = tx.send(RuntimeOutput::StatusTransition {
+                state,
+                source: "forwarder",
+            });
+        }
+    }
+
     /// Drop the `Sender` for spawn `i` so the forwarder thread
     /// sees `Disconnected` and exits — the manager-side path
     /// that simulates a pane dying cleanly.
@@ -242,6 +252,7 @@ fn mgr_with_fake(shell: Option<String>, fake: Arc<FakeRuntime>) -> Arc<SessionMa
 struct Capture {
     output: Mutex<Vec<OutputEvent>>,
     exit: Mutex<Vec<ExitEvent>>,
+    status: Mutex<Vec<SessionActivityEvent>>,
     activity: Mutex<Vec<RunnerActivityEvent>>,
 }
 impl SessionEvents for Capture {
@@ -250,6 +261,9 @@ impl SessionEvents for Capture {
     }
     fn exit(&self, ev: &ExitEvent) {
         self.exit.lock().unwrap().push(ev.clone());
+    }
+    fn status(&self, ev: &SessionActivityEvent) {
+        self.status.lock().unwrap().push(ev.clone());
     }
     fn runner_activity(&self, ev: &RunnerActivityEvent) {
         self.activity.lock().unwrap().push(ev.clone());
@@ -303,6 +317,30 @@ fn mission() -> Mission {
 
 fn capture() -> Arc<Capture> {
     Arc::new(Capture::default())
+}
+
+fn wait_for_session_status_event(
+    cap: &Capture,
+    session_id: &str,
+    state: SessionActivityState,
+) -> SessionActivityEvent {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(ev) = cap
+            .status
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|ev| ev.session_id == session_id && ev.state == state)
+            .cloned()
+        {
+            return ev;
+        }
+        if Instant::now() > deadline {
+            panic!("session/status event never arrived for {session_id} state {state:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn has_arg_pair(args: &[String], flag: &str, value: &str) -> bool {
@@ -1374,6 +1412,179 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
         last.active_sessions, 0,
         "after reap, active_sessions for this runner must be 0"
     );
+}
+
+#[test]
+fn direct_chat_status_transition_emits_session_status_busy() {
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'directbusy', 'Direct Busy', 'shell', '/bin/cat',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+    }
+
+    let mut runner = runner("/bin/cat", &[]);
+    runner.id = runner_id;
+    runner.handle = "directbusy".into();
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture();
+    let spawned = mgr
+        .spawn_direct(
+            &runner,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            Arc::clone(&cap) as Arc<dyn SessionEvents>,
+            None,
+        )
+        .unwrap();
+
+    fake.push_status(0, RunnerStatus::Busy);
+    let ev = wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Busy);
+
+    assert_eq!(ev.session_id, spawned.id);
+    assert_eq!(ev.state, SessionActivityState::Busy);
+    assert_eq!(ev.source, "forwarder");
+
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn direct_chat_status_transition_emits_session_status_idle() {
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'directidle', 'Direct Idle', 'shell', '/bin/cat',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+    }
+
+    let mut runner = runner("/bin/cat", &[]);
+    runner.id = runner_id;
+    runner.handle = "directidle".into();
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture();
+    let spawned = mgr
+        .spawn_direct(
+            &runner,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            Arc::clone(&cap) as Arc<dyn SessionEvents>,
+            None,
+        )
+        .unwrap();
+
+    fake.push_status(0, RunnerStatus::Idle);
+    let ev = wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Idle);
+
+    assert_eq!(ev.session_id, spawned.id);
+    assert_eq!(ev.state, SessionActivityState::Idle);
+    assert_eq!(ev.source, "forwarder");
+
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn mission_status_transition_appends_runner_status_without_session_status_event() {
+    let pool = pool_with_schema();
+    let mission_base = Mission {
+        crew_id: "c".into(),
+        ..mission()
+    };
+    let runner = runner("/bin/cat", &[]);
+    let slot_id = insert_crew_runner(&pool, &mission_base.id, &runner.id);
+    let fresh_mission_id: String = {
+        let conn = pool.get().unwrap();
+        conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
+            .unwrap()
+    };
+    let mission = Mission {
+        id: fresh_mission_id,
+        ..mission_base
+    };
+    let mut slot = slot_for(&runner);
+    slot.id = slot_id;
+    slot.crew_id = mission.crew_id.clone();
+
+    let app_data = tempfile::tempdir().unwrap();
+    let events_log_path =
+        runner_core::event_log::path::events_path(app_data.path(), &mission.crew_id, &mission.id);
+    let mission_dir =
+        runner_core::event_log::path::mission_dir(app_data.path(), &mission.crew_id, &mission.id);
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture();
+    let spawned = mgr
+        .spawn(
+            &mission,
+            &runner,
+            &slot,
+            app_data.path(),
+            events_log_path,
+            Arc::clone(&pool),
+            Arc::clone(&cap) as Arc<dyn SessionEvents>,
+            None,
+        )
+        .unwrap();
+
+    fake.push_status(0, RunnerStatus::Busy);
+
+    let log = EventLog::open(&mission_dir).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let event = loop {
+        let entries = log.read_from(0).unwrap();
+        if let Some(event) = entries.into_iter().map(|entry| entry.event).find(|event| {
+            event
+                .signal_type
+                .as_ref()
+                .is_some_and(|ty| ty.as_str() == "runner_status")
+        }) {
+            break event;
+        }
+        if Instant::now() > deadline {
+            panic!("runner_status event never arrived in mission log");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    assert_eq!(event.from, runner.handle);
+    assert_eq!(event.payload["state"], "busy");
+    assert_eq!(event.payload["source"], "forwarder");
+    assert!(
+        cap.status.lock().unwrap().is_empty(),
+        "mission sessions must not emit live session/status events",
+    );
+
+    mgr.kill(&spawned.id).unwrap();
 }
 
 #[test]
