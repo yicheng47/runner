@@ -131,8 +131,14 @@ fn run(session_id: String, spawn_cwd: String, started_at: DateTime<Utc>, pool: A
                     }
                 }
             }
-            matches.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-            for (_, path, id) in matches {
+            loop {
+                let claimed = claimed_rollouts().lock().unwrap();
+                let next =
+                    select_earliest_unclaimed(matches.clone(), |path| claimed.contains(path));
+                drop(claimed);
+                let Some((path, id)) = next else {
+                    break;
+                };
                 // Race guard: another watcher may have already
                 // captured this rollout (sibling chat in the same cwd).
                 // The first to insert into the process-shared set wins;
@@ -162,6 +168,23 @@ fn run(session_id: String, spawn_cwd: String, started_at: DateTime<Utc>, pool: A
         }
         std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
     }
+}
+
+type MatchCandidate = (DateTime<Utc>, PathBuf, String);
+
+/// Earliest unclaimed rollout wins. This best-effort pairing assumes
+/// Codex writes rollout files in spawn order; because Codex does not
+/// accept a caller-provided id, a later sibling that flushes first can
+/// still be mis-claimed.
+fn select_earliest_unclaimed(
+    mut matches: Vec<MatchCandidate>,
+    mut is_claimed: impl FnMut(&PathBuf) -> bool,
+) -> Option<(PathBuf, String)> {
+    matches.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    matches
+        .into_iter()
+        .find(|(_, path, _)| !is_claimed(path))
+        .map(|(_, path, id)| (path, id))
 }
 
 struct MatchedSessionMeta {
@@ -305,5 +328,22 @@ mod tests {
             }
             _ => panic!("expected matching session_meta"),
         }
+    }
+
+    #[test]
+    fn select_earliest_unclaimed_picks_earliest_then_skips_claimed() {
+        let t0 = "2026-06-20T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let early = (t0, PathBuf::from("rollout-early.jsonl"), "id-a".to_string());
+        let late = (
+            t0 + chrono::Duration::seconds(2),
+            PathBuf::from("rollout-late.jsonl"),
+            "id-b".to_string(),
+        );
+
+        let got = select_earliest_unclaimed(vec![late.clone(), early.clone()], |_| false);
+        assert_eq!(got, Some((early.1.clone(), "id-a".to_string())));
+
+        let got = select_earliest_unclaimed(vec![late.clone(), early.clone()], |p| p == &early.1);
+        assert_eq!(got, Some((late.1.clone(), "id-b".to_string())));
     }
 }
