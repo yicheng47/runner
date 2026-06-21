@@ -9,6 +9,10 @@ use crate::log_dir_for_build;
 /// bounce → fully-rendered window instead of a blank webview.
 #[tauri::command]
 pub fn app_ready(app: AppHandle) -> crate::error::Result<()> {
+    show_main_window(&app)
+}
+
+pub(crate) fn show_main_window(app: &AppHandle) -> crate::error::Result<()> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| Error::msg("main window not found"))?;

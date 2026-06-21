@@ -309,10 +309,29 @@ pub fn run() {
             // failures: best-effort path, and the startup cleanup is
             // the safety net on next launch.
             match event {
+                tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::CloseRequested { api, .. },
+                    ..
+                } if label == "main" => {
+                    api.prevent_close();
+                    hide_main_window_on_close(app_handle);
+                }
                 tauri::RunEvent::ExitRequested { .. } => {
                     stop_running_sessions_on_quit(app_handle);
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         state.mcp.stop();
+                    }
+                }
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen {
+                    has_visible_windows,
+                    ..
+                } => {
+                    if !has_visible_windows {
+                        if let Err(e) = commands::app::show_main_window(app_handle) {
+                            log::error!("reopen main window failed: {e}");
+                        }
                     }
                 }
                 tauri::RunEvent::Resumed => {
@@ -321,6 +340,16 @@ pub fn run() {
                 _ => {}
             }
         });
+}
+
+fn hide_main_window_on_close(app_handle: &AppHandle) {
+    let Some(window) = app_handle.get_webview_window("main") else {
+        log::warn!("window close requested, but main window was not found");
+        return;
+    };
+    if let Err(e) = window.hide() {
+        log::error!("hide main window failed: {e}");
+    }
 }
 
 /// On-quit hook body. Walks the DB for `running` direct-chat
