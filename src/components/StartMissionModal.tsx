@@ -6,7 +6,7 @@
 // either way; the modal surfaces that error inline so an empty-crew
 // pick is recoverable without closing.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
@@ -35,6 +35,10 @@ export function StartMissionModal({
   onStarted,
   initialCrewId = null,
 }: StartMissionModalProps) {
+  const formId = useId();
+  const titleInputId = `${formId}-title`;
+  const goalInputId = `${formId}-goal`;
+  const cwdInputId = `${formId}-cwd`;
   const [crews, setCrews] = useState<CrewListItem[]>([]);
   const [crewId, setCrewId] = useState<string>("");
   const [crewPickerOpen, setCrewPickerOpen] = useState(false);
@@ -272,10 +276,12 @@ export function StartMissionModal({
         </Field>
 
         <Field
+          htmlFor={titleInputId}
           label="Mission title"
           subtitle="Short label shown in the missions list and event log."
         >
           <input
+            id={titleInputId}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="e.g. Wire up event bus watcher"
@@ -285,6 +291,7 @@ export function StartMissionModal({
         </Field>
 
         <Field
+          htmlFor={goalInputId}
           label="Goal"
           subtitle={
             lead
@@ -293,6 +300,7 @@ export function StartMissionModal({
           }
         >
           <textarea
+            id={goalInputId}
             value={goal}
             onChange={(e) => setGoal(e.target.value)}
             placeholder={selectedCrew?.goal ?? "Describe what to do…"}
@@ -302,9 +310,10 @@ export function StartMissionModal({
           />
         </Field>
 
-        <Field label="Working directory">
+        <Field label="Working directory" htmlFor={cwdInputId}>
           <div className="flex items-center gap-2">
             <input
+              id={cwdInputId}
               value={cwd}
               onChange={(e) => setCwd(e.target.value)}
               placeholder="/Users/you/projects/foo (optional)"
@@ -352,22 +361,30 @@ export function StartMissionModal({
 function Field({
   label,
   subtitle,
+  htmlFor,
   children,
 }: {
   label: string;
   subtitle?: string;
+  htmlFor?: string;
   children: React.ReactNode;
 }) {
   return (
-    <label className="flex flex-col gap-1.5">
-      <span className="text-xs font-semibold text-fg">
-        {label}
-      </span>
+    <div className="flex flex-col gap-1.5">
+      {htmlFor ? (
+        <label htmlFor={htmlFor} className="text-xs font-semibold text-fg">
+          {label}
+        </label>
+      ) : (
+        <span className="text-xs font-semibold text-fg">
+          {label}
+        </span>
+      )}
       {children}
       {subtitle ? (
         <span className="text-[11px] text-fg-3">{subtitle}</span>
       ) : null}
-    </label>
+    </div>
   );
 }
 

@@ -7,7 +7,7 @@
 // owns Escape + backdrop close; only the inner dropdown needs its
 // own dismiss handlers.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, X } from "lucide-react";
@@ -38,6 +38,9 @@ export function StartChatModal({
   onClose,
   onStarted,
 }: StartChatModalProps) {
+  const formId = useId();
+  const titleInputId = `${formId}-title`;
+  const cwdInputId = `${formId}-cwd`;
   const [runners, setRunners] = useState<Runner[]>([]);
   const [runtimes, setRuntimes] = useState<RuntimeDefinition[]>([]);
   const [mode, setModeState] = useState<ChatMode>(() => readStartChatMode());
@@ -397,10 +400,12 @@ export function StartChatModal({
         )}
 
         <Field
+          htmlFor={titleInputId}
           label="Chat name"
           subtitle="Optional. Leave blank to use the default label."
         >
           <input
+            id={titleInputId}
             value={title}
             onChange={(e) => {
               setTitle(e.target.value);
@@ -413,9 +418,10 @@ export function StartChatModal({
           />
         </Field>
 
-        <Field label="Working directory">
+        <Field label="Working directory" htmlFor={cwdInputId}>
           <div className="flex items-center gap-2">
             <input
+              id={cwdInputId}
               value={cwd}
               onChange={(e) => setCwd(e.target.value)}
               placeholder={
@@ -442,20 +448,28 @@ export function StartChatModal({
 function Field({
   label,
   subtitle,
+  htmlFor,
   children,
 }: {
   label: string;
   subtitle?: string;
+  htmlFor?: string;
   children: React.ReactNode;
 }) {
   return (
-    <label className="flex flex-col gap-1.5">
-      <span className="text-xs font-semibold text-fg">{label}</span>
+    <div className="flex flex-col gap-1.5">
+      {htmlFor ? (
+        <label htmlFor={htmlFor} className="text-xs font-semibold text-fg">
+          {label}
+        </label>
+      ) : (
+        <span className="text-xs font-semibold text-fg">{label}</span>
+      )}
       {children}
       {subtitle ? (
         <span className="text-[11px] text-fg-3">{subtitle}</span>
       ) : null}
-    </label>
+    </div>
   );
 }
 
