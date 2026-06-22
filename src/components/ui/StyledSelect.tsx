@@ -27,6 +27,7 @@ export interface StyledSelectOption {
 }
 
 export function StyledSelect({
+  id,
   value,
   options,
   onChange,
@@ -34,6 +35,7 @@ export function StyledSelect({
   buttonLabel,
   disabled,
 }: {
+  id?: string;
   value: string;
   options: StyledSelectOption[];
   onChange: (v: string) => void;
@@ -60,6 +62,7 @@ export function StyledSelect({
   return (
     <div ref={rootRef} className={className ?? "min-w-[160px]"}>
       <button
+        id={id}
         type="button"
         onClick={() => {
           if (disabled) return;

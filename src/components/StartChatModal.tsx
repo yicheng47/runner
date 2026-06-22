@@ -39,6 +39,8 @@ export function StartChatModal({
   onStarted,
 }: StartChatModalProps) {
   const formId = useId();
+  const runnerPickerButtonId = `${formId}-runner`;
+  const runtimePickerButtonId = `${formId}-runtime`;
   const titleInputId = `${formId}-title`;
   const cwdInputId = `${formId}-cwd`;
   const [runners, setRunners] = useState<Runner[]>([]);
@@ -328,9 +330,10 @@ export function StartChatModal({
         </div>
 
         {mode === "runner" ? (
-          <Field label="Runner">
+          <Field label="Runner" htmlFor={runnerPickerButtonId}>
             <div ref={runnerPickerRef} className="relative">
               <button
+                id={runnerPickerButtonId}
                 type="button"
                 disabled={submitting || runners.length === 0}
                 onClick={() => setRunnerPickerOpen((v) => !v)}
@@ -387,8 +390,9 @@ export function StartChatModal({
             ) : null}
           </Field>
         ) : (
-          <Field label="Agent runtime">
+          <Field label="Agent runtime" htmlFor={runtimePickerButtonId}>
             <StyledSelect
+              id={runtimePickerButtonId}
               value={runtimeName}
               options={runtimes.map((runtime) => ({
                 value: runtime.name,

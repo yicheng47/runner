@@ -36,6 +36,7 @@ export function StartMissionModal({
   initialCrewId = null,
 }: StartMissionModalProps) {
   const formId = useId();
+  const crewPickerButtonId = `${formId}-crew`;
   const titleInputId = `${formId}-title`;
   const goalInputId = `${formId}-goal`;
   const cwdInputId = `${formId}-cwd`;
@@ -214,9 +215,10 @@ export function StartMissionModal({
           </div>
         ) : null}
 
-        <Field label="Crew">
+        <Field label="Crew" htmlFor={crewPickerButtonId}>
           <div ref={crewPickerRef} className="relative">
             <button
+              id={crewPickerButtonId}
               type="button"
               disabled={submitting || crews.length === 0}
               onClick={() => setCrewPickerOpen((v) => !v)}
