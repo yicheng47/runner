@@ -2221,6 +2221,27 @@ fn scan_alt_screen_detects_modern_and_legacy_escapes() {
 }
 
 #[test]
+fn scan_bracketed_paste_detects_enable_and_disable_escapes() {
+    assert_eq!(scan_bracketed_paste_transition(b"hello world"), None);
+    assert_eq!(
+        scan_bracketed_paste_transition(b"ready\x1b[?2004h"),
+        Some(true)
+    );
+    assert_eq!(
+        scan_bracketed_paste_transition(b"\x1b[?2004lprompt"),
+        Some(false)
+    );
+    assert_eq!(
+        scan_bracketed_paste_transition(b"\x1b[?2004hon\x1b[?2004loff"),
+        Some(false)
+    );
+    assert_eq!(
+        scan_bracketed_paste_transition(b"\x1b[?2004l\x1b[?2004h"),
+        Some(true)
+    );
+}
+
+#[test]
 fn output_snapshot_prepends_alt_screen_enter_when_session_in_alt_screen() {
     let pool = pool_with_schema();
     let fake = fake_runtime();
@@ -2282,6 +2303,113 @@ fn output_snapshot_prepends_alt_screen_enter_when_session_in_alt_screen() {
         snapshot2.first().map(|e| e.seq),
         Some(0),
         "main-screen sessions must not prepend the alt-screen enter"
+    );
+}
+
+#[test]
+fn output_snapshot_prepends_bracketed_paste_enable_when_session_has_it_enabled() {
+    let pool = pool_with_schema();
+    let fake = fake_runtime();
+    let mgr = SessionManager::new(
+        crate::shell_path::LoginShellEnv::default(),
+        Arc::clone(&fake) as Arc<dyn SessionRuntime>,
+    );
+    let runner = runner("/bin/sh", &["-c", "true"]);
+    {
+        let conn = pool.get().unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'r', 'r', 'shell', '/bin/sh',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+            params![runner.id, now],
+        )
+        .unwrap();
+    }
+    let spawned = mgr
+        .spawn_direct(
+            &runner,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+
+    fake.push_output(0, b"\x1b[?2004hprompt ready");
+    std::thread::sleep(Duration::from_millis(50));
+
+    let snapshot = mgr.output_snapshot(&spawned.id);
+    assert!(!snapshot.is_empty(), "snapshot should contain chunks");
+    assert_eq!(snapshot[0].seq, 0);
+    assert_eq!(
+        BASE64.decode(&snapshot[0].data).unwrap(),
+        b"\x1b[?2004h",
+        "synthetic prepend must restore bracketed-paste mode"
+    );
+
+    fake.push_output(0, b"\x1b[?2004lplain prompt");
+    std::thread::sleep(Duration::from_millis(50));
+    let snapshot2 = mgr.output_snapshot(&spawned.id);
+    assert_ne!(
+        snapshot2.first().map(|e| e.seq),
+        Some(0),
+        "sessions with bracketed paste disabled must not prepend the enable escape"
+    );
+}
+
+#[test]
+fn output_snapshot_combines_alt_screen_and_bracketed_paste_prefixes() {
+    let pool = pool_with_schema();
+    let fake = fake_runtime();
+    let mgr = SessionManager::new(
+        crate::shell_path::LoginShellEnv::default(),
+        Arc::clone(&fake) as Arc<dyn SessionRuntime>,
+    );
+    let runner = runner("/bin/sh", &["-c", "true"]);
+    {
+        let conn = pool.get().unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'r', 'r', 'shell', '/bin/sh',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+            params![runner.id, now],
+        )
+        .unwrap();
+    }
+    let spawned = mgr
+        .spawn_direct(
+            &runner,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+
+    fake.push_output(0, b"\x1b[?1049h\x1b[?2004hpainted prompt");
+    std::thread::sleep(Duration::from_millis(50));
+
+    let snapshot = mgr.output_snapshot(&spawned.id);
+    assert!(!snapshot.is_empty(), "snapshot should contain chunks");
+    assert_eq!(snapshot[0].seq, 0);
+    assert_eq!(
+        BASE64.decode(&snapshot[0].data).unwrap(),
+        b"\x1b[?1049h\x1b[?2004h",
+        "synthetic prepend must restore every tracked terminal mode"
     );
 }
 

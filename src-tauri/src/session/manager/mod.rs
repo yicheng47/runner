@@ -76,6 +76,22 @@ const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(1500);
 #[cfg(test)]
 const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(0);
 
+fn scan_mode_transition(bytes: &[u8], patterns: &[(&[u8], bool)]) -> Option<bool> {
+    let mut latest: Option<(usize, bool)> = None;
+    for (needle, state) in patterns {
+        if bytes.len() < needle.len() {
+            continue;
+        }
+        if let Some(pos) = bytes.windows(needle.len()).rposition(|w| w == *needle) {
+            latest = match latest {
+                Some((p, _)) if p >= pos => latest,
+                _ => Some((pos, *state)),
+            };
+        }
+    }
+    latest.map(|(_, state)| state)
+}
+
 /// Returns the resulting alt-screen state if `bytes` contains one or
 /// more enter/exit alt-screen escapes; `None` when no such escape is
 /// present. Recognized escapes: `\x1b[?1049h` / `\x1b[?1049l` (the
@@ -94,19 +110,12 @@ fn scan_alt_screen_transition(bytes: &[u8]) -> Option<bool> {
         (b"\x1b[?47h", true),
         (b"\x1b[?47l", false),
     ];
-    let mut latest: Option<(usize, bool)> = None;
-    for (needle, state) in PATTERNS {
-        if bytes.len() < needle.len() {
-            continue;
-        }
-        if let Some(pos) = bytes.windows(needle.len()).rposition(|w| w == *needle) {
-            latest = match latest {
-                Some((p, _)) if p >= pos => latest,
-                _ => Some((pos, *state)),
-            };
-        }
-    }
-    latest.map(|(_, state)| state)
+    scan_mode_transition(bytes, PATTERNS)
+}
+
+fn scan_bracketed_paste_transition(bytes: &[u8]) -> Option<bool> {
+    const PATTERNS: &[(&[u8], bool)] = &[(b"\x1b[?2004h", true), (b"\x1b[?2004l", false)];
+    scan_mode_transition(bytes, PATTERNS)
 }
 
 /// Inputs the forwarder consumer needs to translate a
@@ -406,6 +415,7 @@ struct SessionState {
     output_buffer: VecDeque<OutputEvent>,
     output_seq: u64,
     alt_screen_on: bool,
+    bracketed_paste_on: bool,
     resuming: bool,
     killed: bool,
 }
@@ -416,6 +426,7 @@ impl SessionState {
             && self.output_buffer.is_empty()
             && self.output_seq == 0
             && !self.alt_screen_on
+            && !self.bracketed_paste_on
             && !self.resuming
             && !self.killed
     }

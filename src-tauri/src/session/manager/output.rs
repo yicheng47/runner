@@ -56,11 +56,11 @@ impl SessionManager {
                 }
                 match output.recv_timeout(Duration::from_millis(500)) {
                     Ok(RuntimeOutput::Stream(bytes)) => {
-                        // Track alt-screen mode before recording so
+                        // Track terminal modes before recording so
                         // that the very next `output_snapshot` (if
                         // one races in here) reflects the latest
                         // state the agent just emitted.
-                        manager_t.update_alt_screen_state(&session_id, &bytes);
+                        manager_t.update_terminal_mode_state(&session_id, &bytes);
                         let ev = manager_t.record_output(
                             &session_id,
                             mission_id.as_deref(),
@@ -251,25 +251,35 @@ impl SessionManager {
         };
         let state = state.lock().unwrap();
         let mut events: Vec<OutputEvent> = state.output_buffer.iter().cloned().collect();
-        // For sessions currently inside an alt-screen, prepend a
-        // synthetic chunk carrying the `\x1b[?1049h` enter escape.
+        // For sessions currently inside terminal modes that xterm
+        // reset clears, prepend a synthetic chunk restoring them.
         // Long-running TUI sessions (claude-code, codex) lose the
         // original enter-alt-screen escape from the bounded
         // 4096-chunk buffer over time, so a re-attach that just
         // replays the remaining chunks lands mid-alt-screen content
         // into xterm's main screen — visible as stacked redraws in
         // scrollback and a blank alt-screen pane on route remount.
-        // seq=0 sits below every real event's
-        // monotonic seq so the frontend's `seq <= lastWrittenSeq`
-        // filter doesn't drop it on re-replay.
+        // Bracketed paste has the same problem after RunnerTerminal
+        // calls `reset()`: without replaying `\x1b[?2004h`, xterm
+        // sends multiline clipboard text as raw Enter-delimited
+        // keystrokes. seq=0 sits below every real event's monotonic
+        // seq so the frontend's `seq <= lastWrittenSeq` filter
+        // doesn't drop it on re-replay.
+        let mut synthetic_prefix = Vec::new();
         if state.alt_screen_on {
+            synthetic_prefix.extend_from_slice(b"\x1b[?1049h");
+        }
+        if state.bracketed_paste_on {
+            synthetic_prefix.extend_from_slice(b"\x1b[?2004h");
+        }
+        if !synthetic_prefix.is_empty() {
             events.insert(
                 0,
                 OutputEvent {
                     session_id: session_id.into(),
                     mission_id: None,
                     seq: 0,
-                    data: BASE64.encode(b"\x1b[?1049h"),
+                    data: BASE64.encode(synthetic_prefix),
                 },
             );
         }
@@ -286,6 +296,7 @@ impl SessionManager {
             state.output_buffer.clear();
             state.output_seq = 0;
             state.alt_screen_on = false;
+            state.bracketed_paste_on = false;
         }
         self.prune_empty_session_state(session_id);
     }
@@ -302,19 +313,19 @@ impl SessionManager {
             let mut state = state.lock().unwrap();
             state.output_buffer.clear();
             // Resume forks a new child; whether it'll be in alt-screen
-            // depends on the new process's own startup. Clear the state
-            // so it re-derives from the new child's emitted bytes
+            // or bracketed-paste mode depends on the new process's own
+            // startup. Clear the state so it re-derives from emitted bytes
             // instead of inheriting the prior child's mode.
             state.alt_screen_on = false;
+            state.bracketed_paste_on = false;
         }
         self.prune_empty_session_state(session_id);
     }
 
-    /// Update the per-session alt-screen flag from a raw runtime
-    /// chunk. We scan for the four mode-switch escapes (1049h/l +
-    /// 47h/l) and take the *latest* match in the chunk as the
-    /// resulting state. No-op when the chunk contains no
-    /// mode-switch escape.
+    /// Update per-session terminal mode flags from a raw runtime
+    /// chunk. We take the *latest* match in the chunk as the resulting
+    /// state for each tracked mode. No-op when the chunk contains no
+    /// tracked mode-switch escape.
     ///
     /// Boundary caveat: an escape could be split across two
     /// adjacent chunks if the PTY reader's buffer slice happens to
@@ -323,12 +334,19 @@ impl SessionManager {
     /// the worst case is one missed transition — the next emitted
     /// transition picks up the right state. If this turns out to
     /// matter we can carry a small tail buffer across chunks.
-    fn update_alt_screen_state(&self, session_id: &str, bytes: &[u8]) {
-        if let Some(new_state) = scan_alt_screen_transition(bytes) {
-            self.session_state_or_insert(session_id)
-                .lock()
-                .unwrap()
-                .alt_screen_on = new_state;
+    fn update_terminal_mode_state(&self, session_id: &str, bytes: &[u8]) {
+        let alt_screen = scan_alt_screen_transition(bytes);
+        let bracketed_paste = scan_bracketed_paste_transition(bytes);
+        if alt_screen.is_none() && bracketed_paste.is_none() {
+            return;
+        }
+        let state = self.session_state_or_insert(session_id);
+        let mut state = state.lock().unwrap();
+        if let Some(new_state) = alt_screen {
+            state.alt_screen_on = new_state;
+        }
+        if let Some(new_state) = bracketed_paste {
+            state.bracketed_paste_on = new_state;
         }
     }
 
