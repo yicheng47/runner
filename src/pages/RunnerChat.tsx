@@ -100,6 +100,14 @@ interface DirectSessionPane {
 
 type DirectChatDisplayStatus = SessionActivityState | "stopped" | "crashed";
 
+function directChatDisplayStatus(
+  status: SessionStatus,
+  activity: SessionActivityState | undefined,
+): DirectChatDisplayStatus {
+  if (status === "stopped" || status === "crashed") return status;
+  return activity ?? "busy";
+}
+
 export default function RunnerChat() {
   const { sessionId: sessionIdParam } = useParams<{
     sessionId: string;
@@ -189,12 +197,7 @@ export default function RunnerChat() {
   const activeSession = directSessions.find((s) => s.id === sessionId) ?? null;
   const status = activeSession?.status ?? chatMeta?.status ?? "running";
   const latestActivity = sessionId ? activityBySession[sessionId] : undefined;
-  const displayStatus: DirectChatDisplayStatus =
-    status === "stopped" || status === "crashed"
-      ? status
-      : latestActivity === "busy"
-        ? "busy"
-        : "idle";
+  const displayStatus = directChatDisplayStatus(status, latestActivity);
   const exitCode = activeSession?.exitCode ?? null;
   const backTarget = chatMeta?.handle ? `/runners/${chatMeta.handle}` : "/runners";
   const backLabel = chatMeta?.handle ? "Back to runner" : "Back to runners";
