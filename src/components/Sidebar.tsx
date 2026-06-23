@@ -62,6 +62,7 @@ import {
 } from "../lib/settings";
 import type {
   AppendedEvent,
+  MissionActivityState,
   MissionSummary,
   SessionActivityEvent,
   SessionActivityState,
@@ -260,10 +261,12 @@ export function Sidebar({
           t === "mission_stopped" ||
           t === "ask_human" ||
           t === "human_question" ||
-          t === "human_response"
+          t === "human_response" ||
+          t === "runner_status"
         ) {
           // ask_human/human_question/human_response refresh the pending-ask
-          // count badge. Cheap query; fires only on these signal types.
+          // count badge; runner_status refreshes live mission activity.
+          // Cheap query; fires only on these signal types.
           void refreshMissions();
         }
       }),
@@ -673,23 +676,12 @@ export function Sidebar({
                       </p>
                     ) : (
                       missions.map((m) => (
-                        <SidebarListRow
+                        <MissionRow
                           key={m.id}
+                          mission={m}
                           selected={m.id === currentMissionId}
-                          label={m.title}
                           onClick={() => openMission(m.id)}
                           onContextMenu={(anchor) => openMissionMenu(m, anchor)}
-                          title={m.crew_name || ""}
-                          pinned={!!m.pinned_at}
-                          // Mute the dot when the mission has no live
-                          // session — `mission.status === "running"` is
-                          // not enough to call a workspace "live", since
-                          // a paused mission (every slot stopped) keeps
-                          // the running status until the user archives.
-                          // `any_session_live` is computed on the backend
-                          // (see `mission_list_summary`) so the sidebar
-                          // doesn't need to fetch session rows per mission.
-                          dim={!m.any_session_live}
                           renaming={renamingMissionId === m.id}
                           onRenameSubmit={(next) =>
                             void submitMissionRename(m.id, next)
@@ -1183,6 +1175,59 @@ function directChatDotClassName(status: DirectChatDisplayStatus): string {
     case "stopped":
       return "bg-fg-3";
   }
+}
+
+function missionActivityDotClassName(
+  activity: MissionActivityState | null,
+): string {
+  switch (activity) {
+    case "busy":
+      return "bg-accent";
+    case "idle":
+      return "bg-accent/30";
+    case null:
+      return "bg-fg-3";
+  }
+}
+
+function MissionRow({
+  mission,
+  selected,
+  renaming,
+  onClick,
+  onContextMenu,
+  onRenameSubmit,
+  onRenameCancel,
+}: {
+  mission: MissionSummary;
+  selected: boolean;
+  renaming: boolean;
+  onClick: () => void;
+  onContextMenu: (anchor: { x: number; y: number }) => void;
+  onRenameSubmit: (nextTitle: string) => void;
+  onRenameCancel: () => void;
+}) {
+  const activity = mission.any_session_live ? (mission.activity ?? "busy") : null;
+  const statusLabel = activity ?? "paused";
+  const tooltip = `${mission.crew_name || "Mission"} · ${statusLabel}${
+    mission.pinned_at ? " · pinned" : ""
+  }`;
+
+  return (
+    <SidebarListRow
+      selected={selected}
+      label={mission.title}
+      onClick={onClick}
+      onContextMenu={onContextMenu}
+      title={tooltip}
+      dim={!mission.any_session_live}
+      dotClassName={missionActivityDotClassName(activity)}
+      pinned={!!mission.pinned_at}
+      renaming={renaming}
+      onRenameSubmit={onRenameSubmit}
+      onRenameCancel={onRenameCancel}
+    />
+  );
 }
 
 function SessionRow({
