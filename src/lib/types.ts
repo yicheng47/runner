@@ -304,6 +304,8 @@ export interface StartMissionOutput {
   goal: string;
 }
 
+export type MissionActivityState = "busy" | "idle";
+
 // Row shape used by the Missions list page. The mission's own fields are
 // flattened (mirrors `#[serde(flatten)]` on the Rust struct) and joined
 // with the crew's display name + a pending-ask count. The count is read
@@ -321,6 +323,9 @@ export interface MissionSummary extends Mission {
    *  the operator can tell which workspaces accept input without
    *  entering each one. */
   any_session_live: boolean;
+  /** Optional busy/idle projection for live mission slots. Null means
+   *  the mission has no live sessions and should keep the paused styling. */
+  activity: MissionActivityState | null;
 }
 
 // Tauri payload for `event/appended` — the bus emits this on every newly

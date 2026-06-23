@@ -53,6 +53,13 @@ pub struct StartMissionOutput {
     pub goal: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MissionActivityState {
+    Busy,
+    Idle,
+}
+
 fn new_id() -> String {
     UlidGen::new().to_string()
 }
@@ -151,6 +158,10 @@ pub struct MissionSummary {
     /// human can tell which workspaces will accept input at a glance,
     /// without entering each one.
     pub any_session_live: bool,
+    /// Optional live activity projection derived from per-slot
+    /// `runner_status` events. `None` means the mission has no live
+    /// sessions, preserving the existing paused/no-live sidebar behavior.
+    pub activity: Option<MissionActivityState>,
 }
 
 pub fn get(conn: &Connection, id: &str) -> Result<Mission> {
@@ -1589,6 +1600,83 @@ fn count_pending_asks_from_log(mission_dir: &Path) -> usize {
     pending.len()
 }
 
+fn latest_runner_statuses_from_log(
+    mission_dir: &Path,
+) -> std::collections::HashMap<String, MissionActivityState> {
+    let log = match EventLog::open(mission_dir) {
+        Ok(l) => l,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    let entries = match log.read_from_lossy(0) {
+        Ok((entries, _skipped)) => entries,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    let mut latest = std::collections::HashMap::new();
+    for entry in &entries {
+        let event = &entry.event;
+        if !matches!(event.kind, runner_core::model::EventKind::Signal) {
+            continue;
+        }
+        let Some(t) = event.signal_type.as_ref() else {
+            continue;
+        };
+        if t.as_str() != "runner_status" {
+            continue;
+        }
+        let Some(state) = event.payload.get("state").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let state = match state {
+            "busy" => MissionActivityState::Busy,
+            "idle" => MissionActivityState::Idle,
+            _ => continue,
+        };
+        latest.insert(event.from.clone(), state);
+    }
+    latest
+}
+
+fn mission_activity_from_latest(
+    live_handles: &[String],
+    latest: &std::collections::HashMap<String, MissionActivityState>,
+) -> Option<MissionActivityState> {
+    if live_handles.is_empty() {
+        return None;
+    }
+    if live_handles
+        .iter()
+        .any(|handle| !matches!(latest.get(handle), Some(MissionActivityState::Idle)))
+    {
+        Some(MissionActivityState::Busy)
+    } else {
+        Some(MissionActivityState::Idle)
+    }
+}
+
+fn mission_activity_from_log(
+    mission_dir: &Path,
+    live_handles: &[String],
+) -> Option<MissionActivityState> {
+    if live_handles.is_empty() {
+        return None;
+    }
+    let latest = latest_runner_statuses_from_log(mission_dir);
+    mission_activity_from_latest(live_handles, &latest)
+}
+
+fn live_session_handles(conn: &Connection, mission_id: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(sl.slot_handle, r.handle) AS handle
+           FROM sessions s
+           JOIN runners r ON r.id = s.runner_id
+           LEFT JOIN slots sl ON sl.id = s.slot_id
+          WHERE s.mission_id = ?1
+            AND s.status = 'running'",
+    )?;
+    let rows = stmt.query_map(params![mission_id], |row| row.get::<_, String>(0))?;
+    rows.collect()
+}
+
 pub(crate) async fn mission_list_summary_impl(
     state: &AppState,
     crew_id: Option<String>,
@@ -1620,23 +1708,23 @@ pub(crate) async fn mission_list_summary_impl(
                 count_pending_asks_from_log(&mission_dir)
             }
         };
-        // Cheap EXISTS — the sessions table is small and the mission_id
-        // column is indexed. Returns 1 if any slot is `running`, else 0;
-        // a missing row (mission with zero seeded sessions) also reads
-        // as 0, which is correct ("no live PTY").
-        let any_session_live: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sessions
-                                WHERE mission_id = ?1 AND status = 'running')",
-                params![m.id],
-                |row| row.get::<_, i64>(0).map(|n| n != 0),
-            )
-            .unwrap_or(false);
+        // The same query feeds both projections: `any_session_live`
+        // preserves the existing paused/no-live behavior, while
+        // `activity` overlays busy/idle only for live mission slots.
+        let live_handles = live_session_handles(&conn, &m.id).unwrap_or_default();
+        let any_session_live = !live_handles.is_empty();
+        let activity = if any_session_live {
+            let mission_dir = event_log::mission_dir(&state.app_data_dir, &m.crew_id, &m.id);
+            mission_activity_from_log(&mission_dir, &live_handles)
+        } else {
+            None
+        };
         summaries.push(MissionSummary {
             mission: m,
             crew_name,
             pending_ask_count,
             any_session_live,
+            activity,
         });
     }
     Ok(summaries)
@@ -1674,7 +1762,7 @@ mod tests {
         crew.id
     }
 
-    fn add_runner(conn: &mut Connection, crew_id: &str, handle: &str) {
+    fn add_runner(conn: &mut Connection, crew_id: &str, handle: &str) -> String {
         // Runners are config templates; in-mission identity is on
         // the slot. Test fixtures use the runner handle as both the
         // template name and the slot_handle for simplicity.
@@ -1695,7 +1783,24 @@ mod tests {
             },
         )
         .unwrap();
-        slot::create(conn, crew_id, &r.id, handle).unwrap();
+        slot::create(conn, crew_id, &r.id, handle).unwrap().slot.id
+    }
+
+    fn append_runner_status(
+        log: &EventLog,
+        crew_id: &str,
+        mission_id: &str,
+        handle: &str,
+        state: &str,
+    ) {
+        log.append(EventDraft::signal(
+            crew_id.to_string(),
+            mission_id.to_string(),
+            handle,
+            SignalType::new("runner_status"),
+            serde_json::json!({ "state": state }),
+        ))
+        .unwrap();
     }
 
     #[test]
@@ -2165,6 +2270,148 @@ mod tests {
         assert_eq!(
             events[1].signal_type.as_ref().unwrap().as_str(),
             "mission_goal"
+        );
+    }
+
+    #[test]
+    fn mission_activity_from_log_defaults_busy_until_all_live_slots_idle() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "A", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id: crew_id.clone(),
+                title: "m".into(),
+                goal_override: None,
+                cwd: None,
+            },
+        )
+        .unwrap();
+        let mission_dir = event_log::mission_dir(tmp.path(), &crew_id, &out.mission.id);
+        let log = EventLog::open(&mission_dir).unwrap();
+        let live_handles = vec!["lead".to_string(), "reviewer".to_string()];
+
+        assert_eq!(
+            mission_activity_from_log(&mission_dir, &[]),
+            None,
+            "no live sessions keeps paused/no-live activity empty"
+        );
+        assert_eq!(
+            mission_activity_from_log(&mission_dir, &live_handles),
+            Some(MissionActivityState::Busy),
+            "live slot without runner_status defaults busy"
+        );
+
+        append_runner_status(&log, &crew_id, &out.mission.id, "lead", "idle");
+        assert_eq!(
+            mission_activity_from_log(&mission_dir, &live_handles),
+            Some(MissionActivityState::Busy),
+            "one missing live slot still reads busy"
+        );
+
+        append_runner_status(&log, &crew_id, &out.mission.id, "reviewer", "idle");
+        assert_eq!(
+            mission_activity_from_log(&mission_dir, &live_handles),
+            Some(MissionActivityState::Idle),
+            "all live slots idle reads idle"
+        );
+
+        append_runner_status(&log, &crew_id, &out.mission.id, "lead", "busy");
+        assert_eq!(
+            mission_activity_from_log(&mission_dir, &live_handles),
+            Some(MissionActivityState::Busy),
+            "latest busy status wins"
+        );
+
+        append_runner_status(&log, &crew_id, &out.mission.id, "lead", "idle");
+        assert_eq!(
+            mission_activity_from_log(&mission_dir, &live_handles),
+            Some(MissionActivityState::Idle),
+            "latest idle status wins after busy"
+        );
+    }
+
+    #[test]
+    fn mission_activity_uses_running_slot_handles_only() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "A", None);
+        let lead_slot_id = add_runner(&mut conn, &crew_id, "lead");
+        let worker_slot_id = add_runner(&mut conn, &crew_id, "worker");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id: crew_id.clone(),
+                title: "m".into(),
+                goal_override: None,
+                cwd: None,
+            },
+        )
+        .unwrap();
+
+        let lead_runner_id: String = conn
+            .query_row(
+                "SELECT runner_id FROM slots WHERE id = ?1",
+                params![lead_slot_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let worker_runner_id: String = conn
+            .query_row(
+                "SELECT runner_id FROM slots WHERE id = ?1",
+                params![worker_slot_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let ts = now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO sessions (id, mission_id, runner_id, slot_id, status, started_at)
+             VALUES (?1, ?2, ?3, ?4, 'running', ?5)",
+            params![
+                new_id(),
+                out.mission.id.clone(),
+                lead_runner_id,
+                lead_slot_id,
+                ts
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, mission_id, runner_id, slot_id, status, started_at)
+             VALUES (?1, ?2, ?3, ?4, 'stopped', ?5)",
+            params![
+                new_id(),
+                out.mission.id.clone(),
+                worker_runner_id,
+                worker_slot_id,
+                now().to_rfc3339()
+            ],
+        )
+        .unwrap();
+
+        let handles = live_session_handles(&conn, &out.mission.id).unwrap();
+        assert_eq!(
+            handles,
+            vec!["lead".to_string()],
+            "projection must key live sessions by slot_handle"
+        );
+
+        let mission_dir = event_log::mission_dir(tmp.path(), &crew_id, &out.mission.id);
+        let log = EventLog::open(&mission_dir).unwrap();
+        append_runner_status(&log, &crew_id, &out.mission.id, "lead", "idle");
+        append_runner_status(&log, &crew_id, &out.mission.id, "worker", "busy");
+        assert_eq!(
+            mission_activity_from_log(&mission_dir, &handles),
+            Some(MissionActivityState::Idle),
+            "stopped slot statuses must not keep the mission busy"
         );
     }
 

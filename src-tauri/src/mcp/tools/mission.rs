@@ -349,7 +349,7 @@ impl RunnerMcpHandler {
     }
 
     #[tool(
-        description = "Return sidebar-style mission summaries with crew name, pending asks, and live-session flag."
+        description = "Return sidebar-style mission summaries with crew name, pending asks, live-session flag, and activity."
     )]
     pub async fn mission_list_summary(
         &self,
