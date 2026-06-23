@@ -1169,7 +1169,7 @@ function directChatDisplayStatus(
   if (session.status === "stopped" || session.status === "crashed") {
     return session.status;
   }
-  return activity === "busy" ? "busy" : "idle";
+  return activity ?? "busy";
 }
 
 function directChatDotClassName(status: DirectChatDisplayStatus): string {
