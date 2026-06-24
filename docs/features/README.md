@@ -36,6 +36,10 @@ links to its tracking issue.
   — add shared search filters and client-side pagination to the
   Runners and Crews list pages so large template/team inventories
   stay scannable.
+- [30 — OpenCode runtime](./30-opencode-runtime.md)
+  — add OpenCode as a first-class runtime for direct chats, runner
+  templates, and missions with conservative model/prompt support
+  before permission/resume mappings.
 
 ## Archive
 
