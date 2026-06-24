@@ -41,6 +41,10 @@ pub struct SessionRow {
     pub runtime: String,
     /// Whether this runner is the lead for the mission's crew.
     pub lead: bool,
+    /// Native agent conversation key captured from the spawned agent.
+    /// NULL means capture is pending, unavailable, or intentionally
+    /// failed closed.
+    pub agent_session_key: Option<String>,
 }
 
 fn row_to_session(row: &Row<'_>) -> rusqlite::Result<SessionRow> {
@@ -80,6 +84,7 @@ fn row_to_session(row: &Row<'_>) -> rusqlite::Result<SessionRow> {
         handle: row.get("handle")?,
         runtime: row.get("runtime")?,
         lead: row.get("lead")?,
+        agent_session_key: row.get("agent_session_key")?,
     })
 }
 
@@ -99,7 +104,7 @@ pub fn list_for_mission(conn: &rusqlite::Connection, mission_id: &str) -> Result
     // running one for every slot.
     let mut stmt = conn.prepare(
         "SELECT s.id, s.mission_id, s.runner_id, s.slot_id, s.cwd, s.status, s.pid,
-                s.started_at, s.stopped_at,
+                s.started_at, s.stopped_at, s.agent_session_key,
                 COALESCE(sl.slot_handle, r.handle) AS handle,
                 r.runtime AS runtime,
                 COALESCE(sl.lead, 0) AS lead
@@ -270,6 +275,11 @@ pub struct DirectSessionEntry {
     /// distinguish "stopped but resumable" from "stopped and
     /// forgotten" without shipping the raw key down.
     pub resumable: bool,
+    /// Native agent conversation key for the active direct chat.
+    /// `session_list_recent_direct` intentionally returns NULL here;
+    /// `session_get` is the full-detail path RunnerChat uses for the
+    /// visible row.
+    pub agent_session_key: Option<String>,
     /// `true` iff `pinned_at IS NOT NULL`. Pinned rows render with a
     /// pin glyph and sort to the top of the tray.
     pub pinned: bool,
@@ -326,6 +336,7 @@ fn direct_entry_from_row(row: &Row<'_>) -> rusqlite::Result<DirectSessionEntry> 
         started_at: started_at.map(parse_ts).transpose()?,
         stopped_at: stopped_at.map(parse_ts).transpose()?,
         resumable: resumable != 0,
+        agent_session_key: row.get("agent_session_key")?,
         pinned: pinned != 0,
         archived_at: archived_at.map(parse_ts).transpose()?,
     })
@@ -355,6 +366,7 @@ pub async fn session_list_recent_direct(
                 s.stopped_at,
                 s.archived_at,
                 CASE WHEN s.agent_session_key IS NOT NULL THEN 1 ELSE 0 END AS resumable,
+                NULL AS agent_session_key,
                 CASE WHEN s.pinned_at         IS NOT NULL THEN 1 ELSE 0 END AS pinned
            FROM sessions s
            LEFT JOIN runners r ON r.id = s.runner_id
@@ -412,6 +424,7 @@ fn get_direct(conn: &rusqlite::Connection, session_id: &str) -> Result<Option<Di
                 s.stopped_at,
                 s.archived_at,
                 CASE WHEN s.agent_session_key IS NOT NULL THEN 1 ELSE 0 END AS resumable,
+                s.agent_session_key AS agent_session_key,
                 CASE WHEN s.pinned_at         IS NOT NULL THEN 1 ELSE 0 END AS pinned
            FROM sessions s
            LEFT JOIN runners r ON r.id = s.runner_id
@@ -849,6 +862,73 @@ mod tests {
         let row = get_direct(&conn, &id).unwrap().unwrap();
         let got = row.archived_at.expect("archived_at populated").to_rfc3339();
         assert_eq!(got, archived_at);
+    }
+
+    #[test]
+    fn session_get_returns_agent_session_key_for_direct_chat() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let runner_id = seed_runner(&conn);
+        let id = ulid::Ulid::new().to_string();
+        let now = Utc::now().to_rfc3339();
+        let key = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO sessions
+                (id, mission_id, runner_id, status, started_at, agent_session_key)
+             VALUES (?1, NULL, ?2, 'stopped', ?3, ?4)",
+            params![id, runner_id, now, key],
+        )
+        .unwrap();
+
+        let row = get_direct(&conn, &id).unwrap().unwrap();
+        assert_eq!(row.agent_session_key.as_deref(), Some(key.as_str()));
+        assert!(row.resumable);
+    }
+
+    #[test]
+    fn session_list_returns_agent_session_key_for_mission_rows() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let runner_id = seed_runner(&conn);
+        let crew_id = ulid::Ulid::new().to_string();
+        let slot_id = ulid::Ulid::new().to_string();
+        let mission_id = ulid::Ulid::new().to_string();
+        let session_id = ulid::Ulid::new().to_string();
+        let now = Utc::now().to_rfc3339();
+        let key = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO crews (id, name, created_at, updated_at)
+             VALUES (?1, 'C', ?2, ?2)",
+            params![crew_id, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO slots
+                (id, crew_id, runner_id, slot_handle, position, lead, added_at)
+             VALUES (?1, ?2, ?3, 'coder', 0, 1, ?4)",
+            params![slot_id, crew_id, runner_id, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO missions
+                (id, crew_id, title, status, started_at)
+             VALUES (?1, ?2, 't', 'running', ?3)",
+            params![mission_id, crew_id, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+                (id, mission_id, runner_id, slot_id, status, started_at, agent_session_key)
+             VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?6)",
+            params![session_id, mission_id, runner_id, slot_id, now, key],
+        )
+        .unwrap();
+
+        let rows = list_for_mission(&conn, &mission_id).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].session.id, session_id);
+        assert_eq!(rows[0].handle, "coder");
+        assert_eq!(rows[0].agent_session_key.as_deref(), Some(key.as_str()));
     }
 
     #[test]

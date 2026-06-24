@@ -139,6 +139,25 @@ impl SessionManager {
         delivered_via_argv
     }
 
+    fn codex_capture_prompt_marker(
+        runtime: &str,
+        session_id: &str,
+        first_turn: Option<String>,
+    ) -> (Option<String>, Option<String>) {
+        if runtime != "codex" {
+            return (first_turn, None);
+        }
+        let Some(first_turn) = first_turn else {
+            return (None, None);
+        };
+        let marker = crate::session::codex_capture::prompt_marker(session_id);
+        let marked_first_turn = format!("{first_turn}\n\n{marker}");
+        if marked_first_turn.len() > router::runtime::FIRST_TURN_ARGV_MAX_BYTES {
+            return (Some(first_turn), None);
+        }
+        (Some(marked_first_turn), Some(marker))
+    }
+
     /// Sync part of a mission-slot spawn: validates inputs, composes
     /// the `SpawnSpec`, generates the session id, and INSERTs the
     /// `sessions` row. Returns a `PendingMissionSpawn` that
@@ -214,6 +233,8 @@ impl SessionManager {
         }
 
         let session_id = ulid::Ulid::new().to_string();
+        let (first_turn, codex_prompt_marker) =
+            Self::codex_capture_prompt_marker(&runner.runtime, &session_id, first_turn);
         let mut spec = self.base_spawn_spec(
             session_id.clone(),
             runner,
@@ -268,6 +289,8 @@ impl SessionManager {
             plan,
             first_turn_delivered_via_argv,
             resolved_cwd,
+            row_started_at: started_at,
+            codex_prompt_marker,
             app_data_dir: app_data_dir.to_path_buf(),
             pool,
         })
@@ -309,6 +332,8 @@ impl SessionManager {
             plan,
             first_turn_delivered_via_argv,
             resolved_cwd,
+            row_started_at,
+            codex_prompt_marker,
             app_data_dir,
             pool,
         } = pending;
@@ -383,17 +408,40 @@ impl SessionManager {
             return Ok(CompleteSpawnOutcome::Cancelled);
         }
 
+        let spawn_pid = self.runtime_pid(&rt_session);
+
         // Persist the runtime-side identity for diagnostics and for
         // the current runtime session row.
         if let Ok(conn) = pool.get() {
             let _ = conn.execute(
                 "UPDATE sessions
                     SET runtime = ?2,
-                        runtime_session = ?3
+                        runtime_session = ?3,
+                        pid = ?4
                   WHERE id = ?1",
-                params![session_id, rt_session.runtime, rt_session.session_id],
+                params![
+                    session_id,
+                    rt_session.runtime,
+                    rt_session.session_id,
+                    spawn_pid
+                ],
             );
         }
+
+        let codex_capture = if runner.runtime == "codex" && plan.assigned_key.is_none() {
+            capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
+                mission_id: Some(mission.id.clone()),
+                spawn_cwd: cwd,
+                started_at: spawn_started_at_dt,
+                row_started_at: row_started_at.clone(),
+                spawn_pid,
+                prompt_marker: codex_prompt_marker.clone(),
+                pool: Arc::clone(&pool),
+                events: Arc::clone(&events),
+            })
+        } else {
+            None
+        };
 
         let stop = output.stop_flag();
         let runtime_session_for_log = rt_session.session_id.clone();
@@ -404,6 +452,7 @@ impl SessionManager {
                 mission_id: Some(mission.id.clone()),
                 runner_id: Some(runner.id.clone()),
                 runtime_session: rt_session.clone(),
+                codex_capture: codex_capture.clone(),
                 forwarder: None,
                 stop,
             },
@@ -430,17 +479,8 @@ impl SessionManager {
         );
         self.install_forwarder(&session_id, forwarder);
 
-        // Mirror the codex rollout capture from spawn_direct / resume so
-        // mission-slot spawns also populate agent_session_key for restart.
-        if runner.runtime == "codex" && plan.assigned_key.is_none() {
-            if let Some(cwd) = capture_cwd(resolved_cwd.clone()) {
-                crate::session::codex_capture::spawn_capture(
-                    session_id.clone(),
-                    cwd,
-                    spawn_started_at_dt,
-                    Arc::clone(&pool),
-                );
-            }
+        if let Some(ctx) = codex_capture.as_ref() {
+            self.spawn_codex_capture_if_unkeyed(&session_id, ctx);
         }
 
         emit_runner_activity(&pool, &runner, events.as_ref());
@@ -653,6 +693,8 @@ impl SessionManager {
         let initial_size = cols.zip(rows);
 
         let session_id = ulid::Ulid::new().to_string();
+        let (first_turn, codex_prompt_marker) =
+            Self::codex_capture_prompt_marker(&runner.runtime, &session_id, first_turn);
         let started_at_dt = Utc::now();
         let started_at = started_at_dt.to_rfc3339();
 
@@ -741,15 +783,38 @@ impl SessionManager {
             )));
         }
 
+        let spawn_pid = self.runtime_pid(&rt_session);
+
         if let Ok(conn) = pool.get() {
             let _ = conn.execute(
                 "UPDATE sessions
                     SET runtime = ?2,
-                        runtime_session = ?3
+                        runtime_session = ?3,
+                        pid = ?4
                   WHERE id = ?1",
-                params![session_id, rt_session.runtime, rt_session.session_id],
+                params![
+                    session_id,
+                    rt_session.runtime,
+                    rt_session.session_id,
+                    spawn_pid
+                ],
             );
         }
+
+        let codex_capture = if runner.runtime == "codex" && plan.assigned_key.is_none() {
+            capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
+                mission_id: None,
+                spawn_cwd: cwd,
+                started_at: spawn_started_at_dt,
+                row_started_at: started_at.clone(),
+                spawn_pid,
+                prompt_marker: codex_prompt_marker.clone(),
+                pool: Arc::clone(&pool),
+                events: Arc::clone(&events),
+            })
+        } else {
+            None
+        };
 
         self.install_handle(
             &session_id,
@@ -758,6 +823,7 @@ impl SessionManager {
                 mission_id: None,
                 runner_id: persisted_runner_id.map(str::to_string),
                 runtime_session: rt_session.clone(),
+                codex_capture: codex_capture.clone(),
                 forwarder: None,
                 stop: output.stop_flag(),
             },
@@ -777,21 +843,8 @@ impl SessionManager {
         );
         self.install_forwarder(&session_id, forwarder);
 
-        // Codex doesn't accept a caller-assigned session id at spawn,
-        // so the runtime adapter leaves `assigned_key = None` for
-        // fresh codex spawns. Kick off a short-lived watcher that
-        // captures codex's auto-generated id from the rollout file
-        // and writes it to `agent_session_key` so the *next* resume
-        // can drive `codex resume <uuid>`.
-        if runner.runtime == "codex" && plan.assigned_key.is_none() {
-            if let Some(cwd) = capture_cwd(resolved_cwd.clone()) {
-                crate::session::codex_capture::spawn_capture(
-                    session_id.clone(),
-                    cwd,
-                    spawn_started_at_dt,
-                    Arc::clone(&pool),
-                );
-            }
+        if let Some(ctx) = codex_capture.as_ref() {
+            self.spawn_codex_capture_if_unkeyed(&session_id, ctx);
         }
 
         if emit_activity {
@@ -1163,15 +1216,38 @@ impl SessionManager {
             }
         };
 
+        let spawn_pid = self.runtime_pid(&rt_session);
+
         if let Ok(conn) = pool.get() {
             let _ = conn.execute(
                 "UPDATE sessions
                     SET runtime = ?2,
-                        runtime_session = ?3
+                        runtime_session = ?3,
+                        pid = ?4
                   WHERE id = ?1",
-                params![session_id, rt_session.runtime, rt_session.session_id],
+                params![
+                    session_id,
+                    rt_session.runtime,
+                    rt_session.session_id,
+                    spawn_pid
+                ],
             );
         }
+
+        let codex_capture = if runner.runtime == "codex" && plan.assigned_key.is_none() {
+            capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
+                mission_id: snap.mission_id.clone(),
+                spawn_cwd: cwd,
+                started_at: spawn_started_at_dt,
+                row_started_at: started_at.clone(),
+                spawn_pid,
+                prompt_marker: None,
+                pool: Arc::clone(&pool),
+                events: Arc::clone(&events),
+            })
+        } else {
+            None
+        };
 
         self.install_handle(
             session_id,
@@ -1180,6 +1256,7 @@ impl SessionManager {
                 mission_id: snap.mission_id.clone(),
                 runner_id: snap.runner_id.clone(),
                 runtime_session: rt_session.clone(),
+                codex_capture: codex_capture.clone(),
                 forwarder: None,
                 stop: output.stop_flag(),
             },
@@ -1215,20 +1292,8 @@ impl SessionManager {
         );
         self.install_forwarder(session_id, forwarder);
 
-        // Same codex post-spawn capture as `spawn_direct`: when we
-        // respawn a codex chat that has no agent_session_key on the
-        // row yet (every prior codex chat, until this lands), the
-        // adapter starts fresh and the watcher writes the new id so
-        // the *next* resume drives `codex resume <uuid>`.
-        if runner.runtime == "codex" && plan.assigned_key.is_none() {
-            if let Some(cwd) = capture_cwd(resolved_cwd.clone()) {
-                crate::session::codex_capture::spawn_capture(
-                    session_id.to_string(),
-                    cwd,
-                    spawn_started_at_dt,
-                    Arc::clone(&pool),
-                );
-            }
+        if let Some(ctx) = codex_capture.as_ref() {
+            self.spawn_codex_capture_if_unkeyed(session_id, ctx);
         }
 
         if snap.runner_id.is_some() {
@@ -1296,5 +1361,13 @@ impl SessionManager {
             |r| r.get(0),
         );
         count.map(|n| n > 0).unwrap_or(false)
+    }
+
+    fn runtime_pid(&self, rt_session: &RuntimeSession) -> Option<i32> {
+        self.runtime
+            .status(rt_session)
+            .ok()
+            .flatten()
+            .and_then(|status| status.pid)
     }
 }

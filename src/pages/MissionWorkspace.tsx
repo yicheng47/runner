@@ -37,6 +37,7 @@ import type {
   Event,
   HumanQuestionPayload,
   Mission,
+  SessionUpdatedEvent,
   WarningEvent,
 } from "../lib/types";
 import { EventFeed } from "../components/EventFeed";
@@ -306,6 +307,89 @@ export default function MissionWorkspace() {
       unlisten?.();
     };
   }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void listen<SessionUpdatedEvent>("session/updated", (event) => {
+      if (event.payload.mission_id !== id) return;
+      void api.session
+        .list(id)
+        .then((rows) => {
+          if (cancelled) return;
+          setSessions(rows);
+        })
+        .catch(() => {
+          // best-effort — the next lifecycle refresh or reload will
+          // reconcile metadata if this request fails
+        });
+    }).then((fn) => {
+      if (cancelled) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [id]);
+
+  const pendingCodexKeySessionIds = useMemo(
+    () =>
+      sessions
+        .filter(
+          (s) =>
+            s.status === "running" &&
+            s.runtime === "codex" &&
+            !s.agent_session_key,
+        )
+        .map((s) => s.id)
+        .sort()
+        .join("|"),
+    [sessions],
+  );
+
+  useEffect(() => {
+    if (!id || !pendingCodexKeySessionIds || mission?.status !== "running") {
+      return;
+    }
+
+    const MAX_ATTEMPTS = 35;
+    let cancelled = false;
+    let attempts = 0;
+
+    const poll = () => {
+      attempts += 1;
+      void api.session
+        .list(id)
+        .then((rows) => {
+          if (cancelled) return;
+          setSessions(rows);
+          const stillPending = rows.some(
+            (s) =>
+              s.status === "running" &&
+              s.runtime === "codex" &&
+              !s.agent_session_key,
+          );
+          if (!stillPending || attempts >= MAX_ATTEMPTS) {
+            window.clearInterval(interval);
+          }
+        })
+        .catch(() => {
+          if (attempts >= MAX_ATTEMPTS) window.clearInterval(interval);
+        });
+    };
+
+    const interval = window.setInterval(poll, 1000);
+    poll();
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [id, mission?.status, pendingCodexKeySessionIds]);
 
   // Effective mission goal — read from the `mission_goal` event the
   // backend writes at mission_start. This is the only authoritative
@@ -1205,11 +1289,7 @@ function SlotPtyPane({
 
   // Mission slot pane omits the Archive option — archiving a slot's
   // session row would orphan the slot in the workspace. Mission-level
-  // archive lives in the topbar kebab. `resumable` defaults to true:
-  // we don't have agent_session_key on the SessionRow, but mission
-  // sessions almost always carry one (claude-code self-assigns a
-  // UUID on every fresh spawn) and the worst case is friendlier
-  // copy than reality.
+  // archive lives in the topbar kebab.
   //
   // Pane opacity:
   //   - resuming/starting: 0 (canvas hidden, the pill carries the visual)

@@ -25,7 +25,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::params;
 use serde::Serialize;
 
@@ -231,6 +231,10 @@ fn drop_streak_is_loggable(streak: u64) -> bool {
 pub trait SessionEvents: Send + Sync + 'static {
     fn output(&self, ev: &OutputEvent);
     fn exit(&self, ev: &ExitEvent);
+    /// Persisted session metadata changed without a lifecycle event
+    /// (e.g. async agent_session_key capture). Default no-op so test
+    /// fakes don't have to opt in.
+    fn updated(&self, _ev: &SessionUpdatedEvent) {}
     /// Live direct-chat activity projection. Mission sessions keep using
     /// `runner_status` rows in the mission log instead.
     fn status(&self, _ev: &SessionActivityEvent) {}
@@ -285,7 +289,7 @@ pub struct SessionActivityEvent {
 }
 
 /// Emitter for the real Tauri app — emits `session/output`, `session/exit`,
-/// and `runner/activity`.
+/// `session/updated`, and `runner/activity`.
 pub struct TauriSessionEvents(pub tauri::AppHandle);
 
 impl SessionEvents for TauriSessionEvents {
@@ -296,6 +300,10 @@ impl SessionEvents for TauriSessionEvents {
     fn exit(&self, ev: &ExitEvent) {
         use tauri::Emitter;
         let _ = self.0.emit("session/exit", ev);
+    }
+    fn updated(&self, ev: &SessionUpdatedEvent) {
+        use tauri::Emitter;
+        let _ = self.0.emit("session/updated", ev);
     }
     fn status(&self, ev: &SessionActivityEvent) {
         use tauri::Emitter;
@@ -335,6 +343,12 @@ pub struct ExitEvent {
     pub mission_id: Option<String>,
     pub exit_code: Option<i32>,
     pub success: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionUpdatedEvent {
+    pub session_id: String,
+    pub mission_id: Option<String>,
 }
 
 /// Non-fatal advisory the UI can render as a banner. Emitted on
@@ -394,6 +408,10 @@ struct SessionHandle {
     /// `runtime.resize` / `runtime.stop` for every operation on the
     /// live session.
     runtime_session: RuntimeSession,
+    /// Codex cannot be given a caller-owned session id at launch.
+    /// When this is present, user activity can retry native id
+    /// capture after Codex has actually created its rollout file.
+    codex_capture: Option<CodexCaptureContext>,
     /// Forwarder thread that drains the runtime's `OutputStream`
     /// into `session/output` events. `kill` joins on this so callers
     /// (mission_stop) get the same "no live sessions after we
@@ -407,6 +425,18 @@ struct SessionHandle {
     /// cleanup stalled — observed live as a stuck "Archiving…" pill
     /// on the chat page.
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Clone)]
+struct CodexCaptureContext {
+    mission_id: Option<String>,
+    spawn_cwd: String,
+    started_at: DateTime<Utc>,
+    row_started_at: String,
+    spawn_pid: Option<i32>,
+    prompt_marker: Option<String>,
+    pool: Arc<DbPool>,
+    events: Arc<dyn SessionEvents>,
 }
 
 #[derive(Default)]
@@ -528,6 +558,8 @@ pub struct PendingMissionSpawn {
     plan: router::runtime::ResumePlan,
     first_turn_delivered_via_argv: bool,
     resolved_cwd: Option<String>,
+    row_started_at: String,
+    codex_prompt_marker: Option<String>,
     app_data_dir: PathBuf,
     pool: Arc<DbPool>,
 }
@@ -604,6 +636,46 @@ impl SessionManager {
                 handle.forwarder = Some(forwarder);
             }
         }
+    }
+
+    fn codex_capture_context(&self, session_id: &str) -> Option<CodexCaptureContext> {
+        let state = self.session_state(session_id)?;
+        let state = state.lock().unwrap();
+        state
+            .handle
+            .as_ref()
+            .and_then(|handle| handle.codex_capture.clone())
+    }
+
+    fn spawn_codex_capture_if_unkeyed(&self, session_id: &str, ctx: &CodexCaptureContext) {
+        let Ok(conn) = ctx.pool.get() else { return };
+        let should_capture = conn
+            .query_row(
+                "SELECT agent_session_key IS NULL
+                   FROM sessions
+                  WHERE id = ?1
+                    AND started_at = ?2",
+                params![session_id, ctx.row_started_at],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
+        drop(conn);
+        if !should_capture {
+            return;
+        }
+        crate::session::codex_capture::spawn_capture(
+            crate::session::codex_capture::CaptureRequest {
+                session_id: session_id.to_string(),
+                mission_id: ctx.mission_id.clone(),
+                spawn_cwd: ctx.spawn_cwd.clone(),
+                started_at: ctx.started_at,
+                expected_row_started_at: ctx.row_started_at.clone(),
+                spawn_pid: ctx.spawn_pid,
+                prompt_marker: ctx.prompt_marker.clone(),
+                pool: Arc::clone(&ctx.pool),
+                events: Arc::clone(&ctx.events),
+            },
+        );
     }
 
     fn live_runtime_session(&self, session_id: &str) -> Result<RuntimeSession> {

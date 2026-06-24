@@ -193,6 +193,11 @@ impl SessionManager {
             self.runtime
                 .send_key(&rt_session, "Enter")
                 .map_err(Into::into)
+                .map(|_| {
+                    if let Some(ctx) = self.codex_capture_context(session_id) {
+                        self.spawn_codex_capture_if_unkeyed(session_id, &ctx);
+                    }
+                })
         } else {
             self.runtime
                 .send_bytes(&rt_session, bytes)
@@ -213,9 +218,16 @@ impl SessionManager {
         let rt_session = self.live_runtime_session(session_id)?;
         self.runtime.send_bytes(&rt_session, payload)?;
         std::thread::sleep(std::time::Duration::from_millis(120));
-        self.runtime
+        let result = self
+            .runtime
             .send_key(&rt_session, "Enter")
-            .map_err(Into::into)
+            .map_err(Into::into);
+        if result.is_ok() {
+            if let Some(ctx) = self.codex_capture_context(session_id) {
+                self.spawn_codex_capture_if_unkeyed(session_id, &ctx);
+            }
+        }
+        result
     }
 
     /// Paste a first-turn body and submit it once we've verified the

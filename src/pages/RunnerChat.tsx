@@ -55,6 +55,7 @@ import type {
   SessionActivityEvent,
   SessionActivityState,
   SessionStatus,
+  SessionUpdatedEvent,
   WarningEvent,
 } from "../lib/types";
 
@@ -330,6 +331,8 @@ export default function RunnerChat() {
       const found = rows.find((r) => r.session_id === sessionId);
       if (found) {
         setChatMeta(found);
+        const full = await api.session.get(sessionId);
+        setChatMeta(full ?? found);
         return;
       }
       // Missed in the visible list — could be archived. The
@@ -352,10 +355,81 @@ export default function RunnerChat() {
   }, [refreshChatMeta]);
 
   useEffect(() => {
+    if (!sessionId || !metaLoaded || isArchived) return;
+    if (
+      chatMeta?.agent_runtime !== "codex" ||
+      chatMeta.agent_session_key ||
+      chatMeta.status !== "running"
+    ) {
+      return;
+    }
+
+    const targetId = sessionId;
+    const MAX_ATTEMPTS = 35;
+    let cancelled = false;
+    let attempts = 0;
+
+    const poll = () => {
+      attempts += 1;
+      void api.session
+        .get(targetId)
+        .then((row) => {
+          if (cancelled) return;
+          if (!row) {
+            window.clearInterval(interval);
+            return;
+          }
+          setChatMeta(row);
+          if (row.agent_session_key || attempts >= MAX_ATTEMPTS) {
+            window.clearInterval(interval);
+          }
+        })
+        .catch(() => {
+          if (attempts >= MAX_ATTEMPTS) window.clearInterval(interval);
+        });
+    };
+
+    const interval = window.setInterval(poll, 1000);
+    poll();
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [
+    sessionId,
+    metaLoaded,
+    isArchived,
+    chatMeta?.agent_runtime,
+    chatMeta?.agent_session_key,
+    chatMeta?.status,
+  ]);
+
+  useEffect(() => {
     if (!sessionId) return;
     let unlisten: (() => void) | null = null;
     let cancelled = false;
     void listen("session/exit", () => {
+      void refreshChatMeta();
+    }).then((fn) => {
+      if (cancelled) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [sessionId, refreshChatMeta]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const targetId = sessionId;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void listen<SessionUpdatedEvent>("session/updated", (event) => {
+      if (event.payload.session_id !== targetId) return;
       void refreshChatMeta();
     }).then((fn) => {
       if (cancelled) {
@@ -1237,6 +1311,14 @@ function RunnerSidePanel({
                         </dd>
                       </>
                     ) : null}
+                    {chatMeta ? (
+                      <>
+                        <dt className="text-fg-3">session_key</dt>
+                        <dd className="break-all font-mono text-fg-2">
+                          {chatMeta.agent_session_key ?? "NULL"}
+                        </dd>
+                      </>
+                    ) : null}
                   </dl>
                 </div>
               </section>
@@ -1281,6 +1363,10 @@ function RunnerSidePanel({
                       </dd>
                     </>
                   ) : null}
+                  <dt className="text-fg-3">session_key</dt>
+                  <dd className="break-all font-mono text-fg-2">
+                    {chatMeta.agent_session_key ?? "NULL"}
+                  </dd>
                 </dl>
               </div>
             </section>
