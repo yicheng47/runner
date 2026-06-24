@@ -664,15 +664,17 @@ impl SessionManager {
             return;
         }
         crate::session::codex_capture::spawn_capture(
-            session_id.to_string(),
-            ctx.mission_id.clone(),
-            ctx.spawn_cwd.clone(),
-            ctx.started_at,
-            ctx.row_started_at.clone(),
-            ctx.spawn_pid,
-            ctx.prompt_marker.clone(),
-            Arc::clone(&ctx.pool),
-            Arc::clone(&ctx.events),
+            crate::session::codex_capture::CaptureRequest {
+                session_id: session_id.to_string(),
+                mission_id: ctx.mission_id.clone(),
+                spawn_cwd: ctx.spawn_cwd.clone(),
+                started_at: ctx.started_at,
+                expected_row_started_at: ctx.row_started_at.clone(),
+                spawn_pid: ctx.spawn_pid,
+                prompt_marker: ctx.prompt_marker.clone(),
+                pool: Arc::clone(&ctx.pool),
+                events: Arc::clone(&ctx.events),
+            },
         );
     }
 

@@ -65,43 +65,23 @@ fn claimed_rollouts() -> &'static Mutex<HashSet<PathBuf>> {
 /// `session_id` (a Runner sessions row) and writes it into
 /// `agent_session_key`. Returns immediately; no-op if `$HOME/.codex/`
 /// doesn't exist.
-pub fn spawn_capture(
-    session_id: String,
-    mission_id: Option<String>,
-    spawn_cwd: String,
-    started_at: DateTime<Utc>,
-    expected_row_started_at: String,
-    spawn_pid: Option<i32>,
-    prompt_marker: Option<String>,
-    pool: Arc<DbPool>,
-    events: Arc<dyn SessionEvents>,
-) {
-    std::thread::spawn(move || {
-        run(
-            session_id,
-            mission_id,
-            spawn_cwd,
-            started_at,
-            expected_row_started_at,
-            spawn_pid,
-            prompt_marker,
-            pool,
-            events,
-        )
-    });
+pub struct CaptureRequest {
+    pub session_id: String,
+    pub mission_id: Option<String>,
+    pub spawn_cwd: String,
+    pub started_at: DateTime<Utc>,
+    pub expected_row_started_at: String,
+    pub spawn_pid: Option<i32>,
+    pub prompt_marker: Option<String>,
+    pub pool: Arc<DbPool>,
+    pub events: Arc<dyn SessionEvents>,
 }
 
-fn run(
-    session_id: String,
-    mission_id: Option<String>,
-    spawn_cwd: String,
-    started_at: DateTime<Utc>,
-    expected_row_started_at: String,
-    spawn_pid: Option<i32>,
-    prompt_marker: Option<String>,
-    pool: Arc<DbPool>,
-    events: Arc<dyn SessionEvents>,
-) {
+pub fn spawn_capture(request: CaptureRequest) {
+    std::thread::spawn(move || run(request));
+}
+
+fn run(request: CaptureRequest) {
     let Some(home) = std::env::var_os("HOME") else {
         return;
     };
@@ -113,7 +93,7 @@ fn run(
     // Rollout dirs are partitioned by *local* date. The user might
     // start codex right before midnight and the rollout could land in
     // the next day's dir, so probe both.
-    let local_started = started_at.with_timezone(&Local);
+    let local_started = request.started_at.with_timezone(&Local);
     let candidates = [local_started, local_started + chrono::Duration::days(1)];
 
     let deadline = Instant::now() + Duration::from_secs(CAPTURE_TIMEOUT_SECS);
@@ -125,23 +105,23 @@ fn run(
     let mut done: HashSet<PathBuf> = HashSet::new();
 
     loop {
-        let (scan, source) = if let Some(pid) = spawn_pid {
+        let (scan, source) = if let Some(pid) = request.spawn_pid {
             scan_pid_result_or_fallback(
                 open_rollout_paths_for_pid(pid, &sessions_root),
                 &sessions_root,
                 &candidates,
-                &spawn_cwd,
-                started_at,
-                prompt_marker.as_deref(),
+                &request.spawn_cwd,
+                request.started_at,
+                request.prompt_marker.as_deref(),
                 &mut done,
             )
         } else {
             scan_fallback_with_marker(
                 &sessions_root,
                 &candidates,
-                &spawn_cwd,
-                started_at,
-                prompt_marker.as_deref(),
+                &request.spawn_cwd,
+                request.started_at,
+                request.prompt_marker.as_deref(),
                 &mut done,
             )
         };
@@ -150,10 +130,10 @@ fn run(
             CaptureScan::Unique(candidate) => {
                 if source == ScanSource::Fallback
                     && !fallback_row_is_unambiguous(
-                        &pool,
-                        &session_id,
-                        &expected_row_started_at,
-                        &spawn_cwd,
+                        &request.pool,
+                        &request.session_id,
+                        &request.expected_row_started_at,
+                        &request.spawn_cwd,
                     )
                 {
                     return;
@@ -169,10 +149,15 @@ fn run(
                     done.insert(candidate.path);
                     continue;
                 }
-                if persist_capture(&pool, &session_id, &expected_row_started_at, &candidate.id) {
-                    events.updated(&SessionUpdatedEvent {
-                        session_id: session_id.clone(),
-                        mission_id: mission_id.clone(),
+                if persist_capture(
+                    &request.pool,
+                    &request.session_id,
+                    &request.expected_row_started_at,
+                    &candidate.id,
+                ) {
+                    request.events.updated(&SessionUpdatedEvent {
+                        session_id: request.session_id.clone(),
+                        mission_id: request.mission_id.clone(),
                     });
                 }
                 return;
@@ -337,9 +322,9 @@ fn scan_paths(
     paths: impl IntoIterator<Item = PathBuf>,
     spawn_cwd: &str,
     started_at: DateTime<Utc>,
-    mut done: Option<&mut HashSet<PathBuf>>,
+    done: Option<&mut HashSet<PathBuf>>,
 ) -> CaptureScan {
-    let matches = matching_candidates(paths, spawn_cwd, started_at, done.as_deref_mut());
+    let matches = matching_candidates(paths, spawn_cwd, started_at, done);
     let claimed = claimed_rollouts().lock().unwrap();
     select_unique_unclaimed(matches, |path| claimed.contains(path))
 }
@@ -349,9 +334,9 @@ fn scan_paths_with_marker(
     spawn_cwd: &str,
     started_at: DateTime<Utc>,
     prompt_marker: &str,
-    mut done: Option<&mut HashSet<PathBuf>>,
+    done: Option<&mut HashSet<PathBuf>>,
 ) -> (CaptureScan, ScanSource) {
-    let matches = matching_candidates(paths, spawn_cwd, started_at, done.as_deref_mut());
+    let matches = matching_candidates(paths, spawn_cwd, started_at, done);
     let claimed = claimed_rollouts().lock().unwrap();
     let unclaimed: Vec<MatchCandidate> = matches
         .into_iter()
@@ -461,10 +446,7 @@ fn open_rollout_paths_for_pid(pid: i32, sessions_root: &Path) -> std::io::Result
         .arg(pid.to_string())
         .output()?;
     if !output.status.success() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("lsof failed for pid {pid}"),
-        ));
+        return Err(std::io::Error::other(format!("lsof failed for pid {pid}")));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut paths: Vec<PathBuf> = stdout
