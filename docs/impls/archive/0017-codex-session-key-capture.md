@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned for issue #229.
+Shipped for issue [#229](https://github.com/yicheng47/runner/issues/229).
 
 ## Problem
 

@@ -56,7 +56,7 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 
 ### 4.3 Live per-runner terminals (with human takeover)
 
-- One PTY per slot, rendered with xterm.js for full TUI fidelity (claude-code, codex, vanilla shell).
+- One PTY per slot, rendered with xterm.js for full TUI fidelity with first-class agent runtimes such as claude-code and codex.
 - The xterm pane is a real terminal, not a log viewer. The human can type into any runner's stdin at any time — answer a prompt, correct a bad plan, kill a tool call, or just chat mid-flight. Human and router share the same writer path, so they are symmetric.
 - Per-runner busy/idle is inferred from PTY-byte silence — agents do not have to call a status verb. Works for any TUI.
 
@@ -65,6 +65,7 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 - Runners emit signals via `runner signal <type> [--payload <json>]` and post prose via `runner msg post [--to <handle>] "<text>"`.
 - Both flow through one append-only NDJSON file per mission. The file is tailable with `tail -f` for debugging.
 - Signals drive fixed router handlers (wake the lead on `mission_goal`, surface HITL cards on `ask_human`, etc.). Messages are pull-based — the recipient picks them up on the next `runner msg read`.
+- Messages stay flat. The product does not need separate thread or fact primitives; durable conclusions should land in the repo, docs, commits, or ordinary mission prose.
 
 ### 4.5 Human-in-the-loop
 
@@ -125,6 +126,7 @@ These are intentionally out of scope — they belong to a different product or a
 - Cost tracking / observability dashboards.
 - Marketplace of runner templates.
 - Multi-human collaboration on the same mission.
+- Thread/fact primitives for mission coordination.
 - Secrets management beyond plain env vars.
 - LLM-based signal routing (the router is a flat dispatcher by design — the lead owns coordination judgment).
 - Windows desktop support (macOS + Linux only for the foreseeable future).

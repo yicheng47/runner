@@ -153,7 +153,7 @@ A mission is a container. Everything in the runtime column is either the contain
 
 ### 3.2 Runner — *one configured agent*
 
-A reusable template: handle, display name, runtime (`claude-code | codex | shell`), command + args, working dir, system prompt (persona), env. **Top-level, not nested under a crew.** The same runner template can be used by many crews simultaneously, and can also be the subject of standalone direct-chat sessions.
+A reusable template: handle, display name, runtime (`claude-code | codex` today), command + args, working dir, system prompt (persona), env. **Top-level, not nested under a crew.** The same runner template can be used by many crews simultaneously, and can also be the subject of standalone direct-chat sessions.
 
 A runner has two identifying fields:
 
@@ -243,7 +243,7 @@ Two shapes:
 - **Broadcast** — `runner msg post "<text>"`. Goes to everyone's inbox.
 - **Direct** — `runner msg post --to <slot_handle> "<text>"`. Goes to that slot's inbox only. `--to human` reaches the workspace operator (rendered in the event feed).
 
-Messages are **flat** today — one stream per mission, no thread scoping. Each runner consumes messages through their **inbox** (§4.3).
+Messages are **flat by design** — one stream per mission, no message-thread scoping, and no separate fact primitive. Each runner consumes messages through their **inbox** (§4.3). Durable conclusions belong in project files, code, commits, or normal message prose instead of a second coordination object model.
 
 Messages and signals stay separate because:
 - Signals are typed and small; router handlers key off them. Messages are prose; the router doesn't parse them.
@@ -505,7 +505,7 @@ Writers: the bundled `runner` CLI writes runner-authored events; the Rust backen
 
 Two subscribers to the NDJSON file, both via `notify`:
 
-- **Signal router** — deserializes each new line. For built-in signals, runs a fixed handler. For messages, no-op (today; next: threads, routing-by-mention).
+- **Signal router** — deserializes each new line. For built-in signals, runs a fixed handler. For messages, no-op; messages stay flat and are not routed into thread/fact projections.
 - **EventBus → UI** — the backend re-emits each line as a `mission:{id}:event` Tauri event. Frontend splits by `kind` into the event feed and the HITL/signal projections.
 
 #### Startup replay
@@ -643,7 +643,7 @@ runners (
   id TEXT PRIMARY KEY,
   handle TEXT NOT NULL UNIQUE,        -- globally unique slug; see §3.2
   display_name TEXT NOT NULL,
-  runtime TEXT NOT NULL,              -- claude-code | codex | shell
+  runtime TEXT NOT NULL,              -- first-class runtime key; claude-code | codex today
   command TEXT NOT NULL,
   args_json TEXT,
   working_dir TEXT,                   -- direct-chat working dir; missions override via mission.cwd
@@ -816,7 +816,7 @@ A panic in a PTY reader thread only affects that one session — the reader thre
 6. **Signals and messages as distinct primitives.** Keeps the router simple and prose natural.
 7. **The signal router is the only urgent wake-up path.** Runners stay decoupled.
 8. **Prompt composition at spawn time (Layer 1/2/3).** Replaces runtime handshakes.
-9. **Incremental vocabulary.** Today = signals + messages; next = threads + facts; later = mentions + reactions.
+9. **Small vocabulary.** Signals + messages are the coordination model. Thread and fact primitives are intentionally not supported; add new vocabulary only when it unlocks a concrete shipped workflow.
 10. **xterm.js for rendering.** Don't reinvent the terminal emulator.
 11. **ULID for event IDs.** Sortable, monotonic within ms.
 12. **Mission state outlives the app process; PTYs do not.** The event log and session rows are the authoritative continuation point, and Resume creates fresh child processes.
