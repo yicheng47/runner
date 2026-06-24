@@ -371,14 +371,7 @@ fn scan_paths_with_marker(
         );
     }
 
-    if unclaimed.len() > 1 {
-        return (CaptureScan::None, ScanSource::Marker);
-    }
-
-    (
-        select_unique_unclaimed(unclaimed, |_| false),
-        ScanSource::Fallback,
-    )
+    (CaptureScan::None, ScanSource::Marker)
 }
 
 fn matching_candidates(
@@ -830,6 +823,52 @@ mod tests {
         let got = scan_paths_with_marker(vec![a, b], "/repo", started_at, &marker, None);
 
         assert_eq!(got, (CaptureScan::None, ScanSource::Marker));
+    }
+
+    #[test]
+    fn marker_scan_waits_on_single_candidate_when_fallback_owner_is_ambiguous() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let runner_id = ulid::Ulid::new().to_string();
+        let current_id = ulid::Ulid::new().to_string();
+        let sibling_id = ulid::Ulid::new().to_string();
+        let row_started_at = "2026-06-20T12:00:00+00:00";
+        conn.execute(
+            "INSERT INTO runners
+                (id, handle, display_name, runtime, command, created_at, updated_at)
+             VALUES (?1, 'codex-capture', 'Codex Capture', 'codex', 'codex', ?2, ?2)",
+            params![runner_id, row_started_at],
+        )
+        .unwrap();
+        for session_id in [&current_id, &sibling_id] {
+            conn.execute(
+                "INSERT INTO sessions
+                    (id, mission_id, runner_id, cwd, status, started_at, agent_session_key)
+                 VALUES (?1, NULL, ?2, '/repo', 'running', ?3, NULL)",
+                params![session_id, runner_id, row_started_at],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let dir = tempfile::tempdir().unwrap();
+        let started_at = "2026-06-20T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let marker = prompt_marker(&current_id);
+        let path = write_meta(
+            &dir,
+            "rollout-one.jsonl",
+            "019ee58f-fb81-7d53-ab71-06b471bb4247",
+            "/repo",
+            started_at,
+        );
+
+        let got = scan_paths_with_marker(vec![path], "/repo", started_at, &marker, None);
+
+        assert_eq!(got, (CaptureScan::None, ScanSource::Marker));
+        assert!(
+            !fallback_row_is_unambiguous(&pool, &current_id, row_started_at, "/repo"),
+            "same-cwd sibling means pre-marker fallback would permanently fail closed",
+        );
     }
 
     #[test]
