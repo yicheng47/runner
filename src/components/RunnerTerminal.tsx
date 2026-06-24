@@ -234,13 +234,13 @@ export const RunnerTerminal = forwardRef<
       forceResizeDance?: boolean;
       pushBackendSize?: boolean;
     } = {}) => {
-      if (!activeRef.current) return;
+      if (!activeRef.current) return false;
       const t = termRef.current;
       const fit = fitRef.current;
       const node = containerRef.current;
-      if (!t || !fit || !node) return;
+      if (!t || !fit || !node) return false;
       const rect = node.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
+      if (rect.width <= 0 || rect.height <= 0) return false;
       try {
         fit.fit();
         tryDrainReplayRef.current?.();
@@ -255,16 +255,16 @@ export const RunnerTerminal = forwardRef<
               });
             });
           });
-          return;
+          return true;
         }
         webglRef.current?.clearTextureAtlas();
         t.refresh(0, t.rows - 1);
         if (focus && !disabledRef.current) t.focus();
         if ((!forceResizeDance && !pushBackendSize) || disabledRef.current) {
-          return;
+          return true;
         }
         const sid = sessionIdRef.current;
-        if (!sid) return;
+        if (!sid) return true;
         const cols = t.cols;
         const rows = t.rows;
         if (!forceResizeDance) {
@@ -272,14 +272,14 @@ export const RunnerTerminal = forwardRef<
             cols === lastPushedColsRef.current &&
             rows === lastPushedRowsRef.current
           ) {
-            return;
+            return true;
           }
           lastPushedColsRef.current = cols;
           lastPushedRowsRef.current = rows;
           void api.session.resize(sid, cols, rows).catch(() => {
             // session may have exited
           });
-          return;
+          return true;
         }
         // Force a full TUI redraw even when the final geometry
         // matches the backend's cached winsize. Same-size TIOCSWINSZ
@@ -300,8 +300,10 @@ export const RunnerTerminal = forwardRef<
           .catch(() => {
             // session may have exited between the two ioctls
           });
+        return true;
       } catch {
         // Layout not ready yet — the next activation / resize will drive it.
+        return false;
       }
     },
     [],
@@ -569,9 +571,14 @@ export const RunnerTerminal = forwardRef<
     const onVisibility = () => {
       if (document.visibilityState === "visible") scheduleWakeRefit();
     };
+    const onWindowFocus = () => {
+      scheduleWakeRefit();
+    };
     const wakeRafs = new Set<number>();
     const wakeTimers = new Set<number>();
     let wakeRefitScheduled = false;
+    let wakeResizeDancePending = false;
+    let wakeResetTimer: number | null = null;
     const scheduleWakeRaf = (cb: () => void) => {
       const id = window.requestAnimationFrame(() => {
         wakeRafs.delete(id);
@@ -588,27 +595,54 @@ export const RunnerTerminal = forwardRef<
       wakeTimers.add(id);
       return id;
     };
-    function scheduleWakeRefit() {
-      if (wakeRefitScheduled) return;
+    const scheduleWakeReset = (delay: number) => {
+      if (wakeResetTimer !== null) {
+        window.clearTimeout(wakeResetTimer);
+        wakeTimers.delete(wakeResetTimer);
+      }
+      wakeResetTimer = scheduleWakeTimer(() => {
+        wakeResetTimer = null;
+        wakeRefitScheduled = false;
+        wakeResizeDancePending = false;
+      }, delay);
+    };
+    const runWakeRefit = () => {
+      const refreshed = wakeResizeDancePending
+        ? refreshActiveTerminal({ forceResizeDance: true })
+        : refreshActiveTerminal({ pushBackendSize: true });
+      if (wakeResizeDancePending && refreshed) {
+        wakeResizeDancePending = false;
+      }
+    };
+    function scheduleWakeRefit(forceResizeDance = false) {
+      if (forceResizeDance) wakeResizeDancePending = true;
+      if (wakeRefitScheduled) {
+        if (forceResizeDance) {
+          scheduleWakeRaf(runWakeRefit);
+          scheduleWakeTimer(runWakeRefit, 250);
+          scheduleWakeTimer(runWakeRefit, 750);
+          scheduleWakeReset(1000);
+        }
+        return;
+      }
       wakeRefitScheduled = true;
       scheduleWakeRaf(() => {
-        scheduleWakeRaf(() => refreshActiveTerminal({ pushBackendSize: true }));
+        scheduleWakeRaf(runWakeRefit);
       });
       // macOS wake/focus can fire before WKWebView has settled its
-      // final layout rect. Run one delayed renderer refresh for the
-      // WebGL atlas without forcing a PTY SIGWINCH; ResizeObserver's
-      // normal refit path still pushes real cols/rows changes.
-      scheduleWakeTimer(() => refreshActiveTerminal({ pushBackendSize: true }), 250);
-      scheduleWakeTimer(() => {
-        wakeRefitScheduled = false;
-      }, 300);
+      // final layout rect. Real app resume gets a longer retry window
+      // for the SIGWINCH dance; ordinary focus/visibility wakes stay
+      // local unless the container size actually changed.
+      scheduleWakeTimer(runWakeRefit, 250);
+      if (forceResizeDance) scheduleWakeTimer(runWakeRefit, 750);
+      scheduleWakeReset(forceResizeDance ? 1000 : 300);
     }
-    window.addEventListener("focus", scheduleWakeRefit);
+    window.addEventListener("focus", onWindowFocus);
     document.addEventListener("visibilitychange", onVisibility);
     let unlistenAppResumed: (() => void) | null = null;
     let appResumedCancelled = false;
     void listen("app/resumed", () => {
-      scheduleWakeRefit();
+      scheduleWakeRefit(true);
     }).then((fn) => {
       if (appResumedCancelled) {
         fn();
@@ -682,7 +716,7 @@ export const RunnerTerminal = forwardRef<
     return () => {
       ro.disconnect();
       window.removeEventListener("resize", refitAndPush);
-      window.removeEventListener("focus", scheduleWakeRefit);
+      window.removeEventListener("focus", onWindowFocus);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("storage", onStorage);
       appResumedCancelled = true;
