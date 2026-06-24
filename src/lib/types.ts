@@ -114,6 +114,13 @@ export interface WarningEvent {
   message: string;
 }
 
+// Payload for `session/updated` — persisted metadata changed without a
+// lifecycle event, e.g. async Codex session-key capture.
+export interface SessionUpdatedEvent {
+  session_id: string;
+  mission_id: string | null;
+}
+
 // Returned by session_start_direct (and by mission_start's session list).
 // mission_id is null for the direct flavor.
 export interface SpawnedSession {

@@ -41,6 +41,7 @@ export interface SessionRow extends Session {
    *  TUI agents). See docs/impls/archive/0011 §"Per-runtime clear-on-resize". */
   runtime: string;
   lead: boolean;
+  agent_session_key: string | null;
 }
 
 /**
@@ -62,6 +63,7 @@ export interface DirectSessionEntry {
   started_at: string | null;
   stopped_at: string | null;
   resumable: boolean;
+  agent_session_key: string | null;
   pinned: boolean;
   // Set when the session has been archived. `listRecentDirect` filters
   // these at SQL so rows from that endpoint always have `archived_at:

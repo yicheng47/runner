@@ -983,14 +983,17 @@ fn codex_mission_spawn_grants_event_log_dir_to_sandbox() {
 
     let spec = fake.last_spawn_spec().expect("spawn was called");
     let mission_dir_arg = mission_dir.to_string_lossy().to_string();
+    let marker = crate::session::codex_capture::prompt_marker(&spawned.id);
     assert!(
         has_arg_pair(&spec.args, "--add-dir", &mission_dir_arg),
         "codex mission spawn must grant mission dir with --add-dir; args = {:?}",
         spec.args,
     );
     assert!(
-        spec.args.iter().any(|arg| arg == &first_turn),
-        "codex mission first turn must ride argv; args = {:?}",
+        spec.args
+            .iter()
+            .any(|arg| arg.contains(&first_turn) && arg.contains(&marker)),
+        "codex mission first turn and capture marker must ride argv; args = {:?}",
         spec.args,
     );
     assert!(
@@ -1133,7 +1136,9 @@ fn codex_resume_skips_first_prompt_injection() {
     let now = Utc::now().to_rfc3339();
     let runner_id = ulid::Ulid::new().to_string();
     let session_id = ulid::Ulid::new().to_string();
+    let sibling_session_id = ulid::Ulid::new().to_string();
     let prior_key = uuid::Uuid::new_v4().to_string();
+    let sibling_key = uuid::Uuid::new_v4().to_string();
     {
         let conn = pool.get().unwrap();
         conn.execute(
@@ -1152,6 +1157,14 @@ fn codex_resume_skips_first_prompt_injection() {
                      agent_session_key)
                  VALUES (?1, NULL, ?2, '/tmp', 'stopped', ?3, ?4)",
             params![session_id, runner_id, now, prior_key],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+                    (id, mission_id, runner_id, cwd, status, started_at,
+                     agent_session_key)
+                 VALUES (?1, NULL, ?2, '/tmp', 'stopped', ?3, ?4)",
+            params![sibling_session_id, runner_id, now, sibling_key],
         )
         .unwrap();
     }
@@ -1178,6 +1191,19 @@ fn codex_resume_skips_first_prompt_injection() {
             capture(),
         )
         .unwrap();
+
+    let spec = fake
+        .last_spawn_spec()
+        .expect("codex resume should spawn through FakeRuntime");
+    assert_eq!(
+        spec.args,
+        vec!["resume".to_string(), prior_key.clone()],
+        "codex resume must bind argv to the resumed row's own agent_session_key",
+    );
+    assert!(
+        !spec.args.contains(&sibling_key),
+        "codex resume must not use a sibling row's agent_session_key"
+    );
 
     // FIRST_PROMPT_DELAY = ZERO under cfg(test); a would-be
     // injection would already be visible in fake.bytes_writes() by
