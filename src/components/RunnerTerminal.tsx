@@ -25,7 +25,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
-import { api } from "../lib/api";
+import { api, type PasteImageMimeType } from "../lib/api";
 import {
   readTerminalCursorStyle,
   readTerminalFontFamily,
@@ -56,6 +56,32 @@ interface ExitEvent {
 }
 
 const MAX_PENDING_LIVE_EVENTS = 4096;
+
+function normalizePasteImageMime(type: string): PasteImageMimeType | null {
+  switch (type.trim().toLowerCase()) {
+    case "image/png":
+      return "image/png";
+    case "image/jpeg":
+    case "image/jpg":
+      return "image/jpeg";
+    default:
+      return null;
+  }
+}
+
+function inferPasteImageMime(
+  itemType: string,
+  file: File,
+): PasteImageMimeType | null {
+  const fromType =
+    normalizePasteImageMime(itemType) ?? normalizePasteImageMime(file.type);
+  if (fromType) return fromType;
+
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".png")) return "image/png";
+  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+  return null;
+}
 
 interface RunnerTerminalProps {
   sessionId: string;
@@ -456,16 +482,17 @@ export const RunnerTerminal = forwardRef<
     // Image paste support. We can't trust the OS clipboard across the
     // WKWebView boundary: when the user presses Cmd+V over the webview,
     // WebKit materializes the image into a `File` (a temp file under
-    // the hood), and as a side effect NSPasteboard's `public.png`
-    // representation becomes the *icon* for that temp file rather than
-    // the original screenshot bytes. So the agent CLI's own
-    // `pbpaste -Prefer png` (triggered by Ctrl-V) gets a generic file
-    // icon instead of what the user copied (#79).
+    // the hood), and as a side effect NSPasteboard's image
+    // representation can become the *icon* for that temp file rather
+    // than the original image bytes. So the agent CLI's own clipboard
+    // image read (triggered by Ctrl-V) gets a generic file icon instead
+    // of what the user copied (#79).
     //
     // Fix: read the bytes off the `ClipboardEvent`'s File ourselves
-    // (still the original screenshot at that point), ship them to Rust,
-    // which writes them back to NSPasteboard's `public.png` so the
-    // agent's existing pbpaste-based flow returns the real bytes.
+    // (still the original image at that point), ship them to Rust with
+    // the image MIME type, which writes them back to the matching
+    // NSPasteboard flavor so the agent's existing pbpaste-based flow
+    // returns the real bytes.
     // Then inject Ctrl-V (`\x16`) — claude-code / codex see Ctrl-V as
     // they would in a host terminal, attach the image with their
     // native `[Image x]` placeholder. Pure-text pastes fall through
@@ -475,28 +502,28 @@ export const RunnerTerminal = forwardRef<
       if (!sid || disabledRef.current) return;
       const items = e.clipboardData?.items;
       if (!items) return;
-      // PNG-only for now. The clipboard-restore path writes the
-      // bytes verbatim into NSPasteboard's `public.png` flavor, so
-      // non-PNG payloads would end up labeled PNG with non-PNG bytes
-      // and decode as garbage in the agent. macOS screenshots are
-      // PNG; JPEG/GIF/WebP support needs either a per-MIME OSType
-      // map or a transcode step — out of scope for v1 (#79
-      // follow-up).
       let imageFile: File | null = null;
+      let imageMimeType: PasteImageMimeType | null = null;
       for (let i = 0; i < items.length; i += 1) {
         const it = items[i];
-        if (it.type === "image/png") {
-          imageFile = it.getAsFile();
-          if (imageFile) break;
-        }
+        if (it.kind !== "file") continue;
+        const file = it.getAsFile();
+        if (!file) continue;
+        const mimeType = inferPasteImageMime(it.type, file);
+        if (!mimeType) continue;
+        imageFile = file;
+        imageMimeType = mimeType;
+        break;
       }
-      if (!imageFile) return;
+      if (!imageFile || !imageMimeType) return;
+      const file = imageFile;
+      const mimeType = imageMimeType;
       e.preventDefault();
       e.stopImmediatePropagation();
       void (async () => {
         try {
-          const buf = await imageFile.arrayBuffer();
-          await api.session.pasteImage(new Uint8Array(buf));
+          const buf = await file.arrayBuffer();
+          await api.session.pasteImage(new Uint8Array(buf), mimeType);
           await api.session.injectStdin(sid, "\x16");
         } catch (err) {
           onErrorRef.current?.(String(err));

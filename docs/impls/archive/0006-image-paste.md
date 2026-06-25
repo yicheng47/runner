@@ -47,40 +47,43 @@ End-to-end pipeline:
 
 1. `RunnerTerminal.tsx` `onPaste` (capture phase on xterm's hidden
    `<textarea>`):
-   - Iterate `clipboardData.items`, find the first with
-     `type === "image/png"`, get the `File` via `getAsFile()`. We
-     filter to PNG only — see "PNG-only" below.
+   - Iterate `clipboardData.items`, find the first supported image
+     file, get the `File` via `getAsFile()`, and preserve the image
+     MIME type. The original fix filtered to PNG only; #234 extended
+     the allowlist to PNG and JPEG, with extension fallback for copied
+     files whose MIME is unavailable.
    - `preventDefault()` + `stopImmediatePropagation()` so xterm.js's
      bubble-phase text-paste handler doesn't also run.
    - `await file.arrayBuffer()` → `Uint8Array` (the original bytes
      WebKit captured when it built the JS event, before the
      downstream pbpaste sees the corrupted clipboard).
-   - `await api.session.pasteImage(bytes)` — Rust side restores
-     NSPasteboard.
+   - `await api.session.pasteImage(bytes, mimeType)` — Rust side
+     restores NSPasteboard.
    - `await api.session.injectStdin(sid, "\x16")` — agent CLI now
      sees Ctrl-V, reads NSPasteboard, gets the real bytes, renders
      its `[Image x]` placeholder.
 
-2. New Rust command `session_paste_image(bytes)`
+2. Rust command `session_paste_image(bytes, mimeType)`
    (`src-tauri/src/commands/session.rs`):
    - Writes `bytes` to a `tempfile::NamedTempFile` in `$TMPDIR` with
-     prefix `runner-paste-` and suffix `.png`. `NamedTempFile` is
-     deleted on `Drop`, so the file is gone before the command
-     returns — pasted screenshots can be sensitive, shouldn't
-     accumulate, and the OS reaper isn't load-bearing.
+     prefix `runner-paste-` and a suffix chosen from the MIME type
+     (`.png` or `.jpg`). `NamedTempFile` is deleted on `Drop`, so the
+     file is gone before the command returns — pasted screenshots can
+     be sensitive, shouldn't accumulate, and the OS reaper isn't
+     load-bearing.
    - On macOS, runs:
 
      ```
      osascript -e 'set the clipboard to (read POSIX file "<path>" as «class PNGf»)'
      ```
 
-     `«class PNGf»` is the four-char OSType code for PNG; the
-     statement reads the file as PNG bytes and writes them to
-     NSPasteboard's `public.png` representation, overwriting whatever
-     icon WebKit left there. The path is interpolated via Rust's
-     `{:?}` debug format so paths with spaces or quotes survive (the
-     escape syntax `\\` / `\"` is shared between Rust string literals
-     and AppleScript string literals).
+     `«class PNGf»` is the four-char OSType code for PNG; JPEG uses
+     `«class JPEG»`. The statement reads the file as image bytes and
+     writes them to the matching NSPasteboard representation,
+     overwriting whatever icon WebKit left there. The path is
+     interpolated via Rust's `{:?}` debug format so paths with spaces
+     or quotes survive (the escape syntax `\\` / `\"` is shared
+     between Rust string literals and AppleScript string literals).
    - On non-macOS the command is a no-op — the embedded webview's
      paste behavior on Linux / Windows hasn't been audited and the
      runner doesn't ship there yet.
@@ -90,21 +93,11 @@ End-to-end pipeline:
 
 3. Wired into the Tauri invoke handler in `lib.rs`.
 
-Plain-text pastes are unchanged: when no clipboard item has an
-`image/png` type, the handler returns early without `preventDefault`,
-and xterm.js's bubble-phase paste handler runs normally.
+Plain-text pastes are unchanged: when no clipboard item has a supported image type, the handler returns early without `preventDefault`, and xterm.js's bubble-phase paste handler runs normally.
 
-## PNG-only
+## Format allowlist
 
-The AppleScript writes the bytes verbatim into the `public.png`
-pasteboard flavor. If we let a JPEG or GIF through, NSPasteboard
-would end up with `public.png` populated by non-PNG bytes — the agent
-would attach an image that fails to decode. The frontend filter to
-`image/png` and the doc-comment in the Rust command both call this
-out; broadening to JPEG / GIF / WebP needs either a per-MIME OSType
-map (`«class JPEG»`, `«class GIFf»`, etc.) or a transcode step in
-Rust. Out of scope for v1; macOS screenshots are PNG, which is the
-common-case paste.
+The AppleScript writes the bytes verbatim into the selected pasteboard flavor, so the MIME must map to the correct OSType. The current allowlist is PNG (`«class PNGf»`) and JPEG (`«class JPEG»`, including `.jpg` / `.jpeg` copied-file fallbacks). GIF/WebP would need more OSType mappings or a transcode step before they can be allowed through.
 
 ## Considered: `arboard` / `tauri-plugin-clipboard-manager`
 

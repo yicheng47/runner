@@ -161,39 +161,58 @@ pub async fn session_output_snapshot(
     Ok(state.sessions.output_snapshot(&session_id))
 }
 
-/// Restore NSPasteboard for a PNG paste that came in through the
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PasteImageFormat {
+    extension: &'static str,
+    pasteboard_class: &'static str,
+}
+
+fn paste_image_format(mime_type: &str) -> Result<PasteImageFormat> {
+    let normalized = mime_type.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "image/png" => Ok(PasteImageFormat {
+            extension: "png",
+            pasteboard_class: "PNGf",
+        }),
+        "image/jpeg" | "image/jpg" => Ok(PasteImageFormat {
+            extension: "jpg",
+            pasteboard_class: "JPEG",
+        }),
+        _ => Err(Error::msg(format!(
+            "unsupported clipboard image type {mime_type:?}"
+        ))),
+    }
+}
+
+/// Restore NSPasteboard for an image paste that came in through the
 /// webview, so the agent CLI's NSPasteboard read returns the real
 /// bytes and renders its native `[Image x]` placeholder in the prompt.
 ///
 /// Why: when the user presses Cmd+V over the WKWebView, WebKit
 /// materializes the image clipboard item into a `File` object (a temp
-/// file under the hood). As a side effect NSPasteboard's `public.png`
-/// representation becomes the OS-rendered icon of that temp file
-/// rather than the original screenshot bytes. The agent CLI's
-/// subsequent clipboard read then returns the icon, not the screenshot
-/// (#79).
+/// file under the hood). As a side effect NSPasteboard's image
+/// representation can become the OS-rendered icon of that temp file
+/// rather than the original image bytes. The agent CLI's subsequent
+/// clipboard read then returns the icon, not the copied image (#79).
 ///
 /// Fix: the frontend grabs the original bytes off the `ClipboardEvent`
-/// File before they reach the child process, ships them here, we
-/// write them to a `NamedTempFile`, and use `osascript` to repopulate
-/// NSPasteboard with the real bytes. The frontend then injects Ctrl-V
-/// (`\x16`); the agent's existing paste-attach flow runs unchanged.
-///
-/// PNG-only. AppleScript writes the bytes verbatim into the
-/// `public.png` pasteboard flavor, so non-PNG payloads would end up
-/// labeled PNG with non-PNG bytes. The frontend filters to
-/// `image/png` for the same reason. JPEG/GIF/WebP support is a
-/// follow-up that would need either a per-MIME OSType map or a
-/// transcode step.
+/// File before they reach the child process, ships them here with the
+/// image MIME type, we write them to a `NamedTempFile`, and use
+/// `osascript` to repopulate NSPasteboard with the matching image
+/// flavor. The frontend then injects Ctrl-V (`\x16`); the agent's
+/// existing paste-attach flow runs unchanged.
 ///
 /// macOS-only; on other platforms this is a no-op (the embedded
 /// webview's paste behavior on Linux/Windows hasn't been audited and
 /// the runner doesn't ship there yet).
 #[tauri::command]
-pub async fn session_paste_image(bytes: Vec<u8>) -> Result<()> {
+pub async fn session_paste_image(bytes: Vec<u8>, mime_type: String) -> Result<()> {
+    let format = paste_image_format(&mime_type)?;
+
     #[cfg(not(target_os = "macos"))]
     {
         let _ = bytes;
+        let _ = format;
         Ok(())
     }
 
@@ -206,23 +225,25 @@ pub async fn session_paste_image(bytes: Vec<u8>) -> Result<()> {
         // cleanup is cheaper and matches the value's lifetime:
         // osascript reads the bytes into NSPasteboard synchronously,
         // and after that we don't need the file.
+        let suffix = format!(".{}", format.extension);
         let mut tmp = tempfile::Builder::new()
             .prefix("runner-paste-")
-            .suffix(".png")
+            .suffix(&suffix)
             .tempfile_in(std::env::temp_dir())?;
         tmp.write_all(&bytes)?;
         tmp.flush()?;
 
         let path_str = tmp.path().to_string_lossy();
         // AppleScript: read the temp file's bytes and write them to
-        // NSPasteboard's `public.png` representation. `«class PNGf»`
-        // is the four-char OSType code for PNG. The `{:?}` debug
-        // format quotes the path with `\\` / `\"` escapes that
-        // AppleScript also accepts, so paths with spaces or quotes
-        // pass through safely.
+        // NSPasteboard's matching image representation. The
+        // `pasteboard_class` values are fixed OSType codes selected
+        // from the MIME allowlist above. The `{:?}` debug format
+        // quotes the path with `\\` / `\"` escapes that AppleScript
+        // also accepts, so paths with spaces or quotes pass through
+        // safely.
         let script = format!(
-            "set the clipboard to (read POSIX file {:?} as «class PNGf»)",
-            path_str
+            "set the clipboard to (read POSIX file {:?} as «class {}»)",
+            path_str, format.pasteboard_class
         );
         let status = std::process::Command::new("osascript")
             .arg("-e")
@@ -687,6 +708,41 @@ mod tests {
     use super::*;
     use crate::db;
     use chrono::Utc;
+
+    #[test]
+    fn paste_image_format_maps_png_and_jpeg_to_pasteboard_classes() {
+        assert_eq!(
+            paste_image_format("image/png").unwrap(),
+            PasteImageFormat {
+                extension: "png",
+                pasteboard_class: "PNGf",
+            }
+        );
+        assert_eq!(
+            paste_image_format("image/jpeg").unwrap(),
+            PasteImageFormat {
+                extension: "jpg",
+                pasteboard_class: "JPEG",
+            }
+        );
+    }
+
+    #[test]
+    fn paste_image_format_normalizes_case_and_jpg_alias() {
+        assert_eq!(
+            paste_image_format(" IMAGE/JPG ").unwrap(),
+            PasteImageFormat {
+                extension: "jpg",
+                pasteboard_class: "JPEG",
+            }
+        );
+    }
+
+    #[test]
+    fn paste_image_format_rejects_unsupported_image_types() {
+        let err = paste_image_format("image/gif").unwrap_err().to_string();
+        assert!(err.contains("unsupported clipboard image type"));
+    }
 
     /// Mirrors the SELECT in `session_list_recent_direct` so we can
     /// exercise the ORDER BY without a Tauri State. Returns
