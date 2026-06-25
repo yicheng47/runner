@@ -40,6 +40,9 @@ links to its tracking issue.
   — add OpenCode as a first-class runtime for direct chats, runner
   templates, and missions with conservative model/prompt support
   before permission/resume mappings.
+- [33 — Mission last terminal tab](./33-mission-last-terminal-tab.md)
+  — remember the last selected runner terminal inside each mission
+  and restore it on workspace remount when the session is still valid.
 
 ## Archive
 
