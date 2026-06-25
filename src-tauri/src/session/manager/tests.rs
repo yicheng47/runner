@@ -343,6 +343,19 @@ fn wait_for_session_status_event(
     }
 }
 
+fn join_forwarder_for_test(mgr: &SessionManager, session_id: &str) {
+    let forwarder = mgr.session_state(session_id).and_then(|state| {
+        let mut state = state.lock().unwrap();
+        state
+            .handle
+            .as_mut()
+            .and_then(|handle| handle.forwarder.take())
+    });
+    if let Some(forwarder) = forwarder {
+        forwarder.join().unwrap();
+    }
+}
+
 fn has_arg_pair(args: &[String], flag: &str, value: &str) -> bool {
     args.windows(2).any(|w| w[0] == flag && w[1] == value)
 }
@@ -1583,24 +1596,22 @@ fn mission_status_transition_appends_runner_status_without_session_status_event(
         .unwrap();
 
     fake.push_status(0, RunnerStatus::Busy);
+    fake.close_spawn(0);
+    join_forwarder_for_test(&mgr, &spawned.id);
 
     let log = EventLog::open(&mission_dir).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let event = loop {
-        let entries = log.read_from(0).unwrap();
-        if let Some(event) = entries.into_iter().map(|entry| entry.event).find(|event| {
+    let event = log
+        .read_from(0)
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.event)
+        .find(|event| {
             event
                 .signal_type
                 .as_ref()
                 .is_some_and(|ty| ty.as_str() == "runner_status")
-        }) {
-            break event;
-        }
-        if Instant::now() > deadline {
-            panic!("runner_status event never arrived in mission log");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
+        })
+        .expect("runner_status event should be appended before the forwarder exits");
 
     assert_eq!(event.from, runner.handle);
     assert_eq!(event.payload["state"], "busy");
@@ -1609,8 +1620,6 @@ fn mission_status_transition_appends_runner_status_without_session_status_event(
         cap.status.lock().unwrap().is_empty(),
         "mission sessions must not emit live session/status events",
     );
-
-    mgr.kill(&spawned.id).unwrap();
 }
 
 #[test]
