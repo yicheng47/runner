@@ -34,6 +34,7 @@ import {
   ResumingButton,
   StopButton,
 } from "../components/ui/SessionControl";
+import { CopyValueButton } from "../components/ui/CopyValueButton";
 import {
   ArchivingOverlay,
   ResumingOverlay,
@@ -1314,8 +1315,14 @@ function RunnerSidePanel({
                     {chatMeta ? (
                       <>
                         <dt className="text-fg-3">session_key</dt>
-                        <dd className="break-all font-mono text-fg-2">
-                          {chatMeta.agent_session_key ?? "NULL"}
+                        <dd className="flex min-w-0 items-start gap-1.5">
+                          <span className="min-w-0 flex-1 break-all font-mono text-fg-2">
+                            {chatMeta.agent_session_key ?? "NULL"}
+                          </span>
+                          <CopyValueButton
+                            value={chatMeta.agent_session_key}
+                            label="Copy session_key"
+                          />
                         </dd>
                       </>
                     ) : null}
@@ -1364,8 +1371,14 @@ function RunnerSidePanel({
                     </>
                   ) : null}
                   <dt className="text-fg-3">session_key</dt>
-                  <dd className="break-all font-mono text-fg-2">
-                    {chatMeta.agent_session_key ?? "NULL"}
+                  <dd className="flex min-w-0 items-start gap-1.5">
+                    <span className="min-w-0 flex-1 break-all font-mono text-fg-2">
+                      {chatMeta.agent_session_key ?? "NULL"}
+                    </span>
+                    <CopyValueButton
+                      value={chatMeta.agent_session_key}
+                      label="Copy session_key"
+                    />
                   </dd>
                 </dl>
               </div>

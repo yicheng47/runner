@@ -6,6 +6,7 @@
 
 import { Terminal } from "lucide-react";
 
+import { CopyValueButton } from "./ui/CopyValueButton";
 import type { SessionRow } from "../lib/api";
 
 interface RunnersRailProps {
@@ -107,9 +108,15 @@ export function RunnersRail({
               <div className="text-[11px] text-fg-2">{subtitle}</div>
               <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-2 border-t border-line/70 pt-2 text-[10px] leading-snug">
                 <span className="text-fg-3">session_key</span>
-                <span className="break-all font-mono text-fg-2">
-                  {s.agent_session_key ?? "NULL"}
-                </span>
+                <div className="flex min-w-0 items-start gap-1.5">
+                  <span className="min-w-0 flex-1 break-all font-mono text-fg-2">
+                    {s.agent_session_key ?? "NULL"}
+                  </span>
+                  <CopyValueButton
+                    value={s.agent_session_key}
+                    label={`Copy @${s.handle} session_key`}
+                  />
+                </div>
               </div>
             </div>
           );

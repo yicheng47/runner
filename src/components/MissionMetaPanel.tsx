@@ -1,8 +1,8 @@
 // Right-rail variant for the mission workspace — read-only display of
-// the effective mission goal (snapshotted into the `mission_goal`
-// event at mission_start), `mission.cwd`, the crew handle (link),
-// and a relative-time "started" row. Toggle into this view via the
-// icon strip in the rail header.
+// the mission id, effective mission goal (snapshotted into the
+// `mission_goal` event at mission_start), `mission.cwd`, the crew
+// handle (link), and a relative-time "started" row. Toggle into this
+// view via the icon strip in the rail header.
 //
 // Editing is intentionally not in v1: goal + cwd are baked into the
 // lead's launch prompt at `mission_start`, so post-start edits don't
@@ -14,6 +14,7 @@ import { Link } from "react-router-dom";
 import { Clock3, Users } from "lucide-react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
+import { CopyValueButton } from "./ui/CopyValueButton";
 import type { Crew, Mission } from "../lib/types";
 
 interface MissionMetaPanelProps {
@@ -53,6 +54,15 @@ export function MissionMetaPanel({
       <div className="text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
         Mission detail
       </div>
+
+      <Section label="Mission ID">
+        <span className="flex min-w-0 items-start gap-1.5">
+          <span className="min-w-0 flex-1 break-all font-mono text-[11px] text-fg-2">
+            {mission.id}
+          </span>
+          <CopyValueButton value={mission.id} label="Copy mission ID" />
+        </span>
+      </Section>
 
       <Section label="Goal">
         {missionGoal === null ? (
@@ -99,12 +109,6 @@ export function MissionMetaPanel({
       </Section>
 
       <div className="h-px w-full bg-line" />
-
-      <Section label="Mission ID">
-        <span className="break-all font-mono text-[11px] text-fg-2">
-          {mission.id}
-        </span>
-      </Section>
     </div>
   );
 }
