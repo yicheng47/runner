@@ -65,6 +65,11 @@ import { useDelayedFlag } from "../lib/useDelayedFlag";
 import { useResizableWidth } from "../hooks/useResizableWidth";
 import { useTerminalBg } from "../lib/useTerminalBg";
 import {
+  clearLastMissionTerminalId,
+  getLastMissionTerminalId,
+  setLastMissionTerminalId,
+} from "../lib/missionLastTerminal";
+import {
   markArchivingMission,
   unmarkArchivingMission,
   useArchivingMission,
@@ -204,10 +209,38 @@ export default function MissionWorkspace() {
             if (!cancelled) setCrew(c);
           })
           .catch((e) => console.error("MissionWorkspace: crew_get failed", e));
-        // Auto-open every slot's PTY tab on mount. The user can close
-        // individual tabs via the × on each tab; if they close them
-        // all and re-mount, the mount path opens them again.
-        setOpenTabs(ss.map((s) => s.id));
+        const rememberedSessionId = getLastMissionTerminalId(id);
+        const rememberedSession =
+          m.archived_at == null && rememberedSessionId
+            ? ss.find(
+                (s) => s.id === rememberedSessionId && s.mission_id === id,
+              )
+            : undefined;
+        if (m.archived_at != null) {
+          clearLastMissionTerminalId(id);
+          setOpenTabs([]);
+          setActiveTab("feed");
+        } else {
+          // Auto-open every slot's PTY tab on mount. The user can close
+          // individual tabs via the × on each tab; if they close them
+          // all and re-mount, the mount path opens them again. Keep
+          // the remembered tab in the strip before selecting it so a
+          // future change to lazy-open tabs can't select a hidden pane.
+          const nextOpenTabs = ss.map((s) => s.id);
+          if (
+            rememberedSession &&
+            !nextOpenTabs.includes(rememberedSession.id)
+          ) {
+            nextOpenTabs.push(rememberedSession.id);
+          }
+          setOpenTabs(nextOpenTabs);
+          if (rememberedSession) {
+            setActiveTab(rememberedSession.id);
+          } else {
+            if (rememberedSessionId) clearLastMissionTerminalId(id);
+            setActiveTab("feed");
+          }
+        }
         ingest(evs);
       } catch (e) {
         if (!cancelled) setError(String(e));
@@ -470,6 +503,7 @@ export default function MissionWorkspace() {
     if (!mission) return;
     markArchivingMission(mission.id);
     try {
+      clearLastMissionTerminalId(mission.id);
       await api.mission.archive(mission.id);
       navigate("/runners");
     } catch (e) {
@@ -509,7 +543,9 @@ export default function MissionWorkspace() {
       });
       setEvents(fresh);
       // Fresh slots = open all PTY tabs.
+      clearLastMissionTerminalId(mission.id);
       setOpenTabs(rows.map((s) => s.id));
+      setActiveTab("feed");
       setResetConfirmOpen(false);
     } catch (e) {
       setError(String(e));
@@ -612,6 +648,61 @@ export default function MissionWorkspace() {
   // any UX off `status === 'completed'` because the migration may
   // later widen archive to include other terminal states.
   const isArchived = mission?.archived_at != null;
+
+  useEffect(() => {
+    if (!id || loading || !mission || mission.id !== id) return;
+    if (isArchived) {
+      clearLastMissionTerminalId(id);
+      setActiveTab("feed");
+      setOpenTabs((prev) => (prev.length === 0 ? prev : []));
+      return;
+    }
+
+    const validSessionIds = new Set(
+      sessions
+        .filter((s) => s.mission_id === id)
+        .map((s) => s.id),
+    );
+    const rememberedSessionId = getLastMissionTerminalId(id);
+    if (rememberedSessionId && !validSessionIds.has(rememberedSessionId)) {
+      clearLastMissionTerminalId(id);
+    }
+    if (activeTab !== "feed" && !validSessionIds.has(activeTab)) {
+      setActiveTab("feed");
+    }
+    setOpenTabs((prev) => {
+      const next = prev.filter((tabId) => validSessionIds.has(tabId));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [activeTab, id, isArchived, loading, mission, sessions]);
+
+  const selectFeed = useCallback(() => {
+    setActiveTab("feed");
+  }, []);
+
+  const selectPty = useCallback(
+    (sessionId: string) => {
+      if (!id || isArchived) return;
+      const session = sessions.find(
+        (s) => s.id === sessionId && s.mission_id === id,
+      );
+      if (!session) {
+        const rememberedSessionId = getLastMissionTerminalId(id);
+        if (rememberedSessionId === sessionId) {
+          clearLastMissionTerminalId(id);
+        }
+        setActiveTab("feed");
+        return;
+      }
+      setOpenTabs((prev) =>
+        prev.includes(sessionId) ? prev : [...prev, sessionId],
+      );
+      setLastMissionTerminalId(id, sessionId);
+      setActiveTab(sessionId);
+    },
+    [id, isArchived, sessions],
+  );
+
   const shortcutTabs = useMemo<Array<"feed" | string>>(() => {
     if (isArchived) return ["feed"];
     const slotTabs = openTabs
@@ -629,12 +720,13 @@ export default function MissionWorkspace() {
       if (!target) return;
       e.preventDefault();
       e.stopPropagation();
-      setActiveTab(target);
+      if (target === "feed") selectFeed();
+      else selectPty(target);
     };
     window.addEventListener("keydown", onKeyDown, { capture: true });
     return () =>
       window.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, [shortcutTabs]);
+  }, [selectFeed, selectPty, shortcutTabs]);
 
   // Project ask_human → human_question pairings + human_response
   // resolutions out of the feed. Mirrors the router's reconstruct_from_log
@@ -681,17 +773,23 @@ export default function MissionWorkspace() {
     return map;
   }, [events]);
 
-  const onOpenPty = useCallback((sessionId: string) => {
-    setOpenTabs((prev) =>
-      prev.includes(sessionId) ? prev : [...prev, sessionId],
-    );
-    setActiveTab(sessionId);
-  }, []);
+  const onOpenPty = useCallback(
+    (sessionId: string) => {
+      selectPty(sessionId);
+    },
+    [selectPty],
+  );
 
-  const onCloseTab = useCallback((sessionId: string) => {
-    setOpenTabs((prev) => prev.filter((id) => id !== sessionId));
-    setActiveTab((prev) => (prev === sessionId ? "feed" : prev));
-  }, []);
+  const onCloseTab = useCallback(
+    (sessionId: string) => {
+      setOpenTabs((prev) => prev.filter((id) => id !== sessionId));
+      if (id && getLastMissionTerminalId(id) === sessionId) {
+        clearLastMissionTerminalId(id);
+      }
+      setActiveTab((prev) => (prev === sessionId ? "feed" : prev));
+    },
+    [id],
+  );
 
   const handles = sessions.map((s) => s.handle);
   const startedAt = mission ? formatRelativeTime(mission.started_at) : "";
@@ -938,7 +1036,7 @@ export default function MissionWorkspace() {
           <div className="flex h-[38px] items-end gap-1 border-b border-line bg-panel px-6">
             <TabButton
               active={activeTab === "feed"}
-              onClick={() => setActiveTab("feed")}
+              onClick={selectFeed}
               shortcut="⌘1"
             >
               feed
@@ -955,7 +1053,7 @@ export default function MissionWorkspace() {
                       key={s.id}
                       handle={s.handle}
                       active={activeTab === s.id}
-                      onClick={() => setActiveTab(s.id)}
+                      onClick={() => selectPty(s.id)}
                       onClose={() => onCloseTab(s.id)}
                       shortcut={index < 8 ? `⌘${index + 2}` : undefined}
                     />

@@ -223,30 +223,37 @@ export function Sidebar({
 
   // ⌘K / Ctrl+K opens the command palette. ⌘N / Ctrl+N opens the
   // Start Chat modal. Skip while editing text controls so shortcuts
-  // don't hijack form input.
+  // don't hijack form input. xterm's hidden textarea is not an editor
+  // field from the app's point of view, so Meta shortcuts still win
+  // there; Ctrl shortcuts stay with the PTY/TUI.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName?.toLowerCase();
+      const isXtermInput = !!target?.closest(".xterm");
       if (
-        tag === "input" ||
-        tag === "textarea" ||
-        tag === "select" ||
-        target?.isContentEditable
+        (tag === "input" ||
+          tag === "textarea" ||
+          tag === "select" ||
+          target?.isContentEditable) &&
+        !isXtermInput
       ) {
         return;
       }
+      if (isXtermInput && !e.metaKey) return;
       if (e.key === "k" || e.key === "K") {
         e.preventDefault();
+        e.stopPropagation();
         setPaletteOpen(true);
       } else if (e.key === "n" || e.key === "N") {
         e.preventDefault();
+        e.stopPropagation();
         setCreatingChat(true);
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
   }, []);
 
   useEffect(() => {
