@@ -73,6 +73,8 @@ export interface DirectSessionEntry {
   archived_at: string | null;
 }
 
+export type PasteImageMimeType = "image/png" | "image/jpeg";
+
 export interface RuntimeDefinition {
   name: string;
   display_name: string;
@@ -201,9 +203,10 @@ export const api = {
       invoke<void>("session_resize", { sessionId, cols, rows }),
     outputSnapshot: (sessionId: string) =>
       invoke<SessionOutputEvent[]>("session_output_snapshot", { sessionId }),
-    pasteImage: (bytes: Uint8Array) =>
+    pasteImage: (bytes: Uint8Array, mimeType: PasteImageMimeType) =>
       invoke<void>("session_paste_image", {
         bytes: Array.from(bytes),
+        mimeType,
       }),
     startDirect: (
       runnerId: string,
