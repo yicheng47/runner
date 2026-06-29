@@ -94,6 +94,19 @@ impl WindowRegistry {
         self.mark_focused_at(label, Utc::now());
     }
 
+    /// Demote a window's focus rank to the floor without dropping its subject.
+    ///
+    /// `main` is hidden (not destroyed) on close, so it never emits
+    /// `Destroyed` and stays registered. A *hidden* window must not keep
+    /// owning a duplicated subject over a *visible* one — otherwise the
+    /// visible window is stuck secondary with no terminal. Demoting
+    /// `focused_at` lets any visible holder outrank it, while preserving the
+    /// subject so a later reshow + `Focused(true)` reclaims primary. A hidden
+    /// sole-holder still wins `primary_for` (nothing visible to hand off to).
+    pub fn mark_hidden(&self, label: &str) {
+        self.mark_focused_at(label, DateTime::<Utc>::MIN_UTC);
+    }
+
     /// Snapshot of every registered window, for the `window_focus_map`
     /// broadcast and the `window_list_subjects` hydrate-on-mount path.
     pub fn snapshot(&self) -> Vec<WindowEntry> {
@@ -231,6 +244,45 @@ mod tests {
         // Primary closes → the survivor is promoted.
         reg.unregister("main");
         assert_eq!(reg.primary_for(&subject), Some("window-a".to_string()));
+    }
+
+    #[test]
+    fn mark_hidden_demotes_below_visible_holder_but_keeps_subject() {
+        let reg = WindowRegistry::new();
+        let subject = Subject::Mission("m1".into());
+        reg.register_at("main", ts(500));
+        reg.register_at("window-a", ts(300));
+        reg.set_subject("main", Some(subject.clone()));
+        reg.set_subject("window-a", Some(subject.clone()));
+        // main focused most recently → primary.
+        assert_eq!(reg.primary_for(&subject), Some("main".to_string()));
+
+        // main hidden on close → demoted; the visible window-a takes over.
+        reg.mark_hidden("main");
+        assert_eq!(reg.primary_for(&subject), Some("window-a".to_string()));
+
+        // Subject preserved so a reshow + focus can reclaim ownership.
+        let main_entry = reg
+            .snapshot()
+            .into_iter()
+            .find(|e| e.label == "main")
+            .expect("main still registered");
+        assert_eq!(main_entry.subject, Some(subject.clone()));
+
+        // Reshow + focus → main reclaims primary.
+        reg.mark_focused_at("main", ts(600));
+        assert_eq!(reg.primary_for(&subject), Some("main".to_string()));
+    }
+
+    #[test]
+    fn mark_hidden_sole_holder_stays_primary() {
+        let reg = WindowRegistry::new();
+        let subject = Subject::Mission("m1".into());
+        reg.register_at("main", ts(500));
+        reg.set_subject("main", Some(subject.clone()));
+        // No visible duplicate to hand off to → hidden main remains primary.
+        reg.mark_hidden("main");
+        assert_eq!(reg.primary_for(&subject), Some("main".to_string()));
     }
 
     #[test]

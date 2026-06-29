@@ -339,6 +339,15 @@ pub fn run() {
                 } if label == "main" => {
                     api.prevent_close();
                     hide_main_window_on_close(app_handle);
+                    // main hides rather than destroys, so it never emits
+                    // `Destroyed` to unregister. Demote it (impl 0018) so a
+                    // visible duplicate window becomes primary and mounts its
+                    // PTY; main keeps its subject, so reopening + focusing it
+                    // reclaims ownership via the `Focused(true)` hook.
+                    if let Some(state) = app_handle.try_state::<AppState>() {
+                        state.windows.mark_hidden(&label);
+                    }
+                    broadcast_focus_map(app_handle);
                 }
                 // Any window gaining focus becomes primary for whatever
                 // subject it's on (spec decision 2). Secondary windows close
