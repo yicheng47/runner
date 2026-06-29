@@ -51,12 +51,20 @@ import {
   unmarkArchivingSession,
   useArchivingSession,
 } from "../lib/archivingState";
+import { DuplicateSubjectOverlay } from "../components/DuplicateSubjectOverlay";
+import {
+  isSecondaryFor,
+  useCurrentWindowLabel,
+  useReportSubject,
+  useWindowFocus,
+} from "../lib/windowFocus";
 import type {
   Runner,
   SessionActivityEvent,
   SessionActivityState,
   SessionStatus,
   SessionUpdatedEvent,
+  Subject,
   WarningEvent,
 } from "../lib/types";
 
@@ -208,6 +216,28 @@ export default function RunnerChat() {
   // End / Archive — the row is terminal and the operator can only
   // read the meta + go back to the runner.
   const isArchived = chatMeta?.archived_at != null;
+
+  // Multi-window coordination (impl 0018). Report this chat as the window's
+  // subject; if another window holds the same session with a later focus,
+  // we're secondary and must not mount a terminal or send stdin/resize/start.
+  const focusMap = useWindowFocus();
+  const myWindowLabel = useCurrentWindowLabel();
+  const subject: Subject | null = sessionId
+    ? { type: "DirectChat", value: sessionId }
+    : null;
+  useReportSubject(subject);
+  const { secondary: isSecondary, primaryLabel } = isSecondaryFor(
+    focusMap,
+    myWindowLabel,
+    subject,
+  );
+  const [overlayDismissed, setOverlayDismissed] = useState(false);
+  // Re-show the overlay on subject change or when this window (re)gains
+  // secondary status (another window stole focus mid-session).
+  useEffect(() => {
+    setOverlayDismissed(false);
+  }, [sessionId, isSecondary]);
+  const showDuplicateOverlay = isSecondary && !overlayDismissed;
 
   // Render-gate without the flash. The two branches below
   // (chatMeta still loading, or terminals haven't upserted yet) gate
@@ -696,7 +726,6 @@ export default function RunnerChat() {
   // ever runs the deterministic attach path.
   useEffect(() => {
     const requestKey = sessionId ?? "";
-    if (startedKeyRef.current === requestKey) return;
     // Wait for chatMeta to resolve before attaching. Without this
     // gate, the brief window between mount and the first
     // refreshChatMeta resolution would attach a PTY listener even
@@ -704,6 +733,19 @@ export default function RunnerChat() {
     // briefly subscribing to session/output + calling
     // outputSnapshot before the read-only branch takes over.
     if (!metaLoaded) return;
+    // Secondary windows (impl 0018) don't own the PTY: drop any pane we
+    // mounted (flip primary→secondary mid-session unmounts RunnerTerminal so
+    // it stops forwarding stdin) and reset the attach + transitional refs so
+    // a flip back to primary re-attaches cleanly. Leaving startedKeyRef null
+    // is what lets that re-attach fire.
+    if (isSecondary) {
+      startedKeyRef.current = null;
+      setDirectSessions((prev) => (prev.length === 0 ? prev : []));
+      setResuming(false);
+      setStarting(false);
+      return;
+    }
+    if (startedKeyRef.current === requestKey) return;
     startedKeyRef.current = requestKey;
     setErr(null);
     // Skip attach for archived rows: the workspace renders read-only,
@@ -727,6 +769,7 @@ export default function RunnerChat() {
     sessionId,
     state?.sessionStatus,
     isArchived,
+    isSecondary,
     metaLoaded,
     chatMeta,
     chatMeta?.started_at,
@@ -996,6 +1039,11 @@ export default function RunnerChat() {
             // Archived rows are terminal: no Resume / Stop / Archive.
             // Only surface the navigation escape hatch.
             <BackButton onClick={() => navigate(backTarget)}>{backLabel}</BackButton>
+          ) : isSecondary ? (
+            // Secondary window (impl 0018): the primary owns the PTY, so no
+            // Stop/Resume here — those call session_kill / session_resume.
+            // Focus the primary (via the overlay) to act on this chat.
+            <BackButton onClick={() => navigate(backTarget)}>{backLabel}</BackButton>
           ) : chatState === "resuming" ? (
             <ResumingButton />
           ) : status === "running" && sessionId ? (
@@ -1019,7 +1067,7 @@ export default function RunnerChat() {
               the mission topbar's `MissionKebab`. Hidden for archived
               rows: Pin/Rename make no sense for a terminal row, and
               Archive is a no-op. */}
-          {sessionId && chatMeta && !isArchived ? (
+          {sessionId && chatMeta && !isArchived && !isSecondary ? (
             <ChatKebab
               pinned={chatMeta.pinned}
               open={kebabOpen}
@@ -1113,6 +1161,11 @@ export default function RunnerChat() {
               </span>
             </div>
           </div>
+        ) : isSecondary ? (
+          // Secondary window (impl 0018): the primary owns the PTY, so we
+          // mount no terminal here. The duplicate-subject overlay below
+          // covers this area with the "Focus that window" affordance.
+          null
         ) : directSessions.length === 0 ? (
           // Same delayed-pill treatment as the metaLoaded gate above —
           // the terminal map hasn't upserted the active session pane
@@ -1170,7 +1223,22 @@ export default function RunnerChat() {
             );
           })
         )}
-        {archiving ? (
+        {showDuplicateOverlay ? (
+          // Duplicate-subject overlay (impl 0018) wins over the
+          // transitional overlays: this window doesn't own the PTY, so
+          // "Resuming…" / "Starting…" / "Session ended" would be
+          // misleading here.
+          <DuplicateSubjectOverlay
+            kind="chat"
+            primaryLabel={primaryLabel}
+            onStayHere={() => setOverlayDismissed(true)}
+          />
+        ) : isSecondary ? (
+          // Overlay dismissed but still secondary: never surface the
+          // SessionEnded card's Resume/Archive actions — they call
+          // session_resume / session_kill on a PTY the primary owns.
+          null
+        ) : archiving ? (
           // Archiving wins over the resume + start + ended overlays
           // — the session is on its way out, so reading "Resuming…"
           // / "Starting…" / "Session ended" mid-flight would be
