@@ -106,4 +106,37 @@ mod tests {
         .collect();
         assert_eq!(names, expected, "MCP tool registry diverged from Phase 2");
     }
+
+    // Regression for #240. A bare `serde_json::Value` field derives a
+    // *typeless* schema (`{}`, plus any doc-comment `description`). Strict MCP
+    // clients reject a property schema that declares neither `type` nor
+    // `$ref`, and because tool discovery validates the whole `tools` array at
+    // once, that single bad schema drops every Runner tool. Assert every tool
+    // input property declares a `type` or `$ref` so a future free-form field
+    // can't silently take the registry down again.
+    #[test]
+    fn every_tool_input_property_declares_a_type() {
+        let router = RunnerMcpHandler::tool_router();
+        for tool in router.list_all() {
+            let Some(props) = tool.input_schema.get("properties") else {
+                continue;
+            };
+            let props = props.as_object().unwrap_or_else(|| {
+                panic!("{}: inputSchema.properties is not an object", tool.name)
+            });
+            for (field, schema) in props {
+                let obj = schema.as_object().unwrap_or_else(|| {
+                    panic!("{}: inputSchema.properties.{field} is not an object", tool.name)
+                });
+                assert!(
+                    obj.contains_key("type") || obj.contains_key("$ref"),
+                    "{}: inputSchema.properties.{field} must declare `type` or `$ref` \
+                     (strict MCP clients reject typeless schemas, dropping the whole \
+                     tool list — #240); got keys {:?}",
+                    tool.name,
+                    obj.keys().collect::<Vec<_>>(),
+                );
+            }
+        }
+    }
 }
