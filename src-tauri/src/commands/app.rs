@@ -1,4 +1,9 @@
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+// `Manager` is only needed by the macOS-only `show_main_window`
+// (`get_webview_window`); importing it unconditionally trips `unused_imports`
+// under `-D warnings` on other platforms.
+#[cfg(target_os = "macos")]
+use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::error::Error;
@@ -16,6 +21,10 @@ pub fn app_ready(window: tauri::WebviewWindow) -> crate::error::Result<()> {
     Ok(())
 }
 
+/// Show + focus the `main` window. Used only by the macOS `Reopen` path
+/// (dock-icon click with no visible windows); `app_ready` shows the calling
+/// window directly, so this is dead code on other platforms.
+#[cfg(target_os = "macos")]
 pub(crate) fn show_main_window(app: &AppHandle) -> crate::error::Result<()> {
     let window = app
         .get_webview_window("main")

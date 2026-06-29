@@ -41,6 +41,9 @@ pub fn open_window(
     // Mirror `main`'s chrome (tauri.conf.json) so secondary windows are
     // visually identical. Starts hidden to avoid the white flash; the
     // generalized `app_ready` shows the calling window after first paint.
+    // `mut` is only consumed by the macOS chrome block below — other
+    // platforms have no extra builder methods, hence the conditional allow.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut builder = WebviewWindowBuilder::new(app, &label, url)
         .title("Runner")
         .inner_size(1440.0, 900.0)
