@@ -5,11 +5,15 @@ use crate::error::Error;
 use crate::log_dir_for_build;
 
 /// Called by the frontend after React has mounted and painted its first frame.
-/// Shows the main window — the window starts hidden so the user sees the dock
-/// bounce → fully-rendered window instead of a blank webview.
+/// Shows the **calling** window — every window (main + secondaries) starts
+/// hidden so the user sees the dock bounce → fully-rendered window instead of
+/// a blank webview. Resolving the window from the invoking webview (rather
+/// than hard-coding `main`) is what lets secondary windows reveal themselves.
 #[tauri::command]
-pub fn app_ready(app: AppHandle) -> crate::error::Result<()> {
-    show_main_window(&app)
+pub fn app_ready(window: tauri::WebviewWindow) -> crate::error::Result<()> {
+    window.show().map_err(|e| Error::msg(e.to_string()))?;
+    window.set_focus().map_err(|e| Error::msg(e.to_string()))?;
+    Ok(())
 }
 
 pub(crate) fn show_main_window(app: &AppHandle) -> crate::error::Result<()> {
