@@ -49,7 +49,7 @@ that story.
   `Mission(id)` or `DirectChat(session_id)`. On any change, it broadcasts
   a `window_focus_map` event so every window has a consistent picture.
 - **Arc-style overlay.** If a window's current subject is also held by
-  another window with an *earlier* `focused_at` timestamp, this window
+  another window with a *later* `focused_at` timestamp, this window
   is the **secondary**. The mission/chat view renders an overlay over
   the main content area:
   - Title: "Open in another window"
@@ -61,15 +61,16 @@ that story.
     (e.g. to `/runners` empty state, or back via router history).
 - **No PTY / xterm mount on the secondary.** xterm has DOM state and
   consumes stdin; double-mounting against one session creates input
-  races. The overlay is what gates the mount: the workspace component
-  skips `mission_attach` / `session_attach` while the overlay is up,
-  and unmounts the terminal if the window flips from primary to
-  secondary mid-session.
-- **Window close behavior.** Closing a non-last window just unregisters
-  it from the focus map; the backend keeps running. Closing the *last*
-  window quits the app (today's behavior). If the primary window for a
-  subject closes, the secondary becomes primary automatically (the
-  earliest `focused_at` among surviving windows wins).
+  races. The overlay is what gates terminal ownership: the workspace
+  may still load mission/session metadata, but it does not mount
+  terminal components or send stdin/resize/start requests while the
+  overlay is up, and unmounts the terminal if the window flips from
+  primary to secondary mid-session.
+- **Window close behavior.** Closing a secondary window unregisters and
+  destroys it; closing `main` keeps today's hide-on-close behavior. Use
+  Quit / `Cmd+Q` to exit the app. If the primary window for a subject
+  closes, the secondary becomes primary automatically (the latest
+  `focused_at` among surviving windows wins).
 
 ### Out of scope (deferred)
 
@@ -112,11 +113,12 @@ that story.
    map and fans it out. Peer-to-peer coordination via the Tauri event
    bus would race on window-spawn and need conflict resolution. Central
    registry is one mutex, one source of truth.
-4. **The overlay gates the mount, not just the display.** A secondary
-   window doesn't merely *hide* the terminal — it never calls
-   `session_attach` / `mission_attach` in the first place. This is what
-   keeps stdin / PTY input single-writer and what makes `mission_attach`
-   idempotent contract still hold (one attached window per mission).
+4. **The overlay gates the terminal mount, not just the display.** A
+   secondary window doesn't merely *hide* the terminal — it does not
+   mount `RunnerTerminal` or send stdin/resize/start requests. Backend
+   lifecycle calls such as `mission_attach` can remain idempotent if
+   they are only ensuring routers/buses exist; the single-writer rule
+   applies to PTY ownership.
 5. **`emit` stays broadcast.** Today `app.emit("…", payload)` reaches
    every webview. That's fine: each window's frontend filters by its
    own current subject. No need to switch to `emit_to(label, …)` for
@@ -181,7 +183,7 @@ that story.
   `null`.
 - A new `<DuplicateSubjectOverlay>` component:
   - Reads the focus map + this window's label and current subject.
-  - If another window has the same subject with an earlier
+  - If another window has the same subject with a later
     `focused_at`, render an absolute-positioned card over the main
     content area: title, subtitle, "Focus that window" button,
     secondary "Stay here" link.
@@ -189,9 +191,9 @@ that story.
     a duplicate view — the overlay should reappear if they navigate away
     and back. (Don't persist a per-subject dismiss flag; keep it simple.)
 - `MissionWorkspace` and `RunnerChat` check `isSecondary` from the
-  focus map and short-circuit `mission_attach` / `session_attach` calls
-  + terminal mount while it's true. They re-attach on flip back to
-  primary.
+  focus map and short-circuit terminal population/mount, stdin,
+  resize, and start paths while it's true. They re-attach terminals on
+  flip back to primary.
 
 ### Phase 4 — new-window affordances
 
@@ -208,26 +210,27 @@ that story.
 
 - Backend tests: unit tests for `WindowRegistry` covering register /
   unregister / set_subject / focus / primary_for, including the
-  "earliest focused_at wins" rule.
+  "most recent focused_at wins" rule.
 - Frontend manual smoke:
   1. Open Runner. `Cmd+N` opens a second window. Both windows are
      functional, can navigate independently.
-  2. Window A opens mission X. Window B opens mission X. Window B
-     shows the overlay (it's the more recent focus). Click "Focus
-     that window" — window A comes forward, window B keeps showing
-     the overlay.
-  3. Click into window B (focus it). Now B is primary, A's mission
+  2. Window A opens mission X. Window B opens mission X. Window B is
+     primary because it is the more recent focus; window A shows the
+     overlay. Click "Focus that window" in A — window B comes forward.
+  3. Click into window A (focus it). Now A is primary, B's mission
      view picks up the overlay. (Focus flip works both directions.)
-  4. In window A (secondary now), navigate to a different mission.
-     A's overlay disappears; B's overlay disappears (B is alone on
+  4. In window B (secondary now), navigate to a different mission.
+     B's overlay disappears; A's overlay disappears (A is alone on
      mission X again, becomes primary).
   5. Open the same direct chat in two windows. Same overlay rules.
      Confirm only one window's xterm is mounted at a time and the
      PTY input lands once.
-  6. Close window A (the primary for mission X). B's overlay
-     disappears, B becomes primary.
-  7. Quit the app (close the last window). On reopen, only the main
-     window comes back (window restoration is out of scope for v1).
+  6. With both windows back on mission X, close window A (the primary
+     for mission X). B's overlay disappears, B becomes primary.
+  7. Close secondary windows. They unregister/destroy. Close `main`.
+     It hides as it does today. Quit via `Cmd+Q` / app menu. On reopen,
+     only the main window comes back (window restoration is out of
+     scope for v1).
 
 ## Verification
 
@@ -243,8 +246,8 @@ that story.
       session. Input lands in exactly one stream.
 - [ ] Closing the primary promotes the secondary to primary; overlay
       disappears.
-- [ ] Closing the last window quits the app. (Today's behavior, not
-      regressed.)
+- [ ] Closing secondary windows destroys them; closing `main` hides the
+      app window; Quit / `Cmd+Q` exits the app.
 - [ ] Backend `window_focus_map` broadcasts after every mutation; the
       frontend reflects it without polling.
 - [ ] `cargo test --workspace` and `pnpm exec tsc --noEmit` clean.
