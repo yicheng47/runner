@@ -126,7 +126,10 @@ mod tests {
             });
             for (field, schema) in props {
                 let obj = schema.as_object().unwrap_or_else(|| {
-                    panic!("{}: inputSchema.properties.{field} is not an object", tool.name)
+                    panic!(
+                        "{}: inputSchema.properties.{field} is not an object",
+                        tool.name
+                    )
                 });
                 assert!(
                     obj.contains_key("type") || obj.contains_key("$ref"),
