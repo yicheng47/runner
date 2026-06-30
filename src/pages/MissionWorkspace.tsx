@@ -38,8 +38,16 @@ import type {
   HumanQuestionPayload,
   Mission,
   SessionUpdatedEvent,
+  Subject,
   WarningEvent,
 } from "../lib/types";
+import { DuplicateSubjectOverlay } from "../components/DuplicateSubjectOverlay";
+import {
+  isSecondaryFor,
+  useCurrentWindowLabel,
+  useReportSubject,
+  useWindowFocus,
+} from "../lib/windowFocus";
 import { EventFeed } from "../components/EventFeed";
 import { MissionInput } from "../components/MissionInput";
 import { MissionMetaPanel } from "../components/MissionMetaPanel";
@@ -132,6 +140,34 @@ export default function MissionWorkspace() {
   // fallback chain and `workspaceDimsFromContainer` for the cell-size
   // measurement step.
   const paneContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Multi-window coordination (impl 0018). This window reports the mission as
+  // its subject; if another window holds the same mission with a later focus,
+  // we're the secondary and must not own the PTY — no terminal mount, no
+  // stdin/resize/start. The mission/session metadata still loads so the feed
+  // and overlay can render.
+  const focusMap = useWindowFocus();
+  const myWindowLabel = useCurrentWindowLabel();
+  const subject = useMemo<Subject | null>(
+    () => (id ? { type: "Mission", value: id } : null),
+    [id],
+  );
+  useReportSubject(subject);
+  const { secondary: isSecondary, primaryLabel } = isSecondaryFor(
+    focusMap,
+    myWindowLabel,
+    subject,
+  );
+  const [overlayDismissed, setOverlayDismissed] = useState(false);
+  // Re-show the overlay when the subject changes or this window (re)gains
+  // secondary status — e.g. another window steals focus mid-session.
+  useEffect(() => {
+    setOverlayDismissed(false);
+  }, [id, isSecondary]);
+  const showDuplicateOverlay = isSecondary && !overlayDismissed;
+  // Force the feed view while secondary: the PTY tabs/panes don't render, so
+  // a non-feed activeTab would otherwise leave a blank content area.
+  const feedActive = isSecondary || activeTab === "feed";
 
   // Combined: subscribe to `event/appended` BEFORE running the
   // events_replay query, then merge both into a single ULID-deduped
@@ -953,7 +989,11 @@ export default function MissionWorkspace() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {mission?.status === "running" && !resumingAll ? (
+          {/* Secondary windows (impl 0018) are read-only: Resume/Reset
+              respawn PTYs, Stop kills them, Archive ends the mission — all
+              of which act on PTYs the primary window owns. Hide the whole
+              action cluster while secondary; focus the primary to act. */}
+          {mission?.status === "running" && !resumingAll && !isSecondary ? (
             <>
               {anySessionStopped ? (
                 <ResumeButton
@@ -1035,16 +1075,18 @@ export default function MissionWorkspace() {
         <div className="flex flex-1 min-h-0 flex-col">
           <div className="flex h-[38px] items-end gap-1 border-b border-line bg-panel px-6">
             <TabButton
-              active={activeTab === "feed"}
+              active={feedActive}
               onClick={selectFeed}
               shortcut="⌘1"
             >
               feed
             </TabButton>
             {/* Archived missions render feed only — skip the per-PTY
-                tabs so no xterm canvas ever mounts. The Pane block
+                tabs so no xterm canvas ever mounts. Secondary windows
+                (impl 0018) likewise show feed only: the duplicated
+                terminal lives in the primary window. The Pane block
                 below applies the same gate. */}
-            {!isArchived
+            {!isArchived && !isSecondary
               ? openTabs
                   .map((tabId) => sessions.find((s) => s.id === tabId))
                   .filter((s): s is SessionRow => s !== undefined)
@@ -1070,20 +1112,25 @@ export default function MissionWorkspace() {
                 that keeps the React/xterm instances alive while making
                 the visible session unambiguous. The terminal activation
                 effect refits + replays after the pane is shown. */}
-            <Pane active={activeTab === "feed"}>
+            <Pane active={feedActive}>
               <EventFeed
                 missionId={mission.id}
                 events={events}
                 resolvedAsks={resolvedAsks}
                 askersByQuestion={askersByQuestion}
-                active={activeTab === "feed"}
+                active={feedActive}
                 onError={setError}
               />
+              {/* Secondary windows can't send input: human_said is
+                  injected into the lead's PTY stdin by the router, which
+                  the primary owns (impl 0018). Disable while secondary. */}
               <MissionInput
                 missionId={mission.id}
                 leadHandle={leadHandle}
                 handles={handles}
-                disabled={mission.status !== "running" || !allSessionsLive}
+                disabled={
+                  mission.status !== "running" || !allSessionsLive || isSecondary
+                }
                 onError={setError}
               />
               {/* Pause overlay fires whenever *any* slot is stopped.
@@ -1097,8 +1144,11 @@ export default function MissionWorkspace() {
               {mission.status === "running" &&
               !allSessionsLive &&
               !resumingAll &&
-              !archivingMission ? (
+              !archivingMission &&
+              !isSecondary ? (
                 // Scrim is rendered by the overlay itself (issue #173).
+                // Hidden while secondary (impl 0018) so its Resume/Archive
+                // buttons can't act on PTYs the primary owns.
                 <MissionPausedCard
                   anySessionLive={anySessionLive}
                   onResumeMission={() => void resumeMission()}
@@ -1107,10 +1157,14 @@ export default function MissionWorkspace() {
               ) : null}
             </Pane>
 
-            {/* Skip per-session PTY panes for archived missions so
-                no xterm canvas ever mounts. The feed Pane stays
+            {/* Skip per-session PTY panes for archived missions and for
+                secondary windows (impl 0018) so no xterm canvas ever
+                mounts and we never write to a PTY the primary owns. On
+                flip primary→secondary this unmounts the terminals (and
+                clears their refs via the register callback); on flip
+                back, they remount and re-attach. The feed Pane stays
                 rendered above as the only surface. */}
-            {!isArchived
+            {!isArchived && !isSecondary
               ? openTabs
                   .map((tabId) => sessions.find((s) => s.id === tabId))
                   .filter((s): s is SessionRow => s !== undefined)
@@ -1142,6 +1196,17 @@ export default function MissionWorkspace() {
                 the resuming-all overlay (slot panes gate
                 forcedResuming on !archivingMission). */}
             {archivingMission ? <ArchivingOverlay withScrim /> : null}
+            {/* Arc-style duplicate-subject overlay (impl 0018). Sits
+                above the panes; gates nothing itself (the PTY mount is
+                gated by `isSecondary`) — "Stay here" only hides the
+                card so the user can read the feed underneath. */}
+            {showDuplicateOverlay ? (
+              <DuplicateSubjectOverlay
+                kind="mission"
+                primaryLabel={primaryLabel}
+                onStayHere={() => setOverlayDismissed(true)}
+              />
+            ) : null}
           </div>
         </div>
       )}

@@ -30,6 +30,7 @@ import {
 } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import {
+  AppWindow,
   Archive,
   ChevronDown,
   ChevronRight,
@@ -221,8 +222,11 @@ export function Sidebar({
     void refreshMissions();
   }, [refreshMissions]);
 
-  // ⌘K / Ctrl+K opens the command palette. ⌘N / Ctrl+N opens the
-  // Start Chat modal. Skip while editing text controls so shortcuts
+  // ⌘K / Ctrl+K opens the command palette. ⌘T / Ctrl+T opens the Start
+  // Chat modal (browser/terminal convention: ⌘T = new tab/chat, ⌘N =
+  // new window). ⌘N is owned by the File → New Window menu accelerator
+  // (impl 0018) at the OS level, so it's deliberately absent here to
+  // avoid a double-fire. Skip while editing text controls so shortcuts
   // don't hijack form input. xterm's hidden textarea is not an editor
   // field from the app's point of view, so Meta shortcuts still win
   // there; Ctrl shortcuts stay with the PTY/TUI.
@@ -246,7 +250,7 @@ export function Sidebar({
         e.preventDefault();
         e.stopPropagation();
         setPaletteOpen(true);
-      } else if (e.key === "n" || e.key === "N") {
+      } else if (e.key === "t" || e.key === "T") {
         e.preventDefault();
         e.stopPropagation();
         setCreatingChat(true);
@@ -833,6 +837,14 @@ export function Sidebar({
             setRenamingId(sessionMenu.session.session_id);
             closeSessionMenu();
           }}
+          onOpenInNewWindow={() => {
+            void api.window
+              .open(`/chats/${sessionMenu.session.session_id}`)
+              .catch((e) =>
+                console.error("sidebar: open chat in new window failed", e),
+              );
+            closeSessionMenu();
+          }}
           onArchive={() => {
             void archiveSession(sessionMenu.session);
             closeSessionMenu();
@@ -852,6 +864,14 @@ export function Sidebar({
           }}
           onRename={() => {
             setRenamingMissionId(missionMenu.mission.id);
+            closeMissionMenu();
+          }}
+          onOpenInNewWindow={() => {
+            void api.window
+              .open(`/missions/${missionMenu.mission.id}`)
+              .catch((e) =>
+                console.error("sidebar: open mission in new window failed", e),
+              );
             closeMissionMenu();
           }}
           onArchive={() => {
@@ -910,7 +930,7 @@ function NewChatNavRow({ onOpen }: { onOpen: () => void }) {
       <MessageSquarePlus aria-hidden className="h-3 w-3 text-fg-2" />
       <span className="min-w-0 flex-1 truncate">new chat</span>
       <span className="shrink-0 rounded border border-line bg-bg px-1.5 py-px font-mono text-[10px] leading-tight text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus:opacity-100">
-        ⌘N
+        ⌘T
       </span>
     </button>
   );
@@ -1331,6 +1351,7 @@ function RowContextMenu({
   onClose,
   onPin,
   onRename,
+  onOpenInNewWindow,
   onArchive,
 }: {
   pinned: boolean;
@@ -1339,6 +1360,7 @@ function RowContextMenu({
   onClose: () => void;
   onPin: () => void;
   onRename: () => void;
+  onOpenInNewWindow: () => void;
   onArchive: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -1382,6 +1404,11 @@ function RowContextMenu({
         onClick={onPin}
       />
       <ContextMenuItem icon={SquarePen} label="Rename" onClick={onRename} />
+      <ContextMenuItem
+        icon={AppWindow}
+        label="Open in New Window"
+        onClick={onOpenInNewWindow}
+      />
       <ContextMenuItem
         icon={Archive}
         label="Archive"

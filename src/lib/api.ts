@@ -28,9 +28,11 @@ import type {
   SpawnedSession,
   StartMissionInput,
   StartMissionOutput,
+  Subject,
   UpdateCrewInput,
   UpdateRunnerInput,
   UpdateSlotInput,
+  WindowEntry,
 } from "./types";
 
 /** Session row joined with the runner's handle for UI labels. */
@@ -232,5 +234,28 @@ export const api = {
         cols,
         rows,
       }),
+  },
+  window: {
+    /** Open a new webview window, optionally pre-navigated to a route
+     *  (carried as a URL hash fragment) and positioned. Returns the new
+     *  window's label. */
+    open: (
+      initialRoute?: string | null,
+      position?: [number, number] | null,
+    ) =>
+      invoke<string>("window_open", {
+        initialRoute: initialRoute ?? null,
+        position: position ?? null,
+      }),
+    /** Bring another window to the front (the overlay's "Focus that
+     *  window" action). */
+    focusOther: (label: string) =>
+      invoke<void>("window_focus_other", { label }),
+    /** Report this window's current subject; the backend recomputes the
+     *  focus map and broadcasts it. */
+    reportSubject: (subject: Subject | null) =>
+      invoke<void>("window_report_subject", { subject }),
+    /** Snapshot of the focus map for hydrate-on-mount. */
+    listSubjects: () => invoke<WindowEntry[]>("window_list_subjects"),
   },
 };
