@@ -81,12 +81,18 @@ const STORAGE_WIDTH = "runner.sidebar.width";
 const STORAGE_MISSION_OPEN = "runner.sidebar.mission.open";
 const STORAGE_SESSION_OPEN = "runner.sidebar.session.open";
 const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
+const SIDEBAR_NAVIGATION_HISTORY_LIMIT = 64;
 
 type SidebarNavigationDirection = "previous" | "next";
 
 interface SidebarNavigationEntry {
   to: string;
   state?: { sessionStatus: DirectSessionEntry["status"] };
+}
+
+interface SidebarNavigationHistory {
+  entries: string[];
+  index: number;
 }
 
 function sidebarNavigationDirectionFromKey(
@@ -99,13 +105,7 @@ function sidebarNavigationDirectionFromKey(
   return null;
 }
 
-function sidebarEntryKeyForPath(pathname: string): string | null {
-  if (pathname === "/runners" || pathname.startsWith("/runners/")) {
-    return "/runners";
-  }
-  if (pathname === "/crews" || pathname.startsWith("/crews/")) {
-    return "/crews";
-  }
+function sidebarRuntimeKeyForPath(pathname: string): string | null {
   if (pathname.startsWith("/missions/") || pathname.startsWith("/chats/")) {
     return pathname;
   }
@@ -188,6 +188,10 @@ export function Sidebar({
   const [directSessionActivity, setDirectSessionActivity] = useState<
     Record<string, SessionActivityState | undefined>
   >({});
+  const sidebarNavigationHistoryRef = useRef<SidebarNavigationHistory>({
+    entries: [],
+    index: -1,
+  });
 
   // Section toggles, persisted so users don't have to re-expand each visit.
   const [missionsOpen, setMissionsOpen] = useState<boolean>(() =>
@@ -245,8 +249,6 @@ export function Sidebar({
 
   const sidebarNavigationEntries = useMemo<SidebarNavigationEntry[]>(
     () => [
-      { to: "/runners" },
-      { to: "/crews" },
       ...missions.map((mission) => ({ to: `/missions/${mission.id}` })),
       ...directSessions.map((session) => ({
         to: `/chats/${session.session_id}`,
@@ -273,29 +275,47 @@ export function Sidebar({
     void refreshMissions();
   }, [refreshMissions]);
 
+  useEffect(() => {
+    const currentKey = sidebarRuntimeKeyForPath(location.pathname);
+    if (!currentKey) return;
+    const history = sidebarNavigationHistoryRef.current;
+    if (history.entries[history.index] === currentKey) return;
+
+    const entries = history.entries.slice(0, history.index + 1);
+    if (entries[entries.length - 1] !== currentKey) {
+      entries.push(currentKey);
+    }
+    if (entries.length > SIDEBAR_NAVIGATION_HISTORY_LIMIT) {
+      entries.splice(0, entries.length - SIDEBAR_NAVIGATION_HISTORY_LIMIT);
+    }
+    history.entries = entries;
+    history.index = entries.length - 1;
+  }, [location.pathname]);
+
   const navigateSidebarPage = useCallback(
     (direction: SidebarNavigationDirection) => {
-      if (sidebarNavigationEntries.length < 2) return;
-      const currentKey = sidebarEntryKeyForPath(location.pathname);
-      const currentIndex = currentKey
-        ? sidebarNavigationEntries.findIndex((entry) => entry.to === currentKey)
-        : -1;
+      const history = sidebarNavigationHistoryRef.current;
+      if (history.entries.length < 2 || history.index === -1) return;
+
       const delta = direction === "next" ? 1 : -1;
-      const nextIndex =
-        currentIndex === -1
-          ? direction === "next"
-            ? 0
-            : sidebarNavigationEntries.length - 1
-          : (currentIndex + delta + sidebarNavigationEntries.length) %
-            sidebarNavigationEntries.length;
-      const entry = sidebarNavigationEntries[nextIndex];
-      const options = entry.state
-        ? {
-            replace: location.pathname === entry.to,
-            state: entry.state,
-          }
-        : { replace: location.pathname === entry.to };
-      navigate(entry.to, options);
+      let nextIndex = history.index + delta;
+      while (nextIndex >= 0 && nextIndex < history.entries.length) {
+        const entry = sidebarNavigationEntries.find(
+          (candidate) => candidate.to === history.entries[nextIndex],
+        );
+        if (entry) {
+          history.index = nextIndex;
+          const options = entry.state
+            ? {
+                replace: location.pathname === entry.to,
+                state: entry.state,
+              }
+            : { replace: location.pathname === entry.to };
+          navigate(entry.to, options);
+          return;
+        }
+        nextIndex += delta;
+      }
     },
     [location.pathname, navigate, sidebarNavigationEntries],
   );
