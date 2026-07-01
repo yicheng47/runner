@@ -17,6 +17,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ComponentType,
@@ -79,6 +80,43 @@ const SIDEBAR_DEFAULT = 240;
 const STORAGE_WIDTH = "runner.sidebar.width";
 const STORAGE_MISSION_OPEN = "runner.sidebar.mission.open";
 const STORAGE_SESSION_OPEN = "runner.sidebar.session.open";
+const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
+
+type SidebarNavigationDirection = "previous" | "next";
+
+interface SidebarNavigationEntry {
+  to: string;
+  state?: { sessionStatus: DirectSessionEntry["status"] };
+}
+
+function sidebarNavigationDirectionFromKey(
+  e: KeyboardEvent,
+): SidebarNavigationDirection | null {
+  if (!(e.metaKey || e.ctrlKey)) return null;
+  if (e.altKey || e.shiftKey) return null;
+  if (e.key === "[" || e.code === "BracketLeft") return "previous";
+  if (e.key === "]" || e.code === "BracketRight") return "next";
+  return null;
+}
+
+function sidebarEntryKeyForPath(pathname: string): string | null {
+  if (pathname === "/runners" || pathname.startsWith("/runners/")) {
+    return "/runners";
+  }
+  if (pathname === "/crews" || pathname.startsWith("/crews/")) {
+    return "/crews";
+  }
+  if (pathname.startsWith("/missions/") || pathname.startsWith("/chats/")) {
+    return pathname;
+  }
+  return null;
+}
+
+function isSidebarNavigationDirection(
+  value: unknown,
+): value is SidebarNavigationDirection {
+  return value === "previous" || value === "next";
+}
 
 function getStoredFlag(key: string, fallback: boolean): boolean {
   if (typeof localStorage === "undefined") return fallback;
@@ -205,6 +243,19 @@ export function Sidebar({
   // session id rather than handle.
   const currentChatSessionId = chatMatch?.params.sessionId ?? null;
 
+  const sidebarNavigationEntries = useMemo<SidebarNavigationEntry[]>(
+    () => [
+      { to: "/runners" },
+      { to: "/crews" },
+      ...missions.map((mission) => ({ to: `/missions/${mission.id}` })),
+      ...directSessions.map((session) => ({
+        to: `/chats/${session.session_id}`,
+        state: { sessionStatus: session.status },
+      })),
+    ],
+    [directSessions, missions],
+  );
+
   const refreshMissions = useCallback(async () => {
     try {
       const rows = await api.mission.listSummary();
@@ -221,6 +272,33 @@ export function Sidebar({
   useEffect(() => {
     void refreshMissions();
   }, [refreshMissions]);
+
+  const navigateSidebarPage = useCallback(
+    (direction: SidebarNavigationDirection) => {
+      if (sidebarNavigationEntries.length < 2) return;
+      const currentKey = sidebarEntryKeyForPath(location.pathname);
+      const currentIndex = currentKey
+        ? sidebarNavigationEntries.findIndex((entry) => entry.to === currentKey)
+        : -1;
+      const delta = direction === "next" ? 1 : -1;
+      const nextIndex =
+        currentIndex === -1
+          ? direction === "next"
+            ? 0
+            : sidebarNavigationEntries.length - 1
+          : (currentIndex + delta + sidebarNavigationEntries.length) %
+            sidebarNavigationEntries.length;
+      const entry = sidebarNavigationEntries[nextIndex];
+      const options = entry.state
+        ? {
+            replace: location.pathname === entry.to,
+            state: entry.state,
+          }
+        : { replace: location.pathname === entry.to };
+      navigate(entry.to, options);
+    },
+    [location.pathname, navigate, sidebarNavigationEntries],
+  );
 
   // ⌘K / Ctrl+K opens the command palette. ⌘T / Ctrl+T opens the Start
   // Chat modal (browser/terminal convention: ⌘T = new tab/chat, ⌘N =
@@ -259,6 +337,42 @@ export function Sidebar({
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
   }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const direction = sidebarNavigationDirectionFromKey(e);
+      if (!direction) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      const isXtermInput = !!target?.closest(".xterm");
+      if (
+        (tag === "input" ||
+          tag === "textarea" ||
+          tag === "select" ||
+          target?.isContentEditable) &&
+        !isXtermInput
+      ) {
+        return;
+      }
+      if (isXtermInput && !e.metaKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+      navigateSidebarPage(direction);
+    };
+    const onNavigate = (event: Event) => {
+      const direction = (event as CustomEvent<{ direction?: unknown }>).detail
+        ?.direction;
+      if (isSidebarNavigationDirection(direction)) {
+        navigateSidebarPage(direction);
+      }
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    window.addEventListener(SIDEBAR_NAVIGATE_EVENT, onNavigate);
+    return () => {
+      window.removeEventListener("keydown", onKey, { capture: true });
+      window.removeEventListener(SIDEBAR_NAVIGATE_EVENT, onNavigate);
+    };
+  }, [navigateSidebarPage]);
 
   useEffect(() => {
     let unlistenEvents: (() => void) | null = null;

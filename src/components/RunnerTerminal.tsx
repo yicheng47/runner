@@ -56,6 +56,8 @@ interface ExitEvent {
 }
 
 const MAX_PENDING_LIVE_EVENTS = 4096;
+const SIDEBAR_TOGGLE_EVENT = "runner:toggle-sidebar";
+const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
 
 function normalizePasteImageMime(type: string): PasteImageMimeType | null {
   switch (type.trim().toLowerCase()) {
@@ -455,7 +457,33 @@ export const RunnerTerminal = forwardRef<
         const key = e.key.toLowerCase();
         if (key === "s" || e.key === "\\") {
           e.preventDefault();
-          window.dispatchEvent(new Event("runner:toggle-sidebar"));
+          window.dispatchEvent(new Event(SIDEBAR_TOGGLE_EVENT));
+          return false;
+        }
+        if (
+          !e.altKey &&
+          !e.shiftKey &&
+          (e.key === "[" || e.code === "BracketLeft")
+        ) {
+          e.preventDefault();
+          window.dispatchEvent(
+            new CustomEvent(SIDEBAR_NAVIGATE_EVENT, {
+              detail: { direction: "previous" },
+            }),
+          );
+          return false;
+        }
+        if (
+          !e.altKey &&
+          !e.shiftKey &&
+          (e.key === "]" || e.code === "BracketRight")
+        ) {
+          e.preventDefault();
+          window.dispatchEvent(
+            new CustomEvent(SIDEBAR_NAVIGATE_EVENT, {
+              detail: { direction: "next" },
+            }),
+          );
           return false;
         }
       }
