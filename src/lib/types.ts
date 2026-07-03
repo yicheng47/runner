@@ -41,6 +41,9 @@ export interface Runner {
   /** Thinking-effort hint (e.g. `xhigh`, `high`, `medium`).
    *  NULL = inherit the agent CLI's own default. */
   effort: string | null;
+  /** Where the agent runs (Windows+WSL fork): `"native"` = directly on
+   *  the Windows host; `"wsl"` / NULL = inside WSL. Ignored on mac/Linux. */
+  execution_target: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
@@ -263,6 +266,9 @@ export interface CreateRunnerInput {
   env?: Record<string, string>;
   model?: string | null;
   effort?: string | null;
+  /** "native" (Windows host) or "wsl"/null (inside WSL). Windows+WSL
+   *  fork; ignored on mac/Linux. */
+  execution_target?: string | null;
   /** Form's "Permission mode" dropdown. Defaults to `"auto"` on the
    *  backend when omitted. Hidden in the form for runtimes
    *  without a permission concept (shell / unknown); this is a no-op
@@ -282,6 +288,8 @@ export interface UpdateRunnerInput {
   env?: Record<string, string>;
   model?: string | null;
   effort?: string | null;
+  /** "native" / "wsl" / null. Windows+WSL fork; ignored on mac/Linux. */
+  execution_target?: string | null;
   /** Rewrites the runtime's permission-mode flags on the stored args
    *  (replacing any prior occurrence so duplicates can't accumulate).
    *  Omit (or `undefined`) to leave args alone — non-form callers

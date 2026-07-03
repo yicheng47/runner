@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 
 import { api } from "../lib/api";
+import { useT } from "../lib/i18n";
 import { readDefaultWorkingDir } from "../lib/settings";
 import type {
   CreateRunnerInput,
@@ -38,9 +39,11 @@ export function CreateRunnerModal({
   onClose: () => void;
   onCreated: (runner: Runner) => void | Promise<void>;
 }) {
+  const t = useT();
   const [handle, setHandle] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [runtime, setRuntime] = useState<string>(RUNTIME_OPTIONS[0].value);
+  const [command, setCommand] = useState(RUNTIME_OPTIONS[0].defaultCommand);
   const [argsText, setArgsText] = useState("");
   const [model, setModel] = useState("");
   const [workingDir, setWorkingDir] = useState("");
@@ -52,6 +55,8 @@ export function CreateRunnerModal({
   // so the user never has to type the flags themselves.
   const [permissionMode, setPermissionMode] =
     useState<PermissionMode>("auto");
+  // Where the agent runs: "wsl" (default) or "native" (Windows host).
+  const [executionTarget, setExecutionTarget] = useState<string>("wsl");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -65,21 +70,32 @@ export function CreateRunnerModal({
       setWorkingDir(readDefaultWorkingDir());
       setSystemPrompt("");
       setPermissionMode("auto");
+      setExecutionTarget("wsl");
       setError(null);
     }
   }, [open]);
 
-  // Command is bound to runtime — each runtime's `defaultCommand` is
-  // the binary we actually spawn. The Command field below is read-only
-  // confirmation of what `claude-code` / `codex` resolves to on PATH.
-  const command =
-    RUNTIME_OPTIONS.find((o) => o.value === runtime)?.defaultCommand ??
-    RUNTIME_OPTIONS[0].defaultCommand;
+  // Command is bound to the runtime's `defaultCommand` for WSL runners
+  // (the binary inside the distro: claude / codex). For "native" Windows
+  // runners the Command field is editable so you can point at a host
+  // command (powershell, a Windows-installed agent, …); we only auto-sync
+  // back to the runtime default while the target is WSL or the runtime
+  // changes.
+  useEffect(() => {
+    if (executionTarget !== "native") {
+      setCommand(
+        RUNTIME_OPTIONS.find((o) => o.value === runtime)?.defaultCommand ??
+          RUNTIME_OPTIONS[0].defaultCommand,
+      );
+    }
+  }, [runtime, executionTarget]);
 
   const handleError = (() => {
     if (!handle) return null;
     if (!HANDLE_RE.test(handle))
-      return "Lowercase letters, digits, '-' or '_'; must start with a letter or digit; up to 32 chars.";
+      return t(
+        "Lowercase letters, digits, '-' or '_'; must start with a letter or digit; up to 32 chars.",
+      );
     return null;
   })();
 
@@ -102,6 +118,7 @@ export function CreateRunnerModal({
       working_dir: workingDir.trim() || null,
       system_prompt: systemPrompt.trim() || null,
       model: model.trim() || null,
+      execution_target: executionTarget,
       // Send the mode only for runtimes that support it — keeps the
       // contract explicit for shell / unknown (where the backend
       // helper is a no-op anyway).
@@ -125,9 +142,9 @@ export function CreateRunnerModal({
       onClose={submitting ? () => {} : onClose}
       title={
         <div className="flex flex-col gap-0.5">
-          <span className="text-base font-semibold text-fg">New runner</span>
+          <span className="text-base font-semibold text-fg">{t("New runner")}</span>
           <span className="text-xs font-normal text-fg-3">
-            Reusable across crews and chats.
+            {t("Reusable across crews and chats.")}
           </span>
         </div>
       }
@@ -135,10 +152,10 @@ export function CreateRunnerModal({
       footer={
         <>
           <Button onClick={onClose} disabled={submitting}>
-            Cancel
+            {t("Cancel")}
           </Button>
           <Button variant="primary" onClick={submit} disabled={!canSubmit}>
-            {submitting ? "Creating…" : "Create runner"}
+            {submitting ? t("Creating…") : t("Create runner")}
           </Button>
         </>
       }
@@ -150,7 +167,7 @@ export function CreateRunnerModal({
           void submit();
         }}
       >
-        <Field id="new-runner-handle" label="Handle" error={handleError}>
+        <Field id="new-runner-handle" label={t("Handle")} error={handleError}>
           <div className="flex items-center rounded border border-line-strong bg-bg px-2.5 py-1.5 text-sm focus-within:border-fg-3">
             <span className="select-none pr-1 font-mono font-semibold text-fg-3">
               @
@@ -159,23 +176,23 @@ export function CreateRunnerModal({
               id="new-runner-handle"
               autoFocus
               value={handle}
-              placeholder="architect"
+              placeholder={t("architect")}
               onChange={(e) => setHandle(e.target.value.toLowerCase())}
               className="flex-1 bg-transparent font-mono text-fg outline-none placeholder:text-fg-3"
             />
           </div>
         </Field>
 
-        <Field id="new-runner-display-name" label="Display name">
+        <Field id="new-runner-display-name" label={t("Display name")}>
           <Input
             id="new-runner-display-name"
             value={displayName}
-            placeholder="Architect"
+            placeholder={t("Architect")}
             onChange={(e) => setDisplayName(e.target.value)}
           />
         </Field>
 
-        <Field id="new-runner-runtime" label="Runtime">
+        <Field id="new-runner-runtime" label={t("Runtime")}>
           <RuntimeSelect
             id="new-runner-runtime"
             value={runtime}
@@ -183,32 +200,45 @@ export function CreateRunnerModal({
           />
         </Field>
 
-        <Field id="new-runner-command" label="Command">
+        <Field
+          id="new-runner-command"
+          label={t("Command")}
+          hint={
+            executionTarget === "native"
+              ? t(
+                  "the Windows host command to run (e.g. powershell, python.exe, a Windows-installed agent)",
+                )
+              : undefined
+          }
+        >
           <Input
             id="new-runner-command"
             value={command}
-            disabled
-            readOnly
+            disabled={executionTarget !== "native"}
+            readOnly={executionTarget !== "native"}
+            onChange={(e) => setCommand(e.target.value)}
           />
         </Field>
 
         <Field
           id="new-runner-args"
-          label="Args"
-          hint="extra flags · whitespace-separated"
+          label={t("Args")}
+          hint={t("extra flags · whitespace-separated")}
         >
           <Input
             id="new-runner-args"
             value={argsText}
-            placeholder="--mcp-debug"
+            placeholder={t("--mcp-debug")}
             onChange={(e) => setArgsText(e.target.value)}
           />
         </Field>
 
         <Field
           id="new-runner-model"
-          label="Model"
-          hint="optional · blank uses the runtime's own model · type a name or pick an alias"
+          label={t("Model")}
+          hint={t(
+            "optional · blank uses the runtime's own model · type a name or pick an alias",
+          )}
         >
           <ModelField
             id="new-runner-model"
@@ -231,7 +261,7 @@ export function CreateRunnerModal({
           return (
             <Field
               id="new-runner-permission-mode"
-              label="Permission mode"
+              label={t("Permission mode")}
               hint={current?.description}
             >
               <StyledSelect
@@ -249,7 +279,37 @@ export function CreateRunnerModal({
           );
         })() : null}
 
-        <Field id="new-runner-working-dir" label="Working directory">
+        <Field
+          id="new-runner-exec-target"
+          label={t("Execution target")}
+          hint={t(
+            "where the agent runs · WSL by default · Windows runs the command natively on the host",
+          )}
+        >
+          <StyledSelect
+            className="w-full"
+            value={executionTarget}
+            options={[
+              {
+                value: "wsl",
+                label: t("WSL"),
+                description: t(
+                  "Run the agent inside WSL via wsl.exe (claude/codex installed in your distro).",
+                ),
+              },
+              {
+                value: "native",
+                label: t("Windows"),
+                description: t(
+                  "Run the command directly on the Windows host (powershell, cmd, a Windows-installed agent).",
+                ),
+              },
+            ]}
+            onChange={(v) => setExecutionTarget(v)}
+          />
+        </Field>
+
+        <Field id="new-runner-working-dir" label={t("Working directory")}>
           <WorkingDirField
             id="new-runner-working-dir"
             value={workingDir}
@@ -258,12 +318,14 @@ export function CreateRunnerModal({
           />
         </Field>
 
-        <Field id="new-runner-system-prompt" label="Default system prompt">
+        <Field id="new-runner-system-prompt" label={t("Default system prompt")}>
           <Textarea
             id="new-runner-system-prompt"
             rows={5}
             value={systemPrompt}
-            placeholder="You are the architect for this crew. When a mission starts, decompose the goal into 2–4 tasks and assign each to a @handle in the crew."
+            placeholder={t(
+              "You are the architect for this crew. When a mission starts, decompose the goal into 2–4 tasks and assign each to a @handle in the crew.",
+            )}
             onChange={(e) => setSystemPrompt(e.target.value)}
           />
         </Field>

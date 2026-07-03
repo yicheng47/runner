@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 
 import { api } from "../lib/api";
+import { useT } from "../lib/i18n";
 import type {
   PermissionMode,
   Runner,
@@ -41,6 +42,7 @@ export function RunnerEditDrawer({
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }) {
+  const t = useT();
   const [displayName, setDisplayName] = useState("");
   const [runtime, setRuntime] = useState<string>(RUNTIME_OPTIONS[0].value);
   // Command is bound to runtime — the field below is read-only — but
@@ -64,6 +66,7 @@ export function RunnerEditDrawer({
   // from the row's stored args whenever a runner is loaded.
   const [permissionMode, setPermissionMode] =
     useState<PermissionMode>("accept_edits");
+  const [executionTarget, setExecutionTarget] = useState<string>("wsl");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -88,6 +91,7 @@ export function RunnerEditDrawer({
         );
       }
       setPermissionMode(inferPermissionMode(runner.runtime, runner.args));
+      setExecutionTarget(runner.execution_target ?? "wsl");
       setError(null);
     }
   }, [open, runner]);
@@ -117,6 +121,10 @@ export function RunnerEditDrawer({
         // value. See commands::runner::update.
         model: model.trim(),
         effort: effort.trim(),
+        // Always send the dropdown's value ("wsl" / "native") so a
+        // change persists; a string deserializes to the outer Some on
+        // the Rust side, which writes the column.
+        execution_target: executionTarget,
         // Send the mode only for runtimes that support it —
         // otherwise the backend's permission-flag helper is a no-op
         // anyway, but keeping the field undefined for shell/unknown
@@ -142,22 +150,22 @@ export function RunnerEditDrawer({
       title={
         runner ? (
           <span className="flex items-center gap-2">
-            Edit runner
+            {t("Edit runner")}
             <span className="rounded bg-raised px-1.5 py-0.5 font-mono text-xs font-normal text-fg-2">
               @{runner.handle}
             </span>
           </span>
         ) : (
-          "Edit runner"
+          t("Edit runner")
         )
       }
       footer={
         <>
           <Button onClick={onClose} disabled={submitting}>
-            Cancel
+            {t("Cancel")}
           </Button>
           <Button variant="primary" onClick={submit} disabled={!canSubmit}>
-            {submitting ? "Saving…" : "Save"}
+            {submitting ? t("Saving…") : t("Save")}
           </Button>
         </>
       }
@@ -169,7 +177,7 @@ export function RunnerEditDrawer({
           void submit();
         }}
       >
-        <Field id="edit-display-name" label="Display name">
+        <Field id="edit-display-name" label={t("Display name")}>
           <Input
             id="edit-display-name"
             value={displayName}
@@ -177,7 +185,7 @@ export function RunnerEditDrawer({
           />
         </Field>
 
-        <Field id="edit-runtime" label="Runtime">
+        <Field id="edit-runtime" label={t("Runtime")}>
           <RuntimeSelect
             id="edit-runtime"
             value={runtime}
@@ -202,27 +210,45 @@ export function RunnerEditDrawer({
           />
         </Field>
 
-        <Field id="edit-command" label="Command">
-          <Input id="edit-command" value={command} disabled readOnly />
+        <Field
+          id="edit-command"
+          label={t("Command")}
+          hint={
+            executionTarget === "native"
+              ? t(
+                  "the Windows host command to run (e.g. powershell, python.exe, a Windows-installed agent)",
+                )
+              : undefined
+          }
+        >
+          <Input
+            id="edit-command"
+            value={command}
+            disabled={executionTarget !== "native"}
+            readOnly={executionTarget !== "native"}
+            onChange={(e) => setCommand(e.target.value)}
+          />
         </Field>
 
         <Field
           id="edit-args"
-          label="Args"
-          hint="extra flags · whitespace-separated"
+          label={t("Args")}
+          hint={t("extra flags · whitespace-separated")}
         >
           <Input
             id="edit-args"
             value={argsText}
-            placeholder="--mcp-debug"
+            placeholder={t("--mcp-debug")}
             onChange={(e) => setArgsText(e.target.value)}
           />
         </Field>
 
         <Field
           id="edit-model"
-          label="Model"
-          hint="optional · blank uses the runtime's own model · type a name or pick an alias"
+          label={t("Model")}
+          hint={t(
+            "optional · blank uses the runtime's own model · type a name or pick an alias",
+          )}
         >
           <ModelField
             id="edit-model"
@@ -245,8 +271,8 @@ export function RunnerEditDrawer({
           return (
             <Field
               id="edit-effort"
-              label="Thinking effort"
-              hint="optional · resolves to the runtime's native effort flag"
+              label={t("Thinking effort")}
+              hint={t("optional · resolves to the runtime's native effort flag")}
             >
               <StyledSelect
                 className="w-full"
@@ -276,7 +302,7 @@ export function RunnerEditDrawer({
           return (
             <Field
               id="edit-permission-mode"
-              label="Permission mode"
+              label={t("Permission mode")}
               hint={current?.description}
             >
               <StyledSelect
@@ -294,7 +320,37 @@ export function RunnerEditDrawer({
           );
         })() : null}
 
-        <Field id="edit-working-dir" label="Working directory">
+        <Field
+          id="edit-exec-target"
+          label={t("Execution target")}
+          hint={t(
+            "where the agent runs · WSL by default · Windows runs the command natively on the host",
+          )}
+        >
+          <StyledSelect
+            className="w-full"
+            value={executionTarget}
+            options={[
+              {
+                value: "wsl",
+                label: t("WSL"),
+                description: t(
+                  "Run the agent inside WSL via wsl.exe (claude/codex installed in your distro).",
+                ),
+              },
+              {
+                value: "native",
+                label: t("Windows"),
+                description: t(
+                  "Run the command directly on the Windows host (powershell, cmd, a Windows-installed agent).",
+                ),
+              },
+            ]}
+            onChange={(v) => setExecutionTarget(v)}
+          />
+        </Field>
+
+        <Field id="edit-working-dir" label={t("Working directory")}>
           <WorkingDirField
             id="edit-working-dir"
             value={workingDir}
@@ -303,7 +359,7 @@ export function RunnerEditDrawer({
           />
         </Field>
 
-        <Field id="edit-system-prompt" label="System prompt">
+        <Field id="edit-system-prompt" label={t("System prompt")}>
           <Textarea
             id="edit-system-prompt"
             rows={6}
