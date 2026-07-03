@@ -100,6 +100,16 @@ export function isGroupActiveFor(
   );
 }
 
+/** The first empty pane a sidebar-created new chat should fill, or null
+ *  when the current chat does not have an active split group on screen. */
+export function newChatTargetPane(
+  layout: PaneLayout,
+  currentChatSessionId: string | null,
+): string | null {
+  if (!isGroupActiveFor(layout, currentChatSessionId)) return null;
+  return leaves(layout.root).find((l) => l.sessionId === null)?.id ?? null;
+}
+
 function leaf(id: string, sessionId: string | null): PaneLeaf {
   return { kind: "leaf", id, sessionId };
 }

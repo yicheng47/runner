@@ -7,6 +7,7 @@ import {
   deserializeLayout,
   isGroupActiveFor,
   leaves,
+  newChatTargetPane,
   removeSessionPure,
   serializeLayout,
   setSizesPure,
@@ -154,6 +155,42 @@ describe("isGroupActiveFor", () => {
     expect(isGroupActiveFor(split, null)).toBe(false);
     const single = applyPresetPure("single", "A", ["A"]);
     expect(isGroupActiveFor(single, "A")).toBe(false);
+  });
+});
+
+describe("newChatTargetPane", () => {
+  it("returns the active group's empty pane even when it is not focused", () => {
+    const layout = removeSessionPure(
+      applyPresetPure("cols-2", "A", ["A", "B"]),
+      "B",
+    );
+
+    expect(slotSessions(layout)).toEqual(["A", null]);
+    expect(layout.focusedPaneId).toBe(leaves(layout.root)[0].id);
+    expect(newChatTargetPane(layout, "A")).toBe(leaves(layout.root)[1].id);
+  });
+
+  it("returns null when the active group has no empty pane", () => {
+    const layout = applyPresetPure("cols-2", "A", ["A", "B"]);
+
+    expect(newChatTargetPane(layout, "A")).toBeNull();
+  });
+
+  it("returns null for an inactive group or single layout", () => {
+    const split = applyPresetPure("cols-2", "A", ["A", "B"]);
+    const single = applyPresetPure("single", "A", ["A"]);
+
+    expect(newChatTargetPane(split, "C")).toBeNull();
+    expect(newChatTargetPane(single, "A")).toBeNull();
+  });
+
+  it("returns the first empty pane in pane order", () => {
+    const layout = applyPresetPure("main-2", "A", ["A"]);
+    const all = leaves(layout.root);
+    const unfocusedSecondEmpty = { ...layout, focusedPaneId: all[2].id };
+
+    expect(slotSessions(unfocusedSecondEmpty)).toEqual(["A", null, null]);
+    expect(newChatTargetPane(unfocusedSecondEmpty, "A")).toBe(all[1].id);
   });
 });
 

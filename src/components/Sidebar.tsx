@@ -69,6 +69,7 @@ import {
   getPaneLayout,
   isGroupActiveFor,
   leafForSession,
+  newChatTargetPane,
   removeSessionFromLayout,
   usePaneLayout,
   visibleSessionIds,
@@ -1092,6 +1093,30 @@ export function Sidebar({
         onClose={() => setCreatingChat(false)}
         onStarted={(spawned) => {
           setCreatingChat(false);
+          const chatLayout = getPaneLayout();
+          const targetPaneId = newChatTargetPane(
+            chatLayout,
+            currentChatSessionId,
+          );
+          if (targetPaneId) {
+            const memberIds = visibleSessionIds(chatLayout.root);
+            assignSessionToPane(targetPaneId, spawned.id);
+            focusPane(targetPaneId);
+            if (
+              shouldInheritPinOnAdd(
+                memberIds,
+                pinnedSessionIds(directSessions),
+                spawned.id,
+              )
+            ) {
+              void api.session
+                .pin(spawned.id, true)
+                .then(() => refreshDirectSessions())
+                .catch((e) =>
+                  console.error("sidebar: session_pin on group add failed", e),
+                );
+            }
+          }
           navigate(`/chats/${spawned.id}`, {
             state: { sessionStatus: "running" },
           });
