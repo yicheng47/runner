@@ -163,12 +163,20 @@ pub fn run() {
                     log::info!("session runtime: pty (in-process, impl 0011)");
                     Arc::new(session::pty_runtime::PtyRuntime::new())
                 }
-                #[cfg(not(unix))]
+                #[cfg(windows)]
                 {
-                    return Err("Runner requires macOS or Linux; \
-                                Windows support is pending impl 0011's \
-                                cross-platform pass"
-                        .into());
+                    // Windows runs the agents inside WSL: the in-process
+                    // PTY (ConPTY) forks `wsl.exe`, and the shaper wraps
+                    // each spawn into the chosen distro. M1 hardcodes the
+                    // distro; M3 adds detection + a Settings picker.
+                    let distro = "Ubuntu".to_string();
+                    log::info!("session runtime: pty over wsl.exe (distro {distro})");
+                    // Install the Linux `runner` agent CLI into the distro
+                    // so mission agents can emit signals onto the event bus.
+                    session::wsl::install::install_linux_runner(&distro);
+                    Arc::new(session::pty_runtime::PtyRuntime::with_shaper(
+                        session::wsl::wsl_command_shaper(distro),
+                    ))
                 }
             };
 
@@ -216,8 +224,9 @@ pub fn run() {
             // runtime — any `running` row in the DB at this point
             // is from a prior process. Demote them to `stopped`
             // so the sidebar surfaces them with a Resume
-            // affordance (impl 0011 §"Tauri startup").
-            #[cfg(unix)]
+            // affordance (impl 0011 §"Tauri startup"). On Windows the
+            // `wsl.exe` relays die with this process too, so the same
+            // invariant holds.
             {
                 if let Err(e) = session::pty_runtime::cleanup_stale_running_rows_on_startup(&pool) {
                     log::warn!("pty runtime startup cleanup failed: {e}");
@@ -314,8 +323,22 @@ pub fn run() {
                     event: tauri::WindowEvent::CloseRequested { api, .. },
                     ..
                 } if label == "main" => {
-                    api.prevent_close();
-                    hide_main_window_on_close(app_handle);
+                    // macOS: closing the window hides it (app stays in the
+                    // Dock, reopen via the Reopen event). Windows/Linux have
+                    // no Dock and this app ships no tray icon, so hiding would
+                    // strand the window with no way back — and the app would
+                    // keep running invisibly. There, let the close proceed:
+                    // the last window closing fires ExitRequested, which runs
+                    // the agent-cleanup path (so WSL agents don't leak).
+                    #[cfg(target_os = "macos")]
+                    {
+                        api.prevent_close();
+                        hide_main_window_on_close(app_handle);
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let _ = api;
+                    }
                 }
                 tauri::RunEvent::ExitRequested { .. } => {
                     stop_running_sessions_on_quit(app_handle);

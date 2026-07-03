@@ -283,6 +283,7 @@ fn runner(command: &str, args: &[&str]) -> Runner {
         env: HashMap::new(),
         model: None,
         effort: None,
+        execution_target: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }

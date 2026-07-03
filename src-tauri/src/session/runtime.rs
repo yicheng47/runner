@@ -59,6 +59,11 @@ pub struct SpawnSpec {
     /// the right size before the first paint. `None` falls back to
     /// the runner config's `default-size`.
     pub initial_size: Option<(u16, u16)>,
+    /// Where to run the agent (Windows+WSL fork): `Some("native")` runs
+    /// the command directly on the Windows host; `Some("wsl")` / `None`
+    /// wraps it in `wsl.exe`. The native runtime ignores this; the
+    /// Windows shaper dispatches on it. See `session::wsl`.
+    pub exec_target: Option<String>,
 }
 
 /// What `spawn` returns: the runtime-side identity persisted on the

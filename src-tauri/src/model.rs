@@ -63,6 +63,12 @@ pub struct Runner {
     /// the agent's own default. See migration 0008.
     #[serde(default)]
     pub effort: Option<String>,
+    /// Where this runner's agent runs (Windows+WSL fork). `Some("native")`
+    /// spawns the command directly on the Windows host; `Some("wsl")` /
+    /// NULL wraps it in `wsl.exe`. Ignored on macOS/Linux. See migration
+    /// 0008 and `session::wsl::wsl_command_shaper`.
+    #[serde(default)]
+    pub execution_target: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }

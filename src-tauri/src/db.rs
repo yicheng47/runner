@@ -92,6 +92,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         7,
         include_str!("../migrations/0007_direct_runtime_sessions.sql"),
     ),
+    (
+        8,
+        include_str!("../migrations/0008_runner_execution_target.sql"),
+    ),
 ];
 
 // Default-data seed: ships the Build squad starter crew on first launch.

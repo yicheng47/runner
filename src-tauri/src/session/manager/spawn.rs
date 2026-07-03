@@ -88,6 +88,7 @@ impl SessionManager {
             bundled_bin_dir,
             shell_path: self.shell_env.path.clone(),
             initial_size,
+            exec_target: runner.execution_target.clone(),
         }
     }
 

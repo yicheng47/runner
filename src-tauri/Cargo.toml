@@ -9,6 +9,18 @@ authors.workspace = true
 name = "runner_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# `custom-protocol` makes the webview load the embedded frontendDist
+# (production) instead of `devUrl`. Tauri keys dev-vs-prod on this
+# feature (tauri build.rs: `dev = !custom-protocol`), NOT on the cargo
+# release flag — the Tauri CLI's `tauri build` enables it. We build the
+# exe standalone without the CLI, and the Windows↔WSL localhost
+# forwarding a dev server would need is unavailable here, so we default
+# it ON: every `cargo build` embeds the frontend. Disable with
+# --no-default-features only when wiring up a live dev server.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -49,15 +61,28 @@ tokio-util = { version = "0.7", features = ["rt"] }
 # Codex MCP config lives in ~/.codex/config.toml; toml_edit preserves
 # user-authored comments + formatting on round-trip writes.
 toml_edit = "0.25"
+# PTY backend for session::pty_runtime (impl 0011). All-targets:
+# portable-pty's ConPTY backend supports Windows, which the Windows+WSL
+# port (session::wsl) relies on to spawn `wsl.exe` into a pseudoconsole.
+portable-pty = "0.9"
 
 # Unix-only deps:
-#  - libc: FIFO mkfifo + poll() inside session::tmux_runtime.
-#  - portable-pty: backing crate for session::pty_runtime, the
-#    in-process replacement for tmux (impl 0011). Windows keeps the
-#    tmux fallback until a named-pipe equivalent lands.
+#  - libc: FIFO mkfifo + poll() inside the retired session::tmux_runtime.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-portable-pty = "0.9"
+
+# Windows-only deps:
+#  - winapi: Job Object so spawned `wsl.exe` agent relays die with the
+#    app even on a crash / force-kill (session::wsl::job). Already in the
+#    tree via portable-pty, so no new transitive cost.
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = [
+    "jobapi2",
+    "processthreadsapi",
+    "handleapi",
+    "winnt",
+    "minwindef",
+] }
 
 [dev-dependencies]
 # Used by issue #124's forwarder-contention regression test to hold the

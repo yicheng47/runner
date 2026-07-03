@@ -779,6 +779,7 @@ pub(crate) fn runtime_direct_runner(runtime: &str, command: Option<&str>) -> Res
         env: HashMap::new(),
         model: None,
         effort: None,
+        execution_target: None,
         created_at: now,
         updated_at: now,
     })

@@ -530,6 +530,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                execution_target: None,
                 permission_mode: crate::router::runtime::PermissionMode::Auto,
             },
         )

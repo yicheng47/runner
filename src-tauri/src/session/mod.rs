@@ -11,8 +11,12 @@
 pub mod codex_capture;
 pub mod launch;
 pub mod manager;
-#[cfg(unix)]
+// portable-pty's ConPTY backend compiles on Windows, so the runtime is
+// no longer unix-gated. On Windows the runtime is constructed with a
+// WSL command shaper (see `wsl`) that wraps each spawn in `wsl.exe`.
 pub mod pty_runtime;
 pub mod runtime;
+#[cfg(windows)]
+pub mod wsl;
 
 pub use manager::{CompleteSpawnOutcome, PendingMissionSpawn, SessionManager};

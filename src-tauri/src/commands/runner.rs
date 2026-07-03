@@ -42,6 +42,10 @@ pub struct CreateRunnerInput {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// "native" (run on the Windows host) or "wsl"/NULL (run inside WSL).
+    /// Windows+WSL fork only; ignored on macOS/Linux.
+    #[serde(default)]
+    pub execution_target: Option<String>,
     /// Permission mode the runner-edit form's dropdown chose. Mapped
     /// to concrete flags on the row's `args` column at create time
     /// via `router::runtime::apply_permission_mode`. Defaults to
@@ -78,6 +82,10 @@ pub struct UpdateRunnerInput {
     pub env: Option<HashMap<String, String>>,
     pub model: Option<Option<String>>,
     pub effort: Option<Option<String>>,
+    /// Execution target patch (Windows+WSL fork). Outer `Some` =
+    /// "the form sent this"; inner `Option<String>` is the new value
+    /// ("native" / "wsl", or `None` to reset to NULL/WSL).
+    pub execution_target: Option<Option<String>>,
     /// Form's "Permission mode" segmented control. `Some(mode)`
     /// rewrites the runtime's permission flags to the canonical args
     /// for that mode (replacing any prior occurrence so duplicates
@@ -242,6 +250,7 @@ pub(super) fn row_to_runner(row: &Row<'_>) -> rusqlite::Result<Runner> {
         },
         model: row.get("model")?,
         effort: row.get("effort")?,
+        execution_target: row.get("execution_target")?,
         created_at: created_at.parse().map_err(|e: chrono::ParseError| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
         })?,
@@ -253,7 +262,7 @@ pub(super) fn row_to_runner(row: &Row<'_>) -> rusqlite::Result<Runner> {
 
 pub(super) const SELECT_COLS: &str = "id, handle, display_name, runtime, command,
                                        args_json, working_dir, system_prompt, env_json,
-                                       model, effort,
+                                       model, effort, execution_target,
                                        created_at, updated_at";
 
 pub fn list(conn: &Connection) -> Result<Vec<Runner>> {
@@ -327,9 +336,9 @@ pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
         "INSERT INTO runners (
             id, handle, display_name, runtime, command,
             args_json, working_dir, system_prompt, env_json,
-            model, effort,
+            model, effort, execution_target,
             created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
         params![
             id,
             input.handle,
@@ -347,6 +356,11 @@ pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
                 .filter(|s| !s.is_empty()),
             input
                 .effort
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty()),
+            input
+                .execution_target
                 .as_ref()
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty()),
@@ -432,6 +446,19 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
             })
         })
         .unwrap_or(existing.effort);
+    let execution_target = input
+        .execution_target
+        .map(|opt| {
+            opt.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t)
+                }
+            })
+        })
+        .unwrap_or(existing.execution_target);
 
     let args_json = serde_json::to_string(&args)?;
     let env_json = serde_json::to_string(&env)?;
@@ -448,8 +475,9 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
                 env_json = ?7,
                 model = ?8,
                 effort = ?9,
-                updated_at = ?10
-          WHERE id = ?11",
+                execution_target = ?10,
+                updated_at = ?11
+          WHERE id = ?12",
         params![
             display_name,
             runtime,
@@ -460,6 +488,7 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
             env_json,
             model,
             effort,
+            execution_target,
             ts,
             id,
         ],
@@ -680,6 +709,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                execution_target: None,
                 // Auto is the form default, but a no-op for shell — the
                 // runtime adapter has no permission concept here, so
                 // existing tests that expect `args == []` keep passing.
@@ -727,6 +757,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                execution_target: None,
                 permission_mode: PermissionMode::Auto,
             },
         )
@@ -811,6 +842,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                execution_target: None,
                 permission_mode: PermissionMode::Bypass,
             },
         )
@@ -844,6 +876,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                execution_target: None,
                 permission_mode: PermissionMode::Bypass,
             },
         )
@@ -874,6 +907,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                execution_target: None,
                 permission_mode: PermissionMode::Default,
             },
         )
@@ -905,6 +939,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                execution_target: None,
                 permission_mode: PermissionMode::Bypass,
             },
         )
@@ -938,6 +973,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                execution_target: None,
                 permission_mode: PermissionMode::Auto,
             },
         )
@@ -965,6 +1001,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                execution_target: None,
                 permission_mode: PermissionMode::Bypass,
             },
         )
@@ -1047,6 +1084,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                execution_target: None,
                 permission_mode: PermissionMode::Bypass,
             },
         )
@@ -1110,6 +1148,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                execution_target: None,
                 permission_mode: PermissionMode::Bypass,
             },
         )
@@ -1152,6 +1191,7 @@ mod tests {
                 env: HashMap::new(),
                 model: None,
                 effort: None,
+                execution_target: None,
                 permission_mode: PermissionMode::Bypass,
             },
         )
@@ -1226,6 +1266,7 @@ mod tests {
                 env: Default::default(),
                 model: None,
                 effort: None,
+                execution_target: None,
                 permission_mode: crate::router::runtime::PermissionMode::AcceptEdits,
             },
         )
@@ -1255,6 +1296,7 @@ mod tests {
                 env: None,
                 model: None,
                 effort: None,
+                execution_target: None,
                 permission_mode: None,
             },
         )

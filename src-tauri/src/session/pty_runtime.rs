@@ -44,16 +44,64 @@ const DEFAULT_OSC11_BG_REPLY: &[u8] = b"\x1b]11;rgb:1515/1616/1b1b\x1b\\";
 const DSR_CURSOR_POS_REPLY: &[u8] = b"\x1b[1;1R";
 const DA1_XTERM_REPLY: &[u8] = b"\x1b[?1;2c";
 
+/// Turns a `SpawnSpec` (+ the runtime's composed PATH) into the
+/// `CommandBuilder` that `portable-pty` actually forks. This is the one
+/// seam that differs across platforms: the native shaper runs the agent
+/// directly; the Windows shaper (see `session::wsl`) wraps it in
+/// `wsl.exe` so the agent runs inside WSL.
+pub type CommandShaper =
+    Box<dyn Fn(&SpawnSpec, &str) -> RuntimeResult<CommandBuilder> + Send + Sync>;
+
+/// The default shaper: run `spec.command` directly with the composed
+/// PATH. This is the behaviour every Unix build wants and matches what
+/// the runtime did inline before the shaper seam was introduced.
+pub fn native_command_shaper(spec: &SpawnSpec, composed_path: &str) -> RuntimeResult<CommandBuilder> {
+    // portable-pty wraps the std CommandBuilder, so env / cwd / args go
+    // through the same APIs we'd use for std::process::Command — minus
+    // the inherited-env surprises (CommandBuilder clears inherited env
+    // unless we explicitly env_clear()).
+    let mut cmd = CommandBuilder::new(&spec.command);
+    cmd.args(&spec.args);
+    if let Some(cwd) = &spec.cwd {
+        cmd.cwd(cwd);
+    }
+    // Reserved env names (PATH) come from the composed result, not from
+    // spec.env.
+    for (k, v) in &spec.env {
+        if launch::is_reserved_env_name(k) {
+            continue;
+        }
+        if !launch::is_valid_env_name(k) {
+            return Err(RuntimeError::Msg(format!(
+                "invalid env var name {k:?}: must match [A-Za-z_][A-Za-z0-9_]*"
+            )));
+        }
+        cmd.env(k, v);
+    }
+    cmd.env("PATH", composed_path);
+    Ok(cmd)
+}
+
 /// Public constructor. Holds no external state — the runtime is purely
 /// in-memory and the per-session resources tear down with their handles.
 pub struct PtyRuntime {
     sessions: Mutex<HashMap<String, Arc<SessionHandle>>>,
+    /// How to turn a `SpawnSpec` into a `CommandBuilder`. Native by
+    /// default; the Windows build installs a WSL shaper.
+    shaper: CommandShaper,
 }
 
 impl PtyRuntime {
     pub fn new() -> Self {
+        Self::with_shaper(Box::new(native_command_shaper))
+    }
+
+    /// Construct with a custom command shaper. The Windows+WSL port uses
+    /// this to install `session::wsl::wsl_command_shaper`.
+    pub fn with_shaper(shaper: CommandShaper) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
+            shaper,
         }
     }
 }
@@ -113,31 +161,11 @@ impl SessionRuntime for PtyRuntime {
             })
             .map_err(|e| RuntimeError::Msg(format!("openpty: {e}")))?;
 
-        // Build the child command. portable-pty wraps the std
-        // CommandBuilder, so env / cwd / args go through the same APIs
-        // we'd use for std::process::Command — minus the inherited-env
-        // surprises (CommandBuilder clears inherited env unless we
-        // explicitly env_clear()).
-        let mut cmd = CommandBuilder::new(&spec.command);
-        cmd.args(&spec.args);
-        if let Some(cwd) = &spec.cwd {
-            cmd.cwd(cwd);
-        }
-
-        // Reserved env names (PATH) come from the composed result, not
-        // from spec.env.
-        for (k, v) in &spec.env {
-            if launch::is_reserved_env_name(k) {
-                continue;
-            }
-            if !launch::is_valid_env_name(k) {
-                return Err(RuntimeError::Msg(format!(
-                    "invalid env var name {k:?}: must match [A-Za-z_][A-Za-z0-9_]*"
-                )));
-            }
-            cmd.env(k, v);
-        }
-        cmd.env("PATH", &composed_path);
+        // Build the child command via the installed shaper. The native
+        // shaper runs the agent directly; the Windows shaper wraps it in
+        // `wsl.exe`. Both receive the composed PATH so PATH precedence
+        // stays in one place.
+        let mut cmd = (self.shaper)(&spec, &composed_path)?;
         // COLUMNS/LINES so Node-based TUIs pick up the initial grid
         // before SIGWINCH lands.
         cmd.env("COLUMNS", cols.to_string());
@@ -153,6 +181,13 @@ impl SessionRuntime for PtyRuntime {
         drop(pair.slave);
 
         let pid = child.process_id().map(|p| p as i32);
+        // Windows: bind the `wsl.exe` relay to the app-wide Job Object so
+        // it (and its in-distro agent tree) is killed if `runner.exe`
+        // exits abnormally — graceful quit already covers the clean path.
+        #[cfg(windows)]
+        if let Some(raw) = child.process_id() {
+            super::wsl::job::assign_to_app_job(raw);
+        }
         let reader = pair
             .master
             .try_clone_reader()
@@ -654,6 +689,7 @@ mod tests {
             bundled_bin_dir: None,
             shell_path: None,
             initial_size: Some((80, 24)),
+            exec_target: None,
         }
     }
 
