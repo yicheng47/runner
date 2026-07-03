@@ -77,6 +77,7 @@ import {
 } from "../lib/groupPinning";
 import {
   isSecondaryFor,
+  reportSubjectsNow,
   useCurrentWindowLabel,
   useReportSubjects,
   useWindowFocus,
@@ -1774,6 +1775,12 @@ export default function RunnerChat() {
             const memberIds = visibleSessionIds(getPaneLayout().root);
             assignSessionToPane(target, spawned.id);
             focusPane(target);
+            reportSubjectsNow(
+              visibleSessionIds(getPaneLayout().root).map((value) => ({
+                type: "DirectChat",
+                value,
+              })),
+            );
             void inheritGroupPin(memberIds, spawned.id);
           }
           navigate(`/chats/${spawned.id}`, {

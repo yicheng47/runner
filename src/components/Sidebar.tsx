@@ -80,6 +80,7 @@ import {
   readBrandTint,
   STORAGE_APP_BRAND_TINT,
 } from "../lib/settings";
+import { reportSubjectsNow } from "../lib/windowFocus";
 import type {
   AppendedEvent,
   MissionActivityState,
@@ -1102,6 +1103,12 @@ export function Sidebar({
             const memberIds = visibleSessionIds(chatLayout.root);
             assignSessionToPane(targetPaneId, spawned.id);
             focusPane(targetPaneId);
+            reportSubjectsNow(
+              visibleSessionIds(getPaneLayout().root).map((value) => ({
+                type: "DirectChat",
+                value,
+              })),
+            );
             if (
               shouldInheritPinOnAdd(
                 memberIds,
