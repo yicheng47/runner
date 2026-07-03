@@ -419,6 +419,11 @@ pub struct PostHumanSignalInput {
     /// Signal type — restricted to the human-originated ones the workspace
     /// UI is allowed to emit. Anything else is rejected.
     pub signal_type: String,
+    /// Free-form JSON object carried with the signal. Annotated so schemars
+    /// emits a schema with an explicit `type`; a bare `serde_json::Value`
+    /// derives a typeless schema (`{}`), which strict MCP clients reject —
+    /// and the rejection drops the entire advertised tool list (#240).
+    #[schemars(with = "std::collections::HashMap<String, serde_json::Value>")]
     pub payload: serde_json::Value,
 }
 

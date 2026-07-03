@@ -5,7 +5,7 @@ use tauri::AppHandle;
 
 use crate::{
     db::DbPool, event_bus::BusRegistry, mcp::McpHandle, router::RouterRegistry,
-    session::SessionManager, AppState,
+    session::SessionManager, windows::WindowRegistry, AppState,
 };
 
 #[derive(Clone)]
@@ -16,6 +16,7 @@ pub(crate) struct McpState {
     pub buses: Arc<BusRegistry>,
     pub routers: Arc<RouterRegistry>,
     pub mcp: Arc<McpHandle>,
+    pub windows: Arc<WindowRegistry>,
     pub app_handle: AppHandle,
 }
 
@@ -28,6 +29,7 @@ impl McpState {
             buses: Arc::clone(&self.buses),
             routers: Arc::clone(&self.routers),
             mcp: Arc::clone(&self.mcp),
+            windows: Arc::clone(&self.windows),
         }
     }
 }

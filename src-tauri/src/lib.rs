@@ -9,6 +9,7 @@ mod panic_hook;
 mod router;
 mod session;
 mod shell_path;
+mod windows;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -50,6 +51,11 @@ pub struct AppState {
     /// MCP server lifecycle handle (impl 0013). Unix socket listener
     /// that external clients connect to via the `runner-mcp` bridge.
     pub mcp: Arc<mcp::McpHandle>,
+    /// Cross-window coordination map (impl 0018). Tracks which subject
+    /// (mission / direct chat) each webview window is looking at + when it
+    /// was last focused, so exactly one window owns a duplicated subject's
+    /// PTY. `main` is registered in `setup`.
+    pub windows: Arc<windows::WindowRegistry>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -188,6 +194,12 @@ pub fn run() {
             let buses = event_bus::BusRegistry::new();
             let routers = router::RouterRegistry::new();
             let mcp_handle = Arc::new(mcp::McpHandle::new());
+            // Window registry seeded with `main` — it exists before any
+            // frontend reports a subject, and the snapshot must reflect it
+            // from the first broadcast. Shared with `McpState` so the
+            // MCP-reconstructed `AppState` sees the same map.
+            let window_registry = Arc::new(windows::WindowRegistry::new());
+            window_registry.register("main");
             let mcp_state = mcp::state::McpState {
                 db: Arc::clone(&pool),
                 app_data_dir: app_data_dir.clone(),
@@ -195,6 +207,7 @@ pub fn run() {
                 buses: Arc::clone(&buses),
                 routers: Arc::clone(&routers),
                 mcp: Arc::clone(&mcp_handle),
+                windows: Arc::clone(&window_registry),
                 app_handle: app.handle().clone(),
             };
             if let Err(e) = mcp_handle.start(&app_data_dir.join("mcp.sock"), mcp_state) {
@@ -208,6 +221,7 @@ pub fn run() {
                 buses,
                 routers,
                 mcp: mcp_handle,
+                windows: window_registry,
             };
 
             // Mount router + bus for every `running` mission before
@@ -246,6 +260,11 @@ pub fn run() {
                 if ev.id() == "runner_logs_reveal" {
                     if let Err(e) = commands::app::reveal_logs_dir(app) {
                         log::error!("reveal logs failed: {e}");
+                    }
+                } else if ev.id() == "window_new" {
+                    let state = app.state::<AppState>();
+                    if let Err(e) = commands::window::open_window(app, state.inner(), None, None) {
+                        log::error!("new window failed: {e}");
                     }
                 }
             });
@@ -305,6 +324,10 @@ pub fn run() {
             commands::mcp::mcp_integration_status,
             commands::mcp::mcp_set_integration,
             commands::mcp::mcp_config_snippet,
+            commands::window::window_open,
+            commands::window::window_focus_other,
+            commands::window::window_report_subject,
+            commands::window::window_list_subjects,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -329,16 +352,50 @@ pub fn run() {
                     // strand the window with no way back — and the app would
                     // keep running invisibly. There, let the close proceed:
                     // the last window closing fires ExitRequested, which runs
-                    // the agent-cleanup path (so WSL agents don't leak).
+                    // the agent-cleanup path (so WSL agents don't leak), and
+                    // the `Destroyed` arm below unregisters it from the map.
                     #[cfg(target_os = "macos")]
                     {
                         api.prevent_close();
                         hide_main_window_on_close(app_handle);
+                        // main hides rather than destroys, so it never emits
+                        // `Destroyed` to unregister. Demote it (impl 0018) so a
+                        // visible duplicate window becomes primary and mounts its
+                        // PTY; main keeps its subject, so reopening + focusing it
+                        // reclaims ownership via the `Focused(true)` hook.
+                        if let Some(state) = app_handle.try_state::<AppState>() {
+                            state.windows.mark_hidden(&label);
+                        }
+                        broadcast_focus_map(app_handle);
                     }
                     #[cfg(not(target_os = "macos"))]
                     {
                         let _ = api;
                     }
+                }
+                // Any window gaining focus becomes primary for whatever
+                // subject it's on (spec decision 2). Secondary windows close
+                // for real (no main-style prevent), and the `Destroyed`
+                // unregister below promotes the next-most-recent survivor.
+                tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::Focused(true),
+                    ..
+                } => {
+                    if let Some(state) = app_handle.try_state::<AppState>() {
+                        state.windows.mark_focused(&label);
+                    }
+                    broadcast_focus_map(app_handle);
+                }
+                tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::Destroyed,
+                    ..
+                } => {
+                    if let Some(state) = app_handle.try_state::<AppState>() {
+                        state.windows.unregister(&label);
+                    }
+                    broadcast_focus_map(app_handle);
                 }
                 tauri::RunEvent::ExitRequested { .. } => {
                     stop_running_sessions_on_quit(app_handle);
@@ -363,6 +420,20 @@ pub fn run() {
                 _ => {}
             }
         });
+}
+
+/// Broadcast the current window→subject map to every webview. Called after
+/// every registry mutation (lifecycle hooks + window commands) so all windows
+/// converge on a consistent picture of who owns what. Broadcast, not
+/// targeted: each window filters by its own subject (spec decision 5).
+pub(crate) fn broadcast_focus_map(app: &AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let snapshot = state.windows.snapshot();
+    if let Err(e) = app.emit("window_focus_map", snapshot) {
+        log::error!("broadcast window_focus_map failed: {e}");
+    }
 }
 
 fn hide_main_window_on_close(app_handle: &AppHandle) {
@@ -441,6 +512,14 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .item(&reveal_logs)
         .build()?;
 
+    // File → New Window owns Cmd+N at the OS/menu level (impl 0018). The
+    // accelerator is handled by the menu, not a JS keydown handler, so the
+    // shortcut works regardless of webview focus and can't double-fire.
+    let new_window = MenuItemBuilder::with_id("window_new", "New Window")
+        .accelerator("CmdOrCtrl+N")
+        .build(app)?;
+    let file_menu = SubmenuBuilder::new(app, "File").item(&new_window).build()?;
+
     #[cfg(target_os = "macos")]
     {
         let pkg = app.package_info();
@@ -482,12 +561,21 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             .build()?;
 
         MenuBuilder::new(app)
-            .items(&[&app_menu, &edit_menu, &view_menu, &window_menu, &help_menu])
+            .items(&[
+                &app_menu,
+                &file_menu,
+                &edit_menu,
+                &view_menu,
+                &window_menu,
+                &help_menu,
+            ])
             .build()
     }
     #[cfg(not(target_os = "macos"))]
     {
-        MenuBuilder::new(app).items(&[&help_menu]).build()
+        MenuBuilder::new(app)
+            .items(&[&file_menu, &help_menu])
+            .build()
     }
 }
 

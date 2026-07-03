@@ -1,19 +1,32 @@
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+// `Manager` is only needed by the macOS-only `show_main_window`
+// (`get_webview_window`); importing it unconditionally trips `unused_imports`
+// under `-D warnings` on other platforms.
+#[cfg(target_os = "macos")]
+use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::error::Error;
 use crate::log_dir_for_build;
 
 /// Called by the frontend after React has mounted and painted its first frame.
-/// Shows the main window — the window starts hidden so the user sees the dock
-/// bounce → fully-rendered window instead of a blank webview.
+/// Shows the **calling** window — every window (main + secondaries) starts
+/// hidden so the user sees the dock bounce → fully-rendered window instead of
+/// a blank webview. Resolving the window from the invoking webview (rather
+/// than hard-coding `main`) is what lets secondary windows reveal themselves.
 #[tauri::command]
-pub fn app_ready(app: AppHandle) -> crate::error::Result<()> {
-    show_main_window(&app)
+pub fn app_ready(window: tauri::WebviewWindow) -> crate::error::Result<()> {
+    window.show().map_err(|e| Error::msg(e.to_string()))?;
+    window.set_focus().map_err(|e| Error::msg(e.to_string()))?;
+    Ok(())
 }
 
+/// Show + focus the `main` window. Used only by the macOS `Reopen` path
+/// (dock-icon click with no visible windows); `app_ready` shows the calling
+/// window directly, so this is dead code on other platforms.
+#[cfg(target_os = "macos")]
 pub(crate) fn show_main_window(app: &AppHandle) -> crate::error::Result<()> {
-    log::info!("show_main_window: app_ready fired; showing main window");
+    log::info!("show_main_window: reopen path; revealing main window");
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| Error::msg("main window not found"))?;

@@ -1,5 +1,11 @@
 import { useEffect } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  Navigate,
+  useNavigate,
+} from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AppShell } from "./components/AppShell";
@@ -75,6 +81,7 @@ export default function App() {
     <LangProvider>
       <UpdateProvider>
       <BrowserRouter>
+        <InitialRouteBootstrap />
         <Routes>
           <Route element={<AppShell />}>
             <Route path="/" element={<Navigate to="/runners" replace />} />
@@ -91,4 +98,22 @@ export default function App() {
       </UpdateProvider>
     </LangProvider>
   );
+}
+
+// Secondary windows are opened at `index.html#/missions/<id>` because
+// BrowserRouter can't resolve a deep path through Tauri's asset protocol in
+// release builds (impl 0018 constraint 3). On first mount, consume the hash
+// fragment: navigate to it and clear the hash so a reload doesn't re-trigger.
+// Runs once per window; a window opened with no initial route has no hash and
+// this is a no-op.
+function InitialRouteBootstrap() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (hash.length > 1) {
+      navigate(hash.slice(1), { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return null;
 }

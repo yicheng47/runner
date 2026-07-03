@@ -382,3 +382,20 @@ export interface PostHumanSignalInput {
   signal_type: "human_said" | "human_response";
   payload: HumanSaidPayload | HumanResponsePayload;
 }
+
+// --- Multi-window coordination (impl 0018) -------------------------------
+// Hand-synced with src-tauri/src/windows.rs. `Subject` is the adjacently-
+// tagged serde shape (`#[serde(tag = "type", content = "value")]`), so
+// `{ type: "Mission", value: "<missionId>" }` on the wire.
+
+export type Subject =
+  | { type: "Mission"; value: string }
+  | { type: "DirectChat"; value: string };
+
+// One window's row in the backend WindowRegistry. `focused_at` is RFC3339;
+// the most-recently-focused holder of a subject is its primary.
+export interface WindowEntry {
+  label: string;
+  subject: Subject | null;
+  focused_at: Timestamp;
+}

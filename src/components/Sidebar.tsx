@@ -17,6 +17,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ComponentType,
@@ -30,6 +31,7 @@ import {
 } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import {
+  AppWindow,
   Archive,
   ChevronDown,
   ChevronRight,
@@ -79,6 +81,43 @@ const SIDEBAR_DEFAULT = 240;
 const STORAGE_WIDTH = "runner.sidebar.width";
 const STORAGE_MISSION_OPEN = "runner.sidebar.mission.open";
 const STORAGE_SESSION_OPEN = "runner.sidebar.session.open";
+const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
+const SIDEBAR_NAVIGATION_HISTORY_LIMIT = 64;
+
+type SidebarNavigationDirection = "previous" | "next";
+
+interface SidebarNavigationEntry {
+  to: string;
+  state?: { sessionStatus: DirectSessionEntry["status"] };
+}
+
+interface SidebarNavigationHistory {
+  entries: string[];
+  index: number;
+}
+
+function sidebarNavigationDirectionFromKey(
+  e: KeyboardEvent,
+): SidebarNavigationDirection | null {
+  if (!(e.metaKey || e.ctrlKey)) return null;
+  if (e.altKey || e.shiftKey) return null;
+  if (e.key === "[" || e.code === "BracketLeft") return "previous";
+  if (e.key === "]" || e.code === "BracketRight") return "next";
+  return null;
+}
+
+function sidebarRuntimeKeyForPath(pathname: string): string | null {
+  if (pathname.startsWith("/missions/") || pathname.startsWith("/chats/")) {
+    return pathname;
+  }
+  return null;
+}
+
+function isSidebarNavigationDirection(
+  value: unknown,
+): value is SidebarNavigationDirection {
+  return value === "previous" || value === "next";
+}
 
 function getStoredFlag(key: string, fallback: boolean): boolean {
   if (typeof localStorage === "undefined") return fallback;
@@ -151,6 +190,10 @@ export function Sidebar({
   const [directSessionActivity, setDirectSessionActivity] = useState<
     Record<string, SessionActivityState | undefined>
   >({});
+  const sidebarNavigationHistoryRef = useRef<SidebarNavigationHistory>({
+    entries: [],
+    index: -1,
+  });
 
   // Section toggles, persisted so users don't have to re-expand each visit.
   const [missionsOpen, setMissionsOpen] = useState<boolean>(() =>
@@ -206,6 +249,17 @@ export function Sidebar({
   // session id rather than handle.
   const currentChatSessionId = chatMatch?.params.sessionId ?? null;
 
+  const sidebarNavigationEntries = useMemo<SidebarNavigationEntry[]>(
+    () => [
+      ...missions.map((mission) => ({ to: `/missions/${mission.id}` })),
+      ...directSessions.map((session) => ({
+        to: `/chats/${session.session_id}`,
+        state: { sessionStatus: session.status },
+      })),
+    ],
+    [directSessions, missions],
+  );
+
   const refreshMissions = useCallback(async () => {
     try {
       const rows = await api.mission.listSummary();
@@ -223,8 +277,56 @@ export function Sidebar({
     void refreshMissions();
   }, [refreshMissions]);
 
-  // ⌘K / Ctrl+K opens the command palette. ⌘N / Ctrl+N opens the
-  // Start Chat modal. Skip while editing text controls so shortcuts
+  useEffect(() => {
+    const currentKey = sidebarRuntimeKeyForPath(location.pathname);
+    if (!currentKey) return;
+    const history = sidebarNavigationHistoryRef.current;
+    if (history.entries[history.index] === currentKey) return;
+
+    const entries = history.entries.slice(0, history.index + 1);
+    if (entries[entries.length - 1] !== currentKey) {
+      entries.push(currentKey);
+    }
+    if (entries.length > SIDEBAR_NAVIGATION_HISTORY_LIMIT) {
+      entries.splice(0, entries.length - SIDEBAR_NAVIGATION_HISTORY_LIMIT);
+    }
+    history.entries = entries;
+    history.index = entries.length - 1;
+  }, [location.pathname]);
+
+  const navigateSidebarPage = useCallback(
+    (direction: SidebarNavigationDirection) => {
+      const history = sidebarNavigationHistoryRef.current;
+      if (history.entries.length < 2 || history.index === -1) return;
+
+      const delta = direction === "next" ? 1 : -1;
+      let nextIndex = history.index + delta;
+      while (nextIndex >= 0 && nextIndex < history.entries.length) {
+        const entry = sidebarNavigationEntries.find(
+          (candidate) => candidate.to === history.entries[nextIndex],
+        );
+        if (entry) {
+          history.index = nextIndex;
+          const options = entry.state
+            ? {
+                replace: location.pathname === entry.to,
+                state: entry.state,
+              }
+            : { replace: location.pathname === entry.to };
+          navigate(entry.to, options);
+          return;
+        }
+        nextIndex += delta;
+      }
+    },
+    [location.pathname, navigate, sidebarNavigationEntries],
+  );
+
+  // ⌘K / Ctrl+K opens the command palette. ⌘T / Ctrl+T opens the Start
+  // Chat modal (browser/terminal convention: ⌘T = new tab/chat, ⌘N =
+  // new window). ⌘N is owned by the File → New Window menu accelerator
+  // (impl 0018) at the OS level, so it's deliberately absent here to
+  // avoid a double-fire. Skip while editing text controls so shortcuts
   // don't hijack form input. xterm's hidden textarea is not an editor
   // field from the app's point of view, so Meta shortcuts still win
   // there; Ctrl shortcuts stay with the PTY/TUI.
@@ -248,7 +350,7 @@ export function Sidebar({
         e.preventDefault();
         e.stopPropagation();
         setPaletteOpen(true);
-      } else if (e.key === "n" || e.key === "N") {
+      } else if (e.key === "t" || e.key === "T") {
         e.preventDefault();
         e.stopPropagation();
         setCreatingChat(true);
@@ -257,6 +359,42 @@ export function Sidebar({
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
   }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const direction = sidebarNavigationDirectionFromKey(e);
+      if (!direction) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      const isXtermInput = !!target?.closest(".xterm");
+      if (
+        (tag === "input" ||
+          tag === "textarea" ||
+          tag === "select" ||
+          target?.isContentEditable) &&
+        !isXtermInput
+      ) {
+        return;
+      }
+      if (isXtermInput && !e.metaKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+      navigateSidebarPage(direction);
+    };
+    const onNavigate = (event: Event) => {
+      const direction = (event as CustomEvent<{ direction?: unknown }>).detail
+        ?.direction;
+      if (isSidebarNavigationDirection(direction)) {
+        navigateSidebarPage(direction);
+      }
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    window.addEventListener(SIDEBAR_NAVIGATE_EVENT, onNavigate);
+    return () => {
+      window.removeEventListener("keydown", onKey, { capture: true });
+      window.removeEventListener(SIDEBAR_NAVIGATE_EVENT, onNavigate);
+    };
+  }, [navigateSidebarPage]);
 
   useEffect(() => {
     let unlistenEvents: (() => void) | null = null;
@@ -837,6 +975,14 @@ export function Sidebar({
             setRenamingId(sessionMenu.session.session_id);
             closeSessionMenu();
           }}
+          onOpenInNewWindow={() => {
+            void api.window
+              .open(`/chats/${sessionMenu.session.session_id}`)
+              .catch((e) =>
+                console.error("sidebar: open chat in new window failed", e),
+              );
+            closeSessionMenu();
+          }}
           onArchive={() => {
             void archiveSession(sessionMenu.session);
             closeSessionMenu();
@@ -856,6 +1002,14 @@ export function Sidebar({
           }}
           onRename={() => {
             setRenamingMissionId(missionMenu.mission.id);
+            closeMissionMenu();
+          }}
+          onOpenInNewWindow={() => {
+            void api.window
+              .open(`/missions/${missionMenu.mission.id}`)
+              .catch((e) =>
+                console.error("sidebar: open mission in new window failed", e),
+              );
             closeMissionMenu();
           }}
           onArchive={() => {
@@ -915,7 +1069,7 @@ function NewChatNavRow({ onOpen }: { onOpen: () => void }) {
       <MessageSquarePlus aria-hidden className="h-3 w-3 text-fg-2" />
       <span className="min-w-0 flex-1 truncate">{t("new chat")}</span>
       <span className="shrink-0 rounded border border-line bg-bg px-1.5 py-px font-mono text-[10px] leading-tight text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus:opacity-100">
-        ⌘N
+        ⌘T
       </span>
     </button>
   );
@@ -1340,6 +1494,7 @@ function RowContextMenu({
   onClose,
   onPin,
   onRename,
+  onOpenInNewWindow,
   onArchive,
 }: {
   pinned: boolean;
@@ -1348,6 +1503,7 @@ function RowContextMenu({
   onClose: () => void;
   onPin: () => void;
   onRename: () => void;
+  onOpenInNewWindow: () => void;
   onArchive: () => void;
 }) {
   const t = useT();
@@ -1392,6 +1548,11 @@ function RowContextMenu({
         onClick={onPin}
       />
       <ContextMenuItem icon={SquarePen} label={t("Rename")} onClick={onRename} />
+      <ContextMenuItem
+        icon={AppWindow}
+        label="Open in New Window"
+        onClick={onOpenInNewWindow}
+      />
       <ContextMenuItem
         icon={Archive}
         label={t("Archive")}
