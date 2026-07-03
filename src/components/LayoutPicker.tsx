@@ -99,7 +99,7 @@ export function LayoutPicker({
           ))}
           <div className="h-px w-full bg-line" />
           <span className="text-[10px] text-fg-3">
-            Layout resets when you leave chats
+            Layout is remembered across restarts
           </span>
         </div>
       ) : null}

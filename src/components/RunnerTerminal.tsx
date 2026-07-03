@@ -58,6 +58,22 @@ interface ExitEvent {
 const MAX_PENDING_LIVE_EVENTS = 4096;
 const SIDEBAR_TOGGLE_EVENT = "runner:toggle-sidebar";
 const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
+const CHAT_PANE_CYCLE_EVENT = "runner:cycle-chat-pane";
+
+// Rebuild peer terminals' WebGL glyph atlases when a new WebGL context
+// comes up (or one is lost). Split chat paints several canvases
+// concurrently (impl 0020), and context churn can evict glyph textures
+// under WKWebView's GPU memory pressure — affected peers keep correct
+// layout and colors but draw the WRONG GLYPH for every cell painted
+// afterwards (dogfooding: "gibberish" panes after starting/resuming a
+// sibling). Clearing the atlas forces re-rasterization; the refresh
+// repaints from xterm's in-memory grid — no PTY round-trip, cheap.
+const atlasPeers = new Set<() => void>();
+function refreshAtlasPeers(except: () => void): void {
+  for (const cb of atlasPeers) {
+    if (cb !== except) cb();
+  }
+}
 
 function normalizePasteImageMime(type: string): PasteImageMimeType | null {
   switch (type.trim().toLowerCase()) {
@@ -329,7 +345,17 @@ export const RunnerTerminal = forwardRef<
         // calls are kernel no-ops on macOS/Linux, so we perturb rows
         // only: width stays constant, avoiding hard-wrapped narrow
         // lines in scrollback, while both ioctls still emit SIGWINCH.
-        const skipLocalClear = replayJustDrainedRef.current;
+        //
+        // Skip the local clear when the grid size hasn't changed since
+        // the last push: the clear exists to stop reflow stacking, and
+        // with unchanged dims codex overdraws in place — clearing first
+        // discards SGR background cells (the gray input box) that the
+        // SIGWINCH repaint doesn't re-emit. Fresh split panes hit this
+        // on activation right after their first paint (impl 0020).
+        const dimsUnchanged =
+          cols === lastPushedColsRef.current &&
+          rows === lastPushedRowsRef.current;
+        const skipLocalClear = replayJustDrainedRef.current || dimsUnchanged;
         if (runtimeClearsOnResize(runnerRuntimeRef.current) && !skipLocalClear) {
           t.write("\x1b[2J\x1b[H");
         }
@@ -399,17 +425,34 @@ export const RunnerTerminal = forwardRef<
     // and the canvas freezes mid-frame. Disposing the addon on loss
     // lets xterm fall back to the DOM renderer for the rest of this
     // mount — degraded but functional, no more frozen panes.
+    // Own atlas-rebuild hook, registered with the peer set below. Also
+    // the callback peers invoke on us when THEIR context churns.
+    const refreshOwnAtlas = () => {
+      try {
+        webglRef.current?.clearTextureAtlas();
+        const t = termRef.current;
+        if (t) t.refresh(0, Math.max(0, t.rows - 1));
+      } catch {
+        // renderer teardown mid-flight
+      }
+    };
     try {
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => {
         webgl.dispose();
         webglRef.current = null;
+        // A lost context is GPU churn peers may have felt too.
+        refreshAtlasPeers(refreshOwnAtlas);
       });
       term.loadAddon(webgl);
       webglRef.current = webgl;
     } catch {
       // No WebGL — fall through to canvas. RunnerChat does the same.
     }
+    atlasPeers.add(refreshOwnAtlas);
+    // This mount just created a WebGL context — peers' glyph textures may
+    // have been evicted by it; have them re-rasterize.
+    if (webglRef.current) refreshAtlasPeers(refreshOwnAtlas);
     const initialRect = containerRef.current.getBoundingClientRect();
     if (initialRect.width > 0 && initialRect.height > 0) {
       fit.fit();
@@ -475,29 +518,33 @@ export const RunnerTerminal = forwardRef<
           window.dispatchEvent(new Event(SIDEBAR_TOGGLE_EVENT));
           return false;
         }
+        // Bracket pair, iTerm2-style: plain Cmd+[ / Cmd+] cycles split-pane
+        // focus (impl 0020; no-op outside a split chat), Cmd+Shift+[ /
+        // Cmd+Shift+] navigates sidebar pages. Shifted brackets arrive as
+        // "{" / "}" on US layouts, hence the code-first match.
         if (
           !e.altKey &&
-          !e.shiftKey &&
-          (e.key === "[" || e.code === "BracketLeft")
+          (e.code === "BracketLeft" || e.key === "[" || e.key === "{")
         ) {
           e.preventDefault();
           window.dispatchEvent(
-            new CustomEvent(SIDEBAR_NAVIGATE_EVENT, {
-              detail: { direction: "previous" },
-            }),
+            new CustomEvent(
+              e.shiftKey ? SIDEBAR_NAVIGATE_EVENT : CHAT_PANE_CYCLE_EVENT,
+              { detail: { direction: "previous" } },
+            ),
           );
           return false;
         }
         if (
           !e.altKey &&
-          !e.shiftKey &&
-          (e.key === "]" || e.code === "BracketRight")
+          (e.code === "BracketRight" || e.key === "]" || e.key === "}")
         ) {
           e.preventDefault();
           window.dispatchEvent(
-            new CustomEvent(SIDEBAR_NAVIGATE_EVENT, {
-              detail: { direction: "next" },
-            }),
+            new CustomEvent(
+              e.shiftKey ? SIDEBAR_NAVIGATE_EVENT : CHAT_PANE_CYCLE_EVENT,
+              { detail: { direction: "next" } },
+            ),
           );
           return false;
         }
@@ -784,6 +831,7 @@ export const RunnerTerminal = forwardRef<
     fitRef.current = fit;
 
     return () => {
+      atlasPeers.delete(refreshOwnAtlas);
       ro.disconnect();
       window.removeEventListener("resize", refitAndPush);
       window.removeEventListener("focus", onWindowFocus);

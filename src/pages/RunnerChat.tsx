@@ -9,14 +9,7 @@
 // ANSI colors, cursor movement, and mouse tracking. A plain `<pre>`
 // can't interpret the control sequences these agents emit.
 
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { listen } from "@tauri-apps/api/event";
@@ -28,14 +21,10 @@ import {
   Pin,
   PinOff,
   SquarePen,
+  SquareSplitHorizontal,
   Terminal,
 } from "lucide-react";
-import { Group, Panel, Separator } from "react-resizable-panels";
 
-import {
-  RunnerTerminal,
-  type RunnerTerminalHandle,
-} from "../components/RunnerTerminal";
 import {
   BackButton,
   ResumeButton,
@@ -55,29 +44,31 @@ import { useDelayedFlag } from "../lib/useDelayedFlag";
 import { useResizableWidth } from "../hooks/useResizableWidth";
 import { useTerminalBg } from "../lib/useTerminalBg";
 import {
+  isArchivingSession,
   markArchivingSession,
   unmarkArchivingSession,
-  useArchivingSession,
+  useArchivingVersion,
 } from "../lib/archivingState";
-import { DuplicateSubjectOverlay } from "../components/DuplicateSubjectOverlay";
+import { ChatPaneGroup } from "../components/ChatPaneGroup";
+import { createTerminalRegistry } from "../lib/terminalRegistry";
 import { LayoutPicker } from "../components/LayoutPicker";
 import { StartChatModal } from "../components/StartChatModal";
 import {
   applyPreset,
+  applyPresetPure,
   assignSessionToPane,
   closePane,
   findLeaf,
   focusPane,
   getPaneLayout,
-  isSplit,
+  isGroupActiveFor,
   leafForSession,
   leaves,
-  recordSplitSizes,
-  resetPaneLayout,
+  removeSessionFromLayout,
+  setGroupName,
   usePaneLayout,
   visibleSessionIds,
   type PaneLeaf,
-  type PaneNode,
   type PresetKind,
 } from "../lib/paneLayout";
 import {
@@ -126,6 +117,9 @@ interface RunnerChatLocationState {
 
 const STORAGE_PANEL_OPEN = "runner.chat.panel.open";
 const STORAGE_PANEL_WIDTH = "runner.chat.panel.width";
+// Dispatched by RunnerTerminal's key handler for plain Cmd+[ / Cmd+]
+// keystrokes that land inside xterm; mirrors SIDEBAR_NAVIGATE_EVENT.
+const CHAT_PANE_CYCLE_EVENT = "runner:cycle-chat-pane";
 const PANEL_MIN = 200;
 const PANEL_MAX = 480;
 const PANEL_DEFAULT = 320;
@@ -177,7 +171,10 @@ export default function RunnerChat() {
   const [chatMeta, setChatMeta] = useState<DirectSessionEntry | null>(null);
   // Full recent-direct list, cached from the same fetch — split panes
   // (impl 0020) read their header name/status per session from here.
+  // `rowsLoaded` flips once the first fetch succeeds; the restored-layout
+  // hydration below waits for it so it never judges panes off stale data.
   const [recentRows, setRecentRows] = useState<DirectSessionEntry[]>([]);
+  const [rowsLoaded, setRowsLoaded] = useState(false);
   const [activityBySession, setActivityBySession] = useState<
     Record<string, SessionActivityState | undefined>
   >({});
@@ -192,11 +189,22 @@ export default function RunnerChat() {
   // navigation to a different chat doesn't reuse the stale flag.
   const [metaLoadedFor, setMetaLoadedFor] = useState<string | null>(null);
   const metaLoaded = sessionId != null && metaLoadedFor === sessionId;
-  // True while the user has clicked Resume and we're waiting for the
-  // resumed PTY to come back online. Drives the cyan status pill, the
-  // header "Resuming…" affordance, and the centered Resuming pill
-  // overlay on the cleared terminal canvas.
-  const [resuming, setResuming] = useState<boolean>(false);
+  // Sessions with a resume in flight — Resume clicked, new PTY not yet
+  // painted. Per session id: split panes resume independently (each pane
+  // header has its own Resume, plus the topbar's Resume all), and each
+  // in-flight id gets a ResumeSettleTracker that clears it when the agent
+  // settles. Drives the cyan status pill, the header "Resuming…"
+  // affordance, and the per-pane Resuming overlay on the cleared canvas.
+  const [resumingIds, setResumingIds] = useState<Set<string>>(() => new Set());
+  const resuming = sessionId != null && resumingIds.has(sessionId);
+  const settleResume = useCallback((id: string) => {
+    setResumingIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
   // True while a freshly-attached session is still warming up — the
   // terminal has mounted but the agent CLI (claude-code / codex)
   // hasn't painted its first frame yet. Overlays the StartingOverlay
@@ -209,7 +217,8 @@ export default function RunnerChat() {
   // session-archive flow has marked this session id as archiving.
   // Drives the centered amber pill + scrim over the chat body so the
   // backend's session_kill grace + archive RPC don't read as a hang.
-  const archiving = useArchivingSession(sessionId);
+  useArchivingVersion(); // subscribe: per-pane overlays check ids below
+  const archiving = sessionId != null && isArchivingSession(sessionId);
   // Right-side panel (runner identity + system prompt readout) open
   // state. Mirrors Obsidian's panel-toggle pattern: a small button at
   // the right edge of the topbar flips it. Persisted in localStorage
@@ -250,12 +259,24 @@ export default function RunnerChat() {
   // read the meta + go back to the runner.
   const isArchived = chatMeta?.archived_at != null;
 
-  // Split-view layout (impl 0020). Module store shared with Sidebar; the
-  // single-pane preset renders the classic path below, split presets render
-  // the pane tree. Reset on surface unmount (decision 6).
+  // Split-view layout (impl 0020). Module store shared with Sidebar,
+  // sticky per window and persisted for the main window (decision 6).
+  // The split is a chat GROUP — a binding between specific sessions — not
+  // a viewport mode: it renders only while the open chat is one of its
+  // members. Any other chat renders the classic single pane, and the
+  // group stays intact in the background until a member is opened again.
   const layout = usePaneLayout();
-  const splitActive = isSplit(layout);
-  useEffect(() => () => resetPaneLayout(), []);
+  const splitActive = isGroupActiveFor(layout, sessionId);
+  // What the pane group renders: the store group for member chats, an
+  // ephemeral single-leaf layout for everything else — one render path,
+  // a single chat is just a group of one.
+  const viewLayout = useMemo(
+    () =>
+      splitActive
+        ? layout
+        : applyPresetPure("single", sessionId, sessionId ? [sessionId] : []),
+    [splitActive, layout, sessionId],
+  );
 
   // Multi-window coordination (impl 0018 + 0020). Report every visible
   // pane's session as a window subject — a split window owns each session
@@ -278,7 +299,7 @@ export default function RunnerChat() {
       isSecondaryFor(focusMap, myWindowLabel, { type: "DirectChat", value }),
     ]),
   );
-  const { secondary: isSecondary, primaryLabel } = (sessionId
+  const { secondary: isSecondary } = (sessionId
     ? secondaryBySession.get(sessionId)
     : null) ?? { secondary: false, primaryLabel: null };
   // Dismissed duplicate-subject overlays, per session id. Cleared on
@@ -300,8 +321,6 @@ export default function RunnerChat() {
       return next.size === prev.size ? prev : next;
     });
   }, [secondaryKey]);
-  const showDuplicateOverlay =
-    isSecondary && sessionId != null && !dismissedSecondary.has(sessionId);
 
   // Render-gate without the flash. The two branches below
   // (chatMeta still loading, or terminals haven't upserted yet) gate
@@ -424,6 +443,7 @@ export default function RunnerChat() {
     try {
       const rows = await api.session.listRecentDirect();
       setRecentRows(rows);
+      setRowsLoaded(true);
       const found = rows.find((r) => r.session_id === sessionId);
       if (found) {
         setChatMeta(found);
@@ -521,24 +541,60 @@ export default function RunnerChat() {
 
   useEffect(() => {
     if (!sessionId) return;
-    const targetId = sessionId;
     let unlisten: (() => void) | null = null;
     let cancelled = false;
-    void listen<SessionUpdatedEvent>("session/updated", (event) => {
-      if (event.payload.session_id !== targetId) return;
-      void refreshChatMeta();
-    }).then((fn) => {
+    // session/updated refreshes for ANY session, not just the URL one:
+    // pane headers and the codex session-key readout render from
+    // recentRows, and the key-capture watcher fires session/updated for
+    // whichever pane's row it lands on. session/archived keeps the
+    // recent list honest when a chat is archived from any surface — the
+    // prune effect below then drops its terminal from the stack.
+    void Promise.all([
+      listen<SessionUpdatedEvent>("session/updated", () => {
+        void refreshChatMeta();
+      }),
+      listen("session/archived", () => {
+        void refreshChatMeta();
+      }),
+    ]).then(([fnUpdated, fnArchived]) => {
       if (cancelled) {
-        fn();
+        fnUpdated();
+        fnArchived();
         return;
       }
-      unlisten = fn;
+      unlisten = () => {
+        fnUpdated();
+        fnArchived();
+      };
     });
     return () => {
       cancelled = true;
       unlisten?.();
     };
   }, [sessionId, refreshChatMeta]);
+
+  // Keep the attach stack derived from the recent-direct list: a row
+  // that vanishes (archived from this window, the sidebar, or another
+  // window) drops its terminal and per-session flags immediately.
+  // Without this, an archived pane's session lingered in the hidden
+  // stack — mounted PTY listener and all — until the surface unmounted,
+  // and later navigation tripped over the residue. The URL session is
+  // exempt: its archived state renders the read-only branch, and a
+  // just-spawned chat may briefly precede its row's first appearance.
+  useEffect(() => {
+    if (!rowsLoaded) return;
+    const live = new Set(recentRows.map((r) => r.session_id));
+    setDirectSessions((prev) => {
+      const next = prev.filter((s) => live.has(s.id) || s.id === sessionId);
+      return next.length === prev.length ? prev : next;
+    });
+    setResumingIds((prev) => {
+      const next = new Set(
+        [...prev].filter((id) => live.has(id) || id === sessionId),
+      );
+      return next.size === prev.size ? prev : next;
+    });
+  }, [rowsLoaded, recentRows, sessionId]);
 
   // Track busy/idle activity for every direct session, not just the URL
   // one — split panes (impl 0020) each show their own status dot. Entries
@@ -595,80 +651,9 @@ export default function RunnerChat() {
     );
   }, [chatMeta, clearActivity]);
 
-  // Clear `resuming` once the agent has settled on a steady frame.
-  // Heuristic: wait for the first output chunk, then for output to
-  // go idle for ~400ms (TUIs like codex/claude-code emit their
-  // banner + prompt frame as a burst of chunks; idle = paint done).
-  // Enforce a 1s minimum visible duration so the loader doesn't
-  // flash on fast paints. Hard 10s fallback handles the pathological
-  // silent-agent case (e.g. shell runtime that produces no output).
-  useEffect(() => {
-    if (!resuming || !sessionId) return;
-    const RESUMING_MIN_VISIBLE_MS = 1000;
-    const RESUMING_IDLE_DEBOUNCE_MS = 400;
-    const RESUMING_HARD_TIMEOUT_MS = 10_000;
-    const startTs = performance.now();
-    const targetId = sessionId;
-    let unlisten: (() => void) | null = null;
-    let cancelled = false;
-    let idleTimer: number | null = null;
-
-    const finish = () => {
-      if (!cancelled) setResuming(false);
-    };
-
-    const scheduleIdleTimer = () => {
-      if (idleTimer !== null) window.clearTimeout(idleTimer);
-      const elapsed = performance.now() - startTs;
-      const delay = Math.max(
-        RESUMING_IDLE_DEBOUNCE_MS,
-        RESUMING_MIN_VISIBLE_MS - elapsed,
-      );
-      idleTimer = window.setTimeout(finish, delay);
-    };
-
-    // Hard fallback so a silent agent never strands the loader.
-    const hardTimeout = window.setTimeout(finish, RESUMING_HARD_TIMEOUT_MS);
-
-    // No snapshot fast-path on resume. The starting-pill effect uses
-    // one because the lead's PTY may have been alive for seconds
-    // before the workspace mounts; here the new PTY hasn't been
-    // forked yet when this effect fires — `resumeChat` calls
-    // `api.session.resume` concurrently with this effect, and the
-    // backend purges `output_buffers` at the *start* of resume. A
-    // snapshot launched alongside resume would race the purge and
-    // could see the pre-stop session's stale `\x1b[?2004h`, clearing
-    // the overlay before the new PTY exists. The live listener
-    // alone is fine: resume's RPC is fast (~200ms), so the listener
-    // attaches well before the new TUI emits its ready signal.
-    void listen<{ session_id: string; data: string }>(
-      "session/output",
-      (event) => {
-        if (event.payload.session_id !== targetId) return;
-        // Clear as soon as the resumed TUI is wired up to accept
-        // input, not after first-reply silence. See
-        // `chunkIndicatesTuiReady`.
-        if (chunkIndicatesTuiReady(event.payload.data)) {
-          finish();
-          return;
-        }
-        scheduleIdleTimer();
-      },
-    ).then((fn) => {
-      if (cancelled) {
-        fn();
-        return;
-      }
-      unlisten = fn;
-    });
-
-    return () => {
-      cancelled = true;
-      if (idleTimer !== null) window.clearTimeout(idleTimer);
-      window.clearTimeout(hardTimeout);
-      unlisten?.();
-    };
-  }, [resuming, sessionId]);
+  // Each in-flight resume gets a ResumeSettleTracker (rendered at the
+  // bottom of the page) that clears its id from `resumingIds` once the
+  // agent settles on a steady frame — see the tracker for the heuristic.
 
   // Mirror of the resume dismissal dance for fresh-attach. The
   // agent CLI takes a beat after spawn to print its banner, so
@@ -808,7 +793,7 @@ export default function RunnerChat() {
     // 0020) each pane is gated per session, not per window.
     if (isSecondary) {
       startedKeyRef.current = null;
-      setResuming(false);
+      if (sessionId) settleResume(sessionId);
       setStarting(false);
       return;
     }
@@ -840,6 +825,7 @@ export default function RunnerChat() {
     metaLoaded,
     chatMeta,
     chatMeta?.started_at,
+    settleResume,
   ]);
 
   // ---- split view (impl 0020) ------------------------------------------
@@ -847,25 +833,85 @@ export default function RunnerChat() {
   // Pane the StartChatModal is filling (empty-pane flow); null = closed.
   const [paneModalTarget, setPaneModalTarget] = useState<string | null>(null);
 
-  // While split, a URL session that isn't on screen anywhere loads into
-  // the focused pane — covers command-palette jumps and any plain
-  // navigation that doesn't know about the layout. Deliberately narrow:
-  // a session already visible in some pane is left alone, otherwise the
-  // empty-pane flow (focus parked on the empty pane, modal open, URL
-  // still on the origin chat) would yank the origin chat out of its
-  // pane. The sidebar handles its own move-not-copy on row click.
+  // Hydrate a restored layout: a persisted split can reference sessions
+  // this app run has never attached (nothing navigated to them yet).
+  // Attach every visible pane session that still exists in the
+  // recent-direct list so its terminal mounts; sweep sessions that are
+  // gone (archived while the app was closed) out of the layout — once,
+  // after the first successful rows fetch, so a freshly-spawned session
+  // can't be swept in the window before the list refreshes.
+  const sweptStaleRef = useRef(false);
   useEffect(() => {
-    if (!splitActive || !sessionId || !metaLoaded || isArchived) return;
-    if (leafForSession(layout.root, sessionId)) return;
-    assignSessionToPane(layout.focusedPaneId, sessionId);
-  }, [splitActive, sessionId, metaLoaded, isArchived, layout]);
+    if (!splitActive || !rowsLoaded) return;
+    for (const sid of visibleSessionIds(layout.root)) {
+      if (directSessions.some((s) => s.id === sid)) continue;
+      const row = recentRows.find((r) => r.session_id === sid);
+      if (row) {
+        attach(
+          sid,
+          row.handle ? `@${row.handle}` : row.display_name,
+          row.status,
+          false,
+        );
+      } else if (!sweptStaleRef.current && sid !== sessionId) {
+        removeSessionFromLayout(sid);
+      }
+    }
+    sweptStaleRef.current = true;
+  }, [
+    splitActive,
+    rowsLoaded,
+    layout,
+    recentRows,
+    directSessions,
+    sessionId,
+    attach,
+  ]);
+
+  // When the surface mounts onto an already-split layout (restored from
+  // storage, or kept from a previous visit), align pane focus to the URL
+  // session once — topbar/right rail already describe it. Not a standing
+  // rule: while live, focus deliberately leads the URL (the empty-pane
+  // flow parks focus on an empty pane whose session is still elsewhere).
+  const [wasSplitAtMount] = useState(splitActive);
+  const syncedRestoredFocusRef = useRef(false);
+  useEffect(() => {
+    if (syncedRestoredFocusRef.current || !wasSplitAtMount || !sessionId) {
+      return;
+    }
+    syncedRestoredFocusRef.current = true;
+    const restoredLeaf = leafForSession(getPaneLayout().root, sessionId);
+    if (restoredLeaf) focusPane(restoredLeaf.id);
+  }, [wasSplitAtMount, sessionId]);
+
+  // Keyboard focus follows the URL session while split, so a sidebar row
+  // click or page-nav shortcut lands keystrokes in the chat the user just
+  // picked. Gated on the session sitting in the focused pane: the
+  // empty-pane flow parks focus on an empty pane and must keep it.
+  useEffect(() => {
+    if (!splitActive || !sessionId) return;
+    const paneLeaf = leafForSession(layout.root, sessionId);
+    if (paneLeaf && paneLeaf.id === layout.focusedPaneId) {
+      terminals.get(sessionId)?.focus();
+    }
+  }, [splitActive, sessionId, layout, terminals]);
+
+  // Note there is deliberately NO "load the URL session into a pane"
+  // effect: navigation must never mutate the group. A chat that isn't a
+  // member renders single-pane (splitActive is false for it); membership
+  // changes only through explicit acts — the preset picker, the
+  // empty-pane StartChatModal, or a sidebar pick while an empty pane is
+  // focused (handled in Sidebar).
 
   // Focus a pane and follow it with the URL (decision 7): topbar, right
   // rail, and deep-link state all key off `/chats/:sessionId`. Replace
   // instead of push so pane-hopping doesn't pile up history entries.
   const focusPaneAndFollow = useCallback(
     (leaf: PaneLeaf) => {
-      focusPane(leaf.id);
+      // Only a member view may move the group's focus — a click inside an
+      // ephemeral single-pane view (non-member chat) must not silently
+      // shift the background group's focused pane.
+      if (splitActive) focusPane(leaf.id);
       if (!leaf.sessionId) return;
       terminals.get(leaf.sessionId)?.focus();
       if (leaf.sessionId === sessionId) return;
@@ -877,19 +923,28 @@ export default function RunnerChat() {
         state: paneStatus ? { sessionStatus: paneStatus } : undefined,
       });
     },
-    [sessionId, navigate, directSessions, terminals],
+    [splitActive, sessionId, navigate, directSessions, terminals],
   );
 
   const pickPreset = useCallback(
     (kind: PresetKind) => {
+      // Rearranging an ACTIVE group keeps its members. Picking a preset
+      // while viewing a non-member chat starts a fresh group seeded from
+      // that chat alone (one group per window — the old one is replaced).
       const prev = getPaneLayout();
-      const visible =
-        prev.root.kind === "split"
-          ? visibleSessionIds(prev.root)
-          : sessionId
-            ? [sessionId]
-            : [];
-      const next = applyPreset(kind, sessionId, visible);
+      const prevActive = isGroupActiveFor(prev, sessionId ?? null);
+      const visible = prevActive
+        ? visibleSessionIds(prev.root)
+        : sessionId
+          ? [sessionId]
+          : [];
+      // Rearranging keeps the group's name; a fresh group starts unnamed.
+      const next = applyPreset(
+        kind,
+        sessionId,
+        visible,
+        prevActive ? prev.name : null,
+      );
       // More slots than open chats: focus already sits on the first empty
       // pane (applyPreset put it there) — funnel into StartChatModal with
       // the focused chat's runner preselected. Cancel leaves the empty
@@ -907,16 +962,26 @@ export default function RunnerChat() {
     [sessionId, navigate],
   );
 
-  // Cmd+W while split collapses the focused pane; the session keeps
-  // running in the hidden pool (decision 8). Single-pane keeps the OS
-  // default (Close Window) — this listener only exists while split.
+  // Collapse a pane (sibling reflows); the session keeps running in the
+  // hidden pool (decision 8). Fired by Cmd+W (focused pane) and the
+  // empty pane's `×`. Follows the collapse with a navigation when the
+  // surviving focused pane holds a different chat than the URL.
+  const closePaneById = useCallback(
+    (paneId: string) => {
+      const next = closePane(paneId);
+      const focused = findLeaf(next.root, next.focusedPaneId);
+      if (focused?.sessionId && focused.sessionId !== sessionId) {
+        navigate(`/chats/${focused.sessionId}`, { replace: true });
+      }
+    },
+    [sessionId, navigate],
+  );
+
+  // Cmd+W while split collapses the focused pane. Single-pane keeps the
+  // OS default (Close Window) — this listener only exists while split.
   const closeFocusedPane = useCallback(() => {
-    const next = closePane(getPaneLayout().focusedPaneId);
-    const focused = findLeaf(next.root, next.focusedPaneId);
-    if (focused?.sessionId && focused.sessionId !== sessionId) {
-      navigate(`/chats/${focused.sessionId}`, { replace: true });
-    }
-  }, [sessionId, navigate]);
+    closePaneById(getPaneLayout().focusedPaneId);
+  }, [closePaneById]);
 
   useEffect(() => {
     if (!splitActive) return;
@@ -932,58 +997,82 @@ export default function RunnerChat() {
       window.removeEventListener("keydown", onKey, { capture: true });
   }, [splitActive, closeFocusedPane]);
 
-  // Geometry sync (decision 4, geometry-sync variant). Terminals stay in
-  // the flat absolutely-positioned stack they've always lived in — their
-  // React tree position never changes, so xterm never remounts. Visible
-  // sessions' wrappers are imperatively sized/positioned to their pane's
-  // body rect; a ResizeObserver per pane body keeps them glued through
-  // gutter drags, window resizes, and panel toggles. (A portal-per-pane
-  // approach was rejected: React remounts portal children when the
-  // container node changes — `updatePortal` compares `containerInfo` by
-  // identity — which is exactly the remount this feature must avoid.)
-  // All geometry bookkeeping lives in one closure object created once —
-  // plain captured variables instead of refs, because the callback-ref
-  // factories are invoked during render where touching `ref.current` is
-  // off-limits (react-hooks/refs). Registration happens at commit time via
-  // the returned callbacks; nothing here drives a React update.
-  const [paneGeo] = useState(createPaneGeometry);
-  useEffect(() => () => paneGeo.dispose(), [paneGeo]);
+  // Cmd+[ / Cmd+] cycle pane focus while split — iTerm2's pane-switch
+  // keys; sidebar page navigation lives on the shifted pair. Two entry
+  // points, mirroring the sidebar's pattern: a window capture listener
+  // for ordinary keystrokes, plus RunnerTerminal's re-dispatched custom
+  // event for keys WKWebView delivers straight to xterm.
+  const cyclePaneFocus = useCallback(
+    (direction: "previous" | "next") => {
+      const current = getPaneLayout();
+      if (current.root.kind !== "split") return;
+      const all = leaves(current.root);
+      const idx = all.findIndex((l) => l.id === current.focusedPaneId);
+      if (idx === -1) return;
+      const delta = direction === "next" ? 1 : -1;
+      focusPaneAndFollow(all[(idx + delta + all.length) % all.length]);
+    },
+    [focusPaneAndFollow],
+  );
 
-  // Position wrappers before paint on every commit — pane tree changes,
-  // session assignment changes, and wrapper mounts all land here. The RO
-  // inside paneGeo keeps them glued through gutter drags and resizes.
-  // Leaving split mode clears the inline geometry, since it would
-  // otherwise override the single-pane wrappers' `inset-0` sizing.
-  useLayoutEffect(() => {
-    paneGeo.setRoot(layout.root);
-    if (splitActive) paneGeo.sync();
-    else paneGeo.clearWrapGeometry();
-  });
+  useEffect(() => {
+    if (!splitActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      const direction =
+        e.code === "BracketLeft" || e.key === "["
+          ? "previous"
+          : e.code === "BracketRight" || e.key === "]"
+            ? "next"
+            : null;
+      if (!direction) return;
+      e.preventDefault();
+      e.stopPropagation();
+      cyclePaneFocus(direction);
+    };
+    const onCycle = (event: Event) => {
+      const direction = (event as CustomEvent<{ direction?: unknown }>).detail
+        ?.direction;
+      if (direction === "previous" || direction === "next") {
+        cyclePaneFocus(direction);
+      }
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    window.addEventListener(CHAT_PANE_CYCLE_EVENT, onCycle);
+    return () => {
+      window.removeEventListener("keydown", onKey, { capture: true });
+      window.removeEventListener(CHAT_PANE_CYCLE_EVENT, onCycle);
+    };
+  }, [splitActive, cyclePaneFocus]);
 
-  async function endChat() {
-    if (!sessionId) return;
-    const targetId = sessionId;
-    killedSessionsRef.current.add(targetId);
-    clearActivity(targetId);
-    try {
-      // session_kill blocks until the reader thread reaps the child
-      // and emits session/exit. The exit listener should flip the
-      // pane status, but we also do it eagerly here so the header
-      // status pill and Stop → Back-to-runner swap don't depend on
-      // the event reaching this component (e.g. if the user navigated
-      // mid-kill, RunnerTerminal may be unmounted before the listener
-      // processes the event).
-      await api.session.kill(targetId);
-      setDirectSessions((prev) =>
-        prev.map((s) =>
-          s.id === targetId ? { ...s, status: "stopped" } : s,
-        ),
-      );
-      void refreshChatMeta();
-    } catch (e) {
-      setErr(String(e));
-    }
-  }
+  // Stop/resume take a session id: split pane headers control their own
+  // session, the topbar controls the URL chat (single) or every visible
+  // pane (Stop all / Resume all).
+  const stopSession = useCallback(
+    async (targetId: string) => {
+      killedSessionsRef.current.add(targetId);
+      clearActivity(targetId);
+      try {
+        // session_kill blocks until the reader thread reaps the child
+        // and emits session/exit. The exit listener should flip the
+        // pane status, but we also do it eagerly here so the header
+        // status pill and Stop → Back-to-runner swap don't depend on
+        // the event reaching this component (e.g. if the user navigated
+        // mid-kill, RunnerTerminal may be unmounted before the listener
+        // processes the event).
+        await api.session.kill(targetId);
+        setDirectSessions((prev) =>
+          prev.map((s) =>
+            s.id === targetId ? { ...s, status: "stopped" } : s,
+          ),
+        );
+        void refreshChatMeta();
+      } catch (e) {
+        setErr(String(e));
+      }
+    },
+    [clearActivity, refreshChatMeta],
+  );
 
   // Resume path mirrors Pencil node `GZhHO` — the cyan transitional
   // state. Calls `session_resume`, which respawns a PTY for the same
@@ -997,34 +1086,75 @@ export default function RunnerChat() {
   //      the seq counter (we keep it across forget) so the live
   //      listener doesn't drop the agent's repaint.
   //   3. Flip the local pane status back to running. Clearing the
-  //      `resuming` flag waits for chatMeta.status to confirm the
-  //      DB-backed truth (the sync effect drives that).
-  async function resumeChat() {
-    if (!sessionId) return;
-    const targetId = sessionId;
-    setResuming(true);
-    setErr(null);
-    clearActivity(targetId);
-    try {
-      const dims = terminals.get(targetId)?.measure() ?? null;
-      await api.session.resume(
-        targetId,
-        dims?.cols ?? null,
-        dims?.rows ?? null,
-      );
-      setDirectSessions((prev) =>
-        prev.map((s) =>
-          s.id === targetId
-            ? { ...s, status: "running", exitCode: null }
-            : s,
-        ),
-      );
-      void refreshChatMeta();
-    } catch (e) {
-      setErr(String(e));
-      setResuming(false);
+  //      resuming id waits for the agent's repaint (ResumeSettleTracker).
+  const resumeSession = useCallback(
+    async (targetId: string) => {
+      setResumingIds((prev) => new Set(prev).add(targetId));
+      setErr(null);
+      clearActivity(targetId);
+      try {
+        const dims = terminals.get(targetId)?.measure() ?? null;
+        await api.session.resume(
+          targetId,
+          dims?.cols ?? null,
+          dims?.rows ?? null,
+        );
+        setDirectSessions((prev) =>
+          prev.map((s) =>
+            s.id === targetId
+              ? { ...s, status: "running", exitCode: null }
+              : s,
+          ),
+        );
+        void refreshChatMeta();
+      } catch (e) {
+        setErr(String(e));
+        settleResume(targetId);
+      }
+    },
+    [clearActivity, refreshChatMeta, settleResume, terminals],
+  );
+
+  // Aggregate topbar actions while split: act on every visible pane.
+  const visiblePaneSessions = splitActive
+    ? visibleSessionIds(layout.root).map((id) => ({
+        id,
+        status:
+          directSessions.find((s) => s.id === id)?.status ??
+          recentRows.find((r) => r.session_id === id)?.status ??
+          "running",
+      }))
+    : [];
+  const anyPaneRunning = visiblePaneSessions.some(
+    (s) => s.status === "running",
+  );
+  const anyPaneResuming = visiblePaneSessions.some((s) =>
+    resumingIds.has(s.id),
+  );
+  const stopAllPanes = () => {
+    for (const s of visiblePaneSessions) {
+      if (s.status === "running") void stopSession(s.id);
     }
-  }
+  };
+  const resumeAllPanes = () => {
+    for (const s of visiblePaneSessions) {
+      if (s.status !== "running" && !resumingIds.has(s.id)) {
+        void resumeSession(s.id);
+      }
+    }
+  };
+  // Sequential, background panes first: each archive empties its pane,
+  // and the URL chat goes last so its handler performs a single final
+  // navigation (no surviving member left → back to the runner page).
+  // Concurrent archives would race the member-handoff navigation.
+  const archiveAllPanes = async () => {
+    for (const s of visiblePaneSessions) {
+      if (s.id !== sessionId) await archiveSession(s.id);
+    }
+    if (sessionId && visiblePaneSessions.some((s) => s.id === sessionId)) {
+      await archiveSession(sessionId);
+    }
+  };
 
   // Topbar kebab open/close. Mirrors `MissionKebab` in
   // `MissionWorkspace`; the design's `session_ctx_menu` (Pin /
@@ -1040,6 +1170,17 @@ export default function RunnerChat() {
       setErr(String(e));
     }
   }, [sessionId, chatMeta, refreshChatMeta]);
+
+  // While split, Rename names the GROUP (persisted with the layout);
+  // blank clears back to the derived member-names title.
+  const renameGroupPrompt = useCallback(() => {
+    const proposed = window.prompt(
+      "Rename group (blank = derive from chats)",
+      getPaneLayout().name ?? "",
+    );
+    if (proposed === null) return;
+    setGroupName(proposed);
+  }, []);
 
   // Topbar rename uses `window.prompt()` for the same reason the
   // mission topbar does — keeps the header layout fixed and avoids
@@ -1063,44 +1204,69 @@ export default function RunnerChat() {
   }, [sessionId, chatMeta, refreshChatMeta]);
 
   // Archive: hide this chat from the sidebar's SESSION tray. The row
-  // stays in the DB so a future Archived workspace surface can list
-  // it, but it's gone from the live tray. We navigate back to the
-  // appropriate parent surface. Mirrors `Sidebar.archiveSession`: the backend
-  // refuses to archive a running row (`commands::session::session_archive`
-  // → "kill before archiving"), so kill first when the row is live.
-  async function archiveChat() {
-    if (!sessionId) return;
-    const targetId = sessionId;
-    const effectiveStatus = activeSession?.status ?? chatMeta?.status;
-    markArchivingSession(targetId);
-    clearActivity(targetId);
-    try {
-      if (effectiveStatus === "running") {
-        // Mark the kill as user-initiated so the exit handler reads it
-        // as "stopped" rather than "crashed" (matches endChat's
-        // pattern). Without this the sidebar would briefly show a
-        // crashed row before the archive RPC removes it.
-        killedSessionsRef.current.add(targetId);
-        try {
-          await api.session.kill(targetId);
-        } catch (e) {
-          // The terminal exit event can beat the SQLite metadata
-          // refresh. If the process is already gone, archive can
-          // still succeed; if it is truly running, the backend
-          // archive call below remains the guardrail.
-          console.warn("RunnerChat: session_kill before archive failed", e);
+  // stays in the DB so a future Archived workspace surface can list it,
+  // but it's gone from the live tray. Per-session, like stop/resume: a
+  // split pane's card archives its own chat and the pane empties in
+  // place; navigation only happens when the archived chat owned the URL —
+  // preferring a surviving group member over leaving the surface.
+  // Mirrors `Sidebar.archiveSession`: the backend refuses to archive a
+  // running row (`commands::session::session_archive` → "kill before
+  // archiving"), so kill first when the row is live.
+  const archiveSession = useCallback(
+    async (targetId: string) => {
+      const effectiveStatus =
+        directSessions.find((s) => s.id === targetId)?.status ??
+        recentRows.find((r) => r.session_id === targetId)?.status;
+      markArchivingSession(targetId);
+      clearActivity(targetId);
+      try {
+        if (effectiveStatus === "running") {
+          // Mark the kill as user-initiated so the exit handler reads it
+          // as "stopped" rather than "crashed" (matches stopSession's
+          // pattern). Without this the sidebar would briefly show a
+          // crashed row before the archive RPC removes it.
+          killedSessionsRef.current.add(targetId);
+          try {
+            await api.session.kill(targetId);
+          } catch (e) {
+            // The terminal exit event can beat the SQLite metadata
+            // refresh. If the process is already gone, archive can
+            // still succeed; if it is truly running, the backend
+            // archive call below remains the guardrail.
+            console.warn("RunnerChat: session_kill before archive failed", e);
+          }
         }
+        await api.session.archive(targetId);
+        // Empty the pane that showed it (no-op when not visible).
+        removeSessionFromLayout(targetId);
+        if (targetId === sessionId) {
+          const survivors = visibleSessionIds(getPaneLayout().root);
+          const next = survivors.find((id) => id !== targetId);
+          if (next) {
+            const nextLeaf = leafForSession(getPaneLayout().root, next);
+            if (nextLeaf) focusPane(nextLeaf.id);
+            navigate(`/chats/${next}`, { replace: true });
+          } else {
+            navigate(backTarget);
+          }
+        }
+      } catch (e) {
+        setErr(String(e));
+      } finally {
+        // Same defer as Sidebar.archiveSession — see that finally for
+        // the full rationale on the React-18 batched-emit race.
+        setTimeout(() => unmarkArchivingSession(targetId), 0);
       }
-      await api.session.archive(targetId);
-      navigate(backTarget);
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      // Same defer as Sidebar.archiveSession — see that finally for
-      // the full rationale on the React-18 batched-emit race.
-      setTimeout(() => unmarkArchivingSession(targetId), 0);
-    }
-  }
+    },
+    [
+      directSessions,
+      recentRows,
+      sessionId,
+      navigate,
+      backTarget,
+      clearActivity,
+    ],
+  );
 
   // Header layout mirrors Pencil node `NLa0k` inside `u6woG`:
   // 36px terminal-icon avatar, vertical title stack (handle + DIRECT
@@ -1152,230 +1318,124 @@ export default function RunnerChat() {
     exitCode != null ? `exit ${exitCode}` : null,
   ].filter((s): s is string => !!s);
 
-  // ---- split-view render helpers (impl 0020) ----------------------------
-  // Plain functions, not components: defining component types inside the
-  // render body would give them a fresh identity every commit and remount
-  // the whole pane tree (Group included) on every render.
+  // ---- pane-group view model (impl 0020) --------------------------------
 
   const paneRow = (sid: string) =>
     recentRows.find((r) => r.session_id === sid) ?? null;
-  const paneName = (sid: string) => {
+  const paneNameFor = (sid: string) => {
     const row = paneRow(sid);
     if (row) {
       return row.title ?? (row.handle ? `@${row.handle}` : row.display_name);
     }
     return directSessions.find((s) => s.id === sid)?.label ?? "chat";
   };
-  const paneDisplayStatus = (sid: string): DirectChatDisplayStatus => {
+  const paneStatusFor = (sid: string): DirectChatDisplayStatus => {
     const live =
       directSessions.find((s) => s.id === sid)?.status ??
       paneRow(sid)?.status ??
       "running";
     return directChatDisplayStatus(live, activityBySession[sid]);
   };
+  const paneRuntimeFor = (sid: string) =>
+    paneRow(sid)?.agent_runtime ??
+    chatMeta?.agent_runtime ??
+    runner?.runtime ??
+    "";
 
-  // Pane chrome per Pencil `g0xSY`/`vdRKp`: 34px header (icon · name ·
-  // CHAT chip · status dot) over the body; the focused pane carries the
-  // 1px accent ring. The body div is the geometry target the session's
-  // terminal wrapper is glued to.
-  const renderPaneNode = (node: PaneNode): ReactNode => {
-    if (node.kind === "leaf") {
-      const focused = node.id === layout.focusedPaneId;
-      const sid = node.sessionId;
-      const sec = sid ? secondaryBySession.get(sid) : undefined;
-      const showPaneOverlay =
-        sid != null && (sec?.secondary ?? false) && !dismissedSecondary.has(sid);
-      const displayStatus = sid ? paneDisplayStatus(sid) : null;
+  // Group identity for the topbar while split (the controls up there are
+  // group-scoped — Stop all / Resume all / Archive all — so the title,
+  // chip, status, and meta describe the group, not one member). Name:
+  // user-given via kebab Rename, else derived from member chat names.
+  const paneCount = splitActive ? leaves(layout.root).length : 0;
+  const groupTitle = splitActive
+    ? (layout.name ??
+      (visiblePaneSessions.length > 0
+        ? visiblePaneSessions.map((s) => paneNameFor(s.id)).join(" + ")
+        : "Empty group"))
+    : null;
+  const runningPaneCount = visiblePaneSessions.filter(
+    (s) => s.status === "running",
+  ).length;
+  const anyPaneBusy = visiblePaneSessions.some(
+    (s) =>
+      s.status === "running" && (activityBySession[s.id] ?? "busy") === "busy",
+  );
+  const groupStatusLabel = `${runningPaneCount}/${paneCount} running`;
+  const groupStatusDotClass = anyPaneBusy
+    ? "bg-accent"
+    : runningPaneCount > 0
+      ? "bg-accent/35"
+      : "bg-fg-3";
+  const groupStatusBadgeClass = anyPaneBusy
+    ? "bg-accent/10 text-accent"
+    : runningPaneCount > 0
+      ? "bg-accent/5 text-fg-2"
+      : "bg-line-strong text-fg-2";
+  // Meta: pane count, plus the working dir when every member shares one.
+  const groupCwds = visiblePaneSessions.map((s) => paneRow(s.id)?.cwd ?? null);
+  const sharedGroupCwd =
+    groupCwds.length > 0 && groupCwds.every((c) => c != null && c === groupCwds[0])
+      ? groupCwds[0]
+      : null;
+  const groupMetaParts = [
+    `${paneCount} ${paneCount === 1 ? "pane" : "panes"}`,
+    sharedGroupCwd,
+  ].filter((s): s is string => !!s);
+
+  // Per-pane transitional flag: a session mid-resume, or the URL session
+  // mid-start. Blanks the canvas so the pill reads on a pristine surface.
+  const transitionalFor = (sid: string) =>
+    resumingIds.has(sid) || (sid === sessionId && starting);
+
+  // Per-pane overlay. Every pane is self-contained: a stopped pane shows
+  // its own scrim + Chat-paused card (Resume scoped to that session), a
+  // resuming pane its own pill — after Stop all, each pane must visibly
+  // read stopped, not just the focused one. The URL session's pane
+  // additionally carries the archiving/starting states and the card's
+  // Archive action (archiveChat navigates away, so it stays URL-scoped).
+  // When a session is secondary (owned by another window) its wrapper
+  // doesn't mount at all, which suppresses these in favor of the
+  // per-pane duplicate overlay.
+  const overlayFor = (sid: string) => {
+    if (sid !== sessionId) {
+      // Archiving wins over the ended card, mirroring the URL chain —
+      // "Session ended" mid-archive would be misleading.
+      if (isArchivingSession(sid)) return <ArchivingOverlay withScrim />;
+      if (resumingIds.has(sid)) return <ResumingOverlay />;
+      const pane = directSessions.find((s) => s.id === sid);
+      const paneStatus = pane?.status ?? paneRow(sid)?.status ?? "running";
+      if (paneStatus === "running") return null;
       return (
-        <section
-          key={node.id}
-          onMouseDownCapture={() => focusPaneAndFollow(node)}
-          className={`relative flex h-full w-full flex-col overflow-hidden border ${
-            focused ? "border-accent" : "border-line"
-          }`}
-        >
-          <header className="flex h-[34px] shrink-0 items-center gap-2 border-b border-line bg-panel px-3.5">
-            <Terminal
-              aria-hidden
-              className={`h-[13px] w-[13px] shrink-0 ${
-                focused ? "text-accent" : "text-fg-3"
-              }`}
-            />
-            <span
-              className={`min-w-0 truncate text-[13px] font-medium ${
-                focused ? "text-fg" : "text-fg-2"
-              }`}
-            >
-              {sid ? paneName(sid) : "Empty pane"}
-            </span>
-            <span className="shrink-0 rounded bg-line-strong px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-fg-2">
-              Chat
-            </span>
-            {displayStatus ? (
-              <span className="flex shrink-0 items-center gap-1.5">
-                <span
-                  className={`inline-block h-1.5 w-1.5 rounded-full ${paneStatusDotClass(displayStatus)}`}
-                />
-                <span className="text-[11px] text-fg-2">{displayStatus}</span>
-              </span>
-            ) : null}
-          </header>
-          <div
-            ref={(el) => paneGeo.paneBodyRefFor(node.id)(el)}
-            style={{ backgroundColor: terminalBg }}
-            className="relative min-h-0 flex-1"
-          >
-            {sid == null ? (
-              <EmptyPaneBody
-                onNewChat={() => {
-                  focusPane(node.id);
-                  setPaneModalTarget(node.id);
-                }}
-              />
-            ) : showPaneOverlay ? (
-              // Per-pane duplicate-subject gate (impl 0018 × 0020): this
-              // pane's session is owned by another window, so no terminal
-              // is mounted for it (see renderTerminalPane) and the
-              // overlay scopes to this pane only.
-              <DuplicateSubjectOverlay
-                kind="chat"
-                primaryLabel={sec?.primaryLabel ?? null}
-                onStayHere={() =>
-                  setDismissedSecondary((prev) => new Set(prev).add(sid))
-                }
-              />
-            ) : null}
-          </div>
-        </section>
+        <SessionEndedOverlay
+          status={paneStatus}
+          exitCode={pane?.exitCode ?? null}
+          resumable={paneRow(sid)?.resumable ?? true}
+          onResume={() => void resumeSession(sid)}
+          onArchive={() => void archiveSession(sid)}
+          variant="inline"
+        />
       );
     }
-    const horizontal = node.orientation === "row";
-    return (
-      <Group
-        key={node.id}
-        orientation={horizontal ? "horizontal" : "vertical"}
-        className="flex h-full w-full"
-        onLayoutChanged={(l) => {
-          const a = l[`${node.id}:a`];
-          const b = l[`${node.id}:b`];
-          if (typeof a === "number" && typeof b === "number") {
-            recordSplitSizes(node.id, [a, b]);
-          }
-        }}
-      >
-        <Panel
-          id={`${node.id}:a`}
-          defaultSize={`${node.sizes[0]}%`}
-          minSize={120}
-          className="h-full w-full"
-        >
-          {renderPaneNode(node.a)}
-        </Panel>
-        <Separator
-          className={`shrink-0 transition-colors hover:bg-accent/40 ${
-            horizontal ? "w-1.5" : "h-1.5"
-          }`}
-        />
-        <Panel
-          id={`${node.id}:b`}
-          defaultSize={`${node.sizes[1]}%`}
-          minSize={120}
-          className="h-full w-full"
-        >
-          {renderPaneNode(node.b)}
-        </Panel>
-      </Group>
-    );
-  };
-
-  // Whether the flat terminal stack renders at all. Split mode keeps it up
-  // unconditionally (bar archived deep links) — gating on `metaLoaded`
-  // would unmount every xterm on each pane-focus navigation. Single-pane
-  // keeps today's gates: no PTY mounts for archived rows, secondary
-  // windows, or before chatMeta resolves.
-  const renderStack = splitActive
-    ? !isArchived
-    : metaLoaded && !isArchived && !isSecondary;
-
-  // One terminal wrapper per session, both modes. The element shape is
-  // identical across modes (same key, same position, RunnerTerminal first
-  // child), so single↔split transitions reuse the mounted terminals.
-  // Single-pane: the URL session's wrapper is full-bleed (`inset-0`),
-  // the rest stack hidden — exactly the classic behavior. Split: visible
-  // wrappers are geometry-synced onto their pane bodies; a session owned
-  // by another window (impl 0018) mounts nothing and its pane shows the
-  // duplicate-subject overlay instead.
-  const renderTerminalPane = (s: DirectSessionPane): ReactNode => {
-    if (splitActive && secondaryBySession.get(s.id)?.secondary) return null;
-    const paneLeaf = splitActive ? leafForSession(layout.root, s.id) : null;
-    const isUrl = s.id === sessionId;
-    const visible = splitActive ? paneLeaf !== null : isUrl;
-    const transitional = isUrl && (resuming || starting);
-    const dead = s.status !== "running";
-    // Pane visual state: while resuming/starting the active pane is fully
-    // blank so the centered cyan pill reads on a pristine canvas. When
-    // stopped, the pane dims to 45% under the Session ended card.
-    const paneOpacity =
-      visible && transitional
-        ? "opacity-0"
-        : visible && dead
-          ? "opacity-45"
-          : "";
-    return (
-      <div
-        key={s.id}
-        ref={(el) => paneGeo.termWrapRefFor(s.id)(el)}
-        // `backgroundColor` is inlined from `useTerminalBg()` so the
-        // frame tracks the active terminal palette; a theme switch flips
-        // the frame + canvas in lockstep.
-        style={{ backgroundColor: terminalBg }}
-        onMouseDownCapture={
-          paneLeaf ? () => focusPaneAndFollow(paneLeaf) : undefined
-        }
-        className={`absolute ${splitActive ? "" : "inset-0"} p-4 ${visible ? "block" : "hidden"} ${paneOpacity} transition-opacity`}
-      >
-        <RunnerTerminal
-          ref={(h) => terminals.refFor(s.id)(h)}
-          sessionId={s.id}
-          runnerRuntime={
-            paneRow(s.id)?.agent_runtime ??
-            chatMeta?.agent_runtime ??
-            runner?.runtime ??
-            ""
-          }
-          // While the resume/start loader is up the canvas is hidden, so
-          // xterm behaves as inactive (no resize pushes, no focus); when
-          // the flag clears, the activation effect fits + repaints.
-          active={visible && !transitional}
-          autoFocus={
-            !splitActive || (visible && paneLeaf?.id === layout.focusedPaneId)
-          }
-          disabled={dead || transitional}
-          onExit={onTerminalExit}
-          onError={setErr}
-        />
-        {splitActive && isUrl ? (
-          // Split mode scopes the URL session's transitional/session-ended
-          // overlays to its own pane; single-pane keeps them page-level.
-          archiving ? (
-            <ArchivingOverlay withScrim />
-          ) : chatState === "resuming" ? (
-            <ResumingOverlay />
-          ) : starting && activeSession ? (
-            <StartingOverlay label="Starting chat…" />
-          ) : activeSession && status !== "running" ? (
-            <SessionEndedOverlay
-              status={status}
-              exitCode={exitCode}
-              resumable={chatMeta?.resumable ?? true}
-              onResume={() => void resumeChat()}
-              onArchive={() => void archiveChat()}
-              variant="inline"
-            />
-          ) : null
-        ) : null}
-      </div>
-    );
+    return archiving ? (
+      <ArchivingOverlay withScrim />
+    ) : chatState === "resuming" ? (
+      <ResumingOverlay />
+    ) : starting && activeSession ? (
+      <StartingOverlay label="Starting chat…" />
+    ) : activeSession && status !== "running" ? (
+      <SessionEndedOverlay
+        status={status}
+        exitCode={exitCode}
+        // chatMeta.resumable is `true` iff agent_session_key is non-NULL on
+        // the row; false means Resume starts a fresh agent process and the
+        // overlay copy shouldn't promise a preserved conversation. Default
+        // true while chatMeta is loading to avoid a mislabel flash.
+        resumable={chatMeta?.resumable ?? true}
+        onResume={() => void resumeSession(sid)}
+        onArchive={() => void archiveSession(sid)}
+        variant="inline"
+      />
+    ) : null;
   };
 
   return (
@@ -1395,7 +1455,14 @@ export default function RunnerChat() {
               dimensions so the chat + mission headers line up at the
               same baseline. */}
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-bg">
-            <Terminal aria-hidden className="h-[18px] w-[18px] text-accent" />
+            {splitActive ? (
+              <SquareSplitHorizontal
+                aria-hidden
+                className="h-[18px] w-[18px] text-accent"
+              />
+            ) : (
+              <Terminal aria-hidden className="h-[18px] w-[18px] text-accent" />
+            )}
           </div>
           {/* Title block — typography + gaps mirror
               MissionWorkspace's header so the bottom border lands at
@@ -1405,38 +1472,57 @@ export default function RunnerChat() {
               the divider visually. */}
           <div className="flex min-w-0 flex-col gap-0.5">
             <div className="flex items-center gap-2">
+              {/* While split the topbar describes the GROUP — its
+                  controls (Stop all / Resume all / Archive all) are
+                  group-scoped, so the identity must be too. Name is
+                  user-given (kebab → Rename group) or derived from the
+                  member chats. */}
               <h1 className="truncate text-[14px] font-semibold leading-tight text-fg">
-                {titleLabel}
+                {splitActive ? groupTitle : titleLabel}
               </h1>
               <span className="rounded bg-line-strong px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-fg-2">
-                Chat
+                {splitActive ? "Group" : "Chat"}
               </span>
               {/* Status pill moved next to the title so it stops
                   competing with the Stop / Resume control on the
                   right — the action button already implies the
                   current state, and a pill at the same edge read
                   redundant. */}
-              <span
-                className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${statusBadgeClass}`}
-                title={`session ${sessionId ? sessionId.slice(-6) : "—"}`}
-              >
-                <span className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass}`} />
-                {sessionId ? statusLabel : "starting"}
-              </span>
+              {splitActive ? (
+                <span
+                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${groupStatusBadgeClass}`}
+                  title={`focused session ${sessionId ? sessionId.slice(-6) : "—"}`}
+                >
+                  <span
+                    className={`inline-block h-1.5 w-1.5 rounded-full ${groupStatusDotClass}`}
+                  />
+                  {groupStatusLabel}
+                </span>
+              ) : (
+                <span
+                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${statusBadgeClass}`}
+                  title={`session ${sessionId ? sessionId.slice(-6) : "—"}`}
+                >
+                  <span
+                    className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass}`}
+                  />
+                  {sessionId ? statusLabel : "starting"}
+                </span>
+              )}
               {isArchived ? (
                 <span className="inline-flex shrink-0 items-center rounded border border-line bg-raised px-2 py-0.5 text-[10px] font-medium text-fg-2">
                   Archived · read-only
                 </span>
               ) : null}
             </div>
-            {metaParts.length > 0 ? (
+            {(splitActive ? groupMetaParts : metaParts).length > 0 ? (
               <div className="flex min-w-0 items-center gap-2 text-[11px] leading-tight text-fg-3">
-                {metaParts.map((part, i) => (
+                {(splitActive ? groupMetaParts : metaParts).map((part, i) => (
                   <span
                     key={i}
                     className={`truncate ${
                       i > 0 ? "before:mr-2 before:text-line-strong before:content-['·']" : ""
-                    } ${i === 0 || (i === metaParts.length - 1 && chatMeta?.cwd) ? "font-mono" : ""}`}
+                    } ${i === 0 || (i > 0 && part.startsWith("/")) ? "font-mono" : ""}`}
                   >
                     {part}
                   </span>
@@ -1449,7 +1535,12 @@ export default function RunnerChat() {
           {/* Layout button — left of Stop per the Pencil mock (`z1hPN`).
               Hidden for archived rows (read-only single pane). */}
           {sessionId && metaLoaded && !isArchived ? (
-            <LayoutPicker active={layout.preset} onPick={pickPreset} />
+            // Highlight reflects the current VIEW: a non-member chat reads
+            // as single-pane even while a group exists in the background.
+            <LayoutPicker
+              active={splitActive ? layout.preset : "single"}
+              onPick={pickPreset}
+            />
           ) : null}
           {isArchived ? (
             // Archived rows are terminal: no Resume / Stop / Archive.
@@ -1460,10 +1551,20 @@ export default function RunnerChat() {
             // Stop/Resume here — those call session_kill / session_resume.
             // Focus the primary (via the overlay) to act on this chat.
             <BackButton onClick={() => navigate(backTarget)}>{backLabel}</BackButton>
+          ) : splitActive && visiblePaneSessions.length > 0 ? (
+            // Aggregate controls while split — per-pane Stop/Resume live
+            // in the pane headers; the topbar acts on every visible pane.
+            anyPaneRunning ? (
+              <StopButton onClick={stopAllPanes}>Stop all</StopButton>
+            ) : anyPaneResuming ? (
+              <ResumingButton />
+            ) : (
+              <ResumeButton onClick={resumeAllPanes}>Resume all</ResumeButton>
+            )
           ) : chatState === "resuming" ? (
             <ResumingButton />
           ) : status === "running" && sessionId ? (
-            <StopButton onClick={() => void endChat()} />
+            <StopButton onClick={() => void stopSession(sessionId)} />
           ) : sessionId ? (
             // Stopped/crashed → Resume, matching
             // Pencil node `HLXK6` in `vS5ce`. Same action the inline
@@ -1473,7 +1574,7 @@ export default function RunnerChat() {
             // the backend resume path starts a fresh agent process
             // for the same row; the overlay subtitle explains that
             // history is unavailable.
-            <ResumeButton onClick={() => void resumeChat()} />
+            <ResumeButton onClick={() => void resumeSession(sessionId)} />
           ) : (
             // Last-resort fallback: no session yet.
             <BackButton onClick={() => navigate(backTarget)}>{backLabel}</BackButton>
@@ -1489,17 +1590,24 @@ export default function RunnerChat() {
               open={kebabOpen}
               onToggle={() => setKebabOpen((v) => !v)}
               onClose={() => setKebabOpen(false)}
+              // Group mode: Pin is a per-chat sidebar concept, so it hides;
+              // Rename names the group; Archive archives every pane.
+              showPin={!splitActive}
               onPin={() => {
                 setKebabOpen(false);
                 void togglePin();
               }}
+              renameLabel={splitActive ? "Rename group" : "Rename"}
               onRename={() => {
                 setKebabOpen(false);
-                void renameChatPrompt();
+                if (splitActive) renameGroupPrompt();
+                else void renameChatPrompt();
               }}
+              archiveLabel={splitActive ? "Archive all" : "Archive"}
               onArchive={() => {
                 setKebabOpen(false);
-                void archiveChat();
+                if (splitActive) void archiveAllPanes();
+                else if (sessionId) void archiveSession(sessionId);
               }}
             />
           ) : null}
@@ -1545,37 +1653,14 @@ export default function RunnerChat() {
         </div>
       ) : null}
 
-      {/* Keep one xterm mounted per direct session. Hidden panes still receive
-          PTY output into their buffers, so switching sessions preserves the
-          real terminal state. When the active pane's session has exited the
-          xterm dims and a "Session ended" card overlays the center —
-          mirrors Pencil node `vS5ce`.
+      {/* The pane group owns everything between topbar and rails: pane
+          chrome, the flat terminal stack (one xterm per session, hidden
+          panes keep buffering), geometry sync, and per-pane overlays. A
+          single chat is a group of one — same render path as a split.
           Archived rows render a static placeholder instead — no xterm,
           no PTY listener, no live data path. */}
-      <div
-        ref={(el) => paneGeo.containerRef(el)}
-        className="relative flex-1 overflow-hidden p-4"
-      >
-        {splitActive && !isArchived ? (
-          // Split view (impl 0020): the pane tree is pure chrome (headers,
-          // focus ring, gutters, empty states); the terminals live in the
-          // flat absolute stack below — its own stable slot, shared with
-          // the single-pane path so preset changes never move a terminal's
-          // tree position — and are geometry-synced onto their pane bodies.
-          <div className="h-full w-full">{renderPaneNode(layout.root)}</div>
-        ) : !metaLoaded && sessionId ? (
-          // Neutral loading state until chatMeta resolves. Rendering
-          // the terminal map here would briefly mount RunnerTerminal
-          // for archived rows (chatMeta null → isArchived false) and
-          // fire a session/output subscribe + outputSnapshot call
-          // before the read-only branch takes over. The flash is short
-          // but visible and contradicts the 'no PTY listener' goal.
-          // Centered cyan pill mirrors the resume transitional state
-          // so any "session is coming up" moment reads consistently
-          // — gated on `showNavLoadingPill` so the common fast-IPC
-          // path doesn't flash on every chat-to-chat navigation.
-          showNavLoadingPill ? <StartingOverlay label="Starting chat…" /> : null
-        ) : isArchived ? (
+      <div className="relative flex-1 overflow-hidden">
+        {isArchived ? (
           <div className="flex h-full items-center justify-center">
             <div className="flex max-w-md flex-col items-center gap-2 rounded border border-line bg-raised px-6 py-5 text-center">
               <span className="text-[13px] font-semibold text-fg">
@@ -1587,75 +1672,56 @@ export default function RunnerChat() {
               </span>
             </div>
           </div>
-        ) : isSecondary ? (
-          // Secondary window (impl 0018): the primary owns the PTY, so we
-          // mount no terminal here. The duplicate-subject overlay below
-          // covers this area with the "Focus that window" affordance.
-          null
-        ) : directSessions.length === 0 ? (
-          // Same delayed-pill treatment as the metaLoaded gate above —
-          // the terminal map hasn't upserted the active session pane
-          // yet but the next render almost always brings it in.
-          showNavLoadingPill ? <StartingOverlay label="Starting chat…" /> : null
-        ) : null}
-        {/* The flat terminal stack — one stable slot for both modes, so
-            flipping between single-pane and split never moves a terminal's
-            tree position (= never remounts xterm). */}
-        {renderStack ? directSessions.map((s) => renderTerminalPane(s)) : null}
-        {splitActive && !isArchived ? (
-          // Split view renders its overlays per pane (duplicate-subject in
-          // the pane chrome, transitional/session-ended inside the focused
-          // session's wrapper) — nothing page-wide to add here.
-          null
-        ) : showDuplicateOverlay ? (
-          // Duplicate-subject overlay (impl 0018) wins over the
-          // transitional overlays: this window doesn't own the PTY, so
-          // "Resuming…" / "Starting…" / "Session ended" would be
-          // misleading here.
-          <DuplicateSubjectOverlay
-            kind="chat"
-            primaryLabel={primaryLabel}
-            onStayHere={() =>
-              sessionId
-                ? setDismissedSecondary((prev) => new Set(prev).add(sessionId))
-                : undefined
-            }
-          />
-        ) : isSecondary ? (
-          // Overlay dismissed but still secondary: never surface the
-          // SessionEnded card's Resume/Archive actions — they call
-          // session_resume / session_kill on a PTY the primary owns.
-          null
-        ) : archiving ? (
-          // Archiving wins over the resume + start + ended overlays
-          // — the session is on its way out, so reading "Resuming…"
-          // / "Starting…" / "Session ended" mid-flight would be
-          // misleading.
-          <ArchivingOverlay withScrim />
-        ) : chatState === "resuming" ? (
-          <ResumingOverlay />
-        ) : starting && activeSession ? (
-          // Min-1s overlay while the freshly-attached agent CLI
-          // boots. The terminal underneath is hidden via
-          // `opacity-0` above so the pill reads on a clean canvas.
+        ) : sessionId ? (
+          // The group stays mounted through navigation — chatMeta refetch
+          // gaps must not unmount every xterm (each remount replays the
+          // backend snapshot; keeping terminals alive is both faster and
+          // avoids replay artifacts). Archived-row PTY safety is enforced
+          // per session: the attach effect only attaches the URL session
+          // after chatMeta resolves un-archived, so an archived deep link
+          // renders an empty group until the branch above takes over.
+          <>
+            <ChatPaneGroup
+              layout={viewLayout}
+              grouped={splitActive}
+              chats={directSessions}
+              transitionalFor={transitionalFor}
+              overlayFor={overlayFor}
+              resumingFor={(sid) => resumingIds.has(sid)}
+              onStopSession={(sid) => void stopSession(sid)}
+              onResumeSession={(sid) => void resumeSession(sid)}
+              onArchiveSession={(sid) => void archiveSession(sid)}
+              onClosePane={closePaneById}
+              terminalBg={terminalBg}
+              nameFor={paneNameFor}
+              statusFor={paneStatusFor}
+              runtimeFor={paneRuntimeFor}
+              secondaryFor={(sid) => secondaryBySession.get(sid)}
+              dismissedSecondary={dismissedSecondary}
+              terminalRefFor={(sid) => terminals.refFor(sid)}
+              onFocusPane={focusPaneAndFollow}
+              onNewChat={(paneId) => {
+                focusPane(paneId);
+                setPaneModalTarget(paneId);
+              }}
+              onDismissSecondary={(sid) =>
+                setDismissedSecondary((prev) => new Set(prev).add(sid))
+              }
+              onTerminalExit={onTerminalExit}
+              onTerminalError={setErr}
+            />
+            {/* Delayed pill while the URL session's pane is still empty
+                (terminal not attached yet) — single-chat view only; group
+                members hydrate quietly. */}
+            {!splitActive && showNavLoadingPill ? (
+              <StartingOverlay label="Starting chat…" />
+            ) : null}
+          </>
+        ) : showNavLoadingPill ? (
+          // Neutral loading state until chatMeta resolves — gated on the
+          // delayed flag so the common fast-IPC path doesn't flash on
+          // every chat-to-chat navigation.
           <StartingOverlay label="Starting chat…" />
-        ) : activeSession && status !== "running" ? (
-          <SessionEndedOverlay
-            status={status}
-            exitCode={exitCode}
-            // chatMeta.resumable is `true` iff agent_session_key is
-            // non-NULL on the row. False for shell runtimes and for
-            // codex chats whose post-spawn capture hasn't completed
-            // — in either case "Resume" actually starts a fresh
-            // agent process, so the overlay copy shouldn't promise a
-            // preserved conversation. We default to true while
-            // chatMeta is still loading so we don't briefly mislabel
-            // a resumable session.
-            resumable={chatMeta?.resumable ?? true}
-            onResume={() => void resumeChat()}
-            onArchive={() => void archiveChat()}
-            variant="inline"
-          />
         ) : null}
       </div>
       </div>
@@ -1685,158 +1751,91 @@ export default function RunnerChat() {
           });
         }}
       />
+      {[...resumingIds].map((id) => (
+        <ResumeSettleTracker key={id} sessionId={id} onSettled={settleResume} />
+      ))}
     </div>
   );
 }
 
-/// Empty split pane (Pencil `t0YBp`): New chat funnels into the
-/// StartChatModal with the focused chat's runner preselected; the sidebar
-/// is the other fill path.
-function EmptyPaneBody({ onNewChat }: { onNewChat: () => void }) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-3.5 p-4 text-center">
-      <SquarePen aria-hidden className="h-[22px] w-[22px] text-fg-3" />
-      <span className="text-[13px] font-medium text-fg-2">
-        No chat in this pane
-      </span>
-      <button
-        type="button"
-        onClick={onNewChat}
-        className="cursor-pointer rounded-md bg-accent px-3.5 py-[7px] text-[12px] font-semibold text-bg transition-colors hover:bg-accent/90"
-      >
-        New chat
-      </button>
-      <span className="text-[11px] text-fg-3">
-        or pick a chat from the sidebar
-      </span>
-    </div>
-  );
-}
+/// Clears a session's resuming state once the agent has settled on a
+/// steady frame. Heuristic: wait for the first output chunk, then for
+/// output to go idle for ~400ms (TUIs like codex/claude-code emit their
+/// banner + prompt frame as a burst of chunks; idle = paint done), with a
+/// 1s minimum visible duration so the loader doesn't flash on fast paints
+/// and a hard 10s fallback for the pathological silent-agent case. One
+/// tracker mounts per in-flight resume — split panes resume concurrently.
+///
+/// No snapshot fast-path here (the starting-pill effect uses one): the new
+/// PTY hasn't been forked yet when this mounts — `resumeSession` calls
+/// `api.session.resume` concurrently, and the backend purges the output
+/// buffer at the *start* of resume. A snapshot launched alongside would
+/// race the purge and could see the pre-stop session's stale
+/// `\x1b[?2004h`, clearing the overlay before the new PTY exists. The
+/// live listener alone is fine: resume's RPC is fast (~200ms), so the
+/// listener attaches well before the new TUI emits its ready signal.
+function ResumeSettleTracker({
+  sessionId,
+  onSettled,
+}: {
+  sessionId: string;
+  onSettled: (id: string) => void;
+}) {
+  useEffect(() => {
+    const RESUMING_MIN_VISIBLE_MS = 1000;
+    const RESUMING_IDLE_DEBOUNCE_MS = 400;
+    const RESUMING_HARD_TIMEOUT_MS = 10_000;
+    const startTs = performance.now();
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    let idleTimer: number | null = null;
 
-/// Registry of live RunnerTerminal handles, keyed by session id. A closure
-/// over plain Maps instead of a ref so `refFor` can be called during render
-/// (react-hooks/refs forbids `ref.current` there); the returned callbacks
-/// are stable per session so React doesn't detach/reattach them per commit.
-function createTerminalRegistry() {
-  const handles = new Map<string, RunnerTerminalHandle>();
-  const cbs = new Map<string, (h: RunnerTerminalHandle | null) => void>();
-  return {
-    refFor(sessionId: string) {
-      let cb = cbs.get(sessionId);
-      if (!cb) {
-        cb = (h) => {
-          if (h) handles.set(sessionId, h);
-          else handles.delete(sessionId);
-        };
-        cbs.set(sessionId, cb);
+    const finish = () => {
+      if (!cancelled) onSettled(sessionId);
+    };
+
+    const scheduleIdleTimer = () => {
+      if (idleTimer !== null) window.clearTimeout(idleTimer);
+      const elapsed = performance.now() - startTs;
+      const delay = Math.max(
+        RESUMING_IDLE_DEBOUNCE_MS,
+        RESUMING_MIN_VISIBLE_MS - elapsed,
+      );
+      idleTimer = window.setTimeout(finish, delay);
+    };
+
+    // Hard fallback so a silent agent never strands the loader.
+    const hardTimeout = window.setTimeout(finish, RESUMING_HARD_TIMEOUT_MS);
+
+    void listen<{ session_id: string; data: string }>(
+      "session/output",
+      (event) => {
+        if (event.payload.session_id !== sessionId) return;
+        // Clear as soon as the resumed TUI is wired up to accept
+        // input, not after first-reply silence. See
+        // `chunkIndicatesTuiReady`.
+        if (chunkIndicatesTuiReady(event.payload.data)) {
+          finish();
+          return;
+        }
+        scheduleIdleTimer();
+      },
+    ).then((fn) => {
+      if (cancelled) {
+        fn();
+        return;
       }
-      return cb;
-    },
-    get(sessionId: string): RunnerTerminalHandle | null {
-      return handles.get(sessionId) ?? null;
-    },
-  };
-}
+      unlisten = fn;
+    });
 
-/// Split-view geometry sync (impl 0020, decision 4 — geometry-sync
-/// variant). Terminals stay in the flat absolutely-positioned stack they
-/// have always lived in — their React tree position never changes, so
-/// xterm never remounts. Each visible session's wrapper is imperatively
-/// sized/positioned onto its pane's body rect; a shared ResizeObserver
-/// keeps them glued through gutter drags, window resizes, and panel
-/// toggles. (Portal-per-pane was rejected: React remounts portal children
-/// when the container node changes — `updatePortal` compares
-/// `containerInfo` by identity — which is exactly the remount this
-/// feature must avoid.) Same closure-over-Maps shape as the terminal
-/// registry, for the same render-time-refs reason.
-function createPaneGeometry() {
-  let container: HTMLDivElement | null = null;
-  let ro: ResizeObserver | null = null;
-  let root: PaneNode | null = null;
-  const paneBodies = new Map<string, HTMLDivElement>();
-  const termWraps = new Map<string, HTMLDivElement>();
-  const paneBodyCbs = new Map<string, (el: HTMLDivElement | null) => void>();
-  const termWrapCbs = new Map<string, (el: HTMLDivElement | null) => void>();
-
-  const sync = () => {
-    if (!container || !root) return;
-    const cRect = container.getBoundingClientRect();
-    for (const [paneId, bodyEl] of paneBodies) {
-      const leaf = findLeaf(root, paneId);
-      if (!leaf?.sessionId) continue;
-      const wrap = termWraps.get(leaf.sessionId);
-      if (!wrap) continue;
-      const r = bodyEl.getBoundingClientRect();
-      wrap.style.left = `${r.left - cRect.left}px`;
-      wrap.style.top = `${r.top - cRect.top}px`;
-      wrap.style.width = `${r.width}px`;
-      wrap.style.height = `${r.height}px`;
-    }
-  };
-
-  return {
-    sync,
-    containerRef(el: HTMLDivElement | null) {
-      container = el;
-    },
-    setRoot(next: PaneNode) {
-      root = next;
-    },
-    paneBodyRefFor(paneId: string) {
-      let cb = paneBodyCbs.get(paneId);
-      if (!cb) {
-        cb = (el) => {
-          const prev = paneBodies.get(paneId);
-          if (prev) ro?.unobserve(prev);
-          if (el) {
-            paneBodies.set(paneId, el);
-            ro ??= new ResizeObserver(sync);
-            ro.observe(el);
-          } else {
-            paneBodies.delete(paneId);
-          }
-        };
-        paneBodyCbs.set(paneId, cb);
-      }
-      return cb;
-    },
-    termWrapRefFor(sessionId: string) {
-      let cb = termWrapCbs.get(sessionId);
-      if (!cb) {
-        cb = (el) => {
-          if (el) termWraps.set(sessionId, el);
-          else termWraps.delete(sessionId);
-        };
-        termWrapCbs.set(sessionId, cb);
-      }
-      return cb;
-    },
-    clearWrapGeometry() {
-      for (const wrap of termWraps.values()) {
-        wrap.style.left = "";
-        wrap.style.top = "";
-        wrap.style.width = "";
-        wrap.style.height = "";
-      }
-    },
-    dispose() {
-      ro?.disconnect();
-    },
-  };
-}
-
-// Pane-header status dot, mirroring the sidebar's chat-row dot palette.
-function paneStatusDotClass(status: DirectChatDisplayStatus): string {
-  switch (status) {
-    case "busy":
-      return "bg-accent";
-    case "idle":
-      return "bg-accent/35";
-    case "crashed":
-      return "bg-danger";
-    case "stopped":
-      return "bg-fg-3";
-  }
+    return () => {
+      cancelled = true;
+      if (idleTimer !== null) window.clearTimeout(idleTimer);
+      window.clearTimeout(hardTimeout);
+      unlisten?.();
+    };
+  }, [sessionId, onSettled]);
+  return null;
 }
 
 // SessionEndedOverlay + ResumingOverlay live in
@@ -2042,17 +2041,28 @@ function ChatKebab({
   open,
   onToggle,
   onClose,
+  showPin = true,
   onPin,
+  renameLabel = "Rename",
   onRename,
   onArchive,
+  archiveLabel = "Archive",
 }: {
   pinned: boolean;
   open: boolean;
   onToggle: () => void;
   onClose: () => void;
+  /** Hidden while split — Pin is a per-chat sidebar concept and the
+   *  topbar kebab is group-scoped there. */
+  showPin?: boolean;
   onPin: () => void;
+  /** "Rename group" while split. */
+  renameLabel?: string;
   onRename: () => void;
   onArchive: () => void;
+  /** "Archive all" while split — the topbar aggregates over visible
+   *  panes, mirroring Stop all / Resume all. */
+  archiveLabel?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -2089,13 +2099,20 @@ function ChatKebab({
           role="menu"
           className="absolute right-0 top-full z-50 mt-1.5 flex w-40 flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
         >
+          {showPin ? (
+            <KebabItem
+              icon={pinned ? PinOff : Pin}
+              label={pinned ? "Unpin" : "Pin"}
+              onClick={onPin}
+            />
+          ) : null}
+          <KebabItem icon={SquarePen} label={renameLabel} onClick={onRename} />
           <KebabItem
-            icon={pinned ? PinOff : Pin}
-            label={pinned ? "Unpin" : "Pin"}
-            onClick={onPin}
+            icon={Archive}
+            label={archiveLabel}
+            onClick={onArchive}
+            danger
           />
-          <KebabItem icon={SquarePen} label="Rename" onClick={onRename} />
-          <KebabItem icon={Archive} label="Archive" onClick={onArchive} danger />
         </div>
       ) : null}
     </div>

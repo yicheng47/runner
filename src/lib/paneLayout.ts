@@ -8,11 +8,13 @@
 // per session, ever, and the layout only decides which of them are visible.
 //
 // State is a module-level store shared by RunnerChat and Sidebar via
-// `useSyncExternalStore`. It is in-memory, per window, chat-surface-scoped:
-// RunnerChat resets it on unmount (navigating to a non-chat surface), and
-// nothing is persisted (key decision 6).
+// `useSyncExternalStore`. It is per window and sticky (key decision 6):
+// the main window persists it to localStorage so a relaunch restores the
+// same pane grouping, and navigating off the chat surface keeps it.
 
 import { useSyncExternalStore } from "react";
+
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export type PresetKind =
   | "single"
@@ -49,6 +51,9 @@ export interface PaneLayout {
   preset: PresetKind;
   root: PaneNode;
   focusedPaneId: string;
+  /** User-given group name; null = derive from member chat names. Only
+   *  meaningful while split — a fresh group starts unnamed. */
+  name: string | null;
 }
 
 // ---- pure helpers -------------------------------------------------------
@@ -78,8 +83,21 @@ export function visibleSessionIds(node: PaneNode): string[] {
     .filter((s): s is string => s !== null);
 }
 
-export function isSplit(layout: PaneLayout): boolean {
-  return layout.root.kind === "split";
+/**
+ * Whether the split group renders for the given chat: the layout is a
+ * binding between member sessions, not a viewport mode, so it only shows
+ * while the open chat is one of its members (decision 6). Non-member
+ * chats render classic single-pane over an intact background group.
+ */
+export function isGroupActiveFor(
+  layout: PaneLayout,
+  sessionId: string | null,
+): boolean {
+  return (
+    layout.root.kind === "split" &&
+    sessionId !== null &&
+    leafForSession(layout.root, sessionId) !== null
+  );
 }
 
 function leaf(id: string, sessionId: string | null): PaneLeaf {
@@ -163,6 +181,7 @@ export function applyPresetPure(
   kind: PresetKind,
   focusedSessionId: string | null,
   currentVisible: string[],
+  name: string | null = null,
 ): PaneLayout {
   const rest = currentVisible.filter((s) => s !== focusedSessionId);
   const ordered = focusedSessionId ? [focusedSessionId, ...rest] : rest;
@@ -177,6 +196,7 @@ export function applyPresetPure(
     preset: kind,
     root,
     focusedPaneId: (firstEmpty ?? focusedLeaf ?? all[0]).id,
+    name: kind === "single" ? null : name,
   };
 }
 
@@ -260,7 +280,13 @@ export function closePanePure(layout: PaneLayout, paneId: string): PaneLayout {
   const focusedPaneId = all.some((l) => l.id === layout.focusedPaneId)
     ? layout.focusedPaneId
     : all[0].id;
-  return { preset: derivePreset(root), root, focusedPaneId };
+  const preset = derivePreset(root);
+  return {
+    preset,
+    root,
+    focusedPaneId,
+    name: preset === "single" ? null : layout.name,
+  };
 }
 
 export function setSizesPure(
@@ -276,6 +302,132 @@ export function setSizesPure(
   return { ...layout, root: map(layout.root) };
 }
 
+// ---- persistence --------------------------------------------------------
+
+const STORAGE_LAYOUT = "runner.chat.layout";
+
+const PRESET_KINDS: readonly PresetKind[] = [
+  "single",
+  "cols-2",
+  "rows-2",
+  "main-2",
+  "cols-3",
+  "rows-3",
+];
+
+function isPresetKind(v: unknown): v is PresetKind {
+  return typeof v === "string" && (PRESET_KINDS as string[]).includes(v);
+}
+
+// Storage schema is deliberately not the tree itself: preset + slot
+// assignments + per-split sizes + focused slot index. Restoring rebuilds
+// the tree through the same preset builder the picker uses, so a stale or
+// hand-edited payload can never produce a shape the renderer hasn't seen.
+interface PersistedLayout {
+  preset: PresetKind;
+  slots: (string | null)[];
+  sizes: Record<string, [number, number]>;
+  focusedSlot: number;
+  name: string | null;
+}
+
+export function serializeLayout(layout: PaneLayout): string {
+  const all = leaves(layout.root);
+  const sizes: Record<string, [number, number]> = {};
+  const walk = (node: PaneNode): void => {
+    if (node.kind === "leaf") return;
+    sizes[node.id] = node.sizes;
+    walk(node.a);
+    walk(node.b);
+  };
+  walk(layout.root);
+  const persisted: PersistedLayout = {
+    preset: layout.preset,
+    slots: all.map((l) => l.sessionId),
+    sizes,
+    focusedSlot: Math.max(
+      0,
+      all.findIndex((l) => l.id === layout.focusedPaneId),
+    ),
+    name: layout.name,
+  };
+  return JSON.stringify(persisted);
+}
+
+/** Rebuild a layout from a persisted payload; null on any malformed or
+ *  unrecognized input (callers fall back to a fresh single pane). */
+export function deserializeLayout(raw: string): PaneLayout | null {
+  try {
+    const p = JSON.parse(raw) as Partial<PersistedLayout> | null;
+    if (!p || !isPresetKind(p.preset)) return null;
+    const slots = Array.isArray(p.slots)
+      ? p.slots.map((s) => (typeof s === "string" ? s : null))
+      : [];
+    const root = buildPresetTree(p.preset, slots);
+    const applySizes = (node: PaneNode): void => {
+      if (node.kind === "leaf") return;
+      const stored = p.sizes?.[node.id];
+      if (
+        Array.isArray(stored) &&
+        stored.length === 2 &&
+        stored.every((n) => typeof n === "number" && n > 0 && n < 100)
+      ) {
+        node.sizes = [stored[0], stored[1]];
+      }
+      applySizes(node.a);
+      applySizes(node.b);
+    };
+    applySizes(root);
+    const all = leaves(root);
+    const focusedSlot =
+      typeof p.focusedSlot === "number" &&
+      Number.isInteger(p.focusedSlot) &&
+      p.focusedSlot >= 0 &&
+      p.focusedSlot < all.length
+        ? p.focusedSlot
+        : 0;
+    return {
+      preset: p.preset,
+      root,
+      focusedPaneId: all[focusedSlot].id,
+      name: typeof p.name === "string" && p.name.length > 0 ? p.name : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Persist for the main window only: localStorage is shared by every
+// webview window, and secondary windows' labels (`window-<ulid>`) don't
+// survive a relaunch — persisting theirs would only clobber the main
+// window's layout.
+let persistToStorage = false;
+try {
+  persistToStorage = getCurrentWindow().label === "main";
+} catch {
+  // Dev browser preview — single "window", persist normally.
+  persistToStorage = true;
+}
+
+function readPersistedLayout(): PaneLayout | null {
+  if (!persistToStorage) return null;
+  try {
+    const raw = localStorage.getItem(STORAGE_LAYOUT);
+    return raw ? deserializeLayout(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistLayout(layout: PaneLayout): void {
+  if (!persistToStorage) return;
+  try {
+    localStorage.setItem(STORAGE_LAYOUT, serializeLayout(layout));
+  } catch {
+    // best-effort
+  }
+}
+
 // ---- module store -------------------------------------------------------
 
 function singleLayout(sessionId: string | null = null): PaneLayout {
@@ -283,15 +435,17 @@ function singleLayout(sessionId: string | null = null): PaneLayout {
     preset: "single",
     root: leaf("p1", sessionId),
     focusedPaneId: "p1",
+    name: null,
   };
 }
 
-let current: PaneLayout = singleLayout();
+let current: PaneLayout = readPersistedLayout() ?? singleLayout();
 const listeners = new Set<() => void>();
 
 function setCurrent(next: PaneLayout): void {
   if (next === current) return;
   current = next;
+  persistLayout(current);
   for (const l of listeners) l();
 }
 
@@ -312,9 +466,17 @@ export function applyPreset(
   kind: PresetKind,
   focusedSessionId: string | null,
   currentVisible: string[],
+  name: string | null = null,
 ): PaneLayout {
-  setCurrent(applyPresetPure(kind, focusedSessionId, currentVisible));
+  setCurrent(applyPresetPure(kind, focusedSessionId, currentVisible, name));
   return current;
+}
+
+/** Name (or un-name, with null/blank) the split group. */
+export function setGroupName(name: string | null): void {
+  const trimmed = name?.trim() || null;
+  if (current.name === trimmed) return;
+  setCurrent({ ...current, name: trimmed });
 }
 
 export function assignSessionToPane(paneId: string, sessionId: string): void {
@@ -337,8 +499,8 @@ export function closePane(paneId: string): PaneLayout {
 }
 
 /** Record live gutter sizes without notifying subscribers — the panel lib
- *  owns the visual truth during a drag; this only keeps the model current
- *  for the next preset rebuild/tests. */
+ *  owns the visual truth during a drag; this only keeps the model (and
+ *  the persisted copy) current. Fires on drag end, not per frame. */
 export function recordSplitSizes(
   splitId: string,
   sizes: [number, number],
@@ -353,10 +515,5 @@ export function recordSplitSizes(
     walk(node.b);
   };
   walk(current.root);
-}
-
-/** Back to a fresh single-pane layout — called when the chat surface
- *  unmounts (key decision 6: layout resets when you leave chats). */
-export function resetPaneLayout(): void {
-  setCurrent(singleLayout());
+  persistLayout(current);
 }

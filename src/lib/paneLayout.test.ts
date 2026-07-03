@@ -4,8 +4,11 @@ import {
   applyPresetPure,
   assignSessionPure,
   closePanePure,
+  deserializeLayout,
+  isGroupActiveFor,
   leaves,
   removeSessionPure,
+  serializeLayout,
   setSizesPure,
   visibleSessionIds,
   type PaneLayout,
@@ -139,5 +142,68 @@ describe("setSizesPure", () => {
     const next = setSizesPure(layout, outer.id, [70, 30]);
     expect((next.root as PaneSplit).sizes).toEqual([70, 30]);
     expect(((next.root as PaneSplit).b as PaneSplit).sizes).toEqual([50, 50]);
+  });
+});
+
+describe("isGroupActiveFor", () => {
+  it("is true only for member chats of a split layout", () => {
+    const split = applyPresetPure("cols-2", "A", ["A", "B"]);
+    expect(isGroupActiveFor(split, "A")).toBe(true);
+    expect(isGroupActiveFor(split, "B")).toBe(true);
+    expect(isGroupActiveFor(split, "C")).toBe(false);
+    expect(isGroupActiveFor(split, null)).toBe(false);
+    const single = applyPresetPure("single", "A", ["A"]);
+    expect(isGroupActiveFor(single, "A")).toBe(false);
+  });
+});
+
+describe("serializeLayout / deserializeLayout", () => {
+  it("round-trips preset, slots, sizes, and focus", () => {
+    const layout = setSizesPure(
+      applyPresetPure("main-2", "B", ["A", "B"]),
+      (applyPresetPure("main-2", "B", ["A", "B"]).root as PaneSplit).id,
+      [70, 30],
+    );
+    const restored = deserializeLayout(serializeLayout(layout));
+    expect(restored).not.toBeNull();
+    expect(restored!.preset).toBe("main-2");
+    expect(slotSessions(restored!)).toEqual(["B", "A", null]);
+    expect((restored!.root as PaneSplit).sizes).toEqual([70, 30]);
+    const focusedBefore = leaves(layout.root).findIndex(
+      (l) => l.id === layout.focusedPaneId,
+    );
+    const focusedAfter = leaves(restored!.root).findIndex(
+      (l) => l.id === restored!.focusedPaneId,
+    );
+    expect(focusedAfter).toBe(focusedBefore);
+  });
+
+  it("round-trips the group name, and drops it for single layouts", () => {
+    const named = applyPresetPure("cols-2", "A", ["A", "B"], "review pair");
+    expect(named.name).toBe("review pair");
+    const restored = deserializeLayout(serializeLayout(named));
+    expect(restored!.name).toBe("review pair");
+    expect(applyPresetPure("single", "A", ["A"], "review pair").name).toBeNull();
+  });
+
+  it("rejects malformed payloads", () => {
+    expect(deserializeLayout("not json")).toBeNull();
+    expect(deserializeLayout("null")).toBeNull();
+    expect(deserializeLayout(JSON.stringify({ preset: "nope" }))).toBeNull();
+  });
+
+  it("survives garbage sizes and out-of-range focus", () => {
+    const layout = applyPresetPure("cols-2", "A", ["A", "B"]);
+    const parsed = JSON.parse(serializeLayout(layout)) as Record<
+      string,
+      unknown
+    >;
+    parsed.sizes = { bogus: [0, 200] };
+    parsed.focusedSlot = 99;
+    const restored = deserializeLayout(JSON.stringify(parsed));
+    expect(restored).not.toBeNull();
+    expect(slotSessions(restored!)).toEqual(["A", "B"]);
+    expect((restored!.root as PaneSplit).sizes).toEqual([50, 50]);
+    expect(restored!.focusedPaneId).toBe(leaves(restored!.root)[0].id);
   });
 });

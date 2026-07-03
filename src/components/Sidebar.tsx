@@ -59,8 +59,10 @@ import {
 import {
   assignSessionToPane,
   findLeaf,
+  focusPane,
   getPaneLayout,
-  isSplit,
+  isGroupActiveFor,
+  leafForSession,
   removeSessionFromLayout,
   usePaneLayout,
   visibleSessionIds,
@@ -104,13 +106,22 @@ interface SidebarNavigationHistory {
   index: number;
 }
 
+// Cmd+Shift+[ / Cmd+Shift+] — page navigation moved to the shifted pair
+// (the tab-switch idiom in iTerm2/Safari/VS Code) so plain Cmd+[ / Cmd+]
+// can cycle split-pane focus in the chat surface (impl 0020), matching
+// iTerm2's pane/tab split. Shifted brackets arrive as "{" / "}" on US
+// layouts, so match on `code` first with the shifted keys as fallback.
 function sidebarNavigationDirectionFromKey(
   e: KeyboardEvent,
 ): SidebarNavigationDirection | null {
   if (!(e.metaKey || e.ctrlKey)) return null;
-  if (e.altKey || e.shiftKey) return null;
-  if (e.key === "[" || e.code === "BracketLeft") return "previous";
-  if (e.key === "]" || e.code === "BracketRight") return "next";
+  if (e.altKey || !e.shiftKey) return null;
+  if (e.code === "BracketLeft" || e.key === "[" || e.key === "{") {
+    return "previous";
+  }
+  if (e.code === "BracketRight" || e.key === "]" || e.key === "}") {
+    return "next";
+  }
   return null;
 }
 
@@ -256,17 +267,16 @@ export function Sidebar({
   // session id rather than handle.
   const currentChatSessionId = chatMatch?.params.sessionId ?? null;
 
-  // Split-view state (impl 0020): while the chat surface is split, every
-  // pane-open chat row gets the selected fill and the focused pane's row
-  // carries a left accent bar mirroring the pane focus ring. Row clicks
-  // stay plain navigations — RunnerChat loads the session into the
-  // focused pane (move-not-copy) off the URL change.
+  // Split-view state (impl 0020). The split is a chat group that renders
+  // only while the open chat is a member; the group rows get the selected
+  // fill (and the focused pane's row an accent bar) only then — while a
+  // non-member chat is open, the sidebar reads classic single-selection.
   const paneLayout = usePaneLayout();
-  const chatSplitActive = isSplit(paneLayout);
-  const paneOpenSessionIds = chatSplitActive
+  const chatGroupActive = isGroupActiveFor(paneLayout, currentChatSessionId);
+  const paneOpenSessionIds = chatGroupActive
     ? new Set(visibleSessionIds(paneLayout.root))
     : null;
-  const focusedPaneSessionId = chatSplitActive
+  const focusedPaneSessionId = chatGroupActive
     ? (findLeaf(paneLayout.root, paneLayout.focusedPaneId)?.sessionId ?? null)
     : null;
 
@@ -690,7 +700,20 @@ export function Sidebar({
         removeSessionFromLayout(session.session_id);
         await refreshDirectSessions();
         if (currentChatSessionId === session.session_id) {
-          navigate(session.handle ? `/runners/${session.handle}` : "/runners");
+          // Prefer handing the URL to a surviving group member over
+          // leaving the chat surface (mirrors RunnerChat.archiveSession).
+          const next = visibleSessionIds(getPaneLayout().root).find(
+            (id) => id !== session.session_id,
+          );
+          if (next) {
+            const nextLeaf = leafForSession(getPaneLayout().root, next);
+            if (nextLeaf) focusPane(nextLeaf.id);
+            navigate(`/chats/${next}`, { replace: true });
+          } else {
+            navigate(
+              session.handle ? `/runners/${session.handle}` : "/runners",
+            );
+          }
         }
       } catch (e) {
         console.error("sidebar: session_archive failed", e);
@@ -739,15 +762,30 @@ export function Sidebar({
   // longer in the live map → "session not found" banner.
   const openDirectChat = useCallback(
     (entry: DirectSessionEntry) => {
-      // While the chat surface is split (impl 0020), a row click loads the
-      // chat into the focused pane — move-not-copy: if it's visible in
-      // another pane, it moves there instead of duplicating. Read the
-      // store directly so a stale render can't mis-target the pane.
+      // Split-group semantics (impl 0020): a member chat's row focuses its
+      // pane and the group renders around it. A non-member row is a plain
+      // navigation — the chat opens single-pane and the group stays intact
+      // — EXCEPT when the group is on screen with an empty focused pane:
+      // that's the "or pick a chat from the sidebar" fill, the one row
+      // click that adds a member. Read the store directly so a stale
+      // render can't mis-target the pane.
       const chatLayout = getPaneLayout();
-      if (isSplit(chatLayout)) {
-        const focusedLeaf = findLeaf(chatLayout.root, chatLayout.focusedPaneId);
-        if (focusedLeaf && focusedLeaf.sessionId !== entry.session_id) {
-          assignSessionToPane(chatLayout.focusedPaneId, entry.session_id);
+      if (chatLayout.root.kind === "split") {
+        const memberLeaf = leafForSession(chatLayout.root, entry.session_id);
+        if (memberLeaf) {
+          focusPane(memberLeaf.id);
+        } else {
+          const groupOnScreen = isGroupActiveFor(
+            chatLayout,
+            currentChatSessionId,
+          );
+          const focusedLeaf = findLeaf(
+            chatLayout.root,
+            chatLayout.focusedPaneId,
+          );
+          if (groupOnScreen && focusedLeaf && focusedLeaf.sessionId === null) {
+            assignSessionToPane(chatLayout.focusedPaneId, entry.session_id);
+          }
         }
       }
       const target = `/chats/${entry.session_id}`;
@@ -756,7 +794,7 @@ export function Sidebar({
         replace: location.pathname === target,
       });
     },
-    [navigate, location.pathname],
+    [navigate, location.pathname, currentChatSessionId],
   );
 
   // CHAT `+` button — opens the StartChat modal (GH #104). The modal is

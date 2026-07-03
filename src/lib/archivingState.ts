@@ -21,8 +21,10 @@ type Listener = () => void;
 const archivingMissions = new Set<string>();
 const archivingSessions = new Set<string>();
 const listeners = new Set<Listener>();
+let version = 0;
 
 function emit() {
+  version += 1;
   for (const l of listeners) l();
 }
 
@@ -76,5 +78,18 @@ export function useArchivingSession(sessionId: string | null | undefined): boole
     subscribe,
     () => (sessionId ? archivingSessions.has(sessionId) : false),
     () => false,
+  );
+}
+
+/**
+ * Re-render on any archiving change, for surfaces that check several ids
+ * per render (split chat checks one per pane via `isArchivingSession`).
+ * Returns a monotonic version — callers use it only as a subscription.
+ */
+export function useArchivingVersion(): number {
+  return useSyncExternalStore(
+    subscribe,
+    () => version,
+    () => 0,
   );
 }
