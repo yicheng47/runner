@@ -123,28 +123,37 @@ so a packaged install is untouched:
       `ms-gamingoverlay` "You'll need a new app" dialog. *Anchor:*
       `RunnerTerminal.tsx` `USE_WEBGL = false`.
 
-### C. Native (host) runner
+### C. Native (host) runner — runs a Windows-installed agent
 
-- [ ] **Create a native runner.** Execution target = Windows/native; the
-      command field becomes editable (e.g. `powershell`). *Anchor:*
-      `CreateRunnerModal` native branch; `pty_runtime::native_command_shaper`.
-- [ ] **It runs on the host, not in WSL.** Start a session — the process is a
-      Windows process (e.g. `powershell.exe` in Task Manager), no `wsl.exe`
-      relay for this session.
+The intent of `native` is to run a Windows-installed agent (codex/claude) on
+the host instead of inside WSL, not to run arbitrary shell commands.
 
-### D. Multi-window
+- [ ] **Create a native runner.** Execution target = Windows; the command
+      field is editable and should stay the runtime's agent (`codex` /
+      `claude`), not `powershell`. Windows agents ship as `.cmd` shims, so
+      spawns route through `cmd.exe /c`. *Anchor:*
+      `session::wsl::windows_native_shaper`; `CreateRunnerModal` native branch.
+- [ ] **The Windows agent launches on the host.** Start a session — the agent's
+      TUI renders (e.g. Codex's banner), as a Windows process (no `wsl.exe`
+      relay for this session). *Note:* an agent-side error like
+      `403 invalid_workspace_selected` is the agent's own account/workspace
+      config, **not** Runner — confirm by running the same command in a plain
+      PowerShell.
 
-- [ ] **Open a second window** (Ctrl+N / File → New Window / sidebar "在新窗口
-      打开"). A new window opens on the same backend. *Anchor:*
-      `commands::window::window_open`; `windows.rs`.
-- [ ] **Duplicate-subject overlay (localized).** Navigate both windows to the
-      same mission → the non-primary window shows the "已在另一个窗口打开"
-      overlay; its terminal is read-only. *Anchor:* `DuplicateSubjectOverlay`.
-- [ ] **"切到那个窗口" works.** The button focuses the primary window.
-      *Anchor:* `api.window.focusOther` → `window_focus_other`.
-- [ ] **Primary promotion on close.** With two windows on one mission, close
-      the primary — the survivor becomes primary and mounts the PTY. *Anchor:*
-      `WindowEvent::Destroyed` → `unregister` + `broadcast_focus_map`.
+### D. Multi-window — disabled on Windows
+
+Multi-window is macOS-only for now: secondary WebView2 windows load blank and
+can't be dismissed on Windows/Linux, and a stray window's focus-map entry
+gated the primary's terminal (blank pane on tab switch, sometimes with
+garbled rendering). Verify it's cleanly off:
+
+- [ ] **No New-Window entry points.** Ctrl+N does nothing, the File menu has no
+      "New Window", and the sidebar row menus have no "在新窗口打开". *Anchor:*
+      `lib.rs build_menu` (macOS-only File menu); `Sidebar` (`isMac` gate).
+- [ ] **Terminal never blanks on tab switch.** Switching between runner tabs in
+      a mission always renders the terminal — the primary window is never
+      demoted to secondary. *Anchor:* `windowFocus.isSecondaryFor` (returns
+      not-secondary off macOS).
 
 ### E. Lifecycle & cleanup (Windows-specific)
 
@@ -171,6 +180,10 @@ so a packaged install is untouched:
 These are intentionally deferred (see the milestone notes in code). A tester
 hitting them is confirming a known limitation, not a regression.
 
+- **Multi-window is macOS-only** — secondary WebView2 windows load blank and
+  can't be dismissed on Windows/Linux, so the New-Window entry points are
+  hidden and `isSecondaryFor` never demotes a window off macOS. The window
+  builder stays cross-platform for when WebView2 multi-window is solved.
 - **MCP server disabled on the Windows host** — `mcp/mod.rs` `start` is a
   no-op; Settings → MCP integration renders but does nothing. Core mission
   coordination is unaffected (it flows through the NDJSON event log, not MCP).
