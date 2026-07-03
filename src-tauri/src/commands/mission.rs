@@ -201,6 +201,30 @@ fn validate_mission_goal(goal: &str) -> Result<()> {
     Ok(())
 }
 
+/// Guard one composed first-turn body against the positional `[PROMPT]`
+/// argv ceiling (`router::runtime::FIRST_TURN_ARGV_MAX_BYTES`) before a
+/// PTY is spawned. The individual persist-time caps
+/// (`system_prompt` 16 KB, `crew.goal` / `mission_goal` 8 KB) do NOT
+/// compose to this bound — brief + goal alone can reach 24 KB, and
+/// `crew.system_prompt_addendum` (team conventions) is uncapped on top —
+/// so the real invariant has to be enforced on the assembled body, at
+/// the spawn boundary. Otherwise `first_turn_argv` silently drops the
+/// entire first turn in release builds (empty argv) and trips a
+/// `debug_assert!` in debug. See #247.
+fn ensure_first_turn_fits(slot_handle: &str, body: &str) -> Result<()> {
+    let max = crate::router::runtime::FIRST_TURN_ARGV_MAX_BYTES;
+    if body.len() > max {
+        return Err(Error::msg(format!(
+            "composed first-turn prompt for slot `{slot_handle}` is {} bytes; exceeds the \
+             {} KB runtime argv ceiling. Trim this crew's runner brief, mission goal, or team \
+             conventions.",
+            body.len(),
+            max / 1024,
+        )));
+    }
+    Ok(())
+}
+
 pub fn start(
     conn: &mut Connection,
     app_data_dir: &Path,
@@ -617,6 +641,27 @@ async fn mission_start_impl_with_size(
             })
             .collect()
     };
+
+    // Enforce the composed-body argv ceiling before spawning any PTY.
+    // Per-field persist caps don't compose to this bound (see
+    // `ensure_first_turn_fits`); on overflow, roll the half-open mission
+    // back to `aborted` and surface an actionable error rather than
+    // booting an agent with an empty first turn.
+    for (member, body) in roster.iter().zip(&first_turns) {
+        if let Some(body) = body {
+            if let Err(e) = ensure_first_turn_fits(&member.slot.slot_handle, body) {
+                if let Ok(conn) = state.db.get() {
+                    let _ = conn.execute(
+                        "UPDATE missions
+                            SET status = 'aborted', stopped_at = ?1
+                          WHERE id = ?2",
+                        rusqlite::params![Utc::now().to_rfc3339(), out.mission.id],
+                    );
+                }
+                return Err(e);
+            }
+        }
+    }
 
     // Build the router up front (opens the log, validates the lead, holds
     // empty state). It does NOT subscribe to the bus yet — see ordering
@@ -1355,6 +1400,28 @@ pub(crate) async fn mission_reset_impl(
             .collect()
     };
 
+    // Enforce the composed-body argv ceiling before respawning (same
+    // guard as mission_start). A crew edited to oversized brief / goal /
+    // conventions since the original start would otherwise boot agents
+    // with an empty first turn; abort with an actionable error instead.
+    // The mission is already torn down at this point, so `aborted` is the
+    // consistent terminal state.
+    for (member, body) in roster.iter().zip(&first_turns) {
+        if let Some(body) = body {
+            if let Err(e) = ensure_first_turn_fits(&member.slot.slot_handle, body) {
+                if let Ok(conn) = state.db.get() {
+                    let _ = conn.execute(
+                        "UPDATE missions
+                            SET status = 'aborted', stopped_at = ?1
+                          WHERE id = ?2",
+                        params![now().to_rfc3339(), id],
+                    );
+                }
+                return Err(e);
+            }
+        }
+    }
+
     // 7. Build router + spawn fresh PTYs + mount bus. Same ordering
     // contract as mission_start: spawn first so register_sessions has
     // the full handle map before the bus's initial replay fires the
@@ -1806,6 +1873,30 @@ mod tests {
             serde_json::json!({ "state": state }),
         ))
         .unwrap();
+    }
+
+    #[test]
+    fn ensure_first_turn_fits_guards_the_argv_ceiling() {
+        // #247: the composed body must stay under the argv ceiling even
+        // when every per-field persist cap is individually satisfied
+        // (brief 16 KB + goal 8 KB + uncapped team conventions can
+        // together overflow). Bodies at the limit pass; a byte over is
+        // rejected with a slot-named, actionable error.
+        let max = crate::router::runtime::FIRST_TURN_ARGV_MAX_BYTES;
+        ensure_first_turn_fits("lead", &"x".repeat(max))
+            .expect("a body exactly at the ceiling must be accepted");
+
+        let err = ensure_first_turn_fits("reviewer", &"x".repeat(max + 1))
+            .expect_err("a body one byte past the ceiling must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("reviewer"),
+            "error must name the slot; got: {msg}"
+        );
+        assert!(
+            msg.contains("argv ceiling"),
+            "error must explain the ceiling; got: {msg}",
+        );
     }
 
     #[test]
