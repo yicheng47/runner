@@ -538,6 +538,15 @@ const zhMore: Record<string, string> = {
   message: "消息",
   signal: "信号",
   "(no text)": "(无内容)",
+
+  // ── 多窗口(impl 0018) ─────────────────────────────────────────
+  "Open in New Window": "在新窗口打开",
+  "Open in another window": "已在另一个窗口打开",
+  mission: "任务",
+  "Another window is already driving this {noun}. Only one window can own the terminal at a time, so this view is read-only until you focus it here.":
+    "另一个窗口正在操作这个{noun}。同一时间只有一个窗口能占用终端,所以在你把焦点切回这里之前,这个视图是只读的。",
+  "Focus that window": "切到那个窗口",
+  "Stay here": "留在这里",
 };
 
 export const zh: Record<string, string> = { ...zhMain, ...zhMore };

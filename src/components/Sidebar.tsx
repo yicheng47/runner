@@ -1550,7 +1550,7 @@ function RowContextMenu({
       <ContextMenuItem icon={SquarePen} label={t("Rename")} onClick={onRename} />
       <ContextMenuItem
         icon={AppWindow}
-        label="Open in New Window"
+        label={t("Open in New Window")}
         onClick={onOpenInNewWindow}
       />
       <ContextMenuItem
