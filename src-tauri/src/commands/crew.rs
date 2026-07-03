@@ -35,7 +35,8 @@ pub struct UpdateCrewInput {
     pub name: Option<String>,
     pub purpose: Option<Option<String>>,
     pub goal: Option<Option<String>>,
-    pub orchestrator_policy: Option<Option<serde_json::Value>>,
+    // `orchestrator_policy` is deprecated (superseded by
+    // `system_prompt_addendum`) and no longer accepted for write. See #247.
     /// Outer None = leave existing untouched; outer Some(inner) =
     /// write inner. Inner Some("") / whitespace-only collapses to
     /// NULL.
@@ -240,38 +241,26 @@ pub fn update(conn: &Connection, id: &str, input: UpdateCrewInput) -> Result<Cre
     let purpose = input.purpose.unwrap_or(existing.purpose);
     let goal = input.goal.unwrap_or(existing.goal);
     validate_crew_goal(goal.as_deref())?;
-    let orchestrator_policy = input
-        .orchestrator_policy
-        .unwrap_or(existing.orchestrator_policy);
     let system_prompt_addendum = match input.system_prompt_addendum {
         Some(inner) => normalize_addendum(inner),
         None => existing.system_prompt_addendum,
     };
 
-    let policy_raw = match orchestrator_policy.as_ref() {
-        Some(v) => Some(serde_json::to_string(v)?),
-        None => None,
-    };
     let ts = now().to_rfc3339();
 
+    // `orchestrator_policy` is deprecated (superseded by
+    // `system_prompt_addendum`) and intentionally not written here — the
+    // column is retained for existing rows but no longer maintained. See
+    // #247.
     conn.execute(
         "UPDATE crews
             SET name = ?1,
                 purpose = ?2,
                 goal = ?3,
-                orchestrator_policy = ?4,
-                system_prompt_addendum = ?5,
-                updated_at = ?6
-          WHERE id = ?7",
-        params![
-            name,
-            purpose,
-            goal,
-            policy_raw,
-            system_prompt_addendum,
-            ts,
-            id,
-        ],
+                system_prompt_addendum = ?4,
+                updated_at = ?5
+          WHERE id = ?6",
+        params![name, purpose, goal, system_prompt_addendum, ts, id],
     )?;
     get(conn, id)
 }

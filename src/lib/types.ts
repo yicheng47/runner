@@ -14,6 +14,9 @@ export interface Crew {
   name: string;
   purpose: string | null;
   goal: string | null;
+  /** @deprecated (#247) superseded by `system_prompt_addendum` as the
+   *  single crew-level prompt layer. Still returned for existing rows,
+   *  but no longer written or spliced into any prompt. Not editable. */
   orchestrator_policy: unknown | null;
   /** Layer-2 team conventions text. Spliced between the platform
    *  preamble and the runner persona on mission spawns only;
@@ -229,7 +232,7 @@ export interface UpdateCrewInput {
   name?: string;
   purpose?: string | null;
   goal?: string | null;
-  orchestrator_policy?: unknown | null;
+  // orchestrator_policy is deprecated (#247) and no longer writable.
   /** Omit to leave existing untouched; pass null to clear; pass a
    *  non-empty string to set. */
   system_prompt_addendum?: string | null;

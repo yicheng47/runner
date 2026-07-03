@@ -23,6 +23,10 @@ pub struct Crew {
     pub name: String,
     pub purpose: Option<String>,
     pub goal: Option<String>,
+    /// DEPRECATED (#247): superseded by `system_prompt_addendum` as the
+    /// single crew-level prompt layer. The column is retained for
+    /// existing rows and still read here, but it is no longer written or
+    /// spliced into any prompt. Do not add new reads.
     pub orchestrator_policy: Option<serde_json::Value>,
     /// Layer-2 team conventions text. Spliced between the platform
     /// preamble and the runner persona on mission spawns only;

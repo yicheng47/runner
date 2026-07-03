@@ -634,7 +634,7 @@ crews (
   name TEXT NOT NULL,
   purpose TEXT,                       -- short prose shown in Crew Detail; optional
   goal TEXT,                          -- default mission goal
-  orchestrator_policy TEXT,           -- reserved for future routing policy
+  orchestrator_policy TEXT,           -- DEPRECATED (#247): superseded by system_prompt_addendum; retained but unused
   system_prompt_addendum TEXT,        -- Layer-2 team conventions; nullable
   created_at TEXT, updated_at TEXT
 );
