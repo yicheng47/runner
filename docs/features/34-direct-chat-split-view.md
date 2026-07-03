@@ -30,9 +30,9 @@ Direct chats are one-at-a-time: `/chats/:sessionId` shows a single chat and you 
 
 ## Implementation Notes
 
-- `RunnerChat` already mounts every direct chat in a hidden stack; split view shows 2–3 of those already-mounted panes at once (portal re-parenting, no remount). See impl plan [0020](../impls/0020-direct-chat-split-view.md).
+- `RunnerChat` already mounts every direct chat in a hidden stack; split view shows 2–3 of those already-mounted panes at once by geometry-syncing each visible terminal's wrapper onto its pane's body rect — the terminals' React tree position never changes, so no remount by construction. (Portal re-parenting was rejected: React remounts portal children when the container changes.) See impl plan [0020](../impls/0020-direct-chat-split-view.md), decision 4.
 - Layout state lives in a small module store shared by `RunnerChat` and `Sidebar`; cleared when the chat surface unmounts.
-- The multi-window duplicate-subject gate (impl 0018) applies per pane: a session owned by another window shows the overlay in its pane only.
+- The multi-window duplicate-subject gate (impl 0018) applies per pane: the window registry stores a list of subjects per window and `RunnerChat` reports every visible pane's session, so a session owned by another window shows the overlay in its pane only (impl 0020, decision 9).
 - Design: `design/runners-design.pen` — `Layout picker popup`, `Runner direct chat — 2-pane split`, `— 3-pane split`, `— 2-pane split, empty pane`.
 
 ## Verification

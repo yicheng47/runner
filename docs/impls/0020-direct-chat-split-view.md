@@ -26,12 +26,12 @@ Direct chats are one-at-a-time: `RunnerChat` (`/chats/:sessionId`) shows a singl
 1. **Layout picker, not drag-tab-to-edge.** Discoverable, no HTML5 DnD, and presets cover every real arrangement at ≤3 panes. (Carried over from the mission-split pivot.)
 2. **Per-pane header + focus ring**, not a shared tab strip. Direct chats have no tab strip today, and the Pencil mock validated per-pane chrome as the way to show each pane's identity.
 3. **A chat lives in exactly one pane.** One `RunnerTerminal` per session (already true); the layout maps sessionId → pane slot. Loading a chat into a pane clears it from any other slot.
-4. **Visible panes re-parent the existing mounted terminals.** Pane slots are portal targets: each visible session's terminal renders via `createPortal` into its pane body, so layout changes re-parent DOM without unmounting — xterm buffers, scrollback, and the stdin pipe survive. Hidden sessions keep today's `hidden` stack behavior. (Fallback if portals fight the absolute-stack styling: keep terminals in the flat stack and geometry-sync each visible one to its pane rect.)
+4. **Terminals stay in the flat stack; visible ones geometry-sync to their pane rect.** Each visible session's absolutely-positioned wrapper is imperatively sized/positioned onto its pane's body rect (a `ResizeObserver` per pane body keeps them glued through gutter drags, window resizes, and panel toggles); hidden sessions keep today's `hidden` stack behavior. The terminals' React tree position never changes, so xterm never remounts — by construction, not by convention. *Rejected:* portal re-parenting (the original default). React's reconciler remounts a portal's children whenever the portal container changes — `updatePortal` in `ReactChildFiber` reuses the fiber only when `current.stateNode.containerInfo === portal.containerInfo` — so retargeting a terminal's portal to a different pane body destroys and recreates the xterm subtree, which is exactly the remount this feature exists to avoid (review finding on PR #244).
 5. **`react-resizable-panels` for gutters** (new dep, ~5kb, no peer deps). Presets construct fixed 1–2 level trees; the lib handles resize/min-max/keyboard. `RunnerTerminal.fit()` refits on gutter drag (debounced) — same contract as the existing panel-collapse refit.
 6. **Layout is in-memory, per window, chat-surface-scoped.** A module-level store (shared by `RunnerChat` + `Sidebar` via `useSyncExternalStore`) holds the pane tree + focused pane. Route param changes inside `/chats/*` do not reset it; navigating to a non-chat surface clears it. No persistence in v1.
 7. **URL stays `/chats/:sessionId` = the focused pane's chat.** Focusing a pane or loading a chat into the focused pane navigates (replace) so refresh/deep-link keeps working; a deep link opens single-pane as today unless a layout is already live.
 8. **Close pane ≠ stop session.** `Cmd+W` while split collapses the focused pane (sibling reflows); the chat keeps running in the hidden pool. Single-pane `Cmd+W` keeps its current behavior.
-9. **Multi-window (impl 0018) still wins.** The duplicate-subject gate is per session: a pane whose session is owned by another window shows the overlay in that pane and mounts no PTY input, same rules as today.
+9. **Multi-window (impl 0018) still wins, via a multi-subject registry.** The one-subject-per-window registry couldn't arbitrate a split window: showing chats A+B while focused on A left B unreported, so another window could claim B and both would mount B's PTY (review finding on PR #244). The registry now stores `subjects: Vec<Subject>` per window (`window_report_subjects`); RunnerChat reports every visible pane's session, and the duplicate-subject gate runs per session: a pane whose session is owned by a later-focused window shows the overlay in that pane and mounts no terminal, same primary/secondary rules as today. MissionWorkspace keeps its single-subject wrapper.
 10. **Sidebar shows pane state in place.** Every pane-open row gets the selected fill; the focused pane's row adds a 2px accent bar. Rows highlight wherever they sit in the CHAT list — no reordering. *Considered:* a marker icon instead of fill for non-focused panes (keeps "selected" unique but under-communicates what's on screen) and a VS Code-style "on screen" section at the top of the list (strongest overview, but reorders rows on split and is overkill at ≤3 panes). In-place highlight wins: zero new components and the accent bar ties directly to the pane focus ring.
 11. **Right rail shows the focused session only.** *Considered:* stacking cards for all visible panes — but 320px split three ways leaves room for name + status, which the pane headers already show, and it stacks multiple Stop/Archive buttons (misclick surface for destructive actions on the wrong session). Inspector-follows-selection matches how the topbar and URL already behave. If real use shows a gap, the cheap future addition is a slim "also on screen" strip (other panes' names + status dots, click to jump focus) — not built in v1.
 
@@ -74,9 +74,9 @@ Mocked in `design/runners-design.pen`:
 
 ### Phase 3 — render the pane tree
 
-- `RunnerChat` center area: single-pane path renders exactly as today; multi-pane renders `<PanelGroup>`/`<Panel>`/`<PanelResizeHandle>` from the tree.
-- Each pane: header (name/chip/status from `directSessions`) + body; the body is a portal target for that session's already-mounted terminal. Empty panes render the empty state and auto-open `StartChatModal` (target-pane mode, runner preselected).
-- Debounced `fit()` on gutter drag and preset change.
+- `RunnerChat` center area: single-pane path renders exactly as today; multi-pane renders `<Group>`/`<Panel>`/`<Separator>` from the tree as a chrome layer (headers, focus ring, gutters, empty states) with the flat terminal stack geometry-synced onto the pane bodies (decision 4).
+- Each pane: header (name/chip/status) + body; the body is the geometry target the session's already-mounted terminal wrapper is glued to. Empty panes render the empty state and auto-open `StartChatModal` (target-pane mode, runner preselected).
+- `RunnerTerminal`'s own `ResizeObserver` refits on gutter drag (dims-deduped) — same contract as the existing panel-collapse refit.
 
 ### Phase 4 — sidebar + modal integration
 
@@ -96,16 +96,17 @@ Mocked in `design/runners-design.pen`:
 ## Relevant Code
 
 - `src/App.tsx:90` — `/chats/:sessionId` route.
-- `src/pages/RunnerChat.tsx:104-136` — `DirectSessionPane`, `directSessions`, `terminalsRef`; `:1139-1260` — the absolute pane stack (`active ? "block" : "hidden"`) this builds on; topbar Stop button for picker placement.
-- `src/components/Sidebar.tsx:237,949-957` — `creatingChat` + `StartChatModal` wiring; `:1056` — `NewChatNavRow`.
-- `src/components/StartChatModal.tsx` — gains `defaultRunnerId` / target-pane `onStarted`.
-- `src/components/RunnerTerminal.tsx` — `fit()` on resize; portal re-parent must not remount it.
-- `src/lib/windowFocus.ts` — `isSecondaryFor` per-session gate (unchanged).
-- `package.json` — add `react-resizable-panels`.
+- `src/pages/RunnerChat.tsx` — `DirectSessionPane`, `directSessions`, the absolute pane stack (`active ? "block" : "hidden"`) this builds on; topbar Stop button for picker placement; gains the pane chrome renderers + geometry sync.
+- `src/components/Sidebar.tsx` — `creatingChat` + `StartChatModal` wiring; chat rows gain pane-open fill + focused accent bar.
+- `src/components/StartChatModal.tsx` — gains `defaultRunnerId` (target-pane `onStarted` stays caller-owned).
+- `src/components/RunnerTerminal.tsx` — `fit()` on resize; gains `autoFocus` (a sibling pane's activation must not steal focus) and a `focus()` handle method.
+- `src/lib/windowFocus.ts` + `src/lib/types.ts` + `src/lib/api.ts` — multi-subject reporting (`useReportSubjects`, `WindowEntry.subjects`).
+- `src-tauri/src/windows.rs` + `src-tauri/src/commands/window.rs` — registry stores `Vec<Subject>` per window; `window_report_subjects`.
+- `package.json` — add `react-resizable-panels` (v4 `Group`/`Panel`/`Separator` API) and `vitest` (dev; first frontend unit-test runner, wired into CI).
 
-## Open Questions
+## Resolved Questions
 
-- Portal re-parenting vs geometry-sync for keeping xterm DOM alive across layout changes — spike first in Phase 3; both keep the component mounted, portals are the cleaner default.
+- Portal re-parenting vs geometry-sync — resolved for geometry-sync without a runtime spike: React's reconciler keys portals by `containerInfo` identity, so retargeting remounts children (decision 4). Geometry-sync keeps the terminals' tree position fixed, which makes no-remount structural.
 - Whether `applyPreset` should pull recently-active chats into empty slots instead of leaving them empty — v1 leaves them empty (explicit beats implicit; the modal opens immediately anyway).
 
 ## References
