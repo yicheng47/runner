@@ -150,7 +150,7 @@ pub async fn session_resize(
     cols: u16,
     rows: u16,
 ) -> Result<()> {
-    state.sessions.resize(&session_id, cols, rows)
+    state.sessions.resize(&session_id, cols, rows, &state.db)
 }
 
 #[tauri::command]

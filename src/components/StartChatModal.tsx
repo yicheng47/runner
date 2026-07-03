@@ -28,6 +28,11 @@ interface StartChatModalProps {
   /** Called after spawn (and rename if title was provided). Caller owns
    *  navigation to the spawned chat URL. */
   onStarted: (spawned: SpawnedSession) => void;
+  /** Preselect this runner instead of the first in the list, and force
+   *  runner mode for the open. Split chat's empty-pane flow (impl 0020)
+   *  passes the focused chat's runner so the same config is one Enter
+   *  away; the picker stays fully changeable. */
+  defaultRunnerId?: string;
 }
 
 type ChatMode = "runner" | "runtime";
@@ -37,6 +42,7 @@ export function StartChatModal({
   open,
   onClose,
   onStarted,
+  defaultRunnerId,
 }: StartChatModalProps) {
   const formId = useId();
   const runnerPickerButtonId = `${formId}-runner`;
@@ -91,6 +97,13 @@ export function StartChatModal({
   // closes a stale-write race: if the user opens then closes (or
   // reopens) before the promise resolves, the late `.then()` would
   // otherwise undo the close-path's wipe and flash prior state.
+  // Force runner mode when the caller asks for a preselected runner —
+  // a persisted "runtime" mode would otherwise hide the preselection.
+  // Doesn't touch the persisted preference; close-path reset restores it.
+  useEffect(() => {
+    if (open && defaultRunnerId) setModeState("runner");
+  }, [open, defaultRunnerId]);
+
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -98,7 +111,10 @@ export function StartChatModal({
       .list()
       .then((rows) => {
         if (cancelled) return;
-        const first = rows[0] ?? null;
+        const preselected = defaultRunnerId
+          ? (rows.find((r) => r.id === defaultRunnerId) ?? null)
+          : null;
+        const first = preselected ?? rows[0] ?? null;
         setRunners(rows);
         setRunnerId(first?.id ?? "");
         // Atomic initial title fill — the ref is the authoritative
@@ -115,7 +131,7 @@ export function StartChatModal({
     return () => {
       cancelled = true;
     };
-  }, [open, mode]);
+  }, [open, mode, defaultRunnerId]);
 
   useEffect(() => {
     if (!open) return;

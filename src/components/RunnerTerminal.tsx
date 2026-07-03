@@ -58,6 +58,22 @@ interface ExitEvent {
 const MAX_PENDING_LIVE_EVENTS = 4096;
 const SIDEBAR_TOGGLE_EVENT = "runner:toggle-sidebar";
 const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
+const CHAT_PANE_CYCLE_EVENT = "runner:cycle-chat-pane";
+
+// Rebuild peer terminals' WebGL glyph atlases when a new WebGL context
+// comes up (or one is lost). Split chat paints several canvases
+// concurrently (impl 0020), and context churn can evict glyph textures
+// under WKWebView's GPU memory pressure — affected peers keep correct
+// layout and colors but draw the WRONG GLYPH for every cell painted
+// afterwards (dogfooding: "gibberish" panes after starting/resuming a
+// sibling). Clearing the atlas forces re-rasterization; the refresh
+// repaints from xterm's in-memory grid — no PTY round-trip, cheap.
+const atlasPeers = new Set<() => void>();
+function refreshAtlasPeers(except: () => void): void {
+  for (const cb of atlasPeers) {
+    if (cb !== except) cb();
+  }
+}
 
 function normalizePasteImageMime(type: string): PasteImageMimeType | null {
   switch (type.trim().toLowerCase()) {
@@ -103,6 +119,12 @@ interface RunnerTerminalProps {
    *  terminal may still be disabled, e.g. a stopped mission slot that
    *  should replay dimmed scrollback without accepting input. */
   active?: boolean;
+  /** Whether activation may steal keyboard focus. Defaults to true (the
+   *  single-visible-terminal surfaces want focus to follow activation).
+   *  Split chat (impl 0020) shows several active terminals at once and
+   *  passes false for every pane except the focused one, so mounting a
+   *  sibling pane can't yank keystrokes away from the focused chat. */
+  autoFocus?: boolean;
   /** Stop forwarding keystrokes / resize events to the backend.
    *  Set by the parent when the bound session has exited so stray
    *  input on the dimmed pane doesn't surface a "session not found"
@@ -126,6 +148,9 @@ export interface RunnerTerminalHandle {
    * container has no measurable size (e.g. hidden via `display:none`).
    */
   measure(): { cols: number; rows: number } | null;
+  /** Grab keyboard focus (no-op while disabled). Split chat calls this
+   *  when pane focus moves without a remount, e.g. a pane-header click. */
+  focus(): void;
 }
 
 /**
@@ -155,7 +180,7 @@ export const RunnerTerminal = forwardRef<
   RunnerTerminalHandle,
   RunnerTerminalProps
 >(function RunnerTerminal(
-  { sessionId, runnerRuntime, onExit, onError, active, disabled },
+  { sessionId, runnerRuntime, onExit, onError, active, autoFocus, disabled },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -184,6 +209,8 @@ export const RunnerTerminal = forwardRef<
   // closures don't capture a stale value across the long-lived
   // terminal effect.
   const disabledRef = useRef<boolean>(disabled ?? false);
+  // Mirrors `autoFocus` for the activation effect below.
+  const autoFocusRef = useRef<boolean>(autoFocus ?? true);
   // Last (cols, rows) pushed to the backend. Shared between `pushSize`
   // (mount-effect scope) and the activation effect's trailing resize so
   // neither hammers the backend with identical dims. During a drag both
@@ -252,6 +279,10 @@ export const RunnerTerminal = forwardRef<
     activeRef.current = active ?? false;
   }, [active]);
 
+  useEffect(() => {
+    autoFocusRef.current = autoFocus ?? true;
+  }, [autoFocus]);
+
   const refreshActiveTerminal = useCallback(
     ({
       focus = false,
@@ -314,7 +345,17 @@ export const RunnerTerminal = forwardRef<
         // calls are kernel no-ops on macOS/Linux, so we perturb rows
         // only: width stays constant, avoiding hard-wrapped narrow
         // lines in scrollback, while both ioctls still emit SIGWINCH.
-        const skipLocalClear = replayJustDrainedRef.current;
+        //
+        // Skip the local clear when the grid size hasn't changed since
+        // the last push: the clear exists to stop reflow stacking, and
+        // with unchanged dims codex overdraws in place — clearing first
+        // discards SGR background cells (the gray input box) that the
+        // SIGWINCH repaint doesn't re-emit. Fresh split panes hit this
+        // on activation right after their first paint (impl 0020).
+        const dimsUnchanged =
+          cols === lastPushedColsRef.current &&
+          rows === lastPushedRowsRef.current;
+        const skipLocalClear = replayJustDrainedRef.current || dimsUnchanged;
         if (runtimeClearsOnResize(runnerRuntimeRef.current) && !skipLocalClear) {
           t.write("\x1b[2J\x1b[H");
         }
@@ -384,17 +425,34 @@ export const RunnerTerminal = forwardRef<
     // and the canvas freezes mid-frame. Disposing the addon on loss
     // lets xterm fall back to the DOM renderer for the rest of this
     // mount — degraded but functional, no more frozen panes.
+    // Own atlas-rebuild hook, registered with the peer set below. Also
+    // the callback peers invoke on us when THEIR context churns.
+    const refreshOwnAtlas = () => {
+      try {
+        webglRef.current?.clearTextureAtlas();
+        const t = termRef.current;
+        if (t) t.refresh(0, Math.max(0, t.rows - 1));
+      } catch {
+        // renderer teardown mid-flight
+      }
+    };
     try {
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => {
         webgl.dispose();
         webglRef.current = null;
+        // A lost context is GPU churn peers may have felt too.
+        refreshAtlasPeers(refreshOwnAtlas);
       });
       term.loadAddon(webgl);
       webglRef.current = webgl;
     } catch {
       // No WebGL — fall through to canvas. RunnerChat does the same.
     }
+    atlasPeers.add(refreshOwnAtlas);
+    // This mount just created a WebGL context — peers' glyph textures may
+    // have been evicted by it; have them re-rasterize.
+    if (webglRef.current) refreshAtlasPeers(refreshOwnAtlas);
     const initialRect = containerRef.current.getBoundingClientRect();
     if (initialRect.width > 0 && initialRect.height > 0) {
       fit.fit();
@@ -460,29 +518,33 @@ export const RunnerTerminal = forwardRef<
           window.dispatchEvent(new Event(SIDEBAR_TOGGLE_EVENT));
           return false;
         }
+        // Bracket pair, iTerm2-style: plain Cmd+[ / Cmd+] cycles split-pane
+        // focus (impl 0020; no-op outside a split chat), Cmd+Shift+[ /
+        // Cmd+Shift+] navigates sidebar pages. Shifted brackets arrive as
+        // "{" / "}" on US layouts, hence the code-first match.
         if (
           !e.altKey &&
-          !e.shiftKey &&
-          (e.key === "[" || e.code === "BracketLeft")
+          (e.code === "BracketLeft" || e.key === "[" || e.key === "{")
         ) {
           e.preventDefault();
           window.dispatchEvent(
-            new CustomEvent(SIDEBAR_NAVIGATE_EVENT, {
-              detail: { direction: "previous" },
-            }),
+            new CustomEvent(
+              e.shiftKey ? SIDEBAR_NAVIGATE_EVENT : CHAT_PANE_CYCLE_EVENT,
+              { detail: { direction: "previous" } },
+            ),
           );
           return false;
         }
         if (
           !e.altKey &&
-          !e.shiftKey &&
-          (e.key === "]" || e.code === "BracketRight")
+          (e.code === "BracketRight" || e.key === "]" || e.key === "}")
         ) {
           e.preventDefault();
           window.dispatchEvent(
-            new CustomEvent(SIDEBAR_NAVIGATE_EVENT, {
-              detail: { direction: "next" },
-            }),
+            new CustomEvent(
+              e.shiftKey ? SIDEBAR_NAVIGATE_EVENT : CHAT_PANE_CYCLE_EVENT,
+              { detail: { direction: "next" } },
+            ),
           );
           return false;
         }
@@ -769,6 +831,7 @@ export const RunnerTerminal = forwardRef<
     fitRef.current = fit;
 
     return () => {
+      atlasPeers.delete(refreshOwnAtlas);
       ro.disconnect();
       window.removeEventListener("resize", refitAndPush);
       window.removeEventListener("focus", onWindowFocus);
@@ -984,7 +1047,10 @@ export const RunnerTerminal = forwardRef<
 
     const activate = () => {
       if (cancelled) return;
-      refreshActiveTerminal({ focus: true, forceResizeDance: true });
+      refreshActiveTerminal({
+        focus: autoFocusRef.current,
+        forceResizeDance: true,
+      });
     };
 
     raf1 = window.requestAnimationFrame(() => {
@@ -1001,6 +1067,9 @@ export const RunnerTerminal = forwardRef<
   useImperativeHandle(
     ref,
     () => ({
+      focus: () => {
+        if (!disabledRef.current) termRef.current?.focus();
+      },
       measure: () => {
         const t = termRef.current;
         const fit = fitRef.current;
