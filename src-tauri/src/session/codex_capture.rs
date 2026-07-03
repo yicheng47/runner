@@ -15,11 +15,14 @@
 // spawned pid. When no pid-owned rollout is available, a Runner-owned
 // prompt marker can identify the rollout that belongs to this exact
 // session row. If neither proof exists, the guarded fallback only
-// accepts a single matching cwd + start-time rollout. Ambiguous
-// matches fail closed and leave `sessions.agent_session_key` NULL.
-// The next `session_resume` for this row then drives
-// `codex resume <uuid>` via the runtime adapter when a key was safely
-// captured.
+// accepts a single matching cwd + start-time rollout that no sibling
+// row could equally own. Ambiguity defers rather than aborts: sibling
+// watchers keep polling, and each pid-proven claim shrinks the
+// unclaimed set until the rest disambiguate (split chats spawn codex
+// siblings in one cwd routinely). Only the 30s deadline fails closed
+// and leaves `sessions.agent_session_key` NULL. The next
+// `session_resume` for this row then drives `codex resume <uuid>` via
+// the runtime adapter when a key was safely captured.
 //
 // The thread is bounded (30s timeout, 400ms poll interval) and best-
 // effort: if the rollout never appears (codex crashed, $HOME differs,
@@ -128,41 +131,55 @@ fn run(request: CaptureRequest) {
 
         match scan {
             CaptureScan::Unique(candidate) => {
-                if source == ScanSource::Fallback
-                    && !fallback_row_is_unambiguous(
+                // A fallback-sourced match additionally needs this row to
+                // be the only plausible owner. When a same-cwd sibling row
+                // exists (split chats spawn codex siblings in one cwd
+                // routinely — impl 0020), don't guess — but keep polling
+                // rather than giving up: the pid path can still prove
+                // ours, and once the sibling's watcher captures its
+                // rollout (dropping its NULL key), this row becomes
+                // unambiguous on a later poll.
+                let row_ok = source != ScanSource::Fallback
+                    || fallback_row_is_unambiguous(
                         &request.pool,
                         &request.session_id,
                         &request.expected_row_started_at,
                         &request.spawn_cwd,
-                    )
-                {
+                    );
+                if row_ok {
+                    // Race guard: another watcher may have already
+                    // captured this rollout (sibling chat in the same cwd).
+                    // The first to insert into the process-shared set wins.
+                    let claimed = claimed_rollouts()
+                        .lock()
+                        .unwrap()
+                        .insert(candidate.path.clone());
+                    if !claimed {
+                        done.insert(candidate.path);
+                        continue;
+                    }
+                    if persist_capture(
+                        &request.pool,
+                        &request.session_id,
+                        &request.expected_row_started_at,
+                        &candidate.id,
+                    ) {
+                        request.events.updated(&SessionUpdatedEvent {
+                            session_id: request.session_id.clone(),
+                            mission_id: request.mission_id.clone(),
+                        });
+                    }
                     return;
                 }
-                // Race guard: another watcher may have already
-                // captured this rollout (sibling chat in the same cwd).
-                // The first to insert into the process-shared set wins.
-                let claimed = claimed_rollouts()
-                    .lock()
-                    .unwrap()
-                    .insert(candidate.path.clone());
-                if !claimed {
-                    done.insert(candidate.path);
-                    continue;
-                }
-                if persist_capture(
-                    &request.pool,
-                    &request.session_id,
-                    &request.expected_row_started_at,
-                    &candidate.id,
-                ) {
-                    request.events.updated(&SessionUpdatedEvent {
-                        session_id: request.session_id.clone(),
-                        mission_id: request.mission_id.clone(),
-                    });
-                }
-                return;
             }
-            CaptureScan::Ambiguous => return,
+            CaptureScan::Ambiguous => {
+                // Two or more unclaimed candidates. Keep polling instead
+                // of failing closed immediately: sibling watchers claim
+                // their rollouts as their pid proofs land, shrinking the
+                // unclaimed set until ours is unique. Returning here was
+                // the split-pane NULL-key bug — concurrent same-cwd codex
+                // spawns permanently forfeited every sibling's key.
+            }
             CaptureScan::None => {}
         }
         if Instant::now() > deadline {
