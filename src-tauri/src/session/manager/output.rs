@@ -414,14 +414,20 @@ impl SessionManager {
 
 /// Whether the session's agent runtime fully repaints on SIGWINCH — the
 /// same set the frontend's `runtimeClearsOnResize` gates its local
-/// viewport clear on. Best-effort: a DB miss keeps the buffer.
-fn runtime_clears_on_resize(session_id: &str, pool: &DbPool) -> bool {
+/// viewport clear on. Runner-backed sessions leave
+/// `sessions.agent_runtime` NULL and carry their runtime on the runner
+/// row, hence the COALESCE join (same pattern as the direct-chat
+/// queries). Best-effort: a DB miss keeps the buffer.
+pub(super) fn runtime_clears_on_resize(session_id: &str, pool: &DbPool) -> bool {
     let Ok(conn) = pool.get() else {
         return false;
     };
     let runtime = conn
         .query_row(
-            "SELECT agent_runtime FROM sessions WHERE id = ?1",
+            "SELECT COALESCE(s.agent_runtime, r.runtime)
+               FROM sessions s
+               LEFT JOIN runners r ON r.id = s.runner_id
+              WHERE s.id = ?1",
             params![session_id],
             |r| r.get::<_, Option<String>>(0),
         )

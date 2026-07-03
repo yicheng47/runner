@@ -2545,3 +2545,63 @@ fn enter_claude_launch_gate_first_claude_does_not_sleep() {
         elapsed.as_millis()
     );
 }
+
+// Regression for the resize buffer purge (impl 0020 dogfooding): the
+// runtime lookup must resolve runner-backed sessions too, where
+// `sessions.agent_runtime` is NULL and the runtime lives on the runner
+// row — the common "Chat now" / mission path. A shell runner must NOT
+// purge (no SIGWINCH repaint would rebuild its history).
+#[test]
+fn runtime_clears_on_resize_resolves_runner_backed_runtimes() {
+    let pool = db::open_in_memory().unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    let conn = pool.get().unwrap();
+    for (runner_id, runtime) in [("r-codex", "codex"), ("r-shell", "shell")] {
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, ?1, ?1, ?2, '/bin/cat',
+                         NULL, NULL, NULL, NULL, ?3, ?3)",
+            params![runner_id, runtime, now],
+        )
+        .unwrap();
+    }
+    // Runner-backed rows: agent_runtime stays NULL.
+    conn.execute(
+        "INSERT INTO sessions (id, mission_id, runner_id, cwd, status, started_at)
+             VALUES ('s-codex-runner', NULL, 'r-codex', '/tmp', 'running', ?1)",
+        params![now],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO sessions (id, mission_id, runner_id, cwd, status, started_at)
+             VALUES ('s-shell-runner', NULL, 'r-shell', '/tmp', 'running', ?1)",
+        params![now],
+    )
+    .unwrap();
+    // Runtime-only chat: no runner row, agent_runtime column set.
+    conn.execute(
+        "INSERT INTO sessions
+                (id, mission_id, runner_id, cwd, status, started_at, agent_runtime)
+             VALUES ('s-claude-runtime', NULL, NULL, '/tmp', 'running', ?1, 'claude-code')",
+        params![now],
+    )
+    .unwrap();
+    drop(conn);
+
+    assert!(super::output::runtime_clears_on_resize(
+        "s-codex-runner",
+        &pool
+    ));
+    assert!(super::output::runtime_clears_on_resize(
+        "s-claude-runtime",
+        &pool
+    ));
+    assert!(!super::output::runtime_clears_on_resize(
+        "s-shell-runner",
+        &pool
+    ));
+    assert!(!super::output::runtime_clears_on_resize("s-missing", &pool));
+}
