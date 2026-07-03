@@ -72,6 +72,10 @@ import {
   type PresetKind,
 } from "../lib/paneLayout";
 import {
+  pinnedSessionIds,
+  shouldInheritPinOnAdd,
+} from "../lib/groupPinning";
+import {
   isSecondaryFor,
   useCurrentWindowLabel,
   useReportSubjects,
@@ -129,6 +133,27 @@ interface DirectSessionPane {
   label: string;
   status: SessionStatus;
   exitCode: number | null;
+}
+
+// A chat spawned into a group with a pinned member inherits the pin so
+// the sidebar keeps the group in one cluster (never unpins on add).
+// Fresh fetch rather than this page's `recentRows`: pins toggled from
+// the sidebar don't flow into that cache. The sidebar reorders off the
+// `session/updated` emit from session_pin.
+async function inheritGroupPin(
+  existingMemberIds: string[],
+  newSessionId: string,
+): Promise<void> {
+  try {
+    const rows = await api.session.listRecentDirect();
+    if (
+      shouldInheritPinOnAdd(existingMemberIds, pinnedSessionIds(rows), newSessionId)
+    ) {
+      await api.session.pin(newSessionId, true);
+    }
+  } catch (e) {
+    console.error("RunnerChat: group pin inherit failed", e);
+  }
 }
 
 type DirectChatDisplayStatus = SessionActivityState | "stopped" | "crashed";
@@ -1745,8 +1770,11 @@ export default function RunnerChat() {
           const target = paneModalTarget;
           setPaneModalTarget(null);
           if (target) {
+            // Read members before the assign fills the target pane.
+            const memberIds = visibleSessionIds(getPaneLayout().root);
             assignSessionToPane(target, spawned.id);
             focusPane(target);
+            void inheritGroupPin(memberIds, spawned.id);
           }
           navigate(`/chats/${spawned.id}`, {
             state: { sessionStatus: "running" },
