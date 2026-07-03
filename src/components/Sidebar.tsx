@@ -825,6 +825,12 @@ export function Sidebar({
             // Read members before the assign fills the focused pane.
             const memberIds = visibleSessionIds(chatLayout.root);
             assignSessionToPane(chatLayout.focusedPaneId, entry.session_id);
+            reportSubjectsNow(
+              visibleSessionIds(getPaneLayout().root).map((value) => ({
+                type: "DirectChat",
+                value,
+              })),
+            );
             // A chat added to a group with a pinned member inherits the
             // pin, so the group stays one sidebar cluster (add never
             // unpins).
