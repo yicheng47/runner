@@ -127,25 +127,23 @@ impl SessionManager {
                 && !was_killed
                 && started_at.elapsed() < std::time::Duration::from_secs(3);
             let final_status = if success || was_killed {
-                "stopped"
+                crate::model::SessionStatus::Stopped
             } else {
-                "crashed"
+                crate::model::SessionStatus::Crashed
             };
             if let Ok(conn) = pool.get() {
                 if resume_failed {
-                    let _ = conn.execute(
-                        "UPDATE sessions
-                            SET status = ?1, stopped_at = ?2,
-                                agent_session_key = NULL
-                          WHERE id = ?3",
-                        params!["crashed", Utc::now().to_rfc3339(), session_id],
+                    let _ = crate::repo::session::set_crashed_clearing_key(
+                        &conn,
+                        &session_id,
+                        Utc::now(),
                     );
                 } else {
-                    let _ = conn.execute(
-                        "UPDATE sessions
-                            SET status = ?1, stopped_at = ?2
-                          WHERE id = ?3",
-                        params![final_status, Utc::now().to_rfc3339(), session_id],
+                    let _ = crate::repo::session::set_exit_status(
+                        &conn,
+                        &session_id,
+                        final_status,
+                        Utc::now(),
                     );
                 }
             }

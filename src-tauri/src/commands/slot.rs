@@ -29,7 +29,7 @@ use crate::{
     commands::runner,
     error::{Error, Result},
     model::{Slot, SlotWithRunner, Timestamp},
-    AppState,
+    repo, AppState,
 };
 
 /// One crew that a given runner template is referenced by, plus the
@@ -96,46 +96,16 @@ pub(super) fn repack_positions(conn: &Connection, crew_id: &str) -> Result<()> {
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
     for (i, id) in ordered.iter().enumerate() {
-        conn.execute(
-            "UPDATE slots SET position = ?1 WHERE id = ?2",
-            params![-(i as i64) - 1, id],
-        )?;
+        repo::slot::set_position(conn, id, -(i as i64) - 1)?;
     }
     for (position, id) in ordered.iter().enumerate() {
-        conn.execute(
-            "UPDATE slots SET position = ?1 WHERE id = ?2",
-            params![position as i64, id],
-        )?;
+        repo::slot::set_position(conn, id, position as i64)?;
     }
     Ok(())
 }
 
-fn row_to_slot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Slot> {
-    let lead: i64 = row.get("lead")?;
-    let added_at_raw: String = row.get("added_at")?;
-    let added_at: Timestamp = added_at_raw.parse().map_err(|e: chrono::ParseError| {
-        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-    })?;
-    Ok(Slot {
-        id: row.get("id")?,
-        crew_id: row.get("crew_id")?,
-        runner_id: row.get("runner_id")?,
-        slot_handle: row.get("slot_handle")?,
-        position: row.get("position")?,
-        lead: lead != 0,
-        added_at,
-    })
-}
-
 fn get_slot_internal(conn: &Connection, slot_id: &str) -> Result<Slot> {
-    conn.query_row(
-        "SELECT id, crew_id, runner_id, slot_handle, position, lead, added_at
-           FROM slots WHERE id = ?1",
-        params![slot_id],
-        row_to_slot,
-    )
-    .optional()?
-    .ok_or_else(|| Error::msg(format!("slot not found: {slot_id}")))
+    repo::slot::get(conn, slot_id)?.ok_or_else(|| Error::msg(format!("slot not found: {slot_id}")))
 }
 
 /// Return the slots that belong to a crew, ordered by position, each
@@ -144,15 +114,7 @@ fn get_slot_internal(conn: &Connection, slot_id: &str) -> Result<Slot> {
 /// big alias-mangled JOIN. Pre-release crews are tiny; readability
 /// wins.
 pub fn list(conn: &Connection, crew_id: &str) -> Result<Vec<SlotWithRunner>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, crew_id, runner_id, slot_handle, position, lead, added_at
-           FROM slots
-          WHERE crew_id = ?1
-          ORDER BY position ASC",
-    )?;
-    let slots: Vec<Slot> = stmt
-        .query_map(params![crew_id], row_to_slot)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let slots = repo::slot::list_for_crew(conn, crew_id)?;
 
     let mut out = Vec::with_capacity(slots.len());
     for slot in slots {
@@ -166,34 +128,19 @@ pub fn list(conn: &Connection, crew_id: &str) -> Result<Vec<SlotWithRunner>> {
 /// across every crew. Drives the Runner Detail "Crews using this
 /// runner" panel.
 pub fn list_crews_for_runner(conn: &Connection, runner_id: &str) -> Result<Vec<CrewMembership>> {
-    let mut stmt = conn.prepare(
-        "SELECT c.id AS crew_id, c.name AS crew_name,
-                sl.id AS slot_id, sl.slot_handle AS slot_handle,
-                sl.lead AS lead,
-                sl.position AS position, sl.added_at AS added_at
-           FROM slots sl
-           JOIN crews c ON c.id = sl.crew_id
-          WHERE sl.runner_id = ?1
-          ORDER BY sl.added_at DESC",
-    )?;
-    let rows = stmt.query_map(params![runner_id], |row| {
-        let added_at_raw: String = row.get("added_at")?;
-        let added_at: Timestamp = added_at_raw.parse().map_err(|e: chrono::ParseError| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-        let lead_int: i64 = row.get("lead")?;
-        Ok(CrewMembership {
-            crew_id: row.get("crew_id")?,
-            crew_name: row.get("crew_name")?,
-            slot_id: row.get("slot_id")?,
-            slot_handle: row.get("slot_handle")?,
-            lead: lead_int != 0,
-            position: row.get("position")?,
-            added_at,
+    let rows = repo::slot::list_for_runner_with_crew_name(conn, runner_id)?;
+    Ok(rows
+        .into_iter()
+        .map(|(slot, crew_name)| CrewMembership {
+            crew_id: slot.crew_id,
+            crew_name,
+            slot_id: slot.id,
+            slot_handle: slot.slot_handle,
+            lead: slot.lead,
+            position: slot.position,
+            added_at: slot.added_at,
         })
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+        .collect())
 }
 
 /// Append a new slot to `crew_id`'s roster at the next position. The
@@ -217,7 +164,7 @@ pub fn create(
     }
 
     let id = new_id();
-    let ts = now().to_rfc3339();
+    let added_at = now();
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
     let count: i64 = tx.query_row(
@@ -231,13 +178,18 @@ pub fn create(
         |r| r.get(0),
     )?;
     let is_first = count == 0;
-    let lead: i64 = if is_first { 1 } else { 0 };
 
-    tx.execute(
-        "INSERT INTO slots
-            (id, crew_id, runner_id, slot_handle, position, lead, added_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![id, crew_id, runner_id, slot_handle, next_position, lead, ts],
+    repo::slot::insert(
+        &tx,
+        &repo::slot::SlotRow {
+            id: id.clone(),
+            crew_id: crew_id.to_string(),
+            runner_id: runner_id.to_string(),
+            slot_handle: slot_handle.to_string(),
+            position: next_position,
+            lead: is_first,
+            added_at,
+        },
     )
     .map_err(|e| match e.sqlite_error_code() {
         Some(rusqlite::ErrorCode::ConstraintViolation) => Error::msg(format!(
@@ -275,15 +227,13 @@ pub fn update(
         None => existing.slot_handle.clone(),
     };
 
-    conn.execute(
-        "UPDATE slots SET slot_handle = ?1 WHERE id = ?2",
-        params![slot_handle, slot_id],
-    )
-    .map_err(|e| match e.sqlite_error_code() {
-        Some(rusqlite::ErrorCode::ConstraintViolation) => Error::msg(format!(
-            "slot_handle '{slot_handle}' is already used in this crew"
-        )),
-        _ => e.into(),
+    repo::slot::set_slot_handle(conn, slot_id, &slot_handle).map_err(|e| {
+        match e.sqlite_error_code() {
+            Some(rusqlite::ErrorCode::ConstraintViolation) => Error::msg(format!(
+                "slot_handle '{slot_handle}' is already used in this crew"
+            )),
+            _ => e.into(),
+        }
     })?;
 
     list(conn, &existing.crew_id)?
@@ -301,7 +251,7 @@ pub fn delete(conn: &mut Connection, slot_id: &str) -> Result<()> {
 
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
-    let affected = tx.execute("DELETE FROM slots WHERE id = ?1", params![slot_id])?;
+    let affected = repo::slot::delete(&tx, slot_id)?;
     if affected != 1 {
         return Err(Error::msg(format!("slot not found: {slot_id}")));
     }
@@ -317,7 +267,7 @@ pub fn delete(conn: &mut Connection, slot_id: &str) -> Result<()> {
             )
             .optional()?;
         if let Some(new_lead) = promote {
-            tx.execute("UPDATE slots SET lead = 1 WHERE id = ?1", params![new_lead])?;
+            repo::slot::promote_to_lead(&tx, &new_lead)?;
         }
     }
 
@@ -345,11 +295,8 @@ pub fn set_lead(conn: &mut Connection, slot_id: &str) -> Result<SlotWithRunner> 
     // Clear the old lead first so no schema-level uniqueness check
     // ever sees two lead=1 rows in the same crew (we removed the
     // partial unique index, but the invariant lives here).
-    tx.execute(
-        "UPDATE slots SET lead = 0 WHERE crew_id = ?1 AND lead = 1",
-        params![crew_id],
-    )?;
-    let affected = tx.execute("UPDATE slots SET lead = 1 WHERE id = ?1", params![slot_id])?;
+    repo::slot::clear_crew_lead(&tx, &crew_id)?;
+    let affected = repo::slot::promote_to_lead(&tx, slot_id)?;
     if affected != 1 {
         return Err(Error::msg(format!("slot not found: {slot_id}")));
     }
@@ -401,16 +348,10 @@ pub fn reorder(
 
     // Two-pass to avoid transient violations of UNIQUE(crew_id, position).
     for (i, id) in current.iter().enumerate() {
-        tx.execute(
-            "UPDATE slots SET position = ?1 WHERE id = ?2",
-            params![-(i as i64) - 1, id],
-        )?;
+        repo::slot::set_position(&tx, id, -(i as i64) - 1)?;
     }
     for (position, id) in ordered_slot_ids.iter().enumerate() {
-        let affected = tx.execute(
-            "UPDATE slots SET position = ?1 WHERE id = ?2",
-            params![position as i64, id],
-        )?;
+        let affected = repo::slot::set_position(&tx, id, position as i64)?;
         if affected != 1 {
             return Err(Error::msg(format!(
                 "slot_reorder: slot {id} not in crew {crew_id}"

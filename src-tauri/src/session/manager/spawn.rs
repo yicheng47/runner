@@ -263,21 +263,14 @@ impl SessionManager {
         let started_at = started_at_dt.to_rfc3339();
         {
             let conn = pool.get()?;
-            conn.execute(
-                "INSERT INTO sessions
-                    (id, mission_id, runner_id, slot_id, cwd, status, pid, started_at,
-                     agent_session_key)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'running', NULL, ?6, ?7)",
-                params![
-                    session_id,
-                    mission.id,
-                    runner.id,
-                    slot.id,
-                    resolved_cwd,
-                    started_at,
-                    plan.assigned_key
-                ],
-            )?;
+            let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
+            row.mission_id = Some(mission.id.clone());
+            row.runner_id = Some(runner.id.clone());
+            row.slot_id = Some(slot.id.clone());
+            row.cwd = resolved_cwd.clone();
+            row.started_at = Some(started_at_dt);
+            row.agent_session_key = plan.assigned_key.clone();
+            crate::repo::session::insert(&conn, &row)?;
         }
 
         Ok(PendingMissionSpawn {
@@ -413,18 +406,12 @@ impl SessionManager {
         // Persist the runtime-side identity for diagnostics and for
         // the current runtime session row.
         if let Ok(conn) = pool.get() {
-            let _ = conn.execute(
-                "UPDATE sessions
-                    SET runtime = ?2,
-                        runtime_session = ?3,
-                        pid = ?4
-                  WHERE id = ?1",
-                params![
-                    session_id,
-                    rt_session.runtime,
-                    rt_session.session_id,
-                    spawn_pid
-                ],
+            let _ = crate::repo::session::update_runtime_metadata(
+                &conn,
+                &session_id,
+                &rt_session.runtime,
+                &rt_session.session_id,
+                spawn_pid,
             );
         }
 
@@ -565,7 +552,7 @@ impl SessionManager {
             // start from a clean slate. The async mission_start path
             // takes a softer line and marks the row crashed instead.
             if let Ok(conn) = pool.get() {
-                let _ = conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id]);
+                let _ = crate::repo::session::delete(&conn, &session_id);
             }
             return Err(e);
         }
@@ -712,32 +699,21 @@ impl SessionManager {
             Self::apply_runtime_args(&mut spec, runner, &plan, first_turn.as_deref(), None);
 
         // Insert the row first so a fast-failing spawn doesn't leave
-        // a half-row.
+        // a half-row. Runtime-only chats (no persisted runner template)
+        // carry their agent identity on the row via agent_runtime /
+        // agent_command; runner-backed chats leave those NULL.
         {
             let conn = pool.get()?;
-            conn.execute(
-                "INSERT INTO sessions
-                    (id, mission_id, runner_id, cwd, status, pid, started_at,
-                     agent_session_key, agent_runtime, agent_command)
-                 VALUES (?1, NULL, ?2, ?3, 'running', NULL, ?4, ?5, ?6, ?7)",
-                params![
-                    session_id,
-                    persisted_runner_id,
-                    resolved_cwd,
-                    started_at,
-                    plan.assigned_key,
-                    if persisted_runner_id.is_none() {
-                        Some(runner.runtime.as_str())
-                    } else {
-                        None
-                    },
-                    if persisted_runner_id.is_none() {
-                        Some(runner.command.as_str())
-                    } else {
-                        None
-                    },
-                ],
-            )?;
+            let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
+            row.runner_id = persisted_runner_id.map(str::to_string);
+            row.cwd = resolved_cwd.clone();
+            row.started_at = Some(started_at_dt);
+            row.agent_session_key = plan.assigned_key.clone();
+            if persisted_runner_id.is_none() {
+                row.agent_runtime = Some(runner.runtime.clone());
+                row.agent_command = Some(runner.command.clone());
+            }
+            crate::repo::session::insert(&conn, &row)?;
         }
 
         // Same gate as the mission spawn path — direct chats are
@@ -761,7 +737,7 @@ impl SessionManager {
             Ok(p) => p,
             Err(e) => {
                 if let Ok(conn) = pool.get() {
-                    let _ = conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id]);
+                    let _ = crate::repo::session::delete(&conn, &session_id);
                 }
                 return Err(Error::msg(format!("spawn {}: {e}", runner.command)));
             }
@@ -786,18 +762,12 @@ impl SessionManager {
         let spawn_pid = self.runtime_pid(&rt_session);
 
         if let Ok(conn) = pool.get() {
-            let _ = conn.execute(
-                "UPDATE sessions
-                    SET runtime = ?2,
-                        runtime_session = ?3,
-                        pid = ?4
-                  WHERE id = ?1",
-                params![
-                    session_id,
-                    rt_session.runtime,
-                    rt_session.session_id,
-                    spawn_pid
-                ],
+            let _ = crate::repo::session::update_runtime_metadata(
+                &conn,
+                &session_id,
+                &rt_session.runtime,
+                &rt_session.session_id,
+                spawn_pid,
             );
         }
 
@@ -924,72 +894,21 @@ impl SessionManager {
         // short-lived connection. We deliberately don't hold the conn
         // across the spawn (which itself grabs a pool slot for the
         // status update).
-        struct Snapshot {
-            runner_id: Option<String>,
-            mission_id: Option<String>,
-            slot_id: Option<String>,
-            cwd: Option<String>,
-            agent_runtime: Option<String>,
-            agent_command: Option<String>,
-            agent_session_key: Option<String>,
-        }
         let snap = {
             let conn = pool.get()?;
-            let mut stmt = conn.prepare(
-                "SELECT runner_id, mission_id, slot_id, cwd, status, archived_at,
-                        agent_runtime, agent_command, agent_session_key
-                   FROM sessions WHERE id = ?1",
-            )?;
-            let row = stmt
-                .query_row(params![session_id], |r| {
-                    Ok((
-                        r.get::<_, Option<String>>("runner_id")?,
-                        r.get::<_, Option<String>>("mission_id")?,
-                        r.get::<_, Option<String>>("slot_id")?,
-                        r.get::<_, Option<String>>("cwd")?,
-                        r.get::<_, String>("status")?,
-                        r.get::<_, Option<String>>("archived_at")?,
-                        r.get::<_, Option<String>>("agent_runtime")?,
-                        r.get::<_, Option<String>>("agent_command")?,
-                        r.get::<_, Option<String>>("agent_session_key")?,
-                    ))
-                })
-                .map_err(|e| match e {
-                    rusqlite::Error::QueryReturnedNoRows => {
-                        Error::msg(format!("session not found: {session_id}"))
-                    }
-                    other => other.into(),
-                })?;
-            let (
-                runner_id,
-                mission_id,
-                slot_id,
-                cwd,
-                status,
-                archived_at,
-                agent_runtime,
-                agent_command,
-                agent_session_key,
-            ) = row;
-            if status == "running" {
+            let row = crate::repo::session::get_row(&conn, session_id)?
+                .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+            if matches!(row.status, crate::model::SessionStatus::Running) {
                 return Err(Error::msg(format!(
                     "session {session_id} is already running — attach instead"
                 )));
             }
-            if archived_at.is_some() {
+            if row.archived_at.is_some() {
                 return Err(Error::msg(format!(
                     "session {session_id} is archived — un-archive before resuming"
                 )));
             }
-            Snapshot {
-                runner_id,
-                mission_id,
-                slot_id,
-                cwd,
-                agent_runtime,
-                agent_command,
-                agent_session_key,
-            }
+            row
         };
 
         // Purge the prior session's output buffer up front. Two
@@ -1179,15 +1098,11 @@ impl SessionManager {
         // UPDATE in place: same id, same conversation thread.
         {
             let conn = pool.get()?;
-            conn.execute(
-                "UPDATE sessions
-                    SET status = 'running',
-                        pid = NULL,
-                        started_at = ?2,
-                        stopped_at = NULL,
-                        agent_session_key = COALESCE(?3, agent_session_key)
-                  WHERE id = ?1",
-                params![session_id, started_at, plan.assigned_key],
+            crate::repo::session::resume_in_place(
+                &conn,
+                session_id,
+                started_at_dt,
+                plan.assigned_key.as_deref(),
             )?;
         }
 
@@ -1204,12 +1119,11 @@ impl SessionManager {
             Err(e) => {
                 // Roll the row back to stopped so the user can retry.
                 if let Ok(conn) = pool.get() {
-                    let _ = conn.execute(
-                        "UPDATE sessions
-                            SET status = 'stopped',
-                                stopped_at = ?2
-                          WHERE id = ?1",
-                        params![session_id, Utc::now().to_rfc3339()],
+                    let _ = crate::repo::session::set_exit_status(
+                        &conn,
+                        session_id,
+                        crate::model::SessionStatus::Stopped,
+                        Utc::now(),
                     );
                 }
                 return Err(Error::msg(format!("spawn {}: {e}", runner.command)));
@@ -1219,18 +1133,12 @@ impl SessionManager {
         let spawn_pid = self.runtime_pid(&rt_session);
 
         if let Ok(conn) = pool.get() {
-            let _ = conn.execute(
-                "UPDATE sessions
-                    SET runtime = ?2,
-                        runtime_session = ?3,
-                        pid = ?4
-                  WHERE id = ?1",
-                params![
-                    session_id,
-                    rt_session.runtime,
-                    rt_session.session_id,
-                    spawn_pid
-                ],
+            let _ = crate::repo::session::update_runtime_metadata(
+                &conn,
+                session_id,
+                &rt_session.runtime,
+                &rt_session.session_id,
+                spawn_pid,
             );
         }
 

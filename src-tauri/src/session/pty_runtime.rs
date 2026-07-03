@@ -620,14 +620,7 @@ pub fn cleanup_stale_running_rows_on_startup(
     let conn = pool
         .get()
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-    let now = chrono::Utc::now().to_rfc3339();
-    let updated = conn.execute(
-        "UPDATE sessions
-            SET status = 'stopped',
-                stopped_at = COALESCE(stopped_at, ?1)
-            WHERE status = 'running'",
-        rusqlite::params![now],
-    )?;
+    let updated = crate::repo::session::cleanup_stale_running(&conn, chrono::Utc::now())?;
     if updated > 0 {
         log::info!(
             "pty-runtime startup cleanup: demoted {updated} stale running session(s) to stopped"

@@ -6,7 +6,7 @@
 // + sidecar that used to feed it are gone (feature 20).
 
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::Connection;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -15,7 +15,7 @@ use ulid::Ulid as UlidGen;
 use crate::{
     error::{Error, Result},
     model::{Crew, Timestamp},
-    AppState,
+    repo, AppState,
 };
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
@@ -72,83 +72,24 @@ fn now() -> Timestamp {
     Utc::now()
 }
 
-fn row_to_crew(row: &Row<'_>) -> rusqlite::Result<Crew> {
-    let orchestrator_policy: Option<String> = row.get("orchestrator_policy")?;
-    let created_at: String = row.get("created_at")?;
-    let updated_at: String = row.get("updated_at")?;
-    Ok(Crew {
-        id: row.get("id")?,
-        name: row.get("name")?,
-        purpose: row.get("purpose")?,
-        goal: row.get("goal")?,
-        orchestrator_policy: match orchestrator_policy {
-            Some(s) => Some(serde_json::from_str(&s).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })?),
-            None => None,
-        },
-        system_prompt_addendum: row.get("system_prompt_addendum")?,
-        created_at: created_at.parse().map_err(|e: chrono::ParseError| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })?,
-        updated_at: updated_at.parse().map_err(|e: chrono::ParseError| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })?,
-    })
-}
-
 pub fn list(conn: &Connection) -> Result<Vec<CrewListItem>> {
-    let mut stmt = conn.prepare(
-        "SELECT c.id, c.name, c.purpose, c.goal, c.orchestrator_policy,
-                c.system_prompt_addendum,
-                c.created_at, c.updated_at,
-                (SELECT COUNT(*) FROM slots s WHERE s.crew_id = c.id) AS runner_count
-           FROM crews c
-         ORDER BY c.created_at ASC",
-    )?;
-    let rows: Vec<(Crew, i64)> = stmt
-        .query_map([], |row| {
-            let crew = row_to_crew(row)?;
-            let runner_count: i64 = row.get("runner_count")?;
-            Ok((crew, runner_count))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    drop(stmt);
+    let rows = repo::crew::list_with_runner_count(conn)?;
 
     // Bulk-fetch slot pills for every crew in a single query so the
     // Crews page renders without an N+1 lookup. Ordered by
     // (crew_id, position) so we can group sequentially.
-    let mut members_stmt = conn.prepare(
-        "SELECT s.crew_id, s.slot_handle, s.lead, r.handle AS runner_handle, r.runtime
-           FROM slots s
-           JOIN runners r ON r.id = s.runner_id
-          ORDER BY s.crew_id ASC, s.position ASC",
-    )?;
     let mut members_by_crew: std::collections::HashMap<String, Vec<CrewMemberPreview>> =
         std::collections::HashMap::new();
-    let member_rows = members_stmt.query_map([], |row| {
-        let crew_id: String = row.get("crew_id")?;
-        let slot_handle: String = row.get("slot_handle")?;
-        let runner_handle: String = row.get("runner_handle")?;
-        let runtime: String = row.get("runtime")?;
-        let lead: i64 = row.get("lead")?;
-        Ok((
-            crew_id,
-            CrewMemberPreview {
-                slot_handle,
-                runner_handle,
-                runtime,
-                lead: lead != 0,
-            },
-        ))
-    })?;
-    for entry in member_rows {
-        let (crew_id, member) = entry?;
-        members_by_crew.entry(crew_id).or_default().push(member);
+    for preview in repo::crew::list_member_previews(conn)? {
+        members_by_crew
+            .entry(preview.crew_id)
+            .or_default()
+            .push(CrewMemberPreview {
+                slot_handle: preview.slot_handle,
+                runner_handle: preview.runner_handle,
+                runtime: preview.runtime,
+                lead: preview.lead,
+            });
     }
 
     Ok(rows
@@ -165,16 +106,7 @@ pub fn list(conn: &Connection) -> Result<Vec<CrewListItem>> {
 }
 
 pub fn get(conn: &Connection, id: &str) -> Result<Crew> {
-    conn.query_row(
-        "SELECT id, name, purpose, goal, orchestrator_policy,
-                system_prompt_addendum,
-                created_at, updated_at
-           FROM crews WHERE id = ?1",
-        params![id],
-        row_to_crew,
-    )
-    .optional()?
-    .ok_or_else(|| Error::msg(format!("crew not found: {id}")))
+    repo::crew::get(conn, id)?.ok_or_else(|| Error::msg(format!("crew not found: {id}")))
 }
 
 /// Reject `crew.goal` payloads that would push the composed lead
@@ -214,13 +146,20 @@ pub fn create(conn: &Connection, input: CreateCrewInput) -> Result<Crew> {
     }
     validate_crew_goal(input.goal.as_deref())?;
     let id = new_id();
-    let ts = now().to_rfc3339();
+    let ts = now();
     let addendum = normalize_addendum(input.system_prompt_addendum);
-    conn.execute(
-        "INSERT INTO crews (id, name, purpose, goal,
-                            system_prompt_addendum, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-        params![id, name, input.purpose, input.goal, addendum, ts],
+    repo::crew::insert(
+        conn,
+        &repo::crew::CrewRow {
+            id: id.clone(),
+            name: name.to_string(),
+            purpose: input.purpose,
+            goal: input.goal,
+            orchestrator_policy: None,
+            system_prompt_addendum: addendum,
+            created_at: ts,
+            updated_at: ts,
+        },
     )?;
     get(conn, &id)
 }
@@ -246,27 +185,28 @@ pub fn update(conn: &Connection, id: &str, input: UpdateCrewInput) -> Result<Cre
         None => existing.system_prompt_addendum,
     };
 
-    let ts = now().to_rfc3339();
-
     // `orchestrator_policy` is deprecated (superseded by
     // `system_prompt_addendum`) and intentionally not written here — the
     // column is retained for existing rows but no longer maintained. See
-    // #247.
-    conn.execute(
-        "UPDATE crews
-            SET name = ?1,
-                purpose = ?2,
-                goal = ?3,
-                system_prompt_addendum = ?4,
-                updated_at = ?5
-          WHERE id = ?6",
-        params![name, purpose, goal, system_prompt_addendum, ts, id],
+    // #247. The repo's update column list excludes it.
+    repo::crew::update(
+        conn,
+        &repo::crew::CrewRow {
+            id: id.to_string(),
+            name,
+            purpose,
+            goal,
+            orchestrator_policy: None,
+            system_prompt_addendum,
+            created_at: existing.created_at,
+            updated_at: now(),
+        },
     )?;
     get(conn, id)
 }
 
 pub fn delete(conn: &Connection, id: &str) -> Result<()> {
-    let affected = conn.execute("DELETE FROM crews WHERE id = ?1", params![id])?;
+    let affected = repo::crew::delete(conn, id)?;
     if affected == 0 {
         return Err(Error::msg(format!("crew not found: {id}")));
     }
@@ -311,6 +251,7 @@ pub async fn crew_delete(state: State<'_, AppState>, id: String) -> Result<()> {
 mod tests {
     use super::*;
     use crate::db;
+    use rusqlite::params;
 
     fn ctx() -> db::DbPool {
         db::open_in_memory().unwrap()

@@ -27,6 +27,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = "0.22"
 rusqlite = { version = "0.32", features = ["bundled", "chrono", "serde_json"] }
+# Derived row<->struct mapping for the repo layer (impl 0021). 0.36.x is
+# the release whose rusqlite dependency is 0.32, matching the workspace
+# rusqlite exactly so the Row types unify.
+serde_rusqlite = "0.36"
 r2d2 = "0.8"
 r2d2_sqlite = "0.25"
 chrono = { workspace = true }

@@ -12,7 +12,6 @@
 
 use std::sync::Arc;
 
-use rusqlite::{params, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
 
@@ -20,6 +19,7 @@ use crate::{
     commands::runner,
     error::{Error, Result},
     model::{Session, SessionStatus, Timestamp},
+    repo,
     session::manager::{
         runtime_direct_runner, OutputEvent, SessionEvents, SpawnedSession, TauriSessionEvents,
     },
@@ -47,77 +47,23 @@ pub struct SessionRow {
     pub agent_session_key: Option<String>,
 }
 
-fn row_to_session(row: &Row<'_>) -> rusqlite::Result<SessionRow> {
-    let status: String = row.get("status")?;
-    let started_at: Option<String> = row.get("started_at")?;
-    let stopped_at: Option<String> = row.get("stopped_at")?;
-
-    let status = match status.as_str() {
-        "running" => SessionStatus::Running,
-        "stopped" => SessionStatus::Stopped,
-        "crashed" => SessionStatus::Crashed,
-        other => {
-            return Err(rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                format!("unknown session status {other:?}").into(),
-            ))
-        }
-    };
-    let parse_ts = |s: String| -> rusqlite::Result<Timestamp> {
-        s.parse().map_err(|e: chrono::ParseError| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })
-    };
-    Ok(SessionRow {
-        session: Session {
-            id: row.get("id")?,
-            mission_id: row.get("mission_id")?,
-            runner_id: row.get("runner_id")?,
-            slot_id: row.get("slot_id")?,
-            cwd: row.get("cwd")?,
-            status,
-            pid: row.get("pid")?,
-            started_at: started_at.map(parse_ts).transpose()?,
-            stopped_at: stopped_at.map(parse_ts).transpose()?,
-        },
-        handle: row.get("handle")?,
-        runtime: row.get("runtime")?,
-        lead: row.get("lead")?,
-        agent_session_key: row.get("agent_session_key")?,
-    })
-}
-
 pub fn list_for_mission(conn: &rusqlite::Connection, mission_id: &str) -> Result<Vec<SessionRow>> {
-    // Order by the slot-scoped position within this mission's crew so
-    // the UI renders sessions in the same slot order as the Crew
-    // Detail roster. The session's `slot_id` is the direct join key
-    // into `slots`; `handle` is the slot's in-crew handle, and the
-    // template handle is no longer used in mission contexts.
-    // `r.handle` (template) is kept on the row for fallback display
-    // (legacy mission sessions before 0006 have no slot_id).
-    // archived_at IS NULL filters out the dead session rows that
-    // `mission_reset` (and any future archive path) leaves behind: a
-    // reset wipes the run context and inserts fresh PTY rows for the
-    // same (mission_id, slot_id) pair, so without this filter the
-    // sidebar would stack the old stopped row alongside the new
-    // running one for every slot.
-    let mut stmt = conn.prepare(
-        "SELECT s.id, s.mission_id, s.runner_id, s.slot_id, s.cwd, s.status, s.pid,
-                s.started_at, s.stopped_at, s.agent_session_key,
-                COALESCE(sl.slot_handle, r.handle) AS handle,
-                r.runtime AS runtime,
-                COALESCE(sl.lead, 0) AS lead
-           FROM sessions s
-           JOIN runners r ON r.id = s.runner_id
-           LEFT JOIN slots sl ON sl.id = s.slot_id
-          WHERE s.mission_id = ?1
-            AND s.archived_at IS NULL
-          ORDER BY COALESCE(sl.position, 0) ASC, s.started_at ASC",
-    )?;
-    let rows = stmt.query_map(params![mission_id], row_to_session)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+    // Sessions render in the same slot order as the Crew Detail roster;
+    // `handle` is the slot's in-crew handle with the template handle as
+    // fallback for legacy pre-slot rows, and archived rows (mission
+    // reset leftovers) are filtered out. The ordering, join, and filter
+    // semantics live in `repo::session::list_for_mission`.
+    let rows = repo::session::list_for_mission(conn, mission_id)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| SessionRow {
+            session: row.session,
+            handle: row.handle,
+            runtime: row.runtime,
+            lead: row.lead,
+            agent_session_key: row.agent_session_key,
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -313,53 +259,48 @@ pub struct DirectSessionEntry {
     pub archived_at: Option<Timestamp>,
 }
 
-fn direct_entry_from_row(row: &Row<'_>) -> rusqlite::Result<DirectSessionEntry> {
-    let status: String = row.get("status")?;
-    let status = match status.as_str() {
-        "running" => SessionStatus::Running,
-        "stopped" => SessionStatus::Stopped,
-        "crashed" => SessionStatus::Crashed,
-        other => {
-            return Err(rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                format!("unknown session status {other:?}").into(),
-            ))
-        }
-    };
-    let parse_ts = |s: String| -> rusqlite::Result<Timestamp> {
-        s.parse().map_err(|e: chrono::ParseError| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })
-    };
-    let started_at: Option<String> = row.get("started_at")?;
-    let stopped_at: Option<String> = row.get("stopped_at")?;
-    let archived_at: Option<String> = row.get("archived_at")?;
-    let resumable: i64 = row.get("resumable")?;
-    let pinned: i64 = row.get("pinned")?;
-    let handle: Option<String> = row.get("handle")?;
-    let agent_runtime: String = row.get("agent_runtime")?;
-    let agent_command: String = row.get("agent_command")?;
-    let runner_display_name: Option<String> = row.get("runner_display_name")?;
-    let display_name = runner_display_name
+/// Assemble the IPC entry from a repo direct-session row. `ship_key`
+/// distinguishes the two surfaces: `session_get` returns the raw
+/// `agent_session_key`, while the recent list intentionally ships NULL.
+fn direct_entry_from_repo(
+    d: repo::session::DirectSessionRow,
+    ship_key: bool,
+) -> Result<DirectSessionEntry> {
+    let handle = d.runner_handle;
+    let agent_runtime = d
+        .row
+        .agent_runtime
+        .or(d.runner_runtime)
+        .ok_or_else(|| Error::msg(format!("session {} has no agent_runtime", d.row.id)))?;
+    let agent_command = d
+        .row
+        .agent_command
+        .or(d.runner_command)
+        .ok_or_else(|| Error::msg(format!("session {} has no agent_command", d.row.id)))?;
+    let display_name = d
+        .runner_display_name
         .filter(|_| handle.is_some())
         .unwrap_or_else(|| crate::router::runtime::runtime_display_name(&agent_runtime));
     Ok(DirectSessionEntry {
-        session_id: row.get("session_id")?,
-        runner_id: row.get("runner_id")?,
+        session_id: d.row.id,
+        runner_id: d.row.runner_id,
         handle,
         agent_runtime,
         agent_command,
         display_name,
-        status,
-        title: row.get("title")?,
-        cwd: row.get("cwd")?,
-        started_at: started_at.map(parse_ts).transpose()?,
-        stopped_at: stopped_at.map(parse_ts).transpose()?,
-        resumable: resumable != 0,
-        agent_session_key: row.get("agent_session_key")?,
-        pinned: pinned != 0,
-        archived_at: archived_at.map(parse_ts).transpose()?,
+        status: d.row.status,
+        title: d.row.title,
+        cwd: d.row.cwd,
+        started_at: d.row.started_at,
+        stopped_at: d.row.stopped_at,
+        resumable: d.row.agent_session_key.is_some(),
+        agent_session_key: if ship_key {
+            d.row.agent_session_key
+        } else {
+            None
+        },
+        pinned: d.row.pinned_at.is_some(),
+        archived_at: d.row.archived_at,
     })
 }
 
@@ -368,38 +309,10 @@ pub async fn session_list_recent_direct(
     state: State<'_, AppState>,
 ) -> Result<Vec<DirectSessionEntry>> {
     let conn = state.db.get()?;
-    // Flat list: every un-archived direct session. Sort key:
-    //   1. pinned first (pinned_at NOT NULL)
-    //   2. then running before stopped/crashed
-    //   3. then by most-recent activity (stopped_at if set, else
-    //      started_at)
-    let mut stmt = conn.prepare(
-        "SELECT s.id        AS session_id,
-                s.runner_id AS runner_id,
-                r.handle    AS handle,
-                r.display_name AS runner_display_name,
-                COALESCE(s.agent_runtime, r.runtime) AS agent_runtime,
-                COALESCE(s.agent_command, r.command) AS agent_command,
-                s.status    AS status,
-                s.title     AS title,
-                s.cwd       AS cwd,
-                s.started_at,
-                s.stopped_at,
-                s.archived_at,
-                CASE WHEN s.agent_session_key IS NOT NULL THEN 1 ELSE 0 END AS resumable,
-                NULL AS agent_session_key,
-                CASE WHEN s.pinned_at         IS NOT NULL THEN 1 ELSE 0 END AS pinned
-           FROM sessions s
-           LEFT JOIN runners r ON r.id = s.runner_id
-          WHERE s.mission_id IS NULL
-            AND s.archived_at IS NULL
-          ORDER BY CASE WHEN s.pinned_at IS NOT NULL THEN 0 ELSE 1 END,
-                   CASE WHEN s.status = 'running'    THEN 0 ELSE 1 END,
-                   COALESCE(s.stopped_at, s.started_at) DESC",
-    )?;
-    let rows = stmt.query_map([], direct_entry_from_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+    repo::session::list_recent_direct(&conn)?
+        .into_iter()
+        .map(|d| direct_entry_from_repo(d, /*ship_key*/ false))
+        .collect()
 }
 
 /// Unfiltered single-row lookup for a direct-chat session.
@@ -431,31 +344,9 @@ pub async fn session_get(
 }
 
 fn get_direct(conn: &rusqlite::Connection, session_id: &str) -> Result<Option<DirectSessionEntry>> {
-    let mut stmt = conn.prepare(
-        "SELECT s.id        AS session_id,
-                s.runner_id AS runner_id,
-                r.handle    AS handle,
-                r.display_name AS runner_display_name,
-                COALESCE(s.agent_runtime, r.runtime) AS agent_runtime,
-                COALESCE(s.agent_command, r.command) AS agent_command,
-                s.status    AS status,
-                s.title     AS title,
-                s.cwd       AS cwd,
-                s.started_at,
-                s.stopped_at,
-                s.archived_at,
-                CASE WHEN s.agent_session_key IS NOT NULL THEN 1 ELSE 0 END AS resumable,
-                s.agent_session_key AS agent_session_key,
-                CASE WHEN s.pinned_at         IS NOT NULL THEN 1 ELSE 0 END AS pinned
-           FROM sessions s
-           LEFT JOIN runners r ON r.id = s.runner_id
-          WHERE s.id = ?1
-            AND s.mission_id IS NULL",
-    )?;
-    let row = stmt
-        .query_row(params![session_id], direct_entry_from_row)
-        .optional()?;
-    Ok(row)
+    repo::session::get_direct(conn, session_id)?
+        .map(|d| direct_entry_from_repo(d, /*ship_key*/ true))
+        .transpose()
 }
 
 /// Soft-delete a session: hides it from the SESSION sidebar tray. The row
@@ -474,14 +365,7 @@ pub async fn session_archive(
     session_id: String,
 ) -> Result<()> {
     let conn = state.db.get()?;
-    let now = chrono::Utc::now().to_rfc3339();
-    let updated = conn.execute(
-        "UPDATE sessions
-            SET archived_at = ?2
-          WHERE id = ?1
-            AND status != 'running'",
-        params![session_id, now],
-    )?;
+    let updated = repo::session::archive(&conn, &session_id, chrono::Utc::now())?;
     if updated == 0 {
         return Err(Error::msg(
             "session not found or still running (kill before archiving)".to_string(),
@@ -524,10 +408,7 @@ pub async fn session_rename(
         }
     });
     let conn = state.db.get()?;
-    let updated = conn.execute(
-        "UPDATE sessions SET title = ?2 WHERE id = ?1",
-        params![session_id, normalized],
-    )?;
+    let updated = repo::session::set_title(&conn, &session_id, normalized.as_deref())?;
     if updated == 0 {
         return Err(Error::msg(format!("session not found: {session_id}")));
     }
@@ -554,18 +435,12 @@ pub async fn session_pin(
     pinned: bool,
 ) -> Result<()> {
     let conn = state.db.get()?;
-    let updated = if pinned {
-        let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
-            "UPDATE sessions SET pinned_at = ?2 WHERE id = ?1",
-            params![session_id, now],
-        )?
+    let pinned_at = if pinned {
+        Some(chrono::Utc::now())
     } else {
-        conn.execute(
-            "UPDATE sessions SET pinned_at = NULL WHERE id = ?1",
-            params![session_id],
-        )?
+        None
     };
+    let updated = repo::session::set_pinned_at(&conn, &session_id, pinned_at)?;
     if updated == 0 {
         return Err(Error::msg(format!("session not found: {session_id}")));
     }
@@ -708,6 +583,7 @@ mod tests {
     use super::*;
     use crate::db;
     use chrono::Utc;
+    use rusqlite::params;
 
     #[test]
     fn paste_image_format_maps_png_and_jpeg_to_pasteboard_classes() {
