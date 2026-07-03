@@ -1,3 +1,24 @@
+//! MCP stdio↔socket bridge for external MCP clients.
+//!
+//! Unix-only: it connects to the app's Unix-domain `mcp.sock`. On the
+//! Windows host build it compiles to a stub that errors out — the
+//! WSL-hosted agents reach the app's MCP server from inside Linux, so a
+//! Windows-host bridge isn't part of the M1 surface (see plan M4+).
+
+#[cfg(unix)]
+pub use unix_impl::run;
+
+#[cfg(not(unix))]
+pub fn run() -> i32 {
+    eprintln!(
+        "runner-mcp: the stdio↔socket MCP bridge needs a Unix domain socket \
+         and isn't supported on the Windows host build. Run it inside WSL."
+    );
+    1
+}
+
+#[cfg(unix)]
+mod unix_impl {
 use std::{path::PathBuf, time::Duration};
 
 use rmcp::handler::server::ServerHandler;
@@ -158,3 +179,4 @@ fn proxy_init_error(e: impl std::fmt::Display) -> ErrorData {
 fn proxy_service_error(e: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(format!("Runner.app MCP call failed: {e}"), None)
 }
+} // mod unix_impl

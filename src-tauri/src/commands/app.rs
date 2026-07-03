@@ -13,6 +13,7 @@ pub fn app_ready(app: AppHandle) -> crate::error::Result<()> {
 }
 
 pub(crate) fn show_main_window(app: &AppHandle) -> crate::error::Result<()> {
+    log::info!("show_main_window: app_ready fired; showing main window");
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| Error::msg("main window not found"))?;

@@ -42,6 +42,9 @@ impl ServerHandler for RunnerMcpHandler {
     }
 }
 
+// Unix-socket connection handler. Gated: the Windows host build has no
+// in-process MCP listener (see mcp/mod.rs), so this is never called there.
+#[cfg(unix)]
 pub(crate) async fn serve_connection(stream: tokio::net::UnixStream, state: McpState) {
     let (read, write) = stream.into_split();
     let handler = RunnerMcpHandler::new(state);
