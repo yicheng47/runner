@@ -1235,7 +1235,7 @@ export default function RunnerChat() {
             ) : showPaneOverlay ? (
               // Per-pane duplicate-subject gate (impl 0018 × 0020): this
               // pane's session is owned by another window, so no terminal
-              // is mounted for it (see renderSplitTerminal) and the
+              // is mounted for it (see renderTerminalPane) and the
               // overlay scopes to this pane only.
               <DuplicateSubjectOverlay
                 kind="chat"
