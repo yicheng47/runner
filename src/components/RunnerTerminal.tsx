@@ -382,16 +382,25 @@ export const RunnerTerminal = forwardRef<
     // and the canvas freezes mid-frame. Disposing the addon on loss
     // lets xterm fall back to the DOM renderer for the rest of this
     // mount — degraded but functional, no more frozen panes.
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => {
-        webgl.dispose();
-        webglRef.current = null;
-      });
-      term.loadAddon(webgl);
-      webglRef.current = webgl;
-    } catch {
-      // No WebGL — fall through to canvas. RunnerChat does the same.
+    // WebGL renderer disabled on this Windows fork. The GPU/D3D surface
+    // it allocates makes Windows GameDVR / Xbox Game Bar mis-detect the
+    // app as a game and pop the `ms-gamingoverlay` "no app" dialog on
+    // launch, and the canvas-drawn cursor complicates CJK IME caret
+    // positioning. xterm's DOM renderer is plenty for a chat-sized
+    // terminal. Flip back to true to restore the upstream WebGL path.
+    const USE_WEBGL = false;
+    if (USE_WEBGL) {
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => {
+          webgl.dispose();
+          webglRef.current = null;
+        });
+        term.loadAddon(webgl);
+        webglRef.current = webgl;
+      } catch {
+        // No WebGL — fall through to the DOM renderer.
+      }
     }
     const initialRect = containerRef.current.getBoundingClientRect();
     if (initialRect.width > 0 && initialRect.height > 0) {
@@ -532,6 +541,49 @@ export const RunnerTerminal = forwardRef<
     };
     const textarea = term.textarea;
     textarea?.addEventListener("paste", onPaste, { capture: true });
+
+    // IME caret fix (Windows/WebView2 + CJK). xterm keeps a hidden
+    // `.xterm-helper-textarea` as the input target and only re-anchors it
+    // to the cursor cell on cursor-move — and it bails out entirely while
+    // a composition is active. So when you start typing pinyin/kana the
+    // textarea can still be sitting at its default off-screen
+    // `left:-9999em`, and WebView2 clamps the IME candidate window to the
+    // screen's top-left corner. We re-anchor the textarea to the cursor
+    // cell (same math xterm uses: cursorX*cellW, cursorY*cellH) the moment
+    // composition starts/updates, plus on focus and cursor-move, so the
+    // candidate window tracks the prompt.
+    const syncImeCaret = () => {
+      const ta = term.textarea;
+      const screen = term.element?.querySelector(
+        ".xterm-screen",
+      ) as HTMLElement | null;
+      if (!ta || !screen || term.cols < 1 || term.rows < 1) return;
+      const cellW = screen.clientWidth / term.cols;
+      const cellH = screen.clientHeight / term.rows;
+      const col = Math.min(term.buffer.active.cursorX, term.cols - 1);
+      const row = Math.min(term.buffer.active.cursorY, term.rows - 1);
+      // Position the textarea at the cursor cell AND give it real geometry
+      // + font metrics. WebView2 derives the IME candidate-window position
+      // from the focused element's caret rectangle; xterm's default
+      // helper textarea is zero-sized and font-less, which yields a
+      // degenerate rect Windows clamps to the screen corner. A 1-cell box
+      // carrying the terminal's font size produces a valid caret rect at
+      // the prompt so the candidate window tracks it.
+      ta.style.left = `${Math.round(col * cellW)}px`;
+      ta.style.top = `${Math.round(row * cellH)}px`;
+      ta.style.width = `${Math.ceil(cellW)}px`;
+      ta.style.height = `${Math.ceil(cellH)}px`;
+      ta.style.fontSize = `${term.options.fontSize ?? 14}px`;
+      ta.style.lineHeight = `${Math.ceil(cellH)}px`;
+    };
+    textarea?.addEventListener("compositionstart", syncImeCaret, {
+      capture: true,
+    });
+    textarea?.addEventListener("compositionupdate", syncImeCaret, {
+      capture: true,
+    });
+    textarea?.addEventListener("focus", syncImeCaret, { capture: true });
+    const imeCursorMoveDisposable = term.onCursorMove(syncImeCaret);
 
     // Dedupe by last-pushed dims. See `lastPushedColsRef` comment for why.
     const pushSize = () => {
@@ -753,6 +805,14 @@ export const RunnerTerminal = forwardRef<
       wakeRafs.forEach((id) => window.cancelAnimationFrame(id));
       wakeTimers.forEach((id) => window.clearTimeout(id));
       textarea?.removeEventListener("paste", onPaste, { capture: true });
+      textarea?.removeEventListener("compositionstart", syncImeCaret, {
+        capture: true,
+      });
+      textarea?.removeEventListener("compositionupdate", syncImeCaret, {
+        capture: true,
+      });
+      textarea?.removeEventListener("focus", syncImeCaret, { capture: true });
+      imeCursorMoveDisposable.dispose();
       onDataDisposable.dispose();
       term.dispose();
       termRef.current = null;
