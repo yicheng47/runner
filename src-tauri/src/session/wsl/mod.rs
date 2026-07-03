@@ -49,8 +49,8 @@ use std::path::Path;
 
 use portable_pty::CommandBuilder;
 
-use super::launch::{is_reserved_env_name, shell_quote};
-use super::pty_runtime::{native_command_shaper, CommandShaper};
+use super::launch::{is_reserved_env_name, is_valid_env_name, shell_quote};
+use super::pty_runtime::CommandShaper;
 use super::runtime::{RuntimeError, RuntimeResult, SpawnSpec};
 use install::RUNNER_BIN_SUBDIR;
 use path::win_to_wsl;
@@ -70,10 +70,10 @@ pub fn wsl_command_shaper(distro: String) -> CommandShaper {
     Box::new(
         move |spec: &SpawnSpec, composed_path: &str| -> RuntimeResult<CommandBuilder> {
             // Per-runner execution target: "native" runs the command
-            // directly on the Windows host (e.g. powershell, a Windows
-            // claude/codex), everything else (incl. NULL) runs inside WSL.
+            // directly on the Windows host (a Windows-installed claude/codex,
+            // powershell, …), everything else (incl. NULL) runs inside WSL.
             if spec.exec_target.as_deref() == Some("native") {
-                return native_command_shaper(spec, composed_path);
+                return windows_native_shaper(spec, composed_path);
             }
             // Deliver the launch script as a FILE that bash `source`s,
             // not as an inline `bash -lic '<body>'` argument. A mission
@@ -98,6 +98,41 @@ pub fn wsl_command_shaper(distro: String) -> CommandShaper {
             Ok(cmd)
         },
     )
+}
+
+/// Native (Windows-host) execution target. Windows agent CLIs — claude,
+/// codex — usually ship as `.cmd`/`.ps1` shims (npm, nodist), which
+/// `CreateProcess` (and thus portable-pty) can't launch directly: only a
+/// shell resolves `PATHEXT`. Route the command through `cmd.exe /c` so a bare
+/// `codex` / `claude` (or an explicit `foo.cmd`) resolves exactly as it would
+/// when typed at a prompt. A real `.exe` like `powershell` also works through
+/// this path, so it isn't special-cased. Mirrors `native_command_shaper`'s
+/// env handling (reserved PATH from the composed result, name validation).
+fn windows_native_shaper(spec: &SpawnSpec, composed_path: &str) -> RuntimeResult<CommandBuilder> {
+    let comspec =
+        std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".to_string());
+    let mut cmd = CommandBuilder::new(comspec);
+    // `/c` runs the command line then exits. command + args go as separate
+    // argv entries; CommandBuilder quotes each for the Windows command line.
+    cmd.arg("/c");
+    cmd.arg(&spec.command);
+    cmd.args(&spec.args);
+    if let Some(cwd) = &spec.cwd {
+        cmd.cwd(cwd);
+    }
+    for (k, v) in &spec.env {
+        if is_reserved_env_name(k) {
+            continue;
+        }
+        if !is_valid_env_name(k) {
+            return Err(RuntimeError::Msg(format!(
+                "invalid env var name {k:?}: must match [A-Za-z_][A-Za-z0-9_]*"
+            )));
+        }
+        cmd.env(k, v);
+    }
+    cmd.env("PATH", composed_path);
+    Ok(cmd)
 }
 
 /// Write the rendered launch-script body to a per-session file under the

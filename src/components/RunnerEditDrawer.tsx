@@ -216,7 +216,7 @@ export function RunnerEditDrawer({
           hint={
             executionTarget === "native"
               ? t(
-                  "the Windows host command to run (e.g. powershell, python.exe, a Windows-installed agent)",
+                  "the Windows-installed agent to run (e.g. codex, claude), launched via cmd.exe so .cmd shims resolve",
                 )
               : undefined
           }

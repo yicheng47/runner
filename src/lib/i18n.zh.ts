@@ -75,8 +75,8 @@ const zhMain: Record<string, string> = {
   Architect: "Architect",
   Runtime: "运行时",
   Command: "命令",
-  "the Windows host command to run (e.g. powershell, python.exe, a Windows-installed agent)":
-    "要在 Windows 上运行的命令(如 powershell、python.exe、装在 Windows 上的 agent)",
+  "the Windows-installed agent to run (e.g. codex, claude), launched via cmd.exe so .cmd shims resolve":
+    "要在 Windows 上跑的 agent(如 codex、claude),经 cmd.exe 拉起,.cmd 包装脚本也能解析",
   Args: "参数",
   "extra flags · whitespace-separated": "额外参数 · 用空格分隔",
   "--mcp-debug": "--mcp-debug",
