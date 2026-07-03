@@ -243,11 +243,23 @@ impl SessionManager {
     /// xterm fits its container — without it, claude-code stays at
     /// the spawn-time grid regardless of how big the visible grid
     /// is.
-    pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<()> {
+    pub fn resize(&self, session_id: &str, cols: u16, rows: u16, pool: &DbPool) -> Result<()> {
         let rt_session = self.live_runtime_session(session_id)?;
-        self.runtime
-            .resize(&rt_session, cols, rows)
-            .map_err(Into::into)
+        self.runtime.resize(&rt_session, cols, rows)?;
+        // Full-repaint TUI runtimes (claude-code, codex) redraw the whole
+        // frame on SIGWINCH, so bytes buffered before this resize describe
+        // a stale grid width. Replaying them into the new grid on a later
+        // snapshot re-attach wraps their absolute-positioned frames wrong
+        // — box-drawing borders shredded into scrollback garbage (seen
+        // dogfooding split view, impl 0020). Drop them: the incoming
+        // repaint rebuilds the buffer at the new width, and the frontend
+        // already hard-clears its local viewport for these runtimes on
+        // resize. Shells keep their buffer — no repaint would arrive, and
+        // their history is meaningful.
+        if runtime_clears_on_resize(session_id, pool) {
+            self.purge_output_buffer_keep_modes(session_id);
+        }
+        Ok(())
     }
 
     /// Return the bounded in-memory PTY output snapshot for a session.
@@ -334,6 +346,18 @@ impl SessionManager {
         self.prune_empty_session_state(session_id);
     }
 
+    /// Buffer-only purge for `resize`: the child process survives, so its
+    /// terminal modes persist — a SIGWINCH repaint does not re-emit the
+    /// enter-alt-screen / bracketed-paste escapes, and clearing the flags
+    /// here would strip the synthetic prefix a later snapshot needs. The
+    /// seq counter is likewise untouched.
+    fn purge_output_buffer_keep_modes(&self, session_id: &str) {
+        if let Some(state) = self.session_state(session_id) {
+            let mut state = state.lock().unwrap();
+            state.output_buffer.clear();
+        }
+    }
+
     /// Update per-session terminal mode flags from a raw runtime
     /// chunk. We take the *latest* match in the chunk as the resulting
     /// state for each tracked mode. No-op when the chunk contains no
@@ -386,4 +410,22 @@ impl SessionManager {
         }
         ev
     }
+}
+
+/// Whether the session's agent runtime fully repaints on SIGWINCH — the
+/// same set the frontend's `runtimeClearsOnResize` gates its local
+/// viewport clear on. Best-effort: a DB miss keeps the buffer.
+fn runtime_clears_on_resize(session_id: &str, pool: &DbPool) -> bool {
+    let Ok(conn) = pool.get() else {
+        return false;
+    };
+    let runtime = conn
+        .query_row(
+            "SELECT agent_runtime FROM sessions WHERE id = ?1",
+            params![session_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten();
+    matches!(runtime.as_deref(), Some("claude-code") | Some("codex"))
 }
