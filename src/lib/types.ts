@@ -385,9 +385,11 @@ export type Subject =
   | { type: "DirectChat"; value: string };
 
 // One window's row in the backend WindowRegistry. `focused_at` is RFC3339;
-// the most-recently-focused holder of a subject is its primary.
+// the most-recently-focused holder of a subject is its primary. `subjects`
+// lists everything the window has on screen — one entry for a single-pane
+// surface, up to three when the direct-chat surface is split (impl 0020).
 export interface WindowEntry {
   label: string;
-  subject: Subject | null;
+  subjects: Subject[];
   focused_at: Timestamp;
 }

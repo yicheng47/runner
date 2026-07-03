@@ -251,10 +251,10 @@ export const api = {
      *  window" action). */
     focusOther: (label: string) =>
       invoke<void>("window_focus_other", { label }),
-    /** Report this window's current subject; the backend recomputes the
-     *  focus map and broadcasts it. */
-    reportSubject: (subject: Subject | null) =>
-      invoke<void>("window_report_subject", { subject }),
+    /** Report every subject this window currently shows (one per visible
+     *  pane); the backend recomputes the focus map and broadcasts it. */
+    reportSubjects: (subjects: Subject[]) =>
+      invoke<void>("window_report_subjects", { subjects }),
     /** Snapshot of the focus map for hydrate-on-mount. */
     listSubjects: () => invoke<WindowEntry[]>("window_list_subjects"),
   },

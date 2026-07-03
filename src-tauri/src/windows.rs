@@ -6,10 +6,13 @@
 // the windows need to *coordinate* is which subject (mission / direct chat)
 // each is looking at, so two windows never write to the same PTY stdin.
 //
-// This module owns that map. Each window reports its current `Subject` and
-// its focus events; the registry computes, per subject, which window is
-// **primary** — the most-recently-focused holder. Everything else (the
-// Arc-style overlay, the terminal-mount gate) derives from that single rule.
+// This module owns that map. Each window reports the `Subject`s it currently
+// shows and its focus events; the registry computes, per subject, which
+// window is **primary** — the most-recently-focused holder. Everything else
+// (the Arc-style overlay, the terminal-mount gate) derives from that single
+// rule. Windows report a *list* because the direct-chat surface can split
+// into 2–3 panes (impl 0020): every visible pane's session participates in
+// ownership arbitration, not just the focused one.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -33,11 +36,12 @@ pub enum Subject {
 
 /// One window's row in the registry. `focused_at` is the tiebreak that
 /// decides primary ownership: among windows holding the same subject, the
-/// largest `focused_at` wins.
+/// largest `focused_at` wins. `subjects` is every subject the window has on
+/// screen — one for a single-pane surface, up to three for a split chat.
 #[derive(Debug, Clone, Serialize)]
 pub struct WindowEntry {
     pub label: String,
-    pub subject: Option<Subject>,
+    pub subjects: Vec<Subject>,
     pub focused_at: DateTime<Utc>,
 }
 
@@ -68,19 +72,19 @@ impl WindowRegistry {
         self.entries.lock().unwrap().remove(label);
     }
 
-    /// Update a window's subject without touching `focused_at` — navigating
-    /// between routes is not a focus change. Upserts so a report that races
-    /// ahead of `register` still lands.
-    pub fn set_subject(&self, label: &str, subject: Option<Subject>) {
+    /// Update a window's subjects without touching `focused_at` — navigating
+    /// between routes (or re-arranging panes) is not a focus change. Upserts
+    /// so a report that races ahead of `register` still lands.
+    pub fn set_subjects(&self, label: &str, subjects: Vec<Subject>) {
         let mut map = self.entries.lock().unwrap();
         match map.get_mut(label) {
-            Some(entry) => entry.subject = subject,
+            Some(entry) => entry.subjects = subjects,
             None => {
                 map.insert(
                     label.to_string(),
                     WindowEntry {
                         label: label.to_string(),
-                        subject,
+                        subjects,
                         focused_at: Utc::now(),
                     },
                 );
@@ -117,14 +121,15 @@ impl WindowRegistry {
         out
     }
 
-    /// The primary window for a subject: among windows currently holding it,
-    /// the one with the max `focused_at`. `None` if no window holds it.
+    /// The primary window for a subject: among windows currently showing it
+    /// (in any pane), the one with the max `focused_at`. `None` if no window
+    /// holds it.
     pub fn primary_for(&self, subject: &Subject) -> Option<String> {
         self.entries
             .lock()
             .unwrap()
             .values()
-            .filter(|e| e.subject.as_ref() == Some(subject))
+            .filter(|e| e.subjects.contains(subject))
             .max_by(|a, b| a.focused_at.cmp(&b.focused_at))
             .map(|e| e.label.clone())
     }
@@ -136,7 +141,7 @@ impl WindowRegistry {
             label.to_string(),
             WindowEntry {
                 label: label.to_string(),
-                subject: None,
+                subjects: Vec::new(),
                 focused_at,
             },
         );
@@ -154,7 +159,7 @@ impl WindowRegistry {
                     label.to_string(),
                     WindowEntry {
                         label: label.to_string(),
-                        subject: None,
+                        subjects: Vec::new(),
                         focused_at,
                     },
                 );
@@ -184,20 +189,20 @@ mod tests {
         reg.register("main");
         assert_eq!(reg.snapshot().len(), 1);
         assert_eq!(reg.snapshot()[0].label, "main");
-        assert!(reg.snapshot()[0].subject.is_none());
+        assert!(reg.snapshot()[0].subjects.is_empty());
 
         reg.unregister("main");
         assert!(reg.snapshot().is_empty());
     }
 
     #[test]
-    fn set_subject_preserves_focused_at() {
+    fn set_subjects_preserves_focused_at() {
         let reg = WindowRegistry::new();
         reg.register_at("main", ts(100));
-        reg.set_subject("main", Some(Subject::Mission("m1".into())));
+        reg.set_subjects("main", vec![Subject::Mission("m1".into())]);
 
         let snap = reg.snapshot();
-        assert_eq!(snap[0].subject, Some(Subject::Mission("m1".into())));
+        assert_eq!(snap[0].subjects, vec![Subject::Mission("m1".into())]);
         // subject change is not a focus change — timestamp untouched.
         assert_eq!(snap[0].focused_at, ts(100));
     }
@@ -216,8 +221,8 @@ mod tests {
         reg.register_at("main", ts(100));
         reg.register_at("window-a", ts(100));
         let subject = Subject::Mission("m1".into());
-        reg.set_subject("main", Some(subject.clone()));
-        reg.set_subject("window-a", Some(subject.clone()));
+        reg.set_subjects("main", vec![subject.clone()]);
+        reg.set_subjects("window-a", vec![subject.clone()]);
 
         // main focused later → main is primary.
         reg.mark_focused_at("main", ts(300));
@@ -235,8 +240,8 @@ mod tests {
         let subject = Subject::DirectChat("s1".into());
         reg.register_at("main", ts(100));
         reg.register_at("window-a", ts(100));
-        reg.set_subject("main", Some(subject.clone()));
-        reg.set_subject("window-a", Some(subject.clone()));
+        reg.set_subjects("main", vec![subject.clone()]);
+        reg.set_subjects("window-a", vec![subject.clone()]);
         reg.mark_focused_at("main", ts(500)); // main is primary
         reg.mark_focused_at("window-a", ts(200));
         assert_eq!(reg.primary_for(&subject), Some("main".to_string()));
@@ -252,8 +257,8 @@ mod tests {
         let subject = Subject::Mission("m1".into());
         reg.register_at("main", ts(500));
         reg.register_at("window-a", ts(300));
-        reg.set_subject("main", Some(subject.clone()));
-        reg.set_subject("window-a", Some(subject.clone()));
+        reg.set_subjects("main", vec![subject.clone()]);
+        reg.set_subjects("window-a", vec![subject.clone()]);
         // main focused most recently → primary.
         assert_eq!(reg.primary_for(&subject), Some("main".to_string()));
 
@@ -267,7 +272,7 @@ mod tests {
             .into_iter()
             .find(|e| e.label == "main")
             .expect("main still registered");
-        assert_eq!(main_entry.subject, Some(subject.clone()));
+        assert_eq!(main_entry.subjects, vec![subject.clone()]);
 
         // Reshow + focus → main reclaims primary.
         reg.mark_focused_at("main", ts(600));
@@ -279,21 +284,46 @@ mod tests {
         let reg = WindowRegistry::new();
         let subject = Subject::Mission("m1".into());
         reg.register_at("main", ts(500));
-        reg.set_subject("main", Some(subject.clone()));
+        reg.set_subjects("main", vec![subject.clone()]);
         // No visible duplicate to hand off to → hidden main remains primary.
         reg.mark_hidden("main");
         assert_eq!(reg.primary_for(&subject), Some("main".to_string()));
     }
 
     #[test]
-    fn none_subject_never_counts_as_primary() {
+    fn empty_subjects_never_counts_as_primary() {
         let reg = WindowRegistry::new();
         reg.register_at("main", ts(100));
-        reg.register_at("window-a", ts(200)); // both subject: None
+        reg.register_at("window-a", ts(200)); // both subjects: []
                                               // An empty window is never the "primary" of anything — querying any
                                               // subject returns None, so the overlay never fires for blank windows.
         assert_eq!(reg.primary_for(&Subject::Mission("m1".into())), None);
         assert_eq!(reg.primary_for(&Subject::DirectChat("s1".into())), None);
+    }
+
+    #[test]
+    fn split_window_owns_every_visible_pane_session() {
+        // Split-view scenario (impl 0020): one window shows chats A+B in
+        // panes and was focused last; another window shows B alone. The
+        // split window must be primary for BOTH sessions — reporting only
+        // the focused pane's subject is exactly the bug this list model
+        // exists to prevent (two windows both believing they own B's PTY).
+        let reg = WindowRegistry::new();
+        let a = Subject::DirectChat("a".into());
+        let b = Subject::DirectChat("b".into());
+        reg.register_at("main", ts(200));
+        reg.register_at("window-a", ts(100));
+        reg.set_subjects("main", vec![a.clone(), b.clone()]);
+        reg.set_subjects("window-a", vec![b.clone()]);
+
+        assert_eq!(reg.primary_for(&a), Some("main".to_string()));
+        assert_eq!(reg.primary_for(&b), Some("main".to_string()));
+
+        // The single-pane window comes forward → it takes B; the split
+        // window keeps A (nobody else shows it).
+        reg.mark_focused_at("window-a", ts(300));
+        assert_eq!(reg.primary_for(&b), Some("window-a".to_string()));
+        assert_eq!(reg.primary_for(&a), Some("main".to_string()));
     }
 
     #[test]

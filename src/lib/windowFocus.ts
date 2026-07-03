@@ -71,42 +71,49 @@ export function useWindowFocus(): WindowEntry[] {
 }
 
 // Debounced subject reporting. Route changes can fire several times in quick
-// succession (unmount-null then mount-subject when navigating between two
+// succession (unmount-empty then mount-subjects when navigating between two
 // missions); coalescing so only the final state hits the backend keeps the
 // focus map from thrashing. Last write wins, which is the correct end state.
 let reportTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingSubject: Subject | null = null;
+let pendingSubjects: Subject[] = [];
 
-/** Debounced wrapper over `window_report_subject`. */
-export function reportSubject(subject: Subject | null): void {
+/** Debounced wrapper over `window_report_subjects`. */
+export function reportSubjects(subjects: Subject[]): void {
   if (!cachedLabel) return; // off-Tauri: nothing to coordinate
-  pendingSubject = subject;
+  pendingSubjects = subjects;
   if (reportTimer !== null) clearTimeout(reportTimer);
   reportTimer = setTimeout(() => {
     reportTimer = null;
-    void api.window.reportSubject(pendingSubject).catch((e) => {
-      console.error("reportSubject failed", e);
+    void api.window.reportSubjects(pendingSubjects).catch((e) => {
+      console.error("reportSubjects failed", e);
     });
   }, 80);
 }
 
 /**
- * Report `subject` on mount and clear it (report null) on unmount. Subject
+ * Report `subjects` on mount and clear them (report []) on unmount. Subject
  * pages (MissionWorkspace, RunnerChat) call this; the unmount-clear is what
  * lets the focus map go empty when the user navigates to a non-subject page
- * that doesn't report anything itself.
+ * that doesn't report anything itself. RunnerChat passes one subject per
+ * visible pane so a split window owns every session it shows (impl 0020).
  */
-export function useReportSubject(subject: Subject | null): void {
-  // Key by content, not object identity, so the effect re-fires only on a
-  // real subject change rather than every render.
-  const key = subject ? `${subject.type}:${subject.value}` : "null";
+export function useReportSubjects(subjects: Subject[]): void {
+  // Key by content, not array identity, so the effect re-fires only on a
+  // real subject-set change rather than every render.
+  const key = subjects.map((s) => `${s.type}:${s.value}`).join(",");
   useEffect(() => {
-    reportSubject(subject);
+    reportSubjects(subjects);
     return () => {
-      reportSubject(null);
+      reportSubjects([]);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
+}
+
+/** Single-subject convenience over `useReportSubjects` for surfaces that
+ *  only ever show one subject (MissionWorkspace). */
+export function useReportSubject(subject: Subject | null): void {
+  useReportSubjects(subject ? [subject] : []);
 }
 
 function sameSubject(a: Subject | null, b: Subject | null): boolean {
@@ -125,8 +132,9 @@ export interface SecondaryState {
 
 /**
  * Derive whether `myLabel` is the secondary window for `subject`. A window is
- * secondary iff some *other* window holds the same subject with a strictly
- * later `focused_at`. The primary is that most-recently-focused other holder.
+ * secondary iff some *other* window shows the same subject (in any pane) with
+ * a strictly later `focused_at`. The primary is that most-recently-focused
+ * other holder.
  *
  * `focused_at` is parsed to epoch-ms rather than string-compared: chrono's
  * RFC3339 uses variable fractional-second widths, so lexicographic order can
@@ -147,7 +155,7 @@ export function isSecondaryFor(
   let primaryFocus = myFocus;
   for (const entry of map) {
     if (entry.label === myLabel) continue;
-    if (!sameSubject(entry.subject, subject)) continue;
+    if (!entry.subjects.some((s) => sameSubject(s, subject))) continue;
     const focus = Date.parse(entry.focused_at);
     if (focus > primaryFocus) {
       primaryFocus = focus;

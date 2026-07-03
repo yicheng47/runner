@@ -116,16 +116,18 @@ pub fn window_focus_other(app: AppHandle, label: String) -> Result<()> {
     Ok(())
 }
 
-/// The frontend reports its current subject on every route change. Label is
-/// resolved from the invoking webview, not trusted from the caller.
+/// The frontend reports the subjects it currently shows on every route or
+/// pane-layout change — one for a single-pane surface, up to three when the
+/// direct-chat surface is split (impl 0020). Label is resolved from the
+/// invoking webview, not trusted from the caller.
 #[tauri::command]
-pub fn window_report_subject(
+pub fn window_report_subjects(
     window: tauri::WebviewWindow,
     state: State<AppState>,
     app: AppHandle,
-    subject: Option<Subject>,
+    subjects: Vec<Subject>,
 ) -> Result<()> {
-    state.windows.set_subject(window.label(), subject);
+    state.windows.set_subjects(window.label(), subjects);
     broadcast_focus_map(&app);
     Ok(())
 }
