@@ -11,6 +11,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test": "vitest run",
     "tauri": "tauri",
     "package": "tauri build",
     "lint": "eslint src/",
@@ -38,6 +39,7 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
+    "react-resizable-panels": "^4.12.0",
     "react-router-dom": "^7.13.1",
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
@@ -54,7 +56,8 @@
     "eslint-plugin-react-refresh": "^0.5.2",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.56.1",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^4.1.9"
   },
   "packageManager": "pnpm@10.33.2+sha512.a90faf6feeab71ad6c6e57f94e0fe1a12f5dcc22cd754db40ae9593eb6a3e0b6b12e3540218bb37ae083404b1f2ce6db2a4121e979829b4aff94b99f49da1cf8"
 }

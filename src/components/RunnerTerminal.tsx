@@ -103,6 +103,12 @@ interface RunnerTerminalProps {
    *  terminal may still be disabled, e.g. a stopped mission slot that
    *  should replay dimmed scrollback without accepting input. */
   active?: boolean;
+  /** Whether activation may steal keyboard focus. Defaults to true (the
+   *  single-visible-terminal surfaces want focus to follow activation).
+   *  Split chat (impl 0020) shows several active terminals at once and
+   *  passes false for every pane except the focused one, so mounting a
+   *  sibling pane can't yank keystrokes away from the focused chat. */
+  autoFocus?: boolean;
   /** Stop forwarding keystrokes / resize events to the backend.
    *  Set by the parent when the bound session has exited so stray
    *  input on the dimmed pane doesn't surface a "session not found"
@@ -126,6 +132,9 @@ export interface RunnerTerminalHandle {
    * container has no measurable size (e.g. hidden via `display:none`).
    */
   measure(): { cols: number; rows: number } | null;
+  /** Grab keyboard focus (no-op while disabled). Split chat calls this
+   *  when pane focus moves without a remount, e.g. a pane-header click. */
+  focus(): void;
 }
 
 /**
@@ -155,7 +164,7 @@ export const RunnerTerminal = forwardRef<
   RunnerTerminalHandle,
   RunnerTerminalProps
 >(function RunnerTerminal(
-  { sessionId, runnerRuntime, onExit, onError, active, disabled },
+  { sessionId, runnerRuntime, onExit, onError, active, autoFocus, disabled },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -184,6 +193,8 @@ export const RunnerTerminal = forwardRef<
   // closures don't capture a stale value across the long-lived
   // terminal effect.
   const disabledRef = useRef<boolean>(disabled ?? false);
+  // Mirrors `autoFocus` for the activation effect below.
+  const autoFocusRef = useRef<boolean>(autoFocus ?? true);
   // Last (cols, rows) pushed to the backend. Shared between `pushSize`
   // (mount-effect scope) and the activation effect's trailing resize so
   // neither hammers the backend with identical dims. During a drag both
@@ -251,6 +262,10 @@ export const RunnerTerminal = forwardRef<
   useEffect(() => {
     activeRef.current = active ?? false;
   }, [active]);
+
+  useEffect(() => {
+    autoFocusRef.current = autoFocus ?? true;
+  }, [autoFocus]);
 
   const refreshActiveTerminal = useCallback(
     ({
@@ -984,7 +999,10 @@ export const RunnerTerminal = forwardRef<
 
     const activate = () => {
       if (cancelled) return;
-      refreshActiveTerminal({ focus: true, forceResizeDance: true });
+      refreshActiveTerminal({
+        focus: autoFocusRef.current,
+        forceResizeDance: true,
+      });
     };
 
     raf1 = window.requestAnimationFrame(() => {
@@ -1001,6 +1019,9 @@ export const RunnerTerminal = forwardRef<
   useImperativeHandle(
     ref,
     () => ({
+      focus: () => {
+        if (!disabledRef.current) termRef.current?.focus();
+      },
       measure: () => {
         const t = termRef.current;
         const fit = fitRef.current;

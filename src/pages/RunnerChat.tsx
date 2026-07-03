@@ -9,7 +9,14 @@
 // ANSI colors, cursor movement, and mouse tracking. A plain `<pre>`
 // can't interpret the control sequences these agents emit.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { listen } from "@tauri-apps/api/event";
@@ -23,6 +30,7 @@ import {
   SquarePen,
   Terminal,
 } from "lucide-react";
+import { Group, Panel, Separator } from "react-resizable-panels";
 
 import {
   RunnerTerminal,
@@ -52,11 +60,32 @@ import {
   useArchivingSession,
 } from "../lib/archivingState";
 import { DuplicateSubjectOverlay } from "../components/DuplicateSubjectOverlay";
+import { LayoutPicker } from "../components/LayoutPicker";
+import { StartChatModal } from "../components/StartChatModal";
+import {
+  applyPreset,
+  assignSessionToPane,
+  closePane,
+  findLeaf,
+  focusPane,
+  getPaneLayout,
+  isSplit,
+  leafForSession,
+  leaves,
+  recordSplitSizes,
+  resetPaneLayout,
+  usePaneLayout,
+  visibleSessionIds,
+  type PaneLeaf,
+  type PaneNode,
+  type PresetKind,
+} from "../lib/paneLayout";
 import {
   isSecondaryFor,
   useCurrentWindowLabel,
-  useReportSubject,
+  useReportSubjects,
   useWindowFocus,
+  type SecondaryState,
 } from "../lib/windowFocus";
 import type {
   Runner,
@@ -130,10 +159,11 @@ export default function RunnerChat() {
   const [directSessions, setDirectSessions] = useState<DirectSessionPane[]>([]);
   // Live handles to each mounted RunnerTerminal so the resume path can
   // measure the actual xterm geometry before the backend forks the new
-  // PTY child. Without this, pty_runtime falls back to 80×24 and the
-  // agent's first paint wraps at default cols until the next user
-  // resize triggers SIGWINCH (#resume-pty-size-mismatch).
-  const terminalsRef = useRef<Map<string, RunnerTerminalHandle>>(new Map());
+  // PTY child (without this, pty_runtime falls back to 80×24 —
+  // #resume-pty-size-mismatch) and pane-focus changes can move keyboard
+  // focus. Closure registry rather than a ref: the split render path
+  // resolves callbacks during render, where refs are off-limits.
+  const [terminals] = useState(createTerminalRegistry);
   const [err, setErr] = useState<string | null>(null);
   // Resume-fallback banner: distinct from `err` because it isn't a failure
   // the user has to act on — the agent just couldn't resume a prior
@@ -145,6 +175,9 @@ export default function RunnerChat() {
   // meta line. Pulled from session_list_recent_direct so the chat
   // surface and the sidebar agree on the truth.
   const [chatMeta, setChatMeta] = useState<DirectSessionEntry | null>(null);
+  // Full recent-direct list, cached from the same fetch — split panes
+  // (impl 0020) read their header name/status per session from here.
+  const [recentRows, setRecentRows] = useState<DirectSessionEntry[]>([]);
   const [activityBySession, setActivityBySession] = useState<
     Record<string, SessionActivityState | undefined>
   >({});
@@ -217,27 +250,58 @@ export default function RunnerChat() {
   // read the meta + go back to the runner.
   const isArchived = chatMeta?.archived_at != null;
 
-  // Multi-window coordination (impl 0018). Report this chat as the window's
-  // subject; if another window holds the same session with a later focus,
-  // we're secondary and must not mount a terminal or send stdin/resize/start.
+  // Split-view layout (impl 0020). Module store shared with Sidebar; the
+  // single-pane preset renders the classic path below, split presets render
+  // the pane tree. Reset on surface unmount (decision 6).
+  const layout = usePaneLayout();
+  const splitActive = isSplit(layout);
+  useEffect(() => () => resetPaneLayout(), []);
+
+  // Multi-window coordination (impl 0018 + 0020). Report every visible
+  // pane's session as a window subject — a split window owns each session
+  // it shows, not just the focused one. Per session, if another window
+  // shows the same chat with a later focus, that pane is secondary here
+  // and must not mount a terminal or send stdin/resize/start.
   const focusMap = useWindowFocus();
   const myWindowLabel = useCurrentWindowLabel();
-  const subject: Subject | null = sessionId
-    ? { type: "DirectChat", value: sessionId }
-    : null;
-  useReportSubject(subject);
-  const { secondary: isSecondary, primaryLabel } = isSecondaryFor(
-    focusMap,
-    myWindowLabel,
-    subject,
+  const paneSessionIds = splitActive ? visibleSessionIds(layout.root) : [];
+  const subjectIds =
+    sessionId && !paneSessionIds.includes(sessionId)
+      ? [sessionId, ...paneSessionIds]
+      : paneSessionIds;
+  useReportSubjects(
+    subjectIds.map((value) => ({ type: "DirectChat", value }) as Subject),
   );
-  const [overlayDismissed, setOverlayDismissed] = useState(false);
-  // Re-show the overlay on subject change or when this window (re)gains
-  // secondary status (another window stole focus mid-session).
+  const secondaryBySession = new Map<string, SecondaryState>(
+    subjectIds.map((value) => [
+      value,
+      isSecondaryFor(focusMap, myWindowLabel, { type: "DirectChat", value }),
+    ]),
+  );
+  const { secondary: isSecondary, primaryLabel } = (sessionId
+    ? secondaryBySession.get(sessionId)
+    : null) ?? { secondary: false, primaryLabel: null };
+  // Dismissed duplicate-subject overlays, per session id. Cleared on
+  // navigation (spec-12 decision 6: dismissal isn't persisted) and pruned
+  // when a session stops being secondary so a later re-flip re-shows it.
+  const [dismissedSecondary, setDismissedSecondary] = useState<Set<string>>(
+    () => new Set(),
+  );
   useEffect(() => {
-    setOverlayDismissed(false);
-  }, [sessionId, isSecondary]);
-  const showDuplicateOverlay = isSecondary && !overlayDismissed;
+    setDismissedSecondary((prev) => (prev.size === 0 ? prev : new Set()));
+  }, [sessionId]);
+  const secondaryKey = subjectIds
+    .filter((id) => secondaryBySession.get(id)?.secondary)
+    .join(",");
+  useEffect(() => {
+    const stillSecondary = new Set(secondaryKey ? secondaryKey.split(",") : []);
+    setDismissedSecondary((prev) => {
+      const next = new Set([...prev].filter((id) => stillSecondary.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [secondaryKey]);
+  const showDuplicateOverlay =
+    isSecondary && sessionId != null && !dismissedSecondary.has(sessionId);
 
   // Render-gate without the flash. The two branches below
   // (chatMeta still loading, or terminals haven't upserted yet) gate
@@ -359,6 +423,7 @@ export default function RunnerChat() {
     }
     try {
       const rows = await api.session.listRecentDirect();
+      setRecentRows(rows);
       const found = rows.find((r) => r.session_id === sessionId);
       if (found) {
         setChatMeta(found);
@@ -475,21 +540,22 @@ export default function RunnerChat() {
     };
   }, [sessionId, refreshChatMeta]);
 
-  useEffect(() => {
-    setActivityBySession({});
-  }, [sessionId]);
-
+  // Track busy/idle activity for every direct session, not just the URL
+  // one — split panes (impl 0020) each show their own status dot. Entries
+  // are dropped by `clearActivity` on exit/kill; no reset on navigation
+  // since other panes' chats keep running through it.
   useEffect(() => {
     if (!sessionId || isArchived) {
       setActivityBySession({});
       return;
     }
-    const targetId = sessionId;
     let unlisten: (() => void) | null = null;
     let cancelled = false;
     void listen<SessionActivityEvent>("session/status", (event) => {
-      if (event.payload.session_id !== targetId) return;
-      setActivityBySession({ [targetId]: event.payload.state });
+      setActivityBySession((prev) => ({
+        ...prev,
+        [event.payload.session_id]: event.payload.state,
+      }));
     }).then((fn) => {
       if (cancelled) {
         fn();
@@ -733,14 +799,15 @@ export default function RunnerChat() {
     // briefly subscribing to session/output + calling
     // outputSnapshot before the read-only branch takes over.
     if (!metaLoaded) return;
-    // Secondary windows (impl 0018) don't own the PTY: drop any pane we
-    // mounted (flip primary→secondary mid-session unmounts RunnerTerminal so
-    // it stops forwarding stdin) and reset the attach + transitional refs so
-    // a flip back to primary re-attaches cleanly. Leaving startedKeyRef null
-    // is what lets that re-attach fire.
+    // Secondary windows (impl 0018) don't own the PTY: the render path
+    // filters this session's RunnerTerminal out (flip primary→secondary
+    // mid-session unmounts it so it stops forwarding stdin), and we reset
+    // the attach + transitional refs so a flip back to primary re-attaches
+    // cleanly. Leaving startedKeyRef null is what lets that re-attach fire.
+    // Other sessions' hidden panes stay mounted — with split view (impl
+    // 0020) each pane is gated per session, not per window.
     if (isSecondary) {
       startedKeyRef.current = null;
-      setDirectSessions((prev) => (prev.length === 0 ? prev : []));
       setResuming(false);
       setStarting(false);
       return;
@@ -774,6 +841,124 @@ export default function RunnerChat() {
     chatMeta,
     chatMeta?.started_at,
   ]);
+
+  // ---- split view (impl 0020) ------------------------------------------
+
+  // Pane the StartChatModal is filling (empty-pane flow); null = closed.
+  const [paneModalTarget, setPaneModalTarget] = useState<string | null>(null);
+
+  // While split, a URL session that isn't on screen anywhere loads into
+  // the focused pane — covers command-palette jumps and any plain
+  // navigation that doesn't know about the layout. Deliberately narrow:
+  // a session already visible in some pane is left alone, otherwise the
+  // empty-pane flow (focus parked on the empty pane, modal open, URL
+  // still on the origin chat) would yank the origin chat out of its
+  // pane. The sidebar handles its own move-not-copy on row click.
+  useEffect(() => {
+    if (!splitActive || !sessionId || !metaLoaded || isArchived) return;
+    if (leafForSession(layout.root, sessionId)) return;
+    assignSessionToPane(layout.focusedPaneId, sessionId);
+  }, [splitActive, sessionId, metaLoaded, isArchived, layout]);
+
+  // Focus a pane and follow it with the URL (decision 7): topbar, right
+  // rail, and deep-link state all key off `/chats/:sessionId`. Replace
+  // instead of push so pane-hopping doesn't pile up history entries.
+  const focusPaneAndFollow = useCallback(
+    (leaf: PaneLeaf) => {
+      focusPane(leaf.id);
+      if (!leaf.sessionId) return;
+      terminals.get(leaf.sessionId)?.focus();
+      if (leaf.sessionId === sessionId) return;
+      const paneStatus = directSessions.find(
+        (s) => s.id === leaf.sessionId,
+      )?.status;
+      navigate(`/chats/${leaf.sessionId}`, {
+        replace: true,
+        state: paneStatus ? { sessionStatus: paneStatus } : undefined,
+      });
+    },
+    [sessionId, navigate, directSessions, terminals],
+  );
+
+  const pickPreset = useCallback(
+    (kind: PresetKind) => {
+      const prev = getPaneLayout();
+      const visible =
+        prev.root.kind === "split"
+          ? visibleSessionIds(prev.root)
+          : sessionId
+            ? [sessionId]
+            : [];
+      const next = applyPreset(kind, sessionId, visible);
+      // More slots than open chats: focus already sits on the first empty
+      // pane (applyPreset put it there) — funnel into StartChatModal with
+      // the focused chat's runner preselected. Cancel leaves the empty
+      // state; the sidebar can fill it too.
+      const firstEmpty = leaves(next.root).find((l) => l.sessionId === null);
+      if (firstEmpty) {
+        setPaneModalTarget(firstEmpty.id);
+        return;
+      }
+      const focused = findLeaf(next.root, next.focusedPaneId);
+      if (focused?.sessionId && focused.sessionId !== sessionId) {
+        navigate(`/chats/${focused.sessionId}`, { replace: true });
+      }
+    },
+    [sessionId, navigate],
+  );
+
+  // Cmd+W while split collapses the focused pane; the session keeps
+  // running in the hidden pool (decision 8). Single-pane keeps the OS
+  // default (Close Window) — this listener only exists while split.
+  const closeFocusedPane = useCallback(() => {
+    const next = closePane(getPaneLayout().focusedPaneId);
+    const focused = findLeaf(next.root, next.focusedPaneId);
+    if (focused?.sessionId && focused.sessionId !== sessionId) {
+      navigate(`/chats/${focused.sessionId}`, { replace: true });
+    }
+  }, [sessionId, navigate]);
+
+  useEffect(() => {
+    if (!splitActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      if (e.key !== "w" && e.key !== "W") return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeFocusedPane();
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKey, { capture: true });
+  }, [splitActive, closeFocusedPane]);
+
+  // Geometry sync (decision 4, geometry-sync variant). Terminals stay in
+  // the flat absolutely-positioned stack they've always lived in — their
+  // React tree position never changes, so xterm never remounts. Visible
+  // sessions' wrappers are imperatively sized/positioned to their pane's
+  // body rect; a ResizeObserver per pane body keeps them glued through
+  // gutter drags, window resizes, and panel toggles. (A portal-per-pane
+  // approach was rejected: React remounts portal children when the
+  // container node changes — `updatePortal` compares `containerInfo` by
+  // identity — which is exactly the remount this feature must avoid.)
+  // All geometry bookkeeping lives in one closure object created once —
+  // plain captured variables instead of refs, because the callback-ref
+  // factories are invoked during render where touching `ref.current` is
+  // off-limits (react-hooks/refs). Registration happens at commit time via
+  // the returned callbacks; nothing here drives a React update.
+  const [paneGeo] = useState(createPaneGeometry);
+  useEffect(() => () => paneGeo.dispose(), [paneGeo]);
+
+  // Position wrappers before paint on every commit — pane tree changes,
+  // session assignment changes, and wrapper mounts all land here. The RO
+  // inside paneGeo keeps them glued through gutter drags and resizes.
+  // Leaving split mode clears the inline geometry, since it would
+  // otherwise override the single-pane wrappers' `inset-0` sizing.
+  useLayoutEffect(() => {
+    paneGeo.setRoot(layout.root);
+    if (splitActive) paneGeo.sync();
+    else paneGeo.clearWrapGeometry();
+  });
 
   async function endChat() {
     if (!sessionId) return;
@@ -821,7 +1006,7 @@ export default function RunnerChat() {
     setErr(null);
     clearActivity(targetId);
     try {
-      const dims = terminalsRef.current.get(targetId)?.measure() ?? null;
+      const dims = terminals.get(targetId)?.measure() ?? null;
       await api.session.resume(
         targetId,
         dims?.cols ?? null,
@@ -967,6 +1152,232 @@ export default function RunnerChat() {
     exitCode != null ? `exit ${exitCode}` : null,
   ].filter((s): s is string => !!s);
 
+  // ---- split-view render helpers (impl 0020) ----------------------------
+  // Plain functions, not components: defining component types inside the
+  // render body would give them a fresh identity every commit and remount
+  // the whole pane tree (Group included) on every render.
+
+  const paneRow = (sid: string) =>
+    recentRows.find((r) => r.session_id === sid) ?? null;
+  const paneName = (sid: string) => {
+    const row = paneRow(sid);
+    if (row) {
+      return row.title ?? (row.handle ? `@${row.handle}` : row.display_name);
+    }
+    return directSessions.find((s) => s.id === sid)?.label ?? "chat";
+  };
+  const paneDisplayStatus = (sid: string): DirectChatDisplayStatus => {
+    const live =
+      directSessions.find((s) => s.id === sid)?.status ??
+      paneRow(sid)?.status ??
+      "running";
+    return directChatDisplayStatus(live, activityBySession[sid]);
+  };
+
+  // Pane chrome per Pencil `g0xSY`/`vdRKp`: 34px header (icon · name ·
+  // CHAT chip · status dot) over the body; the focused pane carries the
+  // 1px accent ring. The body div is the geometry target the session's
+  // terminal wrapper is glued to.
+  const renderPaneNode = (node: PaneNode): ReactNode => {
+    if (node.kind === "leaf") {
+      const focused = node.id === layout.focusedPaneId;
+      const sid = node.sessionId;
+      const sec = sid ? secondaryBySession.get(sid) : undefined;
+      const showPaneOverlay =
+        sid != null && (sec?.secondary ?? false) && !dismissedSecondary.has(sid);
+      const displayStatus = sid ? paneDisplayStatus(sid) : null;
+      return (
+        <section
+          key={node.id}
+          onMouseDownCapture={() => focusPaneAndFollow(node)}
+          className={`relative flex h-full w-full flex-col overflow-hidden border ${
+            focused ? "border-accent" : "border-line"
+          }`}
+        >
+          <header className="flex h-[34px] shrink-0 items-center gap-2 border-b border-line bg-panel px-3.5">
+            <Terminal
+              aria-hidden
+              className={`h-[13px] w-[13px] shrink-0 ${
+                focused ? "text-accent" : "text-fg-3"
+              }`}
+            />
+            <span
+              className={`min-w-0 truncate text-[13px] font-medium ${
+                focused ? "text-fg" : "text-fg-2"
+              }`}
+            >
+              {sid ? paneName(sid) : "Empty pane"}
+            </span>
+            <span className="shrink-0 rounded bg-line-strong px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-fg-2">
+              Chat
+            </span>
+            {displayStatus ? (
+              <span className="flex shrink-0 items-center gap-1.5">
+                <span
+                  className={`inline-block h-1.5 w-1.5 rounded-full ${paneStatusDotClass(displayStatus)}`}
+                />
+                <span className="text-[11px] text-fg-2">{displayStatus}</span>
+              </span>
+            ) : null}
+          </header>
+          <div
+            ref={(el) => paneGeo.paneBodyRefFor(node.id)(el)}
+            style={{ backgroundColor: terminalBg }}
+            className="relative min-h-0 flex-1"
+          >
+            {sid == null ? (
+              <EmptyPaneBody
+                onNewChat={() => {
+                  focusPane(node.id);
+                  setPaneModalTarget(node.id);
+                }}
+              />
+            ) : showPaneOverlay ? (
+              // Per-pane duplicate-subject gate (impl 0018 × 0020): this
+              // pane's session is owned by another window, so no terminal
+              // is mounted for it (see renderTerminalPane) and the
+              // overlay scopes to this pane only.
+              <DuplicateSubjectOverlay
+                kind="chat"
+                primaryLabel={sec?.primaryLabel ?? null}
+                onStayHere={() =>
+                  setDismissedSecondary((prev) => new Set(prev).add(sid))
+                }
+              />
+            ) : null}
+          </div>
+        </section>
+      );
+    }
+    const horizontal = node.orientation === "row";
+    return (
+      <Group
+        key={node.id}
+        orientation={horizontal ? "horizontal" : "vertical"}
+        className="flex h-full w-full"
+        onLayoutChanged={(l) => {
+          const a = l[`${node.id}:a`];
+          const b = l[`${node.id}:b`];
+          if (typeof a === "number" && typeof b === "number") {
+            recordSplitSizes(node.id, [a, b]);
+          }
+        }}
+      >
+        <Panel
+          id={`${node.id}:a`}
+          defaultSize={`${node.sizes[0]}%`}
+          minSize={120}
+          className="h-full w-full"
+        >
+          {renderPaneNode(node.a)}
+        </Panel>
+        <Separator
+          className={`shrink-0 transition-colors hover:bg-accent/40 ${
+            horizontal ? "w-1.5" : "h-1.5"
+          }`}
+        />
+        <Panel
+          id={`${node.id}:b`}
+          defaultSize={`${node.sizes[1]}%`}
+          minSize={120}
+          className="h-full w-full"
+        >
+          {renderPaneNode(node.b)}
+        </Panel>
+      </Group>
+    );
+  };
+
+  // Whether the flat terminal stack renders at all. Split mode keeps it up
+  // unconditionally (bar archived deep links) — gating on `metaLoaded`
+  // would unmount every xterm on each pane-focus navigation. Single-pane
+  // keeps today's gates: no PTY mounts for archived rows, secondary
+  // windows, or before chatMeta resolves.
+  const renderStack = splitActive
+    ? !isArchived
+    : metaLoaded && !isArchived && !isSecondary;
+
+  // One terminal wrapper per session, both modes. The element shape is
+  // identical across modes (same key, same position, RunnerTerminal first
+  // child), so single↔split transitions reuse the mounted terminals.
+  // Single-pane: the URL session's wrapper is full-bleed (`inset-0`),
+  // the rest stack hidden — exactly the classic behavior. Split: visible
+  // wrappers are geometry-synced onto their pane bodies; a session owned
+  // by another window (impl 0018) mounts nothing and its pane shows the
+  // duplicate-subject overlay instead.
+  const renderTerminalPane = (s: DirectSessionPane): ReactNode => {
+    if (splitActive && secondaryBySession.get(s.id)?.secondary) return null;
+    const paneLeaf = splitActive ? leafForSession(layout.root, s.id) : null;
+    const isUrl = s.id === sessionId;
+    const visible = splitActive ? paneLeaf !== null : isUrl;
+    const transitional = isUrl && (resuming || starting);
+    const dead = s.status !== "running";
+    // Pane visual state: while resuming/starting the active pane is fully
+    // blank so the centered cyan pill reads on a pristine canvas. When
+    // stopped, the pane dims to 45% under the Session ended card.
+    const paneOpacity =
+      visible && transitional
+        ? "opacity-0"
+        : visible && dead
+          ? "opacity-45"
+          : "";
+    return (
+      <div
+        key={s.id}
+        ref={(el) => paneGeo.termWrapRefFor(s.id)(el)}
+        // `backgroundColor` is inlined from `useTerminalBg()` so the
+        // frame tracks the active terminal palette; a theme switch flips
+        // the frame + canvas in lockstep.
+        style={{ backgroundColor: terminalBg }}
+        onMouseDownCapture={
+          paneLeaf ? () => focusPaneAndFollow(paneLeaf) : undefined
+        }
+        className={`absolute ${splitActive ? "" : "inset-0"} p-4 ${visible ? "block" : "hidden"} ${paneOpacity} transition-opacity`}
+      >
+        <RunnerTerminal
+          ref={(h) => terminals.refFor(s.id)(h)}
+          sessionId={s.id}
+          runnerRuntime={
+            paneRow(s.id)?.agent_runtime ??
+            chatMeta?.agent_runtime ??
+            runner?.runtime ??
+            ""
+          }
+          // While the resume/start loader is up the canvas is hidden, so
+          // xterm behaves as inactive (no resize pushes, no focus); when
+          // the flag clears, the activation effect fits + repaints.
+          active={visible && !transitional}
+          autoFocus={
+            !splitActive || (visible && paneLeaf?.id === layout.focusedPaneId)
+          }
+          disabled={dead || transitional}
+          onExit={onTerminalExit}
+          onError={setErr}
+        />
+        {splitActive && isUrl ? (
+          // Split mode scopes the URL session's transitional/session-ended
+          // overlays to its own pane; single-pane keeps them page-level.
+          archiving ? (
+            <ArchivingOverlay withScrim />
+          ) : chatState === "resuming" ? (
+            <ResumingOverlay />
+          ) : starting && activeSession ? (
+            <StartingOverlay label="Starting chat…" />
+          ) : activeSession && status !== "running" ? (
+            <SessionEndedOverlay
+              status={status}
+              exitCode={exitCode}
+              resumable={chatMeta?.resumable ?? true}
+              onResume={() => void resumeChat()}
+              onArchive={() => void archiveChat()}
+              variant="inline"
+            />
+          ) : null
+        ) : null}
+      </div>
+    );
+  };
+
   return (
     <div className="flex h-full flex-1 flex-row bg-bg">
       <div className="flex min-w-0 flex-1 flex-col">
@@ -1035,6 +1446,11 @@ export default function RunnerChat() {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {/* Layout button — left of Stop per the Pencil mock (`z1hPN`).
+              Hidden for archived rows (read-only single pane). */}
+          {sessionId && metaLoaded && !isArchived ? (
+            <LayoutPicker active={layout.preset} onPick={pickPreset} />
+          ) : null}
           {isArchived ? (
             // Archived rows are terminal: no Resume / Stop / Archive.
             // Only surface the navigation escape hatch.
@@ -1136,8 +1552,18 @@ export default function RunnerChat() {
           mirrors Pencil node `vS5ce`.
           Archived rows render a static placeholder instead — no xterm,
           no PTY listener, no live data path. */}
-      <div className="relative flex-1 overflow-hidden p-4">
-        {!metaLoaded && sessionId ? (
+      <div
+        ref={(el) => paneGeo.containerRef(el)}
+        className="relative flex-1 overflow-hidden p-4"
+      >
+        {splitActive && !isArchived ? (
+          // Split view (impl 0020): the pane tree is pure chrome (headers,
+          // focus ring, gutters, empty states); the terminals live in the
+          // flat absolute stack below — its own stable slot, shared with
+          // the single-pane path so preset changes never move a terminal's
+          // tree position — and are geometry-synced onto their pane bodies.
+          <div className="h-full w-full">{renderPaneNode(layout.root)}</div>
+        ) : !metaLoaded && sessionId ? (
           // Neutral loading state until chatMeta resolves. Rendering
           // the terminal map here would briefly mount RunnerTerminal
           // for archived rows (chatMeta null → isArchived false) and
@@ -1171,59 +1597,17 @@ export default function RunnerChat() {
           // the terminal map hasn't upserted the active session pane
           // yet but the next render almost always brings it in.
           showNavLoadingPill ? <StartingOverlay label="Starting chat…" /> : null
-        ) : (
-          directSessions.map((s) => {
-            const active = s.id === sessionId;
-            const dead = s.status !== "running";
-            // Pane visual state: while resuming/starting the active
-            // pane is fully blank so the centered cyan pill below
-            // reads on a pristine canvas. When stopped, the pane
-            // dims to 45% and the Session ended card overlays it.
-            const paneOpacity = active
-              ? resuming || starting
-                ? "opacity-0"
-                : dead
-                  ? "opacity-45"
-                  : ""
-              : "";
-            return (
-              <div
-                key={s.id}
-                // Wrapper is full-bleed (inset-0) with internal p-4
-                // padding around the canvas. `backgroundColor` is
-                // inlined from `useTerminalBg()` so the frame tracks
-                // the active terminal palette (Runner #15161B,
-                // Solarized Dark #002B36, Catppuccin Latte #EFF1F5,
-                // etc.). No CSS-class lock means a theme switch flips
-                // the frame + canvas in lockstep.
-                style={{ backgroundColor: terminalBg }}
-                className={`absolute inset-0 p-4 ${active ? "block" : "hidden"} ${paneOpacity} transition-opacity`}
-              >
-                <RunnerTerminal
-                  ref={(handle) => {
-                    if (handle) terminalsRef.current.set(s.id, handle);
-                    else terminalsRef.current.delete(s.id);
-                  }}
-                  sessionId={s.id}
-                  runnerRuntime={chatMeta?.agent_runtime ?? runner?.runtime ?? ""}
-                  // While the loader is up the canvas is hidden, so
-                  // we want xterm to behave as inactive (no resize
-                  // pushes, no focus). When `resuming`/`starting`
-                  // flips off, `active && !resuming && !starting`
-                  // flips true, which triggers RunnerTerminal's
-                  // activation effect — fit() + refresh() + focus +
-                  // winsize push — and clears the half-painted
-                  // canvas frame the user otherwise sees.
-                  active={active && !resuming && !starting}
-                  disabled={dead || resuming || starting}
-                  onExit={onTerminalExit}
-                  onError={setErr}
-                />
-              </div>
-            );
-          })
-        )}
-        {showDuplicateOverlay ? (
+        ) : null}
+        {/* The flat terminal stack — one stable slot for both modes, so
+            flipping between single-pane and split never moves a terminal's
+            tree position (= never remounts xterm). */}
+        {renderStack ? directSessions.map((s) => renderTerminalPane(s)) : null}
+        {splitActive && !isArchived ? (
+          // Split view renders its overlays per pane (duplicate-subject in
+          // the pane chrome, transitional/session-ended inside the focused
+          // session's wrapper) — nothing page-wide to add here.
+          null
+        ) : showDuplicateOverlay ? (
           // Duplicate-subject overlay (impl 0018) wins over the
           // transitional overlays: this window doesn't own the PTY, so
           // "Resuming…" / "Starting…" / "Session ended" would be
@@ -1231,7 +1615,11 @@ export default function RunnerChat() {
           <DuplicateSubjectOverlay
             kind="chat"
             primaryLabel={primaryLabel}
-            onStayHere={() => setOverlayDismissed(true)}
+            onStayHere={() =>
+              sessionId
+                ? setDismissedSecondary((prev) => new Set(prev).add(sessionId))
+                : undefined
+            }
           />
         ) : isSecondary ? (
           // Overlay dismissed but still secondary: never surface the
@@ -1277,8 +1665,178 @@ export default function RunnerChat() {
         open={panelOpen}
         onClose={() => setPanelOpen(false)}
       />
+      {/* Empty-pane fill flow (impl 0020): auto-opened when a preset has
+          more slots than open chats, or from an empty pane's New chat
+          button. The focused chat's runner is preselected; the spawned
+          session lands in the target pane. */}
+      <StartChatModal
+        open={paneModalTarget !== null}
+        onClose={() => setPaneModalTarget(null)}
+        defaultRunnerId={chatMeta?.runner_id ?? undefined}
+        onStarted={(spawned) => {
+          const target = paneModalTarget;
+          setPaneModalTarget(null);
+          if (target) {
+            assignSessionToPane(target, spawned.id);
+            focusPane(target);
+          }
+          navigate(`/chats/${spawned.id}`, {
+            state: { sessionStatus: "running" },
+          });
+        }}
+      />
     </div>
   );
+}
+
+/// Empty split pane (Pencil `t0YBp`): New chat funnels into the
+/// StartChatModal with the focused chat's runner preselected; the sidebar
+/// is the other fill path.
+function EmptyPaneBody({ onNewChat }: { onNewChat: () => void }) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3.5 p-4 text-center">
+      <SquarePen aria-hidden className="h-[22px] w-[22px] text-fg-3" />
+      <span className="text-[13px] font-medium text-fg-2">
+        No chat in this pane
+      </span>
+      <button
+        type="button"
+        onClick={onNewChat}
+        className="cursor-pointer rounded-md bg-accent px-3.5 py-[7px] text-[12px] font-semibold text-bg transition-colors hover:bg-accent/90"
+      >
+        New chat
+      </button>
+      <span className="text-[11px] text-fg-3">
+        or pick a chat from the sidebar
+      </span>
+    </div>
+  );
+}
+
+/// Registry of live RunnerTerminal handles, keyed by session id. A closure
+/// over plain Maps instead of a ref so `refFor` can be called during render
+/// (react-hooks/refs forbids `ref.current` there); the returned callbacks
+/// are stable per session so React doesn't detach/reattach them per commit.
+function createTerminalRegistry() {
+  const handles = new Map<string, RunnerTerminalHandle>();
+  const cbs = new Map<string, (h: RunnerTerminalHandle | null) => void>();
+  return {
+    refFor(sessionId: string) {
+      let cb = cbs.get(sessionId);
+      if (!cb) {
+        cb = (h) => {
+          if (h) handles.set(sessionId, h);
+          else handles.delete(sessionId);
+        };
+        cbs.set(sessionId, cb);
+      }
+      return cb;
+    },
+    get(sessionId: string): RunnerTerminalHandle | null {
+      return handles.get(sessionId) ?? null;
+    },
+  };
+}
+
+/// Split-view geometry sync (impl 0020, decision 4 — geometry-sync
+/// variant). Terminals stay in the flat absolutely-positioned stack they
+/// have always lived in — their React tree position never changes, so
+/// xterm never remounts. Each visible session's wrapper is imperatively
+/// sized/positioned onto its pane's body rect; a shared ResizeObserver
+/// keeps them glued through gutter drags, window resizes, and panel
+/// toggles. (Portal-per-pane was rejected: React remounts portal children
+/// when the container node changes — `updatePortal` compares
+/// `containerInfo` by identity — which is exactly the remount this
+/// feature must avoid.) Same closure-over-Maps shape as the terminal
+/// registry, for the same render-time-refs reason.
+function createPaneGeometry() {
+  let container: HTMLDivElement | null = null;
+  let ro: ResizeObserver | null = null;
+  let root: PaneNode | null = null;
+  const paneBodies = new Map<string, HTMLDivElement>();
+  const termWraps = new Map<string, HTMLDivElement>();
+  const paneBodyCbs = new Map<string, (el: HTMLDivElement | null) => void>();
+  const termWrapCbs = new Map<string, (el: HTMLDivElement | null) => void>();
+
+  const sync = () => {
+    if (!container || !root) return;
+    const cRect = container.getBoundingClientRect();
+    for (const [paneId, bodyEl] of paneBodies) {
+      const leaf = findLeaf(root, paneId);
+      if (!leaf?.sessionId) continue;
+      const wrap = termWraps.get(leaf.sessionId);
+      if (!wrap) continue;
+      const r = bodyEl.getBoundingClientRect();
+      wrap.style.left = `${r.left - cRect.left}px`;
+      wrap.style.top = `${r.top - cRect.top}px`;
+      wrap.style.width = `${r.width}px`;
+      wrap.style.height = `${r.height}px`;
+    }
+  };
+
+  return {
+    sync,
+    containerRef(el: HTMLDivElement | null) {
+      container = el;
+    },
+    setRoot(next: PaneNode) {
+      root = next;
+    },
+    paneBodyRefFor(paneId: string) {
+      let cb = paneBodyCbs.get(paneId);
+      if (!cb) {
+        cb = (el) => {
+          const prev = paneBodies.get(paneId);
+          if (prev) ro?.unobserve(prev);
+          if (el) {
+            paneBodies.set(paneId, el);
+            ro ??= new ResizeObserver(sync);
+            ro.observe(el);
+          } else {
+            paneBodies.delete(paneId);
+          }
+        };
+        paneBodyCbs.set(paneId, cb);
+      }
+      return cb;
+    },
+    termWrapRefFor(sessionId: string) {
+      let cb = termWrapCbs.get(sessionId);
+      if (!cb) {
+        cb = (el) => {
+          if (el) termWraps.set(sessionId, el);
+          else termWraps.delete(sessionId);
+        };
+        termWrapCbs.set(sessionId, cb);
+      }
+      return cb;
+    },
+    clearWrapGeometry() {
+      for (const wrap of termWraps.values()) {
+        wrap.style.left = "";
+        wrap.style.top = "";
+        wrap.style.width = "";
+        wrap.style.height = "";
+      }
+    },
+    dispose() {
+      ro?.disconnect();
+    },
+  };
+}
+
+// Pane-header status dot, mirroring the sidebar's chat-row dot palette.
+function paneStatusDotClass(status: DirectChatDisplayStatus): string {
+  switch (status) {
+    case "busy":
+      return "bg-accent";
+    case "idle":
+      return "bg-accent/35";
+    case "crashed":
+      return "bg-danger";
+    case "stopped":
+      return "bg-fg-3";
+  }
 }
 
 // SessionEndedOverlay + ResumingOverlay live in

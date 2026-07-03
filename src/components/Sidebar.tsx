@@ -56,6 +56,15 @@ import {
   unmarkArchivingMission,
   unmarkArchivingSession,
 } from "../lib/archivingState";
+import {
+  assignSessionToPane,
+  findLeaf,
+  getPaneLayout,
+  isSplit,
+  removeSessionFromLayout,
+  usePaneLayout,
+  visibleSessionIds,
+} from "../lib/paneLayout";
 import { useResizableWidth } from "../hooks/useResizableWidth";
 import {
   BRAND_MARK_PINNED_COLOR,
@@ -246,6 +255,20 @@ export function Sidebar({
   // chats — see docs/impls/archive/0003-direct-chats.md), so we match by
   // session id rather than handle.
   const currentChatSessionId = chatMatch?.params.sessionId ?? null;
+
+  // Split-view state (impl 0020): while the chat surface is split, every
+  // pane-open chat row gets the selected fill and the focused pane's row
+  // carries a left accent bar mirroring the pane focus ring. Row clicks
+  // stay plain navigations — RunnerChat loads the session into the
+  // focused pane (move-not-copy) off the URL change.
+  const paneLayout = usePaneLayout();
+  const chatSplitActive = isSplit(paneLayout);
+  const paneOpenSessionIds = chatSplitActive
+    ? new Set(visibleSessionIds(paneLayout.root))
+    : null;
+  const focusedPaneSessionId = chatSplitActive
+    ? (findLeaf(paneLayout.root, paneLayout.focusedPaneId)?.sessionId ?? null)
+    : null;
 
   const sidebarNavigationEntries = useMemo<SidebarNavigationEntry[]>(
     () => [
@@ -627,7 +650,7 @@ export function Sidebar({
         console.error("sidebar: mission_rename failed", e);
       }
     },
-    [missions, refreshMissions],
+    [missions, refreshMissions, setRenamingMissionId],
   );
 
   const togglePin = useCallback(
@@ -662,6 +685,9 @@ export function Sidebar({
           }
         }
         await api.session.archive(session.session_id);
+        // Archived rows can't stay on screen — empty out any split pane
+        // that was showing this chat (no-op when not split / not visible).
+        removeSessionFromLayout(session.session_id);
         await refreshDirectSessions();
         if (currentChatSessionId === session.session_id) {
           navigate(session.handle ? `/runners/${session.handle}` : "/runners");
@@ -713,6 +739,17 @@ export function Sidebar({
   // longer in the live map → "session not found" banner.
   const openDirectChat = useCallback(
     (entry: DirectSessionEntry) => {
+      // While the chat surface is split (impl 0020), a row click loads the
+      // chat into the focused pane — move-not-copy: if it's visible in
+      // another pane, it moves there instead of duplicating. Read the
+      // store directly so a stale render can't mis-target the pane.
+      const chatLayout = getPaneLayout();
+      if (isSplit(chatLayout)) {
+        const focusedLeaf = findLeaf(chatLayout.root, chatLayout.focusedPaneId);
+        if (focusedLeaf && focusedLeaf.sessionId !== entry.session_id) {
+          assignSessionToPane(chatLayout.focusedPaneId, entry.session_id);
+        }
+      }
       const target = `/chats/${entry.session_id}`;
       navigate(target, {
         state: { sessionStatus: entry.status },
@@ -860,7 +897,12 @@ export function Sidebar({
                           key={s.session_id}
                           session={s}
                           activity={directSessionActivity[s.session_id]}
-                          selected={s.session_id === currentChatSessionId}
+                          selected={
+                            paneOpenSessionIds
+                              ? paneOpenSessionIds.has(s.session_id)
+                              : s.session_id === currentChatSessionId
+                          }
+                          paneFocused={s.session_id === focusedPaneSessionId}
                           renaming={renamingId === s.session_id}
                           onClick={() => openDirectChat(s)}
                           onContextMenu={(anchor) => openSessionMenu(s, anchor)}
@@ -1140,6 +1182,7 @@ function CollapsibleSectionHeader({
 
 function SidebarListRow({
   selected,
+  accentBar,
   label,
   onClick,
   onContextMenu,
@@ -1155,6 +1198,9 @@ function SidebarListRow({
   onRenameCancel,
 }: {
   selected: boolean;
+  /** 2px accent bar on the row's left edge — marks the chat in the
+   *  focused split pane (impl 0020), mirroring the pane focus ring. */
+  accentBar?: boolean;
   label: string;
   onClick: () => void;
   /** Right-click handler. Anchor the menu at clientX/clientY. */
@@ -1202,12 +1248,18 @@ function SidebarListRow({
             }
           : undefined
       }
-      className={`group flex w-full items-center gap-2 rounded border px-2.5 py-1.5 text-left text-xs transition-colors ${
+      className={`group relative flex w-full items-center gap-2 rounded border px-2.5 py-1.5 text-left text-xs transition-colors ${
         selected
           ? "border-sidebar-selected-border bg-sidebar-selected font-semibold text-fg shadow-sm"
           : "border-transparent text-fg-2 hover:bg-sidebar-selected/60 hover:text-fg"
       }`}
     >
+      {accentBar ? (
+        <span
+          aria-hidden
+          className="absolute inset-y-0.5 left-0 w-0.5 rounded-full bg-accent"
+        />
+      ) : null}
       <button
         type="button"
         onClick={onClick}
@@ -1395,6 +1447,7 @@ function SessionRow({
   session,
   activity,
   selected,
+  paneFocused,
   renaming,
   onClick,
   onContextMenu,
@@ -1404,6 +1457,8 @@ function SessionRow({
   session: DirectSessionEntry;
   activity: SessionActivityState | undefined;
   selected: boolean;
+  /** This chat sits in the focused split pane (impl 0020). */
+  paneFocused?: boolean;
   renaming: boolean;
   onClick: () => void;
   onContextMenu: (anchor: { x: number; y: number }) => void;
@@ -1423,6 +1478,7 @@ function SessionRow({
   return (
     <SidebarListRow
       selected={selected}
+      accentBar={paneFocused}
       label={label}
       onClick={onClick}
       onContextMenu={onContextMenu}

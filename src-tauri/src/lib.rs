@@ -317,7 +317,7 @@ pub fn run() {
             commands::mcp::mcp_config_snippet,
             commands::window::window_open,
             commands::window::window_focus_other,
-            commands::window::window_report_subject,
+            commands::window::window_report_subjects,
             commands::window::window_list_subjects,
         ])
         .build(tauri::generate_context!())
