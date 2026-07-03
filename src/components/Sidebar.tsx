@@ -51,7 +51,7 @@ import {
 
 import { api, type DirectSessionEntry } from "../lib/api";
 import { useT, type TFn } from "../lib/i18n";
-import { MOD_LABEL } from "../lib/platform";
+import { MOD_LABEL, isMac } from "../lib/platform";
 import {
   markArchivingMission,
   markArchivingSession,
@@ -1549,11 +1549,15 @@ function RowContextMenu({
         onClick={onPin}
       />
       <ContextMenuItem icon={SquarePen} label={t("Rename")} onClick={onRename} />
-      <ContextMenuItem
-        icon={AppWindow}
-        label={t("Open in New Window")}
-        onClick={onOpenInNewWindow}
-      />
+      {/* Multi-window is macOS-only for now: WebView2 secondary windows load
+          blank on Windows/Linux, so hide the action there. */}
+      {isMac && (
+        <ContextMenuItem
+          icon={AppWindow}
+          label={t("Open in New Window")}
+          onClick={onOpenInNewWindow}
+        />
+      )}
       <ContextMenuItem
         icon={Archive}
         label={t("Archive")}

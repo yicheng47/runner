@@ -515,16 +515,16 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .item(&reveal_logs)
         .build()?;
 
-    // File → New Window owns Cmd+N at the OS/menu level (impl 0018). The
-    // accelerator is handled by the menu, not a JS keydown handler, so the
-    // shortcut works regardless of webview focus and can't double-fire.
-    let new_window = MenuItemBuilder::with_id("window_new", "New Window")
-        .accelerator("CmdOrCtrl+N")
-        .build(app)?;
-    let file_menu = SubmenuBuilder::new(app, "File").item(&new_window).build()?;
-
     #[cfg(target_os = "macos")]
     {
+        // File → New Window owns Cmd+N at the menu level. Multi-window is
+        // macOS-only for now — WebView2 secondary windows load blank on
+        // Windows/Linux (see commands::window) — so this menu lives here.
+        let new_window = MenuItemBuilder::with_id("window_new", "New Window")
+            .accelerator("CmdOrCtrl+N")
+            .build(app)?;
+        let file_menu = SubmenuBuilder::new(app, "File").item(&new_window).build()?;
+
         let pkg = app.package_info();
         let about_meta = AboutMetadataBuilder::new()
             .name(Some(pkg.name.clone()))
@@ -576,9 +576,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        MenuBuilder::new(app)
-            .items(&[&file_menu, &help_menu])
-            .build()
+        // No File→New Window off macOS: multi-window is macOS-only for now
+        // (WebView2 secondary windows load blank on Windows/Linux).
+        MenuBuilder::new(app).items(&[&help_menu]).build()
     }
 }
 

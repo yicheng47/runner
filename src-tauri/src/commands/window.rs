@@ -21,6 +21,13 @@ pub fn open_window(
     initial_route: Option<String>,
     position: Option<(i32, i32)>,
 ) -> Result<String> {
+    // NOTE: Multi-window is gated off Windows/Linux at the *entry points*
+    // (the File→New Window menu item and the sidebar "Open in New Window"
+    // action are macOS-only), because the secondary WebView2 window loads
+    // blank and can't be dismissed there. The frontend also treats no window
+    // as secondary off macOS (windowFocus.isSecondaryFor) so a stray window
+    // never gates the primary's terminal. This builder stays cross-platform
+    // for when that's solved.
     let label = format!("window-{}", ulid::Ulid::new());
 
     // BrowserRouter can't resolve a deep path (`/missions/<id>`) through
