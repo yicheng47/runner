@@ -57,6 +57,12 @@ import {
   unmarkArchivingSession,
 } from "../lib/archivingState";
 import {
+  clusterActiveGroupRows,
+  groupPinTargets,
+  pinnedSessionIds,
+  shouldInheritPinOnAdd,
+} from "../lib/groupPinning";
+import {
   assignSessionToPane,
   findLeaf,
   focusPane,
@@ -273,22 +279,38 @@ export function Sidebar({
   // non-member chat is open, the sidebar reads classic single-selection.
   const paneLayout = usePaneLayout();
   const chatGroupActive = isGroupActiveFor(paneLayout, currentChatSessionId);
-  const paneOpenSessionIds = chatGroupActive
-    ? new Set(visibleSessionIds(paneLayout.root))
+  const activeGroupSessionIds = useMemo(
+    () => (chatGroupActive ? visibleSessionIds(paneLayout.root) : null),
+    [chatGroupActive, paneLayout],
+  );
+  const paneOpenSessionIds = activeGroupSessionIds
+    ? new Set(activeGroupSessionIds)
     : null;
   const focusedPaneSessionId = chatGroupActive
     ? (findLeaf(paneLayout.root, paneLayout.focusedPaneId)?.sessionId ?? null)
     : null;
 
+  // The CHAT list renders active-group members as one contiguous block in
+  // pane order, anchored where the group's best-sorted member sits — an
+  // unrelated pinned chat can't interleave between two members. Pure
+  // list-rendering logic; the backend sort stays group-blind.
+  const chatRows = useMemo(
+    () =>
+      activeGroupSessionIds
+        ? clusterActiveGroupRows(directSessions, activeGroupSessionIds)
+        : directSessions,
+    [directSessions, activeGroupSessionIds],
+  );
+
   const sidebarNavigationEntries = useMemo<SidebarNavigationEntry[]>(
     () => [
       ...missions.map((mission) => ({ to: `/missions/${mission.id}` })),
-      ...directSessions.map((session) => ({
+      ...chatRows.map((session) => ({
         to: `/chats/${session.session_id}`,
         state: { sessionStatus: session.status },
       })),
     ],
-    [directSessions, missions],
+    [chatRows, missions],
   );
 
   const refreshMissions = useCallback(async () => {
@@ -663,16 +685,30 @@ export function Sidebar({
     [missions, refreshMissions, setRenamingMissionId],
   );
 
+  // Pin/unpin on a member of the active on-screen group applies to every
+  // member, so the group moves between sidebar clusters as one unit.
+  // Chats outside the active group keep single-session behavior.
   const togglePin = useCallback(
     async (session: DirectSessionEntry) => {
+      const layout = getPaneLayout();
+      const groupIds = isGroupActiveFor(layout, currentChatSessionId)
+        ? visibleSessionIds(layout.root)
+        : [];
+      const nextPinned = !session.pinned;
+      const targets = groupPinTargets(
+        session.session_id,
+        groupIds,
+        pinnedSessionIds(directSessions),
+        nextPinned,
+      );
       try {
-        await api.session.pin(session.session_id, !session.pinned);
+        await Promise.all(targets.map((id) => api.session.pin(id, nextPinned)));
         await refreshDirectSessions();
       } catch (e) {
         console.error("sidebar: session_pin failed", e);
       }
     },
-    [refreshDirectSessions],
+    [currentChatSessionId, directSessions, refreshDirectSessions],
   );
 
   const archiveSession = useCallback(
@@ -784,7 +820,26 @@ export function Sidebar({
             chatLayout.focusedPaneId,
           );
           if (groupOnScreen && focusedLeaf && focusedLeaf.sessionId === null) {
+            // Read members before the assign fills the focused pane.
+            const memberIds = visibleSessionIds(chatLayout.root);
             assignSessionToPane(chatLayout.focusedPaneId, entry.session_id);
+            // A chat added to a group with a pinned member inherits the
+            // pin, so the group stays one sidebar cluster (add never
+            // unpins).
+            if (
+              shouldInheritPinOnAdd(
+                memberIds,
+                pinnedSessionIds(directSessions),
+                entry.session_id,
+              )
+            ) {
+              void api.session
+                .pin(entry.session_id, true)
+                .then(() => refreshDirectSessions())
+                .catch((e) =>
+                  console.error("sidebar: session_pin on group add failed", e),
+                );
+            }
           }
         }
       }
@@ -794,7 +849,13 @@ export function Sidebar({
         replace: location.pathname === target,
       });
     },
-    [navigate, location.pathname, currentChatSessionId],
+    [
+      navigate,
+      location.pathname,
+      currentChatSessionId,
+      directSessions,
+      refreshDirectSessions,
+    ],
   );
 
   // CHAT `+` button — opens the StartChat modal (GH #104). The modal is
@@ -925,12 +986,12 @@ export function Sidebar({
                 />
                 {sessionsOpen ? (
                   <div className="flex flex-col gap-0.5 px-3 pt-1">
-                    {directSessions.length === 0 ? (
+                    {chatRows.length === 0 ? (
                       <p className="px-2.5 py-1 text-xs text-fg-3">
                         No chats yet.
                       </p>
                     ) : (
-                      directSessions.map((s) => (
+                      chatRows.map((s) => (
                         <SessionRow
                           key={s.session_id}
                           session={s}
