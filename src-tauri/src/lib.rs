@@ -6,6 +6,7 @@ mod event_bus;
 mod mcp;
 mod model;
 mod panic_hook;
+mod repo;
 mod router;
 mod session;
 mod shell_path;

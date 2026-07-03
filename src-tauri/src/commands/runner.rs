@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -21,7 +21,7 @@ use ulid::Ulid as UlidGen;
 use crate::{
     error::{Error, Result},
     model::{Runner, Timestamp},
-    AppState,
+    repo, AppState,
 };
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -207,61 +207,8 @@ pub(super) fn validate_env_keys<S: std::hash::BuildHasher>(
     Ok(())
 }
 
-pub(super) fn row_to_runner(row: &Row<'_>) -> rusqlite::Result<Runner> {
-    let args_raw: Option<String> = row.get("args_json")?;
-    let env_raw: Option<String> = row.get("env_json")?;
-    let created_at: String = row.get("created_at")?;
-    let updated_at: String = row.get("updated_at")?;
-    Ok(Runner {
-        id: row.get("id")?,
-        handle: row.get("handle")?,
-        display_name: row.get("display_name")?,
-        runtime: row.get("runtime")?,
-        command: row.get("command")?,
-        args: match args_raw {
-            Some(s) => serde_json::from_str(&s).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })?,
-            None => Vec::new(),
-        },
-        working_dir: row.get("working_dir")?,
-        system_prompt: row.get("system_prompt")?,
-        env: match env_raw {
-            Some(s) => serde_json::from_str(&s).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })?,
-            None => HashMap::new(),
-        },
-        model: row.get("model")?,
-        effort: row.get("effort")?,
-        created_at: created_at.parse().map_err(|e: chrono::ParseError| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })?,
-        updated_at: updated_at.parse().map_err(|e: chrono::ParseError| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })?,
-    })
-}
-
-pub(super) const SELECT_COLS: &str = "id, handle, display_name, runtime, command,
-                                       args_json, working_dir, system_prompt, env_json,
-                                       model, effort,
-                                       created_at, updated_at";
-
 pub fn list(conn: &Connection) -> Result<Vec<Runner>> {
-    let sql = format!("SELECT {SELECT_COLS} FROM runners ORDER BY handle ASC");
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], row_to_runner)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+    repo::runner::list(conn).map_err(Into::into)
 }
 
 /// `list()` + `activity()` for every runner, in one IPC call. The Runners
@@ -282,10 +229,7 @@ pub fn list_with_activity(conn: &Connection) -> Result<Vec<RunnerWithActivity>> 
 }
 
 pub fn get(conn: &Connection, id: &str) -> Result<Runner> {
-    let sql = format!("SELECT {SELECT_COLS} FROM runners WHERE id = ?1");
-    conn.query_row(&sql, params![id], row_to_runner)
-        .optional()?
-        .ok_or_else(|| Error::msg(format!("runner not found: {id}")))
+    repo::runner::get(conn, id)?.ok_or_else(|| Error::msg(format!("runner not found: {id}")))
 }
 
 /// Look up a runner by its `handle`. Used by `/runners/:handle` so the URL
@@ -293,9 +237,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Runner> {
 /// not ULIDs). Handles are globally unique by schema, so this is exactly
 /// 0 or 1 rows.
 pub fn get_by_handle(conn: &Connection, handle: &str) -> Result<Runner> {
-    let sql = format!("SELECT {SELECT_COLS} FROM runners WHERE handle = ?1");
-    conn.query_row(&sql, params![handle], row_to_runner)
-        .optional()?
+    repo::runner::get_by_handle(conn, handle)?
         .ok_or_else(|| Error::msg(format!("runner not found: @{handle}")))
 }
 
@@ -308,7 +250,7 @@ pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
     validate_system_prompt(input.system_prompt.as_deref())?;
 
     let id = new_id();
-    let ts = now().to_rfc3339();
+    let ts = now();
     // Apply the form's "Permission mode" segmented control to the
     // args column at create time so the canonical mode flags are
     // persisted on the row, not derived at spawn time. See
@@ -320,38 +262,30 @@ pub fn create(conn: &Connection, input: CreateRunnerInput) -> Result<Runner> {
         &input.args,
         input.permission_mode,
     );
-    let args_json = serde_json::to_string(&args)?;
-    let env_json = serde_json::to_string(&input.env)?;
 
-    conn.execute(
-        "INSERT INTO runners (
-            id, handle, display_name, runtime, command,
-            args_json, working_dir, system_prompt, env_json,
-            model, effort,
-            created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
-        params![
-            id,
-            input.handle,
-            input.display_name,
-            input.runtime,
-            input.command,
-            args_json,
-            input.working_dir,
-            input.system_prompt,
-            env_json,
-            input
+    repo::runner::insert(
+        conn,
+        &repo::runner::RunnerRow {
+            id: id.clone(),
+            handle: input.handle,
+            display_name: input.display_name,
+            runtime: input.runtime,
+            command: input.command,
+            args_json: Some(args),
+            working_dir: input.working_dir,
+            system_prompt: input.system_prompt,
+            env_json: Some(input.env),
+            model: input
                 .model
-                .as_ref()
-                .map(|s| s.trim())
+                .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
-            input
+            effort: input
                 .effort
-                .as_ref()
-                .map(|s| s.trim())
+                .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
-            ts,
-        ],
+            created_at: ts,
+            updated_at: ts,
+        },
     )?;
     get(conn, &id)
 }
@@ -433,36 +367,23 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
         })
         .unwrap_or(existing.effort);
 
-    let args_json = serde_json::to_string(&args)?;
-    let env_json = serde_json::to_string(&env)?;
-    let ts = now().to_rfc3339();
-
-    conn.execute(
-        "UPDATE runners
-            SET display_name = ?1,
-                runtime = ?2,
-                command = ?3,
-                args_json = ?4,
-                working_dir = ?5,
-                system_prompt = ?6,
-                env_json = ?7,
-                model = ?8,
-                effort = ?9,
-                updated_at = ?10
-          WHERE id = ?11",
-        params![
+    repo::runner::update(
+        conn,
+        &repo::runner::RunnerRow {
+            id: id.to_string(),
+            handle: existing.handle,
             display_name,
             runtime,
             command,
-            args_json,
+            args_json: Some(args),
             working_dir,
             system_prompt,
-            env_json,
+            env_json: Some(env),
             model,
             effort,
-            ts,
-            id,
-        ],
+            created_at: existing.created_at,
+            updated_at: now(),
+        },
     )?;
     get(conn, id)
 }
@@ -497,7 +418,7 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
 
-    let affected = tx.execute("DELETE FROM runners WHERE id = ?1", params![id])?;
+    let affected = repo::runner::delete(&tx, id)?;
     if affected != 1 {
         return Err(Error::msg(format!("runner not found: {id}")));
     }
@@ -515,7 +436,7 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
                 )
                 .optional()?;
             if let Some(new_lead) = promote {
-                tx.execute("UPDATE slots SET lead = 1 WHERE id = ?1", params![new_lead])?;
+                repo::slot::promote_to_lead(&tx, &new_lead)?;
             }
         }
         // Close the position gap the cascade left for this crew so

@@ -16,7 +16,7 @@ use std::path::Path;
 use chrono::Utc;
 use runner_core::event_log::{self, EventLog};
 use runner_core::model::{EventDraft, EventKind, KnownSignalType, SignalType};
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -25,8 +25,8 @@ use ulid::Ulid as UlidGen;
 use crate::{
     commands::{crew, slot},
     error::{Error, Result},
-    model::{Mission, MissionStatus, Timestamp},
-    AppState,
+    model::{Mission, MissionStatus, SessionStatus, Timestamp},
+    repo, AppState,
 };
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -77,66 +77,16 @@ fn all_known_signals() -> Vec<SignalType> {
         .collect()
 }
 
-fn row_to_mission(row: &Row<'_>) -> rusqlite::Result<Mission> {
-    let status: String = row.get("status")?;
-    let started_at: String = row.get("started_at")?;
-    let stopped_at: Option<String> = row.get("stopped_at")?;
-    let pinned_at: Option<String> = row.get("pinned_at")?;
-    let archived_at: Option<String> = row.get("archived_at")?;
-
-    let status = match status.as_str() {
-        "running" => MissionStatus::Running,
-        "completed" => MissionStatus::Completed,
-        "aborted" => MissionStatus::Aborted,
-        other => {
-            return Err(rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                format!("unknown mission status {other:?}").into(),
-            ))
-        }
-    };
-    let parse_ts = |s: String| -> rusqlite::Result<Timestamp> {
-        s.parse().map_err(|e: chrono::ParseError| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })
-    };
-
-    Ok(Mission {
-        id: row.get("id")?,
-        crew_id: row.get("crew_id")?,
-        title: row.get("title")?,
-        status,
-        goal_override: row.get("goal_override")?,
-        cwd: row.get("cwd")?,
-        started_at: parse_ts(started_at)?,
-        stopped_at: stopped_at.map(parse_ts).transpose()?,
-        pinned_at: pinned_at.map(parse_ts).transpose()?,
-        archived_at: archived_at.map(parse_ts).transpose()?,
-    })
-}
-
 pub fn list(conn: &Connection, crew_id: Option<&str>) -> Result<Vec<Mission>> {
     // Pinned missions float to the top, then most-recently-started.
-    // Sort key: NULL pinned_at sorts last (DESC), older pinned_at
-    // sorts after newer (last-pinned first feels right for testing).
     //
-    // `archived_at IS NULL` is the single chokepoint that hides
-    // archived missions from every surface that lists missions: the
-    // ⌘K palette, the sidebar tray, the Missions page summary. New
-    // surfaces inherit the filter by going through this helper. To
-    // open an archived mission by direct URL, use `get()` instead —
-    // it intentionally does NOT filter.
-    let sql = "SELECT id, crew_id, title, status, goal_override, cwd,
-                      started_at, stopped_at, pinned_at, archived_at
-                 FROM missions
-                 WHERE (?1 IS NULL OR crew_id = ?1)
-                   AND archived_at IS NULL
-                 ORDER BY pinned_at IS NULL, pinned_at DESC, started_at DESC";
-    let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map(params![crew_id], row_to_mission)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+    // `archived_at IS NULL` (inside the repo query) is the single
+    // chokepoint that hides archived missions from every surface that
+    // lists missions: the ⌘K palette, the sidebar tray, the Missions
+    // page summary. New surfaces inherit the filter by going through
+    // this helper. To open an archived mission by direct URL, use
+    // `get()` instead — it intentionally does NOT filter.
+    repo::mission::list(conn, crew_id).map_err(Into::into)
 }
 
 /// One row in the Missions page list — the mission's own fields denormalized
@@ -168,15 +118,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Mission> {
     // Intentionally no `archived_at` filter — opening an archived
     // mission by direct URL has to still resolve so the workspace can
     // render it read-only.
-    conn.query_row(
-        "SELECT id, crew_id, title, status, goal_override, cwd,
-                started_at, stopped_at, pinned_at, archived_at
-           FROM missions WHERE id = ?1",
-        params![id],
-        row_to_mission,
-    )
-    .optional()?
-    .ok_or_else(|| Error::msg(format!("mission not found: {id}")))
+    repo::mission::get(conn, id)?.ok_or_else(|| Error::msg(format!("mission not found: {id}")))
 }
 
 /// Cap on the effective mission goal byte length. The launch prompt
@@ -275,18 +217,20 @@ pub fn start(
 
     let id = new_id();
     let started_at = now();
-    tx.execute(
-        "INSERT INTO missions
-            (id, crew_id, title, status, goal_override, cwd, started_at)
-         VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6)",
-        params![
-            id,
-            crew.id,
-            title,
-            input.goal_override,
-            input.cwd,
-            started_at.to_rfc3339(),
-        ],
+    repo::mission::insert(
+        &tx,
+        &repo::mission::MissionRow {
+            id: id.clone(),
+            crew_id: crew.id.clone(),
+            title: title.clone(),
+            status: MissionStatus::Running,
+            goal_override: input.goal_override.clone(),
+            cwd: input.cwd.clone(),
+            started_at,
+            stopped_at: None,
+            pinned_at: None,
+            archived_at: None,
+        },
     )?;
 
     let mission_dir = event_log::mission_dir(app_data_dir, &crew.id, &id);
@@ -361,12 +305,7 @@ pub fn stop(conn: &mut Connection, app_data_dir: &Path, id: &str) -> Result<Miss
     // `status='completed' AND archived_at IS NULL` (other than
     // pre-existing rows the migration backfilled).
     let stopped_at = now();
-    let affected = tx.execute(
-        "UPDATE missions
-            SET status = 'completed', stopped_at = ?1, archived_at = ?1
-          WHERE id = ?2 AND status = 'running'",
-        params![stopped_at.to_rfc3339(), id],
-    )?;
+    let affected = repo::mission::complete_and_archive_if_running(&tx, id, stopped_at)?;
     if affected == 0 {
         // Either the id doesn't exist or the mission isn't running anymore
         // (a concurrent stop won the race). Fetch for a precise error.
@@ -651,12 +590,7 @@ async fn mission_start_impl_with_size(
         if let Some(body) = body {
             if let Err(e) = ensure_first_turn_fits(&member.slot.slot_handle, body) {
                 if let Ok(conn) = state.db.get() {
-                    let _ = conn.execute(
-                        "UPDATE missions
-                            SET status = 'aborted', stopped_at = ?1
-                          WHERE id = ?2",
-                        rusqlite::params![Utc::now().to_rfc3339(), out.mission.id],
-                    );
+                    let _ = repo::mission::abort(&conn, &out.mission.id, Utc::now());
                 }
                 return Err(e);
             }
@@ -674,12 +608,7 @@ async fn mission_start_impl_with_size(
             // Couldn't open the log — roll the mission row back. Bus isn't
             // mounted yet, no sessions were spawned, nothing to clean up.
             if let Ok(conn) = state.db.get() {
-                let _ = conn.execute(
-                    "UPDATE missions
-                        SET status = 'aborted', stopped_at = ?1
-                      WHERE id = ?2",
-                    rusqlite::params![Utc::now().to_rfc3339(), out.mission.id],
-                );
+                let _ = repo::mission::abort(&conn, &out.mission.id, Utc::now());
             }
             return Err(e);
         }
@@ -698,12 +627,7 @@ async fn mission_start_impl_with_size(
         Ok(r) => r,
         Err(e) => {
             if let Ok(conn) = state.db.get() {
-                let _ = conn.execute(
-                    "UPDATE missions
-                        SET status = 'aborted', stopped_at = ?1
-                      WHERE id = ?2",
-                    rusqlite::params![Utc::now().to_rfc3339(), out.mission.id],
-                );
+                let _ = repo::mission::abort(&conn, &out.mission.id, Utc::now());
             }
             return Err(e);
         }
@@ -764,16 +688,8 @@ async fn mission_start_impl_with_size(
                 // error. Bus and router aren't mounted yet so no
                 // event-side cleanup.
                 if let Ok(conn) = state.db.get() {
-                    let _ = conn.execute(
-                        "DELETE FROM sessions WHERE mission_id = ?1",
-                        rusqlite::params![out.mission.id],
-                    );
-                    let _ = conn.execute(
-                        "UPDATE missions
-                            SET status = 'aborted', stopped_at = ?1
-                          WHERE id = ?2",
-                        rusqlite::params![Utc::now().to_rfc3339(), out.mission.id],
-                    );
+                    let _ = repo::session::delete_all_for_mission(&conn, &out.mission.id);
+                    let _ = repo::mission::abort(&conn, &out.mission.id, Utc::now());
                 }
                 return Err(e);
             }
@@ -811,16 +727,8 @@ async fn mission_start_impl_with_size(
         // `complete_mission_session_spawn`.
         drop(pendings);
         if let Ok(conn) = state.db.get() {
-            let _ = conn.execute(
-                "DELETE FROM sessions WHERE mission_id = ?1",
-                rusqlite::params![out.mission.id],
-            );
-            let _ = conn.execute(
-                "UPDATE missions
-                    SET status = 'aborted', stopped_at = ?1
-                  WHERE id = ?2",
-                rusqlite::params![Utc::now().to_rfc3339(), out.mission.id],
-            );
+            let _ = repo::session::delete_all_for_mission(&conn, &out.mission.id);
+            let _ = repo::mission::abort(&conn, &out.mission.id, Utc::now());
         }
         return Err(e);
     }
@@ -865,12 +773,11 @@ async fn mission_start_impl_with_size(
                 Ok(crate::session::CompleteSpawnOutcome::Spawned) => {}
                 Ok(crate::session::CompleteSpawnOutcome::Cancelled) => {
                     if let Ok(conn) = pool_for_task.get() {
-                        let _ = conn.execute(
-                            "UPDATE sessions
-                                SET status = 'stopped',
-                                    stopped_at = ?2
-                              WHERE id = ?1",
-                            rusqlite::params![session_id, Utc::now().to_rfc3339()],
+                        let _ = repo::session::set_exit_status(
+                            &conn,
+                            &session_id,
+                            SessionStatus::Stopped,
+                            Utc::now(),
                         );
                     }
                     emitter_for_task.exit(&crate::session::manager::ExitEvent {
@@ -886,12 +793,11 @@ async fn mission_start_impl_with_size(
                          mission={mission_id_for_task} session={session_id} error={e}"
                     );
                     if let Ok(conn) = pool_for_task.get() {
-                        let _ = conn.execute(
-                            "UPDATE sessions
-                                SET status = 'crashed',
-                                    stopped_at = ?2
-                              WHERE id = ?1",
-                            rusqlite::params![session_id, Utc::now().to_rfc3339()],
+                        let _ = repo::session::set_exit_status(
+                            &conn,
+                            &session_id,
+                            SessionStatus::Crashed,
+                            Utc::now(),
                         );
                     }
                     // Tell the workspace the slot died so the pane
@@ -1163,15 +1069,8 @@ pub(crate) async fn mission_pin_impl(
     pinned: bool,
 ) -> Result<Mission> {
     let conn = state.db.get()?;
-    let pinned_at: Option<String> = if pinned {
-        Some(now().to_rfc3339())
-    } else {
-        None
-    };
-    let n = conn.execute(
-        "UPDATE missions SET pinned_at = ?1 WHERE id = ?2",
-        params![pinned_at, id],
-    )?;
+    let pinned_at: Option<Timestamp> = if pinned { Some(now()) } else { None };
+    let n = repo::mission::set_pinned_at(&conn, &id, pinned_at)?;
     if n != 1 {
         return Err(Error::msg(format!("mission not found: {id}")));
     }
@@ -1196,10 +1095,7 @@ pub(crate) async fn mission_rename_impl(
         return Err(Error::msg("mission title must not be empty"));
     }
     let conn = state.db.get()?;
-    let n = conn.execute(
-        "UPDATE missions SET title = ?1 WHERE id = ?2",
-        params![trimmed, id],
-    )?;
+    let n = repo::mission::set_title(&conn, &id, trimmed)?;
     if n != 1 {
         return Err(Error::msg(format!("mission not found: {id}")));
     }
@@ -1272,12 +1168,7 @@ pub(crate) async fn mission_reset_impl(
     // below.
     {
         let conn = state.db.get()?;
-        conn.execute(
-            "UPDATE sessions
-                SET archived_at = ?1
-              WHERE mission_id = ?2 AND archived_at IS NULL",
-            params![now().to_rfc3339(), id],
-        )?;
+        repo::session::archive_all_for_mission(&conn, &id, now())?;
     }
 
     // 4. Wipe the event log + per-mission shim dir so the next spawn
@@ -1311,15 +1202,7 @@ pub(crate) async fn mission_reset_impl(
     let started_at_dt = now();
     {
         let conn = state.db.get()?;
-        let n = conn.execute(
-            "UPDATE missions
-                SET status = 'running',
-                    started_at = ?1,
-                    stopped_at = NULL,
-                    archived_at = NULL
-              WHERE id = ?2",
-            params![started_at_dt.to_rfc3339(), id],
-        )?;
+        let n = repo::mission::reset_to_running(&conn, &id, started_at_dt)?;
         if n != 1 {
             return Err(Error::msg(format!("mission not found: {id}")));
         }
@@ -1410,12 +1293,7 @@ pub(crate) async fn mission_reset_impl(
         if let Some(body) = body {
             if let Err(e) = ensure_first_turn_fits(&member.slot.slot_handle, body) {
                 if let Ok(conn) = state.db.get() {
-                    let _ = conn.execute(
-                        "UPDATE missions
-                            SET status = 'aborted', stopped_at = ?1
-                          WHERE id = ?2",
-                        params![now().to_rfc3339(), id],
-                    );
+                    let _ = repo::mission::abort(&conn, &id, now());
                 }
                 return Err(e);
             }
@@ -1476,13 +1354,8 @@ pub(crate) async fn mission_reset_impl(
                 // the mission. Bus / router aren't mounted yet so no
                 // event-side cleanup.
                 if let Ok(conn) = state.db.get() {
-                    let _ = conn.execute("DELETE FROM sessions WHERE mission_id = ?1", params![id]);
-                    let _ = conn.execute(
-                        "UPDATE missions
-                            SET status = 'aborted', stopped_at = ?1
-                          WHERE id = ?2",
-                        params![now().to_rfc3339(), id],
-                    );
+                    let _ = repo::session::delete_all_for_mission(&conn, &id);
+                    let _ = repo::mission::abort(&conn, &id, now());
                 }
                 return Err(e);
             }
@@ -1507,13 +1380,8 @@ pub(crate) async fn mission_reset_impl(
         // mission stays aborted.
         drop(pendings);
         if let Ok(conn) = state.db.get() {
-            let _ = conn.execute("DELETE FROM sessions WHERE mission_id = ?1", params![id]);
-            let _ = conn.execute(
-                "UPDATE missions
-                    SET status = 'aborted', stopped_at = ?1
-                  WHERE id = ?2",
-                params![now().to_rfc3339(), id],
-            );
+            let _ = repo::session::delete_all_for_mission(&conn, &id);
+            let _ = repo::mission::abort(&conn, &id, now());
         }
         return Err(e);
     }
@@ -1541,12 +1409,11 @@ pub(crate) async fn mission_reset_impl(
                 Ok(crate::session::CompleteSpawnOutcome::Spawned) => {}
                 Ok(crate::session::CompleteSpawnOutcome::Cancelled) => {
                     if let Ok(conn) = pool_for_task.get() {
-                        let _ = conn.execute(
-                            "UPDATE sessions
-                                SET status = 'stopped',
-                                    stopped_at = ?2
-                              WHERE id = ?1",
-                            params![session_id, now().to_rfc3339()],
+                        let _ = repo::session::set_exit_status(
+                            &conn,
+                            &session_id,
+                            SessionStatus::Stopped,
+                            now(),
                         );
                     }
                     emitter_for_task.exit(&crate::session::manager::ExitEvent {
@@ -1562,12 +1429,11 @@ pub(crate) async fn mission_reset_impl(
                          mission={mission_id_for_task} session={session_id} error={e}"
                     );
                     if let Ok(conn) = pool_for_task.get() {
-                        let _ = conn.execute(
-                            "UPDATE sessions
-                                SET status = 'crashed',
-                                    stopped_at = ?2
-                              WHERE id = ?1",
-                            params![session_id, now().to_rfc3339()],
+                        let _ = repo::session::set_exit_status(
+                            &conn,
+                            &session_id,
+                            SessionStatus::Crashed,
+                            now(),
                         );
                     }
                     emitter_for_task.exit(&crate::session::manager::ExitEvent {

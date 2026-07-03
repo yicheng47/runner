@@ -200,15 +200,12 @@ fn persist_capture(
     // that a concurrent path (resume that already had a key) wrote
     // first. Guard with `started_at` so a stale watcher from a prior
     // incarnation of this row cannot write into a later stop/resume.
-    conn.execute(
-        "UPDATE sessions
-            SET agent_session_key = ?2
-          WHERE id = ?1
-            AND agent_session_key IS NULL
-            AND started_at = ?3",
-        params![session_id, agent_session_key, expected_row_started_at],
+    crate::repo::session::capture_agent_session_key(
+        &conn,
+        session_id,
+        agent_session_key,
+        expected_row_started_at,
     )
-    .map(|updated| updated > 0)
     .unwrap_or(false)
 }
 
