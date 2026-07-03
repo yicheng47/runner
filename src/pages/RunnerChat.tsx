@@ -836,11 +836,14 @@ export default function RunnerChat() {
   // Hydrate a restored layout: a persisted split can reference sessions
   // this app run has never attached (nothing navigated to them yet).
   // Attach every visible pane session that still exists in the
-  // recent-direct list so its terminal mounts; sweep sessions that are
-  // gone (archived while the app was closed) out of the layout — once,
-  // after the first successful rows fetch, so a freshly-spawned session
-  // can't be swept in the window before the list refreshes.
-  const sweptStaleRef = useRef(false);
+  // recent-direct list so its terminal mounts; sweep members that are
+  // gone from the list (archived while the app was closed, or from
+  // another window — session/archived refreshes the rows) out of the
+  // layout so a stale pane can't linger with a phantom "running" status
+  // or receive aggregate Stop/Resume/Archive actions. The URL session is
+  // exempt: a freshly-spawned chat is assigned + navigated to before its
+  // row's first appearance, and an in-flight rows fetch from just before
+  // the spawn must not evict it from its pane.
   useEffect(() => {
     if (!splitActive || !rowsLoaded) return;
     for (const sid of visibleSessionIds(layout.root)) {
@@ -853,11 +856,10 @@ export default function RunnerChat() {
           row.status,
           false,
         );
-      } else if (!sweptStaleRef.current && sid !== sessionId) {
+      } else if (sid !== sessionId) {
         removeSessionFromLayout(sid);
       }
     }
-    sweptStaleRef.current = true;
   }, [
     splitActive,
     rowsLoaded,
