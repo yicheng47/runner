@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 
 import { api, type SessionRow } from "../lib/api";
+import { useT, type TFn } from "../lib/i18n";
 import type {
   AppendedEvent,
   Crew,
@@ -102,6 +103,7 @@ function workspaceDimsFromContainer(
 export default function MissionWorkspace() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const t = useT();
   const [mission, setMission] = useState<Mission | null>(null);
   const [crew, setCrew] = useState<Crew | null>(null);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -478,7 +480,7 @@ export default function MissionWorkspace() {
   // rename row for power users.
   const renameMissionPrompt = useCallback(async () => {
     if (!mission) return;
-    const next = window.prompt("Rename mission", mission.title);
+    const next = window.prompt(t("Rename mission"), mission.title);
     if (next === null) return; // user cancelled
     const trimmed = next.trim();
     if (!trimmed || trimmed === mission.title) return;
@@ -792,7 +794,7 @@ export default function MissionWorkspace() {
   );
 
   const handles = sessions.map((s) => s.handle);
-  const startedAt = mission ? formatRelativeTime(mission.started_at) : "";
+  const startedAt = mission ? formatRelativeTime(mission.started_at, t) : "";
   const [kebabOpen, setKebabOpen] = useState(false);
   // Right rail (Runners panel) collapse state. Mirrors the RunnerChat
   // side-panel collapse — same localStorage shape for consistency.
@@ -879,7 +881,7 @@ export default function MissionWorkspace() {
                   workspace surfaces consistently signal what kind of
                   thing this is, not just its status. */}
               <span className="rounded bg-line-strong px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-fg-2">
-                Mission
+                {t("Mission")}
               </span>
               {/* Status pill moved to the left so it sits next to
                   the title instead of competing visually with the
@@ -931,7 +933,7 @@ export default function MissionWorkspace() {
                     <span
                       className={`inline-flex h-1.5 w-1.5 rounded-full ${dotClass}`}
                     />
-                    {display === "resuming" ? "resuming…" : display}
+                    {display === "resuming" ? t("resuming…") : t(display)}
                   </span>
                 );
               })() : null}
@@ -942,13 +944,15 @@ export default function MissionWorkspace() {
                   here will accept input. */}
               {isArchived ? (
                 <span className="inline-flex shrink-0 items-center rounded border border-line bg-raised px-2 py-0.5 text-[10px] font-medium text-fg-2">
-                  Archived · read-only
+                  {t("Archived · read-only")}
                 </span>
               ) : null}
             </div>
             <span className="truncate text-[11px] leading-tight text-fg-3">
-              {sessions.length} runner{sessions.length === 1 ? "" : "s"}
-              {startedAt ? ` · started ${startedAt}` : ""}
+              {sessions.length === 1
+                ? t("{n} runner", { n: sessions.length })
+                : t("{n} runners", { n: sessions.length })}
+              {startedAt ? t(" · started {time}", { time: startedAt }) : ""}
             </span>
           </div>
         </div>
@@ -958,13 +962,13 @@ export default function MissionWorkspace() {
               {anySessionStopped ? (
                 <ResumeButton
                   onClick={() => void resumeMission()}
-                  title="Respawn every stopped slot in this mission"
+                  title={t("Respawn every stopped slot in this mission")}
                 />
               ) : null}
               {allSessionsLive ? (
                 <StopButton
                   onClick={() => void stopMission()}
-                  title="Kill all PTYs; mission stays running so you can Resume"
+                  title={t("Kill all PTYs; mission stays running so you can Resume")}
                   iconTone="fg"
                 />
               ) : null}
@@ -996,8 +1000,8 @@ export default function MissionWorkspace() {
             <button
               type="button"
               onClick={() => setRailOpen(true)}
-              title="Open runners panel"
-              aria-label="Open runners panel"
+              title={t("Open runners panel")}
+              aria-label={t("Open runners panel")}
               className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-2 transition-colors hover:bg-raised hover:text-fg"
             >
               <PanelRightDashed aria-hidden className="h-4 w-4" />
@@ -1020,14 +1024,14 @@ export default function MissionWorkspace() {
             onClick={() => setWarning(null)}
             className="cursor-pointer text-xs text-warn/80 hover:text-warn"
           >
-            Dismiss
+            {t("Dismiss")}
           </button>
         </div>
       ) : null}
 
       {isLoading ? (
         showLoadingPill ? (
-          <StartingOverlay label="Loading mission…" inline />
+          <StartingOverlay label={t("Loading mission…")} inline />
         ) : (
           <div className="flex flex-1 min-h-0" />
         )
@@ -1039,7 +1043,7 @@ export default function MissionWorkspace() {
               onClick={selectFeed}
               shortcut="⌘1"
             >
-              feed
+              {t("feed")}
             </TabButton>
             {/* Archived missions render feed only — skip the per-PTY
                 tabs so no xterm canvas ever mounts. The Pane block
@@ -1181,13 +1185,13 @@ export default function MissionWorkspace() {
             <div className="flex h-9 items-center gap-0.5">
               <RailViewButton
                 icon={UsersIcon}
-                label="Runners"
+                label={t("Runners")}
                 active={railView === "runners"}
                 onClick={() => setRailView("runners")}
               />
               <RailViewButton
                 icon={Info}
-                label="Mission detail"
+                label={t("Mission detail")}
                 active={railView === "meta"}
                 onClick={() => setRailView("meta")}
               />
@@ -1196,8 +1200,8 @@ export default function MissionWorkspace() {
               <button
                 type="button"
                 onClick={() => setRailOpen(false)}
-                title="Collapse panel"
-                aria-label="Collapse panel"
+                title={t("Collapse panel")}
+                aria-label={t("Collapse panel")}
                 className="flex h-7 w-7 cursor-pointer items-center justify-center rounded border border-transparent text-fg-2 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
               >
                 <PanelRight aria-hidden className="h-4 w-4" />
@@ -1226,7 +1230,7 @@ export default function MissionWorkspace() {
             sidebar's right-edge handle. Inert when collapsed. */}
         <div
           onPointerDown={railOpen ? onRailResizeStart : undefined}
-          title={railOpen ? "Drag to resize" : undefined}
+          title={railOpen ? t("Drag to resize") : undefined}
           className={
             railOpen
               ? "absolute left-0 top-0 z-20 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-accent/40"
@@ -1289,6 +1293,7 @@ function SlotPtyPane({
    *  cols/rows before the resume RPC and avoid the 80×24 default. */
   registerTerminal: (handle: RunnerTerminalHandle | null) => void;
 }) {
+  const t = useT();
   const resuming = !!forcedResuming;
   const dead = session.status !== "running";
   // Per-slot "warming up" overlay: when the pane first mounts for a
@@ -1417,7 +1422,7 @@ function SlotPtyPane({
       {resuming ? (
         <ResumingOverlay />
       ) : starting ? (
-        <StartingOverlay label="Starting chat…" />
+        <StartingOverlay label={t("Starting chat…")} />
       ) : dead ? (
         <MissionPausedCard
           anySessionLive={anySessionLive}
@@ -1499,6 +1504,7 @@ function PtyTabButton({
   onClose: () => void;
   shortcut?: string;
 }) {
+  const t = useT();
   return (
     <button
       type="button"
@@ -1519,7 +1525,7 @@ function PtyTabButton({
       ) : null}
       <span
         role="button"
-        aria-label={`Close @${handle} tab`}
+        aria-label={t("Close @{handle} tab", { handle })}
         onClick={(e) => {
           e.stopPropagation();
           onClose();
@@ -1556,6 +1562,7 @@ function MissionKebab({
   onReset: () => void;
   onArchive: () => void;
 }) {
+  const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -1578,7 +1585,7 @@ function MissionKebab({
     <div ref={ref} className="relative">
       <button
         type="button"
-        aria-label="Mission actions"
+        aria-label={t("Mission actions")}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={onToggle}
@@ -1593,12 +1600,17 @@ function MissionKebab({
         >
           <KebabItem
             icon={pinned ? PinOff : Pin}
-            label={pinned ? "Unpin" : "Pin"}
+            label={pinned ? t("Unpin") : t("Pin")}
             onClick={onPin}
           />
-          <KebabItem icon={SquarePen} label="Rename" onClick={onRename} />
-          <KebabItem icon={RotateCcw} label="Reset" onClick={onReset} />
-          <KebabItem icon={Archive} label="Archive" onClick={onArchive} danger />
+          <KebabItem icon={SquarePen} label={t("Rename")} onClick={onRename} />
+          <KebabItem icon={RotateCcw} label={t("Reset")} onClick={onReset} />
+          <KebabItem
+            icon={Archive}
+            label={t("Archive")}
+            onClick={onArchive}
+            danger
+          />
         </div>
       ) : null}
     </div>
@@ -1663,17 +1675,17 @@ function RailViewButton({
   );
 }
 
-function formatRelativeTime(iso: string): string {
+function formatRelativeTime(iso: string, t: TFn): string {
   try {
     const d = new Date(iso);
     const diffMs = Date.now() - d.getTime();
     const minutes = Math.floor(diffMs / 60000);
-    if (minutes < 1) return "just now";
-    if (minutes < 60) return `${minutes}m ago`;
+    if (minutes < 1) return t("just now");
+    if (minutes < 60) return t("{n}m ago", { n: minutes });
     const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
+    if (hours < 24) return t("{n}h ago", { n: hours });
     const days = Math.floor(hours / 24);
-    return `${days}d ago`;
+    return t("{n}d ago", { n: days });
   } catch {
     return iso;
   }
@@ -1695,19 +1707,24 @@ function MissionPausedCard({
   onResumeMission: () => void | Promise<void>;
   onArchiveMission: () => void | Promise<void>;
 }) {
+  const t = useT();
   return (
     <SessionEndedOverlay
       status="stopped"
       resumable
-      title="Mission paused"
+      title={t("Mission paused")}
       subtitle={
         anySessionLive
-          ? "One or more slots are paused. Resume the mission to respawn every paused slot — partial-mission states aren't a valid run."
-          : "All slots are paused. Resume to respawn every slot and pick up the conversation — the event log is preserved."
+          ? t(
+              "One or more slots are paused. Resume the mission to respawn every paused slot — partial-mission states aren't a valid run.",
+            )
+          : t(
+              "All slots are paused. Resume to respawn every slot and pick up the conversation — the event log is preserved.",
+            )
       }
-      resumeLabel="Resume"
+      resumeLabel={t("Resume")}
       onResume={() => void onResumeMission()}
-      archiveLabel="Archive"
+      archiveLabel={t("Archive")}
       onArchive={() => void onArchiveMission()}
       variant="inline"
     />

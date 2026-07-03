@@ -9,6 +9,7 @@ import { useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 
 import { api } from "../lib/api";
+import { useT } from "../lib/i18n";
 import type { CrewListItem } from "../lib/types";
 import { Button } from "../components/ui/Button";
 import { Modal } from "../components/ui/Overlay";
@@ -22,6 +23,7 @@ export default function Crews() {
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const navigate = useNavigate();
+  const t = useT();
 
   const refresh = useCallback(async () => {
     try {
@@ -75,7 +77,8 @@ export default function Crews() {
   }, [refresh]);
 
   const onDelete = async (id: string, name: string) => {
-    if (!confirm(`Delete crew "${name}"? This removes all its slots.`)) return;
+    if (!confirm(t('Delete crew "{name}"? This removes all its slots.', { name })))
+      return;
     try {
       await api.crew.delete(id);
       await refresh();
@@ -91,14 +94,14 @@ export default function Crews() {
           <header className="flex items-center justify-between gap-4">
             <div className="flex flex-col gap-1">
               <h1 className="text-2xl font-bold tracking-tight text-fg">
-                Crews
+                {t("Crews")}
               </h1>
               <p className="text-sm text-fg-2">
-                Named groups of runners with a shared goal.
+                {t("Named groups of runners with a shared goal.")}
               </p>
             </div>
             <Button variant="primary" onClick={() => setCreating(true)}>
-              + New crew
+              {t("+ New crew")}
             </Button>
           </header>
 
@@ -109,19 +112,21 @@ export default function Crews() {
           ) : null}
 
           {loading ? (
-            <div className="text-sm text-fg-2">Loading…</div>
+            <div className="text-sm text-fg-2">{t("Loading…")}</div>
           ) : !loaded ? (
             <div className="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-              Failed to load crews.
+              {t("Failed to load crews.")}
             </div>
           ) : crews.length === 0 ? (
             <EmptyStateCard
               icon={<UsersIcon />}
-              title="No crews yet"
-              description="A crew is a named group of runners working a goal together. Spin up your first one to get started."
+              title={t("No crews yet")}
+              description={t(
+                "A crew is a named group of runners working a goal together. Spin up your first one to get started.",
+              )}
               action={
                 <Button variant="primary" onClick={() => setCreating(true)}>
-                  + New crew
+                  {t("+ New crew")}
                 </Button>
               }
             />
@@ -188,6 +193,7 @@ function CrewCard({
   onOpen: () => void;
   onDelete: () => void;
 }) {
+  const t = useT();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
@@ -223,20 +229,20 @@ function CrewCard({
               {item.purpose}
             </div>
           ) : (
-            <div className="text-[12px] italic text-fg-3">No purpose set</div>
+            <div className="text-[12px] italic text-fg-3">{t("No purpose set")}</div>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2 text-[12px] text-fg-2">
           <span>
             {item.runner_count === 1
-              ? "1 runner"
-              : `${item.runner_count} runners`}
+              ? t("1 runner")
+              : t("{n} runners", { n: item.runner_count })}
           </span>
           <div ref={menuRef} className="relative">
             <button
               type="button"
-              aria-label={`Crew ${item.name} actions`}
-              title="Actions"
+              aria-label={t("Crew {name} actions", { name: item.name })}
+              title={t("Actions")}
               onClick={(e) => {
                 e.stopPropagation();
                 setMenuOpen((v) => !v);
@@ -259,7 +265,7 @@ function CrewCard({
                   }}
                   className="cursor-pointer rounded px-2 py-1.5 text-left text-[13px] text-fg hover:bg-raised"
                 >
-                  Open
+                  {t("Open")}
                 </button>
                 <button
                   type="button"
@@ -270,7 +276,7 @@ function CrewCard({
                   }}
                   className="cursor-pointer rounded px-2 py-1.5 text-left text-[13px] text-danger hover:bg-danger/10"
                 >
-                  Delete
+                  {t("Delete")}
                 </button>
               </div>
             ) : null}
@@ -283,7 +289,7 @@ function CrewCard({
             <div
               key={m.slot_handle}
               className="flex items-center gap-1.5 rounded-full bg-raised px-2.5 py-1.5 text-[12px]"
-              title={m.lead ? "lead slot" : undefined}
+              title={m.lead ? t("lead slot") : undefined}
             >
               <span className="font-mono font-medium text-fg">
                 @{m.slot_handle}
@@ -293,14 +299,14 @@ function CrewCard({
               </span>
               {m.lead ? (
                 <span className="rounded bg-accent/15 px-1 text-[9px] font-bold uppercase tracking-wide text-accent">
-                  lead
+                  {t("lead")}
                 </span>
               ) : null}
             </div>
           ))}
         </div>
       ) : (
-        <div className="text-[12px] italic text-fg-3">No slots yet.</div>
+        <div className="text-[12px] italic text-fg-3">{t("No slots yet.")}</div>
       )}
     </div>
   );
@@ -335,6 +341,7 @@ function CreateCrewModal({
   onClose: () => void;
   onCreated: (crew: { id: string }) => void | Promise<void>;
 }) {
+  const t = useT();
   const [name, setName] = useState("");
   const [purpose, setPurpose] = useState("");
   const [goal, setGoal] = useState("");
@@ -352,7 +359,7 @@ function CreateCrewModal({
 
   const submit = async () => {
     if (!name.trim()) {
-      setError("Name is required");
+      setError(t("Name is required"));
       return;
     }
     setSubmitting(true);
@@ -377,19 +384,19 @@ function CreateCrewModal({
       onClose={submitting ? () => {} : onClose}
       title={
         <div className="flex flex-col gap-0.5">
-          <span className="text-base font-semibold text-fg">New crew</span>
+          <span className="text-base font-semibold text-fg">{t("New crew")}</span>
           <span className="text-xs font-normal text-fg-3">
-            Group of runners that work missions together.
+            {t("Group of runners that work missions together.")}
           </span>
         </div>
       }
       footer={
         <>
           <Button onClick={onClose} disabled={submitting}>
-            Cancel
+            {t("Cancel")}
           </Button>
           <Button variant="primary" onClick={submit} disabled={submitting}>
-            {submitting ? "Creating…" : "Create crew"}
+            {submitting ? t("Creating…") : t("Create crew")}
           </Button>
         </>
       }
@@ -401,29 +408,29 @@ function CreateCrewModal({
           void submit();
         }}
       >
-        <Field id="crew-name" label="Name">
+        <Field id="crew-name" label={t("Name")}>
           <Input
             id="crew-name"
             value={name}
             autoFocus
-            placeholder="runners-feature"
+            placeholder={t("runners-feature")}
             onChange={(e) => setName(e.target.value)}
           />
         </Field>
-        <Field id="crew-purpose" label="Purpose" hint="optional">
+        <Field id="crew-purpose" label={t("Purpose")} hint={t("optional")}>
           <Textarea
             id="crew-purpose"
             rows={2}
-            placeholder="What does this crew exist to do?"
+            placeholder={t("What does this crew exist to do?")}
             value={purpose}
             onChange={(e) => setPurpose(e.target.value)}
           />
         </Field>
-        <Field id="crew-goal" label="Default goal" hint="optional">
+        <Field id="crew-goal" label={t("Default goal")} hint={t("optional")}>
           <Textarea
             id="crew-goal"
             rows={3}
-            placeholder="Pre-fills the Start Mission goal."
+            placeholder={t("Pre-fills the Start Mission goal.")}
             value={goal}
             onChange={(e) => setGoal(e.target.value)}
           />

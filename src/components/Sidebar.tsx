@@ -48,6 +48,7 @@ import {
 } from "lucide-react";
 
 import { api, type DirectSessionEntry } from "../lib/api";
+import { useT, type TFn } from "../lib/i18n";
 import {
   markArchivingMission,
   markArchivingSession,
@@ -120,6 +121,7 @@ export function Sidebar({
   previewOpen,
   onPreviewOpenChange,
 }: SidebarProps) {
+  const t = useT();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -639,13 +641,13 @@ export function Sidebar({
             >
               <BrandMark />
               <span className="text-base font-semibold tracking-tight text-fg">
-                Runner
+                {t("Runner")}
               </span>
             </div>
             {/* WORKSPACE keeps natural height; it doesn't compete
                 with the scrollable Mission/Chat region below. */}
             <div className="shrink-0">
-              <SectionHeader>WORKSPACE</SectionHeader>
+              <SectionHeader>{t("WORKSPACE")}</SectionHeader>
               <nav className="flex flex-col gap-0.5 px-3 pb-1">
                 <NewChatNavRow onOpen={handleNewDirectChat} />
                 {/* Search opens a command-palette modal — matches design
@@ -656,8 +658,8 @@ export function Sidebar({
                     entry point — jumping to any mission / runner /
                     crew without scrolling the lists below. */}
                 <SearchNavRow onOpen={() => setPaletteOpen(true)} />
-                <NavRow icon={Terminal} to="/runners" label="runner" />
-                <NavRow icon={Users} to="/crews" label="crew" />
+                <NavRow icon={Terminal} to="/runners" label={t("runner")} />
+                <NavRow icon={Users} to="/crews" label={t("crew")} />
               </nav>
             </div>
 
@@ -669,17 +671,17 @@ export function Sidebar({
             <div className="min-h-0 flex-1 overflow-y-auto pb-3">
               <section className="flex flex-col">
                 <CollapsibleSectionHeader
-                  label="MISSION"
+                  label={t("MISSION")}
                   open={missionsOpen}
                   onToggle={toggleMissions}
                   onPlus={() => setCreatingMission(true)}
-                  plusTitle="Start mission"
+                  plusTitle={t("Start mission")}
                 />
                 {missionsOpen ? (
                   <div className="flex flex-col gap-0.5 px-3 pt-1">
                     {missions.length === 0 ? (
                       <p className="px-2.5 py-1 text-xs text-fg-3">
-                        No live missions.
+                        {t("No live missions.")}
                       </p>
                     ) : (
                       missions.map((m) => (
@@ -703,18 +705,18 @@ export function Sidebar({
 
               <section className="mt-5 flex flex-col">
                 <CollapsibleSectionHeader
-                  label="CHAT"
+                  label={t("CHAT")}
                   open={sessionsOpen}
                   onToggle={toggleSessions}
                   onPlus={handleNewDirectChat}
-                  plusTitle="Start a chat"
+                  plusTitle={t("Start a chat")}
                   plusExpanded={creatingChat}
                 />
                 {sessionsOpen ? (
                   <div className="flex flex-col gap-0.5 px-3 pt-1">
                     {directSessions.length === 0 ? (
                       <p className="px-2.5 py-1 text-xs text-fg-3">
-                        No chats yet.
+                        {t("No chats yet.")}
                       </p>
                     ) : (
                       directSessions.map((s) => (
@@ -749,7 +751,7 @@ export function Sidebar({
                 className="flex flex-1 cursor-pointer items-center gap-2.5 rounded border border-transparent px-2.5 py-2 text-left text-fg-2 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
               >
                 <SettingsIcon aria-hidden className="h-3.5 w-3.5" />
-                <span className="text-[13px]">Settings</span>
+                <span className="text-[13px]">{t("Settings")}</span>
               </button>
               <button
                 type="button"
@@ -762,10 +764,12 @@ export function Sidebar({
                   onCollapsedChange(true);
                 }}
                 title={
-                  sidebarPreview ? "Keep sidebar open" : "Collapse sidebar (⌘S)"
+                  sidebarPreview
+                    ? t("Keep sidebar open")
+                    : t("Collapse sidebar (⌘S)")
                 }
                 aria-label={
-                  sidebarPreview ? "Keep sidebar open" : "Collapse sidebar"
+                  sidebarPreview ? t("Keep sidebar open") : t("Collapse sidebar")
                 }
                 className="flex h-6 w-6 cursor-pointer items-center justify-center rounded border border-transparent text-fg-3 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
               >
@@ -782,7 +786,7 @@ export function Sidebar({
         {sidebarVisible ? (
           <div
             onPointerDown={handleResizeStart}
-            title="Drag to resize"
+            title={t("Drag to resize")}
             className="absolute right-0 top-0 z-20 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-accent/40"
           />
         ) : null}
@@ -900,15 +904,16 @@ function NavRow({
 }
 
 function NewChatNavRow({ onOpen }: { onOpen: () => void }) {
+  const t = useT();
   return (
     <button
       type="button"
-      title="New chat"
+      title={t("New chat")}
       onClick={onOpen}
       className="group flex w-full cursor-pointer items-center gap-2 rounded border border-transparent px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
     >
       <MessageSquarePlus aria-hidden className="h-3 w-3 text-fg-2" />
-      <span className="min-w-0 flex-1 truncate">new chat</span>
+      <span className="min-w-0 flex-1 truncate">{t("new chat")}</span>
       <span className="shrink-0 rounded border border-line bg-bg px-1.5 py-px font-mono text-[10px] leading-tight text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus:opacity-100">
         ⌘N
       </span>
@@ -921,15 +926,16 @@ function NewChatNavRow({ onOpen }: { onOpen: () => void }) {
 /// keyboard binding (registered above) still works; the shortcut
 /// hint appears on hover/focus.
 function SearchNavRow({ onOpen }: { onOpen: () => void }) {
+  const t = useT();
   return (
     <button
       type="button"
-      title="Search"
+      title={t("Search")}
       onClick={onOpen}
       className="group flex w-full cursor-pointer items-center gap-2 rounded border border-transparent px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
     >
       <Search aria-hidden className="h-3 w-3 text-fg-2" />
-      <span className="min-w-0 flex-1 truncate">search</span>
+      <span className="min-w-0 flex-1 truncate">{t("search")}</span>
       <span className="shrink-0 rounded border border-line bg-bg px-1.5 py-px font-mono text-[10px] leading-tight text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus:opacity-100">
         ⌘K
       </span>
@@ -1024,6 +1030,7 @@ function SidebarListRow({
   onRenameSubmit?: (next: string) => void;
   onRenameCancel?: () => void;
 }) {
+  const t = useT();
   if (renaming && onRenameSubmit && onRenameCancel) {
     return (
       <SidebarRowRenameInput
@@ -1084,8 +1091,8 @@ function SidebarListRow({
             e.stopPropagation();
             onContextMenu({ x: e.clientX, y: e.clientY });
           }}
-          title="More actions"
-          aria-label="More actions"
+          title={t("More actions")}
+          aria-label={t("More actions")}
           className="cursor-pointer rounded p-0.5 text-fg-3 opacity-0 transition-opacity hover:bg-raised hover:text-fg group-hover:opacity-100 focus:opacity-100"
         >
           <MoreHorizontal aria-hidden className="h-3 w-3" />
@@ -1214,10 +1221,11 @@ function MissionRow({
   onRenameSubmit: (nextTitle: string) => void;
   onRenameCancel: () => void;
 }) {
+  const t = useT();
   const activity = mission.any_session_live ? (mission.activity ?? "busy") : null;
-  const statusLabel = activity ?? "paused";
-  const tooltip = `${mission.crew_name || "Mission"} · ${statusLabel}${
-    mission.pinned_at ? " · pinned" : ""
+  const statusLabel = activity ?? t("paused");
+  const tooltip = `${mission.crew_name || t("Mission")} · ${statusLabel}${
+    mission.pinned_at ? ` · ${t("pinned")}` : ""
   }`;
 
   return (
@@ -1256,15 +1264,16 @@ function SessionRow({
   onRenameSubmit: (nextTitle: string | null) => void;
   onRenameCancel: () => void;
 }) {
+  const t = useT();
   const defaultLabel = session.handle
-    ? `@${session.handle} · ${formatStartedAt(session)}`
-    : `${session.display_name} · ${formatStartedAt(session)}`;
+    ? `@${session.handle} · ${formatStartedAt(session, t)}`
+    : `${session.display_name} · ${formatStartedAt(session, t)}`;
   const label = session.title ?? defaultLabel;
   const dim = session.status !== "running";
   const displayStatus = directChatDisplayStatus(session, activity);
   const tooltip = `${session.handle ? `@${session.handle}` : session.display_name} · ${displayStatus}${
-    session.status !== "running" && session.resumable ? " · resumable" : ""
-  }${session.pinned ? " · pinned" : ""}`;
+    session.status !== "running" && session.resumable ? ` · ${t("resumable")}` : ""
+  }${session.pinned ? ` · ${t("pinned")}` : ""}`;
 
   return (
     <SidebarListRow
@@ -1341,6 +1350,7 @@ function RowContextMenu({
   onRename: () => void;
   onArchive: () => void;
 }) {
+  const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x: anchorX, y: anchorY });
 
@@ -1378,13 +1388,13 @@ function RowContextMenu({
     >
       <ContextMenuItem
         icon={pinned ? PinOff : Pin}
-        label={pinned ? "Unpin" : "Pin"}
+        label={pinned ? t("Unpin") : t("Pin")}
         onClick={onPin}
       />
-      <ContextMenuItem icon={SquarePen} label="Rename" onClick={onRename} />
+      <ContextMenuItem icon={SquarePen} label={t("Rename")} onClick={onRename} />
       <ContextMenuItem
         icon={Archive}
-        label="Archive"
+        label={t("Archive")}
         onClick={onArchive}
         danger
       />
@@ -1395,11 +1405,11 @@ function RowContextMenu({
 // Cheap relative-ish label for sessions that have no user-set title.
 // Prefers the started_at column; falls back to stopped_at if both are
 // set (older rows stay sortable). Months are short to keep the row narrow.
-function formatStartedAt(s: DirectSessionEntry): string {
+function formatStartedAt(s: DirectSessionEntry, t: TFn): string {
   const ts = s.started_at ?? s.stopped_at;
-  if (!ts) return "session";
+  if (!ts) return t("session");
   const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return "session";
+  if (Number.isNaN(d.getTime())) return t("session");
   const now = new Date();
   const sameDay =
     d.getFullYear() === now.getFullYear() &&

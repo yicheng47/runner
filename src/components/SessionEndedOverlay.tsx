@@ -6,6 +6,7 @@
 
 import { Archive, Loader2, Pause, Play } from "lucide-react";
 
+import { useT } from "../lib/i18n";
 import type { SessionStatus } from "../lib/types";
 
 export interface SessionEndedOverlayProps {
@@ -67,22 +68,34 @@ export function SessionEndedOverlay({
   resumeLabel,
   archiveLabel,
 }: SessionEndedOverlayProps) {
+  const t = useT();
   const computedSubtitle = !resumable
-    ? "The PTY is closed. Resume to start a fresh agent process — there's no saved conversation to pick up from this row."
+    ? t(
+        "The PTY is closed. Resume to start a fresh agent process — there's no saved conversation to pick up from this row.",
+      )
     : status === "crashed"
       ? exitCode != null
-        ? `The PTY exited with code ${exitCode}. Resume to start a fresh process — the prior agent conversation is preserved.`
-        : "The PTY exited unexpectedly. Resume to start a fresh process — the prior agent conversation is preserved."
-      : "The PTY is closed, but the conversation is preserved. Resume to pick up where you left off.";
+        ? t(
+            "The PTY exited with code {code}. Resume to start a fresh process — the prior agent conversation is preserved.",
+            { code: exitCode },
+          )
+        : t(
+            "The PTY exited unexpectedly. Resume to start a fresh process — the prior agent conversation is preserved.",
+          )
+      : t(
+          "The PTY is closed, but the conversation is preserved. Resume to pick up where you left off.",
+        );
   const finalSubtitle = subtitle ?? computedSubtitle;
   // Short labels. The title above ("Chat paused" / "Mission paused")
   // already names the surface, so the button just needs to name the
   // action. Slot-level callsites still get a "Resume @handle" form
   // when `handle` is provided — there's no enclosing title there to
   // tell the user which slot the action targets.
-  const computedResumeLabel = handle ? `Resume @${handle}` : "Resume";
+  const computedResumeLabel = handle
+    ? t("Resume @{handle}", { handle })
+    : t("Resume");
   const finalResumeLabel = resumeLabel ?? computedResumeLabel;
-  const finalTitle = title ?? "Chat paused";
+  const finalTitle = title ?? t("Chat paused");
 
   const card = (
     <div className="flex w-full max-w-2xl flex-col gap-3.5 rounded-xl border border-line bg-panel p-5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]">
@@ -109,7 +122,7 @@ export function SessionEndedOverlay({
             className="flex cursor-pointer items-center gap-2 rounded-md border border-line bg-raised px-3.5 py-2 text-[13px] text-fg hover:border-fg-3"
           >
             <Archive aria-hidden className="h-3.5 w-3.5 text-fg-2" />
-            {archiveLabel ?? "Archive"}
+            {archiveLabel ?? t("Archive")}
           </button>
         ) : null}
       </div>
@@ -144,9 +157,10 @@ export function SessionEndedOverlay({
 /// Pencil node `GZhHO`. Shown overlaid on a freshly-cleared xterm
 /// canvas while the agent CLI re-attaches.
 export function ResumingOverlay() {
+  const t = useT();
   return (
     <div className="pointer-events-none absolute inset-4 flex items-center justify-center">
-      <LoadingPill label="Resuming…" />
+      <LoadingPill label={t("Resuming…")} />
     </div>
   );
 }
@@ -158,22 +172,24 @@ export function ResumingOverlay() {
 /// absolute positioning when the caller is already a flex container
 /// (e.g. MissionWorkspace's loading branch).
 export function StartingOverlay({
-  label = "Starting…",
+  label,
   inline = false,
 }: {
   label?: string;
   inline?: boolean;
 } = {}) {
+  const t = useT();
+  const resolvedLabel = label ?? t("Starting…");
   if (inline) {
     return (
       <div className="flex flex-1 items-center justify-center p-6">
-        <LoadingPill label={label} />
+        <LoadingPill label={resolvedLabel} />
       </div>
     );
   }
   return (
     <div className="pointer-events-none absolute inset-4 flex items-center justify-center">
-      <LoadingPill label={label} />
+      <LoadingPill label={resolvedLabel} />
     </div>
   );
 }
@@ -199,6 +215,7 @@ function LoadingPill({ label }: { label: string }) {
 /// variant — the chat body dims behind the pill so the terminal
 /// stays faintly visible.
 export function ArchivingOverlay({ withScrim = false }: { withScrim?: boolean }) {
+  const t = useT();
   // Archiving pill — warn-toned (destructive transition). The scrim
   // + pill chrome were Carbon-only hexes (#15161B for the bg, #FFB020
   // for the amber). Now routed through `--color-bg` and `--color-warn`
@@ -213,7 +230,7 @@ export function ArchivingOverlay({ withScrim = false }: { withScrim?: boolean })
           className="pointer-events-auto flex h-[30px] items-center gap-2 rounded-[15px] border border-warn/40 bg-warn/15 px-3 font-mono text-[13px] font-semibold tracking-[0.5px] text-warn"
         >
           <span className="h-2 w-2 animate-pulse rounded-[4px] bg-warn" />
-          Archiving…
+          {t("Archiving…")}
         </div>
       </div>
     </>

@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 import { X } from "lucide-react";
 
 import { useUpdate } from "../contexts/UpdateContext";
+import { useT } from "../lib/i18n";
 import {
   readStoredBool,
   STORAGE_AUTO_INSTALL_UPDATES,
@@ -19,6 +20,7 @@ interface UpdateToastProps {
 }
 
 export function UpdateToast({ onOpenSettings }: UpdateToastProps) {
+  const t = useT();
   const { status, update, progress, restart } = useUpdate();
   const [dismissed, setDismissed] = useState(false);
   const [visible, setVisible] = useState(false);
@@ -76,10 +78,10 @@ export function UpdateToast({ onOpenSettings }: UpdateToastProps) {
 
   const label =
     status === "downloading"
-      ? `Downloading Runner v${version}… ${progress}%`
+      ? t("Downloading Runner v{version}… {progress}%", { version, progress })
       : status === "ready"
-        ? `Runner v${version} is ready to install`
-        : `Runner v${version} is available`;
+        ? t("Runner v{version} is ready to install", { version })
+        : t("Runner v{version} is available", { version });
 
   return (
     <div
@@ -98,7 +100,7 @@ export function UpdateToast({ onOpenSettings }: UpdateToastProps) {
             onClick={handleUpdate}
             className="cursor-pointer whitespace-nowrap rounded-md bg-accent/15 px-2.5 py-1 text-[13px] font-medium text-accent transition-colors hover:bg-accent/25"
           >
-            Update
+            {t("Update")}
           </button>
         ) : null}
         {status === "ready" ? (
@@ -107,13 +109,13 @@ export function UpdateToast({ onOpenSettings }: UpdateToastProps) {
             onClick={handleRestart}
             className="cursor-pointer whitespace-nowrap rounded-md bg-accent/15 px-2.5 py-1 text-[13px] font-medium text-accent transition-colors hover:bg-accent/25"
           >
-            Restart
+            {t("Restart")}
           </button>
         ) : null}
         <button
           type="button"
           onClick={dismiss}
-          aria-label="Dismiss update notification"
+          aria-label={t("Dismiss update notification")}
           className="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-fg-3 transition-colors hover:bg-raised hover:text-fg"
         >
           <X size={14} aria-hidden />

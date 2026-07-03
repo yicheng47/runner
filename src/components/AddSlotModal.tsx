@@ -8,6 +8,7 @@ import { useNavigate } from "react-router-dom";
 import { ChevronDown, X } from "lucide-react";
 
 import { api } from "../lib/api";
+import { useT, type TFn } from "../lib/i18n";
 import type { RunnerWithActivity } from "../lib/types";
 import { Button } from "./ui/Button";
 import { Modal } from "./ui/Overlay";
@@ -32,6 +33,7 @@ export function AddSlotModal({
   onClose: () => void;
   onCreated: () => void | Promise<void>;
 }) {
+  const t = useT();
   const [runners, setRunners] = useState<RunnerWithActivity[]>([]);
   const [query, setQuery] = useState("");
   const [selectedRunnerId, setSelectedRunnerId] = useState("");
@@ -123,9 +125,13 @@ export function AddSlotModal({
   const slotHandleError = (() => {
     if (!slotHandle) return null;
     if (!HANDLE_RE.test(slotHandle))
-      return "Lowercase letters, digits, '-' or '_'; must start with a letter or digit; up to 32 chars.";
+      return t(
+        "Lowercase letters, digits, '-' or '_'; must start with a letter or digit; up to 32 chars.",
+      );
     if (taken.has(slotHandle))
-      return `'${slotHandle}' is already used in this crew.`;
+      return t("'{handle}' is already used in this crew.", {
+        handle: slotHandle,
+      });
     return null;
   })();
 
@@ -166,9 +172,9 @@ export function AddSlotModal({
       title={
         <div className="flex items-center justify-between gap-4">
           <div className="flex flex-col gap-0.5">
-            <span className="text-base font-semibold text-fg">Add slot</span>
+            <span className="text-base font-semibold text-fg">{t("Add slot")}</span>
             <span className="text-xs font-normal text-fg-2">
-              crew: {crewName}
+              {t("crew: {name}", { name: crewName })}
             </span>
           </div>
           <button
@@ -176,7 +182,7 @@ export function AddSlotModal({
             onClick={onClose}
             disabled={submitting}
             className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-3 transition-colors hover:bg-raised hover:text-fg disabled:pointer-events-none disabled:opacity-50"
-            aria-label="Close add slot"
+            aria-label={t("Close add slot")}
           >
             <X aria-hidden className="h-3.5 w-3.5" />
           </button>
@@ -186,10 +192,10 @@ export function AddSlotModal({
       footer={
         <>
           <Button onClick={onClose} disabled={submitting}>
-            Cancel
+            {t("Cancel")}
           </Button>
           <Button variant="primary" onClick={submit} disabled={!canSubmit}>
-            {submitting ? "Adding..." : "Add slot"}
+            {submitting ? t("Adding...") : t("Add slot")}
           </Button>
         </>
       }
@@ -206,14 +212,14 @@ export function AddSlotModal({
             htmlFor="add-slot-runner-search"
             className="text-xs font-semibold text-fg"
           >
-            Runner
+            {t("Runner")}
           </label>
           <div className="flex items-center gap-2 rounded-md border border-line bg-bg px-3 py-2 text-[13px] focus-within:border-fg-3">
             <input
               id="add-slot-runner-search"
               autoFocus
               value={query}
-              placeholder="Search runners..."
+              placeholder={t("Search runners...")}
               onChange={(e) => setQuery(e.target.value)}
               className="min-w-0 flex-1 bg-transparent text-fg outline-none placeholder:text-fg-3"
             />
@@ -226,18 +232,18 @@ export function AddSlotModal({
               onClick={openCreateRunner}
               className="flex w-full cursor-pointer items-center border-b border-line px-3 py-2.5 text-left text-[13px] font-medium text-accent transition-colors hover:bg-raised"
             >
-              + Create new runner...
+              {t("+ Create new runner...")}
             </button>
 
             {loading ? (
               <div className="px-3 py-3 text-xs text-fg-3">
-                Loading runners...
+                {t("Loading runners...")}
               </div>
             ) : filteredRunners.length === 0 ? (
               <div className="px-3 py-3 text-xs text-fg-3">
                 {runners.length === 0
-                  ? "No runners yet. Create one first, then add it here."
-                  : "No runners match this search."}
+                  ? t("No runners yet. Create one first, then add it here.")
+                  : t("No runners match this search.")}
               </div>
             ) : (
               <div className="max-h-56 overflow-y-auto">
@@ -259,8 +265,8 @@ export function AddSlotModal({
 
         <Field
           id="add-slot-handle"
-          label="Slot handle"
-          hint="in-crew identity used by mission events and stdin routing"
+          label={t("Slot handle")}
+          hint={t("in-crew identity used by mission events and stdin routing")}
           error={slotHandleError}
         >
           <div className="flex items-center rounded border border-line-strong bg-bg px-2.5 py-1.5 text-sm focus-within:border-fg-3">
@@ -270,7 +276,7 @@ export function AddSlotModal({
             <input
               id="add-slot-handle"
               value={slotHandle}
-              placeholder="architect"
+              placeholder={t("architect")}
               onChange={(e) => {
                 setSlotHandle(e.target.value.toLowerCase());
                 setSlotHandleEdited(true);
@@ -284,23 +290,24 @@ export function AddSlotModal({
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <span className="text-xs font-semibold text-fg">
-                System prompt override
+                {t("System prompt override")}
               </span>
               <span className="rounded bg-raised px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-fg-3">
                 v0.x
               </span>
             </div>
             <span
-              aria-label="System prompt override unavailable"
+              aria-label={t("System prompt override unavailable")}
               className="flex h-[18px] w-8 items-center rounded-full bg-raised p-0.5"
-              title="Per-slot prompt overrides land in v0.x"
+              title={t("Per-slot prompt overrides land in v0.x")}
             >
               <span className="h-3.5 w-3.5 rounded-full bg-panel" />
             </span>
           </div>
           <p className="text-[11px] text-fg-2">
-            Uses the selected runner&apos;s default prompt. Per-slot overrides
-            are not editable in the MVP.
+            {t(
+              "Uses the selected runner's default prompt. Per-slot overrides are not editable in the MVP.",
+            )}
           </p>
         </section>
 
@@ -319,6 +326,7 @@ function RunnerOption({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const t = useT();
   return (
     <button
       type="button"
@@ -332,28 +340,28 @@ function RunnerOption({
       </span>
       <span className="truncate text-[11px] text-fg-2">{runner.runtime}</span>
       <span className="truncate text-xs text-fg-2">
-        {crewUsageLabel(runner)} · {activityLabel(runner)}
+        {crewUsageLabel(runner, t)} · {activityLabel(runner, t)}
       </span>
     </button>
   );
 }
 
-function crewUsageLabel(runner: RunnerWithActivity): string {
+function crewUsageLabel(runner: RunnerWithActivity, t: TFn): string {
   return runner.crew_count === 1
-    ? "in 1 crew"
-    : `in ${runner.crew_count} crews`;
+    ? t("in 1 crew")
+    : t("in {n} crews", { n: runner.crew_count });
 }
 
-function activityLabel(runner: RunnerWithActivity): string {
+function activityLabel(runner: RunnerWithActivity, t: TFn): string {
   if (runner.active_sessions > 0) {
     return runner.active_sessions === 1
-      ? "1 session"
-      : `${runner.active_sessions} sessions`;
+      ? t("1 session")
+      : t("{n} sessions", { n: runner.active_sessions });
   }
   if (runner.active_missions > 0) {
     return runner.active_missions === 1
-      ? "1 mission"
-      : `${runner.active_missions} missions`;
+      ? t("1 mission")
+      : t("{n} missions", { n: runner.active_missions });
   }
-  return "idle";
+  return t("idle");
 }

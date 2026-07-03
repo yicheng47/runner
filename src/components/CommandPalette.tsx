@@ -16,6 +16,7 @@ import { useNavigate } from "react-router-dom";
 import { Flag, MessageSquare, Terminal, Users } from "lucide-react";
 
 import { api, type DirectSessionEntry } from "../lib/api";
+import { useT } from "../lib/i18n";
 import type {
   CrewListItem,
   MissionSummary,
@@ -45,6 +46,7 @@ interface CommandPaletteProps {
 }
 
 export function CommandPalette({ open, onClose }: CommandPaletteProps) {
+  const t = useT();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
@@ -215,7 +217,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onListKey}
-            placeholder="Search…"
+            placeholder={t("Search…")}
             className="flex-1 bg-transparent text-[14px] text-fg outline-none placeholder:text-fg-3"
           />
           <span className="rounded bg-bg px-1.5 py-px font-mono text-[10px] font-medium text-fg-3">
@@ -226,15 +228,15 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
           {filtered.length === 0 ? (
             <div className="px-3 py-6 text-center text-[12px] text-fg-3">
               {query.trim()
-                ? "No matches."
-                : "No missions, chats, runners, or crews yet."}
+                ? t("No matches.")
+                : t("No missions, chats, runners, or crews yet.")}
             </div>
           ) : (
             <ul ref={listRef} className="flex flex-col gap-0.5 px-2">
               {!query.trim() ? (
                 <li className="px-2.5 py-1.5">
                   <span className="font-mono text-[10px] font-semibold tracking-[1px] text-fg-3">
-                    RECENT
+                    {t("RECENT")}
                   </span>
                 </li>
               ) : null}

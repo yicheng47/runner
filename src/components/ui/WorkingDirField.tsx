@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
+import { useT } from "../../lib/i18n";
 import { Button } from "./Button";
 import { Input, Textarea } from "./Field";
 
@@ -16,7 +17,7 @@ export function WorkingDirField({
   id,
   value,
   onChange,
-  placeholder = "/absolute/path",
+  placeholder,
   disabled,
   className,
   singleLine,
@@ -29,6 +30,8 @@ export function WorkingDirField({
   className?: string;
   singleLine?: boolean;
 }) {
+  const t = useT();
+  const resolvedPlaceholder = placeholder ?? t("/absolute/path");
   const [picking, setPicking] = useState(false);
   const browse = async () => {
     if (picking) return;
@@ -38,7 +41,7 @@ export function WorkingDirField({
         directory: true,
         multiple: false,
         defaultPath: value || undefined,
-        title: "Pick a working directory",
+        title: t("Pick a working directory"),
       });
       if (typeof result === "string" && result) onChange(result);
     } catch {
@@ -56,7 +59,7 @@ export function WorkingDirField({
         <Input
           id={id}
           value={value}
-          placeholder={placeholder}
+          placeholder={resolvedPlaceholder}
           onChange={(e) => onChange(e.target.value)}
           className="min-w-0 flex-1 font-mono"
         />
@@ -65,13 +68,13 @@ export function WorkingDirField({
           id={id}
           rows={2}
           value={value}
-          placeholder={placeholder}
+          placeholder={resolvedPlaceholder}
           onChange={(e) => onChange(e.target.value)}
           className="min-w-0 flex-1 resize-y break-all"
         />
       )}
       <Button onClick={() => void browse()} disabled={disabled || picking}>
-        Browse…
+        {t("Browse…")}
       </Button>
     </div>
   );

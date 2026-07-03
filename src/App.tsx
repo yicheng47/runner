@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AppShell } from "./components/AppShell";
 import { UpdateProvider } from "./contexts/UpdateContext";
+import { LangProvider } from "./lib/i18n";
 import { nudgeAppZoom } from "./lib/appZoom";
 import { readAppZoom } from "./lib/settings";
 import Crews from "./pages/Crews";
@@ -71,7 +72,8 @@ export default function App() {
   }, []);
 
   return (
-    <UpdateProvider>
+    <LangProvider>
+      <UpdateProvider>
       <BrowserRouter>
         <Routes>
           <Route element={<AppShell />}>
@@ -86,6 +88,7 @@ export default function App() {
           </Route>
         </Routes>
       </BrowserRouter>
-    </UpdateProvider>
+      </UpdateProvider>
+    </LangProvider>
   );
 }

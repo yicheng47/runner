@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { AskHumanCard } from "./AskHumanCard";
 import { MessageBody } from "./MessageBody";
+import { useT, type TFn } from "../lib/i18n";
 import type {
   Event,
   HumanQuestionPayload,
@@ -75,6 +76,7 @@ export function EventFeed({
   active,
   onError,
 }: EventFeedProps) {
+  const t = useT();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const wasNearBottomRef = useRef(true);
   // Tail id of the last event we processed in the append effect. Without
@@ -156,7 +158,7 @@ export function EventFeed({
         className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-10 py-6"
       >
         {events.length === 0 ? (
-          <p className="text-[12px] text-fg-3">No events yet.</p>
+          <p className="text-[12px] text-fg-3">{t("No events yet.")}</p>
         ) : (
           events
             .filter((ev) => !isHiddenSystemSignal(ev))
@@ -178,7 +180,7 @@ export function EventFeed({
           onClick={onPillClick}
           className="absolute bottom-4 left-1/2 -translate-x-1/2 cursor-pointer rounded-full bg-accent px-3 py-1.5 text-[12px] font-medium text-bg shadow-md transition-opacity hover:opacity-90"
         >
-          New messages ↓
+          {t("New messages ↓")}
         </button>
       ) : null}
     </div>
@@ -198,6 +200,7 @@ function EventRow({
   askersByQuestion: Record<string, string>;
   onError?: (msg: string) => void;
 }) {
+  const t = useT();
   // human_question — render the rich card. Asker derived from the
   // originating ask_human (via askersByQuestion). Fall back to the
   // event's `from` (which is "router") if we haven't paired it yet.
@@ -226,7 +229,7 @@ function EventRow({
           <span className="font-mono text-[12px] font-semibold text-accent">
             @{event.from}
           </span>
-          <span>message</span>
+          <span>{t("message")}</span>
           {event.to ? (
             <>
               <span>→</span>
@@ -270,7 +273,7 @@ function EventRow({
           <span className="font-mono text-[12px] font-semibold text-accent">
             @{event.from}
           </span>
-          <span>message</span>
+          <span>{t("message")}</span>
           {target ? (
             <>
               <span>→</span>
@@ -296,18 +299,18 @@ function EventRow({
         <span className="font-mono text-[12px] font-semibold text-accent">
           @{event.from}
         </span>
-        <span>signal · {event.type ?? "?"}</span>
+        <span>{t("signal")} · {event.type ?? "?"}</span>
         <span>·</span>
         <span>{formatTs(event.ts)}</span>
       </div>
       <div className="rounded-md border border-line bg-bg p-3 font-mono text-[12px] leading-snug text-fg-2">
-        {renderPayload(event)}
+        {renderPayload(event, t)}
       </div>
     </div>
   );
 }
 
-function renderPayload(event: Event): React.ReactNode {
+function renderPayload(event: Event, t: TFn): React.ReactNode {
   // Common signal shapes get shorter inline renderings; everything else
   // falls back to formatted JSON. The v0 router never emits opaque blobs
   // so this stays readable.
@@ -320,7 +323,7 @@ function renderPayload(event: Event): React.ReactNode {
     const target = typeof p.target === "string" ? p.target : null;
     return (
       <div className="text-fg">
-        {text ? <MessageBody text={text} /> : <span>(no text)</span>}
+        {text ? <MessageBody text={text} /> : <span>{t("(no text)")}</span>}
         {target ? (
           <div className="mt-1 text-fg-3">→ @{target}</div>
         ) : null}

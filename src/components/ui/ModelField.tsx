@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 
+import { useT } from "../../lib/i18n";
 import { PopoverMenu } from "./PopoverMenu";
 import { modelSuggestions } from "./runtimes";
 
@@ -23,6 +24,7 @@ export function ModelField({
   model: string;
   onModelChange: (model: string) => void;
 }) {
+  const t = useT();
   const suggestions = modelSuggestions(runtime);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -35,7 +37,7 @@ export function ModelField({
         id={id}
         type="text"
         value={model}
-        placeholder="default"
+        placeholder={t("default")}
         onChange={(e) => onModelChange(e.target.value)}
         // Clicking the field toggles the suggestion list — so clicking
         // it again closes rather than re-opening (matches the other
@@ -52,7 +54,7 @@ export function ModelField({
       {hasSuggestions ? (
         <button
           type="button"
-          aria-label="Choose a model"
+          aria-label={t("Choose a model")}
           aria-haspopup="listbox"
           aria-expanded={open}
           tabIndex={-1}

@@ -8,6 +8,7 @@ import { Terminal } from "lucide-react";
 
 import { CopyValueButton } from "./ui/CopyValueButton";
 import type { SessionRow } from "../lib/api";
+import { useT } from "../lib/i18n";
 
 interface RunnersRailProps {
   sessions: SessionRow[];
@@ -28,13 +29,14 @@ export function RunnersRail({
   leadHandle,
   onOpenPty,
 }: RunnersRailProps) {
+  const t = useT();
   return (
     <div className="flex flex-1 min-h-0 flex-col gap-3 overflow-y-auto px-5 pb-5">
       <div className="text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
-        Runner sessions
+        {t("Runner sessions")}
       </div>
       {sessions.length === 0 ? (
-        <p className="text-xs text-fg-3">No runner sessions yet.</p>
+        <p className="text-xs text-fg-3">{t("No runner sessions yet.")}</p>
       ) : (
         sessions.map((s) => {
           const isLead = s.handle === leadHandle;
@@ -55,7 +57,7 @@ export function RunnersRail({
             ptyStatus === "running"
               ? runnerStatus
                 ? runnerStatus
-                : "running"
+                : t("running")
               : ptyStatus;
           const selected = selectedSessionId === s.id;
           return (
@@ -88,19 +90,19 @@ export function RunnersRail({
                   </span>
                   {isLead ? (
                     <span className="rounded bg-warn/20 px-1.5 py-px text-[9px] font-bold uppercase tracking-wide text-warn">
-                      Lead
+                      {t("Lead")}
                     </span>
                   ) : null}
                 </div>
                 <button
                   type="button"
-                  aria-label={`Open @${s.handle} pty tab`}
+                  aria-label={t("Open @{handle} pty tab", { handle: s.handle })}
                   onClick={(e) => {
                     e.stopPropagation();
                     onOpenPty(s.id);
                   }}
                   className="inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded border border-line text-fg-3 transition-colors hover:border-line-strong hover:text-fg"
-                  title="Open PTY"
+                  title={t("Open PTY")}
                 >
                   <Terminal aria-hidden className="h-3 w-3" />
                 </button>
@@ -114,7 +116,7 @@ export function RunnersRail({
                   </span>
                   <CopyValueButton
                     value={s.agent_session_key}
-                    label={`Copy @${s.handle} session_key`}
+                    label={t("Copy @{handle} session_key", { handle: s.handle })}
                   />
                 </div>
               </div>

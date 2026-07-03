@@ -42,6 +42,7 @@ import {
   StartingOverlay,
 } from "../components/SessionEndedOverlay";
 import { api, type DirectSessionEntry } from "../lib/api";
+import { useT, type TFn } from "../lib/i18n";
 import { chunkIndicatesTuiReady, isFreshSpawn } from "../lib/sessionLifecycle";
 import { useDelayedFlag } from "../lib/useDelayedFlag";
 import { useResizableWidth } from "../hooks/useResizableWidth";
@@ -117,6 +118,7 @@ export default function RunnerChat() {
   const location = useLocation();
   const navigate = useNavigate();
   const state = location.state as RunnerChatLocationState | null;
+  const t = useT();
 
   const sessionId = sessionIdParam ?? null;
   const [directSessions, setDirectSessions] = useState<DirectSessionPane[]>([]);
@@ -202,7 +204,7 @@ export default function RunnerChat() {
   const displayStatus = directChatDisplayStatus(status, latestActivity);
   const exitCode = activeSession?.exitCode ?? null;
   const backTarget = chatMeta?.handle ? `/runners/${chatMeta.handle}` : "/runners";
-  const backLabel = chatMeta?.handle ? "Back to runner" : "Back to runners";
+  const backLabel = chatMeta?.handle ? t("Back to runner") : t("Back to runners");
   // Archived rows can be reached by direct URL but render read-only.
   // We don't attach a PTY, mount RunnerTerminal, or expose Resume /
   // End / Archive — the row is terminal and the operator can only
@@ -822,7 +824,7 @@ export default function RunnerChat() {
     const current =
       chatMeta?.title ??
       (chatMeta?.handle ? `@${chatMeta.handle}` : (chatMeta?.display_name ?? ""));
-    const next = window.prompt("Rename chat", current);
+    const next = window.prompt(t("Rename chat"), current);
     if (next === null) return; // cancelled
     const trimmed = next.trim();
     if (!trimmed || trimmed === current) return;
@@ -901,12 +903,13 @@ export default function RunnerChat() {
           : chatState === "resuming"
             ? "bg-info"
             : "bg-fg-3";
-  const statusLabel = chatState === "resuming" ? "resuming…" : displayStatus;
+  const statusLabel =
+    chatState === "resuming" ? t("resuming…") : t(displayStatus);
   const titleLabel =
     chatMeta?.title ??
     (chatMeta?.handle
       ? `@${chatMeta.handle}`
-      : (chatMeta?.display_name ?? "chat"));
+      : (chatMeta?.display_name ?? t("chat")));
   // Padding wrapper around the xterm canvas tracks the current
   // terminal palette's background so the canvas + frame stay
   // seamless across theme switches.
@@ -918,10 +921,10 @@ export default function RunnerChat() {
         : chatMeta.agent_runtime
       : null,
     chatMeta?.started_at
-      ? `started ${formatRelative(chatMeta.started_at)}`
+      ? t("started {time}", { time: formatRelative(chatMeta.started_at, t) })
       : null,
     chatMeta?.cwd ?? runner?.working_dir ?? null,
-    exitCode != null ? `exit ${exitCode}` : null,
+    exitCode != null ? t("exit {code}", { code: exitCode }) : null,
   ].filter((s): s is string => !!s);
 
   return (
@@ -955,7 +958,7 @@ export default function RunnerChat() {
                 {titleLabel}
               </h1>
               <span className="rounded bg-line-strong px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-fg-2">
-                Chat
+                {t("Chat")}
               </span>
               {/* Status pill moved next to the title so it stops
                   competing with the Stop / Resume control on the
@@ -964,14 +967,16 @@ export default function RunnerChat() {
                   redundant. */}
               <span
                 className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${statusBadgeClass}`}
-                title={`session ${sessionId ? sessionId.slice(-6) : "—"}`}
+                title={t("session {id}", {
+                  id: sessionId ? sessionId.slice(-6) : "—",
+                })}
               >
                 <span className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass}`} />
-                {sessionId ? statusLabel : "starting"}
+                {sessionId ? statusLabel : t("starting")}
               </span>
               {isArchived ? (
                 <span className="inline-flex shrink-0 items-center rounded border border-line bg-raised px-2 py-0.5 text-[10px] font-medium text-fg-2">
-                  Archived · read-only
+                  {t("Archived · read-only")}
                 </span>
               ) : null}
             </div>
@@ -1048,8 +1053,8 @@ export default function RunnerChat() {
             <button
               type="button"
               onClick={() => setPanelOpen(true)}
-              title="Open side panel"
-              aria-label="Open side panel"
+              title={t("Open side panel")}
+              aria-label={t("Open side panel")}
               className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-2 hover:bg-raised hover:text-fg"
             >
               {/* Dashed-bar variant = "panel exists but is collapsed";
@@ -1076,7 +1081,7 @@ export default function RunnerChat() {
             onClick={() => setWarning(null)}
             className="cursor-pointer text-xs text-warn/80 hover:text-warn"
           >
-            Dismiss
+            {t("Dismiss")}
           </button>
         </div>
       ) : null}
@@ -1100,16 +1105,17 @@ export default function RunnerChat() {
           // so any "session is coming up" moment reads consistently
           // — gated on `showNavLoadingPill` so the common fast-IPC
           // path doesn't flash on every chat-to-chat navigation.
-          showNavLoadingPill ? <StartingOverlay label="Starting chat…" /> : null
+          showNavLoadingPill ? <StartingOverlay label={t("Starting chat…")} /> : null
         ) : isArchived ? (
           <div className="flex h-full items-center justify-center">
             <div className="flex max-w-md flex-col items-center gap-2 rounded border border-line bg-raised px-6 py-5 text-center">
               <span className="text-[13px] font-semibold text-fg">
-                Session ended — terminal closed
+                {t("Session ended — terminal closed")}
               </span>
               <span className="text-[12px] text-fg-2">
-                This chat was archived. The PTY is gone and the workspace is
-                read-only.
+                {t(
+                  "This chat was archived. The PTY is gone and the workspace is read-only.",
+                )}
               </span>
             </div>
           </div>
@@ -1117,7 +1123,7 @@ export default function RunnerChat() {
           // Same delayed-pill treatment as the metaLoaded gate above —
           // the terminal map hasn't upserted the active session pane
           // yet but the next render almost always brings it in.
-          showNavLoadingPill ? <StartingOverlay label="Starting chat…" /> : null
+          showNavLoadingPill ? <StartingOverlay label={t("Starting chat…")} /> : null
         ) : (
           directSessions.map((s) => {
             const active = s.id === sessionId;
@@ -1182,7 +1188,7 @@ export default function RunnerChat() {
           // Min-1s overlay while the freshly-attached agent CLI
           // boots. The terminal underneath is hidden via
           // `opacity-0` above so the pill reads on a clean canvas.
-          <StartingOverlay label="Starting chat…" />
+          <StartingOverlay label={t("Starting chat…")} />
         ) : activeSession && status !== "running" ? (
           <SessionEndedOverlay
             status={status}
@@ -1238,6 +1244,7 @@ function RunnerSidePanel({
   open: boolean;
   onClose: () => void;
 }) {
+  const t = useT();
   const asideRef = useRef<HTMLElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
   const { width, onResizeStart } = useResizableWidth({
@@ -1269,8 +1276,8 @@ function RunnerSidePanel({
             <button
               type="button"
               onClick={onClose}
-              title="Collapse panel"
-              aria-label="Collapse panel"
+              title={t("Collapse panel")}
+              aria-label={t("Collapse panel")}
               className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-2 hover:bg-raised hover:text-fg"
             >
               <PanelRight aria-hidden className="h-4 w-4" />
@@ -1282,7 +1289,7 @@ function RunnerSidePanel({
             <>
               <section className="flex flex-col gap-2.5">
                 <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
-                  Runner
+                  {t("Runner")}
                 </span>
                 <div className="flex flex-col gap-2.5 rounded-lg border border-line-strong bg-bg p-3.5">
                   <div className="flex items-center gap-2">
@@ -1321,7 +1328,7 @@ function RunnerSidePanel({
                           </span>
                           <CopyValueButton
                             value={chatMeta.agent_session_key}
-                            label="Copy session_key"
+                            label={t("Copy session_key")}
                           />
                         </dd>
                       </>
@@ -1333,7 +1340,7 @@ function RunnerSidePanel({
                 <section className="flex min-h-0 flex-col gap-2">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
-                      System prompt
+                      {t("System prompt")}
                     </span>
                   </div>
                   <div className="overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-line-strong bg-bg p-3 font-sans text-[12px] leading-relaxed text-fg-2">
@@ -1345,7 +1352,7 @@ function RunnerSidePanel({
           ) : chatMeta ? (
             <section className="flex flex-col gap-2.5">
               <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
-                Runtime
+                {t("Runtime")}
               </span>
               <div className="flex flex-col gap-2.5 rounded-lg border border-line-strong bg-bg p-3.5">
                 <div className="flex items-center gap-2">
@@ -1377,14 +1384,14 @@ function RunnerSidePanel({
                     </span>
                     <CopyValueButton
                       value={chatMeta.agent_session_key}
-                      label="Copy session_key"
+                      label={t("Copy session_key")}
                     />
                   </dd>
                 </dl>
               </div>
             </section>
           ) : (
-            <p className="text-xs text-fg-3">Loading chat…</p>
+            <p className="text-xs text-fg-3">{t("Loading chat…")}</p>
           )}
         </div>
       </div>
@@ -1395,7 +1402,7 @@ function RunnerSidePanel({
           briefly read as resizable inside the chat column. */}
       <div
         onPointerDown={open ? onResizeStart : undefined}
-        title={open ? "Drag to resize" : undefined}
+        title={open ? t("Drag to resize") : undefined}
         className={
           open
             ? "absolute left-0 top-0 z-20 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-accent/40"
@@ -1428,6 +1435,7 @@ function ChatKebab({
   onRename: () => void;
   onArchive: () => void;
 }) {
+  const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -1450,7 +1458,7 @@ function ChatKebab({
     <div ref={ref} className="relative">
       <button
         type="button"
-        aria-label="Chat actions"
+        aria-label={t("Chat actions")}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={onToggle}
@@ -1465,11 +1473,16 @@ function ChatKebab({
         >
           <KebabItem
             icon={pinned ? PinOff : Pin}
-            label={pinned ? "Unpin" : "Pin"}
+            label={pinned ? t("Unpin") : t("Pin")}
             onClick={onPin}
           />
-          <KebabItem icon={SquarePen} label="Rename" onClick={onRename} />
-          <KebabItem icon={Archive} label="Archive" onClick={onArchive} danger />
+          <KebabItem icon={SquarePen} label={t("Rename")} onClick={onRename} />
+          <KebabItem
+            icon={Archive}
+            label={t("Archive")}
+            onClick={onArchive}
+            danger
+          />
         </div>
       ) : null}
     </div>
@@ -1508,16 +1521,16 @@ function KebabItem({
 // Compact relative time for the chat header meta line. Mirrors the
 // "started 18m ago" text in the Pencil design. Falls back to a short
 // absolute date for anything older than a week.
-function formatRelative(ts: string): string {
+function formatRelative(ts: string, t: TFn): string {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return "—";
   const diffSec = Math.max(0, (Date.now() - d.getTime()) / 1000);
-  if (diffSec < 60) return "just now";
+  if (diffSec < 60) return t("just now");
   const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffMin < 60) return t("{n}m ago", { n: diffMin });
   const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
+  if (diffHr < 24) return t("{n}h ago", { n: diffHr });
   const diffDay = Math.floor(diffHr / 24);
-  if (diffDay < 7) return `${diffDay}d ago`;
+  if (diffDay < 7) return t("{n}d ago", { n: diffDay });
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }

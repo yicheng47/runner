@@ -13,6 +13,7 @@ import { listen } from "@tauri-apps/api/event";
 import { MessageSquare } from "lucide-react";
 
 import { api } from "../lib/api";
+import { useT } from "../lib/i18n";
 import { readDefaultWorkingDir } from "../lib/settings";
 import type { RunnerActivityEvent, RunnerWithActivity } from "../lib/types";
 // AppShell is supplied by the layout route in App.tsx; pages render
@@ -29,6 +30,7 @@ export default function Runners() {
   const [creating, setCreating] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
+  const t = useT();
 
   const refresh = useCallback(async () => {
     try {
@@ -145,7 +147,10 @@ export default function Runners() {
   const onDelete = async (id: string, handle: string) => {
     if (
       !confirm(
-        `Delete runner @${handle}? This removes it from every crew it's in, kills any live chats, and erases its session history. Crews and missions are kept.`,
+        t(
+          "Delete runner @{handle}? This removes it from every crew it's in, kills any live chats, and erases its session history. Crews and missions are kept.",
+          { handle },
+        ),
       )
     )
       return;
@@ -164,15 +169,16 @@ export default function Runners() {
           <header className="flex items-center justify-between gap-4">
             <div className="flex flex-col gap-1">
               <h1 className="text-2xl font-bold tracking-tight text-fg">
-                Runners
+                {t("Runners")}
               </h1>
               <p className="text-sm text-fg-2">
-                Reusable CLI agents — pick one for a crew slot or chat
-                directly.
+                {t(
+                  "Reusable CLI agents — pick one for a crew slot or chat directly.",
+                )}
               </p>
             </div>
             <Button variant="primary" onClick={() => setCreating(true)}>
-              + New runner
+              {t("+ New runner")}
             </Button>
           </header>
 
@@ -183,19 +189,21 @@ export default function Runners() {
           ) : null}
 
           {loading ? (
-            <div className="text-sm text-fg-2">Loading…</div>
+            <div className="text-sm text-fg-2">{t("Loading…")}</div>
           ) : !loaded ? (
             <div className="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-              Failed to load runners.
+              {t("Failed to load runners.")}
             </div>
           ) : runners.length === 0 ? (
             <EmptyStateCard
               icon={<TerminalIcon />}
-              title="No runners yet"
-              description="A runner is a reusable CLI agent — claude-code, codex, a custom shell — that crews pull in. Add one to start composing crews."
+              title={t("No runners yet")}
+              description={t(
+                "A runner is a reusable CLI agent — claude-code, codex, a custom shell — that crews pull in. Add one to start composing crews.",
+              )}
               action={
                 <Button variant="primary" onClick={() => setCreating(true)}>
-                  + New runner
+                  {t("+ New runner")}
                 </Button>
               }
             />
@@ -263,6 +271,7 @@ function RunnerCard({
   chatPending: boolean;
   onDelete: () => void;
 }) {
+  const t = useT();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
@@ -276,11 +285,17 @@ function RunnerCard({
   }, [menuOpen]);
 
   const sessionsLabel =
-    item.active_sessions === 1 ? "1 session" : `${item.active_sessions} sessions`;
+    item.active_sessions === 1
+      ? t("1 session")
+      : t("{n} sessions", { n: item.active_sessions });
   const missionsLabel =
-    item.active_missions === 1 ? "1 mission" : `${item.active_missions} missions`;
+    item.active_missions === 1
+      ? t("1 mission")
+      : t("{n} missions", { n: item.active_missions });
   const crewsLabel =
-    item.crew_count === 1 ? "in 1 crew" : `in ${item.crew_count} crews`;
+    item.crew_count === 1
+      ? t("in 1 crew")
+      : t("in {n} crews", { n: item.crew_count });
   const live = item.active_sessions > 0 || item.active_missions > 0;
 
   return (
@@ -318,10 +333,10 @@ function RunnerCard({
               }}
               disabled={chatPending}
               className="ml-1 inline-flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent/10 active:bg-accent/20 disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
-              title="Start a new chat"
+              title={t("Start a new chat")}
             >
               <MessageSquare aria-hidden className="h-3 w-3" />
-              <span>{chatPending ? "Starting…" : "Chat"}</span>
+              <span>{chatPending ? t("Starting…") : t("Chat")}</span>
             </button>
           </div>
           <p className="mt-1 line-clamp-2 text-xs text-fg-2">
@@ -344,8 +359,8 @@ function RunnerCard({
           <div className="relative" ref={menuRef}>
             <button
               type="button"
-              aria-label={`More actions for @${item.handle}`}
-              title="More actions"
+              aria-label={t("More actions for @{handle}", { handle: item.handle })}
+              title={t("More actions")}
               onClick={(e) => {
                 e.stopPropagation();
                 setMenuOpen((v) => !v);
@@ -367,7 +382,7 @@ function RunnerCard({
                   }}
                   className="flex w-full items-center px-3 py-1.5 text-left text-fg hover:bg-raised"
                 >
-                  Edit details
+                  {t("Edit details")}
                 </button>
                 <button
                   type="button"
@@ -377,7 +392,7 @@ function RunnerCard({
                   }}
                   className="flex w-full items-center px-3 py-1.5 text-left text-danger hover:bg-raised"
                 >
-                  Delete runner
+                  {t("Delete runner")}
                 </button>
               </div>
             ) : null}

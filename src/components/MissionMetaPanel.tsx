@@ -15,6 +15,7 @@ import { Clock3, Users } from "lucide-react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
 import { CopyValueButton } from "./ui/CopyValueButton";
+import { useT, type TFn } from "../lib/i18n";
 import type { Crew, Mission } from "../lib/types";
 
 interface MissionMetaPanelProps {
@@ -32,6 +33,7 @@ export function MissionMetaPanel({
   crew,
   missionGoal,
 }: MissionMetaPanelProps) {
+  const t = useT();
   const cwd = mission.cwd;
 
   // Re-render the relative "started X ago" row every 60s so the value
@@ -52,46 +54,46 @@ export function MissionMetaPanel({
   return (
     <div className="flex flex-1 min-h-0 flex-col gap-4 overflow-y-auto px-5 pb-5">
       <div className="text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
-        Mission detail
+        {t("Mission detail")}
       </div>
 
-      <Section label="Mission ID">
+      <Section label={t("Mission ID")}>
         <span className="flex min-w-0 items-start gap-1.5">
           <span className="min-w-0 flex-1 break-all font-mono text-[11px] text-fg-2">
             {mission.id}
           </span>
-          <CopyValueButton value={mission.id} label="Copy mission ID" />
+          <CopyValueButton value={mission.id} label={t("Copy mission ID")} />
         </span>
       </Section>
 
-      <Section label="Goal">
+      <Section label={t("Goal")}>
         {missionGoal === null ? (
-          <p className="text-[12px] italic text-fg-3">Loading…</p>
+          <p className="text-[12px] italic text-fg-3">{t("Loading…")}</p>
         ) : missionGoal ? (
           <p className="whitespace-pre-wrap break-words text-[12px] leading-[1.5] text-fg">
             {missionGoal}
           </p>
         ) : (
-          <p className="text-[12px] italic text-fg-3">No goal set.</p>
+          <p className="text-[12px] italic text-fg-3">{t("No goal set.")}</p>
         )}
       </Section>
 
-      <Section label="Working dir">
+      <Section label={t("Working dir")}>
         {cwd ? (
           <button
             type="button"
             onClick={revealCwd}
-            title="Reveal in Finder"
+            title={t("Reveal in Finder")}
             className="w-full cursor-pointer rounded-md border border-line bg-bg px-2.5 py-2 text-left font-mono text-[11px] text-fg break-all transition-colors hover:border-line-strong"
           >
             {cwd}
           </button>
         ) : (
-          <p className="text-[12px] italic text-fg-3">No cwd set.</p>
+          <p className="text-[12px] italic text-fg-3">{t("No cwd set.")}</p>
         )}
       </Section>
 
-      <Section label="Crew">
+      <Section label={t("Crew")}>
         <Link
           to={`/crews/${mission.crew_id}`}
           className="flex items-center gap-2 text-[12px] font-medium text-accent hover:underline"
@@ -101,10 +103,10 @@ export function MissionMetaPanel({
         </Link>
       </Section>
 
-      <Section label="Started">
+      <Section label={t("Started")}>
         <div className="flex items-center gap-2 text-[12px] text-fg">
           <Clock3 aria-hidden className="h-3 w-3 text-fg-2" />
-          <span>{formatRelativeTime(mission.started_at)}</span>
+          <span>{formatRelativeTime(mission.started_at, t)}</span>
         </div>
       </Section>
 
@@ -130,17 +132,25 @@ function Section({
   );
 }
 
-function formatRelativeTime(iso: string): string {
+function formatRelativeTime(iso: string, t: TFn): string {
   try {
     const d = new Date(iso);
     const diffMs = Date.now() - d.getTime();
     const minutes = Math.floor(diffMs / 60000);
-    if (minutes < 1) return "just now";
-    if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+    if (minutes < 1) return t("just now");
+    if (minutes < 60)
+      return minutes === 1
+        ? t("{n} minute ago", { n: minutes })
+        : t("{n} minutes ago", { n: minutes });
     const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+    if (hours < 24)
+      return hours === 1
+        ? t("{n} hour ago", { n: hours })
+        : t("{n} hours ago", { n: hours });
     const days = Math.floor(hours / 24);
-    return `${days} day${days === 1 ? "" : "s"} ago`;
+    return days === 1
+      ? t("{n} day ago", { n: days })
+      : t("{n} days ago", { n: days });
   } catch {
     return iso;
   }

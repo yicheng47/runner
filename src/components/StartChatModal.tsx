@@ -13,6 +13,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, X } from "lucide-react";
 
 import { api, type RuntimeDefinition } from "../lib/api";
+import { useT, type TFn } from "../lib/i18n";
 import {
   readDefaultChatRuntime,
   readDefaultWorkingDir,
@@ -38,6 +39,7 @@ export function StartChatModal({
   onClose,
   onStarted,
 }: StartChatModalProps) {
+  const t = useT();
   const formId = useId();
   const runnerPickerButtonId = `${formId}-runner`;
   const runtimePickerButtonId = `${formId}-runtime`;
@@ -105,7 +107,7 @@ export function StartChatModal({
         // signal here, since a keystroke during the pre-load window
         // would have flipped it true synchronously.
         if (first && mode === "runner" && !titleEditedRef.current) {
-          setTitle(defaultTitleFor(first));
+          setTitle(defaultTitleFor(first, t));
         }
       })
       .catch((e) => {
@@ -130,7 +132,7 @@ export function StartChatModal({
         setRuntimes(rows);
         setRuntimeName(selected?.name ?? "");
         if (selected && !titleEditedRef.current && mode === "runtime") {
-          setTitle(defaultTitleForRuntime(selected));
+          setTitle(defaultTitleForRuntime(selected, t));
         }
       })
       .catch((e) => {
@@ -176,8 +178,8 @@ export function StartChatModal({
     setModeState(next);
     writeStartChatMode(next);
     if (titleEditedRef.current) return;
-    if (next === "runner") setTitle(defaultTitleFor(selectedRunner));
-    else setTitle(defaultTitleForRuntime(selectedRuntime));
+    if (next === "runner") setTitle(defaultTitleFor(selectedRunner, t));
+    else setTitle(defaultTitleForRuntime(selectedRuntime, t));
   };
 
   // Follow runner-picker changes: while the user hasn't typed in the
@@ -188,16 +190,16 @@ export function StartChatModal({
   useEffect(() => {
     if (!open) return;
     if (titleEdited) return;
-    if (mode === "runner") setTitle(defaultTitleFor(selectedRunner));
-    else setTitle(defaultTitleForRuntime(selectedRuntime));
-  }, [open, mode, selectedRunner, selectedRuntime, titleEdited]);
+    if (mode === "runner") setTitle(defaultTitleFor(selectedRunner, t));
+    else setTitle(defaultTitleForRuntime(selectedRuntime, t));
+  }, [open, mode, selectedRunner, selectedRuntime, titleEdited, t]);
 
   const browseCwd = async () => {
     try {
       const picked = await openDialog({
         directory: true,
         multiple: false,
-        title: "Pick a working directory",
+        title: t("Pick a working directory"),
       });
       if (typeof picked === "string") setCwd(picked);
     } catch (e) {
@@ -265,10 +267,10 @@ export function StartChatModal({
         <div className="flex items-center justify-between gap-4">
           <div className="flex flex-col gap-0.5">
             <span className="text-base font-semibold text-fg">
-              Start a chat
+              {t("Start a chat")}
             </span>
             <span className="text-xs font-normal text-fg-2">
-              Spawns a direct PTY in the selected directory.
+              {t("Spawns a direct PTY in the selected directory.")}
             </span>
           </div>
           <button
@@ -276,7 +278,7 @@ export function StartChatModal({
             onClick={onClose}
             disabled={submitting}
             className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-3 transition-colors hover:bg-raised hover:text-fg disabled:pointer-events-none disabled:opacity-50"
-            aria-label="Close start chat"
+            aria-label={t("Close start chat")}
           >
             <X aria-hidden className="h-3.5 w-3.5" />
           </button>
@@ -286,7 +288,7 @@ export function StartChatModal({
       footer={
         <>
           <Button onClick={onClose} disabled={submitting}>
-            Cancel
+            {t("Cancel")}
           </Button>
           <Button
             variant="primary"
@@ -297,7 +299,7 @@ export function StartChatModal({
               (mode === "runtime" && (!runtimeName || runtimes.length === 0))
             }
           >
-            {submitting ? "Starting…" : "Start chat"}
+            {submitting ? t("Starting…") : t("Start chat")}
           </Button>
         </>
       }
@@ -324,13 +326,13 @@ export function StartChatModal({
                   : "text-fg-2 hover:text-fg"
               }`}
             >
-              {option === "runner" ? "Runner" : "Direct"}
+              {option === "runner" ? t("Runner") : t("Direct")}
             </button>
           ))}
         </div>
 
         {mode === "runner" ? (
-          <Field label="Runner" htmlFor={runnerPickerButtonId}>
+          <Field label={t("Runner")} htmlFor={runnerPickerButtonId}>
             <div ref={runnerPickerRef} className="relative">
               <button
                 id={runnerPickerButtonId}
@@ -343,10 +345,10 @@ export function StartChatModal({
               >
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-mono text-[13px] font-semibold text-fg">
-                    {selectedRunner ? `@${selectedRunner.handle}` : "No runners yet"}
+                    {selectedRunner ? `@${selectedRunner.handle}` : t("No runners yet")}
                   </span>
                   <span className="block truncate text-[11px] text-fg-2">
-                    {summarizeRunner(selectedRunner)}
+                    {summarizeRunner(selectedRunner, t)}
                   </span>
                 </span>
                 <ChevronDown aria-hidden className="h-3.5 w-3.5 text-fg-3" />
@@ -375,7 +377,7 @@ export function StartChatModal({
                           @{r.handle}
                         </span>
                         <span className="block truncate text-[11px] text-fg-2">
-                          {summarizeRunner(r)}
+                          {summarizeRunner(r, t)}
                         </span>
                       </span>
                     </button>
@@ -385,12 +387,12 @@ export function StartChatModal({
             </div>
             {runners.length === 0 ? (
               <p className="mt-1 text-[11px] text-warn">
-                No runners yet. Create one from the runner page first.
+                {t("No runners yet. Create one from the runner page first.")}
               </p>
             ) : null}
           </Field>
         ) : (
-          <Field label="Agent runtime" htmlFor={runtimePickerButtonId}>
+          <Field label={t("Agent runtime")} htmlFor={runtimePickerButtonId}>
             <StyledSelect
               id={runtimePickerButtonId}
               value={runtimeName}
@@ -405,8 +407,8 @@ export function StartChatModal({
 
         <Field
           htmlFor={titleInputId}
-          label="Chat name"
-          subtitle="Optional. Leave blank to use the default label."
+          label={t("Chat name")}
+          subtitle={t("Optional. Leave blank to use the default label.")}
         >
           <input
             id={titleInputId}
@@ -416,13 +418,13 @@ export function StartChatModal({
               titleEditedRef.current = true;
               setTitleEdited(true);
             }}
-            placeholder="e.g. quick-debug"
+            placeholder={t("e.g. quick-debug")}
             disabled={submitting}
             className="rounded-md border border-line bg-bg px-3 py-2 text-[13px] text-fg placeholder:text-fg-3 focus:border-fg-3 focus:outline-none"
           />
         </Field>
 
-        <Field label="Working directory" htmlFor={cwdInputId}>
+        <Field label={t("Working directory")} htmlFor={cwdInputId}>
           <div className="flex items-center gap-2">
             <input
               id={cwdInputId}
@@ -430,18 +432,18 @@ export function StartChatModal({
               onChange={(e) => setCwd(e.target.value)}
               placeholder={
                 mode === "runner"
-                  ? cwdPlaceholderFor(selectedRunner)
-                  : cwdPlaceholderForRuntime()
+                  ? cwdPlaceholderFor(selectedRunner, t)
+                  : cwdPlaceholderForRuntime(t)
               }
               disabled={submitting}
               className="min-w-0 flex-1 rounded-md border border-line bg-bg px-3 py-2 font-mono text-xs text-fg placeholder:text-fg-3 focus:border-fg-3 focus:outline-none"
             />
             <Button onClick={() => void browseCwd()} disabled={submitting}>
-              Browse…
+              {t("Browse…")}
             </Button>
           </div>
           <p className="text-[11px] text-fg-2">
-            Leave blank to use the default working directory.
+            {t("Leave blank to use the default working directory.")}
           </p>
         </Field>
       </div>
@@ -477,40 +479,43 @@ function Field({
   );
 }
 
-function summarizeRunner(runner: Runner | null): string {
-  if (!runner) return "Create a runner first.";
-  const wd = runner.working_dir ?? "no working dir";
+function summarizeRunner(runner: Runner | null, t: TFn): string {
+  if (!runner) return t("Create a runner first.");
+  const wd = runner.working_dir ?? t("no working dir");
   return `${runner.runtime} · ${wd}`;
 }
 
 // Default Chat name when the user hasn't typed anything. Uses the
 // runner's `handle` (not `display_name`) so the title mirrors the URL
 // path the chat will land at.
-function defaultTitleFor(runner: Runner | null): string {
+function defaultTitleFor(runner: Runner | null, t: TFn): string {
   if (!runner) return "";
-  return `Chat with @${runner.handle}`;
+  return t("Chat with @{handle}", { handle: runner.handle });
 }
 
-function defaultTitleForRuntime(runtime: RuntimeDefinition | null): string {
+function defaultTitleForRuntime(
+  runtime: RuntimeDefinition | null,
+  t: TFn,
+): string {
   if (!runtime) return "";
-  return `Chat with ${runtime.display_name}`;
+  return t("Chat with {name}", { name: runtime.display_name });
 }
 
 // Dynamic placeholder for the working-directory input. Shows what
 // blank-leave will produce: the runner's own working_dir if set,
 // else the global settings default, else a parenthetical hint that
 // no directory will be passed.
-function cwdPlaceholderFor(runner: Runner | null): string {
+function cwdPlaceholderFor(runner: Runner | null, t: TFn): string {
   if (runner?.working_dir) return runner.working_dir;
   const fallback = readDefaultWorkingDir();
   if (fallback) return fallback;
-  return "(no working directory)";
+  return t("(no working directory)");
 }
 
-function cwdPlaceholderForRuntime(): string {
+function cwdPlaceholderForRuntime(t: TFn): string {
   const fallback = readDefaultWorkingDir();
   if (fallback) return fallback;
-  return "(no working directory)";
+  return t("(no working directory)");
 }
 
 function readStartChatMode(): ChatMode {

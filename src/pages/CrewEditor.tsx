@@ -18,6 +18,7 @@ import { listen } from "@tauri-apps/api/event";
 import { MoreHorizontal, SquarePen, Star, Trash2 } from "lucide-react";
 
 import { api } from "../lib/api";
+import { useT } from "../lib/i18n";
 import type { Crew, Runner, SlotWithRunner } from "../lib/types";
 import { AddSlotModal } from "../components/AddSlotModal";
 import { RunnerEditDrawer } from "../components/RunnerEditDrawer";
@@ -45,6 +46,7 @@ export default function CrewEditor() {
   const [reordering, setReordering] = useState(false);
   const reorderInFlight = useRef(false);
   const navigate = useNavigate();
+  const t = useT();
 
   const refresh = useCallback(async () => {
     if (!crewId) return;
@@ -197,9 +199,18 @@ export default function CrewEditor() {
 
   const onRemoveSlot = async (s: SlotWithRunner) => {
     const tail = s.lead
-      ? "\nAs the LEAD, leadership will pass to the next slot by position."
+      ? "\n" +
+        t("As the LEAD, leadership will pass to the next slot by position.")
       : "";
-    if (!confirm(`Remove slot @${s.slot_handle} from this crew?${tail}`)) return;
+    if (
+      !confirm(
+        t("Remove slot @{handle} from this crew?{tail}", {
+          handle: s.slot_handle,
+          tail,
+        }),
+      )
+    )
+      return;
     try {
       await api.slot.delete(s.id);
       await refresh();
@@ -235,7 +246,7 @@ export default function CrewEditor() {
   };
 
   if (!crewId) {
-    return <div className="p-8 text-sm text-danger">Missing crew id.</div>;
+    return <div className="p-8 text-sm text-danger">{t("Missing crew id.")}</div>;
   }
 
   const trimmedNameDraft = nameDraft.trim();
@@ -252,7 +263,7 @@ export default function CrewEditor() {
             to="/crews"
             className="shrink-0 text-sm text-fg-2 transition-colors hover:text-fg"
           >
-            ‹ Crews
+            {t("‹ Crews")}
           </Link>
           <span className="text-line-strong">›</span>
           {crew ? (
@@ -282,20 +293,20 @@ export default function CrewEditor() {
               disabled={savingName || !nameDirty}
               title={
                 nameInvalid
-                  ? "Crew name cannot be empty"
+                  ? t("Crew name cannot be empty")
                   : nameDirty
-                    ? "Save crew name"
-                    : "No persisted change after trimming"
+                    ? t("Save crew name")
+                    : t("No persisted change after trimming")
               }
             >
-              {savingName ? "Saving..." : "Save"}
+              {savingName ? t("Saving...") : t("Save")}
             </Button>
           ) : (
             <span
               className="inline-flex items-center justify-center rounded border border-line bg-raised px-3 py-1.5 text-sm font-medium text-fg-3"
-              title="Crew name is saved. Slot changes save immediately."
+              title={t("Crew name is saved. Slot changes save immediately.")}
             >
-              Saved
+              {t("Saved")}
             </span>
           )}
           <Button
@@ -304,24 +315,24 @@ export default function CrewEditor() {
             disabled={slots.length === 0}
             title={
               slots.length === 0
-                ? "Add at least one slot before starting a mission"
-                : "Start a mission with this crew"
+                ? t("Add at least one slot before starting a mission")
+                : t("Start a mission with this crew")
             }
           >
-            Start mission
+            {t("Start mission")}
           </Button>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto">
         {loading ? (
-          <div className="p-8 text-sm text-fg-2">Loading…</div>
+          <div className="p-8 text-sm text-fg-2">{t("Loading…")}</div>
         ) : !loaded ? (
           <div className="m-8 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-            {error ?? "Failed to load crew."}
+            {error ?? t("Failed to load crew.")}
           </div>
         ) : crew === null ? (
-          <div className="p-8 text-sm text-danger">Crew not found.</div>
+          <div className="p-8 text-sm text-danger">{t("Crew not found.")}</div>
         ) : (
           <div className="mx-auto flex max-w-4xl flex-col gap-8 px-8 py-8">
             {error ? (
@@ -332,19 +343,19 @@ export default function CrewEditor() {
 
             <section className="flex flex-col gap-1.5">
               <div className="text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
-                Purpose
+                {t("Purpose")}
               </div>
               {crew.purpose ? (
                 <p className="text-sm text-fg">{crew.purpose}</p>
               ) : (
-                <p className="text-sm italic text-fg-3">No purpose set.</p>
+                <p className="text-sm italic text-fg-3">{t("No purpose set.")}</p>
               )}
             </section>
 
             <section className="flex flex-col gap-1.5">
               <div className="flex items-center justify-between gap-3">
                 <div className="text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
-                  Default goal
+                  {t("Default goal")}
                 </div>
                 {!goalEditing && crew.goal ? (
                   <button
@@ -352,7 +363,7 @@ export default function CrewEditor() {
                     onClick={onStartGoalEdit}
                     className="text-xs text-fg-2 transition-colors hover:text-fg"
                   >
-                    Edit
+                    {t("Edit")}
                   </button>
                 ) : null}
               </div>
@@ -361,20 +372,20 @@ export default function CrewEditor() {
                   <textarea
                     value={goalDraft}
                     onChange={(e) => setGoalDraft(e.target.value)}
-                    placeholder="Pre-fills the Start Mission goal."
+                    placeholder={t("Pre-fills the Start Mission goal.")}
                     rows={4}
                     className="w-full rounded border border-line bg-bg px-3 py-2 text-sm text-fg focus:border-fg-3 focus:outline-none"
                   />
                   <div className="flex items-center gap-2">
                     <Button onClick={onSaveGoal} disabled={savingGoal}>
-                      {savingGoal ? "Saving..." : "Save"}
+                      {savingGoal ? t("Saving...") : t("Save")}
                     </Button>
                     <Button
                       variant="secondary"
                       onClick={onCancelGoalEdit}
                       disabled={savingGoal}
                     >
-                      Cancel
+                      {t("Cancel")}
                     </Button>
                   </div>
                 </div>
@@ -389,10 +400,10 @@ export default function CrewEditor() {
                     onClick={onStartGoalEdit}
                     className="self-start text-sm text-fg-2 transition-colors hover:text-fg"
                   >
-                    + Add default goal
+                    {t("+ Add default goal")}
                   </button>
                   <p className="text-xs text-fg-3">
-                    Pre-fills the Start Mission goal. Optional.
+                    {t("Pre-fills the Start Mission goal. Optional.")}
                   </p>
                 </div>
               )}
@@ -401,7 +412,7 @@ export default function CrewEditor() {
             <section className="flex flex-col gap-1.5">
               <div className="flex items-center justify-between gap-3">
                 <div className="text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
-                  Team conventions
+                  {t("Team conventions")}
                 </div>
                 {!addendumEditing && crew.system_prompt_addendum ? (
                   <button
@@ -409,7 +420,7 @@ export default function CrewEditor() {
                     onClick={onStartAddendumEdit}
                     className="text-xs text-fg-2 transition-colors hover:text-fg"
                   >
-                    Edit
+                    {t("Edit")}
                   </button>
                 ) : null}
               </div>
@@ -418,20 +429,22 @@ export default function CrewEditor() {
                   <textarea
                     value={addendumDraft}
                     onChange={(e) => setAddendumDraft(e.target.value)}
-                    placeholder="Optional team-level guidance applied to all mission spawns."
+                    placeholder={t(
+                      "Optional team-level guidance applied to all mission spawns.",
+                    )}
                     rows={6}
                     className="w-full rounded border border-line bg-bg px-3 py-2 font-mono text-sm text-fg focus:border-fg-3 focus:outline-none"
                   />
                   <div className="flex items-center gap-2">
                     <Button onClick={onSaveAddendum} disabled={savingAddendum}>
-                      {savingAddendum ? "Saving..." : "Save"}
+                      {savingAddendum ? t("Saving...") : t("Save")}
                     </Button>
                     <Button
                       variant="secondary"
                       onClick={onCancelAddendumEdit}
                       disabled={savingAddendum}
                     >
-                      Cancel
+                      {t("Cancel")}
                     </Button>
                   </div>
                 </div>
@@ -446,11 +459,12 @@ export default function CrewEditor() {
                     onClick={onStartAddendumEdit}
                     className="self-start text-sm text-fg-2 transition-colors hover:text-fg"
                   >
-                    + Add team conventions
+                    {t("+ Add team conventions")}
                   </button>
                   <p className="text-xs text-fg-3">
-                    Optional team-level guidance applied to all mission spawns.
-                    Leave blank for crews that need no team-level layer.
+                    {t(
+                      "Optional team-level guidance applied to all mission spawns. Leave blank for crews that need no team-level layer.",
+                    )}
                   </p>
                 </div>
               )}
@@ -459,13 +473,15 @@ export default function CrewEditor() {
             <section className="flex flex-col gap-4">
               <div className="flex items-end justify-between gap-4">
                 <div className="flex flex-col gap-0.5">
-                  <h2 className="text-xl font-bold text-fg">Slots</h2>
+                  <h2 className="text-xl font-bold text-fg">{t("Slots")}</h2>
                   <p className="text-xs text-fg-2">
-                    Positions in the crew. Each slot binds a handle to a runner.
-                    The{" "}
-                    <span className="font-semibold text-accent">LEAD</span> is the
-                    crew's face — receives human messages by default and dispatches
-                    back to other slots.
+                    {t(
+                      "Positions in the crew. Each slot binds a handle to a runner. The",
+                    )}{" "}
+                    <span className="font-semibold text-accent">{t("LEAD")}</span>{" "}
+                    {t(
+                      "is the crew's face — receives human messages by default and dispatches back to other slots.",
+                    )}
                   </p>
                 </div>
                 <Button
@@ -473,7 +489,7 @@ export default function CrewEditor() {
                   className="shrink-0 whitespace-nowrap"
                   onClick={() => setAdding(true)}
                 >
-                  + Add slot
+                  {t("+ Add slot")}
                 </Button>
               </div>
 
@@ -540,13 +556,15 @@ function SlotList({
   onRemove: (s: SlotWithRunner) => void;
   onReorder: (newOrder: SlotWithRunner[]) => void;
 }) {
+  const t = useT();
   if (slots.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-line-strong bg-panel/40 px-5 py-8 text-center">
-        <p className="text-sm text-fg">No slots yet.</p>
+        <p className="text-sm text-fg">{t("No slots yet.")}</p>
         <p className="mt-1 text-xs text-fg-3">
-          Use <span className="font-medium text-fg">+ Add slot</span> above —
-          the first slot auto-assigns as LEAD.
+          {t("Use")}{" "}
+          <span className="font-medium text-fg">{t("+ Add slot")}</span>{" "}
+          {t("above — the first slot auto-assigns as LEAD.")}
         </p>
       </div>
     );
@@ -600,6 +618,7 @@ function SlotRow({
   onRemove: () => void;
   onReorderDrop: (fromIndex: number) => void;
 }) {
+  const t = useT();
   const [dragOver, setDragOver] = useState(false);
   const draggable = total > 1 && !dragDisabled;
 
@@ -645,7 +664,7 @@ function SlotRow({
         className={`flex shrink-0 select-none items-center text-[14px] leading-none text-fg-3 ${
           draggable ? "cursor-grab" : "opacity-40"
         }`}
-        title={draggable ? "Drag to reorder" : undefined}
+        title={draggable ? t("Drag to reorder") : undefined}
       >
         ⋮⋮
       </div>
@@ -657,14 +676,14 @@ function SlotRow({
           </span>
           {slot.lead ? (
             <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
-              Lead
+              {t("Lead")}
             </span>
           ) : null}
           <span className="rounded bg-raised px-1.5 py-0.5 text-[10px] font-medium text-fg-2">
             {runner.runtime}
           </span>
           <span className="font-mono text-[11px] text-fg-3">
-            from @{runner.handle}
+            {t("from @{handle}", { handle: runner.handle })}
           </span>
         </div>
         {runner.system_prompt ? (
@@ -700,6 +719,7 @@ function SlotActionMenu({
   onEdit: () => void;
   onRemove: () => void;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
@@ -726,7 +746,7 @@ function SlotActionMenu({
     >
       <button
         type="button"
-        aria-label={`Slot actions for @${slot.slot_handle}`}
+        aria-label={t("Slot actions for @{handle}", { handle: slot.slot_handle })}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={(e) => {
@@ -735,7 +755,7 @@ function SlotActionMenu({
         }}
         onMouseDown={(e) => e.stopPropagation()}
         className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded text-fg-2 transition-colors hover:bg-raised hover:text-fg focus:outline-none focus-visible:bg-raised focus-visible:text-fg"
-        title="Slot actions"
+        title={t("Slot actions")}
       >
         <MoreHorizontal aria-hidden className="h-4 w-4" />
       </button>
@@ -764,7 +784,7 @@ function SlotActionMenu({
                 slot.lead ? "text-fg-3" : "text-warn"
               }`}
             />
-            <span>{slot.lead ? "Current lead" : "Set as lead"}</span>
+            <span>{slot.lead ? t("Current lead") : t("Set as lead")}</span>
           </button>
 
           <button
@@ -777,7 +797,7 @@ function SlotActionMenu({
             className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-fg transition-colors hover:bg-raised"
           >
             <SquarePen aria-hidden className="h-3.5 w-3.5 text-fg" />
-            <span>Edit runner</span>
+            <span>{t("Edit runner")}</span>
           </button>
 
           <div className="px-1 py-1">
@@ -794,7 +814,7 @@ function SlotActionMenu({
             className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-danger transition-colors hover:bg-raised"
           >
             <Trash2 aria-hidden className="h-3.5 w-3.5" />
-            <span>Remove from crew</span>
+            <span>{t("Remove from crew")}</span>
           </button>
         </div>
       ) : null}

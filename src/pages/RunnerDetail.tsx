@@ -11,6 +11,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 
 import { api } from "../lib/api";
+import { useT } from "../lib/i18n";
 import { readDefaultWorkingDir } from "../lib/settings";
 import type {
   CrewMembership,
@@ -25,6 +26,7 @@ export default function RunnerDetail() {
   const { handle: handleParam } = useParams<{ handle: string }>();
   const handle = handleParam ?? "";
   const navigate = useNavigate();
+  const t = useT();
 
   const [runner, setRunner] = useState<Runner | null>(null);
   const [activity, setActivity] = useState<RunnerActivity | null>(null);
@@ -157,7 +159,7 @@ export default function RunnerDetail() {
           <header className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-2 text-sm text-fg-2">
               <Link to="/runners" className="hover:text-fg">
-                Runners
+                {t("Runners")}
               </Link>
               <span className="text-line-strong">›</span>
               <span className="font-mono text-base font-semibold text-fg">
@@ -173,9 +175,9 @@ export default function RunnerDetail() {
               <Button
                 onClick={() => setEditing(true)}
                 disabled={!runner}
-                title="Edit runner"
+                title={t("Edit runner")}
               >
-                Edit
+                {t("Edit")}
               </Button>
               <Button
                 variant="primary"
@@ -183,9 +185,9 @@ export default function RunnerDetail() {
                   void startChat();
                 }}
                 disabled={!runner || openingChat}
-                title="Start a one-on-one PTY with this runner"
+                title={t("Start a one-on-one PTY with this runner")}
               >
-                {openingChat ? "Starting…" : "Chat now"}
+                {openingChat ? t("Starting…") : t("Chat now")}
               </Button>
             </div>
           </header>
@@ -201,31 +203,31 @@ export default function RunnerDetail() {
           ) : null}
 
           {loading ? (
-            <div className="text-sm text-fg-2">Loading…</div>
+            <div className="text-sm text-fg-2">{t("Loading…")}</div>
           ) : !runner ? (
             <div className="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-              Runner @{handle} not found.
+              {t("Runner @{handle} not found.", { handle })}
             </div>
           ) : (
             <div className="grid grid-cols-3 gap-4">
               {/* Left column */}
               <div className="col-span-2 flex flex-col gap-4">
-                <Card title="Default system prompt" subtitle="Used whenever this runner spawns. Override per crew/mission slot later (v0.x).">
+                <Card title={t("Default system prompt")} subtitle={t("Used whenever this runner spawns. Override per crew/mission slot later (v0.x).")}>
                   {runner.system_prompt ? (
                     <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed text-fg">
                       {runner.system_prompt}
                     </pre>
                   ) : (
                     <p className="text-sm italic text-fg-3">
-                      No system prompt set.
+                      {t("No system prompt set.")}
                     </p>
                   )}
                 </Card>
 
-                <Card title="Crews using this runner">
+                <Card title={t("Crews using this runner")}>
                   {crews.length === 0 ? (
                     <p className="text-sm italic text-fg-3">
-                      Not in any crew yet. Add it to one from Crew Detail.
+                      {t("Not in any crew yet. Add it to one from Crew Detail.")}
                     </p>
                   ) : (
                     <ul className="flex flex-col divide-y divide-line">
@@ -240,7 +242,7 @@ export default function RunnerDetail() {
                             </span>
                             {m.lead ? (
                               <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
-                                LEAD
+                                {t("LEAD")}
                               </span>
                             ) : null}
                           </div>
@@ -248,7 +250,7 @@ export default function RunnerDetail() {
                             to={`/crews/${m.crew_id}`}
                             className="text-xs text-accent hover:underline"
                           >
-                            Open →
+                            {t("Open →")}
                           </Link>
                         </li>
                       ))}
@@ -256,17 +258,17 @@ export default function RunnerDetail() {
                   )}
                 </Card>
 
-                <Card title="Chat now" subtitle="Spawn a one-on-one PTY. Chats don't join any mission's coordination bus.">
+                <Card title={t("Chat now")} subtitle={t("Spawn a one-on-one PTY. Chats don't join any mission's coordination bus.")}>
                   <div className="flex flex-col gap-2">
                     <div className="flex flex-col gap-1 text-xs text-fg-2">
-                      <span>Working directory</span>
+                      <span>{t("Working directory")}</span>
                       <div className="rounded border border-line-strong bg-bg p-1.5 font-mono text-xs text-fg-3">
                         {runner.working_dir ?? "—"}
                       </div>
                       <p className="text-[11px] text-fg-3">
-                        Inherits the runner's working directory. Click{" "}
-                        <span className="text-fg-2">Edit</span> to change it,
-                        or override per-chat from the chat itself.
+                        {t("Inherits the runner's working directory. Click")}{" "}
+                        <span className="text-fg-2">{t("Edit")}</span>{" "}
+                        {t("to change it, or override per-chat from the chat itself.")}
                       </p>
                     </div>
                   </div>
@@ -275,23 +277,23 @@ export default function RunnerDetail() {
 
               {/* Right column */}
               <div className="col-span-1 flex flex-col gap-4">
-                <Card title="Activity">
+                <Card title={t("Activity")}>
                   <div className="grid grid-cols-2 gap-2">
                     <BigStat
-                      label="sessions"
+                      label={t("sessions")}
                       value={activity?.active_sessions ?? 0}
                       accent={(activity?.active_sessions ?? 0) > 0}
                     />
                     <BigStat
-                      label="missions"
+                      label={t("missions")}
                       value={activity?.active_missions ?? 0}
                       accent={(activity?.active_missions ?? 0) > 0}
                     />
                   </div>
                   <div className="mt-3 flex flex-col gap-1 border-t border-line pt-3 text-xs text-fg-2">
-                    <Row label="In crews" value={`${activity?.crew_count ?? 0}`} />
+                    <Row label={t("In crews")} value={`${activity?.crew_count ?? 0}`} />
                     <Row
-                      label="Last seen"
+                      label={t("Last seen")}
                       value={
                         activity?.last_started_at
                           ? new Date(activity.last_started_at).toLocaleString()
@@ -301,29 +303,29 @@ export default function RunnerDetail() {
                   </div>
                 </Card>
 
-                <Card title="Details">
+                <Card title={t("Details")}>
                   <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs">
-                    <dt className="text-fg-3">Handle</dt>
+                    <dt className="text-fg-3">{t("Handle")}</dt>
                     <dd className="font-mono text-fg">@{runner.handle}</dd>
-                    <dt className="text-fg-3">Runtime</dt>
+                    <dt className="text-fg-3">{t("Runtime")}</dt>
                     <dd className="text-fg">{runner.runtime}</dd>
-                    <dt className="text-fg-3">Command</dt>
+                    <dt className="text-fg-3">{t("Command")}</dt>
                     <dd className="break-all font-mono text-fg">
                       {runner.command}
                     </dd>
                     {runner.args.length > 0 ? (
                       <>
-                        <dt className="text-fg-3">Args</dt>
+                        <dt className="text-fg-3">{t("Args")}</dt>
                         <dd className="break-all font-mono text-fg">
                           {runner.args.join(" ")}
                         </dd>
                       </>
                     ) : null}
-                    <dt className="text-fg-3">Created</dt>
+                    <dt className="text-fg-3">{t("Created")}</dt>
                     <dd className="text-fg">
                       {new Date(runner.created_at).toLocaleString()}
                     </dd>
-                    <dt className="text-fg-3">ID</dt>
+                    <dt className="text-fg-3">{t("ID")}</dt>
                     <dd className="break-all font-mono text-[10px] text-fg-3">
                       {runner.id}
                     </dd>

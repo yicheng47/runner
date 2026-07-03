@@ -13,6 +13,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "../lib/api";
+import { useT } from "../lib/i18n";
 
 const MAX_TEXTAREA_HEIGHT = 240;
 
@@ -36,6 +37,7 @@ export function MissionInput({
   disabled,
   onError,
 }: MissionInputProps) {
+  const t = useT();
   const [text, setText] = useState("");
   const [target, setTarget] = useState<string>(leadHandle);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -98,14 +100,14 @@ export function MissionInput({
   return (
     <div className="flex flex-col gap-2.5 border-t border-line bg-bg px-10 pb-5 pt-3.5">
       <div className="flex items-center gap-2.5 text-[11px] text-fg-2">
-        <span>Post to mission log as</span>
+        <span>{t("Post to mission log as")}</span>
         <span className="rounded bg-warn/20 px-2 py-0.5 text-[11px] font-semibold text-warn">
           @human
         </span>
-        <span className="text-fg-3">· visible to the crew</span>
+        <span className="text-fg-3">· {t("visible to the crew")}</span>
       </div>
       <div className="flex flex-wrap items-center gap-2 text-[11px]" ref={pickerRef}>
-        <span className="text-fg-3">to:</span>
+        <span className="text-fg-3">{t("to:")}</span>
         <button
           type="button"
           onClick={() => setPickerOpen((v) => !v)}
@@ -113,7 +115,7 @@ export function MissionInput({
         >
           @{target}
           {target === leadHandle ? (
-            <span className="text-fg-3">(lead)</span>
+            <span className="text-fg-3">{t("(lead)")}</span>
           ) : null}
           <span className="text-fg-3">▾</span>
         </button>
@@ -134,7 +136,7 @@ export function MissionInput({
                 >
                   <span>@{h}</span>
                   {h === leadHandle ? (
-                    <span className="text-[10px] text-fg-3">lead</span>
+                    <span className="text-[10px] text-fg-3">{t("lead")}</span>
                   ) : null}
                 </button>
               ))}
@@ -150,8 +152,8 @@ export function MissionInput({
           onKeyDown={onKeyDown}
           placeholder={
             disabled
-              ? "Mission stopped — input disabled."
-              : "Talk to the crew…"
+              ? t("Mission stopped — input disabled.")
+              : t("Talk to the crew…")
           }
           disabled={disabled}
           rows={1}
@@ -166,12 +168,12 @@ export function MissionInput({
           disabled={!text.trim() || submitting || disabled}
           className="rounded-md bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-ink transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Send
+          {t("Send")}
         </button>
       </div>
       <div className="flex flex-wrap gap-3.5 text-[11px] text-fg-3">
-        <span>↵ send</span>
-        <span>⇧↵ newline</span>
+        <span>↵ {t("send")}</span>
+        <span>⇧↵ {t("newline")}</span>
       </div>
     </div>
   );

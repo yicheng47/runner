@@ -112,6 +112,7 @@ import {
 } from "../lib/settings";
 import { useUpdate } from "../contexts/UpdateContext";
 import { StyledSelect } from "./ui/StyledSelect";
+import { useI18n } from "../lib/i18n";
 import { WorkingDirField } from "./ui/WorkingDirField";
 
 interface SettingsModalProps {
@@ -201,6 +202,7 @@ interface McpConfigSnippet {
 }
 
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
+  const { t } = useI18n();
   const [pane, setPane] = useState<Pane>("general");
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -236,7 +238,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             than highlighting the current section in brand color. */}
         <aside className="flex w-[200px] shrink-0 flex-col gap-1 border-r border-line bg-sidebar px-3 py-4">
           <div className="px-2 pb-2 text-[14px] font-bold text-fg">
-            Settings
+            {t("Settings")}
           </div>
           {PANES.map((p) => {
             const active = pane === p.key;
@@ -258,14 +260,14 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 />
                 <div className="flex min-w-0 flex-col gap-px">
                   <span className="truncate text-[12px] font-medium text-fg">
-                    {p.label}
+                    {t(p.label)}
                   </span>
                   <span
                     className={`truncate text-[10px] ${
                       active ? "text-fg-2" : "text-fg-3"
                     }`}
                   >
-                    {p.subtitle}
+                    {t(p.subtitle)}
                   </span>
                 </div>
               </button>
@@ -396,25 +398,39 @@ function GeneralPane() {
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
+  const { lang, setLang, t } = useI18n();
   return (
     <>
-      <PaneHeader title="General" subtitle="Defaults and startup behavior." />
+      <PaneHeader title={t("General")} subtitle={t("Defaults and startup behavior.")} />
       <Row
-        label="Default crew"
-        sub="Pre-selected when starting a new mission."
+        label={t("Language")}
+        sub={t("Interface language. Restart not required.")}
+      >
+        <StyledSelect
+          value={lang}
+          options={[
+            { value: "zh", label: "中文" },
+            { value: "en", label: "English" },
+          ]}
+          onChange={(v) => setLang(v as "zh" | "en")}
+        />
+      </Row>
+      <Row
+        label={t("Default crew")}
+        sub={t("Pre-selected when starting a new mission.")}
       >
         <StyledSelect
           value={defaultCrewId}
           options={[
-            { value: "", label: "No default" },
+            { value: "", label: t("No default") },
             ...crews.map((c) => ({ value: c.id, label: c.name })),
           ]}
           onChange={setDefaultCrewId}
         />
       </Row>
       <Row
-        label="Default working directory"
-        sub="Cwd new chats inherit unless overridden."
+        label={t("Default working directory")}
+        sub={t("Cwd new chats inherit unless overridden.")}
       >
         <WorkingDirField
           singleLine
@@ -424,8 +440,8 @@ function GeneralPane() {
         />
       </Row>
       <Row
-        label="App zoom"
-        sub="Whole-app scale. Doesn't apply to the runner terminal canvas — see Terminal pane."
+        label={t("App zoom")}
+        sub={t("Whole-app scale. Doesn't apply to the runner terminal canvas — see Terminal pane.")}
       >
         <ZoomStepper value={appZoom} onChange={setAppZoom} />
       </Row>
@@ -467,17 +483,18 @@ function ChatPane() {
     writeDefaultChatRuntime(runtime);
   };
 
+  const { t } = useI18n();
   return (
     <>
-      <PaneHeader title="Chat" subtitle="Defaults for direct chats." />
+      <PaneHeader title={t("Chat")} subtitle={t("Defaults for direct chats.")} />
       <Row
-        label="Default runtime"
-        sub="Pre-selected in Start Chat's Direct mode."
+        label={t("Default runtime")}
+        sub={t("Pre-selected in Start Chat's Direct mode.")}
       >
         <StyledSelect
           value={defaultRuntime}
           options={[
-            { value: "", label: "First available" },
+            { value: "", label: t("First available") },
             ...runtimes.map((runtime) => ({
               value: runtime.name,
               label: runtime.display_name,
@@ -550,21 +567,22 @@ function AppearancePane() {
     writeAppFontFamily(next);
     notifySameWindowStorage(STORAGE_APP_FONT_FAMILY, next);
   };
+  const { t } = useI18n();
   return (
     <>
       <PaneHeader
-        title="Appearance"
-        subtitle="Theme, palette, and font."
+        title={t("Appearance")}
+        subtitle={t("Theme, palette, and font.")}
       />
       <Row
-        label="Theme"
-        sub="Match the OS, or pin to light or dark."
+        label={t("Theme")}
+        sub={t("Match the OS, or pin to light or dark.")}
       >
         <ThemeSegmented value={theme} onChange={setTheme} />
       </Row>
       <Row
-        label="Light theme"
-        sub="Picked when the OS is light or Theme = Light."
+        label={t("Light theme")}
+        sub={t("Picked when the OS is light or Theme = Light.")}
       >
         <StyledSelect
           value={lightVariant}
@@ -577,8 +595,8 @@ function AppearancePane() {
         />
       </Row>
       <Row
-        label="Dark theme"
-        sub="Picked when the OS is dark or Theme = Dark."
+        label={t("Dark theme")}
+        sub={t("Picked when the OS is dark or Theme = Dark.")}
       >
         <StyledSelect
           value={darkVariant}
@@ -591,8 +609,8 @@ function AppearancePane() {
         />
       </Row>
       <Row
-        label="App font"
-        sub="UI typeface across the app. Doesn't apply to the embedded terminal — see Terminal pane."
+        label={t("App font")}
+        sub={t("UI typeface across the app. Doesn't apply to the embedded terminal — see Terminal pane.")}
       >
         <StyledSelect
           value={fontFamily}
@@ -629,6 +647,7 @@ function AppearancePreview({
   lightVariant: LightVariant;
   darkVariant: DarkVariant;
 }) {
+  const { t } = useI18n();
   const previewTheme: string | undefined =
     surface === "light"
       ? lightVariant
@@ -638,7 +657,7 @@ function AppearancePreview({
   return (
     <div className="flex flex-col gap-2">
       <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3">
-        Preview
+        {t("Preview")}
       </div>
       <div
         data-theme={previewTheme}
@@ -649,14 +668,14 @@ function AppearancePreview({
             @architect
           </span>
           <span className="truncate text-[11px] text-fg-2">
-            Plans features and splits work into tasks.
+            {t("Plans features and splits work into tasks.")}
           </span>
         </div>
         <button
           type="button"
           className="shrink-0 cursor-default rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-accent-ink"
         >
-          Chat
+          {t("Chat")}
         </button>
       </div>
     </div>
@@ -674,20 +693,21 @@ function ThemeSegmented({
   value: AppTheme;
   onChange: (next: AppTheme) => void;
 }) {
+  const { t } = useI18n();
   const ICONS: Record<AppTheme, typeof Monitor> = {
     auto: Monitor,
     light: Sun,
     dark: Moon,
   };
   const LABELS: Record<AppTheme, string> = {
-    auto: "Auto",
-    light: "Light",
-    dark: "Dark",
+    auto: t("Auto"),
+    light: t("Light"),
+    dark: t("Dark"),
   };
   return (
     <div
       role="radiogroup"
-      aria-label="Theme"
+      aria-label={t("Theme")}
       className="flex items-center gap-0.5 rounded-md border border-line bg-panel p-0.5"
     >
       {APP_THEME_OPTIONS.map((option) => {
@@ -756,15 +776,16 @@ function TerminalPane() {
     writeTerminalTheme(next);
     notifySameWindowStorage(STORAGE_TERMINAL_THEME, next);
   };
+  const { t } = useI18n();
   return (
     <>
       <PaneHeader
-        title="Terminal"
-        subtitle="xterm appearance settings for the runner terminal."
+        title={t("Terminal")}
+        subtitle={t("xterm appearance settings for the runner terminal.")}
       />
       <Row
-        label="Theme"
-        sub="ANSI palette for the embedded terminal."
+        label={t("Theme")}
+        sub={t("ANSI palette for the embedded terminal.")}
       >
         <StyledSelect
           value={theme}
@@ -777,8 +798,8 @@ function TerminalPane() {
         />
       </Row>
       <Row
-        label="Font family"
-        sub="Typeface used by the embedded terminal."
+        label={t("Font family")}
+        sub={t("Typeface used by the embedded terminal.")}
       >
         <StyledSelect
           value={fontFamily}
@@ -790,14 +811,14 @@ function TerminalPane() {
         />
       </Row>
       <Row
-        label="Terminal font size"
-        sub="Glyph size for the embedded terminal."
+        label={t("Terminal font size")}
+        sub={t("Glyph size for the embedded terminal.")}
       >
         <FontSizeStepper value={fontSize} onChange={setFontSize} />
       </Row>
       <Row
-        label="Cursor style"
-        sub="Block, underline, or bar — affects the prompt caret only."
+        label={t("Cursor style")}
+        sub={t("Block, underline, or bar — affects the prompt caret only.")}
       >
         <StyledSelect
           value={cursorStyle}
@@ -809,8 +830,8 @@ function TerminalPane() {
         />
       </Row>
       <Row
-        label="Scrollback"
-        sub="Lines kept in history per session. Higher uses more memory."
+        label={t("Scrollback")}
+        sub={t("Lines kept in history per session. Higher uses more memory.")}
       >
         <div className="flex items-center gap-2">
           <StyledSelect
@@ -821,7 +842,7 @@ function TerminalPane() {
             }))}
             onChange={(v) => setScrollback(Number.parseInt(v, 10))}
           />
-          <span className="text-[12px] text-fg-2">lines</span>
+          <span className="text-[12px] text-fg-2">{t("lines")}</span>
         </div>
       </Row>
     </>
@@ -888,6 +909,7 @@ function ZoomStepper({
   value: number;
   onChange: (v: number) => void;
 }) {
+  const { t } = useI18n();
   // Snap a possibly-stale persisted value to the nearest known step so the
   // user can always move with `−`/`+`; nothing in the modal hard-blocks
   // off-step values.
@@ -899,8 +921,8 @@ function ZoomStepper({
       valueCellWidth={56}
       decDisabled={currentIdx <= 0}
       incDisabled={currentIdx >= ZOOM_STEPS.length - 1}
-      decAriaLabel="Decrease zoom"
-      incAriaLabel="Increase zoom"
+      decAriaLabel={t("Decrease zoom")}
+      incAriaLabel={t("Increase zoom")}
       onDec={() => onChange(ZOOM_STEPS[Math.max(0, currentIdx - 1)])}
       onInc={() =>
         onChange(ZOOM_STEPS[Math.min(ZOOM_STEPS.length - 1, currentIdx + 1)])
@@ -918,6 +940,7 @@ function FontSizeStepper({
   value: number;
   onChange: (v: number) => void;
 }) {
+  const { t } = useI18n();
   const clamped = Math.max(
     TERMINAL_FONT_SIZE_MIN,
     Math.min(TERMINAL_FONT_SIZE_MAX, value),
@@ -927,8 +950,8 @@ function FontSizeStepper({
       valueCellWidth={64}
       decDisabled={clamped <= TERMINAL_FONT_SIZE_MIN}
       incDisabled={clamped >= TERMINAL_FONT_SIZE_MAX}
-      decAriaLabel="Decrease terminal font size"
-      incAriaLabel="Increase terminal font size"
+      decAriaLabel={t("Decrease terminal font size")}
+      incAriaLabel={t("Increase terminal font size")}
       onDec={() => onChange(Math.max(TERMINAL_FONT_SIZE_MIN, clamped - 1))}
       onInc={() => onChange(Math.min(TERMINAL_FONT_SIZE_MAX, clamped + 1))}
     >
@@ -936,13 +959,14 @@ function FontSizeStepper({
         <span className="font-mono text-[12px] font-medium text-fg">
           {clamped}
         </span>
-        <span className="font-mono text-[10px] text-fg-3">px</span>
+        <span className="font-mono text-[10px] text-fg-3">{t("px")}</span>
       </span>
     </Stepper>
   );
 }
 
 function McpPane() {
+  const { t } = useI18n();
   const [status, setStatus] = useState<McpIntegrationStatus | null>(null);
   const [snippet, setSnippet] = useState<McpConfigSnippet | null>(null);
   const [busy, setBusy] = useState<McpClientId | null>(null);
@@ -997,21 +1021,21 @@ function McpPane() {
   return (
     <>
       <PaneHeader
-        title="MCP"
-        subtitle="Register Runner with external MCP clients."
+        title={t("MCP")}
+        subtitle={t("Register Runner with external MCP clients.")}
       />
       <div className="rounded-lg border border-line bg-bg p-3.5">
         <div className="mb-2 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Plug aria-hidden className="h-3.5 w-3.5 text-fg-2" />
             <span className="text-[13px] font-semibold text-fg">
-              Current binding
+              {t("Current binding")}
             </span>
           </div>
           <McpEnvironmentBadge environment={status?.environment} />
         </div>
         <BindingLine
-          label="Binding dir"
+          label={t("Binding dir")}
           value={bindingDir}
           copied={copied === "binding_dir"}
           onCopy={() => void copyMcpText("binding_dir", bindingDir)}
@@ -1019,14 +1043,14 @@ function McpPane() {
       </div>
       <McpClientRow
         title="Claude Code"
-        subtitle="Writes the runner entry under ~/.claude.json."
+        subtitle={t("Writes the runner entry under ~/.claude.json.")}
         status={status?.claude_code ?? null}
         busy={busy === "claude_code"}
         onToggle={(enabled) => void setIntegration("claude_code", enabled)}
       />
       <McpClientRow
         title="Codex CLI"
-        subtitle="Writes the runner table under ~/.codex/config.toml."
+        subtitle={t("Writes the runner table under ~/.codex/config.toml.")}
         status={status?.codex ?? null}
         busy={busy === "codex"}
         onToggle={(enabled) => void setIntegration("codex", enabled)}
@@ -1034,7 +1058,7 @@ function McpPane() {
       <div className="rounded-lg border border-line bg-bg p-3.5">
         <div className="mb-2 flex items-center justify-between gap-3">
           <span className="text-[13px] font-semibold text-fg">
-            Manual config
+            {t("Manual config")}
           </span>
           <div className="flex items-center gap-2">
             <CopyButton
@@ -1050,15 +1074,13 @@ function McpPane() {
           </div>
         </div>
         <p className="text-[11px] leading-[1.5] text-fg-2">
-          Use these snippets for clients Runner does not update directly.
+          {t("Use these snippets for clients Runner does not update directly.")}
         </p>
       </div>
       <div className="flex items-start gap-2.5 rounded-lg border border-line bg-panel px-3 py-2.5">
         <ShieldAlert aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent" />
         <p className="text-[11px] leading-[1.5] text-fg-2">
-          Registering replaces only the `runner` MCP entry. If the row says it
-          points to another binary, replacing it will move that client to the
-          binding shown above.
+          {t("Registering replaces only the `runner` MCP entry. If the row says it points to another binary, replacing it will move that client to the binding shown above.")}
         </p>
       </div>
       {error ? (
@@ -1069,7 +1091,7 @@ function McpPane() {
             onClick={() => void refresh()}
             className="shrink-0 cursor-pointer text-[12px] font-medium text-red-200 underline"
           >
-            Retry
+            {t("Retry")}
           </button>
         </div>
       ) : null}
@@ -1078,6 +1100,7 @@ function McpPane() {
 }
 
 function McpEnvironmentBadge({ environment }: { environment?: string }) {
+  const { t } = useI18n();
   const loading = !environment;
   const development = environment?.toLowerCase().includes("dev") ?? false;
 
@@ -1100,7 +1123,7 @@ function McpEnvironmentBadge({ environment }: { environment?: string }) {
               : "bg-accent"
         }`}
       />
-      {environment ?? "Loading"}
+      {environment ?? t("Loading")}
     </span>
   );
 }
@@ -1121,12 +1144,13 @@ function BindingLine({
   copied: boolean;
   onCopy: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-2 py-1">
       <span className="text-[11px] text-fg-3">{label}</span>
       <div className="group relative flex h-8 min-w-0 items-center gap-2 rounded bg-raised px-2">
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg-2">
-          {value || "Loading..."}
+          {value || t("Loading...")}
         </span>
         {value ? (
           <div className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden max-w-[560px] rounded border border-line bg-raised px-2 py-1.5 font-mono text-[10px] leading-[1.45] text-fg shadow-[0_8px_24px_rgba(0,0,0,0.5)] group-hover:block group-focus-within:block">
@@ -1135,7 +1159,7 @@ function BindingLine({
         ) : null}
         <button
           type="button"
-          aria-label={`Copy ${label}`}
+          aria-label={t("Copy {label}", { label })}
           disabled={!value}
           onClick={onCopy}
           className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-fg-3 transition-colors hover:bg-line/60 hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
@@ -1164,20 +1188,21 @@ function McpClientRow({
   busy: boolean;
   onToggle: (enabled: boolean) => void;
 }) {
+  const { t } = useI18n();
   const loading = status == null;
   const hasError = Boolean(status?.error);
   const active = status?.matches_current ?? false;
   const stateLabel = loading
-    ? "Checking"
+    ? t("Checking")
     : busy
-      ? "Updating"
+      ? t("Updating")
     : hasError
-      ? "Config error"
+      ? t("Config error")
       : !status.registered
-        ? "Not registered"
+        ? t("Not registered")
         : status.matches_current
           ? ""
-          : "Registered to another Runner";
+          : t("Registered to another Runner");
   const stateClass = loading
     ? "text-fg-3"
     : hasError
@@ -1188,7 +1213,7 @@ function McpClientRow({
         ? "text-amber-300"
         : "text-fg-3";
   const configured = status?.registered
-    ? `${status.command ?? "(missing command)"} ${JSON.stringify(status.args)}`
+    ? `${status.command ?? t("(missing command)")} ${JSON.stringify(status.args)}`
     : "";
   const showDetail = hasError || Boolean(status?.registered && !status.matches_current);
 
@@ -1213,7 +1238,7 @@ function McpClientRow({
       {showDetail ? (
         <div className="mt-2 min-w-0 rounded bg-raised px-2 py-1.5">
           <McpStatusLine
-            label={status?.error ? "Error" : "Configured command"}
+            label={status?.error ? t("Error") : t("Configured command")}
             value={status?.error ?? configured}
           />
         </div>
@@ -1242,6 +1267,7 @@ function CopyButton({
   label: string;
   onClick: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <button
       type="button"
@@ -1253,7 +1279,7 @@ function CopyButton({
       ) : (
         <Copy aria-hidden className="h-3 w-3" />
       )}
-      {copied ? "Copied" : label}
+      {copied ? t("Copied") : label}
     </button>
   );
 }
@@ -1264,6 +1290,7 @@ function DiagnosticsPane() {
   // `~/Library/Logs/com.wycstudios.runner/` and hands it to the
   // opener plugin. Dedicated pane (not buried in About) so #10/#13/#14
   // diagnostic affordances have a home to grow into.
+  const { t } = useI18n();
   const [busy, setBusy] = useState(false);
   const reveal = async () => {
     if (busy) return;
@@ -1283,12 +1310,12 @@ function DiagnosticsPane() {
   return (
     <>
       <PaneHeader
-        title="Diagnostics"
-        subtitle="Logs and troubleshooting tools."
+        title={t("Diagnostics")}
+        subtitle={t("Logs and troubleshooting tools.")}
       />
       <Row
-        label="Application logs"
-        sub="Open the folder containing runner.log so you can attach it to a bug report."
+        label={t("Application logs")}
+        sub={t("Open the folder containing runner.log so you can attach it to a bug report.")}
       >
         <button
           type="button"
@@ -1297,7 +1324,7 @@ function DiagnosticsPane() {
           className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-line bg-panel px-3 py-1.5 text-[12px] font-medium text-fg-2 transition-colors hover:border-line-strong hover:text-fg disabled:cursor-not-allowed disabled:opacity-60"
         >
           <FolderOpen aria-hidden className="h-3 w-3" />
-          Reveal logs in Finder
+          {t("Reveal logs in Finder")}
         </button>
       </Row>
     </>
@@ -1305,6 +1332,7 @@ function DiagnosticsPane() {
 }
 
 function UpdatesPane() {
+  const { t } = useI18n();
   const [autoInstall, setAutoInstall] = useStoredBool(
     STORAGE_AUTO_INSTALL_UPDATES,
     true,
@@ -1331,19 +1359,19 @@ function UpdatesPane() {
   const sub = (() => {
     switch (status) {
       case "checking":
-        return "Checking for updates…";
+        return t("Checking for updates…");
       case "available":
         return update?.version
-          ? `v${update.version} is available.`
-          : "An update is available.";
+          ? t("v{version} is available.", { version: update.version })
+          : t("An update is available.");
       case "downloading":
-        return `Downloading update… ${progress}%`;
+        return t("Downloading update… {progress}%", { progress });
       case "ready":
-        return "Update ready — restart to apply.";
+        return t("Update ready — restart to apply.");
       case "error":
-        return error ? `Couldn't check: ${error}` : "Couldn't check for updates.";
+        return error ? t("Couldn't check: {error}", { error }) : t("Couldn't check for updates.");
       default:
-        return "You're up to date.";
+        return t("You're up to date.");
     }
   })();
   const subTone =
@@ -1353,8 +1381,8 @@ function UpdatesPane() {
   return (
     <>
       <PaneHeader
-        title="Updates"
-        subtitle="Stay current with the latest version."
+        title={t("Updates")}
+        subtitle={t("Stay current with the latest version.")}
       />
       {/* Version card — same shell, different right-hand action per state. */}
       <div className="flex items-center justify-between gap-4 rounded-lg border border-line bg-bg p-3.5">
@@ -1383,8 +1411,8 @@ function UpdatesPane() {
         </div>
       ) : null}
       <Row
-        label="Install updates automatically"
-        sub="Download and apply updates in the background. Restart needed to finish."
+        label={t("Install updates automatically")}
+        sub={t("Download and apply updates in the background. Restart needed to finish.")}
       >
         <Toggle on={autoInstall} onChange={setAutoInstall} />
       </Row>
@@ -1403,6 +1431,7 @@ function UpdatesAction({
   onDownload: () => void;
   onRestart: () => void;
 }) {
+  const { t } = useI18n();
   // No button slot during download — the inline progress bar is the
   // affordance. Cancel isn't supported by the plugin (no abort
   // handle), so we don't pretend to offer one.
@@ -1410,7 +1439,7 @@ function UpdatesAction({
     return (
       <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-line bg-panel px-3 py-1.5 text-[12px] font-medium text-fg-2">
         <Loader2 aria-hidden className="h-3 w-3 animate-spin" />
-        Checking…
+        {t("Checking…")}
       </div>
     );
   }
@@ -1422,7 +1451,7 @@ function UpdatesAction({
         className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md bg-accent px-3 py-1.5 text-[12px] font-semibold text-bg transition-colors hover:bg-accent/90"
       >
         <Download aria-hidden className="h-3 w-3" />
-        Download &amp; install
+        {t("Download & install")}
       </button>
     );
   }
@@ -1430,7 +1459,7 @@ function UpdatesAction({
     return (
       <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-line bg-panel px-3 py-1.5 text-[12px] font-medium text-fg-2">
         <Loader2 aria-hidden className="h-3 w-3 animate-spin" />
-        Installing
+        {t("Installing")}
       </div>
     );
   }
@@ -1442,7 +1471,7 @@ function UpdatesAction({
         className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md bg-accent px-3 py-1.5 text-[12px] font-semibold text-bg transition-colors hover:bg-accent/90"
       >
         <RotateCcw aria-hidden className="h-3 w-3" />
-        Restart to update
+        {t("Restart to update")}
       </button>
     );
   }
@@ -1454,12 +1483,13 @@ function UpdatesAction({
       className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-line bg-panel px-3 py-1.5 text-[12px] font-medium text-fg-2 transition-colors hover:border-line-strong hover:text-fg"
     >
       <RefreshCw aria-hidden className="h-3 w-3" />
-      Check now
+      {t("Check now")}
     </button>
   );
 }
 
 function AboutPane() {
+  const { t } = useI18n();
   const [version, setVersion] = useState<string>("");
   // Platform/arch label derived from navigator.userAgent — Tauri 2's
   // dedicated `@tauri-apps/plugin-os` isn't installed yet, and the
@@ -1508,7 +1538,7 @@ function AboutPane() {
             Vite emits a hashed URL into the bundle. */}
         <img
           src={appIcon}
-          alt="Runner icon"
+          alt={t("Runner icon")}
           width={56}
           height={56}
           className="h-14 w-14 rounded-2xl"
@@ -1516,7 +1546,7 @@ function AboutPane() {
         <div className="flex flex-col items-center gap-1.5">
           <span className="text-[20px] font-bold text-fg">Runner</span>
           <span className="text-[12px] text-fg-2">
-            Desktop editor for crews of local CLI coding agents.
+            {t("Desktop editor for crews of local CLI coding agents.")}
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -1540,13 +1570,13 @@ function AboutPane() {
         />
         <LinkRow
           icon={<BookText aria-hidden className="h-3.5 w-3.5 text-fg-2" />}
-          label="Documentation"
+          label={t("Documentation")}
           onClick={() => openLink("https://github.com/yicheng47/runner#readme")}
           external
         />
         <LinkRow
           icon={<Scale aria-hidden className="h-3.5 w-3.5 text-fg-2" />}
-          label="License"
+          label={t("License")}
           trailing={<span className="text-[12px] text-fg-3">MIT</span>}
         />
       </div>

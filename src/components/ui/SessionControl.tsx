@@ -15,6 +15,8 @@
 import type { ComponentType, ReactNode } from "react";
 import { Loader2, Play, Square } from "lucide-react";
 
+import { useT } from "../../lib/i18n";
+
 const PILL_BASE =
   "inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-semibold transition-colors";
 
@@ -35,6 +37,7 @@ export function ResumeButton({
   title,
   children,
 }: SessionControlProps) {
+  const t = useT();
   return (
     <button
       type="button"
@@ -43,7 +46,7 @@ export function ResumeButton({
       className={`${PILL_BASE} border-accent/40 bg-accent/10 text-accent hover:border-accent`}
     >
       <Play aria-hidden className="h-3 w-3" />
-      {children ?? "Resume"}
+      {children ?? t("Resume")}
     </button>
   );
 }
@@ -56,6 +59,7 @@ export function ResumingButton({
   title,
   children,
 }: Omit<SessionControlProps, "onClick">) {
+  const t = useT();
   return (
     <button
       type="button"
@@ -64,7 +68,7 @@ export function ResumingButton({
       className={`${PILL_BASE} cursor-not-allowed border-info/40 bg-info/10 text-info`}
     >
       <Loader2 aria-hidden className="h-3 w-3 animate-spin text-info" />
-      {children ?? "Resuming…"}
+      {children ?? t("Resuming…")}
     </button>
   );
 }
@@ -78,6 +82,7 @@ export function StopButton({
   children,
   iconTone = "danger",
 }: SessionControlProps & { iconTone?: "danger" | "fg" }) {
+  const t = useT();
   return (
     <button
       type="button"
@@ -89,7 +94,7 @@ export function StopButton({
         aria-hidden
         className={`h-3 w-3 ${iconTone === "danger" ? "text-danger" : "text-fg"}`}
       />
-      {children ?? "Stop"}
+      {children ?? t("Stop")}
     </button>
   );
 }
@@ -105,6 +110,7 @@ export function BackButton({
 }: SessionControlProps & {
   icon?: ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
 }) {
+  const t = useT();
   return (
     <button
       type="button"
@@ -113,7 +119,7 @@ export function BackButton({
       className={`${PILL_BASE} border-line bg-raised text-fg hover:border-line-strong`}
     >
       {Icon ? <Icon aria-hidden className="h-3 w-3 text-fg-2" /> : null}
-      {children ?? "Back to runner"}
+      {children ?? t("Back to runner")}
     </button>
   );
 }

@@ -12,6 +12,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
 
 import { api } from "../lib/api";
+import { useT, type TFn } from "../lib/i18n";
 import { readDefaultWorkingDir } from "../lib/settings";
 import { estimateMissionTerminalGrid } from "../lib/terminalSizing";
 import type { CrewListItem, Mission, SlotWithRunner } from "../lib/types";
@@ -35,6 +36,7 @@ export function StartMissionModal({
   onStarted,
   initialCrewId = null,
 }: StartMissionModalProps) {
+  const t = useT();
   const formId = useId();
   const crewPickerButtonId = `${formId}-crew`;
   const titleInputId = `${formId}-title`;
@@ -124,14 +126,14 @@ export function StartMissionModal({
   const launchable = (selectedCrew?.runner_count ?? 0) > 0;
   const lead = crewSlots.find((s) => s.lead) ?? null;
   const workers = crewSlots.filter((s) => !s.lead);
-  const selectedCrewSummary = summarizeCrew(selectedCrew, lead, workers);
+  const selectedCrewSummary = summarizeCrew(selectedCrew, lead, workers, t);
 
   const browseCwd = async () => {
     try {
       const picked = await openDialog({
         directory: true,
         multiple: false,
-        title: "Pick a working directory",
+        title: t("Pick a working directory"),
       });
       if (typeof picked === "string") setCwd(picked);
     } catch (e) {
@@ -159,9 +161,9 @@ export function StartMissionModal({
   };
 
   const sessionsHint = selectedCrew
-    ? `${selectedCrew.runner_count} session${
-        selectedCrew.runner_count === 1 ? "" : "s"
-      } will spawn`
+    ? selectedCrew.runner_count === 1
+      ? t("{n} session will spawn", { n: selectedCrew.runner_count })
+      : t("{n} sessions will spawn", { n: selectedCrew.runner_count })
     : "";
 
   return (
@@ -172,10 +174,10 @@ export function StartMissionModal({
         <div className="flex items-center justify-between gap-4">
           <div className="flex flex-col gap-0.5">
             <span className="text-base font-semibold text-fg">
-              Start mission
+              {t("Start mission")}
             </span>
             <span className="text-xs font-normal text-fg-2">
-              Spawns a session per slot and opens the mission workspace.
+              {t("Spawns a session per slot and opens the mission workspace.")}
             </span>
           </div>
           <button
@@ -183,7 +185,7 @@ export function StartMissionModal({
             onClick={onClose}
             disabled={submitting}
             className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-3 transition-colors hover:bg-raised hover:text-fg disabled:pointer-events-none disabled:opacity-50"
-            aria-label="Close start mission"
+            aria-label={t("Close start mission")}
           >
             <X aria-hidden className="h-3.5 w-3.5" />
           </button>
@@ -194,7 +196,7 @@ export function StartMissionModal({
         <>
           <span className="mr-auto text-[11px] text-fg-3">{sessionsHint}</span>
           <Button onClick={onClose} disabled={submitting}>
-            Cancel
+            {t("Cancel")}
           </Button>
           <Button
             variant="primary"
@@ -203,7 +205,7 @@ export function StartMissionModal({
               submitting || !crewId || !title.trim() || !launchable
             }
           >
-            {submitting ? "Starting…" : "Start mission"}
+            {submitting ? t("Starting…") : t("Start mission")}
           </Button>
         </>
       }
@@ -215,7 +217,7 @@ export function StartMissionModal({
           </div>
         ) : null}
 
-        <Field label="Crew" htmlFor={crewPickerButtonId}>
+        <Field label={t("Crew")} htmlFor={crewPickerButtonId}>
           <div ref={crewPickerRef} className="relative">
             <button
               id={crewPickerButtonId}
@@ -228,7 +230,7 @@ export function StartMissionModal({
             >
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[13px] font-semibold text-fg">
-                  {selectedCrew?.name ?? "No crews yet"}
+                  {selectedCrew?.name ?? t("No crews yet")}
                 </span>
                 <span className="block truncate text-[11px] text-fg-2">
                   {selectedCrewSummary}
@@ -260,8 +262,9 @@ export function StartMissionModal({
                         {c.name}
                       </span>
                       <span className="block truncate text-[11px] text-fg-2">
-                        {c.runner_count} runner
-                        {c.runner_count === 1 ? "" : "s"}
+                        {c.runner_count === 1
+                          ? t("{n} runner", { n: c.runner_count })
+                          : t("{n} runners", { n: c.runner_count })}
                       </span>
                     </span>
                   </button>
@@ -271,22 +274,23 @@ export function StartMissionModal({
           </div>
           {selectedCrew && !launchable ? (
             <p className="mt-1 text-[11px] text-warn">
-              This crew has no runners. Add at least one before starting a
-              mission.
+              {t(
+                "This crew has no runners. Add at least one before starting a mission.",
+              )}
             </p>
           ) : null}
         </Field>
 
         <Field
           htmlFor={titleInputId}
-          label="Mission title"
-          subtitle="Short label shown in the missions list and event log."
+          label={t("Mission title")}
+          subtitle={t("Short label shown in the missions list and event log.")}
         >
           <input
             id={titleInputId}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            placeholder="e.g. Wire up event bus watcher"
+            placeholder={t("e.g. Wire up event bus watcher")}
             disabled={submitting}
             className="rounded-md border border-line bg-bg px-3 py-2 text-[13px] text-fg placeholder:text-fg-3 focus:border-fg-3 focus:outline-none"
           />
@@ -294,41 +298,44 @@ export function StartMissionModal({
 
         <Field
           htmlFor={goalInputId}
-          label="Goal"
+          label={t("Goal")}
           subtitle={
             lead
-              ? `Delivered to @${lead.slot_handle} (lead) on mission start.`
-              : "Delivered to the crew lead on mission start."
+              ? t("Delivered to @{handle} (lead) on mission start.", {
+                  handle: lead.slot_handle,
+                })
+              : t("Delivered to the crew lead on mission start.")
           }
         >
           <textarea
             id={goalInputId}
             value={goal}
             onChange={(e) => setGoal(e.target.value)}
-            placeholder={selectedCrew?.goal ?? "Describe what to do…"}
+            placeholder={selectedCrew?.goal ?? t("Describe what to do…")}
             rows={4}
             disabled={submitting}
             className="min-h-[120px] resize-y rounded-md border border-line bg-bg px-3 py-2 font-mono text-[13px] leading-relaxed text-fg placeholder:text-fg-3 focus:border-fg-3 focus:outline-none"
           />
         </Field>
 
-        <Field label="Working directory" htmlFor={cwdInputId}>
+        <Field label={t("Working directory")} htmlFor={cwdInputId}>
           <div className="flex items-center gap-2">
             <input
               id={cwdInputId}
               value={cwd}
               onChange={(e) => setCwd(e.target.value)}
-              placeholder="/Users/you/projects/foo (optional)"
+              placeholder={t("/Users/you/projects/foo (optional)")}
               disabled={submitting}
               className="min-w-0 flex-1 rounded-md border border-line bg-bg px-3 py-2 font-mono text-xs text-fg placeholder:text-fg-3 focus:border-fg-3 focus:outline-none"
             />
             <Button onClick={() => void browseCwd()} disabled={submitting}>
-              Browse…
+              {t("Browse…")}
             </Button>
           </div>
           <p className="text-[11px] text-fg-2">
-            Each runner&apos;s PTY starts in this directory. Exposed as
-            $MISSION_CWD.
+            {t(
+              "Each runner's PTY starts in this directory. Exposed as $MISSION_CWD.",
+            )}
           </p>
         </Field>
 
@@ -344,14 +351,14 @@ export function StartMissionModal({
                 advancedOpen ? "rotate-90" : ""
               }`}
             />
-            <span className="min-w-0 flex-1">Advanced</span>
+            <span className="min-w-0 flex-1">{t("Advanced")}</span>
             <span className="text-[11px] font-normal text-fg-3">
-              env overrides · per-runner args · attach files
+              {t("env overrides · per-runner args · attach files")}
             </span>
           </button>
           {advancedOpen ? (
             <div className="mt-3 rounded border border-line bg-panel px-3 py-2 text-[11px] text-fg-3">
-              Reserved for v0.x — custom env, dry-run mode. Inert in v0 MVP.
+              {t("Reserved for v0.x — custom env, dry-run mode. Inert in v0 MVP.")}
             </div>
           ) : null}
         </div>
@@ -394,18 +401,26 @@ function summarizeCrew(
   crew: CrewListItem | null,
   lead: SlotWithRunner | null,
   workers: SlotWithRunner[],
+  t: TFn,
 ): string {
-  if (!crew) return "Create a crew first.";
-  if (crew.runner_count === 0) return "No runners in this crew.";
+  if (!crew) return t("Create a crew first.");
+  if (crew.runner_count === 0) return t("No runners in this crew.");
   if (!lead) {
-    return `${crew.runner_count} slot${
-      crew.runner_count === 1 ? "" : "s"
-    }`;
+    return crew.runner_count === 1
+      ? t("{n} slot", { n: crew.runner_count })
+      : t("{n} slots", { n: crew.runner_count });
   }
-  if (workers.length === 0) return `lead: @${lead.slot_handle}`;
+  if (workers.length === 0)
+    return t("lead: @{handle}", { handle: lead.slot_handle });
   const shownWorkers = workers.slice(0, 3).map((s) => `@${s.slot_handle}`);
   const tail = workers.length > 3 ? `, +${workers.length - 3}` : "";
-  return `lead: @${lead.slot_handle} · ${workers.length} worker${
-    workers.length === 1 ? "" : "s"
-  }: ${shownWorkers.join(", ")}${tail}`;
+  const workerLabel =
+    workers.length === 1
+      ? t("{n} worker", { n: workers.length })
+      : t("{n} workers", { n: workers.length });
+  return t("lead: @{handle} · {workers}: {list}", {
+    handle: lead.slot_handle,
+    workers: workerLabel,
+    list: `${shownWorkers.join(", ")}${tail}`,
+  });
 }

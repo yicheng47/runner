@@ -7,6 +7,8 @@
 import { useEffect, useRef, useState } from "react";
 import { RotateCcw, TriangleAlert } from "lucide-react";
 
+import { useT } from "../lib/i18n";
+
 interface MissionResetConfirmProps {
   open: boolean;
   missionTitle: string;
@@ -20,6 +22,7 @@ export function MissionResetConfirm({
   onConfirm,
   onClose,
 }: MissionResetConfirmProps) {
+  const t = useT();
   const [submitting, setSubmitting] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -68,18 +71,18 @@ export function MissionResetConfirm({
             </div>
             <div className="flex min-w-0 flex-col gap-0.5">
               <h2 className="truncate text-[16px] font-semibold text-fg">
-                Reset mission?
+                {t("Reset mission?")}
               </h2>
               <p className="truncate text-[12px] text-fg-3">
-                This wipes the run and starts the crew over.
+                {t("This wipes the run and starts the crew over.")}
               </p>
             </div>
           </header>
           <div className="flex flex-col gap-1.5 rounded-lg border border-line bg-bg px-3.5 py-3">
             {[
-              "All slot PTYs are killed and respawned fresh.",
-              "The event log is wiped — feed history is lost.",
-              "Agent conversations are dropped — claude-code starts fresh.",
+              t("All slot PTYs are killed and respawned fresh."),
+              t("The event log is wiped — feed history is lost."),
+              t("Agent conversations are dropped — claude-code starts fresh."),
             ].map((line) => (
               <div key={line} className="flex items-start gap-2 text-[12px] leading-snug text-fg-2">
                 <span className="select-none text-fg-3">·</span>
@@ -88,8 +91,8 @@ export function MissionResetConfirm({
             ))}
           </div>
           <p className="text-[12px] text-fg-3">
-            <span className="font-mono text-fg-2">{missionTitle}</span> will
-            keep its title, crew, and slots — just nothing else.
+            <span className="font-mono text-fg-2">{missionTitle}</span>{" "}
+            {t("will keep its title, crew, and slots — just nothing else.")}
           </p>
           <div className="flex items-center justify-end gap-2">
             <button
@@ -98,7 +101,7 @@ export function MissionResetConfirm({
               disabled={submitting}
               className="cursor-pointer rounded-md border border-line bg-raised px-3.5 py-2 text-[13px] font-medium text-fg transition-colors hover:border-line-strong disabled:cursor-default disabled:opacity-60"
             >
-              Cancel
+              {t("Cancel")}
             </button>
             <button
               type="button"
@@ -107,7 +110,7 @@ export function MissionResetConfirm({
               className="flex cursor-pointer items-center gap-2 rounded-md bg-warn px-3.5 py-2 text-[13px] font-semibold text-bg transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-60"
             >
               <RotateCcw aria-hidden className="h-3.5 w-3.5" />
-              {submitting ? "Resetting…" : "Reset mission"}
+              {submitting ? t("Resetting…") : t("Reset mission")}
             </button>
           </div>
         </div>
