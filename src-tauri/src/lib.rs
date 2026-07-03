@@ -436,6 +436,9 @@ pub(crate) fn broadcast_focus_map(app: &AppHandle) {
     }
 }
 
+// Only the macOS CloseRequested arm hides `main` (Windows/Linux let the
+// close proceed), so this is dead code elsewhere and would trip `-D warnings`.
+#[cfg(target_os = "macos")]
 fn hide_main_window_on_close(app_handle: &AppHandle) {
     let Some(window) = app_handle.get_webview_window("main") else {
         log::warn!("window close requested, but main window was not found");
