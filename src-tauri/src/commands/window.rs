@@ -39,8 +39,20 @@ pub fn open_window(
     };
 
     // Mirror `main`'s chrome (tauri.conf.json) so secondary windows are
-    // visually identical. Starts hidden to avoid the white flash; the
-    // generalized `app_ready` shows the calling window after first paint.
+    // visually identical.
+    //
+    // Reveal strategy differs by platform, same split as `main`:
+    // - macOS starts hidden and the generalized `app_ready` shows the window
+    //   after first paint (avoids the white flash).
+    // - Windows/Linux start *visible*: their after-first-paint reveal path is
+    //   unreliable (this is exactly why `main` ships `visible:true` in
+    //   tauri.conf.json), so a hidden secondary window would build and then
+    //   never show — the bug behind "Ctrl+N does nothing" on Windows.
+    #[cfg(target_os = "macos")]
+    let start_visible = false;
+    #[cfg(not(target_os = "macos"))]
+    let start_visible = true;
+
     // `mut` is only consumed by the macOS chrome block below — other
     // platforms have no extra builder methods, hence the conditional allow.
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
@@ -48,7 +60,7 @@ pub fn open_window(
         .title("Runner")
         .inner_size(1440.0, 900.0)
         .accept_first_mouse(true)
-        .visible(false);
+        .visible(start_visible);
 
     #[cfg(target_os = "macos")]
     {
