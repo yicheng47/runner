@@ -9,6 +9,8 @@ CREATE TABLE crews (
     name TEXT NOT NULL,
     purpose TEXT,
     goal TEXT,
+    -- DEPRECATED (#247): superseded by system_prompt_addendum. Retained
+    -- for existing rows; no longer written or read into any prompt.
     orchestrator_policy TEXT,
     signal_types TEXT NOT NULL DEFAULT '["mission_goal","human_said","ask_lead","ask_human","human_question","human_response","runner_status","inbox_read"]',
     created_at TEXT NOT NULL,
