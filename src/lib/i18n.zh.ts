@@ -22,7 +22,7 @@ const zhMain: Record<string, string> = {
   "No chats yet.": "还没有对话。",
   Settings: "设置",
   "Keep sidebar open": "固定侧边栏",
-  "Collapse sidebar (⌘S)": "收起侧边栏 (⌘S)",
+  "Collapse sidebar ({mod}S)": "收起侧边栏 ({mod}S)",
   "Collapse sidebar": "收起侧边栏",
   "Drag to resize": "拖动调整宽度",
   "New chat": "新建对话",

@@ -12,6 +12,7 @@ import { Outlet } from "react-router-dom";
 
 import { Sidebar } from "./Sidebar";
 import { UpdateToast } from "./UpdateToast";
+import { isModKey } from "../lib/platform";
 import {
   STORAGE_SIDEBAR_COLLAPSED,
   readStoredBool,
@@ -58,7 +59,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
   // picked it up during development.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!e.metaKey) return;
+      if (!isModKey(e)) return;
       const key = e.key.toLowerCase();
       if (key !== "s" && e.key !== "\\") return;
       const target = e.target as HTMLElement | null;

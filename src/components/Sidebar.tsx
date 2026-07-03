@@ -51,6 +51,7 @@ import {
 
 import { api, type DirectSessionEntry } from "../lib/api";
 import { useT, type TFn } from "../lib/i18n";
+import { MOD_LABEL } from "../lib/platform";
 import {
   markArchivingMission,
   markArchivingSession,
@@ -904,7 +905,7 @@ export function Sidebar({
                 title={
                   sidebarPreview
                     ? t("Keep sidebar open")
-                    : t("Collapse sidebar (⌘S)")
+                    : t("Collapse sidebar ({mod}S)", { mod: MOD_LABEL })
                 }
                 aria-label={
                   sidebarPreview ? t("Keep sidebar open") : t("Collapse sidebar")
@@ -1069,7 +1070,7 @@ function NewChatNavRow({ onOpen }: { onOpen: () => void }) {
       <MessageSquarePlus aria-hidden className="h-3 w-3 text-fg-2" />
       <span className="min-w-0 flex-1 truncate">{t("new chat")}</span>
       <span className="shrink-0 rounded border border-line bg-bg px-1.5 py-px font-mono text-[10px] leading-tight text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus:opacity-100">
-        ⌘T
+        {`${MOD_LABEL}T`}
       </span>
     </button>
   );
@@ -1091,7 +1092,7 @@ function SearchNavRow({ onOpen }: { onOpen: () => void }) {
       <Search aria-hidden className="h-3 w-3 text-fg-2" />
       <span className="min-w-0 flex-1 truncate">{t("search")}</span>
       <span className="shrink-0 rounded border border-line bg-bg px-1.5 py-px font-mono text-[10px] leading-tight text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus:opacity-100">
-        ⌘K
+        {`${MOD_LABEL}K`}
       </span>
     </button>
   );

@@ -32,6 +32,7 @@ import {
 
 import { api, type SessionRow } from "../lib/api";
 import { useT, type TFn } from "../lib/i18n";
+import { MOD_LABEL, isModKey, isOppositeMod } from "../lib/platform";
 import type {
   AppendedEvent,
   Crew,
@@ -752,7 +753,7 @@ export default function MissionWorkspace() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      if (!isModKey(e) || isOppositeMod(e) || e.altKey || e.shiftKey) return;
       if (!/^[1-9]$/.test(e.key)) return;
       const target = shortcutTabs[Number(e.key) - 1];
       if (!target) return;
@@ -1081,7 +1082,7 @@ export default function MissionWorkspace() {
             <TabButton
               active={feedActive}
               onClick={selectFeed}
-              shortcut="⌘1"
+              shortcut={`${MOD_LABEL}1`}
             >
               {t("feed")}
             </TabButton>
@@ -1101,7 +1102,7 @@ export default function MissionWorkspace() {
                       active={activeTab === s.id}
                       onClick={() => selectPty(s.id)}
                       onClose={() => onCloseTab(s.id)}
-                      shortcut={index < 8 ? `⌘${index + 2}` : undefined}
+                      shortcut={index < 8 ? `${MOD_LABEL}${index + 2}` : undefined}
                     />
                   ))
               : null}
