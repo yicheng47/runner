@@ -90,6 +90,20 @@ export function reportSubjects(subjects: Subject[]): void {
   }, 80);
 }
 
+/** Immediate wrapper for explicit pane-membership changes that must update
+ *  ownership before the next route render / terminal mount. */
+export function reportSubjectsNow(subjects: Subject[]): void {
+  if (!cachedLabel) return;
+  pendingSubjects = subjects;
+  if (reportTimer !== null) {
+    clearTimeout(reportTimer);
+    reportTimer = null;
+  }
+  void api.window.reportSubjects(subjects).catch((e) => {
+    console.error("reportSubjects failed", e);
+  });
+}
+
 /**
  * Report `subjects` on mount and clear them (report []) on unmount. Subject
  * pages (MissionWorkspace, RunnerChat) call this; the unmount-clear is what

@@ -18,6 +18,15 @@ Core vocabulary:
 - **Session**: one spawned runner process attached to a PTY.
 - **Event**: an NDJSON log entry used for mission coordination.
 
+Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
+
+- **Window**: a real OS window (⌘N). Multi-window support is impl 0018.
+- **Tab**: one group of panes shown on a window's chat surface — the unit
+  the layout picker builds and the sidebar highlights (formerly "chat
+  group" / "split"). ⌘T starts a chat in a new tab.
+- **Pane**: one slot inside a tab, holding a single chat session. Panes
+  are filled from a pane's own New chat button or a sidebar pick.
+
 ## Stack
 
 - Frontend: React 19, TypeScript, Tailwind CSS 4, Vite, React Router.

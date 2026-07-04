@@ -51,12 +51,15 @@ import {
 } from "../lib/archivingState";
 import { ChatPaneGroup } from "../components/ChatPaneGroup";
 import { createTerminalRegistry } from "../lib/terminalRegistry";
+import { refreshAllTerminalAtlases } from "../components/RunnerTerminal";
 import { LayoutPicker } from "../components/LayoutPicker";
 import { StartChatModal } from "../components/StartChatModal";
 import {
+  activatePaneLayoutForSession,
   applyPreset,
   applyPresetPure,
   assignSessionToPane,
+  isFreshlyAssigned,
   closePane,
   findLeaf,
   focusPane,
@@ -77,6 +80,7 @@ import {
 } from "../lib/groupPinning";
 import {
   isSecondaryFor,
+  reportSubjectsNow,
   useCurrentWindowLabel,
   useReportSubjects,
   useWindowFocus,
@@ -229,6 +233,11 @@ export default function RunnerChat() {
       next.delete(id);
       return next;
     });
+    // The settled TUI's paint burst may have evicted sibling panes'
+    // WebGL glyph textures (no context created or lost, so neither
+    // renderer hook fires). Repaint every mounted terminal now that
+    // the burst is over — background split panes can't self-heal.
+    refreshAllTerminalAtlases();
   }, []);
   // True while a freshly-attached session is still warming up — the
   // terminal has mounted but the agent CLI (claude-code / codex)
@@ -290,7 +299,10 @@ export default function RunnerChat() {
   // a viewport mode: it renders only while the open chat is one of its
   // members. Any other chat renders the classic single pane, and the
   // group stays intact in the background until a member is opened again.
-  const layout = usePaneLayout();
+  const layout = usePaneLayout(sessionId);
+  useEffect(() => {
+    activatePaneLayoutForSession(sessionId);
+  }, [sessionId]);
   const splitActive = isGroupActiveFor(layout, sessionId);
   // What the pane group renders: the store group for member chats, an
   // ephemeral single-leaf layout for everything else — one render path,
@@ -702,7 +714,11 @@ export default function RunnerChat() {
     let idleTimer: number | null = null;
 
     const finish = () => {
-      if (!cancelled) setStarting(false);
+      if (cancelled) return;
+      setStarting(false);
+      // A fresh spawn's first-frame burst can evict sibling panes'
+      // glyph textures, same as a resume settling — repaint peers.
+      refreshAllTerminalAtlases();
     };
 
     const scheduleIdleTimer = () => {
@@ -881,7 +897,12 @@ export default function RunnerChat() {
           row.status,
           false,
         );
-      } else if (sid !== sessionId) {
+      } else if (sid !== sessionId && !isFreshlyAssigned(sid)) {
+        // React Router v7 defers navigate() via startTransition, so a
+        // just-assigned chat hits this sweep one commit BEFORE it becomes
+        // the URL session — the exemption above never sees it. Fresh
+        // assignments are not "vanished while the app was closed"; leave
+        // them alone until the rows catch up.
         removeSessionFromLayout(sid);
       }
     }
@@ -907,7 +928,10 @@ export default function RunnerChat() {
       return;
     }
     syncedRestoredFocusRef.current = true;
-    const restoredLeaf = leafForSession(getPaneLayout().root, sessionId);
+    const restoredLeaf = leafForSession(
+      getPaneLayout(sessionId).root,
+      sessionId,
+    );
     if (restoredLeaf) focusPane(restoredLeaf.id);
   }, [wasSplitAtMount, sessionId]);
 
@@ -955,10 +979,10 @@ export default function RunnerChat() {
 
   const pickPreset = useCallback(
     (kind: PresetKind) => {
-      // Rearranging an ACTIVE group keeps its members. Picking a preset
-      // while viewing a non-member chat starts a fresh group seeded from
-      // that chat alone (one group per window — the old one is replaced).
-      const prev = getPaneLayout();
+      // Rearranging an ACTIVE tab keeps its members. Picking a preset
+      // while viewing a non-member chat creates another pane tab seeded
+      // from that chat; existing pane tabs stay backgrounded.
+      const prev = getPaneLayout(sessionId);
       const prevActive = isGroupActiveFor(prev, sessionId ?? null);
       const visible = prevActive
         ? visibleSessionIds(prev.root)
@@ -1007,8 +1031,8 @@ export default function RunnerChat() {
   // Cmd+W while split collapses the focused pane. Single-pane keeps the
   // OS default (Close Window) — this listener only exists while split.
   const closeFocusedPane = useCallback(() => {
-    closePaneById(getPaneLayout().focusedPaneId);
-  }, [closePaneById]);
+    closePaneById(getPaneLayout(sessionId).focusedPaneId);
+  }, [closePaneById, sessionId]);
 
   useEffect(() => {
     if (!splitActive) return;
@@ -1031,7 +1055,7 @@ export default function RunnerChat() {
   // event for keys WKWebView delivers straight to xterm.
   const cyclePaneFocus = useCallback(
     (direction: "previous" | "next") => {
-      const current = getPaneLayout();
+      const current = getPaneLayout(sessionId);
       if (current.root.kind !== "split") return;
       const all = leaves(current.root);
       const idx = all.findIndex((l) => l.id === current.focusedPaneId);
@@ -1039,7 +1063,7 @@ export default function RunnerChat() {
       const delta = direction === "next" ? 1 : -1;
       focusPaneAndFollow(all[(idx + delta + all.length) % all.length]);
     },
-    [focusPaneAndFollow],
+    [focusPaneAndFollow, sessionId],
   );
 
   useEffect(() => {
@@ -1120,7 +1144,21 @@ export default function RunnerChat() {
       setErr(null);
       clearActivity(targetId);
       try {
-        const dims = terminals.get(targetId)?.measure() ?? null;
+        // Null dims make the backend fork the PTY at its 80×24
+        // default, and a TUI prints its banner into that geometry
+        // before the attach resize lands — the banner bytes then
+        // render permanently garbled in the pane-width xterm (the
+        // agent's SIGWINCH repaint only redraws the live region).
+        // measure() can be null right after a restart (terminal
+        // still at the construction sentinel until geometry sync
+        // lands), so give it a few frames before giving up.
+        let dims = terminals.get(targetId)?.measure() ?? null;
+        for (let attempt = 0; attempt < 3 && !dims; attempt += 1) {
+          await new Promise<void>((resolve) =>
+            window.requestAnimationFrame(() => resolve()),
+          );
+          dims = terminals.get(targetId)?.measure() ?? null;
+        }
         await api.session.resume(
           targetId,
           dims?.cols ?? null,
@@ -1203,11 +1241,11 @@ export default function RunnerChat() {
   const renameGroupPrompt = useCallback(() => {
     const proposed = window.prompt(
       "Rename group (blank = derive from chats)",
-      getPaneLayout().name ?? "",
+      getPaneLayout(sessionId).name ?? "",
     );
     if (proposed === null) return;
     setGroupName(proposed);
-  }, []);
+  }, [sessionId]);
 
   // Topbar rename uses `window.prompt()` for the same reason the
   // mission topbar does — keeps the header layout fixed and avoids
@@ -1267,10 +1305,10 @@ export default function RunnerChat() {
         // Empty the pane that showed it (no-op when not visible).
         removeSessionFromLayout(targetId);
         if (targetId === sessionId) {
-          const survivors = visibleSessionIds(getPaneLayout().root);
+          const survivors = visibleSessionIds(getPaneLayout(sessionId).root);
           const next = survivors.find((id) => id !== targetId);
           if (next) {
-            const nextLeaf = leafForSession(getPaneLayout().root, next);
+            const nextLeaf = leafForSession(getPaneLayout(sessionId).root, next);
             if (nextLeaf) focusPane(nextLeaf.id);
             navigate(`/chats/${next}`, { replace: true });
           } else {
@@ -1769,11 +1807,31 @@ export default function RunnerChat() {
         onStarted={(spawned) => {
           const target = paneModalTarget;
           setPaneModalTarget(null);
+          activatePaneLayoutForSession(sessionId);
+          console.info(
+            `[pane-fill] spawned=${spawned.id} target=${target ?? "NULL"} ` +
+              `panes=[${visibleSessionIds(getPaneLayout(sessionId).root).join(
+                ",",
+              )}]`,
+          );
           if (target) {
             // Read members before the assign fills the target pane.
-            const memberIds = visibleSessionIds(getPaneLayout().root);
+            const memberIds = visibleSessionIds(getPaneLayout(sessionId).root);
             assignSessionToPane(target, spawned.id);
             focusPane(target);
+            console.info(
+              `[pane-fill] after-assign panes=[${visibleSessionIds(
+                getPaneLayout(spawned.id).root,
+              ).join(",")}]`,
+            );
+            reportSubjectsNow(
+              visibleSessionIds(getPaneLayout(spawned.id).root).map(
+                (value) => ({
+                  type: "DirectChat",
+                  value,
+                }),
+              ),
+            );
             void inheritGroupPin(memberIds, spawned.id);
           }
           navigate(`/chats/${spawned.id}`, {
