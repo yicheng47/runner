@@ -1,14 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  activatePaneLayoutForSession,
+  applyPreset,
   applyPresetPure,
+  assignSessionToPane,
   assignSessionPure,
   closePanePure,
   deserializeLayout,
+  focusPane,
+  getPaneLayout,
+  getPaneLayoutsForTest,
   isGroupActiveFor,
+  isFreshlyAssigned,
   leaves,
   newChatTargetPane,
   removeSessionPure,
+  resetPaneLayoutsForTest,
   serializeLayout,
   setSizesPure,
   visibleSessionIds,
@@ -170,6 +178,18 @@ describe("newChatTargetPane", () => {
     expect(newChatTargetPane(layout, "A")).toBe(leaves(layout.root)[1].id);
   });
 
+  it("returns the emptied pane after archiving the URL-owner chat", () => {
+    const emptied = removeSessionPure(
+      applyPresetPure("cols-2", "A", ["A", "B"]),
+      "A",
+    );
+    const all = leaves(emptied.root);
+    const survivorFocused = { ...emptied, focusedPaneId: all[1].id };
+
+    expect(slotSessions(survivorFocused)).toEqual([null, "B"]);
+    expect(newChatTargetPane(survivorFocused, "B")).toBe(all[0].id);
+  });
+
   it("returns null when the active group has no empty pane", () => {
     const layout = applyPresetPure("cols-2", "A", ["A", "B"]);
 
@@ -191,6 +211,83 @@ describe("newChatTargetPane", () => {
 
     expect(slotSessions(unfocusedSecondEmpty)).toEqual(["A", null, null]);
     expect(newChatTargetPane(unfocusedSecondEmpty, "A")).toBe(all[1].id);
+  });
+});
+
+describe("pane layout tabs", () => {
+  afterEach(() => {
+    resetPaneLayoutsForTest();
+  });
+
+  it("keeps an existing pane tab when creating panes from a non-member chat", () => {
+    applyPreset("cols-2", "A", ["A"]);
+    applyPreset("cols-2", "C", ["C"]);
+
+    expect(getPaneLayoutsForTest()).toHaveLength(2);
+    expect(slotSessions(getPaneLayout("A"))).toEqual(["A", null]);
+    expect(slotSessions(getPaneLayout("C"))).toEqual(["C", null]);
+
+    activatePaneLayoutForSession("A");
+
+    expect(slotSessions(getPaneLayout())).toEqual(["A", null]);
+  });
+
+  it("moves a session out of its old pane tab when assigned to another one", () => {
+    applyPreset("cols-2", "A", ["A"]);
+    applyPreset("cols-2", "C", ["C"]);
+
+    activatePaneLayoutForSession("A");
+    assignSessionToPane("p2", "C");
+
+    expect(getPaneLayoutsForTest()).toHaveLength(1);
+    expect(slotSessions(getPaneLayout("C"))).toEqual(["A", "C"]);
+  });
+
+  it("reactivates an inactive pane tab and focuses the clicked member", () => {
+    applyPreset("cols-2", "A", ["A", "B"]);
+    const bLeaf = leaves(getPaneLayout("B").root).find(
+      (leaf) => leaf.sessionId === "B",
+    )!;
+    focusPane(bLeaf.id);
+    applyPreset("cols-2", "C", ["C"]);
+
+    const reactivated = activatePaneLayoutForSession("A");
+    const aLeaf = leaves(reactivated.root).find(
+      (leaf) => leaf.sessionId === "A",
+    )!;
+    focusPane(aLeaf.id);
+
+    expect(getPaneLayout("A").focusedPaneId).toBe(aLeaf.id);
+  });
+});
+
+describe("fresh assignments", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    resetPaneLayoutsForTest();
+  });
+
+  it("marks a session fresh immediately after assignment", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+
+    assignSessionToPane("p1", "fresh-session");
+
+    expect(isFreshlyAssigned("fresh-session")).toBe(true);
+  });
+
+  it("does not mark never-assigned sessions fresh", () => {
+    expect(isFreshlyAssigned("never-assigned-session")).toBe(false);
+  });
+
+  it("expires freshness after the assignment TTL", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000);
+
+    assignSessionToPane("p1", "expired-session");
+    vi.setSystemTime(17_000);
+
+    expect(isFreshlyAssigned("expired-session")).toBe(false);
   });
 });
 

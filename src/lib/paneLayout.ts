@@ -9,8 +9,8 @@
 //
 // State is a module-level store shared by RunnerChat and Sidebar via
 // `useSyncExternalStore`. It is per window and sticky (key decision 6):
-// the main window persists it to localStorage so a relaunch restores the
-// same pane grouping, and navigating off the chat surface keeps it.
+// the main window persists pane tabs to localStorage so a relaunch restores
+// them, and navigating off the chat surface keeps them.
 
 import { useSyncExternalStore } from "react";
 
@@ -341,7 +341,13 @@ interface PersistedLayout {
   name: string | null;
 }
 
-export function serializeLayout(layout: PaneLayout): string {
+interface PersistedLayoutSet {
+  version: 2;
+  activeSlot: number;
+  tabs: PersistedLayout[];
+}
+
+function toPersistedLayout(layout: PaneLayout): PersistedLayout {
   const all = leaves(layout.root);
   const sizes: Record<string, [number, number]> = {};
   const walk = (node: PaneNode): void => {
@@ -351,7 +357,7 @@ export function serializeLayout(layout: PaneLayout): string {
     walk(node.b);
   };
   walk(layout.root);
-  const persisted: PersistedLayout = {
+  return {
     preset: layout.preset,
     slots: all.map((l) => l.sessionId),
     sizes,
@@ -361,47 +367,57 @@ export function serializeLayout(layout: PaneLayout): string {
     ),
     name: layout.name,
   };
-  return JSON.stringify(persisted);
+}
+
+function fromPersistedLayout(
+  p: Partial<PersistedLayout> | null,
+): PaneLayout | null {
+  if (!p || !isPresetKind(p.preset)) return null;
+  const slots = Array.isArray(p.slots)
+    ? p.slots.map((s) => (typeof s === "string" ? s : null))
+    : [];
+  const root = buildPresetTree(p.preset, slots);
+  const applySizes = (node: PaneNode): void => {
+    if (node.kind === "leaf") return;
+    const stored = p.sizes?.[node.id];
+    if (
+      Array.isArray(stored) &&
+      stored.length === 2 &&
+      stored.every((n) => typeof n === "number" && n > 0 && n < 100)
+    ) {
+      node.sizes = [stored[0], stored[1]];
+    }
+    applySizes(node.a);
+    applySizes(node.b);
+  };
+  applySizes(root);
+  const all = leaves(root);
+  const focusedSlot =
+    typeof p.focusedSlot === "number" &&
+    Number.isInteger(p.focusedSlot) &&
+    p.focusedSlot >= 0 &&
+    p.focusedSlot < all.length
+      ? p.focusedSlot
+      : 0;
+  return {
+    preset: p.preset,
+    root,
+    focusedPaneId: all[focusedSlot].id,
+    name: typeof p.name === "string" && p.name.length > 0 ? p.name : null,
+  };
+}
+
+export function serializeLayout(layout: PaneLayout): string {
+  return JSON.stringify(toPersistedLayout(layout));
 }
 
 /** Rebuild a layout from a persisted payload; null on any malformed or
  *  unrecognized input (callers fall back to a fresh single pane). */
 export function deserializeLayout(raw: string): PaneLayout | null {
   try {
-    const p = JSON.parse(raw) as Partial<PersistedLayout> | null;
-    if (!p || !isPresetKind(p.preset)) return null;
-    const slots = Array.isArray(p.slots)
-      ? p.slots.map((s) => (typeof s === "string" ? s : null))
-      : [];
-    const root = buildPresetTree(p.preset, slots);
-    const applySizes = (node: PaneNode): void => {
-      if (node.kind === "leaf") return;
-      const stored = p.sizes?.[node.id];
-      if (
-        Array.isArray(stored) &&
-        stored.length === 2 &&
-        stored.every((n) => typeof n === "number" && n > 0 && n < 100)
-      ) {
-        node.sizes = [stored[0], stored[1]];
-      }
-      applySizes(node.a);
-      applySizes(node.b);
-    };
-    applySizes(root);
-    const all = leaves(root);
-    const focusedSlot =
-      typeof p.focusedSlot === "number" &&
-      Number.isInteger(p.focusedSlot) &&
-      p.focusedSlot >= 0 &&
-      p.focusedSlot < all.length
-        ? p.focusedSlot
-        : 0;
-    return {
-      preset: p.preset,
-      root,
-      focusedPaneId: all[focusedSlot].id,
-      name: typeof p.name === "string" && p.name.length > 0 ? p.name : null,
-    };
+    return fromPersistedLayout(
+      JSON.parse(raw) as Partial<PersistedLayout> | null,
+    );
   } catch {
     return null;
   }
@@ -410,32 +426,13 @@ export function deserializeLayout(raw: string): PaneLayout | null {
 // Persist for the main window only: localStorage is shared by every
 // webview window, and secondary windows' labels (`window-<ulid>`) don't
 // survive a relaunch — persisting theirs would only clobber the main
-// window's layout.
+// window's pane tabs.
 let persistToStorage = false;
 try {
   persistToStorage = getCurrentWindow().label === "main";
 } catch {
   // Dev browser preview — single "window", persist normally.
   persistToStorage = true;
-}
-
-function readPersistedLayout(): PaneLayout | null {
-  if (!persistToStorage) return null;
-  try {
-    const raw = localStorage.getItem(STORAGE_LAYOUT);
-    return raw ? deserializeLayout(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function persistLayout(layout: PaneLayout): void {
-  if (!persistToStorage) return;
-  try {
-    localStorage.setItem(STORAGE_LAYOUT, serializeLayout(layout));
-  } catch {
-    // best-effort
-  }
 }
 
 // ---- module store -------------------------------------------------------
@@ -449,18 +446,128 @@ function singleLayout(sessionId: string | null = null): PaneLayout {
   };
 }
 
-let current: PaneLayout = readPersistedLayout() ?? singleLayout();
+function deserializeLayoutSet(
+  raw: string,
+): { layouts: PaneLayout[]; activeIndex: number } | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<PersistedLayoutSet> | null;
+    if (parsed?.version !== 2 || !Array.isArray(parsed.tabs)) {
+      const legacy = fromPersistedLayout(
+        parsed as Partial<PersistedLayout> | null,
+      );
+      return legacy ? { layouts: [legacy], activeIndex: 0 } : null;
+    }
+    const layouts = parsed.tabs
+      .map((tab) => fromPersistedLayout(tab))
+      .filter((tab): tab is PaneLayout => tab !== null);
+    if (layouts.length === 0) return null;
+    const activeIndex =
+      typeof parsed.activeSlot === "number" &&
+      Number.isInteger(parsed.activeSlot) &&
+      parsed.activeSlot >= 0 &&
+      parsed.activeSlot < layouts.length
+        ? parsed.activeSlot
+        : 0;
+    return { layouts, activeIndex };
+  } catch {
+    return null;
+  }
+}
+
+function serializeLayoutSet(
+  layouts: PaneLayout[],
+  activeIndex: number,
+): string {
+  return JSON.stringify({
+    version: 2,
+    activeSlot: activeIndex,
+    tabs: layouts.map(toPersistedLayout),
+  } satisfies PersistedLayoutSet);
+}
+
+function readPersistedLayoutSet(): {
+  layouts: PaneLayout[];
+  activeIndex: number;
+} | null {
+  if (!persistToStorage) return null;
+  try {
+    const raw = localStorage.getItem(STORAGE_LAYOUT);
+    return raw ? deserializeLayoutSet(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistLayoutSet(): void {
+  if (!persistToStorage) return;
+  try {
+    localStorage.setItem(
+      STORAGE_LAYOUT,
+      serializeLayoutSet(layouts, activeIndex),
+    );
+  } catch {
+    // best-effort
+  }
+}
+
+function normalizeLayoutSet(
+  nextLayouts: PaneLayout[],
+  nextActiveIndex: number,
+): { layouts: PaneLayout[]; activeIndex: number } {
+  const source = nextLayouts.length > 0 ? nextLayouts : [singleLayout()];
+  const keep = source
+    .map((layout, index) => ({ layout, index }))
+    .filter(
+      ({ layout, index }) =>
+        index === nextActiveIndex || visibleSessionIds(layout.root).length > 0,
+    );
+  const entries =
+    keep.length > 0 ? keep : [{ layout: singleLayout(), index: 0 }];
+  const active = Math.max(
+    0,
+    entries.findIndex(({ index }) => index === nextActiveIndex),
+  );
+  return {
+    layouts: entries.map(({ layout }) => layout),
+    activeIndex: active,
+  };
+}
+
+const persisted = readPersistedLayoutSet();
+let layouts: PaneLayout[] = persisted?.layouts ?? [singleLayout()];
+let activeIndex = persisted?.activeIndex ?? 0;
 const listeners = new Set<() => void>();
 
-function setCurrent(next: PaneLayout): void {
-  if (next === current) return;
-  current = next;
-  persistLayout(current);
+function currentLayout(): PaneLayout {
+  return layouts[activeIndex] ?? layouts[0] ?? singleLayout();
+}
+
+function findLayoutIndexForSession(sessionId: string | null): number {
+  if (!sessionId) return -1;
+  return layouts.findIndex((layout) => leafForSession(layout.root, sessionId));
+}
+
+function setLayoutSet(
+  nextLayouts: PaneLayout[],
+  nextActiveIndex: number,
+): void {
+  const normalized = normalizeLayoutSet(nextLayouts, nextActiveIndex);
+  layouts = normalized.layouts;
+  activeIndex = normalized.activeIndex;
+  persistLayoutSet();
   for (const l of listeners) l();
 }
 
-export function getPaneLayout(): PaneLayout {
-  return current;
+function setCurrent(next: PaneLayout): void {
+  if (next === currentLayout()) return;
+  const nextLayouts = [...layouts];
+  nextLayouts[activeIndex] = next;
+  setLayoutSet(nextLayouts, activeIndex);
+}
+
+export function getPaneLayout(sessionId: string | null = null): PaneLayout {
+  const index = findLayoutIndexForSession(sessionId);
+  return index >= 0 ? layouts[index] : currentLayout();
 }
 
 export function subscribePaneLayout(cb: () => void): () => void {
@@ -468,8 +575,38 @@ export function subscribePaneLayout(cb: () => void): () => void {
   return () => listeners.delete(cb);
 }
 
-export function usePaneLayout(): PaneLayout {
-  return useSyncExternalStore(subscribePaneLayout, getPaneLayout);
+export function usePaneLayout(sessionId: string | null = null): PaneLayout {
+  return useSyncExternalStore(
+    subscribePaneLayout,
+    () => getPaneLayout(sessionId),
+    () => getPaneLayout(sessionId),
+  );
+}
+
+export function activatePaneLayoutForSession(
+  sessionId: string | null,
+): PaneLayout {
+  const index = findLayoutIndexForSession(sessionId);
+  if (index >= 0 && index !== activeIndex) {
+    setLayoutSet(layouts, index);
+    return currentLayout();
+  }
+  return index >= 0 ? layouts[index] : currentLayout();
+}
+
+export function resetPaneLayoutsForTest(
+  nextLayouts: PaneLayout[] = [singleLayout()],
+  nextActiveIndex = 0,
+): void {
+  const normalized = normalizeLayoutSet(nextLayouts, nextActiveIndex);
+  layouts = normalized.layouts;
+  activeIndex = normalized.activeIndex;
+  freshAssignments.clear();
+  for (const l of listeners) l();
+}
+
+export function getPaneLayoutsForTest(): PaneLayout[] {
+  return layouts;
 }
 
 export function applyPreset(
@@ -478,34 +615,84 @@ export function applyPreset(
   currentVisible: string[],
   name: string | null = null,
 ): PaneLayout {
-  setCurrent(applyPresetPure(kind, focusedSessionId, currentVisible, name));
-  return current;
+  const next = applyPresetPure(kind, focusedSessionId, currentVisible, name);
+  const existingIndex = findLayoutIndexForSession(focusedSessionId);
+  if (existingIndex >= 0) {
+    const nextLayouts = [...layouts];
+    nextLayouts[existingIndex] = next;
+    setLayoutSet(nextLayouts, existingIndex);
+    return currentLayout();
+  }
+  const active = currentLayout();
+  if (
+    active.preset === "single" &&
+    visibleSessionIds(active.root).length <= 1
+  ) {
+    setCurrent(next);
+    return currentLayout();
+  }
+  setLayoutSet([...layouts, next], layouts.length);
+  return currentLayout();
 }
 
 /** Name (or un-name, with null/blank) the split group. */
 export function setGroupName(name: string | null): void {
   const trimmed = name?.trim() || null;
-  if (current.name === trimmed) return;
-  setCurrent({ ...current, name: trimmed });
+  const active = currentLayout();
+  if (active.name === trimmed) return;
+  setCurrent({ ...active, name: trimmed });
+}
+
+// Sessions assigned to a pane this app-session, with assign time. React
+// Router v7 wraps navigate() in startTransition, so "assign then navigate"
+// commits in TWO renders: an urgent one where the layout already holds the
+// new session but the URL still points at the old chat. RunnerChat's
+// vanished-session sweep runs on that intermediate commit and would evict
+// the just-assigned session (not in directSessions yet, not in the
+// pre-spawn recentRows, not the URL session). The sweep consults this
+// freshness window to leave brand-new assignments alone; genuinely stale
+// layout members (restored from a previous app run) are never fresh
+// because the map is in-memory.
+const FRESH_ASSIGN_TTL_MS = 15_000;
+const freshAssignments = new Map<string, number>();
+
+export function isFreshlyAssigned(sessionId: string): boolean {
+  const at = freshAssignments.get(sessionId);
+  if (at === undefined) return false;
+  if (Date.now() - at >= FRESH_ASSIGN_TTL_MS) {
+    freshAssignments.delete(sessionId);
+    return false;
+  }
+  return true;
 }
 
 export function assignSessionToPane(paneId: string, sessionId: string): void {
-  setCurrent(assignSessionPure(current, paneId, sessionId));
+  freshAssignments.set(sessionId, Date.now());
+  const nextLayouts = layouts.map((layout, index) =>
+    index === activeIndex
+      ? assignSessionPure(layout, paneId, sessionId)
+      : removeSessionPure(layout, sessionId),
+  );
+  setLayoutSet(nextLayouts, activeIndex);
 }
 
 export function removeSessionFromLayout(sessionId: string): void {
-  setCurrent(removeSessionPure(current, sessionId));
+  setLayoutSet(
+    layouts.map((layout) => removeSessionPure(layout, sessionId)),
+    activeIndex,
+  );
 }
 
 export function focusPane(paneId: string): void {
-  if (current.focusedPaneId === paneId) return;
-  if (!findLeaf(current.root, paneId)) return;
-  setCurrent({ ...current, focusedPaneId: paneId });
+  const active = currentLayout();
+  if (active.focusedPaneId === paneId) return;
+  if (!findLeaf(active.root, paneId)) return;
+  setCurrent({ ...active, focusedPaneId: paneId });
 }
 
 export function closePane(paneId: string): PaneLayout {
-  setCurrent(closePanePure(current, paneId));
-  return current;
+  setCurrent(closePanePure(currentLayout(), paneId));
+  return currentLayout();
 }
 
 /** Record live gutter sizes without notifying subscribers — the panel lib
@@ -524,6 +711,6 @@ export function recordSplitSizes(
     walk(node.a);
     walk(node.b);
   };
-  walk(current.root);
-  persistLayout(current);
+  walk(currentLayout().root);
+  persistLayoutSet();
 }

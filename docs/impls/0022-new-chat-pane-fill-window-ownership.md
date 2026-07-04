@@ -6,7 +6,7 @@ Investigation + fix design for a multi-window dogfooding bug in the direct-chat 
 
 ## Problem (user repro, deterministic — "happens each time")
 
-With more than one Runner window open, in a split-view chat group:
+With more than one Runner window open, in a split tab (chat group in this doc's original vocabulary — see the terminology follow-up at the bottom):
 
 1. Archive one pane's chat — the pane empties in place, the other pane keeps its chat.
 2. Hit **New chat**.
@@ -113,3 +113,12 @@ Scope `newChatTargetPane` to the **sidebar new-chat path only** — it is the pa
 - `src/lib/paneLayout.ts:180-238`, `:482-494` — `applyPresetPure`, `assignSessionPure`/`removeSessionPure`, `assignSessionToPane`/`focusPane` (where `newChatTargetPane` lands).
 - `src/lib/windowFocus.ts:100-166` — `useReportSubjects`, `isSecondaryFor` (arbitration; sound — not the defect).
 - `src-tauri/src/windows.rs`, `src-tauri/src/commands/window.rs`, `src-tauri/src/commands/session.rs:510` — registry + spawn (verified: spawn never assigns window ownership).
+
+## Follow-up: terminology correction — the "separate window" was a TAB
+
+Continued dogfooding resolved a vocabulary mismatch that shaped this whole doc: in the user's reports, "window" meant **a new group of panes on the same chat surface** — what the hierarchy now calls a **tab** (arch §3.6, Window → Tab → Pane) — not an OS window. There was never a second OS window in the repro. Consequences:
+
+- The multi-window ownership mechanism analyzed above is real machinery and the analysis stands, but it was not what the user was reporting. The observed bug in the user's vocabulary — "the new chat lands in a separate window" — reads correctly as: **the new chat opens as a new single-pane tab instead of filling the empty pane of the current tab.**
+- An interim ⌘N → "File → New Chat" menu rebinding (built on the OS-window misreading) was reverted; ⌘N remains **New Window**, matching the hierarchy (⌘N = window, ⌘T = tab, panes fill from the pane's New chat button or a sidebar pick).
+- The sidebar new-chat fill shipped above is correct and stays. The still-open defect is that the **empty-pane New chat button** (`RunnerChat`'s pane modal, path a) reportedly also lands the chat in a new tab, despite `assignSessionToPane` + `focusPane` + navigate reading correct. That path is instrumented (`[pane-fill]` console logs around the assign) pending a captured repro; the fix lands here once the logs identify the failing step.
+- A later regression made the implementation treat the window as having only one persistent pane tab, so creating panes from a non-member chat replaced the previous pane tab. That was corrected by storing pane tabs as a per-window set keyed by member sessions: non-member pane creation now adds another tab, and reopening any member re-activates its existing tab.

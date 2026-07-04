@@ -17,11 +17,11 @@ Direct chats are one-at-a-time: `/chats/:sessionId` shows a single chat and you 
 - `Cmd+[` / `Cmd+]` cycle pane focus while split; sidebar page navigation moves to `Cmd+Shift+[` / `Cmd+Shift+]`.
 - A chat lives in exactly one pane (move-not-copy); layout changes never remount terminals, so xterm state and the single-writer stdin invariant are preserved.
 - Empty panes (preset has more slots than open chats): focus the first empty pane and auto-open `StartChatModal` with the focused chat's runner preselected; cancel leaves an empty state with a New chat button and a sidebar hint.
-- The split is a chat group: it renders while the open chat is a member; other chats open single-pane and the group stays intact in the background. Navigation never mutates the group — members are added only via the empty-pane modal or a sidebar pick while an empty pane is focused.
-- Sidebar reflects the on-screen group: pane-open rows get the selected-row fill, the focused pane's row gets a left accent bar; clicking a member's row focuses its pane.
-- While split, the topbar carries the group identity: split-icon avatar, group name (user-given via kebab Rename, else derived from member chat names; persisted with the layout), a GROUP chip, an aggregate "n/m running" status, and a pane-count meta line. URL and the right-hand runner panel still follow the focused pane.
+- The split is a **tab** — one group of panes on the chat surface, bound to specific sessions (arch §3.6, Window → Tab → Pane; earlier wording here called it the "chat group"): it renders while the open chat is a member; other chats open single-pane and pane tabs stay intact in the background. Navigation never mutates a tab — members are added only via the empty-pane modal or a sidebar pick while an empty pane is focused, and building panes from a non-member chat creates another pane tab.
+- Sidebar reflects the on-screen tab: pane-open rows get the selected-row fill, the focused pane's row gets a left accent bar; clicking a member's row focuses its pane.
+- While split, the topbar carries the tab identity: split-icon avatar, tab name (user-given via kebab Rename, else derived from member chat names; persisted with the layout), a TAB chip (UI copy still reads GROUP until the code rename pass lands), an aggregate "n/m running" status, and a pane-count meta line. URL and the right-hand runner panel still follow the focused pane.
 - `Cmd+W` while split closes the focused pane (the session keeps running); the sibling pane reflows.
-- Layout is sticky per window: leaving the chat surface keeps it, and the main window persists it across restarts (restored chats come back stopped, in their panes, resumable).
+- Layout is sticky per window: leaving the chat surface keeps pane tabs, and the main window persists them across restarts (restored chats come back stopped, in their panes, resumable).
 
 ### Out of scope
 
@@ -42,7 +42,7 @@ Direct chats are one-at-a-time: `/chats/:sessionId` shows a single chat and you 
 - [ ] Picking a 2-pane preset shows both chats live; typing in one pane never echoes in the other.
 - [ ] Layout changes and gutter resizes preserve terminal scrollback (no remount) and refit dimensions.
 - [ ] Clicking a sidebar row for a chat already visible in another pane focuses that pane (no duplicate terminals, no pane emptied).
-- [ ] Opening a non-member chat renders it single-pane with the group untouched; opening a member re-activates the group.
+- [ ] Opening a non-member chat renders it single-pane with pane tabs untouched; opening a member re-activates that member's tab, and creating panes from the non-member preserves the previous pane tabs.
 - [ ] Pane-header Stop/Resume act on that pane's session only (no focus/URL jump); topbar Stop all / Resume all act on every visible pane, and concurrent resumes settle independently.
 - [ ] After Stop all, every stopped pane dims and shows its own scrim + Chat-paused card with per-pane Resume and Archive.
 - [ ] Archiving a pane's chat (card, kebab, or sidebar) shows the amber pill in that pane and empties it in place; archiving the focused chat hands the URL to a surviving member, leaving the surface only when none remains.

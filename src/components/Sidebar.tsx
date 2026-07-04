@@ -63,6 +63,7 @@ import {
   shouldInheritPinOnAdd,
 } from "../lib/groupPinning";
 import {
+  activatePaneLayoutForSession,
   assignSessionToPane,
   findLeaf,
   focusPane,
@@ -279,7 +280,7 @@ export function Sidebar({
   // only while the open chat is a member; the group rows get the selected
   // fill (and the focused pane's row an accent bar) only then — while a
   // non-member chat is open, the sidebar reads classic single-selection.
-  const paneLayout = usePaneLayout();
+  const paneLayout = usePaneLayout(currentChatSessionId);
   const chatGroupActive = isGroupActiveFor(paneLayout, currentChatSessionId);
   const activeGroupSessionIds = useMemo(
     () => (chatGroupActive ? visibleSessionIds(paneLayout.root) : null),
@@ -692,7 +693,7 @@ export function Sidebar({
   // Chats outside the active group keep single-session behavior.
   const togglePin = useCallback(
     async (session: DirectSessionEntry) => {
-      const layout = getPaneLayout();
+      const layout = getPaneLayout(currentChatSessionId);
       const groupIds = isGroupActiveFor(layout, currentChatSessionId)
         ? visibleSessionIds(layout.root)
         : [];
@@ -740,11 +741,16 @@ export function Sidebar({
         if (currentChatSessionId === session.session_id) {
           // Prefer handing the URL to a surviving group member over
           // leaving the chat surface (mirrors RunnerChat.archiveSession).
-          const next = visibleSessionIds(getPaneLayout().root).find(
+          const next = visibleSessionIds(
+            getPaneLayout(currentChatSessionId).root,
+          ).find(
             (id) => id !== session.session_id,
           );
           if (next) {
-            const nextLeaf = leafForSession(getPaneLayout().root, next);
+            const nextLeaf = leafForSession(
+              getPaneLayout(currentChatSessionId).root,
+              next,
+            );
             if (nextLeaf) focusPane(nextLeaf.id);
             navigate(`/chats/${next}`, { replace: true });
           } else {
@@ -807,11 +813,13 @@ export function Sidebar({
       // that's the "or pick a chat from the sidebar" fill, the one row
       // click that adds a member. Read the store directly so a stale
       // render can't mis-target the pane.
-      const chatLayout = getPaneLayout();
+      const chatLayout = activatePaneLayoutForSession(currentChatSessionId);
+      let handledPaneTarget = false;
       if (chatLayout.root.kind === "split") {
         const memberLeaf = leafForSession(chatLayout.root, entry.session_id);
         if (memberLeaf) {
           focusPane(memberLeaf.id);
+          handledPaneTarget = true;
         } else {
           const groupOnScreen = isGroupActiveFor(
             chatLayout,
@@ -825,11 +833,14 @@ export function Sidebar({
             // Read members before the assign fills the focused pane.
             const memberIds = visibleSessionIds(chatLayout.root);
             assignSessionToPane(chatLayout.focusedPaneId, entry.session_id);
+            handledPaneTarget = true;
             reportSubjectsNow(
-              visibleSessionIds(getPaneLayout().root).map((value) => ({
-                type: "DirectChat",
-                value,
-              })),
+              visibleSessionIds(getPaneLayout(entry.session_id).root).map(
+                (value) => ({
+                  type: "DirectChat",
+                  value,
+                }),
+              ),
             );
             // A chat added to a group with a pinned member inherits the
             // pin, so the group stays one sidebar cluster (add never
@@ -850,6 +861,11 @@ export function Sidebar({
             }
           }
         }
+      }
+      if (!handledPaneTarget) {
+        const entryLayout = activatePaneLayoutForSession(entry.session_id);
+        const entryLeaf = leafForSession(entryLayout.root, entry.session_id);
+        if (entryLeaf) focusPane(entryLeaf.id);
       }
       const target = `/chats/${entry.session_id}`;
       navigate(target, {
@@ -1100,7 +1116,7 @@ export function Sidebar({
         onClose={() => setCreatingChat(false)}
         onStarted={(spawned) => {
           setCreatingChat(false);
-          const chatLayout = getPaneLayout();
+          const chatLayout = activatePaneLayoutForSession(currentChatSessionId);
           const targetPaneId = newChatTargetPane(
             chatLayout,
             currentChatSessionId,
@@ -1110,10 +1126,12 @@ export function Sidebar({
             assignSessionToPane(targetPaneId, spawned.id);
             focusPane(targetPaneId);
             reportSubjectsNow(
-              visibleSessionIds(getPaneLayout().root).map((value) => ({
-                type: "DirectChat",
-                value,
-              })),
+              visibleSessionIds(getPaneLayout(spawned.id).root).map(
+                (value) => ({
+                  type: "DirectChat",
+                  value,
+                }),
+              ),
             );
             if (
               shouldInheritPinOnAdd(

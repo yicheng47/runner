@@ -213,6 +213,18 @@ A session owns:
 
 A session is the only object in the system that actually *executes* code — everything else is metadata, a coordination channel, or a projection over the event log.
 
+### 3.6 Surface hierarchy — *Window → Tab → Pane (frontend only)*
+
+How sessions are *displayed* is a strictly frontend concern, with three nested concepts that must never be blurred (in code, docs, or UI copy):
+
+- **Window** — a real OS window (⌘N, `File → New Window`, impl 0018). The backend's only per-window state is the subject registry (`src-tauri/src/windows.rs`) used for duplicate-session ownership arbitration; it knows nothing about tabs or panes.
+- **Tab** — one group of panes rendered on a window's chat surface: the unit the layout picker builds, the sidebar clusters, and `⌘T` creates (formerly called the "chat group" or "the split", impl 0020). A window may hold multiple pane tabs; the URL session selects the tab whose members include it, and opening a non-member chat renders an ephemeral single-pane tab until the user builds panes from it. The main window persists pane tabs to `runner.chat.layout`.
+- **Pane** — one slot inside a tab, holding exactly one chat session (move-not-copy). Panes are filled from a pane's own New chat button or a sidebar pick into a focused empty pane; `⌘[` / `⌘]` cycle pane focus, `⌘W` closes the focused pane without stopping its session.
+
+Sessions exist independently of all three: closing a pane, replacing a tab, or closing a window never kills a PTY.
+
+Disambiguation: the mission workspace's per-slot terminal switcher (feature 33's "terminal tabs") predates this hierarchy and is a different, mission-scoped UI element — not a Tab in the sense above. If the mission surface ever adopts the tab/pane model, that is feature 19's deferred scope.
+
 ## 4. Coordination primitives — *what flows between runners*
 
 Runners don't share a programming model; they share an IM-like surface. We ship a subset in each milestone.

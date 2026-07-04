@@ -75,6 +75,18 @@ function refreshAtlasPeers(except: () => void): void {
   }
 }
 
+// Resume-driven variant of the peer refresh. A resumed sibling's first
+// paint burst can evict peers' glyph textures with NO context created
+// and NO context lost — neither existing hook fires, so the gibberish
+// sticks on background panes (restart → one-by-one pane resume; the
+// active pane self-heals via refreshActiveTerminal, hidden split panes
+// never do). Callers invoke this when a resume settles — the burst is
+// over, one repaint of every mounted terminal fixes all evictions.
+// eslint-disable-next-line react-refresh/only-export-components
+export function refreshAllTerminalAtlases(): void {
+  for (const cb of atlasPeers) cb();
+}
+
 function normalizePasteImageMime(type: string): PasteImageMimeType | null {
   switch (type.trim().toLowerCase()) {
     case "image/png":
@@ -356,6 +368,11 @@ export const RunnerTerminal = forwardRef<
           cols === lastPushedColsRef.current &&
           rows === lastPushedRowsRef.current;
         const skipLocalClear = replayJustDrainedRef.current || dimsUnchanged;
+        console.info(
+          `[terminal] resize-dance session=${sid} cols=${cols} rows=${rows} ` +
+            `lastPushed=${lastPushedColsRef.current}x${lastPushedRowsRef.current} ` +
+            `skipLocalClear=${skipLocalClear}`,
+        );
         if (runtimeClearsOnResize(runnerRuntimeRef.current) && !skipLocalClear) {
           t.write("\x1b[2J\x1b[H");
         }
@@ -634,6 +651,10 @@ export const RunnerTerminal = forwardRef<
       ) {
         return;
       }
+      console.info(
+        `[terminal] push-size session=${sid} cols=${t.cols} rows=${t.rows} ` +
+          `prev=${lastPushedColsRef.current}x${lastPushedRowsRef.current}`,
+      );
       lastPushedColsRef.current = t.cols;
       lastPushedRowsRef.current = t.rows;
       // Clear the visible region before the SIGWINCH-driven redraw
@@ -668,7 +689,16 @@ export const RunnerTerminal = forwardRef<
       const rect = containerRef.current.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
       try {
+        const beforeCols = term.cols;
+        const beforeRows = term.rows;
         fit.fit();
+        if (term.cols !== beforeCols || term.rows !== beforeRows) {
+          console.info(
+            `[terminal] refit session=${sessionIdRef.current} ` +
+              `${beforeCols}x${beforeRows} -> ${term.cols}x${term.rows} ` +
+              `disabled=${disabledRef.current}`,
+          );
+        }
         pushSize();
       } catch {
         // teardown
@@ -1035,6 +1065,21 @@ export const RunnerTerminal = forwardRef<
     };
   }, [sessionId, refreshActiveTerminal]);
 
+  // Latch WHY this terminal is inactive. `active=false` with
+  // `disabled=true` is the transitional resume/start window — the canvas
+  // sits under an opacity-0 loader but xterm keeps painting, so the
+  // coming activation must NOT run the wake dance: double-SIGWINCHing a
+  // codex pane that already holds content makes its repaint push a
+  // duplicated, reflow-garbled frame into scrollback (restart → resume
+  // panes one by one; Resume all was immune only because siblings were
+  // still disabled when each settled). `disabled=false` means the pane
+  // was genuinely hidden (display:none tab) — that return path keeps the
+  // dance, which exists to wake a stale canvas (#108, impl 0011).
+  const wasTransitionalRef = useRef(false);
+  useEffect(() => {
+    if (!active) wasTransitionalRef.current = disabledRef.current;
+  }, [active]);
+
   // Activation effect: when this tab moves to the front, wait for the pane
   // to become measurable, fit to its container, repaint the WebGL/canvas
   // renderer with the current scrollback, and grab focus so keystrokes flow
@@ -1047,9 +1092,14 @@ export const RunnerTerminal = forwardRef<
 
     const activate = () => {
       if (cancelled) return;
+      const dance = !wasTransitionalRef.current;
+      console.info(
+        `[terminal] activate session=${sessionIdRef.current} dance=${dance}`,
+      );
       refreshActiveTerminal({
         focus: autoFocusRef.current,
-        forceResizeDance: true,
+        forceResizeDance: dance,
+        pushBackendSize: !dance,
       });
     };
 
