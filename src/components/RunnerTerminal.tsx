@@ -40,6 +40,10 @@ import {
   STORAGE_TERMINAL_SCROLLBACK,
   STORAGE_TERMINAL_THEME,
 } from "../lib/settings";
+import {
+  shouldDelayTerminalResize,
+  type TerminalGridSize,
+} from "../lib/terminalResize";
 
 interface OutputEvent {
   session_id: string;
@@ -313,7 +317,17 @@ export const RunnerTerminal = forwardRef<
       const rect = node.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return false;
       try {
+        const beforeCols = t.cols;
+        const beforeRows = t.rows;
         fit.fit();
+        if (t.cols !== beforeCols || t.rows !== beforeRows) {
+          console.info(
+            `[terminal] refresh-fit session=${sessionIdRef.current} ` +
+              `${beforeCols}x${beforeRows} -> ${t.cols}x${t.rows} ` +
+              `disabled=${disabledRef.current} forceDance=${forceResizeDance} ` +
+              `pushBackend=${pushBackendSize}`,
+          );
+        }
         tryDrainReplayRef.current?.();
         if (replayFlushPendingRef.current) {
           if (focus && !disabledRef.current) t.focus();
@@ -332,6 +346,14 @@ export const RunnerTerminal = forwardRef<
         t.refresh(0, t.rows - 1);
         if (focus && !disabledRef.current) t.focus();
         if ((!forceResizeDance && !pushBackendSize) || disabledRef.current) {
+          if ((forceResizeDance || pushBackendSize) && disabledRef.current) {
+            console.info(
+              `[terminal] push-suppressed session=${sessionIdRef.current} ` +
+                `cols=${t.cols} rows=${t.rows} ` +
+                `lastPushed=${lastPushedColsRef.current}x${lastPushedRowsRef.current} ` +
+                `forceDance=${forceResizeDance} pushBackend=${pushBackendSize}`,
+            );
+          }
           return true;
         }
         const sid = sessionIdRef.current;
@@ -343,8 +365,16 @@ export const RunnerTerminal = forwardRef<
             cols === lastPushedColsRef.current &&
             rows === lastPushedRowsRef.current
           ) {
+            console.info(
+              `[terminal] refresh-push-skip session=${sid} cols=${cols} rows=${rows} ` +
+                `prev=${lastPushedColsRef.current}x${lastPushedRowsRef.current}`,
+            );
             return true;
           }
+          console.info(
+            `[terminal] refresh-push session=${sid} cols=${cols} rows=${rows} ` +
+              `prev=${lastPushedColsRef.current}x${lastPushedRowsRef.current}`,
+          );
           lastPushedColsRef.current = cols;
           lastPushedRowsRef.current = rows;
           void api.session.resize(sid, cols, rows).catch(() => {
@@ -681,16 +711,63 @@ export const RunnerTerminal = forwardRef<
         // session may have exited
       });
     };
+    let stableResizeTimer: number | null = null;
+    let stableResizeRaf: number | null = null;
+    let pendingStableResize: TerminalGridSize | null = null;
+    const clearStableResizeSchedule = () => {
+      if (stableResizeTimer !== null) {
+        window.clearTimeout(stableResizeTimer);
+        stableResizeTimer = null;
+      }
+      if (stableResizeRaf !== null) {
+        window.cancelAnimationFrame(stableResizeRaf);
+        stableResizeRaf = null;
+      }
+    };
+    const scheduleStableRefit = () => {
+      if (stableResizeTimer !== null || stableResizeRaf !== null) return;
+      stableResizeTimer = window.setTimeout(() => {
+        stableResizeTimer = null;
+        stableResizeRaf = window.requestAnimationFrame(() => {
+          stableResizeRaf = null;
+          refitAndPush({ allowPendingLargeDrop: true });
+        });
+      }, 150);
+    };
     // Refit + push backend geometry when the pane is active and
     // measurable. Hidden panes don't refit/push — the activation
     // effect picks up the new metrics when they come to the front.
-    const refitAndPush = () => {
+    function refitAndPush({
+      allowPendingLargeDrop = false,
+    }: { allowPendingLargeDrop?: boolean } = {}) {
       if (!activeRef.current || !containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
       try {
         const beforeCols = term.cols;
         const beforeRows = term.rows;
+        const proposed = fit.proposeDimensions();
+        if (!proposed) return;
+        if (
+          shouldDelayTerminalResize({
+            clearsOnResize: runtimeClearsOnResize(runnerRuntimeRef.current),
+            current: { cols: beforeCols, rows: beforeRows },
+            proposed,
+            pending: pendingStableResize,
+            allowPending: allowPendingLargeDrop,
+          })
+        ) {
+          pendingStableResize = proposed;
+          console.info(
+            `[terminal] refit-delay session=${sessionIdRef.current} ` +
+              `${beforeCols}x${beforeRows} -> ${proposed.cols}x${proposed.rows} ` +
+              `disabled=${disabledRef.current} allowPending=${allowPendingLargeDrop}`,
+          );
+          scheduleStableRefit();
+          return;
+        }
+        pendingStableResize = null;
+        clearStableResizeSchedule();
         fit.fit();
         if (term.cols !== beforeCols || term.rows !== beforeRows) {
           console.info(
@@ -703,8 +780,9 @@ export const RunnerTerminal = forwardRef<
       } catch {
         // teardown
       }
-    };
-    window.addEventListener("resize", refitAndPush);
+    }
+    const onResize = () => refitAndPush();
+    window.addEventListener("resize", onResize);
     // Panel toggles (left sidebar collapse, right rail) animate the
     // container's width without firing window-resize, so the xterm
     // grid and backend PTY geometry stay stale until the user nudges
@@ -863,7 +941,7 @@ export const RunnerTerminal = forwardRef<
     return () => {
       atlasPeers.delete(refreshOwnAtlas);
       ro.disconnect();
-      window.removeEventListener("resize", refitAndPush);
+      window.removeEventListener("resize", onResize);
       window.removeEventListener("focus", onWindowFocus);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("storage", onStorage);
@@ -873,6 +951,7 @@ export const RunnerTerminal = forwardRef<
       unlistenFocus?.();
       wakeRafs.forEach((id) => window.cancelAnimationFrame(id));
       wakeTimers.forEach((id) => window.clearTimeout(id));
+      clearStableResizeSchedule();
       textarea?.removeEventListener("paste", onPaste, { capture: true });
       onDataDisposable.dispose();
       term.dispose();
@@ -1145,7 +1224,17 @@ export const RunnerTerminal = forwardRef<
           // resize listeners on activeRef, so cols/rows can be stale
           // (often still 80×24 from the initial Terminal construction)
           // by the time the user clicks Resume.
+          const beforeCols = t.cols;
+          const beforeRows = t.rows;
           fit.fit();
+          if (t.cols !== beforeCols || t.rows !== beforeRows) {
+            console.info(
+              `[terminal] measure-fit session=${sessionIdRef.current} ` +
+                `${beforeCols}x${beforeRows} -> ${t.cols}x${t.rows} ` +
+                `lastPushed=${lastPushedColsRef.current}x${lastPushedRowsRef.current} ` +
+                `disabled=${disabledRef.current} active=${activeRef.current}`,
+            );
+          }
           return { cols: t.cols, rows: t.rows };
         } catch {
           return null;
