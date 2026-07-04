@@ -140,20 +140,26 @@ the host instead of inside WSL, not to run arbitrary shell commands.
       config, **not** Runner — confirm by running the same command in a plain
       PowerShell.
 
-### D. Multi-window — disabled on Windows
+### D. Multi-window
 
-Multi-window is macOS-only for now: secondary WebView2 windows load blank and
-can't be dismissed on Windows/Linux, and a stray window's focus-map entry
-gated the primary's terminal (blank pane on tab switch, sometimes with
-garbled rendering). Verify it's cleanly off:
+Two Windows-specific fixes make this work: secondary windows must be built off
+the event-loop thread (`WebviewWindowBuilder::build()` deadlocks in a sync
+command / menu handler on WebView2 → blank, unclosable window, tauri #13963),
+and Ctrl+N is bound in the frontend because the menu accelerator never fires on
+Windows (WebView2 swallows it, tauri #6365).
 
-- [ ] **No New-Window entry points.** Ctrl+N does nothing, the File menu has no
-      "New Window", and the sidebar row menus have no "在新窗口打开". *Anchor:*
-      `lib.rs build_menu` (macOS-only File menu); `Sidebar` (`isMac` gate).
-- [ ] **Terminal never blanks on tab switch.** Switching between runner tabs in
-      a mission always renders the terminal — the primary window is never
-      demoted to secondary. *Anchor:* `windowFocus.isSecondaryFor` (returns
-      not-secondary off macOS).
+- [ ] **Open a new window.** Ctrl+N opens a fresh window (frontend keydown, off
+      terminal focus); the File → New Window menu item does too; and the sidebar
+      row menu's "在新窗口打开" opens the window pre-navigated to that subject.
+      All come up **fully rendered, not blank**, and close cleanly. *Anchor:*
+      `commands::window::window_open` (async); `lib.rs` menu handler (spawns a
+      thread); `Sidebar` Ctrl+N binding.
+- [ ] **Duplicate-subject overlay (localized).** Two windows on the same mission
+      → the non-primary shows the "已在另一个窗口打开" overlay; "切到那个窗口"
+      focuses the primary. *Anchor:* `DuplicateSubjectOverlay`;
+      `windowFocus.isSecondaryFor`.
+- [ ] **Primary keeps its terminal.** Switching runner tabs in the primary
+      always renders the terminal (it's never wrongly demoted to secondary).
 
 ### E. Lifecycle & cleanup (Windows-specific)
 
@@ -180,10 +186,6 @@ garbled rendering). Verify it's cleanly off:
 These are intentionally deferred (see the milestone notes in code). A tester
 hitting them is confirming a known limitation, not a regression.
 
-- **Multi-window is macOS-only** — secondary WebView2 windows load blank and
-  can't be dismissed on Windows/Linux, so the New-Window entry points are
-  hidden and `isSecondaryFor` never demotes a window off macOS. The window
-  builder stays cross-platform for when WebView2 multi-window is solved.
 - **MCP server disabled on the Windows host** — `mcp/mod.rs` `start` is a
   no-op; Settings → MCP integration renders but does nothing. Core mission
   coordination is unaffected (it flows through the NDJSON event log, not MCP).
