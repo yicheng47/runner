@@ -262,10 +262,20 @@ pub fn run() {
                         log::error!("reveal logs failed: {e}");
                     }
                 } else if ev.id() == "window_new" {
-                    let state = app.state::<AppState>();
-                    if let Err(e) = commands::window::open_window(app, state.inner(), None, None) {
-                        log::error!("new window failed: {e}");
-                    }
+                    // Building a window from this (synchronous) menu-event
+                    // handler deadlocks on Windows WebView2 — the handler is
+                    // on the event-loop thread the builder needs. Hand off to
+                    // a separate thread so the loop stays free. See
+                    // WebviewWindowBuilder's Windows deadlock note.
+                    let app = app.clone();
+                    std::thread::spawn(move || {
+                        let state = app.state::<AppState>();
+                        if let Err(e) =
+                            commands::window::open_window(&app, state.inner(), None, None)
+                        {
+                            log::error!("new window failed: {e}");
+                        }
+                    });
                 }
             });
 
@@ -515,16 +525,16 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .item(&reveal_logs)
         .build()?;
 
+    // File → New Window owns Cmd+N / Ctrl+N at the menu level. The accelerator
+    // is handled by the menu, not a JS keydown handler, so it works regardless
+    // of webview focus and can't double-fire.
+    let new_window = MenuItemBuilder::with_id("window_new", "New Window")
+        .accelerator("CmdOrCtrl+N")
+        .build(app)?;
+    let file_menu = SubmenuBuilder::new(app, "File").item(&new_window).build()?;
+
     #[cfg(target_os = "macos")]
     {
-        // File → New Window owns Cmd+N at the menu level. Multi-window is
-        // macOS-only for now — WebView2 secondary windows load blank on
-        // Windows/Linux (see commands::window) — so this menu lives here.
-        let new_window = MenuItemBuilder::with_id("window_new", "New Window")
-            .accelerator("CmdOrCtrl+N")
-            .build(app)?;
-        let file_menu = SubmenuBuilder::new(app, "File").item(&new_window).build()?;
-
         let pkg = app.package_info();
         let about_meta = AboutMetadataBuilder::new()
             .name(Some(pkg.name.clone()))
@@ -576,9 +586,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        // No File→New Window off macOS: multi-window is macOS-only for now
-        // (WebView2 secondary windows load blank on Windows/Linux).
-        MenuBuilder::new(app).items(&[&help_menu]).build()
+        MenuBuilder::new(app)
+            .items(&[&file_menu, &help_menu])
+            .build()
     }
 }
 

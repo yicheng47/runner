@@ -114,10 +114,16 @@ fn cascade_reference(
 
 /// Open a new webview window. Returns the new window's label. Thin wrapper
 /// around `open_window` so the menu handler and the command share one path.
+///
+/// `async` is mandatory on Windows: `WebviewWindowBuilder::build()` deadlocks
+/// when called from a *synchronous* command — WebView2 needs the main-thread
+/// event loop that a sync command is occupying, so the new window comes up
+/// blank and can't be closed. An async command yields the loop while the
+/// window builds. See the WebviewWindowBuilder docs' Windows deadlock note.
 #[tauri::command]
-pub fn window_open(
+pub async fn window_open(
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
     initial_route: Option<String>,
     position: Option<(i32, i32)>,
 ) -> Result<String> {

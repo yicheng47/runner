@@ -13,7 +13,6 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { api } from "./api";
-import { isMac } from "./platform";
 import type { Subject, WindowEntry } from "./types";
 
 // The current window's label never changes, so resolve it once at module
@@ -138,12 +137,6 @@ export function isSecondaryFor(
   myLabel: string | null,
   subject: Subject | null,
 ): SecondaryState {
-  // Multi-window is macOS-only for now: on Windows/Linux the secondary
-  // WebView2 window loads blank and can't be dismissed (see commands/window),
-  // yet its lingering focus-map entry would otherwise flip the primary window
-  // to secondary and gate its terminal off. Never treat a window as secondary
-  // off macOS so the primary always owns its PTY.
-  if (!isMac) return { secondary: false, primaryLabel: null };
   if (!myLabel || !subject) return { secondary: false, primaryLabel: null };
   const mine = map.find((e) => e.label === myLabel);
   // Unknown self (broadcast hasn't included us yet) → treat as the earliest
