@@ -51,7 +51,7 @@ import {
 
 import { api, type DirectSessionEntry } from "../lib/api";
 import { useT, type TFn } from "../lib/i18n";
-import { MOD_LABEL } from "../lib/platform";
+import { MOD_LABEL, isMac } from "../lib/platform";
 import {
   markArchivingMission,
   markArchivingSession,
@@ -325,12 +325,13 @@ export function Sidebar({
 
   // ⌘K / Ctrl+K opens the command palette. ⌘T / Ctrl+T opens the Start
   // Chat modal (browser/terminal convention: ⌘T = new tab/chat, ⌘N =
-  // new window). ⌘N is owned by the File → New Window menu accelerator
-  // (impl 0018) at the OS level, so it's deliberately absent here to
-  // avoid a double-fire. Skip while editing text controls so shortcuts
-  // don't hijack form input. xterm's hidden textarea is not an editor
-  // field from the app's point of view, so Meta shortcuts still win
-  // there; Ctrl shortcuts stay with the PTY/TUI.
+  // new window). On macOS ⌘N is owned by the File → New Window menu
+  // accelerator, so it's left out here to avoid a double-fire. On
+  // Windows/Linux that accelerator never fires — WebView2 swallows Ctrl+N
+  // (tauri #6365) — so Ctrl+N is bound here for those platforms. Skip while
+  // editing text controls so shortcuts don't hijack form input. xterm's
+  // hidden textarea is not an editor field from the app's point of view, so
+  // Meta shortcuts still win there; Ctrl shortcuts stay with the PTY/TUI.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
@@ -355,6 +356,12 @@ export function Sidebar({
         e.preventDefault();
         e.stopPropagation();
         setCreatingChat(true);
+      } else if (!isMac && (e.key === "n" || e.key === "N")) {
+        // Windows/Linux only: the menu accelerator can't deliver Ctrl+N,
+        // so open a fresh window from here. macOS uses the menu accelerator.
+        e.preventDefault();
+        e.stopPropagation();
+        void api.window.open().catch(() => {});
       }
     };
     window.addEventListener("keydown", onKey, { capture: true });
