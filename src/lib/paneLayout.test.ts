@@ -581,3 +581,51 @@ describe("serializeLayout / deserializeLayout", () => {
     expect(restored!.focusedPaneId).toBe(leaves(restored!.root)[0].id);
   });
 });
+
+describe("cold-start hydration", () => {
+  const STORAGE_KEY = "runner.chat.layout";
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.doUnmock("@tauri-apps/api/window");
+    vi.doUnmock("@tauri-apps/api/event");
+    vi.resetModules();
+  });
+
+  it("loads the shared persisted set in a secondary window", async () => {
+    // The env's localStorage is a partial shim; back it with a Map so both
+    // the seed write and the freshly-imported module see the same store.
+    const store = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+      setItem: (k: string, v: string) => void store.set(k, String(v)),
+      removeItem: (k: string) => void store.delete(k),
+      clear: () => store.clear(),
+    });
+
+    // The main window persisted a grouped tab; now a secondary window opens.
+    localStorage.setItem(
+      STORAGE_KEY,
+      serializeLayoutSet([applyPresetPure("cols-2", "A", ["A", "B"])], 0),
+    );
+    vi.resetModules();
+    vi.doMock("@tauri-apps/api/window", () => ({
+      getCurrentWindow: () => ({ label: "window-secondary" }),
+    }));
+    vi.doMock("@tauri-apps/api/event", () => ({
+      emit: () => Promise.resolve(),
+      listen: () => Promise.resolve(() => {}),
+    }));
+
+    const mod = await import("./paneLayout");
+
+    // Even though a secondary window never WRITES localStorage, it now reads
+    // the shared set on cold start, so the tab structure shows immediately.
+    const tabs = mod.getPaneLayouts();
+    expect(tabs).toHaveLength(1);
+    expect(mod.leaves(tabs[0].root).map((l) => l.sessionId)).toEqual([
+      "A",
+      "B",
+    ]);
+  });
+});

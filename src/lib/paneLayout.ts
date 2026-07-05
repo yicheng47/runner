@@ -441,10 +441,13 @@ try {
   windowLabel = null;
 }
 
-// Persist for the main window only: localStorage is shared by every
-// webview window, and secondary windows' labels (`window-<ulid>`) don't
-// survive a relaunch — persisting theirs would only clobber the main
-// window's pane tabs. Off-Tauri there is a single "window", so persist.
+// localStorage is shared by every webview window. WRITES stay main-window
+// only: secondary windows' labels (`window-<ulid>`) don't survive a relaunch,
+// so persisting theirs would only clobber the main window's pane tabs (a
+// secondary's live changes still reach storage — they broadcast, the main
+// window hydrates and persists). READS, however, are open to every window so
+// a freshly-opened one cold-starts from the current structure instead of a
+// blank single pane. Off-Tauri there is a single "window", so it persists.
 const persistToStorage = windowLabel === null || windowLabel === "main";
 
 // ---- module store -------------------------------------------------------
@@ -497,11 +500,13 @@ export function serializeLayoutSet(
   } satisfies PersistedLayoutSet);
 }
 
+// Read the shared persisted set for ANY window (see `persistToStorage`):
+// secondary windows load the main window's structure on cold start, then
+// track live changes over the broadcast channel.
 function readPersistedLayoutSet(): {
   layouts: PaneLayout[];
   activeIndex: number;
 } | null {
-  if (!persistToStorage) return null;
   try {
     const raw = localStorage.getItem(STORAGE_LAYOUT);
     return raw ? deserializeLayoutSet(raw) : null;
