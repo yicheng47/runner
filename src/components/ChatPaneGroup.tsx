@@ -126,13 +126,20 @@ export function ChatPaneGroup({
   const [paneGeo] = useState(createPaneGeometry);
   useEffect(() => () => paneGeo.dispose(), [paneGeo]);
 
-  // Position wrappers before paint on every commit — pane tree changes,
-  // session assignment changes, and wrapper mounts all land here. The RO
-  // inside paneGeo keeps them glued through gutter drags and resizes.
+  // Position wrappers before paint when the pane tree changes — pane
+  // splits/closes and session assignment both rebuild `layout.root`. A
+  // wrapper that mounts WITHOUT a tree change (a session attaching into an
+  // already-hydrated pane — restored-split hydration in RunnerChat) is
+  // synced by `termWrapRefFor` at commit instead. The RO inside paneGeo
+  // keeps everything glued through gutter drags and resizes, so we
+  // deliberately do NOT re-sync on every unrelated re-render (e.g. a
+  // resume toggling `resumingIds`): an all-panes getBoundingClientRect
+  // read + geometry write per commit is redundant, and a stray sub-pixel
+  // delta on a sibling wrapper would needlessly perturb its terminal.
   useLayoutEffect(() => {
     paneGeo.setRoot(layout.root);
     paneGeo.sync();
-  });
+  }, [layout.root, paneGeo]);
 
   // Plain render functions, not components: defining component types here
   // would give them a fresh identity every commit and remount the whole
@@ -427,8 +434,20 @@ function createPaneGeometry() {
       let cb = termWrapCbs.get(sessionId);
       if (!cb) {
         cb = (el) => {
-          if (el) termWraps.set(sessionId, el);
-          else termWraps.delete(sessionId);
+          if (el) {
+            termWraps.set(sessionId, el);
+            // A wrapper can mount a commit AFTER its pane body has already
+            // settled: restored-split hydration attaches the session
+            // (adding it to `chats`) once the pane tree is stable, so
+            // `layout.root` doesn't change and neither the geometry
+            // layoutEffect nor the pane-body ResizeObserver fires. Position
+            // it now from the existing pane rects. On the component's first
+            // mount `root`/`container` aren't set yet so this no-ops,
+            // leaving the layoutEffect to drive the initial sync.
+            sync();
+          } else {
+            termWraps.delete(sessionId);
+          }
         };
         termWrapCbs.set(sessionId, cb);
       }
