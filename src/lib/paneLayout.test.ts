@@ -10,6 +10,7 @@ import {
   deserializeLayout,
   focusPane,
   getPaneLayout,
+  getPaneLayouts,
   getPaneLayoutsForTest,
   isGroupActiveFor,
   isFreshlyAssigned,
@@ -19,6 +20,7 @@ import {
   resetPaneLayoutsForTest,
   serializeLayout,
   setSizesPure,
+  setTabCollapsed,
   visibleSessionIds,
   type PaneLayout,
   type PaneSplit,
@@ -261,6 +263,45 @@ describe("pane layout tabs", () => {
   });
 });
 
+describe("setTabCollapsed", () => {
+  afterEach(() => {
+    resetPaneLayoutsForTest();
+  });
+
+  it("collapses one tab without touching the others", () => {
+    applyPreset("cols-2", "A", ["A", "B"]);
+    applyPreset("cols-2", "C", ["C", "D"]);
+    expect(getPaneLayouts()).toHaveLength(2);
+
+    setTabCollapsed("C", true);
+
+    const [tabA, tabC] = getPaneLayouts();
+    expect(tabA.collapsed ?? false).toBe(false);
+    expect(tabC.collapsed).toBe(true);
+  });
+
+  it("targets a tab by index and no-ops when already in that state", () => {
+    applyPreset("cols-2", "A", ["A", "B"]);
+    const before = getPaneLayouts()[0];
+
+    setTabCollapsed(0, false);
+    expect(getPaneLayouts()[0]).toBe(before);
+
+    setTabCollapsed(0, true);
+    expect(getPaneLayouts()[0].collapsed).toBe(true);
+  });
+
+  it("ignores unknown session ids and out-of-range indices", () => {
+    applyPreset("cols-2", "A", ["A", "B"]);
+    const before = getPaneLayouts();
+
+    setTabCollapsed("missing", true);
+    setTabCollapsed(7, true);
+
+    expect(getPaneLayouts()).toBe(before);
+  });
+});
+
 describe("fresh assignments", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -318,6 +359,24 @@ describe("serializeLayout / deserializeLayout", () => {
     const restored = deserializeLayout(serializeLayout(named));
     expect(restored!.name).toBe("review pair");
     expect(applyPresetPure("single", "A", ["A"], "review pair").name).toBeNull();
+  });
+
+  it("round-trips the collapsed bit, defaulting missing to expanded", () => {
+    const collapsed = {
+      ...applyPresetPure("cols-2", "A", ["A", "B"]),
+      collapsed: true,
+    };
+    expect(deserializeLayout(serializeLayout(collapsed))!.collapsed).toBe(true);
+
+    // Expanded tabs omit the field entirely so old payloads stay expanded.
+    const expanded = applyPresetPure("cols-2", "A", ["A", "B"]);
+    expect(expanded.collapsed).toBeUndefined();
+    const parsed = JSON.parse(serializeLayout(expanded)) as Record<
+      string,
+      unknown
+    >;
+    expect("collapsed" in parsed).toBe(false);
+    expect(deserializeLayout(serializeLayout(expanded))!.collapsed).toBeUndefined();
   });
 
   it("rejects malformed payloads", () => {
