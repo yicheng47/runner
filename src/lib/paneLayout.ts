@@ -14,6 +14,7 @@
 
 import { useSyncExternalStore } from "react";
 
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export type PresetKind =
@@ -430,17 +431,21 @@ export function deserializeLayout(raw: string): PaneLayout | null {
   }
 }
 
+// This window's Tauri label (`main` or `window-<ulid>`), resolved once at
+// module load. Null off-Tauri (dev browser preview), where the cross-window
+// broadcast/listen below all no-op.
+let windowLabel: string | null = null;
+try {
+  windowLabel = getCurrentWindow().label;
+} catch {
+  windowLabel = null;
+}
+
 // Persist for the main window only: localStorage is shared by every
 // webview window, and secondary windows' labels (`window-<ulid>`) don't
 // survive a relaunch — persisting theirs would only clobber the main
-// window's pane tabs.
-let persistToStorage = false;
-try {
-  persistToStorage = getCurrentWindow().label === "main";
-} catch {
-  // Dev browser preview — single "window", persist normally.
-  persistToStorage = true;
-}
+// window's pane tabs. Off-Tauri there is a single "window", so persist.
+const persistToStorage = windowLabel === null || windowLabel === "main";
 
 // ---- module store -------------------------------------------------------
 
@@ -481,7 +486,7 @@ function deserializeLayoutSet(
   }
 }
 
-function serializeLayoutSet(
+export function serializeLayoutSet(
   layouts: PaneLayout[],
   activeIndex: number,
 ): string {
@@ -554,7 +559,11 @@ function findLayoutIndexForSession(sessionId: string | null): number {
   return layouts.findIndex((layout) => leafForSession(layout.root, sessionId));
 }
 
-function setLayoutSet(
+// Commit a new layout set to the in-window store: normalize, swap in the
+// fresh arrays, persist (main window only), and notify subscribers. Does
+// NOT broadcast — the remote-hydration path reuses this so a received
+// change never echoes back out.
+function applyLayoutSet(
   nextLayouts: PaneLayout[],
   nextActiveIndex: number,
 ): void {
@@ -565,11 +574,71 @@ function setLayoutSet(
   for (const l of listeners) l();
 }
 
+function setLayoutSet(
+  nextLayouts: PaneLayout[],
+  nextActiveIndex: number,
+): void {
+  applyLayoutSet(nextLayouts, nextActiveIndex);
+  broadcastLayoutSet();
+}
+
 function setCurrent(next: PaneLayout): void {
   if (next === currentLayout()) return;
   const nextLayouts = [...layouts];
   nextLayouts[activeIndex] = next;
   setLayoutSet(nextLayouts, activeIndex);
+}
+
+// ---- cross-window sync (issue #258) -------------------------------------
+//
+// The store is per window and in-memory, so a tab/pane change in one window
+// left the others stale. Mirror how pins converge: every mutation through
+// `setLayoutSet` broadcasts the serialized set over a frontend Tauri event,
+// and every window reloads it. The change carries its origin window label so
+// a window ignores its own echo (Tauri `emit` also delivers to the sender);
+// the hydrate path reuses `applyLayoutSet`, which never re-broadcasts, so
+// there is no feedback loop.
+
+const LAYOUT_CHANGED_EVENT = "chat/layout-changed";
+
+interface LayoutChangedEvent {
+  /** Tauri label of the window that made the change; receivers drop their
+   *  own echo by comparing it to their own label. */
+  origin: string;
+  /** Serialized `PersistedLayoutSet` — the same payload localStorage holds. */
+  set: string;
+}
+
+function broadcastLayoutSet(): void {
+  if (windowLabel === null) return; // off-Tauri: nothing to sync
+  void emit(LAYOUT_CHANGED_EVENT, {
+    origin: windowLabel,
+    set: serializeLayoutSet(layouts, activeIndex),
+  } satisfies LayoutChangedEvent).catch(() => {
+    // best-effort; other windows converge on the next change
+  });
+}
+
+/**
+ * Apply a layout set received from another window: hydrate the in-memory
+ * store and notify subscribers, without re-broadcasting (echo guard). No-op
+ * and returns false on a malformed payload. Exported for the sync listener
+ * and its unit test.
+ */
+export function hydrateLayoutSet(raw: string): boolean {
+  const parsed = deserializeLayoutSet(raw);
+  if (!parsed) return false;
+  applyLayoutSet(parsed.layouts, parsed.activeIndex);
+  return true;
+}
+
+if (windowLabel !== null) {
+  void listen<LayoutChangedEvent>(LAYOUT_CHANGED_EVENT, (event) => {
+    if (event.payload.origin === windowLabel) return; // ignore own echo
+    hydrateLayoutSet(event.payload.set);
+  }).catch(() => {
+    // Tauri unavailable — cross-window sync simply no-ops.
+  });
 }
 
 export function getPaneLayout(sessionId: string | null = null): PaneLayout {

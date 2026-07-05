@@ -12,6 +12,7 @@ import {
   getPaneLayout,
   getPaneLayouts,
   getPaneLayoutsForTest,
+  hydrateLayoutSet,
   isGroupActiveFor,
   isFreshlyAssigned,
   leaves,
@@ -19,8 +20,10 @@ import {
   removeSessionPure,
   resetPaneLayoutsForTest,
   serializeLayout,
+  serializeLayoutSet,
   setSizesPure,
   setTabCollapsed,
+  subscribePaneLayout,
   visibleSessionIds,
   type PaneLayout,
   type PaneSplit,
@@ -298,6 +301,71 @@ describe("setTabCollapsed", () => {
     setTabCollapsed("missing", true);
     setTabCollapsed(7, true);
 
+    expect(getPaneLayouts()).toBe(before);
+  });
+});
+
+describe("hydrateLayoutSet (cross-window sync)", () => {
+  afterEach(() => {
+    resetPaneLayoutsForTest();
+  });
+
+  it("replaces the store with a set broadcast from another window and notifies subscribers", () => {
+    // Local state: a single tab on chat A.
+    applyPreset("single", "A", ["A"]);
+
+    // A remote window's serialized set: two tabs, second one active.
+    const remote = serializeLayoutSet(
+      [
+        applyPresetPure("cols-2", "A", ["A", "B"]),
+        applyPresetPure("cols-2", "C", ["C", "D"]),
+      ],
+      1,
+    );
+
+    let notified = 0;
+    const unsub = subscribePaneLayout(() => {
+      notified += 1;
+    });
+    const applied = hydrateLayoutSet(remote);
+    unsub();
+
+    expect(applied).toBe(true);
+    expect(notified).toBe(1);
+    const tabs = getPaneLayouts();
+    expect(tabs).toHaveLength(2);
+    expect(slotSessions(tabs[0])).toEqual(["A", "B"]);
+    expect(slotSessions(tabs[1])).toEqual(["C", "D"]);
+    // The remote active tab wins so every window agrees on the front tab.
+    expect(getPaneLayout()).toBe(tabs[1]);
+  });
+
+  it("converges collapsed state from the broadcasting window", () => {
+    applyPreset("cols-2", "A", ["A", "B"]);
+    expect(getPaneLayouts()[0].collapsed ?? false).toBe(false);
+
+    const remote = serializeLayoutSet(
+      [{ ...applyPresetPure("cols-2", "A", ["A", "B"]), collapsed: true }],
+      0,
+    );
+    hydrateLayoutSet(remote);
+
+    expect(getPaneLayouts()[0].collapsed).toBe(true);
+  });
+
+  it("no-ops and returns false on a malformed payload", () => {
+    applyPreset("cols-2", "A", ["A", "B"]);
+    const before = getPaneLayouts();
+
+    let notified = 0;
+    const unsub = subscribePaneLayout(() => {
+      notified += 1;
+    });
+    expect(hydrateLayoutSet("not json")).toBe(false);
+    expect(hydrateLayoutSet("null")).toBe(false);
+    unsub();
+
+    expect(notified).toBe(0);
     expect(getPaneLayouts()).toBe(before);
   });
 });
