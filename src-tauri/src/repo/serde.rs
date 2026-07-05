@@ -10,8 +10,7 @@
 //     historical offset spellings (`+00:00` and `Z`).
 //   - `json_text` / `json_text_opt`: serialize any `Serialize` value through
 //     `serde_json::to_string` into a TEXT column — the same call the legacy
-//     write paths made for `args_json`, `env_json`, and
-//     `orchestrator_policy`.
+//     write paths made for `args_json` and `env_json`.
 
 pub mod rfc3339 {
     use chrono::{DateTime, Utc};

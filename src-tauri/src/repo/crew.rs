@@ -1,9 +1,4 @@
 // `crews` table — the top-level container for a team of runners.
-//
-// `orchestrator_policy` is deprecated (#247, superseded by
-// `system_prompt_addendum`): the row struct keeps it so reads and the
-// serialized `Crew` shape are unaffected, but it is excluded from every
-// write column list — the column is never written again.
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -19,9 +14,6 @@ pub struct CrewRow {
     pub name: String,
     pub purpose: Option<String>,
     pub goal: Option<String>,
-    /// Read-only (#247): kept for existing rows, never in a write list.
-    #[serde(with = "crate::repo::serde::json_text_opt")]
-    pub orchestrator_policy: Option<serde_json::Value>,
     pub system_prompt_addendum: Option<String>,
     #[serde(with = "crate::repo::serde::rfc3339")]
     pub created_at: Timestamp,
@@ -30,19 +22,6 @@ pub struct CrewRow {
 }
 
 pub const COLUMNS: &[&str] = &[
-    "id",
-    "name",
-    "purpose",
-    "goal",
-    "orchestrator_policy",
-    "system_prompt_addendum",
-    "created_at",
-    "updated_at",
-];
-
-/// Write column list — `COLUMNS` minus the read-only
-/// `orchestrator_policy`.
-const INSERT_COLUMNS: &[&str] = &[
     "id",
     "name",
     "purpose",
@@ -68,7 +47,6 @@ impl From<CrewRow> for Crew {
             name: r.name,
             purpose: r.purpose,
             goal: r.goal,
-            orchestrator_policy: r.orchestrator_policy,
             system_prompt_addendum: r.system_prompt_addendum,
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -83,7 +61,6 @@ impl From<&Crew> for CrewRow {
             name: c.name.clone(),
             purpose: c.purpose.clone(),
             goal: c.goal.clone(),
-            orchestrator_policy: c.orchestrator_policy.clone(),
             system_prompt_addendum: c.system_prompt_addendum.clone(),
             created_at: c.created_at,
             updated_at: c.updated_at,
@@ -93,8 +70,8 @@ impl From<&Crew> for CrewRow {
 
 pub fn insert(conn: &Connection, row: &CrewRow) -> rusqlite::Result<()> {
     conn.execute(
-        &insert_sql("crews", INSERT_COLUMNS),
-        to_params_named_with_fields(row, INSERT_COLUMNS)
+        &insert_sql("crews", COLUMNS),
+        to_params_named_with_fields(row, COLUMNS)
             .map_err(ser_err)?
             .to_slice()
             .as_slice(),
@@ -187,7 +164,6 @@ mod tests {
             name: "Full crew".into(),
             purpose: Some("purpose".into()),
             goal: Some("goal".into()),
-            orchestrator_policy: None, // never written through the repo
             system_prompt_addendum: Some("squash PRs against main".into()),
             created_at: now,
             updated_at: now,
@@ -201,7 +177,6 @@ mod tests {
             name: "Minimal".into(),
             purpose: None,
             goal: None,
-            orchestrator_policy: None,
             system_prompt_addendum: None,
             created_at: now,
             updated_at: now,
@@ -220,30 +195,22 @@ mod tests {
     }
 
     #[test]
-    fn legacy_rows_read_cleanly_including_policy_json_and_z_timestamps() {
+    fn legacy_rows_read_cleanly_including_z_timestamps() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        // Raw SQL in today's exact stored formats: `Z` timestamps (seed
-        // shape) and a JSON TEXT orchestrator_policy written by the
-        // pre-#247 update path.
+        // Raw SQL in today's exact stored formats: mixed `Z` (seed shape)
+        // and `+00:00` timestamp spellings must both parse.
         conn.execute(
             r#"INSERT INTO crews
-                (id, name, purpose, goal, orchestrator_policy,
-                 system_prompt_addendum, created_at, updated_at)
-             VALUES ('c-legacy', 'Legacy', NULL, 'ship it',
-                     '[{"when":{"signal":"ask_lead"},"do":"inject_stdin"}]',
-                     NULL, '2026-05-03T00:00:00Z', '2026-05-03T00:00:00+00:00')"#,
+                (id, name, purpose, goal, system_prompt_addendum,
+                 created_at, updated_at)
+             VALUES ('c-legacy', 'Legacy', NULL, 'ship it', NULL,
+                     '2026-05-03T00:00:00Z', '2026-05-03T00:00:00+00:00')"#,
             [],
         )
         .unwrap();
 
         let crew = get(&conn, "c-legacy").unwrap().unwrap();
-        assert_eq!(
-            crew.orchestrator_policy,
-            Some(serde_json::json!([
-                {"when": {"signal": "ask_lead"}, "do": "inject_stdin"}
-            ]))
-        );
         assert_eq!(
             crew.created_at, crew.updated_at,
             "both spellings, same instant"
@@ -266,48 +233,6 @@ mod tests {
             .unwrap();
         assert_eq!(created_raw, row.created_at.to_rfc3339());
         assert_eq!(updated_raw, row.updated_at.to_rfc3339());
-    }
-
-    #[test]
-    fn orchestrator_policy_is_never_written_by_insert_or_update() {
-        let pool = db::open_in_memory().unwrap();
-        let conn = pool.get().unwrap();
-        let mut row = full_row();
-        // Even a row struct carrying a policy value must not write it.
-        row.orchestrator_policy = Some(serde_json::json!({"drift": true}));
-        insert(&conn, &row).unwrap();
-        let stored: Option<String> = conn
-            .query_row(
-                "SELECT orchestrator_policy FROM crews WHERE id = 'c-full'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(stored, None, "insert must not write orchestrator_policy");
-
-        // Seed a legacy policy by raw SQL, then update through the repo —
-        // the legacy value must survive untouched.
-        conn.execute(
-            "UPDATE crews SET orchestrator_policy = '{\"keep\":1}' WHERE id = 'c-full'",
-            [],
-        )
-        .unwrap();
-        row.name = "Renamed".into();
-        update(&conn, &row).unwrap();
-        let stored: Option<String> = conn
-            .query_row(
-                "SELECT orchestrator_policy FROM crews WHERE id = 'c-full'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(stored.as_deref(), Some("{\"keep\":1}"));
-        let name: String = conn
-            .query_row("SELECT name FROM crews WHERE id = 'c-full'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(name, "Renamed");
     }
 
     #[test]

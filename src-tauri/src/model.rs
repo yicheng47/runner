@@ -23,11 +23,6 @@ pub struct Crew {
     pub name: String,
     pub purpose: Option<String>,
     pub goal: Option<String>,
-    /// DEPRECATED (#247): superseded by `system_prompt_addendum` as the
-    /// single crew-level prompt layer. The column is retained for
-    /// existing rows and still read here, but it is no longer written or
-    /// spliced into any prompt. Do not add new reads.
-    pub orchestrator_policy: Option<serde_json::Value>,
     /// Layer-2 team conventions text. Spliced between the platform
     /// preamble and the runner persona on mission spawns only;
     /// direct chats ignore it. NULL / empty = no splice. See #54.
@@ -58,13 +53,13 @@ pub struct Runner {
     /// Optional pinned model name (e.g. `claude-opus-4-7`,
     /// `gpt-5`). When set, the runtime adapter passes it through as
     /// the agent CLI's model flag (claude-code: `--model`). NULL =
-    /// inherit the agent's own default. See migration 0008.
+    /// inherit the agent's own default. Column lives in `0001_init.sql`.
     #[serde(default)]
     pub model: Option<String>,
     /// Optional thinking-effort hint (e.g. `xhigh`, `high`,
     /// `medium`). claude-code accepts an effort flag; codex's
     /// equivalent is wired in the runtime adapter. NULL = inherit
-    /// the agent's own default. See migration 0008.
+    /// the agent's own default. Column lives in `0001_init.sql`.
     #[serde(default)]
     pub effort: Option<String>,
     pub created_at: Timestamp,
