@@ -64,33 +64,6 @@ const SIDEBAR_TOGGLE_EVENT = "runner:toggle-sidebar";
 const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
 const CHAT_PANE_CYCLE_EVENT = "runner:cycle-chat-pane";
 
-// Rebuild peer terminals' WebGL glyph atlases when a new WebGL context
-// comes up (or one is lost). Split chat paints several canvases
-// concurrently (impl 0020), and context churn can evict glyph textures
-// under WKWebView's GPU memory pressure — affected peers keep correct
-// layout and colors but draw the WRONG GLYPH for every cell painted
-// afterwards (dogfooding: "gibberish" panes after starting/resuming a
-// sibling). Clearing the atlas forces re-rasterization; the refresh
-// repaints from xterm's in-memory grid — no PTY round-trip, cheap.
-const atlasPeers = new Set<() => void>();
-function refreshAtlasPeers(except: () => void): void {
-  for (const cb of atlasPeers) {
-    if (cb !== except) cb();
-  }
-}
-
-// Resume-driven variant of the peer refresh. A resumed sibling's first
-// paint burst can evict peers' glyph textures with NO context created
-// and NO context lost — neither existing hook fires, so the gibberish
-// sticks on background panes (restart → one-by-one pane resume; the
-// active pane self-heals via refreshActiveTerminal, hidden split panes
-// never do). Callers invoke this when a resume settles — the burst is
-// over, one repaint of every mounted terminal fixes all evictions.
-// eslint-disable-next-line react-refresh/only-export-components
-export function refreshAllTerminalAtlases(): void {
-  for (const cb of atlasPeers) cb();
-}
-
 function normalizePasteImageMime(type: string): PasteImageMimeType | null {
   switch (type.trim().toLowerCase()) {
     case "image/png":
@@ -202,16 +175,15 @@ export const RunnerTerminal = forwardRef<
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  // Live WebglAddon handle so the visibility / focus / font-change
-  // listeners below can call `clearTextureAtlas()` on it. The WebGL
-  // renderer caches every distinct (codepoint, fg, bg, style) cell
-  // into a GPU texture atlas; in dev (Vite HMR re-mounts) and on
-  // long-lived sessions with bold + italic + many ANSI colors the
-  // atlas occasionally desyncs and ASCII codepoints render with the
-  // wrong glyph until a resize triggers a refit. Rebuilding the
-  // atlas on the same lifecycle hooks where we already refresh /
-  // refit makes the corruption window a few hundred milliseconds at
-  // worst instead of "until the user touches the window edge."
+  // Live WebglAddon handle so the font-change listeners below can call
+  // `clearTextureAtlas()` on it. The WebGL renderer caches every distinct
+  // (codepoint, fg, bg, style) cell into a GPU texture atlas keyed by
+  // rendered pixel size, so a font-size / font-family change must evict
+  // the atlas or a band of pre-change glyphs lingers at the old metrics
+  // until something else rebuilds it. (The old cross-pane atlas-corruption
+  // mitigation is gone: that "wrong glyph" bug was an upstream atlas
+  // page-merge defect, fixed in @xterm/addon-webgl — see the renderer
+  // setup below.)
   const webglRef = useRef<WebglAddon | null>(null);
   const sessionIdRef = useRef<string>(sessionId);
   const onExitRef = useRef(onExit);
@@ -342,7 +314,6 @@ export const RunnerTerminal = forwardRef<
           });
           return true;
         }
-        webglRef.current?.clearTextureAtlas();
         t.refresh(0, t.rows - 1);
         if (focus && !disabledRef.current) t.focus();
         if ((!forceResizeDance && !pushBackendSize) || disabledRef.current) {
@@ -466,40 +437,30 @@ export const RunnerTerminal = forwardRef<
     });
     term.loadAddon(webLinks);
     term.open(containerRef.current);
-    // WebGL renderer + context-loss recovery. Without the
-    // onContextLoss hook, a single GPU reset / driver hiccup / dev
-    // HMR remount would leave xterm rendering against a dead context
-    // and the canvas freezes mid-frame. Disposing the addon on loss
-    // lets xterm fall back to the DOM renderer for the rest of this
-    // mount — degraded but functional, no more frozen panes.
-    // Own atlas-rebuild hook, registered with the peer set below. Also
-    // the callback peers invoke on us when THEIR context churns.
-    const refreshOwnAtlas = () => {
-      try {
-        webglRef.current?.clearTextureAtlas();
-        const t = termRef.current;
-        if (t) t.refresh(0, Math.max(0, t.rows - 1));
-      } catch {
-        // renderer teardown mid-flight
-      }
-    };
+    // WebGL renderer + context-loss recovery. The glyph-atlas corruption
+    // that used to garble sibling panes under agentic-CLI output — a wide
+    // range of styled glyphs forces atlas page merges, and a merge bug
+    // sampled the wrong page → correct layout, wrong glyphs — is fixed
+    // upstream in @xterm/addon-webgl >=0.20.0-beta.219 (xtermjs/xterm.js
+    // #5883). So we no longer coordinate atlases across panes; each
+    // terminal just guards its own context loss. Without the onContextLoss
+    // hook, a GPU reset / driver hiccup / dev HMR remount would leave
+    // xterm rendering against a dead context and the canvas freezes
+    // mid-frame. Disposing the addon on loss reverts this terminal to the
+    // DOM renderer for the rest of the mount — degraded but functional,
+    // and it also covers the rarer GPU-process-death corruption the
+    // atlas-merge fix doesn't (the VSCode dom-fallback pattern).
     try {
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => {
         webgl.dispose();
         webglRef.current = null;
-        // A lost context is GPU churn peers may have felt too.
-        refreshAtlasPeers(refreshOwnAtlas);
       });
       term.loadAddon(webgl);
       webglRef.current = webgl;
     } catch {
-      // No WebGL — fall through to canvas. RunnerChat does the same.
+      // No WebGL — xterm keeps its DOM renderer. RunnerChat does the same.
     }
-    atlasPeers.add(refreshOwnAtlas);
-    // This mount just created a WebGL context — peers' glyph textures may
-    // have been evicted by it; have them re-rasterize.
-    if (webglRef.current) refreshAtlasPeers(refreshOwnAtlas);
     const initialRect = containerRef.current.getBoundingClientRect();
     if (initialRect.width > 0 && initialRect.height > 0) {
       fit.fit();
@@ -939,7 +900,6 @@ export const RunnerTerminal = forwardRef<
     fitRef.current = fit;
 
     return () => {
-      atlasPeers.delete(refreshOwnAtlas);
       ro.disconnect();
       window.removeEventListener("resize", onResize);
       window.removeEventListener("focus", onWindowFocus);

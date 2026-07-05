@@ -45,17 +45,17 @@ importers:
         specifier: ^2.10.0
         version: 2.10.1
       '@xterm/addon-fit':
-        specifier: ^0.11.0
-        version: 0.11.0
+        specifier: 0.12.0-beta.219
+        version: 0.12.0-beta.219(@xterm/xterm@6.1.0-beta.220)
       '@xterm/addon-web-links':
-        specifier: ^0.11.0
-        version: 0.11.0(@xterm/xterm@6.0.0)
+        specifier: 0.13.0-beta.219
+        version: 0.13.0-beta.219(@xterm/xterm@6.1.0-beta.220)
       '@xterm/addon-webgl':
-        specifier: ^0.19.0
-        version: 0.19.0
+        specifier: 0.20.0-beta.219
+        version: 0.20.0-beta.219(@xterm/xterm@6.1.0-beta.220)
       '@xterm/xterm':
-        specifier: ^6.0.0
-        version: 6.0.0
+        specifier: 6.1.0-beta.220
+        version: 6.1.0-beta.220
       lucide-react:
         specifier: ^0.577.0
         version: 0.577.0(react@19.2.5)
@@ -933,19 +933,23 @@ packages:
   '@vitest/utils@4.1.9':
     resolution: {integrity: sha512-A51o8ymO5PpqlWNnBP9ZHPXDIpuMtTLlGSjN7la4US+LJzoUMyhwjA5QXlm39JexgwHKW4Xjs8Z2d3dLCXOeuA==}
 
-  '@xterm/addon-fit@0.11.0':
-    resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
-
-  '@xterm/addon-web-links@0.11.0':
-    resolution: {integrity: sha512-nIHQ38pQI+a5kXnRaTgwqSHnX7KE6+4SVoceompgHL26unAxdfP6IPqUTSYPQgSwM56hsElfoNrrW5V7BUED/Q==}
+  '@xterm/addon-fit@0.12.0-beta.219':
+    resolution: {integrity: sha512-ve9MP+xSfkcFG+l4GoWHurO+r97vh2U52J392Is246Cd2/EWkE9Q/KwpLqEdILTBQl7XVwTuuJzNv9IfndfnfQ==}
     peerDependencies:
-      '@xterm/xterm': ^5.0.0
+      '@xterm/xterm': ^6.1.0-beta.219
 
-  '@xterm/addon-webgl@0.19.0':
-    resolution: {integrity: sha512-b3fMOsyLVuCeNJWxolACEUED0vm7qC0cy4wRvf3oURSzDTYVQiGPhTnhWZwIHdvC48Y+oLhvYXnY4XDXPoJo6A==}
+  '@xterm/addon-web-links@0.13.0-beta.219':
+    resolution: {integrity: sha512-nBKYN08FDqtXvIxMdXjj4YifY8l2EGhAWUKMy3n2LYsUvP7YhGvCbcBpwWDTt8ogB4rpXawJKIAi+SMjSkpWmw==}
+    peerDependencies:
+      '@xterm/xterm': ^6.1.0-beta.219
 
-  '@xterm/xterm@6.0.0':
-    resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
+  '@xterm/addon-webgl@0.20.0-beta.219':
+    resolution: {integrity: sha512-IaAcDDP0lhHIdYJuTFKZIMsRqlN8iR5U8lW9MiTK4mUAjettqZN2z/tkSsl4yV3GZ9/siOZofDl+GO1TK7y7ww==}
+    peerDependencies:
+      '@xterm/xterm': ^6.1.0-beta.220
+
+  '@xterm/xterm@6.1.0-beta.220':
+    resolution: {integrity: sha512-rwEKE75wfwfNWeGnjl0iQRA1W50HigKoGcGMeF3o5CqDSdI9IjmwzpV9xHXqLH6CYj6s9N1g6bbKFVDou9dJ/A==}
 
   acorn-jsx@5.3.2:
     resolution: {integrity: sha512-rq9s+JNhf0IChjtDXxllJ7g41oZk5SlXtp0LHwyA5cejwn7vKmKp4pPri6YEePv2PU65sAsegbXtIinmDFDXgQ==}
@@ -2670,15 +2674,19 @@ snapshots:
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.0
 
-  '@xterm/addon-fit@0.11.0': {}
-
-  '@xterm/addon-web-links@0.11.0(@xterm/xterm@6.0.0)':
+  '@xterm/addon-fit@0.12.0-beta.219(@xterm/xterm@6.1.0-beta.220)':
     dependencies:
-      '@xterm/xterm': 6.0.0
+      '@xterm/xterm': 6.1.0-beta.220
 
-  '@xterm/addon-webgl@0.19.0': {}
+  '@xterm/addon-web-links@0.13.0-beta.219(@xterm/xterm@6.1.0-beta.220)':
+    dependencies:
+      '@xterm/xterm': 6.1.0-beta.220
 
-  '@xterm/xterm@6.0.0': {}
+  '@xterm/addon-webgl@0.20.0-beta.219(@xterm/xterm@6.1.0-beta.220)':
+    dependencies:
+      '@xterm/xterm': 6.1.0-beta.220
+
+  '@xterm/xterm@6.1.0-beta.220': {}
 
   acorn-jsx@5.3.2(acorn@8.16.0):
     dependencies:
