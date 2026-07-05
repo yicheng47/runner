@@ -12,6 +12,7 @@ import {
   getPaneLayout,
   getPaneLayouts,
   getPaneLayoutsForTest,
+  hydrateLayoutSet,
   isGroupActiveFor,
   isFreshlyAssigned,
   leaves,
@@ -19,8 +20,11 @@ import {
   removeSessionPure,
   resetPaneLayoutsForTest,
   serializeLayout,
+  serializeLayoutSet,
+  setRouteAnchorSession,
   setSizesPure,
   setTabCollapsed,
+  subscribePaneLayout,
   visibleSessionIds,
   type PaneLayout,
   type PaneSplit,
@@ -302,6 +306,183 @@ describe("setTabCollapsed", () => {
   });
 });
 
+describe("hydrateLayoutSet (cross-window sync)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    resetPaneLayoutsForTest();
+  });
+
+  it("converges tab membership from another window and notifies subscribers", () => {
+    // Local state: one tab {A,B}, focused on A (this window's active tab).
+    applyPreset("cols-2", "A", ["A", "B"]);
+
+    // A remote window's serialized set: our tab plus a second one it made
+    // active.
+    const remote = serializeLayoutSet(
+      [
+        applyPresetPure("cols-2", "A", ["A", "B"]),
+        applyPresetPure("cols-2", "C", ["C", "D"]),
+      ],
+      1,
+    );
+
+    let notified = 0;
+    const unsub = subscribePaneLayout(() => {
+      notified += 1;
+    });
+    const applied = hydrateLayoutSet(remote);
+    unsub();
+
+    expect(applied).toBe(true);
+    expect(notified).toBe(1);
+    const tabs = getPaneLayouts();
+    expect(tabs).toHaveLength(2);
+    expect(slotSessions(tabs[0])).toEqual(["A", "B"]);
+    expect(slotSessions(tabs[1])).toEqual(["C", "D"]);
+  });
+
+  it("keeps this window on its route tab instead of adopting the sender's active tab", () => {
+    // This window's route owns A (its tab is {A,B}).
+    applyPreset("cols-2", "A", ["A", "B"]);
+    setRouteAnchorSession("A");
+
+    // Sender's set puts A's tab at index 1 and makes {C,D} (index 0) active,
+    // so neither the sender's activeIndex nor a positional clamp lands on it.
+    const remote = serializeLayoutSet(
+      [
+        applyPresetPure("cols-2", "C", ["C", "D"]),
+        applyPresetPure("cols-2", "A", ["A", "B"]),
+      ],
+      0,
+    );
+
+    hydrateLayoutSet(remote);
+
+    // Active tab tracks the route session A, so a local closePane/focusPane
+    // can't hit the wrong tab.
+    expect(slotSessions(getPaneLayout())).toEqual(["A", "B"]);
+    expect(getPaneLayout()).toBe(getPaneLayouts()[1]);
+  });
+
+  it("anchors on the route session, not a remotely-changed focused pane", () => {
+    // Route owns A; its tab is {A,B}, focused on A.
+    applyPreset("cols-2", "A", ["A", "B"]);
+    setRouteAnchorSession("A");
+
+    // A remote change moves the tab's focused pane to B (focus is synced).
+    const tabAB = applyPresetPure("cols-2", "A", ["A", "B"]);
+    const bLeaf = leaves(tabAB.root).find((l) => l.sessionId === "B")!;
+    hydrateLayoutSet(
+      serializeLayoutSet([{ ...tabAB, focusedPaneId: bLeaf.id }], 0),
+    );
+
+    // Then a second remote change splits B into its own tab while A stays put.
+    hydrateLayoutSet(
+      serializeLayoutSet(
+        [
+          applyPresetPure("single", "A", ["A"]),
+          applyPresetPure("cols-2", "B", ["B", "X"]),
+        ],
+        1,
+      ),
+    );
+
+    // The window follows A (its route), not the remotely-moved focus on B.
+    expect(getPaneLayout()).toBe(getPaneLayouts()[0]);
+    expect(visibleSessionIds(getPaneLayout().root)).toEqual(["A"]);
+  });
+
+  it("follows the anchored session when a remote change moves its tab", () => {
+    // Two tabs; this window's route owns A and is looking at A's tab.
+    applyPreset("cols-2", "A", ["A"]);
+    applyPreset("cols-2", "B", ["B"]);
+    activatePaneLayoutForSession("A");
+    setRouteAnchorSession("A");
+    expect(visibleSessionIds(getPaneLayout().root)).toEqual(["A"]);
+
+    // Remote regroups A and B into a single pair; the separate tabs are gone.
+    const remote = serializeLayoutSet(
+      [applyPresetPure("cols-2", "B", ["B", "A"])],
+      0,
+    );
+    hydrateLayoutSet(remote);
+
+    // Active tab tracks A into the merged pair rather than falling out of it.
+    expect(getPaneLayouts()).toHaveLength(1);
+    expect(visibleSessionIds(getPaneLayout().root)).toContain("A");
+  });
+
+  it("does not let a background-tab activation rewrite the route anchor", () => {
+    // Route owns A; a separate background tab holds C/D.
+    applyPreset("cols-2", "A", ["A", "B"]);
+    applyPreset("cols-2", "C", ["C", "D"]);
+    activatePaneLayoutForSession("A"); // view A's tab
+    setRouteAnchorSession("A"); // route owns A
+
+    // Renaming the background C/D tab activates it without navigating —
+    // mirrors ChatTabGroup.submitRename. The route anchor must stay A.
+    activatePaneLayoutForSession("C");
+
+    // A remote change moves C elsewhere; A stays in its own tab (index 0).
+    const remote = serializeLayoutSet(
+      [
+        applyPresetPure("cols-2", "A", ["A", "B"]),
+        applyPresetPure("cols-2", "C", ["C", "X"]),
+      ],
+      1,
+    );
+    hydrateLayoutSet(remote);
+
+    // Anchored on A, not the just-activated C, so we stay on A's tab.
+    expect(getPaneLayout()).toBe(getPaneLayouts()[0]);
+    expect(slotSessions(getPaneLayout())).toEqual(["A", "B"]);
+  });
+
+  it("marks hydrated members fresh so the vanished-session sweep spares them", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    applyPreset("single", "A", ["A"]);
+
+    // Remote fills a pane with a chat this window's row cache hasn't seen.
+    const remote = serializeLayoutSet(
+      [applyPresetPure("cols-2", "A", ["A", "just-made-elsewhere"])],
+      0,
+    );
+    hydrateLayoutSet(remote);
+
+    expect(isFreshlyAssigned("just-made-elsewhere")).toBe(true);
+  });
+
+  it("converges collapsed state from the broadcasting window", () => {
+    applyPreset("cols-2", "A", ["A", "B"]);
+    expect(getPaneLayouts()[0].collapsed ?? false).toBe(false);
+
+    const remote = serializeLayoutSet(
+      [{ ...applyPresetPure("cols-2", "A", ["A", "B"]), collapsed: true }],
+      0,
+    );
+    hydrateLayoutSet(remote);
+
+    expect(getPaneLayouts()[0].collapsed).toBe(true);
+  });
+
+  it("no-ops and returns false on a malformed payload", () => {
+    applyPreset("cols-2", "A", ["A", "B"]);
+    const before = getPaneLayouts();
+
+    let notified = 0;
+    const unsub = subscribePaneLayout(() => {
+      notified += 1;
+    });
+    expect(hydrateLayoutSet("not json")).toBe(false);
+    expect(hydrateLayoutSet("null")).toBe(false);
+    unsub();
+
+    expect(notified).toBe(0);
+    expect(getPaneLayouts()).toBe(before);
+  });
+});
+
 describe("fresh assignments", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -398,5 +579,53 @@ describe("serializeLayout / deserializeLayout", () => {
     expect(slotSessions(restored!)).toEqual(["A", "B"]);
     expect((restored!.root as PaneSplit).sizes).toEqual([50, 50]);
     expect(restored!.focusedPaneId).toBe(leaves(restored!.root)[0].id);
+  });
+});
+
+describe("cold-start hydration", () => {
+  const STORAGE_KEY = "runner.chat.layout";
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.doUnmock("@tauri-apps/api/window");
+    vi.doUnmock("@tauri-apps/api/event");
+    vi.resetModules();
+  });
+
+  it("loads the shared persisted set in a secondary window", async () => {
+    // The env's localStorage is a partial shim; back it with a Map so both
+    // the seed write and the freshly-imported module see the same store.
+    const store = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+      setItem: (k: string, v: string) => void store.set(k, String(v)),
+      removeItem: (k: string) => void store.delete(k),
+      clear: () => store.clear(),
+    });
+
+    // The main window persisted a grouped tab; now a secondary window opens.
+    localStorage.setItem(
+      STORAGE_KEY,
+      serializeLayoutSet([applyPresetPure("cols-2", "A", ["A", "B"])], 0),
+    );
+    vi.resetModules();
+    vi.doMock("@tauri-apps/api/window", () => ({
+      getCurrentWindow: () => ({ label: "window-secondary" }),
+    }));
+    vi.doMock("@tauri-apps/api/event", () => ({
+      emit: () => Promise.resolve(),
+      listen: () => Promise.resolve(() => {}),
+    }));
+
+    const mod = await import("./paneLayout");
+
+    // Even though a secondary window never WRITES localStorage, it now reads
+    // the shared set on cold start, so the tab structure shows immediately.
+    const tabs = mod.getPaneLayouts();
+    expect(tabs).toHaveLength(1);
+    expect(mod.leaves(tabs[0].root).map((l) => l.sessionId)).toEqual([
+      "A",
+      "B",
+    ]);
   });
 });

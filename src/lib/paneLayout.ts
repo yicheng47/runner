@@ -14,6 +14,7 @@
 
 import { useSyncExternalStore } from "react";
 
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export type PresetKind =
@@ -430,17 +431,24 @@ export function deserializeLayout(raw: string): PaneLayout | null {
   }
 }
 
-// Persist for the main window only: localStorage is shared by every
-// webview window, and secondary windows' labels (`window-<ulid>`) don't
-// survive a relaunch — persisting theirs would only clobber the main
-// window's pane tabs.
-let persistToStorage = false;
+// This window's Tauri label (`main` or `window-<ulid>`), resolved once at
+// module load. Null off-Tauri (dev browser preview), where the cross-window
+// broadcast/listen below all no-op.
+let windowLabel: string | null = null;
 try {
-  persistToStorage = getCurrentWindow().label === "main";
+  windowLabel = getCurrentWindow().label;
 } catch {
-  // Dev browser preview — single "window", persist normally.
-  persistToStorage = true;
+  windowLabel = null;
 }
+
+// localStorage is shared by every webview window. WRITES stay main-window
+// only: secondary windows' labels (`window-<ulid>`) don't survive a relaunch,
+// so persisting theirs would only clobber the main window's pane tabs (a
+// secondary's live changes still reach storage — they broadcast, the main
+// window hydrates and persists). READS, however, are open to every window so
+// a freshly-opened one cold-starts from the current structure instead of a
+// blank single pane. Off-Tauri there is a single "window", so it persists.
+const persistToStorage = windowLabel === null || windowLabel === "main";
 
 // ---- module store -------------------------------------------------------
 
@@ -481,7 +489,7 @@ function deserializeLayoutSet(
   }
 }
 
-function serializeLayoutSet(
+export function serializeLayoutSet(
   layouts: PaneLayout[],
   activeIndex: number,
 ): string {
@@ -492,11 +500,13 @@ function serializeLayoutSet(
   } satisfies PersistedLayoutSet);
 }
 
+// Read the shared persisted set for ANY window (see `persistToStorage`):
+// secondary windows load the main window's structure on cold start, then
+// track live changes over the broadcast channel.
 function readPersistedLayoutSet(): {
   layouts: PaneLayout[];
   activeIndex: number;
 } | null {
-  if (!persistToStorage) return null;
   try {
     const raw = localStorage.getItem(STORAGE_LAYOUT);
     return raw ? deserializeLayoutSet(raw) : null;
@@ -545,6 +555,13 @@ let layouts: PaneLayout[] = persisted?.layouts ?? [singleLayout()];
 let activeIndex = persisted?.activeIndex ?? 0;
 const listeners = new Set<() => void>();
 
+// The chat this window owns via its route — the last non-null session passed
+// to `setRouteAnchorSession` (only RunnerChat's URL effect calls it). This is
+// the anchor for cross-window hydration: it is local to this window and,
+// unlike a tab's `focusedPaneId`, never carried in the synced payload, so a
+// remote change can't move it off the tab it renders.
+let routeAnchorSession: string | null = null;
+
 function currentLayout(): PaneLayout {
   return layouts[activeIndex] ?? layouts[0] ?? singleLayout();
 }
@@ -554,7 +571,11 @@ function findLayoutIndexForSession(sessionId: string | null): number {
   return layouts.findIndex((layout) => leafForSession(layout.root, sessionId));
 }
 
-function setLayoutSet(
+// Commit a new layout set to the in-window store: normalize, swap in the
+// fresh arrays, persist (main window only), and notify subscribers. Does
+// NOT broadcast — the remote-hydration path reuses this so a received
+// change never echoes back out.
+function applyLayoutSet(
   nextLayouts: PaneLayout[],
   nextActiveIndex: number,
 ): void {
@@ -565,11 +586,100 @@ function setLayoutSet(
   for (const l of listeners) l();
 }
 
+function setLayoutSet(
+  nextLayouts: PaneLayout[],
+  nextActiveIndex: number,
+): void {
+  applyLayoutSet(nextLayouts, nextActiveIndex);
+  broadcastLayoutSet();
+}
+
 function setCurrent(next: PaneLayout): void {
   if (next === currentLayout()) return;
   const nextLayouts = [...layouts];
   nextLayouts[activeIndex] = next;
   setLayoutSet(nextLayouts, activeIndex);
+}
+
+// ---- cross-window sync (issue #258) -------------------------------------
+//
+// The store is per window and in-memory, so a tab/pane change in one window
+// left the others stale. Mirror how pins converge: every mutation through
+// `setLayoutSet` broadcasts the serialized set over a frontend Tauri event,
+// and every window reloads it. The change carries its origin window label so
+// a window ignores its own echo (Tauri `emit` also delivers to the sender);
+// the hydrate path reuses `applyLayoutSet`, which never re-broadcasts, so
+// there is no feedback loop.
+
+const LAYOUT_CHANGED_EVENT = "chat/layout-changed";
+
+interface LayoutChangedEvent {
+  /** Tauri label of the window that made the change; receivers drop their
+   *  own echo by comparing it to their own label. */
+  origin: string;
+  /** Serialized `PersistedLayoutSet` — the same payload localStorage holds. */
+  set: string;
+}
+
+function broadcastLayoutSet(): void {
+  if (windowLabel === null) return; // off-Tauri: nothing to sync
+  void emit(LAYOUT_CHANGED_EVENT, {
+    origin: windowLabel,
+    set: serializeLayoutSet(layouts, activeIndex),
+  } satisfies LayoutChangedEvent).catch(() => {
+    // best-effort; other windows converge on the next change
+  });
+}
+
+/**
+ * Apply a layout set received from another window: hydrate the in-memory
+ * store and notify subscribers, without re-broadcasting (echo guard). No-op
+ * and returns false on a malformed payload. Exported for the sync listener
+ * and its unit test.
+ */
+export function hydrateLayoutSet(raw: string): boolean {
+  const parsed = deserializeLayoutSet(raw);
+  if (!parsed) return false;
+
+  // Tab membership / sizes / collapsed / names converge, but activeIndex is
+  // per-window view state bound to this window's route. Adopting the
+  // sender's would repoint `currentLayout()` away from the tab this window
+  // renders, so a local `closePane`/`focusPane`/`setGroupName` would mutate
+  // the wrong tab. Keep our own active tab: re-find, in the incoming set,
+  // the tab showing our route session (`routeAnchorSession` — local, and
+  // not part of the synced payload, unlike a tab's focused pane). Fall back
+  // to clamping our index into range when we don't own a route yet.
+  const anchor = routeAnchorSession;
+  const anchoredIndex =
+    anchor !== null
+      ? parsed.layouts.findIndex((l) => leafForSession(l.root, anchor))
+      : -1;
+  const nextActive =
+    anchoredIndex >= 0
+      ? anchoredIndex
+      : Math.min(activeIndex, parsed.layouts.length - 1);
+
+  // Members may be sessions this window's row cache hasn't observed yet (a
+  // chat just created in another window). Mark them fresh so RunnerChat's
+  // vanished-session sweep leaves them alone until the rows catch up,
+  // instead of evicting them and broadcasting the stale layout back.
+  for (const l of parsed.layouts) {
+    for (const sid of visibleSessionIds(l.root)) {
+      freshAssignments.set(sid, Date.now());
+    }
+  }
+
+  applyLayoutSet(parsed.layouts, nextActive);
+  return true;
+}
+
+if (windowLabel !== null) {
+  void listen<LayoutChangedEvent>(LAYOUT_CHANGED_EVENT, (event) => {
+    if (event.payload.origin === windowLabel) return; // ignore own echo
+    hydrateLayoutSet(event.payload.set);
+  }).catch(() => {
+    // Tauri unavailable — cross-window sync simply no-ops.
+  });
 }
 
 export function getPaneLayout(sessionId: string | null = null): PaneLayout {
@@ -605,6 +715,17 @@ export function usePaneLayouts(): PaneLayout[] {
   );
 }
 
+/**
+ * Record the chat this window owns via its route, for cross-window hydration
+ * to anchor on. Only RunnerChat's URL effect should call this — generic tab
+ * activations (a sidebar pick, renaming a background tab) reactivate a tab
+ * without owning it as the route, and must not move the anchor. Keeps the
+ * last non-null id so navigating to a non-chat surface doesn't drop it.
+ */
+export function setRouteAnchorSession(sessionId: string | null): void {
+  if (sessionId !== null) routeAnchorSession = sessionId;
+}
+
 export function activatePaneLayoutForSession(
   sessionId: string | null,
 ): PaneLayout {
@@ -623,6 +744,7 @@ export function resetPaneLayoutsForTest(
   const normalized = normalizeLayoutSet(nextLayouts, nextActiveIndex);
   layouts = normalized.layouts;
   activeIndex = normalized.activeIndex;
+  routeAnchorSession = null;
   freshAssignments.clear();
   for (const l of listeners) l();
 }
@@ -733,9 +855,12 @@ export function closePane(paneId: string): PaneLayout {
   return currentLayout();
 }
 
-/** Record live gutter sizes without notifying subscribers — the panel lib
- *  owns the visual truth during a drag; this only keeps the model (and
- *  the persisted copy) current. Fires on drag end, not per frame. */
+/** Record live gutter sizes without notifying local subscribers — the panel
+ *  lib owns the visual truth during a drag; this only keeps the model (and
+ *  the persisted copy) current. Fires on drag end, not per frame. Sizes are
+ *  part of the serialized payload, so it also broadcasts: other windows are
+ *  not mid-drag and reconverge on the new sizes, and the main window's
+ *  localStorage picks up a resize made in a secondary window. */
 export function recordSplitSizes(
   splitId: string,
   sizes: [number, number],
@@ -751,4 +876,5 @@ export function recordSplitSizes(
   };
   walk(currentLayout().root);
   persistLayoutSet();
+  broadcastLayoutSet();
 }
