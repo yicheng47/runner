@@ -51,7 +51,6 @@ import {
 } from "../lib/archivingState";
 import { ChatPaneGroup } from "../components/ChatPaneGroup";
 import { createTerminalRegistry } from "../lib/terminalRegistry";
-import { refreshAllTerminalAtlases } from "../components/RunnerTerminal";
 import { LayoutPicker } from "../components/LayoutPicker";
 import { StartChatModal } from "../components/StartChatModal";
 import {
@@ -234,11 +233,6 @@ export default function RunnerChat() {
       next.delete(id);
       return next;
     });
-    // The settled TUI's paint burst may have evicted sibling panes'
-    // WebGL glyph textures (no context created or lost, so neither
-    // renderer hook fires). Repaint every mounted terminal now that
-    // the burst is over — background split panes can't self-heal.
-    refreshAllTerminalAtlases();
   }, []);
   // True while a freshly-attached session is still warming up — the
   // terminal has mounted but the agent CLI (claude-code / codex)
@@ -720,9 +714,6 @@ export default function RunnerChat() {
     const finish = () => {
       if (cancelled) return;
       setStarting(false);
-      // A fresh spawn's first-frame burst can evict sibling panes'
-      // glyph textures, same as a resume settling — repaint peers.
-      refreshAllTerminalAtlases();
     };
 
     const scheduleIdleTimer = () => {
