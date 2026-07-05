@@ -550,6 +550,13 @@ let layouts: PaneLayout[] = persisted?.layouts ?? [singleLayout()];
 let activeIndex = persisted?.activeIndex ?? 0;
 const listeners = new Set<() => void>();
 
+// The chat this window owns via its route — the last non-null session passed
+// to `setRouteAnchorSession` (only RunnerChat's URL effect calls it). This is
+// the anchor for cross-window hydration: it is local to this window and,
+// unlike a tab's `focusedPaneId`, never carried in the synced payload, so a
+// remote change can't move it off the tab it renders.
+let routeAnchorSession: string | null = null;
+
 function currentLayout(): PaneLayout {
   return layouts[activeIndex] ?? layouts[0] ?? singleLayout();
 }
@@ -628,7 +635,36 @@ function broadcastLayoutSet(): void {
 export function hydrateLayoutSet(raw: string): boolean {
   const parsed = deserializeLayoutSet(raw);
   if (!parsed) return false;
-  applyLayoutSet(parsed.layouts, parsed.activeIndex);
+
+  // Tab membership / sizes / collapsed / names converge, but activeIndex is
+  // per-window view state bound to this window's route. Adopting the
+  // sender's would repoint `currentLayout()` away from the tab this window
+  // renders, so a local `closePane`/`focusPane`/`setGroupName` would mutate
+  // the wrong tab. Keep our own active tab: re-find, in the incoming set,
+  // the tab showing our route session (`routeAnchorSession` — local, and
+  // not part of the synced payload, unlike a tab's focused pane). Fall back
+  // to clamping our index into range when we don't own a route yet.
+  const anchor = routeAnchorSession;
+  const anchoredIndex =
+    anchor !== null
+      ? parsed.layouts.findIndex((l) => leafForSession(l.root, anchor))
+      : -1;
+  const nextActive =
+    anchoredIndex >= 0
+      ? anchoredIndex
+      : Math.min(activeIndex, parsed.layouts.length - 1);
+
+  // Members may be sessions this window's row cache hasn't observed yet (a
+  // chat just created in another window). Mark them fresh so RunnerChat's
+  // vanished-session sweep leaves them alone until the rows catch up,
+  // instead of evicting them and broadcasting the stale layout back.
+  for (const l of parsed.layouts) {
+    for (const sid of visibleSessionIds(l.root)) {
+      freshAssignments.set(sid, Date.now());
+    }
+  }
+
+  applyLayoutSet(parsed.layouts, nextActive);
   return true;
 }
 
@@ -674,6 +710,17 @@ export function usePaneLayouts(): PaneLayout[] {
   );
 }
 
+/**
+ * Record the chat this window owns via its route, for cross-window hydration
+ * to anchor on. Only RunnerChat's URL effect should call this — generic tab
+ * activations (a sidebar pick, renaming a background tab) reactivate a tab
+ * without owning it as the route, and must not move the anchor. Keeps the
+ * last non-null id so navigating to a non-chat surface doesn't drop it.
+ */
+export function setRouteAnchorSession(sessionId: string | null): void {
+  if (sessionId !== null) routeAnchorSession = sessionId;
+}
+
 export function activatePaneLayoutForSession(
   sessionId: string | null,
 ): PaneLayout {
@@ -692,6 +739,7 @@ export function resetPaneLayoutsForTest(
   const normalized = normalizeLayoutSet(nextLayouts, nextActiveIndex);
   layouts = normalized.layouts;
   activeIndex = normalized.activeIndex;
+  routeAnchorSession = null;
   freshAssignments.clear();
   for (const l of listeners) l();
 }
@@ -802,9 +850,12 @@ export function closePane(paneId: string): PaneLayout {
   return currentLayout();
 }
 
-/** Record live gutter sizes without notifying subscribers — the panel lib
- *  owns the visual truth during a drag; this only keeps the model (and
- *  the persisted copy) current. Fires on drag end, not per frame. */
+/** Record live gutter sizes without notifying local subscribers — the panel
+ *  lib owns the visual truth during a drag; this only keeps the model (and
+ *  the persisted copy) current. Fires on drag end, not per frame. Sizes are
+ *  part of the serialized payload, so it also broadcasts: other windows are
+ *  not mid-drag and reconverge on the new sizes, and the main window's
+ *  localStorage picks up a resize made in a secondary window. */
 export function recordSplitSizes(
   splitId: string,
   sizes: [number, number],
@@ -820,4 +871,5 @@ export function recordSplitSizes(
   };
   walk(currentLayout().root);
   persistLayoutSet();
+  broadcastLayoutSet();
 }

@@ -69,6 +69,7 @@ import {
   leaves,
   removeSessionFromLayout,
   setGroupName,
+  setRouteAnchorSession,
   usePaneLayout,
   visibleSessionIds,
   type PaneLeaf,
@@ -301,6 +302,9 @@ export default function RunnerChat() {
   // group stays intact in the background until a member is opened again.
   const layout = usePaneLayout(sessionId);
   useEffect(() => {
+    // This is the authoritative route signal: record the session this window
+    // owns so cross-window layout hydration anchors on it (paneLayout.ts).
+    setRouteAnchorSession(sessionId);
     activatePaneLayoutForSession(sessionId);
   }, [sessionId]);
   const splitActive = isGroupActiveFor(layout, sessionId);

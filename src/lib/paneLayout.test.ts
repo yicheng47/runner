@@ -21,6 +21,7 @@ import {
   resetPaneLayoutsForTest,
   serializeLayout,
   serializeLayoutSet,
+  setRouteAnchorSession,
   setSizesPure,
   setTabCollapsed,
   subscribePaneLayout,
@@ -307,14 +308,16 @@ describe("setTabCollapsed", () => {
 
 describe("hydrateLayoutSet (cross-window sync)", () => {
   afterEach(() => {
+    vi.useRealTimers();
     resetPaneLayoutsForTest();
   });
 
-  it("replaces the store with a set broadcast from another window and notifies subscribers", () => {
-    // Local state: a single tab on chat A.
-    applyPreset("single", "A", ["A"]);
+  it("converges tab membership from another window and notifies subscribers", () => {
+    // Local state: one tab {A,B}, focused on A (this window's active tab).
+    applyPreset("cols-2", "A", ["A", "B"]);
 
-    // A remote window's serialized set: two tabs, second one active.
+    // A remote window's serialized set: our tab plus a second one it made
+    // active.
     const remote = serializeLayoutSet(
       [
         applyPresetPure("cols-2", "A", ["A", "B"]),
@@ -336,8 +339,118 @@ describe("hydrateLayoutSet (cross-window sync)", () => {
     expect(tabs).toHaveLength(2);
     expect(slotSessions(tabs[0])).toEqual(["A", "B"]);
     expect(slotSessions(tabs[1])).toEqual(["C", "D"]);
-    // The remote active tab wins so every window agrees on the front tab.
-    expect(getPaneLayout()).toBe(tabs[1]);
+  });
+
+  it("keeps this window on its route tab instead of adopting the sender's active tab", () => {
+    // This window's route owns A (its tab is {A,B}).
+    applyPreset("cols-2", "A", ["A", "B"]);
+    setRouteAnchorSession("A");
+
+    // Sender's set puts A's tab at index 1 and makes {C,D} (index 0) active,
+    // so neither the sender's activeIndex nor a positional clamp lands on it.
+    const remote = serializeLayoutSet(
+      [
+        applyPresetPure("cols-2", "C", ["C", "D"]),
+        applyPresetPure("cols-2", "A", ["A", "B"]),
+      ],
+      0,
+    );
+
+    hydrateLayoutSet(remote);
+
+    // Active tab tracks the route session A, so a local closePane/focusPane
+    // can't hit the wrong tab.
+    expect(slotSessions(getPaneLayout())).toEqual(["A", "B"]);
+    expect(getPaneLayout()).toBe(getPaneLayouts()[1]);
+  });
+
+  it("anchors on the route session, not a remotely-changed focused pane", () => {
+    // Route owns A; its tab is {A,B}, focused on A.
+    applyPreset("cols-2", "A", ["A", "B"]);
+    setRouteAnchorSession("A");
+
+    // A remote change moves the tab's focused pane to B (focus is synced).
+    const tabAB = applyPresetPure("cols-2", "A", ["A", "B"]);
+    const bLeaf = leaves(tabAB.root).find((l) => l.sessionId === "B")!;
+    hydrateLayoutSet(
+      serializeLayoutSet([{ ...tabAB, focusedPaneId: bLeaf.id }], 0),
+    );
+
+    // Then a second remote change splits B into its own tab while A stays put.
+    hydrateLayoutSet(
+      serializeLayoutSet(
+        [
+          applyPresetPure("single", "A", ["A"]),
+          applyPresetPure("cols-2", "B", ["B", "X"]),
+        ],
+        1,
+      ),
+    );
+
+    // The window follows A (its route), not the remotely-moved focus on B.
+    expect(getPaneLayout()).toBe(getPaneLayouts()[0]);
+    expect(visibleSessionIds(getPaneLayout().root)).toEqual(["A"]);
+  });
+
+  it("follows the anchored session when a remote change moves its tab", () => {
+    // Two tabs; this window's route owns A and is looking at A's tab.
+    applyPreset("cols-2", "A", ["A"]);
+    applyPreset("cols-2", "B", ["B"]);
+    activatePaneLayoutForSession("A");
+    setRouteAnchorSession("A");
+    expect(visibleSessionIds(getPaneLayout().root)).toEqual(["A"]);
+
+    // Remote regroups A and B into a single pair; the separate tabs are gone.
+    const remote = serializeLayoutSet(
+      [applyPresetPure("cols-2", "B", ["B", "A"])],
+      0,
+    );
+    hydrateLayoutSet(remote);
+
+    // Active tab tracks A into the merged pair rather than falling out of it.
+    expect(getPaneLayouts()).toHaveLength(1);
+    expect(visibleSessionIds(getPaneLayout().root)).toContain("A");
+  });
+
+  it("does not let a background-tab activation rewrite the route anchor", () => {
+    // Route owns A; a separate background tab holds C/D.
+    applyPreset("cols-2", "A", ["A", "B"]);
+    applyPreset("cols-2", "C", ["C", "D"]);
+    activatePaneLayoutForSession("A"); // view A's tab
+    setRouteAnchorSession("A"); // route owns A
+
+    // Renaming the background C/D tab activates it without navigating —
+    // mirrors ChatTabGroup.submitRename. The route anchor must stay A.
+    activatePaneLayoutForSession("C");
+
+    // A remote change moves C elsewhere; A stays in its own tab (index 0).
+    const remote = serializeLayoutSet(
+      [
+        applyPresetPure("cols-2", "A", ["A", "B"]),
+        applyPresetPure("cols-2", "C", ["C", "X"]),
+      ],
+      1,
+    );
+    hydrateLayoutSet(remote);
+
+    // Anchored on A, not the just-activated C, so we stay on A's tab.
+    expect(getPaneLayout()).toBe(getPaneLayouts()[0]);
+    expect(slotSessions(getPaneLayout())).toEqual(["A", "B"]);
+  });
+
+  it("marks hydrated members fresh so the vanished-session sweep spares them", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    applyPreset("single", "A", ["A"]);
+
+    // Remote fills a pane with a chat this window's row cache hasn't seen.
+    const remote = serializeLayoutSet(
+      [applyPresetPure("cols-2", "A", ["A", "just-made-elsewhere"])],
+      0,
+    );
+    hydrateLayoutSet(remote);
+
+    expect(isFreshlyAssigned("just-made-elsewhere")).toBe(true);
   });
 
   it("converges collapsed state from the broadcasting window", () => {
