@@ -1,6 +1,28 @@
 # 19 — Mission split view
 
-> Tracking issue: [#166](https://github.com/yicheng47/runner/issues/166)
+> Tracking issue: [#255](https://github.com/yicheng47/runner/issues/255) (revives the deferred [#166](https://github.com/yicheng47/runner/issues/166)).
+
+## Update — 2026-07-05: revive on top of the shipped direct-chat split
+
+This spec predates **direct-chat split view** (feature 34 / impl 0020), which shipped the exact machinery a mission split needs. The plan below — a parallel `paneTree.ts` plus HTML5 drag-tab-to-edge — is **superseded in approach**. The intent stands; the build should **reuse**, not re-create:
+
+- **`src/lib/paneLayout.ts`** — the pane-tree model (leaf/split, six presets, move-not-copy, per-split sizes) *and* a per-surface tab set with localStorage persistence. Missions get layout + restore for free; the "in-memory, reset on switch" deferral (Out of scope, below) is already solved for chats.
+- **`src/components/ChatPaneGroup.tsx`** — ONE render path for any arrangement, terminals kept in a flat stack and **geometry-synced** onto pane rects (no portal re-parenting, no xterm remount). This obsoletes key decision 6 (remount-and-replay on move): geometry-sync keeps scrollback without a remount.
+- **Multi-subject window registry** (`windows.rs`, `useReportSubjects`) — already arbitrates split windows per session, so the Phase-5 multi-window cross-check holds by construction.
+- **Sidebar tab accordion** (impl 0023) — a mission's split would surface in the sidebar the same way a chat tab does.
+
+**What's actually mission-specific (the new work):**
+
+1. **Panes view the mission's runner sessions — nothing else.** The pane content is the fixed set of slot PTYs for this mission; the split exists to *watch two or three runners at once* (lead beside worker), not to compose a workspace of arbitrary chats. Critically, **a mission has no direct-chat creation**: none of feature 34's empty-pane → `StartChatModal` funnel, runner-preselect "new chat", or sidebar-pick-a-chat applies. An unfilled pane offers "show a runner session" — choose among the mission's slots — never "start a chat". This is the sharpest divergence from the direct-chat split, whose empty panes exist precisely to spawn new chats.
+2. **Sessions come from the mission's slots**, enumerated by `MissionWorkspace`, not the direct-chat list; the mission owns the pane store instead of `RunnerChat`. Reuse the `paneLayout` tree + geometry-sync, but the fill source is the slot session set and the pane is view-only assignment (no create, no move-in-a-new-chat).
+3. **The feed** stays the mission's own surface. Whether it can occupy a pane (as this spec originally proposed) or remains the fixed feed panel while only PTYs split is an open design call — the runner-session split is the core; feed-in-a-pane is optional.
+4. **Interaction: reuse the layout picker**, not drag-tab-to-edge. Direct chat shipped the picker; use the same one to choose how many runner sessions to show side by side. Drag-to-reshape belongs to feature 35 (sidebar) or a mission-center follow-up.
+
+**Why it "might be hard to design":** the feed-plus-N-PTYs tree, per-pane Stop/Resume + status chrome, and how resume/geometry interact across a mission restart are the genuinely tricky parts. Mock the mission workspace in `design/runners-design.pen` first — the way direct-chat split was mocked (`fxfRj` / `WQmol`) — before coding.
+
+The original proposal below is kept for its motivation and invariants (move-not-copy, one feed); read the model + DnD sections as historical.
+
+---
 
 ## Motivation
 

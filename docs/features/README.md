@@ -43,6 +43,10 @@ links to its tracking issue.
 - [33 — Mission last terminal tab](./33-mission-last-terminal-tab.md)
   — remember the last selected runner terminal inside each mission
   and restore it on workspace remount when the session is still valid.
+- [35 — Sidebar drag to group and disband tabs](./35-sidebar-drag-group-tabs.md)
+  — drag chats in the sidebar CHAT list to form a multi-pane tab, add a
+  chat to a group, or pull a member out; a frontend-only reshape of the
+  tab accordion (impl 0023), complementing the chat-surface layout picker.
 
 ## Archive
 
