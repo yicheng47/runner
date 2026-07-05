@@ -35,8 +35,6 @@ pub struct UpdateCrewInput {
     pub name: Option<String>,
     pub purpose: Option<Option<String>>,
     pub goal: Option<Option<String>>,
-    // `orchestrator_policy` is deprecated (superseded by
-    // `system_prompt_addendum`) and no longer accepted for write. See #247.
     /// Outer None = leave existing untouched; outer Some(inner) =
     /// write inner. Inner Some("") / whitespace-only collapses to
     /// NULL.
@@ -155,7 +153,6 @@ pub fn create(conn: &Connection, input: CreateCrewInput) -> Result<Crew> {
             name: name.to_string(),
             purpose: input.purpose,
             goal: input.goal,
-            orchestrator_policy: None,
             system_prompt_addendum: addendum,
             created_at: ts,
             updated_at: ts,
@@ -185,10 +182,6 @@ pub fn update(conn: &Connection, id: &str, input: UpdateCrewInput) -> Result<Cre
         None => existing.system_prompt_addendum,
     };
 
-    // `orchestrator_policy` is deprecated (superseded by
-    // `system_prompt_addendum`) and intentionally not written here — the
-    // column is retained for existing rows but no longer maintained. See
-    // #247. The repo's update column list excludes it.
     repo::crew::update(
         conn,
         &repo::crew::CrewRow {
@@ -196,7 +189,6 @@ pub fn update(conn: &Connection, id: &str, input: UpdateCrewInput) -> Result<Cre
             name,
             purpose,
             goal,
-            orchestrator_policy: None,
             system_prompt_addendum,
             created_at: existing.created_at,
             updated_at: now(),

@@ -71,13 +71,12 @@ sqlite3 "$DB_PATH" <<SQL
 PRAGMA foreign_keys = ON;
 BEGIN;
 
-INSERT OR REPLACE INTO crews (id, name, purpose, goal, orchestrator_policy, created_at, updated_at)
+INSERT OR REPLACE INTO crews (id, name, purpose, goal, created_at, updated_at)
 VALUES (
   '$CREW_ID',
   'Build squad',
   'Plan, build, and review a single feature end-to-end. Architect dispatches, implementer ships, reviewer gates merge.',
   'Definition of done = code merged behind a green test suite and a clean review pass, with a one-paragraph human-readable summary posted as a broadcast.',
-  NULL,
   '$NOW',
   '$NOW'
 );

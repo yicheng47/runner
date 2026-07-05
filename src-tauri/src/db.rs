@@ -72,6 +72,9 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // 0007: makes direct-chat `sessions.runner_id` nullable and adds
 // `agent_runtime` / `agent_command` so runtime-only chats can resume
 // without a persisted runner template (#195).
+// 0008: drops `crews.orchestrator_policy`. Deprecated in #247
+// (superseded by `system_prompt_addendum`) and read-only since; it
+// fed no prompt and was never written, so the drop is behavior-neutral.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -91,6 +94,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         7,
         include_str!("../migrations/0007_direct_runtime_sessions.sql"),
+    ),
+    (
+        8,
+        include_str!("../migrations/0008_drop_crews_orchestrator_policy.sql"),
     ),
 ];
 
@@ -478,14 +485,6 @@ mod tests {
     fn json_blob_columns_roundtrip() {
         let pool = open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        insert_crew(&conn, "c1");
-
-        let policy = serde_json::json!([{"when": {"signal": "ask_lead"}, "do": "inject_stdin"}]);
-        conn.execute(
-            "UPDATE crews SET orchestrator_policy = ?1 WHERE id = 'c1'",
-            params![policy.to_string()],
-        )
-        .unwrap();
 
         let env = serde_json::json!({"FOO": "bar", "BAZ": "qux"});
         let args = serde_json::json!(["--flag", "--val=1"]);
@@ -497,18 +496,6 @@ mod tests {
             params![args.to_string(), env.to_string(), "2026-04-22T00:00:00Z"],
         )
         .unwrap();
-
-        let policy_raw: String = conn
-            .query_row(
-                "SELECT orchestrator_policy FROM crews WHERE id = 'c1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&policy_raw).unwrap(),
-            policy
-        );
 
         let (args_raw, env_raw): (String, String) = conn
             .query_row(

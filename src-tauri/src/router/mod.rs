@@ -11,8 +11,8 @@
 //
 // What this is not. There is no policy engine, no rule abstraction, no
 // per-crew config in MVP. Handlers are a flat `match signal_type { … }`.
-// `crews.orchestrator_policy` is deprecated (#247), superseded by
-// `crew.system_prompt_addendum`; it is not read here or spliced anywhere.
+// The crew-level prompt layer is `crew.system_prompt_addendum`, spliced
+// on mission spawns — not read or acted on here.
 //
 // Per arch §5.5.0 invariant: messages never trigger router actions. Only
 // `EventKind::Signal` reaches the dispatcher; messages flow through the
