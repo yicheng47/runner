@@ -57,11 +57,11 @@ import {
   unmarkArchivingSession,
 } from "../lib/archivingState";
 import {
-  clusterActiveGroupRows,
   groupPinTargets,
   pinnedSessionIds,
   shouldInheritPinOnAdd,
 } from "../lib/groupPinning";
+import { buildChatListItems, type ChatListItem } from "../lib/chatTabs";
 import {
   activatePaneLayoutForSession,
   assignSessionToPane,
@@ -73,8 +73,10 @@ import {
   newChatTargetPane,
   removeSessionFromLayout,
   usePaneLayout,
+  usePaneLayouts,
   visibleSessionIds,
 } from "../lib/paneLayout";
+import { ChatTabGroup } from "./ChatTabGroup";
 import { useResizableWidth } from "../hooks/useResizableWidth";
 import {
   BRAND_MARK_PINNED_COLOR,
@@ -276,44 +278,44 @@ export function Sidebar({
   // session id rather than handle.
   const currentChatSessionId = chatMatch?.params.sessionId ?? null;
 
-  // Split-view state (impl 0020). The split is a chat group that renders
-  // only while the open chat is a member; the group rows get the selected
-  // fill (and the focused pane's row an accent bar) only then — while a
-  // non-member chat is open, the sidebar reads classic single-selection.
+  // Split-view state (impl 0020 / 0023). `paneLayout` is the tab holding the
+  // open chat; its focused pane's chat gets the selected fill + accent bar,
+  // and its accordion renders in accent (see ChatTabGroup). `paneLayouts` is
+  // the whole tab set, which the grouped CHAT render below partitions over.
   const paneLayout = usePaneLayout(currentChatSessionId);
+  const paneLayouts = usePaneLayouts();
   const chatGroupActive = isGroupActiveFor(paneLayout, currentChatSessionId);
-  const activeGroupSessionIds = useMemo(
-    () => (chatGroupActive ? visibleSessionIds(paneLayout.root) : null),
-    [chatGroupActive, paneLayout],
-  );
-  const paneOpenSessionIds = activeGroupSessionIds
-    ? new Set(activeGroupSessionIds)
-    : null;
   const focusedPaneSessionId = chatGroupActive
     ? (findLeaf(paneLayout.root, paneLayout.focusedPaneId)?.sessionId ?? null)
     : null;
 
-  // The CHAT list renders active-group members as one contiguous block in
-  // pane order, anchored where the group's best-sorted member sits — an
-  // unrelated pinned chat can't interleave between two members. Pure
-  // list-rendering logic; the backend sort stays group-blind.
-  const chatRows = useMemo(
+  // Partition the flat recent-direct rows into the tabs that own them: each
+  // ≥2-member tab renders as one accordion group (active or background), and
+  // every other chat stays a loose leaf row. Generalizes impl 0020's
+  // active-only clustering; the backend sort stays group-blind.
+  const chatItems = useMemo(
+    () => buildChatListItems(directSessions, paneLayouts),
+    [directSessions, paneLayouts],
+  );
+  // Flat display order (group members expanded in slot order) for keyboard
+  // page-nav, which steps through every chat regardless of grouping.
+  const orderedChatRows = useMemo(
     () =>
-      activeGroupSessionIds
-        ? clusterActiveGroupRows(directSessions, activeGroupSessionIds)
-        : directSessions,
-    [directSessions, activeGroupSessionIds],
+      chatItems.flatMap((item) =>
+        item.kind === "group" ? item.members : [item.row],
+      ),
+    [chatItems],
   );
 
   const sidebarNavigationEntries = useMemo<SidebarNavigationEntry[]>(
     () => [
       ...missions.map((mission) => ({ to: `/missions/${mission.id}` })),
-      ...chatRows.map((session) => ({
+      ...orderedChatRows.map((session) => ({
         to: `/chats/${session.session_id}`,
         state: { sessionStatus: session.status },
       })),
     ],
-    [chatRows, missions],
+    [orderedChatRows, missions],
   );
 
   const refreshMissions = useCallback(async () => {
@@ -693,8 +695,12 @@ export function Sidebar({
   // Chats outside the active group keep single-session behavior.
   const togglePin = useCallback(
     async (session: DirectSessionEntry) => {
-      const layout = getPaneLayout(currentChatSessionId);
-      const groupIds = isGroupActiveFor(layout, currentChatSessionId)
+      // Fan the pin across the toggled chat's OWN tab, not just the on-screen
+      // one: impl 0023 renders every multi-member tab with member context
+      // menus, so pinning a background group's member must still move the
+      // whole group as a unit (docs/impls/0023 §Interaction).
+      const layout = getPaneLayout(session.session_id);
+      const groupIds = isGroupActiveFor(layout, session.session_id)
         ? visibleSessionIds(layout.root)
         : [];
       const nextPinned = !session.pinned;
@@ -711,7 +717,7 @@ export function Sidebar({
         console.error("sidebar: session_pin failed", e);
       }
     },
-    [currentChatSessionId, directSessions, refreshDirectSessions],
+    [directSessions, refreshDirectSessions],
   );
 
   const archiveSession = useCallback(
@@ -882,6 +888,25 @@ export function Sidebar({
     ],
   );
 
+  // Accordion header (tab name) click: activate the header's OWN tab and open
+  // its focused pane's chat (impl 0023). Unlike openDirectChat this never
+  // routes through the empty-pane fill — a header is "go to this tab", so it
+  // must not pull the tab's chat into whatever empty pane the current split
+  // happens to have. Member-row clicks keep openDirectChat (spec: unchanged).
+  const activateTabChat = useCallback(
+    (entry: DirectSessionEntry) => {
+      const entryLayout = activatePaneLayoutForSession(entry.session_id);
+      const entryLeaf = leafForSession(entryLayout.root, entry.session_id);
+      if (entryLeaf) focusPane(entryLeaf.id);
+      const target = `/chats/${entry.session_id}`;
+      navigate(target, {
+        state: { sessionStatus: entry.status },
+        replace: location.pathname === target,
+      });
+    },
+    [navigate, location.pathname],
+  );
+
   // CHAT `+` button — opens the StartChat modal (GH #104). The modal is
   // a takeover, so we don't pre-expand the SESSION section; the new
   // chat row will be visible on return from the spawned chat URL.
@@ -902,6 +927,49 @@ export function Sidebar({
       return !prev;
     });
   }, []);
+
+  // Render one CHAT-list entry: an accordion for a multi-member tab, a plain
+  // leaf row for a loose chat. A group is "active" when it owns the open chat
+  // — only then does it carry the accent rail + focused-member marks.
+  const renderChatItem = (item: ChatListItem<DirectSessionEntry>) => {
+    if (item.kind === "group") {
+      const active = item.members.some(
+        (m) => m.session_id === currentChatSessionId,
+      );
+      return (
+        <ChatTabGroup
+          key={`group-${item.members[0].session_id}`}
+          layout={item.layout}
+          members={item.members}
+          active={active}
+          focusedSessionId={active ? focusedPaneSessionId : null}
+          activity={directSessionActivity}
+          renamingId={renamingId}
+          onOpenChat={openDirectChat}
+          onActivateTab={activateTabChat}
+          onMemberContextMenu={openSessionMenu}
+          onMemberRenameSubmit={(sessionId, title) =>
+            void submitRename(sessionId, title)
+          }
+          onMemberRenameCancel={() => setRenamingId(null)}
+        />
+      );
+    }
+    const s = item.row;
+    return (
+      <SessionRow
+        key={s.session_id}
+        session={s}
+        activity={directSessionActivity[s.session_id]}
+        selected={s.session_id === currentChatSessionId}
+        renaming={renamingId === s.session_id}
+        onClick={() => openDirectChat(s)}
+        onContextMenu={(anchor) => openSessionMenu(s, anchor)}
+        onRenameSubmit={(nextTitle) => void submitRename(s.session_id, nextTitle)}
+        onRenameCancel={() => setRenamingId(null)}
+      />
+    );
+  };
 
   const sidebarVisible = !collapsed || previewOpen;
   const sidebarPreview = collapsed && previewOpen;
@@ -1010,31 +1078,12 @@ export function Sidebar({
                 />
                 {sessionsOpen ? (
                   <div className="flex flex-col gap-0.5 px-3 pt-1">
-                    {chatRows.length === 0 ? (
+                    {chatItems.length === 0 ? (
                       <p className="px-2.5 py-1 text-xs text-fg-3">
                         No chats yet.
                       </p>
                     ) : (
-                      chatRows.map((s) => (
-                        <SessionRow
-                          key={s.session_id}
-                          session={s}
-                          activity={directSessionActivity[s.session_id]}
-                          selected={
-                            paneOpenSessionIds
-                              ? paneOpenSessionIds.has(s.session_id)
-                              : s.session_id === currentChatSessionId
-                          }
-                          paneFocused={s.session_id === focusedPaneSessionId}
-                          renaming={renamingId === s.session_id}
-                          onClick={() => openDirectChat(s)}
-                          onContextMenu={(anchor) => openSessionMenu(s, anchor)}
-                          onRenameSubmit={(nextTitle) =>
-                            void submitRename(s.session_id, nextTitle)
-                          }
-                          onRenameCancel={() => setRenamingId(null)}
-                        />
-                      ))
+                      chatItems.map(renderChatItem)
                     )}
                   </div>
                 ) : null}
@@ -1598,7 +1647,7 @@ function MissionRow({
   );
 }
 
-function SessionRow({
+export function SessionRow({
   session,
   activity,
   selected,

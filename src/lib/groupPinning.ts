@@ -1,11 +1,11 @@
 // Pin semantics for the on-screen chat group (spec 34 follow-up): the
-// active split group behaves as ONE pinned unit in the sidebar. Three
-// concerns, all pure so they unit-test like paneLayout's ops:
+// active split group behaves as ONE pinned unit in the sidebar. Two
+// concerns, both pure so they unit-test like paneLayout's ops:
 //   - a chat added to a group with a pinned member inherits the pin,
-//   - pin/unpin on a member fans out to every member,
-//   - the CHAT list renders members as one contiguous block.
+//   - pin/unpin on a member fans out to every member.
 // Group membership stays in the frontend layout store; the recent-direct
-// sort SQL is intentionally group-blind.
+// sort SQL is intentionally group-blind. Sidebar list ordering (which rows
+// cluster into which tab) lives in `chatTabs.ts`.
 
 interface PinnableRow {
   session_id: string;
@@ -55,31 +55,4 @@ export function groupPinTargets(
   return activeGroupSessionIds.filter(
     (id) => pinnedIds.has(id) !== nextPinned,
   );
-}
-
-/**
- * Reorder the recent-direct rows so active-group members render as one
- * contiguous block in pane order, anchored where the group's
- * highest-sorted member already sits. Non-members keep their relative
- * order, and because the anchor is the best-sorted member, a fully
- * unpinned group can never float up into the pinned cluster. Returns
- * the input unchanged when fewer than two members are in the list.
- */
-export function clusterActiveGroupRows<T extends { session_id: string }>(
-  rows: readonly T[],
-  activeGroupSessionIds: readonly string[],
-): readonly T[] {
-  const memberIds = new Set(activeGroupSessionIds);
-  const byId = new Map(rows.map((r) => [r.session_id, r]));
-  const block = activeGroupSessionIds
-    .map((id) => byId.get(id))
-    .filter((r): r is T => r !== undefined);
-  if (block.length < 2) return rows;
-  const anchor = rows.findIndex((r) => memberIds.has(r.session_id));
-  const out: T[] = [];
-  rows.forEach((r, i) => {
-    if (i === anchor) out.push(...block);
-    else if (!memberIds.has(r.session_id)) out.push(r);
-  });
-  return out;
 }

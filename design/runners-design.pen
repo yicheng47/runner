@@ -40345,6 +40345,807 @@
           ]
         }
       ]
+    },
+    {
+      "type": "frame",
+      "id": "y6LaRZ",
+      "x": -5668,
+      "y": 5410,
+      "name": "Tab accordion — sidebar spec",
+      "clip": true,
+      "width": 980,
+      "height": 780,
+      "fill": "#0F1014",
+      "cornerRadius": 12,
+      "stroke": "#272930",
+      "strokeWidth": 1,
+      "strokeAlignment": "inner",
+      "layout": "vertical",
+      "gap": 24,
+      "padding": 32,
+      "children": [
+        {
+          "type": "frame",
+          "id": "Y0XhV",
+          "name": "header",
+          "width": "fill_container",
+          "layout": "vertical",
+          "gap": 6,
+          "children": [
+            {
+              "type": "text",
+              "id": "s2cS2",
+              "name": "title",
+              "fill": "#DCDCE0",
+              "content": "Tab accordion — multi-pane grouping in the sidebar",
+              "fontFamily": "Inter",
+              "fontSize": 18,
+              "fontWeight": "600"
+            },
+            {
+              "type": "text",
+              "id": "D4rZ1",
+              "name": "subtitle",
+              "fill": "#9A9BA5",
+              "textGrowth": "fixed-width",
+              "width": 640,
+              "content": "Single-pane tabs stay flat leaf rows. A tab with 2+ panes collapses into one accordion group so its panes read as a unit.",
+              "fontFamily": "Inter",
+              "fontSize": 13,
+              "fontWeight": "normal"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "pSqtQ",
+          "name": "body",
+          "width": "fill_container",
+          "height": "fill_container",
+          "gap": 48,
+          "children": [
+            {
+              "type": "frame",
+              "id": "Oi9pL",
+              "name": "Sidebar slice",
+              "width": 240,
+              "height": "fill_container",
+              "fill": "#272930",
+              "cornerRadius": 10,
+              "stroke": "#272930",
+              "strokeWidth": 1,
+              "strokeAlignment": "inner",
+              "layout": "vertical",
+              "gap": 4,
+              "padding": [
+                16,
+                20,
+                20,
+                20
+              ],
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "Jpt1L",
+                  "name": "ChatHeader",
+                  "width": "fill_container",
+                  "justifyContent": "space_between",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "Zlo8x",
+                      "name": "left",
+                      "gap": 8,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "LMLEc",
+                          "name": "chev",
+                          "width": 10,
+                          "height": 10,
+                          "icon": "chevron-down",
+                          "library": "lucide",
+                          "fill": "#5A5C66"
+                        },
+                        {
+                          "type": "text",
+                          "id": "QlOsi",
+                          "name": "label",
+                          "fill": "#5A5C66",
+                          "content": "CHAT",
+                          "fontFamily": "JetBrains Mono",
+                          "fontSize": 10,
+                          "fontWeight": "600",
+                          "letterSpacing": 1
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "g2KzhX",
+                      "name": "AddBtn",
+                      "cornerRadius": 4,
+                      "padding": 4,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "RkTGg",
+                          "name": "plus",
+                          "width": 12,
+                          "height": 12,
+                          "icon": "plus",
+                          "library": "lucide",
+                          "fill": "#9A9BA5"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "W9vrCD",
+                  "name": "gap6",
+                  "width": "fill_container",
+                  "height": 6
+                },
+                {
+                  "type": "frame",
+                  "id": "ur60w",
+                  "name": "Tab A · multi (expanded)",
+                  "width": "fill_container",
+                  "layout": "vertical",
+                  "gap": 2,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "M0sZ2e",
+                      "name": "tabHeader",
+                      "width": "fill_container",
+                      "cornerRadius": 6,
+                      "gap": 8,
+                      "padding": [
+                        8,
+                        10
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "BYuIA",
+                          "name": "chev",
+                          "width": 11,
+                          "height": 11,
+                          "icon": "chevron-down",
+                          "library": "lucide",
+                          "fill": "#9A9BA5"
+                        },
+                        {
+                          "type": "icon",
+                          "id": "qr2BS",
+                          "name": "splitIcon",
+                          "width": 12,
+                          "height": 12,
+                          "icon": "columns-2",
+                          "library": "lucide",
+                          "fill": "#00FF9C"
+                        },
+                        {
+                          "type": "text",
+                          "id": "u9nj6",
+                          "name": "tabTitle",
+                          "fill": "#DCDCE0",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Event bus wiring",
+                          "fontFamily": "Inter",
+                          "fontSize": 12,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "EDwHN",
+                          "name": "paneCount",
+                          "fill": "#00FF9C1A",
+                          "cornerRadius": 999,
+                          "padding": [
+                            1,
+                            6
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "y25o71",
+                              "name": "n",
+                              "fill": "#00FF9C",
+                              "content": "2",
+                              "fontFamily": "JetBrains Mono",
+                              "fontSize": 10,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "eP5gU",
+                      "name": "paneRail",
+                      "width": "fill_container",
+                      "stroke": "#00FF9C4D",
+                      "strokeWidth": {
+                        "left": 2
+                      },
+                      "strokeAlignment": "inner",
+                      "layout": "vertical",
+                      "gap": 2,
+                      "padding": [
+                        0,
+                        0,
+                        0,
+                        15
+                      ],
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "c3SUAN",
+                          "name": "pane_active",
+                          "width": "fill_container",
+                          "fill": "#333640",
+                          "cornerRadius": 6,
+                          "stroke": "#3b3e49",
+                          "strokeWidth": 1,
+                          "strokeAlignment": "inner",
+                          "gap": 8,
+                          "padding": [
+                            8,
+                            10
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "ellipse",
+                              "id": "Dd3tT",
+                              "name": "dot",
+                              "fill": "#00FF9C",
+                              "width": 6,
+                              "height": 6
+                            },
+                            {
+                              "type": "text",
+                              "id": "t9gN0f",
+                              "name": "t",
+                              "fill": "#DCDCE0",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "Wire up event bus…",
+                              "fontFamily": "Inter",
+                              "fontSize": 12,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "O29hi7",
+                          "name": "pane",
+                          "width": "fill_container",
+                          "cornerRadius": 6,
+                          "gap": 8,
+                          "padding": [
+                            8,
+                            10
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "ellipse",
+                              "id": "b1DyRA",
+                              "name": "dot",
+                              "fill": "#00FF9C",
+                              "width": 6,
+                              "height": 6
+                            },
+                            {
+                              "type": "text",
+                              "id": "zCBBW",
+                              "name": "t",
+                              "fill": "#9A9BA5",
+                              "textGrowth": "fixed-width",
+                              "width": "fill_container",
+                              "content": "@architect chat",
+                              "fontFamily": "Inter",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "YlOeV",
+                  "name": "gapA",
+                  "width": "fill_container",
+                  "height": 4
+                },
+                {
+                  "type": "frame",
+                  "id": "o3lUh",
+                  "name": "Tab B · single (leaf)",
+                  "width": "fill_container",
+                  "cornerRadius": 6,
+                  "gap": 8,
+                  "padding": [
+                    8,
+                    10
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "ellipse",
+                      "id": "q77Yc4",
+                      "name": "dot",
+                      "fill": "#00FF9C",
+                      "width": 6,
+                      "height": 6
+                    },
+                    {
+                      "type": "text",
+                      "id": "GJQgn",
+                      "name": "t",
+                      "fill": "#9A9BA5",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Fix resume glitch",
+                      "fontFamily": "Inter",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "yJ2iC",
+                  "name": "gapB",
+                  "width": "fill_container",
+                  "height": 4
+                },
+                {
+                  "type": "frame",
+                  "id": "InLbx",
+                  "name": "Tab C · multi (collapsed)",
+                  "width": "fill_container",
+                  "layout": "vertical",
+                  "gap": 2,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "iqXAY",
+                      "name": "tabHeader",
+                      "width": "fill_container",
+                      "cornerRadius": 6,
+                      "gap": 8,
+                      "padding": [
+                        8,
+                        10
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "AkKyj",
+                          "name": "chev",
+                          "width": 11,
+                          "height": 11,
+                          "icon": "chevron-right",
+                          "library": "lucide",
+                          "fill": "#9A9BA5"
+                        },
+                        {
+                          "type": "icon",
+                          "id": "HoHJv",
+                          "name": "splitIcon",
+                          "width": 12,
+                          "height": 12,
+                          "icon": "columns-3",
+                          "library": "lucide",
+                          "fill": "#9A9BA5"
+                        },
+                        {
+                          "type": "text",
+                          "id": "mHvBP",
+                          "name": "tabTitle",
+                          "fill": "#DCDCE0",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Repo layer refactor",
+                          "fontFamily": "Inter",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "Cw7u7",
+                          "name": "paneCount",
+                          "fill": "#15161B",
+                          "cornerRadius": 999,
+                          "padding": [
+                            1,
+                            6
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "HDnXc",
+                              "name": "n",
+                              "fill": "#9A9BA5",
+                              "content": "3",
+                              "fontFamily": "JetBrains Mono",
+                              "fontSize": 10,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "ZC1Xd",
+                  "name": "gapC",
+                  "width": "fill_container",
+                  "height": 4
+                },
+                {
+                  "type": "frame",
+                  "id": "W6GN5U",
+                  "name": "Tab D · single (leaf)",
+                  "width": "fill_container",
+                  "cornerRadius": 6,
+                  "gap": 8,
+                  "padding": [
+                    8,
+                    10
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "ellipse",
+                      "id": "U9g7er",
+                      "name": "dot",
+                      "fill": "#5A5C66",
+                      "width": 6,
+                      "height": 6
+                    },
+                    {
+                      "type": "text",
+                      "id": "MXBOO",
+                      "name": "t",
+                      "fill": "#9A9BA5",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "@reviewer chat",
+                      "fontFamily": "Inter",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "NBck5",
+              "name": "notes",
+              "width": "fill_container",
+              "height": "fill_container",
+              "layout": "vertical",
+              "gap": 16,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "Q0IAZ",
+                  "name": "note",
+                  "width": "fill_container",
+                  "stroke": "#00FF9C",
+                  "strokeWidth": {
+                    "left": 3
+                  },
+                  "strokeAlignment": "inner",
+                  "padding": [
+                    0,
+                    0,
+                    0,
+                    12
+                  ],
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "nOI42",
+                      "name": "col",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 3,
+                      "padding": [
+                        2,
+                        0
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "i1zBl",
+                          "name": "t",
+                          "fill": "#DCDCE0",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Multi-pane → accordion",
+                          "fontFamily": "Inter",
+                          "fontSize": 13,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "O3Zis",
+                          "name": "d",
+                          "fill": "#9A9BA5",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "A tab with 2+ panes collapses into one group. The header carries a split icon (columns-2 / columns-3) and a pane-count badge.",
+                          "lineHeight": 1.4,
+                          "fontFamily": "Inter",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "U1a9dk",
+                  "name": "note",
+                  "width": "fill_container",
+                  "stroke": "#00FF9C",
+                  "strokeWidth": {
+                    "left": 3
+                  },
+                  "strokeAlignment": "inner",
+                  "padding": [
+                    0,
+                    0,
+                    0,
+                    12
+                  ],
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "gdtau",
+                      "name": "col",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 3,
+                      "padding": [
+                        2,
+                        0
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "JiWlD",
+                          "name": "t",
+                          "fill": "#DCDCE0",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Active tab & pane",
+                          "fontFamily": "Inter",
+                          "fontSize": 13,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "P0oAL",
+                          "name": "d",
+                          "fill": "#9A9BA5",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "The focused tab shows a green indent rail; its focused pane gets the filled + bordered active treatment. Everything else stays muted.",
+                          "lineHeight": 1.4,
+                          "fontFamily": "Inter",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "XC0vi",
+                  "name": "note",
+                  "width": "fill_container",
+                  "stroke": "#5A5C66",
+                  "strokeWidth": {
+                    "left": 3
+                  },
+                  "strokeAlignment": "inner",
+                  "padding": [
+                    0,
+                    0,
+                    0,
+                    12
+                  ],
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "AZWV9",
+                      "name": "col",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 3,
+                      "padding": [
+                        2,
+                        0
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "bnZx4",
+                          "name": "t",
+                          "fill": "#DCDCE0",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Single-pane → leaf",
+                          "fontFamily": "Inter",
+                          "fontSize": 13,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "BDLze",
+                          "name": "d",
+                          "fill": "#9A9BA5",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "A one-pane tab is a plain row: status dot + title, no chevron, no group chrome. The absence of the disclosure triangle is the tell.",
+                          "lineHeight": 1.4,
+                          "fontFamily": "Inter",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "f6sJf",
+                  "name": "note",
+                  "width": "fill_container",
+                  "stroke": "#9A9BA5",
+                  "strokeWidth": {
+                    "left": 3
+                  },
+                  "strokeAlignment": "inner",
+                  "padding": [
+                    0,
+                    0,
+                    0,
+                    12
+                  ],
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "my2Jh",
+                      "name": "col",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 3,
+                      "padding": [
+                        2,
+                        0
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "FFHyo",
+                          "name": "t",
+                          "fill": "#DCDCE0",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Collapse to tidy",
+                          "fontFamily": "Inter",
+                          "fontSize": 13,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "C4kEJP",
+                          "name": "d",
+                          "fill": "#9A9BA5",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Click the chevron or tab header to collapse. A collapsed group hides its panes but keeps the count + split icon, so it still reads as a group.",
+                          "lineHeight": 1.4,
+                          "fontFamily": "Inter",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "E4diz6",
+                  "name": "note",
+                  "width": "fill_container",
+                  "stroke": "#9A9BA5",
+                  "strokeWidth": {
+                    "left": 3
+                  },
+                  "strokeAlignment": "inner",
+                  "padding": [
+                    0,
+                    0,
+                    0,
+                    12
+                  ],
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "gAFAo",
+                      "name": "col",
+                      "width": "fill_container",
+                      "layout": "vertical",
+                      "gap": 3,
+                      "padding": [
+                        2,
+                        0
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "tYDC0",
+                          "name": "t",
+                          "fill": "#DCDCE0",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Tab title",
+                          "fontFamily": "Inter",
+                          "fontSize": 13,
+                          "fontWeight": "600"
+                        },
+                        {
+                          "type": "text",
+                          "id": "p14NTv",
+                          "name": "d",
+                          "fill": "#9A9BA5",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Header shows the tab's name (PaneLayout.name), defaulting to the focused pane's session title. Rename inline like any chat.",
+                          "lineHeight": 1.4,
+                          "fontFamily": "Inter",
+                          "fontSize": 12,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
     }
   ],
   "fileToken": "238a5aa3-1778-4702-a0cc-856ec975f9ae"

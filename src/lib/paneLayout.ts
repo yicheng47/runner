@@ -54,6 +54,9 @@ export interface PaneLayout {
   /** User-given group name; null = derive from member chat names. Only
    *  meaningful while split — a fresh group starts unnamed. */
   name: string | null;
+  /** Sidebar accordion tidied away (impl 0023). Absent = expanded; the
+   *  active on-screen tab renders expanded regardless. */
+  collapsed?: boolean;
 }
 
 // ---- pure helpers -------------------------------------------------------
@@ -339,6 +342,8 @@ interface PersistedLayout {
   sizes: Record<string, [number, number]>;
   focusedSlot: number;
   name: string | null;
+  /** Optional so old payloads deserialize as expanded (no version bump). */
+  collapsed?: boolean;
 }
 
 interface PersistedLayoutSet {
@@ -366,6 +371,7 @@ function toPersistedLayout(layout: PaneLayout): PersistedLayout {
       all.findIndex((l) => l.id === layout.focusedPaneId),
     ),
     name: layout.name,
+    ...(layout.collapsed ? { collapsed: true } : {}),
   };
 }
 
@@ -404,6 +410,7 @@ function fromPersistedLayout(
     root,
     focusedPaneId: all[focusedSlot].id,
     name: typeof p.name === "string" && p.name.length > 0 ? p.name : null,
+    ...(p.collapsed === true ? { collapsed: true } : {}),
   };
 }
 
@@ -583,6 +590,21 @@ export function usePaneLayout(sessionId: string | null = null): PaneLayout {
   );
 }
 
+/** The whole tab set, in tab order. The reference is stable between store
+ *  updates (each mutation swaps in a fresh array), so it is a sound
+ *  `useSyncExternalStore` snapshot for the sidebar's grouped render. */
+export function getPaneLayouts(): PaneLayout[] {
+  return layouts;
+}
+
+export function usePaneLayouts(): PaneLayout[] {
+  return useSyncExternalStore(
+    subscribePaneLayout,
+    getPaneLayouts,
+    getPaneLayouts,
+  );
+}
+
 export function activatePaneLayoutForSession(
   sessionId: string | null,
 ): PaneLayout {
@@ -641,6 +663,22 @@ export function setGroupName(name: string | null): void {
   const active = currentLayout();
   if (active.name === trimmed) return;
   setCurrent({ ...active, name: trimmed });
+}
+
+/** Collapse or expand a tab's sidebar accordion (impl 0023), persisted with
+ *  the set. Target a tab by a member session id or by its index. */
+export function setTabCollapsed(
+  target: string | number,
+  collapsed: boolean,
+): void {
+  const index =
+    typeof target === "number" ? target : findLayoutIndexForSession(target);
+  if (index < 0 || index >= layouts.length) return;
+  const layout = layouts[index];
+  if ((layout.collapsed ?? false) === collapsed) return;
+  const nextLayouts = [...layouts];
+  nextLayouts[index] = { ...layout, collapsed };
+  setLayoutSet(nextLayouts, activeIndex);
 }
 
 // Sessions assigned to a pane this app-session, with assign time. React
