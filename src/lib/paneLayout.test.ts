@@ -419,8 +419,8 @@ describe("hydrateLayoutSet (cross-window sync)", () => {
     activatePaneLayoutForSession("A"); // view A's tab
     setRouteAnchorSession("A"); // route owns A
 
-    // Renaming the background C/D tab activates it without navigating —
-    // mirrors ChatTabGroup.submitRename. The route anchor must stay A.
+    // Activating the background C/D tab (as setGroupName does when naming it)
+    // must not navigate — the route anchor must stay A.
     activatePaneLayoutForSession("C");
 
     // A remote change moves C elsewhere; A stays in its own tab (index 0).
