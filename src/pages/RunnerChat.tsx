@@ -16,8 +16,6 @@ import { listen } from "@tauri-apps/api/event";
 import {
   Archive,
   MoreHorizontal,
-  PanelRight,
-  PanelRightDashed,
   Pin,
   PinOff,
   SquarePen,
@@ -50,6 +48,7 @@ import {
   useArchivingVersion,
 } from "../lib/archivingState";
 import { ChatPaneGroup } from "../components/ChatPaneGroup";
+import { PanelToggleGlyph } from "../components/PanelToggleGlyph";
 import { createTerminalRegistry } from "../lib/terminalRegistry";
 import { LayoutPicker } from "../components/LayoutPicker";
 import { StartChatModal } from "../components/StartChatModal";
@@ -1684,11 +1683,14 @@ export default function RunnerChat() {
               aria-label="Open side panel"
               className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-2 hover:bg-raised hover:text-fg"
             >
-              {/* Dashed-bar variant = "panel exists but is collapsed";
-                  flips to the solid `PanelRight` when the panel is
-                  open. Two clearly distinct states, both Obsidian-
-                  flavored (no chevrons). */}
-              <PanelRightDashed aria-hidden className="h-4 w-4" />
+              {/* Hollow = "panel exists but is collapsed"; flips to the
+                  filled trailing column when the panel is open. Mirror of
+                  the left sidebar toggle (#246), oriented to the right. */}
+              <PanelToggleGlyph
+                side="right"
+                filled={false}
+                className="h-[12.5px] w-[16px]"
+              />
             </button>
           ) : null}
         </div>
@@ -1956,13 +1958,25 @@ function RunnerSidePanel({
     edge: "left",
     targets: [asideRef, innerRef],
   });
+  // Show the left divider only once the panel is fully open, and drop it the
+  // instant a collapse starts. Otherwise the visible border rides the
+  // animating left edge and reads as a gray bar sliding across the main area
+  // during the width transition (the left sidebar dodges this only because
+  // its border color happens to match its own background).
+  const [borderOn, setBorderOn] = useState(open);
+  useEffect(() => {
+    if (!open) setBorderOn(false);
+  }, [open]);
   return (
     <aside
       ref={asideRef}
       aria-hidden={!open}
+      onTransitionEnd={(e) => {
+        if (e.propertyName === "width" && open) setBorderOn(true);
+      }}
       style={{ width: open ? width : 0 }}
-      className={`relative flex shrink-0 flex-col overflow-hidden bg-panel transition-[width,border-left-width] duration-200 ease-in-out ${
-        open ? "border-l border-line" : "border-l-0"
+      className={`relative flex shrink-0 flex-col overflow-hidden bg-panel transition-[width] duration-200 ease-in-out ${
+        borderOn ? "border-l border-line" : "border-l-0"
       }`}
     >
       <div ref={innerRef} style={{ width }} className="flex h-full flex-col">
@@ -1981,7 +1995,11 @@ function RunnerSidePanel({
               aria-label="Collapse panel"
               className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-2 hover:bg-raised hover:text-fg"
             >
-              <PanelRight aria-hidden className="h-4 w-4" />
+              <PanelToggleGlyph
+                side="right"
+                filled
+                className="h-[12.5px] w-[16px]"
+              />
             </button>
           </div>
         </header>

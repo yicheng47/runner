@@ -21,8 +21,6 @@ import {
   MoreHorizontal,
   Pin,
   PinOff,
-  PanelRight,
-  PanelRightDashed,
   RotateCcw,
   SquarePen,
   Terminal,
@@ -53,6 +51,7 @@ import { MissionInput } from "../components/MissionInput";
 import { MissionMetaPanel } from "../components/MissionMetaPanel";
 import { MissionResetConfirm } from "../components/MissionResetConfirm";
 import { RunnersRail } from "../components/RunnersRail";
+import { PanelToggleGlyph } from "../components/PanelToggleGlyph";
 import {
   RunnerTerminal,
   type RunnerTerminalHandle,
@@ -843,6 +842,14 @@ export default function MissionWorkspace() {
       // ignore storage errors
     }
   }, [railOpen]);
+  // Show the rail's left divider only once it's fully open, dropping it as a
+  // collapse starts — otherwise the visible border rides the animating edge
+  // and slides across the workspace during the width transition. Mirrors the
+  // RunnerChat side panel.
+  const [railBorderOn, setRailBorderOn] = useState(railOpen);
+  useEffect(() => {
+    if (!railOpen) setRailBorderOn(false);
+  }, [railOpen]);
   // Drag-to-resize width for the rail. Persisted separately from the
   // open/closed flag so collapse → expand restores the last dragged
   // width instead of the hardcoded default. The hook writes
@@ -1040,7 +1047,11 @@ export default function MissionWorkspace() {
               aria-label="Open runners panel"
               className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-2 transition-colors hover:bg-raised hover:text-fg"
             >
-              <PanelRightDashed aria-hidden className="h-4 w-4" />
+              <PanelToggleGlyph
+                side="right"
+                filled={false}
+                className="h-[12.5px] w-[16px]"
+              />
             </button>
           ) : null}
         </div>
@@ -1221,9 +1232,12 @@ export default function MissionWorkspace() {
       <aside
         ref={railAsideRef}
         aria-hidden={!railOpen}
+        onTransitionEnd={(e) => {
+          if (e.propertyName === "width" && railOpen) setRailBorderOn(true);
+        }}
         style={{ width: railOpen ? railWidth : 0 }}
-        className={`relative flex shrink-0 flex-col overflow-hidden bg-panel transition-[width,border-left-width] duration-200 ease-in-out ${
-          railOpen ? "border-l border-line" : "border-l-0"
+        className={`relative flex shrink-0 flex-col overflow-hidden bg-panel transition-[width] duration-200 ease-in-out ${
+          railBorderOn ? "border-l border-line" : "border-l-0"
         }`}
       >
         <div
@@ -1265,7 +1279,11 @@ export default function MissionWorkspace() {
                 aria-label="Collapse panel"
                 className="flex h-7 w-7 cursor-pointer items-center justify-center rounded border border-transparent text-fg-2 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
               >
-                <PanelRight aria-hidden className="h-4 w-4" />
+                <PanelToggleGlyph
+                  side="right"
+                  filled
+                  className="h-[12.5px] w-[16px]"
+                />
               </button>
             </div>
           </header>

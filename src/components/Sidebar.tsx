@@ -34,9 +34,6 @@ import {
   AppWindow,
   Archive,
   ChevronDown,
-  ChevronRight,
-  ChevronsLeft,
-  ChevronsRight,
   MessageSquarePlus,
   MoreHorizontal,
   Pin,
@@ -77,6 +74,7 @@ import {
   visibleSessionIds,
 } from "../lib/paneLayout";
 import { ChatTabGroup } from "./ChatTabGroup";
+import { PanelToggleGlyph } from "./PanelToggleGlyph";
 import { useResizableWidth } from "../hooks/useResizableWidth";
 import {
   BRAND_MARK_PINNED_COLOR,
@@ -173,9 +171,9 @@ interface SidebarProps {
   settingsOpen: boolean;
   onSettingsOpenChange: (open: boolean) => void;
   // Collapsed/expanded state lives in AppShell so the global Cmd+S
-  // shortcut can toggle it. The `width` resize state stays local —
-  // it's preserved across collapse/expand cycles so users get their
-  // last full width back when they re-open.
+  // shortcut can toggle it too. The `width` resize state stays local —
+  // it's preserved across collapse/expand cycles so users get their last
+  // full width back when they re-open.
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
   previewOpen: boolean;
@@ -888,11 +886,12 @@ export function Sidebar({
     ],
   );
 
-  // Accordion header (tab name) click: activate the header's OWN tab and open
-  // its focused pane's chat (impl 0023). Unlike openDirectChat this never
-  // routes through the empty-pane fill — a header is "go to this tab", so it
-  // must not pull the tab's chat into whatever empty pane the current split
-  // happens to have. Member-row clicks keep openDirectChat (spec: unchanged).
+  // Accordion header row click: activate the header's OWN tab and open its
+  // focused pane's chat (impl 0023). ChatTabGroup fires this alongside its
+  // expand toggle. Unlike openDirectChat this never routes through the
+  // empty-pane fill — a header is "go to this tab", so it must not pull the
+  // tab's chat into whatever empty pane the current split happens to have.
+  // Member-row clicks keep openDirectChat (spec: unchanged).
   const activateTabChat = useCallback(
     (entry: DirectSessionEntry) => {
       const entryLayout = activatePaneLayoutForSession(entry.session_id);
@@ -973,6 +972,26 @@ export function Sidebar({
 
   const sidebarVisible = !collapsed || previewOpen;
   const sidebarPreview = collapsed && previewOpen;
+  // Keep the panel mounted through the collapse width-animation so it
+  // slides out under the overflow clip instead of blinking away — the
+  // mirror of the expand animation. `contentMounted` lingers true after
+  // `sidebarVisible` flips false; a `width` transitionend then clears it.
+  const [contentMounted, setContentMounted] = useState(sidebarVisible);
+  useEffect(() => {
+    if (sidebarVisible) setContentMounted(true);
+  }, [sidebarVisible]);
+  const showPanel = sidebarVisible || contentMounted;
+  // The collapsed hover-peek renders as a raised, docked overlay with a
+  // rounded right edge (Arc-ish), fading + sliding in on hover. `peeking`
+  // holds that overlay treatment through the fade-out so it stays absolute
+  // (never shoving the main content); pinning it open clears it, as does the
+  // width transitionend once fully closed.
+  const [peeking, setPeeking] = useState(false);
+  useEffect(() => {
+    if (previewOpen) setPeeking(true);
+    else if (!collapsed) setPeeking(false);
+  }, [previewOpen, collapsed]);
+  const peekOverlay = collapsed && (previewOpen || peeking);
 
   return (
     <>
@@ -981,18 +1000,30 @@ export function Sidebar({
         onMouseLeave={
           sidebarPreview ? () => onPreviewOpenChange(false) : undefined
         }
-        style={{ width: sidebarVisible ? width : 0 }}
-        className={`${
-          collapsed
-            ? "absolute left-0 top-0 z-40"
-            : "relative"
-        } ${
-          sidebarPreview ? "shadow-2xl shadow-black/40" : ""
-        } flex h-full shrink-0 select-none flex-col overflow-hidden transition-[width] duration-150 ${
-          sidebarVisible ? "border-r border-line bg-sidebar" : "bg-transparent"
+        onTransitionEnd={(e) => {
+          if (e.propertyName === "width" && !sidebarVisible) {
+            setContentMounted(false);
+            setPeeking(false);
+          }
+        }}
+        style={{
+          width: sidebarVisible ? width : 0,
+          opacity: sidebarVisible ? 1 : 0,
+        }}
+        className={`flex shrink-0 select-none flex-col overflow-hidden transition-[width,opacity] duration-150 ${
+          peekOverlay
+            ? // Collapsed peek: a raised, docked overlay with a rounded right
+              // edge. Kept absolute (via `peeking`) through the fade-out so it
+              // never shoves the main content on the way in or out.
+              "absolute inset-y-0 left-0 z-40 rounded-r-xl border-r border-line bg-sidebar shadow-2xl shadow-black/40"
+            : // Docked: in-flow so the width animation pushes/pulls the main
+              // content symmetrically on both expand and collapse.
+              `relative h-full ${
+                showPanel ? "border-r border-line bg-sidebar" : "bg-transparent"
+              }`
         }`}
       >
-        {sidebarVisible ? (
+        {showPanel ? (
           <div className="flex min-h-0 flex-1 flex-col pb-4">
             <div data-tauri-drag-region className="h-8 shrink-0" />
 
@@ -1029,11 +1060,12 @@ export function Sidebar({
 
             <div className="h-5 shrink-0" />
 
-            {/* Codex-desktop style: Mission and Chat live in one
-                natural scroll column. Sections stack by content
-                height; no pane reserves empty space. */}
-            <div className="min-h-0 flex-1 overflow-y-auto pb-3">
-              <section className="flex flex-col">
+            {/* Mission and Chat get INDEPENDENT scroll regions so a long
+                chat list can't scroll the mission tray out of view. The
+                mission tray is capped and self-scrolls; Chat fills and
+                scrolls the rest. */}
+            <div className="flex min-h-0 flex-1 flex-col pb-3">
+              <section className="flex shrink-0 flex-col">
                 <CollapsibleSectionHeader
                   label="MISSION"
                   open={missionsOpen}
@@ -1042,7 +1074,7 @@ export function Sidebar({
                   plusTitle="Start mission"
                 />
                 {missionsOpen ? (
-                  <div className="flex flex-col gap-0.5 px-3 pt-1">
+                  <div className="flex max-h-[38vh] flex-col gap-0.5 overflow-y-auto px-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                     {missions.length === 0 ? (
                       <p className="px-2.5 py-1 text-xs text-fg-3">
                         No live missions.
@@ -1067,7 +1099,7 @@ export function Sidebar({
                 ) : null}
               </section>
 
-              <section className="mt-5 flex flex-col">
+              <section className="mt-5 flex min-h-0 flex-1 flex-col">
                 <CollapsibleSectionHeader
                   label="CHAT"
                   open={sessionsOpen}
@@ -1077,7 +1109,7 @@ export function Sidebar({
                   plusExpanded={creatingChat}
                 />
                 {sessionsOpen ? (
-                  <div className="flex flex-col gap-0.5 px-3 pt-1">
+                  <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                     {chatItems.length === 0 ? (
                       <p className="px-2.5 py-1 text-xs text-fg-3">
                         No chats yet.
@@ -1092,13 +1124,13 @@ export function Sidebar({
 
             {/* Settings row — pinned at the bottom of the sidebar
                 column. Mirrors Pencil node `IJsUO` (sidebar settings).
-                The chevron points toward the action: left collapses
-                an open sidebar, right pins a hover-preview sidebar. */}
-            <div className="flex shrink-0 items-center gap-2 border-t border-line px-3 pt-2">
+                The trailing button collapses the sidebar (or, in a
+                hover-preview, pins it open) via the #246 panel glyph. */}
+            <div className="flex shrink-0 items-center gap-2 border-t border-sidebar-selected-border px-3 pt-2">
               <button
                 type="button"
                 onClick={() => setSettingsOpen(true)}
-                className="flex flex-1 cursor-pointer items-center gap-2.5 rounded border border-transparent px-2.5 py-2 text-left text-fg-2 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
+                className="flex flex-1 cursor-pointer items-center gap-2.5 rounded border border-transparent px-2.5 py-2 text-left text-fg-2 transition-colors hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg focus:border-sidebar-selected-border focus:bg-sidebar-selected/40 focus:text-fg focus:outline-none"
               >
                 <SettingsIcon aria-hidden className="h-3.5 w-3.5" />
                 <span className="text-[13px]">Settings</span>
@@ -1119,13 +1151,13 @@ export function Sidebar({
                 aria-label={
                   sidebarPreview ? "Keep sidebar open" : "Collapse sidebar"
                 }
-                className="flex h-6 w-6 cursor-pointer items-center justify-center rounded border border-transparent text-fg-3 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
+                className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded border border-transparent text-fg-2 transition-colors hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg focus:border-sidebar-selected-border focus:bg-sidebar-selected/40 focus:text-fg focus:outline-none"
               >
-                {sidebarPreview ? (
-                  <ChevronsRight aria-hidden className="h-3.5 w-3.5" />
-                ) : (
-                  <ChevronsLeft aria-hidden className="h-3.5 w-3.5" />
-                )}
+                <PanelToggleGlyph
+                  side="left"
+                  filled={!collapsed}
+                  className="h-[12px] w-[15.4px]"
+                />
               </button>
             </div>
           </div>
@@ -1282,7 +1314,7 @@ function NavRow({
         `flex items-center gap-2 rounded border px-2.5 py-1.5 text-sm transition-colors ${
           isActive
             ? "border-sidebar-selected-border bg-sidebar-selected font-semibold text-fg shadow-sm"
-            : "border-transparent text-fg-2 hover:bg-sidebar-selected/60 hover:text-fg"
+            : "border-transparent text-fg-2 hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg"
         }`
       }
     >
@@ -1305,7 +1337,7 @@ function NewChatNavRow({ onOpen }: { onOpen: () => void }) {
       type="button"
       title="New chat"
       onClick={onOpen}
-      className="group flex w-full cursor-pointer items-center gap-2 rounded border border-transparent px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
+      className="group flex w-full cursor-pointer items-center gap-2 rounded border border-transparent px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg focus:border-sidebar-selected-border focus:bg-sidebar-selected/40 focus:text-fg focus:outline-none"
     >
       <MessageSquarePlus aria-hidden className="h-3 w-3 text-fg-2" />
       <span className="min-w-0 flex-1 truncate">new chat</span>
@@ -1326,7 +1358,7 @@ function SearchNavRow({ onOpen }: { onOpen: () => void }) {
       type="button"
       title="Search"
       onClick={onOpen}
-      className="group flex w-full cursor-pointer items-center gap-2 rounded border border-transparent px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
+      className="group flex w-full cursor-pointer items-center gap-2 rounded border border-transparent px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg focus:border-sidebar-selected-border focus:bg-sidebar-selected/40 focus:text-fg focus:outline-none"
     >
       <Search aria-hidden className="h-3 w-3 text-fg-2" />
       <span className="min-w-0 flex-1 truncate">search</span>
@@ -1356,7 +1388,6 @@ function CollapsibleSectionHeader({
    *  trigger advertises `aria-haspopup="dialog"` + `aria-expanded`. */
   plusExpanded?: boolean;
 }) {
-  const Chevron = open ? ChevronDown : ChevronRight;
   return (
     <div className="flex items-center justify-between gap-2 px-5 pb-1.5">
       <button
@@ -1364,8 +1395,13 @@ function CollapsibleSectionHeader({
         onClick={onToggle}
         className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-3 hover:text-fg-2"
       >
-        <Chevron aria-hidden className="h-2.5 w-2.5" />
         <span>{label}</span>
+        <ChevronDown
+          aria-hidden
+          className={`h-2.5 w-2.5 transition-transform ${
+            open ? "" : "-rotate-90"
+          }`}
+        />
       </button>
       <button
         type="button"
@@ -1455,7 +1491,7 @@ function SidebarListRow({
       className={`group relative flex w-full items-center gap-2 rounded border px-2.5 py-1.5 text-left text-xs transition-colors ${
         selected
           ? "border-sidebar-selected-border bg-sidebar-selected font-semibold text-fg shadow-sm"
-          : "border-transparent text-fg-2 hover:bg-sidebar-selected/60 hover:text-fg"
+          : "border-transparent text-fg-2 hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg"
       }`}
     >
       {accentBar ? (
