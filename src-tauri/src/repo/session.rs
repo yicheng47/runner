@@ -358,6 +358,9 @@ pub fn list_for_mission(
 
 /// A direct-chat session row plus the runner-template labels the sidebar
 /// needs. `runner_*` fields are None for runtime-only chats (#195).
+/// Direct chats are exactly rows with no mission and no slot; legacy
+/// orphaned mission-slot rows can have `mission_id NULL` after the old
+/// FK behavior, but their `slot_id` must keep them off this surface.
 #[derive(Debug, Clone)]
 pub struct DirectSessionRow {
     pub row: SessionRowDb,
@@ -392,6 +395,7 @@ pub fn list_recent_direct(conn: &Connection) -> rusqlite::Result<Vec<DirectSessi
            FROM sessions s
            LEFT JOIN runners r ON r.id = s.runner_id
           WHERE s.mission_id IS NULL
+            AND s.slot_id IS NULL
             AND s.archived_at IS NULL
           ORDER BY CASE WHEN s.pinned_at IS NOT NULL THEN 0 ELSE 1 END,
                    CASE WHEN s.status = 'running'    THEN 0 ELSE 1 END,
@@ -413,7 +417,8 @@ pub fn get_direct(conn: &Connection, id: &str) -> rusqlite::Result<Option<Direct
            FROM sessions s
            LEFT JOIN runners r ON r.id = s.runner_id
           WHERE s.id = ?1
-            AND s.mission_id IS NULL",
+            AND s.mission_id IS NULL
+            AND s.slot_id IS NULL",
         qualified_select_list("s", COLUMNS)
     );
     conn.query_row(&sql, rusqlite::params![id], direct_row)
@@ -647,6 +652,14 @@ mod tests {
             rusqlite::params![now],
         )
         .unwrap();
+        // Legacy orphan from the old mission FK: no mission, but still
+        // slot-bound, so it must never masquerade as a direct chat.
+        conn.execute(
+            "INSERT INTO sessions (id, mission_id, runner_id, slot_id, status, started_at)
+             VALUES ('orphan-slot', NULL, 'r1', 'slot-old', 'stopped', ?1)",
+            rusqlite::params![now],
+        )
+        .unwrap();
 
         let listed = list_recent_direct(&conn).unwrap();
         let ids: Vec<&str> = listed.iter().map(|d| d.row.id.as_str()).collect();
@@ -660,5 +673,9 @@ mod tests {
 
         let archived = get_direct(&conn, "d3").unwrap().unwrap();
         assert!(archived.row.archived_at.is_some());
+        assert!(
+            get_direct(&conn, "orphan-slot").unwrap().is_none(),
+            "slot-bound orphaned mission sessions must stay off direct-chat surfaces"
+        );
     }
 }

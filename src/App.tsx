@@ -9,6 +9,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AppShell } from "./components/AppShell";
+import { ToastProvider } from "./contexts/ToastContext";
 import { UpdateProvider } from "./contexts/UpdateContext";
 import { nudgeAppZoom } from "./lib/appZoom";
 import { readAppZoom } from "./lib/settings";
@@ -78,21 +79,23 @@ export default function App() {
 
   return (
     <UpdateProvider>
-      <BrowserRouter>
-        <InitialRouteBootstrap />
-        <Routes>
-          <Route element={<AppShell />}>
-            <Route path="/" element={<Navigate to="/runners" replace />} />
-            <Route path="/crews" element={<Crews />} />
-            <Route path="/crews/:crewId" element={<CrewEditor />} />
-            <Route path="/runners" element={<Runners />} />
-            <Route path="/runners/:handle" element={<RunnerDetail />} />
-            <Route path="/chats/:sessionId" element={<RunnerChat />} />
-            <Route path="/missions/:id" element={<MissionWorkspace />} />
-            <Route path="*" element={<Navigate to="/runners" replace />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
+      <ToastProvider>
+        <BrowserRouter>
+          <InitialRouteBootstrap />
+          <Routes>
+            <Route element={<AppShell />}>
+              <Route path="/" element={<Navigate to="/runners" replace />} />
+              <Route path="/crews" element={<Crews />} />
+              <Route path="/crews/:crewId" element={<CrewEditor />} />
+              <Route path="/runners" element={<Runners />} />
+              <Route path="/runners/:handle" element={<RunnerDetail />} />
+              <Route path="/chats/:sessionId" element={<RunnerChat />} />
+              <Route path="/missions/:id" element={<MissionWorkspace />} />
+              <Route path="*" element={<Navigate to="/runners" replace />} />
+            </Route>
+          </Routes>
+        </BrowserRouter>
+      </ToastProvider>
     </UpdateProvider>
   );
 }

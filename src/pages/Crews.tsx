@@ -8,6 +8,7 @@ import { useNavigate } from "react-router-dom";
 
 import { listen } from "@tauri-apps/api/event";
 
+import { useToast } from "../contexts/ToastContext";
 import { api } from "../lib/api";
 import type { CrewListItem } from "../lib/types";
 import { Button } from "../components/ui/Button";
@@ -21,6 +22,8 @@ export default function Crews() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [deletingCrewId, setDeletingCrewId] = useState<string | null>(null);
+  const { showToast } = useToast();
   const navigate = useNavigate();
 
   const refresh = useCallback(async () => {
@@ -75,12 +78,24 @@ export default function Crews() {
   }, [refresh]);
 
   const onDelete = async (id: string, name: string) => {
+    if (deletingCrewId) return;
     if (!confirm(`Delete crew "${name}"? This removes all its slots.`)) return;
+    if (
+      !confirm(
+        `Delete crew "${name}" permanently?\n\nThis also deletes archived missions and session history for this crew. Crews with non-archived missions cannot be deleted until those missions are archived.`,
+      )
+    )
+      return;
+    setDeletingCrewId(id);
+    showToast(`Deleting crew "${name}"...`, { durationMs: null });
     try {
       await api.crew.delete(id);
       await refresh();
+      showToast(`Deleted crew "${name}".`, { tone: "success" });
     } catch (e) {
-      setError(String(e));
+      showToast(String(e), { tone: "error" });
+    } finally {
+      setDeletingCrewId(null);
     }
   };
 
@@ -131,6 +146,7 @@ export default function Crews() {
                 <CrewCard
                   key={c.id}
                   item={c}
+                  deleting={deletingCrewId === c.id}
                   onOpen={() => navigate(`/crews/${c.id}`)}
                   onDelete={() => onDelete(c.id, c.name)}
                 />
@@ -181,10 +197,12 @@ function UsersIcon() {
 // list each slot with `@slot_handle` + `runtime-runner_handle`.
 function CrewCard({
   item,
+  deleting,
   onOpen,
   onDelete,
 }: {
   item: CrewListItem;
+  deleting: boolean;
   onOpen: () => void;
   onDelete: () => void;
 }) {
@@ -263,14 +281,15 @@ function CrewCard({
                 </button>
                 <button
                   type="button"
+                  disabled={deleting}
                   onClick={(e) => {
                     e.stopPropagation();
                     setMenuOpen(false);
                     onDelete();
                   }}
-                  className="cursor-pointer rounded px-2 py-1.5 text-left text-[13px] text-danger hover:bg-danger/10"
+                  className="cursor-pointer rounded px-2 py-1.5 text-left text-[13px] text-danger hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
                 >
-                  Delete
+                  {deleting ? "Deleting…" : "Delete"}
                 </button>
               </div>
             ) : null}

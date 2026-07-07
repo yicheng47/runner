@@ -833,7 +833,11 @@ fn emit_runner_activity(pool: &DbPool, runner: &Runner, events: &dyn SessionEven
     let direct_session_id: Option<String> = conn
         .query_row(
             "SELECT id FROM sessions
-              WHERE runner_id = ?1 AND status = 'running' AND mission_id IS NULL
+              WHERE runner_id = ?1
+                AND status = 'running'
+                AND mission_id IS NULL
+                AND slot_id IS NULL
+                AND archived_at IS NULL
               ORDER BY started_at DESC
               LIMIT 1",
             params![runner.id],

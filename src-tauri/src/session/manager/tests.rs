@@ -1454,6 +1454,57 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
 }
 
 #[test]
+fn runner_activity_event_direct_session_id_ignores_slot_bound_orphans() {
+    let pool = pool_with_schema();
+    let now = Utc::now();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'directevent', 'Direct Event', 'shell', '/bin/cat',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+            params![runner_id, now.to_rfc3339()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+                    (id, mission_id, runner_id, slot_id, status, started_at)
+                 VALUES ('slot-orphan-newer', NULL, ?1, 'slot-old', 'running', ?2)",
+            params![
+                runner_id,
+                (now + chrono::Duration::seconds(10)).to_rfc3339()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+                    (id, mission_id, runner_id, slot_id, status, started_at)
+                 VALUES ('direct-valid-older', NULL, ?1, NULL, 'running', ?2)",
+            params![runner_id, now.to_rfc3339()],
+        )
+        .unwrap();
+    }
+
+    let mut r = runner("/bin/cat", &[]);
+    r.id = runner_id;
+    r.handle = "directevent".into();
+    let cap = capture();
+    emit_runner_activity(&pool, &r, cap.as_ref());
+
+    let activity = cap.activity.lock().unwrap();
+    let ev = activity.last().expect("runner/activity event emitted");
+    assert_eq!(
+        ev.direct_session_id.as_deref(),
+        Some("direct-valid-older"),
+        "slot-bound orphan must not be emitted as a direct chat"
+    );
+}
+
+#[test]
 fn direct_chat_status_transition_emits_session_status_busy() {
     let pool = pool_with_schema();
     let now = Utc::now().to_rfc3339();

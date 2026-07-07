@@ -6,6 +6,7 @@ use serde::Deserialize;
 use tauri::Emitter;
 
 use crate::commands::runner;
+use crate::error::Error;
 use crate::mcp::server::RunnerMcpHandler;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -26,6 +27,13 @@ pub struct UpdateRunnerArgs {
     pub id: String,
     /// Fields to update. Omitted fields are preserved.
     pub input: runner::UpdateRunnerInput,
+}
+
+fn command_error(e: Error) -> ErrorData {
+    match e {
+        Error::Msg(message) => ErrorData::invalid_request(message, None),
+        other => ErrorData::internal_error(other.to_string(), None),
+    }
 }
 
 #[tool_router(router = runner_router, vis = "pub(crate)")]
@@ -111,6 +119,14 @@ impl RunnerMcpHandler {
         &self,
         Parameters(RunnerIdArgs { id }): Parameters<RunnerIdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        {
+            let conn = self
+                .state
+                .db
+                .get()
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            runner::ensure_delete_allowed(&conn, &id).map_err(command_error)?;
+        }
         self.state
             .sessions
             .kill_all_for_runner(&id)
@@ -120,8 +136,7 @@ impl RunnerMcpHandler {
             .db
             .get()
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        runner::delete(&mut conn, &id)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        runner::delete(&mut conn, &id).map_err(command_error)?;
         self.state.app_handle.emit("runner/changed", ()).ok();
         self.state.app_handle.emit("slot/changed", ()).ok();
         Ok(CallToolResult::success(vec![Content::json(
