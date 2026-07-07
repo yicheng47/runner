@@ -325,9 +325,10 @@ pub async fn session_list_recent_direct(
 /// read-only (no PTY attach, no Resume, no live composer) instead of
 /// silently failing to find the session.
 ///
-/// Returns `None` if the id doesn't exist. Mission sessions are not
-/// returned here — this command is for direct chats only, matching
-/// the surface that `listRecentDirect` covers.
+/// Returns `None` if the id doesn't exist. Mission sessions and
+/// slot-bound legacy orphans are not returned here — this command is
+/// for direct chats only, matching the surface that `listRecentDirect`
+/// covers.
 ///
 /// The SQL lives in `get_direct(...)` below so the test module can
 /// exercise the real query against an in-memory DB without spinning
@@ -635,6 +636,7 @@ mod tests {
                    FROM sessions s
                    LEFT JOIN runners r ON r.id = s.runner_id
                   WHERE s.mission_id IS NULL
+                    AND s.slot_id IS NULL
                     AND s.archived_at IS NULL
                   ORDER BY CASE WHEN s.pinned_at IS NOT NULL THEN 0 ELSE 1 END,
                            CASE WHEN s.status = 'running'    THEN 0 ELSE 1 END,

@@ -6,7 +6,7 @@
 // + sidecar that used to feed it are gone (feature 20).
 
 use chrono::Utc;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -197,11 +197,44 @@ pub fn update(conn: &Connection, id: &str, input: UpdateCrewInput) -> Result<Cre
     get(conn, id)
 }
 
-pub fn delete(conn: &Connection, id: &str) -> Result<()> {
-    let affected = repo::crew::delete(conn, id)?;
+fn non_archived_mission_ids_for_crew(
+    conn: &Connection,
+    crew_id: &str,
+) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id
+           FROM missions
+          WHERE crew_id = ?1
+            AND archived_at IS NULL
+          ORDER BY started_at ASC",
+    )?;
+    let ids = stmt
+        .query_map(params![crew_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
+
+pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let mission_ids = non_archived_mission_ids_for_crew(&tx, id)?;
+    if !mission_ids.is_empty() {
+        return Err(Error::msg(format!(
+            "crew {id} has non-archived missions; archive them before deleting this crew: {}",
+            mission_ids.join(", ")
+        )));
+    }
+    tx.execute(
+        "DELETE FROM sessions
+          WHERE mission_id IN (
+              SELECT id FROM missions WHERE crew_id = ?1
+          )",
+        params![id],
+    )?;
+    let affected = repo::crew::delete(&tx, id)?;
     if affected == 0 {
         return Err(Error::msg(format!("crew not found: {id}")));
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -235,8 +268,8 @@ pub async fn crew_update(
 
 #[tauri::command]
 pub async fn crew_delete(state: State<'_, AppState>, id: String) -> Result<()> {
-    let conn = state.db.get()?;
-    delete(&conn, &id)
+    let mut conn = state.db.get()?;
+    delete(&mut conn, &id)
 }
 
 #[cfg(test)]
@@ -373,7 +406,7 @@ mod tests {
         // slot rows but leave the runner intact for other crews (or a
         // future direct chat).
         let pool = ctx();
-        let conn = pool.get().unwrap();
+        let mut conn = pool.get().unwrap();
         let crew = create(
             &conn,
             CreateCrewInput {
@@ -398,7 +431,7 @@ mod tests {
         )
         .unwrap();
 
-        delete(&conn, &crew.id).unwrap();
+        delete(&mut conn, &crew.id).unwrap();
         let slot_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM slots WHERE crew_id = ?1",
@@ -413,6 +446,108 @@ mod tests {
             .unwrap();
         assert_eq!(slot_count, 0);
         assert_eq!(runner_count, 1, "runner outlives the crew");
+    }
+
+    #[test]
+    fn delete_refuses_crew_with_any_non_archived_mission() {
+        let pool = ctx();
+        let mut conn = pool.get().unwrap();
+        let crew = create(
+            &conn,
+            CreateCrewInput {
+                name: "Busy".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO missions (id, crew_id, title, status, started_at)
+             VALUES ('m-live', ?1, 'Live', 'running', '2026-04-22T00:00:00Z')",
+            params![crew.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO missions
+                (id, crew_id, title, status, started_at, stopped_at)
+             VALUES ('m-aborted', ?1, 'Aborted', 'aborted',
+                     '2026-04-22T00:01:00Z', '2026-04-22T00:02:00Z')",
+            params![crew.id],
+        )
+        .unwrap();
+
+        let err = delete(&mut conn, &crew.id).unwrap_err().to_string();
+        assert!(err.contains("non-archived missions"));
+        assert!(err.contains("m-live"));
+        assert!(err.contains("m-aborted"));
+        let crew_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM crews WHERE id = ?1",
+                params![crew.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(crew_count, 1, "crew must survive a refused delete");
+    }
+
+    #[test]
+    fn delete_removes_archived_mission_sessions_before_deleting_crew() {
+        let pool = ctx();
+        let mut conn = pool.get().unwrap();
+        let crew = create(
+            &conn,
+            CreateCrewInput {
+                name: "Archived".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO runners (
+                id, handle, display_name, runtime, command,
+                created_at, updated_at
+             ) VALUES ('r1', 'reviewer', 'Reviewer', 'shell', 'sh',
+                       '2026-04-22T00:00:00Z', '2026-04-22T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO missions
+                (id, crew_id, title, status, started_at, stopped_at, archived_at)
+             VALUES ('m-archived', ?1, 'Done', 'completed',
+                     '2026-04-22T00:00:00Z', '2026-04-22T01:00:00Z',
+                     '2026-04-22T01:00:00Z')",
+            params![crew.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+                (id, mission_id, runner_id, slot_id, status, started_at)
+             VALUES ('s-archived', 'm-archived', 'r1', 'slot-reviewer',
+                     'stopped', '2026-04-22T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        delete(&mut conn, &crew.id).unwrap();
+        let session_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = 's-archived'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mission_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM missions WHERE id = 'm-archived'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(session_count, 0, "app layer deletes mission sessions first");
+        assert_eq!(
+            mission_count, 0,
+            "crew delete still removes archived missions"
+        );
     }
 
     #[test]

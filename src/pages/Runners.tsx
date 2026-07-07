@@ -12,6 +12,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { MessageSquare } from "lucide-react";
 
+import { useToast } from "../contexts/ToastContext";
 import { api } from "../lib/api";
 import { readDefaultWorkingDir } from "../lib/settings";
 import type { RunnerActivityEvent, RunnerWithActivity } from "../lib/types";
@@ -27,6 +28,7 @@ export default function Runners() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const { showToast } = useToast();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -136,7 +138,7 @@ export default function Runners() {
         state: { sessionStatus: "running" },
       });
     } catch (e) {
-      setError(String(e));
+      showToast(String(e), { tone: "error" });
     } finally {
       setChatPending(null);
     }
@@ -145,15 +147,16 @@ export default function Runners() {
   const onDelete = async (id: string, handle: string) => {
     if (
       !confirm(
-        `Delete runner @${handle}? This removes it from every crew it's in, kills any live chats, and erases its session history. Crews and missions are kept.`,
+        `Delete runner @${handle}? This removes it from every crew it's in and deletes archived session history for that runner. Unarchived chats must be archived first. Crews and missions are kept.`,
       )
     )
       return;
     try {
       await api.runner.delete(id);
       await refresh();
+      showToast(`Deleted runner @${handle}.`, { tone: "success" });
     } catch (e) {
-      setError(String(e));
+      showToast(String(e), { tone: "error" });
     }
   };
 

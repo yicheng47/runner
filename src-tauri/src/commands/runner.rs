@@ -388,6 +388,36 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
     get(conn, id)
 }
 
+fn unarchived_direct_session_ids_for_runner(
+    conn: &Connection,
+    runner_id: &str,
+) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id
+           FROM sessions
+          WHERE runner_id = ?1
+            AND mission_id IS NULL
+            AND slot_id IS NULL
+            AND archived_at IS NULL
+          ORDER BY started_at ASC",
+    )?;
+    let ids = stmt
+        .query_map(params![runner_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
+
+pub(crate) fn ensure_delete_allowed(conn: &Connection, id: &str) -> Result<()> {
+    let session_ids = unarchived_direct_session_ids_for_runner(conn, id)?;
+    if !session_ids.is_empty() {
+        return Err(Error::msg(format!(
+            "runner {id} has unarchived chats; archive them before deleting this runner: {}",
+            session_ids.join(", ")
+        )));
+    }
+    Ok(())
+}
+
 // Global delete: removes the runner template row and lets the
 // `ON DELETE CASCADE` on `slots` strip every slot that referenced
 // the runner. A single runner template might have been referenced by
@@ -400,6 +430,7 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
 // (0..N-1).
 pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    ensure_delete_allowed(&tx, id)?;
 
     // Distinct crews that referenced this runner, plus whether ANY of
     // its slots in that crew was lead (so we know to auto-promote
@@ -418,6 +449,7 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
 
+    tx.execute("DELETE FROM sessions WHERE runner_id = ?1", params![id])?;
     let affected = repo::runner::delete(&tx, id)?;
     if affected != 1 {
         return Err(Error::msg(format!("runner not found: {id}")));
@@ -494,7 +526,11 @@ pub fn activity(conn: &Connection, runner_id: &str) -> Result<RunnerActivity> {
     let direct_session_id: Option<String> = conn
         .query_row(
             "SELECT id FROM sessions
-              WHERE runner_id = ?1 AND status = 'running' AND mission_id IS NULL
+              WHERE runner_id = ?1
+                AND status = 'running'
+                AND mission_id IS NULL
+                AND slot_id IS NULL
+                AND archived_at IS NULL
               ORDER BY started_at DESC
               LIMIT 1",
             params![runner_id],
@@ -560,12 +596,14 @@ pub async fn runner_update(
 
 #[tauri::command]
 pub async fn runner_delete(state: State<'_, AppState>, id: String) -> Result<()> {
-    // Reap every live PTY for this runner BEFORE the DB delete.
-    // `sessions.runner_id` is `ON DELETE CASCADE`, so the row drop nukes
-    // the session record — but the in-memory SessionManager still holds
-    // the live child + reader thread. Without `kill_all_for_runner`, the
-    // PTY lingers as a daemon attached to nothing and the Mac's TTY count
-    // climbs every time the user deletes a runner with an open chat.
+    {
+        let conn = state.db.get()?;
+        ensure_delete_allowed(&conn, &id)?;
+    }
+    // Reap every live PTY for this runner before the DB delete. The
+    // command-layer delete removes session rows explicitly, but the
+    // in-memory SessionManager still owns child processes and reader
+    // threads until they are killed.
     state.sessions.kill_all_for_runner(&id)?;
     let mut conn = state.db.get()?;
     delete(&mut conn, &id)
@@ -684,6 +722,117 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM runners", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn delete_refuses_runner_with_unarchived_direct_chat() {
+        let pool = ctx();
+        let mut conn = pool.get().unwrap();
+        let r = make(&conn, "alpha");
+        conn.execute(
+            "INSERT INTO sessions
+                (id, mission_id, runner_id, slot_id, status, started_at)
+             VALUES ('direct-live', NULL, ?1, NULL, 'stopped',
+                     '2026-04-22T00:00:00Z')",
+            params![r.id],
+        )
+        .unwrap();
+
+        let err = delete(&mut conn, &r.id).unwrap_err().to_string();
+        assert!(err.contains("unarchived chats"));
+        let runner_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM runners WHERE id = ?1",
+                params![r.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let session_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = 'direct-live'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(runner_count, 1, "runner must survive refused delete");
+        assert_eq!(session_count, 1, "chat must survive refused delete");
+    }
+
+    #[test]
+    fn delete_removes_runner_sessions_before_runner_row() {
+        let pool = ctx();
+        let mut conn = pool.get().unwrap();
+        let r = make(&conn, "alpha");
+        conn.execute(
+            "INSERT INTO crews (id, name, created_at, updated_at)
+             VALUES ('crew-1', 'Crew', '2026-04-22T00:00:00Z',
+                     '2026-04-22T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO missions (id, crew_id, title, status, started_at)
+             VALUES ('mission-1', 'crew-1', 'Mission', 'running',
+                     '2026-04-22T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+                (id, mission_id, runner_id, slot_id, status, started_at)
+             VALUES ('mission-session', 'mission-1', ?1, 'slot-1',
+                     'running', '2026-04-22T00:00:00Z')",
+            params![r.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+                (id, mission_id, runner_id, slot_id, status, started_at, archived_at)
+             VALUES ('archived-direct', NULL, ?1, NULL, 'stopped',
+                     '2026-04-22T00:00:00Z', '2026-04-22T01:00:00Z')",
+            params![r.id],
+        )
+        .unwrap();
+
+        delete(&mut conn, &r.id).unwrap();
+        let session_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions
+                  WHERE id IN ('mission-session', 'archived-direct')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mission_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM missions WHERE id = 'mission-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(session_count, 0, "runner sessions are hard-deleted");
+        assert_eq!(mission_count, 1, "runner delete does not delete missions");
+    }
+
+    #[test]
+    fn activity_direct_session_id_ignores_slot_bound_orphans() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let r = make(&conn, "alpha");
+        conn.execute(
+            "INSERT INTO sessions
+                (id, mission_id, runner_id, slot_id, status, started_at)
+             VALUES ('slot-orphan', NULL, ?1, 'slot-old', 'running',
+                     '2026-04-22T00:00:00Z')",
+            params![r.id],
+        )
+        .unwrap();
+
+        let got = activity(&conn, &r.id).unwrap();
+        assert_eq!(
+            got.direct_session_id, None,
+            "slot-bound orphan must not be treated as direct chat activity"
+        );
     }
 
     #[test]
