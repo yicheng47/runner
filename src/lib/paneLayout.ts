@@ -779,12 +779,31 @@ export function applyPreset(
   return currentLayout();
 }
 
-/** Name (or un-name, with null/blank) the split group. */
+function normalizedGroupName(name: string | null): string | null {
+  return name?.trim() || null;
+}
+
+function setGroupNameAtIndex(index: number, name: string | null): void {
+  if (index < 0 || index >= layouts.length) return;
+  const trimmed = normalizedGroupName(name);
+  const layout = layouts[index];
+  if (layout.name === trimmed) return;
+  const nextLayouts = [...layouts];
+  nextLayouts[index] = { ...layout, name: trimmed };
+  setLayoutSet(nextLayouts, activeIndex);
+}
+
+/** Name (or un-name, with null/blank) the active split group. */
 export function setGroupName(name: string | null): void {
-  const trimmed = name?.trim() || null;
-  const active = currentLayout();
-  if (active.name === trimmed) return;
-  setCurrent({ ...active, name: trimmed });
+  setGroupNameAtIndex(activeIndex, name);
+}
+
+/** Name (or un-name, with null/blank) a split group by any member session. */
+export function setGroupNameForSession(
+  sessionId: string,
+  name: string | null,
+): void {
+  setGroupNameAtIndex(findLayoutIndexForSession(sessionId), name);
 }
 
 /** Collapse or expand a tab's sidebar accordion (impl 0023), persisted with

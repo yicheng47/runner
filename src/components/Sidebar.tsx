@@ -69,6 +69,7 @@ import {
   leafForSession,
   newChatTargetPane,
   removeSessionFromLayout,
+  setGroupNameForSession,
   usePaneLayout,
   usePaneLayouts,
   visibleSessionIds,
@@ -238,6 +239,11 @@ export function Sidebar({
   // both work without per-row refs. `null` = closed.
   const [sessionMenu, setSessionMenu] = useState<{
     session: DirectSessionEntry;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [chatTabMenu, setChatTabMenu] = useState<{
+    members: DirectSessionEntry[];
     x: number;
     y: number;
   } | null>(null);
@@ -616,14 +622,27 @@ export function Sidebar({
   // render path so the menu stays visible near the right edge.
   const openSessionMenu = useCallback(
     (session: DirectSessionEntry, anchor: { x: number; y: number }) => {
+      setChatTabMenu(null);
+      setMissionMenu(null);
       setSessionMenu({ session, x: anchor.x, y: anchor.y });
     },
     [],
   );
   const closeSessionMenu = useCallback(() => setSessionMenu(null), []);
+  const openChatTabMenu = useCallback(
+    (members: DirectSessionEntry[], anchor: { x: number; y: number }) => {
+      setSessionMenu(null);
+      setMissionMenu(null);
+      setChatTabMenu({ members, x: anchor.x, y: anchor.y });
+    },
+    [],
+  );
+  const closeChatTabMenu = useCallback(() => setChatTabMenu(null), []);
 
   const openMissionMenu = useCallback(
     (mission: MissionSummary, anchor: { x: number; y: number }) => {
+      setChatTabMenu(null);
+      setSessionMenu(null);
       setMissionMenu({ mission, x: anchor.x, y: anchor.y });
     },
     [],
@@ -779,6 +798,66 @@ export function Sidebar({
       }
     },
     [currentChatSessionId, navigate, refreshDirectSessions],
+  );
+
+  const setChatTabPin = useCallback(
+    async (members: DirectSessionEntry[], nextPinned: boolean) => {
+      const memberIds = members.map((member) => member.session_id);
+      const firstId = memberIds[0];
+      if (!firstId) return;
+      const targets = groupPinTargets(
+        firstId,
+        memberIds,
+        pinnedSessionIds(directSessions),
+        nextPinned,
+      );
+      try {
+        await Promise.all(targets.map((id) => api.session.pin(id, nextPinned)));
+        await refreshDirectSessions();
+      } catch (e) {
+        console.error("sidebar: chat tab session_pin failed", e);
+      }
+    },
+    [directSessions, refreshDirectSessions],
+  );
+
+  const renameChatTab = useCallback((members: DirectSessionEntry[]) => {
+    const first = members[0];
+    if (!first) return;
+    const layout = getPaneLayout(first.session_id);
+    const proposed = window.prompt(
+      "Rename group (blank = derive from chats)",
+      layout.name ?? "",
+    );
+    if (proposed === null) return;
+    setGroupNameForSession(first.session_id, proposed);
+  }, []);
+
+  const openChatTabInNewWindow = useCallback((members: DirectSessionEntry[]) => {
+    const first = members[0];
+    if (!first) return;
+    const layout = getPaneLayout(first.session_id);
+    const focusedSessionId =
+      findLeaf(layout.root, layout.focusedPaneId)?.sessionId ?? null;
+    const target =
+      members.find((member) => member.session_id === focusedSessionId) ?? first;
+    void api.window.open(`/chats/${target.session_id}`).catch((e) =>
+      console.error("sidebar: open chat tab in new window failed", e),
+    );
+  }, []);
+
+  const archiveChatTab = useCallback(
+    async (members: DirectSessionEntry[]) => {
+      const ordered = [...members].sort((a, b) => {
+        if (a.session_id === currentChatSessionId) return 1;
+        if (b.session_id === currentChatSessionId) return -1;
+        return 0;
+      });
+      for (const member of ordered) {
+        await archiveSession(member);
+      }
+    },
+    [archiveSession, currentChatSessionId],
   );
 
   const submitRename = useCallback(
@@ -946,6 +1025,7 @@ export function Sidebar({
           renamingId={renamingId}
           onOpenChat={openDirectChat}
           onActivateTab={activateTabChat}
+          onTabContextMenu={openChatTabMenu}
           onMemberContextMenu={openSessionMenu}
           onMemberRenameSubmit={(sessionId, title) =>
             void submitRename(sessionId, title)
@@ -1260,6 +1340,36 @@ export function Sidebar({
           onArchive={() => {
             void archiveSession(sessionMenu.session);
             closeSessionMenu();
+          }}
+        />
+      ) : null}
+
+      {chatTabMenu ? (
+        <RowContextMenu
+          pinned={chatTabMenu.members.every((member) => member.pinned)}
+          anchorX={chatTabMenu.x}
+          anchorY={chatTabMenu.y}
+          renameLabel="Rename group"
+          archiveLabel="Archive all"
+          onClose={closeChatTabMenu}
+          onPin={() => {
+            void setChatTabPin(
+              chatTabMenu.members,
+              !chatTabMenu.members.every((member) => member.pinned),
+            );
+            closeChatTabMenu();
+          }}
+          onRename={() => {
+            renameChatTab(chatTabMenu.members);
+            closeChatTabMenu();
+          }}
+          onOpenInNewWindow={() => {
+            openChatTabInNewWindow(chatTabMenu.members);
+            closeChatTabMenu();
+          }}
+          onArchive={() => {
+            void archiveChatTab(chatTabMenu.members);
+            closeChatTabMenu();
           }}
         />
       ) : null}
@@ -1783,6 +1893,8 @@ function RowContextMenu({
   onRename,
   onOpenInNewWindow,
   onArchive,
+  renameLabel = "Rename",
+  archiveLabel = "Archive",
 }: {
   pinned: boolean;
   anchorX: number;
@@ -1792,6 +1904,8 @@ function RowContextMenu({
   onRename: () => void;
   onOpenInNewWindow: () => void;
   onArchive: () => void;
+  renameLabel?: string;
+  archiveLabel?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x: anchorX, y: anchorY });
@@ -1833,7 +1947,7 @@ function RowContextMenu({
         label={pinned ? "Unpin" : "Pin"}
         onClick={onPin}
       />
-      <ContextMenuItem icon={SquarePen} label="Rename" onClick={onRename} />
+      <ContextMenuItem icon={SquarePen} label={renameLabel} onClick={onRename} />
       <ContextMenuItem
         icon={AppWindow}
         label="Open in New Window"
@@ -1841,7 +1955,7 @@ function RowContextMenu({
       />
       <ContextMenuItem
         icon={Archive}
-        label="Archive"
+        label={archiveLabel}
         onClick={onArchive}
         danger
       />

@@ -1,10 +1,28 @@
 import { describe, expect, it } from "vitest";
 
-import { buildChatListItems, type ChatListItem } from "./chatTabs";
+import {
+  buildChatListItems,
+  derivedChatTabTitle,
+  type ChatListItem,
+} from "./chatTabs";
 import { applyPresetPure } from "./paneLayout";
 
 function rows(...ids: string[]): { session_id: string }[] {
   return ids.map((session_id) => ({ session_id }));
+}
+
+function titleMembers(
+  ...members: {
+    title?: string | null;
+    handle?: string | null;
+    display_name?: string;
+  }[]
+) {
+  return members.map((member, index) => ({
+    title: member.title ?? null,
+    handle: member.handle ?? null,
+    display_name: member.display_name ?? `Runner ${index + 1}`,
+  }));
 }
 
 // Group → "[A,B]" (members in slot order); loose → "A".
@@ -83,5 +101,29 @@ describe("buildChatListItems", () => {
     const input = rows("A", "X");
     const tab = applyPresetPure("cols-2", "A", ["A", "GONE"]);
     expect(shape(buildChatListItems(input, [tab]))).toEqual(["A", "X"]);
+  });
+});
+
+describe("derivedChatTabTitle", () => {
+  it("combines default-created chat titles for multi-chat tabs", () => {
+    expect(
+      derivedChatTabTitle(
+        titleMembers(
+          { title: "Chat with Codex", handle: "codex" },
+          { title: "Chat with Claude", handle: "claude" },
+        ),
+      ),
+    ).toBe("Chat with Codex + Chat with Claude");
+  });
+
+  it("falls back to handle then display name for unnamed chats", () => {
+    expect(
+      derivedChatTabTitle(
+        titleMembers(
+          { handle: "coder", display_name: "Codex" },
+          { display_name: "Runtime chat" },
+        ),
+      ),
+    ).toBe("@coder + Runtime chat");
   });
 });
