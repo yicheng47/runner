@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Windows application manifest for every linked executable in this
+     package: the app itself AND cargo's test binaries. Content matches
+     tauri-build's default (windows-app-manifest.xml): a dependency on
+     common-controls 6.0, which the tauri stack needs at load time for
+     comctl32 v6's TaskDialogIndirect.
+
+     Why not tauri_build's own manifest embedding? It goes through a
+     compiled resource that embed_resource links into *bin* targets only
+     (cargo:rustc-link-arg-bins), so the lib-test exe used to load the
+     pre-v6 comctl32 and die with STATUS_ENTRYPOINT_NOT_FOUND before
+     running a single test. build.rs instead disables the resource-based
+     manifest (new_without_app_manifest) and feeds this file to the
+     linker (/MANIFEST:EMBED) for all targets. -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+</assembly>

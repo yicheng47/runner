@@ -296,12 +296,14 @@ mod tests {
             dir_a, dir_b,
             "shim dirs for two missions on the same crew + slot must differ",
         );
+        // Compare path components, not substrings — the separator is
+        // platform-dependent.
         assert!(
-            dir_a.to_string_lossy().contains("/m-a/"),
+            dir_a.components().any(|c| c.as_os_str() == "m-a"),
             "dir_a must include mission_id m-a: {dir_a:?}",
         );
         assert!(
-            dir_b.to_string_lossy().contains("/m-b/"),
+            dir_b.components().any(|c| c.as_os_str() == "m-b"),
             "dir_b must include mission_id m-b: {dir_b:?}",
         );
 

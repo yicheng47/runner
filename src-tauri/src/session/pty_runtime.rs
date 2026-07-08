@@ -55,7 +55,10 @@ pub type CommandShaper =
 /// The default shaper: run `spec.command` directly with the composed
 /// PATH. This is the behaviour every Unix build wants and matches what
 /// the runtime did inline before the shaper seam was introduced.
-pub fn native_command_shaper(spec: &SpawnSpec, composed_path: &str) -> RuntimeResult<CommandBuilder> {
+pub fn native_command_shaper(
+    spec: &SpawnSpec,
+    composed_path: &str,
+) -> RuntimeResult<CommandBuilder> {
     // portable-pty wraps the std CommandBuilder, so env / cwd / args go
     // through the same APIs we'd use for std::process::Command — minus
     // the inherited-env surprises (CommandBuilder clears inherited env
@@ -800,6 +803,12 @@ mod tests {
         );
     }
 
+    // The four spawn-a-real-process tests below drive /bin/sh & /bin/cat
+    // and are unix-only: there is no Windows-host equivalent with the
+    // same canonical-mode PTY semantics, and the Windows spawn paths
+    // (WSL shaper, cmd.exe native target) are covered by the manual
+    // smoke plan (docs/tests/windows-wsl-port-smoke.md).
+    #[cfg(unix)]
     #[test]
     fn spawn_cat_pipes_bytes_back() {
         let rt = PtyRuntime::new();
@@ -829,6 +838,7 @@ mod tests {
         rt.stop(&sess).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn spawn_emits_idle_after_silence_and_busy_on_more_output() {
         let rt = PtyRuntime::new();
@@ -869,6 +879,7 @@ mod tests {
         let _ = rt.stop(&sess);
     }
 
+    #[cfg(unix)]
     #[test]
     fn spawn_exit_seven_records_exit_code() {
         let rt = PtyRuntime::new();
@@ -909,6 +920,7 @@ mod tests {
         assert!(rt.status(&phantom).unwrap().is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn resize_succeeds_on_live_session() {
         let rt = PtyRuntime::new();

@@ -74,10 +74,15 @@ impl EventLog {
         std::fs::create_dir_all(mission_dir)?;
         let path = mission_dir.join(EVENTS_FILENAME);
 
+        // `.write(true)`, not `.append(true)`: Windows append-mode handles
+        // get FILE_APPEND_DATA but not FILE_WRITE_DATA, so the `set_len`
+        // calls in `repair_tail` and the partial-write rollback fail with
+        // "access denied". Position is irrelevant anyway — every write
+        // seeks to EOF under the exclusive lock (see `append_locked`).
         let file = OpenOptions::new()
             .create(true)
             .read(true)
-            .append(true)
+            .write(true)
             .open(&path)?;
 
         file.lock_exclusive()?;
@@ -118,10 +123,11 @@ impl EventLog {
     /// concurrent CLI processes safe: whichever of them gets the lock first
     /// also wins the lower ULID.
     pub fn append(&self, draft: EventDraft) -> Result<Event> {
+        // `.write(true)`, not `.append(true)` — see `open` for why.
         let file = OpenOptions::new()
             .create(true)
             .read(true)
-            .append(true)
+            .write(true)
             .open(&self.path)?;
 
         file.lock_exclusive()?;
@@ -145,10 +151,11 @@ impl EventLog {
     /// transitions are observability, not load-bearing) and bump a
     /// streak counter for visibility.
     pub fn try_append(&self, draft: EventDraft) -> std::result::Result<Event, TryAppendError> {
+        // `.write(true)`, not `.append(true)` — see `open` for why.
         let file = OpenOptions::new()
             .create(true)
             .read(true)
-            .append(true)
+            .write(true)
             .open(&self.path)
             .map_err(TryAppendError::from_io)?;
 
@@ -202,7 +209,10 @@ impl EventLog {
         }
         line.push(b'\n');
 
-        let pre_len = file.metadata()?.len();
+        // The handle is opened in write (not append) mode, so position it
+        // at EOF explicitly. Safe: we hold the exclusive lock, so nothing
+        // can grow the file between the seek and the write.
+        let pre_len = (&*file).seek(SeekFrom::End(0))?;
         let write_res = (&*file).write_all(&line);
         if let Err(e) = write_res {
             // Partial-write rollback: truncate back to what we saw before the

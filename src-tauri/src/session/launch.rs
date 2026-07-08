@@ -120,7 +120,11 @@ pub fn compose_path(
 fn expand_home(path: &str, home: Option<&Path>) -> String {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(h) = home {
-            return h.join(rest).display().to_string();
+            // Plain '/' concat, not Path::join: every consumer feeds
+            // these into colon-joined PATH strings for bash launch
+            // scripts, so the POSIX separator is correct even when the
+            // host is Windows (where join would insert '\').
+            return format!("{}/{rest}", h.display());
         }
     }
     if path == "~" {

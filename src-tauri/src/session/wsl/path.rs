@@ -24,12 +24,9 @@ pub fn win_to_wsl(p: &Path) -> String {
 }
 
 fn win_to_wsl_str(s: &str) -> String {
-    // Already POSIX.
-    if s.starts_with('/') {
-        return s.to_string();
-    }
-
-    // UNC into WSL: //wsl$/Distro/rest  or  //wsl.localhost/Distro/rest
+    // UNC into WSL: //wsl$/Distro/rest  or  //wsl.localhost/Distro/rest.
+    // Must run before the POSIX passthrough — a slash-normalized UNC
+    // path starts with '/' too and would false-match it.
     for prefix in ["//wsl$/", "//wsl.localhost/"] {
         if let Some(rest) = s.strip_prefix(prefix) {
             // rest = "Distro/home/h" → drop the distro segment.
@@ -38,6 +35,11 @@ fn win_to_wsl_str(s: &str) -> String {
                 None => "/".to_string(),
             };
         }
+    }
+
+    // Already POSIX.
+    if s.starts_with('/') {
+        return s.to_string();
     }
 
     // Drive path: "C:/Users/x" → "/mnt/c/Users/x".
@@ -88,15 +90,24 @@ mod tests {
 
     #[test]
     fn drive_paths() {
-        assert_eq!(win_to_wsl(&PathBuf::from(r"C:\Users\Haochen\proj")), "/mnt/c/Users/Haochen/proj");
+        assert_eq!(
+            win_to_wsl(&PathBuf::from(r"C:\Users\Haochen\proj")),
+            "/mnt/c/Users/Haochen/proj"
+        );
         assert_eq!(win_to_wsl(&PathBuf::from(r"D:\code")), "/mnt/d/code");
         assert_eq!(win_to_wsl(&PathBuf::from(r"C:\")), "/mnt/c");
     }
 
     #[test]
     fn unc_into_wsl() {
-        assert_eq!(win_to_wsl(&PathBuf::from(r"\\wsl$\Ubuntu\home\h\p")), "/home/h/p");
-        assert_eq!(win_to_wsl(&PathBuf::from(r"\\wsl.localhost\Ubuntu\home\h")), "/home/h");
+        assert_eq!(
+            win_to_wsl(&PathBuf::from(r"\\wsl$\Ubuntu\home\h\p")),
+            "/home/h/p"
+        );
+        assert_eq!(
+            win_to_wsl(&PathBuf::from(r"\\wsl.localhost\Ubuntu\home\h")),
+            "/home/h"
+        );
     }
 
     #[test]
