@@ -55,7 +55,9 @@ export function AppShell({ children }: { children?: ReactNode }) {
 
   // Cmd+S toggles the sidebar. Skip real text fields, but let xterm's
   // hidden textarea through so terminal focus doesn't swallow the
-  // app-level shortcut. Cmd+\ remains as a legacy alias for anyone who
+  // app-level shortcut — ⌘ only: Ctrl+S / Ctrl+\ are shell control
+  // characters (XOFF / SIGQUIT) and must reach the PTY (see
+  // lib/platform.ts). Cmd+\ remains as a legacy alias for anyone who
   // picked it up during development.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -68,6 +70,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
         tag === "input" || tag === "textarea" || !!target?.isContentEditable;
       const isXtermInput = !!target?.closest(".xterm");
       if (isTextInput && !isXtermInput) return;
+      if (isXtermInput && !e.metaKey) return;
       e.preventDefault();
       e.stopPropagation();
       window.dispatchEvent(new Event(SIDEBAR_TOGGLE_EVENT));
