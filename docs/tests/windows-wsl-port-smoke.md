@@ -64,15 +64,17 @@ standalone exe.
    `runner-mcp-x86_64-pc-windows-msvc.exe`.
 3. **Linux agent CLI** at `src-tauri/binaries/runner-agent-cli-linux-x86_64`
    — this is the ELF `include_bytes!`'d by `session::wsl::install` and pushed
-   into the distro. Rebuild it in WSL whenever `cli/` changes:
+   into the distro. `scripts/stage-runner-cli.mjs` cross-builds it for
+   `x86_64-unknown-linux-musl` (static, runs in any distro) whenever the app
+   target is Windows — one-time setup, then the stage script covers it:
 
    ```sh
-   cargo build -p runner-cli --release
-   cp target/release/runner-agent-cli src-tauri/binaries/runner-agent-cli-linux-x86_64
+   rustup target add x86_64-unknown-linux-musl
+   node scripts/stage-runner-cli.mjs
    ```
 
    > Stale-binary trap: `include_bytes!` bakes this file in at compile time. If
-   > you change the CLI but skip this copy, the distro runs the **old** agent.
+   > you change the CLI but skip restaging, the distro runs the **old** agent.
 
 Build + launch (from Windows, or via `cmd.exe` from WSL):
 

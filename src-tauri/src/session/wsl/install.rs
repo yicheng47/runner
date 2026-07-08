@@ -6,10 +6,13 @@
 //! can exec — not the Windows `runner.exe` sidecar `cli_install` stages
 //! for the host.
 //!
-//! We embed the Linux ELF in the app binary (built from `cli/` for
-//! `x86_64-unknown-linux-gnu`, staged at `binaries/`) and stream it into
-//! the distro's ext4 at startup. ext4 (not `/mnt/c`) because drvfs does
-//! not reliably persist the exec bit, and we need `chmod +x` to stick.
+//! We embed the Linux ELF in the app binary (cross-built from `cli/`
+//! for `x86_64-unknown-linux-musl` — a static ELF that runs in any
+//! distro regardless of glibc — and staged at `binaries/` by
+//! `scripts/stage-runner-cli.mjs` on Windows targets) and stream it
+//! into the distro's ext4 at startup. ext4 (not `/mnt/c`) because
+//! drvfs does not reliably persist the exec bit, and we need
+//! `chmod +x` to stick.
 //!
 //! Idempotent: rewrites every launch (cheap, ~1.4 MB), so a version bump
 //! always ships the matching CLI.
@@ -25,12 +28,13 @@ pub const RUNNER_BIN_SUBDIR: &str = ".local/share/runner/bin";
 const WSL_EXE: &str = r"C:\Windows\System32\wsl.exe";
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Linux ELF of the agent CLI, embedded at compile time. Staged by the
-/// build/CI from `cargo build -p runner-cli --bin runner-agent-cli` on a
-/// Linux target. (`include_bytes!` is compiled only on Windows since this
-/// module is `cfg(windows)`.)
-static LINUX_RUNNER_ELF: &[u8] =
-    include_bytes!("../../../binaries/runner-agent-cli-linux-x86_64");
+/// Linux ELF of the agent CLI, embedded at compile time. Staged by
+/// `scripts/stage-runner-cli.mjs`, which cross-builds it for
+/// `x86_64-unknown-linux-musl` whenever the app target is Windows;
+/// `src-tauri/build.rs` verifies it exists before compilation so a
+/// missing stage fails with instructions. (`include_bytes!` is compiled
+/// only on Windows since this module is `cfg(windows)`.)
+static LINUX_RUNNER_ELF: &[u8] = include_bytes!("../../../binaries/runner-agent-cli-linux-x86_64");
 
 /// Stream the embedded Linux `runner` ELF into
 /// `~/.local/share/runner/bin/runner` in the given distro and mark it

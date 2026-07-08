@@ -72,3 +72,27 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo check --workspace
       - run: cargo test --workspace
+
+  backend-windows:
+    name: Backend (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # The Windows app embeds a Linux agent CLI (include_bytes! in
+          # session/wsl/install.rs); the stage script cross-builds it
+          # for musl with the rustup-bundled rust-lld linker.
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      # Proves a clean Windows checkout compiles: stages host sidecars
+      # for externalBin plus the embedded Linux agent CLI, then checks
+      # the whole workspace (covers all cfg(windows) code, which the
+      # ubuntu Backend job never compiles). Check only — the full
+      # clippy/test matrix stays on ubuntu to keep this job cheap.
+      - name: Stage runner CLI sidecars (host + embedded Linux CLI)
+        run: node scripts/stage-runner-cli.mjs --profile=debug
+      - run: cargo check --workspace

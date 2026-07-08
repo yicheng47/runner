@@ -106,11 +106,77 @@ function stageArtifacts(triple, profile) {
   }
 }
 
+// The Windows app additionally embeds a *Linux* agent CLI
+// (`include_bytes!` in `src-tauri/src/session/wsl/install.rs`) and
+// streams it into the WSL distro at launch, so mission agents running
+// inside WSL can emit onto the event bus. Cross-build it for
+// x86_64-unknown-linux-musl: musl yields a static ELF that runs in any
+// distro regardless of glibc, and rust-lld (bundled with rustup) links
+// it without needing a Linux toolchain on the Windows host. Always
+// release — the bytes ship inside the app binary either way, and a
+// debug ELF is ~13× larger for no benefit.
+const LINUX_AGENT_TRIPLE = "x86_64-unknown-linux-musl";
+const LINUX_AGENT_ARTIFACT = "runner-agent-cli-linux-x86_64";
+
+function stageLinuxAgentCli() {
+  const installed = execSync("rustup target list --installed", {
+    encoding: "utf8",
+  });
+  if (!installed.split("\n").some((l) => l.trim() === LINUX_AGENT_TRIPLE)) {
+    throw new Error(
+      `stage-runner-cli: the Windows build embeds a Linux agent CLI and needs the ${LINUX_AGENT_TRIPLE} target.\n` +
+        `Run: rustup target add ${LINUX_AGENT_TRIPLE}`,
+    );
+  }
+  console.log(
+    `stage-runner-cli: cross-building Linux agent CLI for ${LINUX_AGENT_TRIPLE} (release)…`,
+  );
+  const result = spawnSync(
+    "cargo",
+    [
+      "build",
+      "-p",
+      "runner-cli",
+      "--bin",
+      "runner-agent-cli",
+      "--release",
+      "--target",
+      LINUX_AGENT_TRIPLE,
+    ],
+    {
+      cwd: repoRoot,
+      stdio: "inherit",
+      env: {
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: "rust-lld",
+        ...process.env,
+      },
+    },
+  );
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1);
+  }
+  const source = path.join(
+    repoRoot,
+    "target",
+    LINUX_AGENT_TRIPLE,
+    "release",
+    "runner-agent-cli",
+  );
+  const destDir = path.join(repoRoot, "src-tauri", "binaries");
+  mkdirSync(destDir, { recursive: true });
+  const dest = path.join(destDir, LINUX_AGENT_ARTIFACT);
+  copyFileSync(source, dest);
+  console.log(`stage-runner-cli: staged ${dest}`);
+}
+
 function main() {
   const triple = resolveTargetTriple();
   const profile = resolveProfile();
   buildCli(triple, profile);
   stageArtifacts(triple, profile);
+  if (triple.includes("-windows-")) {
+    stageLinuxAgentCli();
+  }
 }
 
 main();
