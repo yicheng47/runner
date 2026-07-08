@@ -21,12 +21,10 @@ use std::sync::OnceLock;
 
 use winapi::shared::minwindef::FALSE;
 use winapi::um::handleapi::CloseHandle;
-use winapi::um::jobapi2::{
-    AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-};
+use winapi::um::jobapi2::{AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject};
 use winapi::um::processthreadsapi::OpenProcess;
 use winapi::um::winnt::{
-    HANDLE, JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectExtendedLimitInformation, HANDLE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
 };
 

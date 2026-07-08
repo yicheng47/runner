@@ -245,7 +245,10 @@ mod tests {
             inner.contains("export PATH=\"$HOME/.local/share/runner/bin:$PATH\"\n"),
             "inner =\n{inner}"
         );
-        assert!(inner.trim_end().ends_with("exec 'claude'"), "inner =\n{inner}");
+        assert!(
+            inner.trim_end().ends_with("exec 'claude'"),
+            "inner =\n{inner}"
+        );
     }
 
     #[test]
