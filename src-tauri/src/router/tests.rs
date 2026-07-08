@@ -39,12 +39,21 @@ struct RecordingInjector {
 }
 
 impl RecordingInjector {
+    /// True for the bare `\r` that `inject_and_submit` fires from a
+    /// detached thread ~80ms after the body. Helpers project it away:
+    /// it's a mechanical submit keystroke, and whether it lands before
+    /// or after a test's assertions is a scheduler race — counting it
+    /// made `len() == 1` assertions flaky under parallel test load.
+    fn is_submit_enter(bytes: &[u8]) -> bool {
+        bytes == b"\r"
+    }
+
     fn pushes_for(&self, session_id: &str) -> Vec<String> {
         self.pushes
             .lock()
             .unwrap()
             .iter()
-            .filter(|(s, _, _)| s == session_id)
+            .filter(|(s, _, b)| s == session_id && !Self::is_submit_enter(b))
             .map(|(_, _, bytes)| String::from_utf8_lossy(bytes).into_owned())
             .collect()
     }
@@ -54,6 +63,7 @@ impl RecordingInjector {
             .lock()
             .unwrap()
             .iter()
+            .filter(|(_, _, b)| !Self::is_submit_enter(b))
             .map(|(s, _, b)| (s.clone(), String::from_utf8_lossy(b).into_owned()))
             .collect()
     }
@@ -81,7 +91,9 @@ impl RecordingInjector {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(s, k, _)| s == session_id && *k == InjectKind::Raw)
+            .filter(|(s, k, b)| {
+                s == session_id && *k == InjectKind::Raw && !Self::is_submit_enter(b)
+            })
             .map(|(_, _, bytes)| String::from_utf8_lossy(bytes).into_owned())
             .collect()
     }
