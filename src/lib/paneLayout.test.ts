@@ -21,6 +21,7 @@ import {
   resetPaneLayoutsForTest,
   serializeLayout,
   serializeLayoutSet,
+  setGroupNameForSession,
   setRouteAnchorSession,
   setSizesPure,
   setTabCollapsed,
@@ -303,6 +304,31 @@ describe("setTabCollapsed", () => {
     setTabCollapsed(7, true);
 
     expect(getPaneLayouts()).toBe(before);
+  });
+});
+
+describe("setGroupNameForSession", () => {
+  afterEach(() => {
+    resetPaneLayoutsForTest();
+  });
+
+  it("renames a background group without activating it", () => {
+    applyPreset("cols-2", "A", ["A", "B"]);
+    applyPreset("cols-2", "C", ["C", "D"]);
+    activatePaneLayoutForSession("A");
+
+    setGroupNameForSession("C", "review pair");
+
+    expect(getPaneLayout()).toBe(getPaneLayouts()[0]);
+    expect(getPaneLayouts()[1].name).toBe("review pair");
+  });
+
+  it("clears a group name with blank input", () => {
+    applyPreset("cols-2", "A", ["A", "B"], "review pair");
+
+    setGroupNameForSession("A", "   ");
+
+    expect(getPaneLayout("A").name).toBeNull();
   });
 });
 

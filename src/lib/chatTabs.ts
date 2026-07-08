@@ -24,6 +24,26 @@ export interface LooseChatItem<T> {
 
 export type ChatListItem<T> = TabGroupItem<T> | LooseChatItem<T>;
 
+export function chatTabMemberLabel(member: {
+  title?: string | null;
+  handle?: string | null;
+  display_name: string;
+}): string {
+  return (
+    member.title ?? (member.handle ? `@${member.handle}` : member.display_name)
+  );
+}
+
+export function derivedChatTabTitle<
+  T extends {
+    title?: string | null;
+    handle?: string | null;
+    display_name: string;
+  },
+>(members: readonly T[]): string {
+  return members.map(chatTabMemberLabel).join(" + ");
+}
+
 /**
  * Order the CHAT list into groups and loose rows. Backend sort order is
  * preserved: each group is anchored where its best-sorted member already

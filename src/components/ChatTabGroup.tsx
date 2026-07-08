@@ -1,5 +1,5 @@
 // Sidebar accordion for a multi-pane tab (impl 0023). A tab with ≥2 member
-// chats renders as a disclosure header (split icon · name · pin marker · a
+// chats renders as a disclosure header (pin marker · split icon · name · a
 // trailing collapse chevron) over a left rail wrapping the member rows.
 // Single-member and un-tabbed chats never reach here — they stay flat
 // `SessionRow` leaves.
@@ -14,6 +14,7 @@
 import { ChevronDown, Columns2, Columns3, Pin } from "lucide-react";
 
 import type { DirectSessionEntry } from "../lib/api";
+import { derivedChatTabTitle } from "../lib/chatTabs";
 import {
   findLeaf,
   setTabCollapsed,
@@ -21,13 +22,6 @@ import {
 } from "../lib/paneLayout";
 import type { SessionActivityState } from "../lib/types";
 import { SessionRow } from "./Sidebar";
-
-function memberLabel(session: DirectSessionEntry): string {
-  return (
-    session.title ??
-    (session.handle ? `@${session.handle}` : session.display_name)
-  );
-}
 
 export function ChatTabGroup({
   layout,
@@ -38,6 +32,7 @@ export function ChatTabGroup({
   renamingId,
   onOpenChat,
   onActivateTab,
+  onTabContextMenu,
   onMemberContextMenu,
   onMemberRenameSubmit,
   onMemberRenameCancel,
@@ -55,6 +50,10 @@ export function ChatTabGroup({
   onOpenChat: (session: DirectSessionEntry) => void;
   /** Header click: activate this tab, never fill another tab's empty pane. */
   onActivateTab: (session: DirectSessionEntry) => void;
+  onTabContextMenu: (
+    members: DirectSessionEntry[],
+    anchor: { x: number; y: number },
+  ) => void;
   onMemberContextMenu: (
     session: DirectSessionEntry,
     anchor: { x: number; y: number },
@@ -68,7 +67,7 @@ export function ChatTabGroup({
     findLeaf(layout.root, layout.focusedPaneId)?.sessionId ?? null;
   const nameSource =
     members.find((m) => m.session_id === paneFocusedSessionId) ?? members[0];
-  const name = layout.name ?? memberLabel(nameSource);
+  const name = layout.name ?? derivedChatTabTitle(members);
   const pinned = members.every((m) => m.pinned);
 
   const SplitIcon = members.length >= 3 ? Columns3 : Columns2;
@@ -79,7 +78,13 @@ export function ChatTabGroup({
 
   return (
     <div className="flex flex-col gap-0.5">
-      <div className="group relative flex items-center gap-1.5 rounded-md border border-transparent px-2.5 py-1.5 text-xs transition-colors hover:border-sidebar-selected-border hover:bg-sidebar-selected/40">
+      <div
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onTabContextMenu(members, { x: e.clientX, y: e.clientY });
+        }}
+        className="group relative flex items-center gap-1.5 rounded-md border border-transparent px-2.5 py-1.5 text-xs transition-colors hover:border-sidebar-selected-border hover:bg-sidebar-selected/40"
+      >
         <button
           type="button"
           onClick={() => {
@@ -93,16 +98,16 @@ export function ChatTabGroup({
           title={name}
           className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
         >
-          <SplitIcon
-            aria-hidden
-            className={`h-3 w-3 shrink-0 ${active ? "text-accent" : "text-fg-2"}`}
-          />
           {pinned ? (
             <Pin
               aria-hidden
               className="h-2.5 w-2.5 shrink-0 -rotate-45 text-fg-3"
             />
           ) : null}
+          <SplitIcon
+            aria-hidden
+            className={`h-3 w-3 shrink-0 ${active ? "text-accent" : "text-fg-2"}`}
+          />
           <span className={`truncate text-fg ${active ? "font-semibold" : ""}`}>
             {name}
           </span>
