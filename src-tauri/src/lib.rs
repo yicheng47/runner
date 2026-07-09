@@ -310,6 +310,7 @@ pub fn run() {
             commands::session::session_kill,
             commands::session::session_resize,
             commands::session::session_output_snapshot,
+            commands::session::session_replay_watermark,
             commands::session::session_paste_image,
             commands::session::session_start_direct,
             commands::session::session_start_runtime,

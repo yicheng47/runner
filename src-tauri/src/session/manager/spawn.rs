@@ -911,25 +911,33 @@ impl SessionManager {
             row
         };
 
-        // Purge the prior session's output buffer up front. Two
+        // Stamp the resume watermark (and, for full-frame-repaint
+        // runtimes, purge the prior output buffer) up front. Two
         // properties depend on this happening *before* any
         // long-running step (gate, runtime.spawn, mission/runner
         // re-lookup):
         //
         // 1. The frontend's resuming-pill effect calls
         //    `session_output_snapshot` to catch a TUI-ready escape
-        //    that fired before its live listener attached. If the
-        //    purge happens after `runtime.spawn` (the original
-        //    placement), the snapshot races the resume and can
-        //    return the *old* PTY's chunks — which include the
-        //    pre-stop `\x1b[?2004h` — clearing the resuming overlay
-        //    before the new PTY exists. Purging at the top closes
-        //    that window.
-        // 2. The seq counter is intentionally retained (see
+        //    that fired before its live listener attached. The old
+        //    PTY's chunks include the pre-stop `\x1b[?2004h`, so the
+        //    pill only honors ready escapes in chunks with
+        //    `seq > session_replay_watermark`. Stamping the watermark
+        //    at the top closes the window where the snapshot could
+        //    clear the resuming overlay before the new PTY exists.
+        // 2. The seq counter is never touched (see
         //    `purge_output_buffer`'s contract) so the new PTY's first
         //    chunk continues at `last + 1` and the frontend's
         //    `seq <= lastWrittenSeq` filter doesn't drop it.
-        self.purge_output_buffer(session_id);
+        //
+        // Whether the ring itself survives is per-runtime: claude-code
+        // keeps it (a terminal emulator would; scrolling up after
+        // resume shows the prior conversation), codex/shells purge —
+        // see `runtime_purges_on_resume`.
+        self.set_resume_watermark(session_id);
+        if output::runtime_purges_on_resume(session_id, &pool) {
+            self.purge_output_buffer(session_id);
+        }
 
         // Mission resume: pull the slot + mission so we can stamp the
         // in-mission env (RUNNER_HANDLE = slot_handle, RUNNER_CREW_ID,

@@ -1960,6 +1960,231 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
     mgr.kill(&session_id).unwrap();
 }
 
+/// Poll `output_snapshot` until it holds at least `min_len` chunks.
+/// The forwarder thread records chunks asynchronously, so tests that
+/// push through FakeRuntime must wait for the ring to catch up.
+fn wait_for_snapshot(mgr: &SessionManager, session_id: &str, min_len: usize) -> Vec<OutputEvent> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let snapshot = mgr.output_snapshot(session_id);
+        if snapshot.len() >= min_len {
+            return snapshot;
+        }
+        if Instant::now() > deadline {
+            panic!("snapshot for {session_id} never reached {min_len} chunks");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Poll the sessions row until the forwarder demotes it from
+/// `running` — `resume()` refuses rows that still look live.
+fn wait_for_db_stop(pool: &DbPool, session_id: &str) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let conn = pool.get().unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM sessions WHERE id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if status != "running" {
+            return;
+        }
+        if Instant::now() > deadline {
+            panic!("session {session_id} never left running");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn resume_keeps_scrollback_for_claude_code() {
+    // Impl 0024: resuming a claude-code session must NOT drop the
+    // output ring — a terminal emulator keeps pre-resume scrollback
+    // above the resume repaint, and the ring has to agree with the
+    // mounted xterm so a later remount replay doesn't lose what the
+    // screen already showed. The pill race the old unconditional
+    // purge closed is carried by the resume watermark instead.
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'keeper', 'K', 'claude-code', '/bin/sh',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+    }
+    let mut runner = runner("/bin/sh", &[]);
+    runner.id = runner_id;
+    runner.handle = "keeper".into();
+    runner.runtime = "claude-code".into();
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let spawned = mgr
+        .spawn_direct(
+            &runner,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    let session_id = spawned.id.clone();
+
+    assert_eq!(
+        mgr.replay_watermark(&session_id),
+        0,
+        "fresh spawn must report watermark 0"
+    );
+
+    fake.push_output(0, b"pre-resume scrollback");
+    let pre_max_seq = wait_for_snapshot(&mgr, &session_id, 1).last().unwrap().seq;
+
+    fake.close_spawn(0);
+    wait_for_db_stop(&pool, &session_id);
+
+    let resumed = mgr
+        .resume(
+            &session_id,
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+        )
+        .unwrap();
+    assert_eq!(resumed.id, session_id);
+
+    assert_eq!(
+        mgr.replay_watermark(&session_id),
+        pre_max_seq,
+        "watermark must equal the pre-resume max seq"
+    );
+    let kept = BASE64.encode(b"pre-resume scrollback");
+    assert!(
+        mgr.output_snapshot(&session_id)
+            .iter()
+            .any(|ev| ev.data == kept),
+        "claude-code resume must keep pre-resume chunks in the ring"
+    );
+
+    // The new PTY (spawn index 1) continues the seq counter: its
+    // chunk lands after the kept scrollback, strictly above the
+    // watermark, with no reset back to 1.
+    fake.push_output(1, b"post-resume repaint");
+    let snapshot = wait_for_snapshot(&mgr, &session_id, 2);
+    assert!(
+        snapshot.windows(2).all(|w| w[0].seq < w[1].seq),
+        "snapshot seqs must stay strictly monotonic across resume"
+    );
+    let new_chunk = snapshot.last().unwrap();
+    assert_eq!(new_chunk.data, BASE64.encode(b"post-resume repaint"));
+    assert!(
+        new_chunk.seq > pre_max_seq,
+        "post-resume chunk must continue above the watermark"
+    );
+
+    mgr.kill(&session_id).unwrap();
+    mgr.purge_session_buffers(&session_id);
+    assert_eq!(
+        mgr.replay_watermark(&session_id),
+        0,
+        "purge_session_buffers must reset the watermark with the rest of the state"
+    );
+}
+
+#[test]
+fn resume_purges_scrollback_for_codex() {
+    // Codex keeps the pre-0024 behavior: its full-frame repaint over
+    // retained scrollback is the stacking artifact the purge was
+    // added for, so resume still drops the ring — while the watermark
+    // is stamped uniformly (equal to the post-purge floor here).
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'purger', 'P', 'codex', '/bin/sh',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+    }
+    let mut runner = runner("/bin/sh", &[]);
+    runner.id = runner_id;
+    runner.handle = "purger".into();
+    runner.runtime = "codex".into();
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let spawned = mgr
+        .spawn_direct(
+            &runner,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    let session_id = spawned.id.clone();
+
+    fake.push_output(0, b"pre-resume frame");
+    let pre_max_seq = wait_for_snapshot(&mgr, &session_id, 1).last().unwrap().seq;
+
+    fake.close_spawn(0);
+    wait_for_db_stop(&pool, &session_id);
+
+    mgr.resume(
+        &session_id,
+        None,
+        None,
+        std::path::Path::new("/tmp"),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+
+    assert!(
+        mgr.output_snapshot(&session_id).is_empty(),
+        "codex resume must still purge the output ring"
+    );
+    assert_eq!(
+        mgr.replay_watermark(&session_id),
+        pre_max_seq,
+        "watermark must equal the pre-resume max seq on the purge path too"
+    );
+
+    // Seq continuity across the purge: the new PTY's first chunk is
+    // `last + 1`, i.e. strictly above the watermark.
+    fake.push_output(1, b"fresh repaint");
+    let snapshot = wait_for_snapshot(&mgr, &session_id, 1);
+    assert_eq!(snapshot[0].seq, pre_max_seq + 1);
+
+    mgr.kill(&session_id).unwrap();
+}
+
 #[test]
 fn resume_refuses_running_and_archived_rows() {
     // Mission rows are no longer rejected — see

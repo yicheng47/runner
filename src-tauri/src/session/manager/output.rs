@@ -317,19 +317,43 @@ impl SessionManager {
             let mut state = state.lock().unwrap();
             state.output_buffer.clear();
             state.output_seq = 0;
+            state.resume_watermark_seq = 0;
             state.alt_screen_on = false;
             state.bracketed_paste_on = false;
         }
         self.prune_empty_session_state(session_id);
     }
 
+    /// Record the resume watermark: the seq the ring had reached when
+    /// the current resume started. Called at the top of `resume()`
+    /// for every runtime — on the purge path (codex) it equals the
+    /// post-purge floor, so the frontend's `seq > watermark` filter
+    /// is a no-op there.
+    pub fn set_resume_watermark(&self, session_id: &str) {
+        if let Some(state) = self.session_state(session_id) {
+            let mut state = state.lock().unwrap();
+            state.resume_watermark_seq = state.output_seq;
+        }
+    }
+
+    /// Read back the resume watermark for the pill fast-paths.
+    /// Sessions that never resumed (or whose state was purged)
+    /// report 0, which degenerates the frontend filter to
+    /// "any chunk counts".
+    pub fn replay_watermark(&self, session_id: &str) -> u64 {
+        self.session_state(session_id)
+            .map(|state| state.lock().unwrap().resume_watermark_seq)
+            .unwrap_or(0)
+    }
+
     /// Drop only the output buffer for a session, keeping the seq
-    /// counter. Used by `resume`: clearing the buffer means the
-    /// post-resume snapshot is fresh (no double banner / stacked
-    /// agent output on remount), while preserving the monotonic seq
-    /// means the new PTY's first chunk is `last + 1` rather than
-    /// `1` — which the frontend's `seq <= lastWrittenSeq` filter
-    /// would otherwise drop.
+    /// counter. Used by `resume` for runtimes that repaint their
+    /// whole frame on resume (codex — see `runtime_purges_on_resume`):
+    /// clearing the buffer means the post-resume snapshot is fresh
+    /// (no double banner / stacked agent output on remount), while
+    /// preserving the monotonic seq means the new PTY's first chunk
+    /// is `last + 1` rather than `1` — which the frontend's
+    /// `seq <= lastWrittenSeq` filter would otherwise drop.
     pub fn purge_output_buffer(&self, session_id: &str) {
         if let Some(state) = self.session_state(session_id) {
             let mut state = state.lock().unwrap();
@@ -432,4 +456,33 @@ pub(super) fn runtime_clears_on_resize(session_id: &str, pool: &DbPool) -> bool 
         .ok()
         .flatten();
     matches!(runtime.as_deref(), Some("claude-code") | Some("codex"))
+}
+
+/// Whether `resume` should drop the session's output ring before
+/// spawning the new PTY. Codex repaints its whole frame on resume
+/// (and its own resume replay restores a deep conversation tail), so
+/// replaying retained scrollback under the new frame stacks garbled
+/// content — the artifact class from impls 0009/0011/0020. Claude-code
+/// paints inline into the main screen: kept scrollback, then the
+/// resume banner, then the tail repaint is exactly what a physical
+/// terminal shows, so its ring is kept. Shells and future runtimes
+/// keep today's purge purely
+/// for scope (extending them is a one-line change here). Best-effort:
+/// a DB miss fails toward the purge, i.e. today's behavior.
+pub(super) fn runtime_purges_on_resume(session_id: &str, pool: &DbPool) -> bool {
+    let Ok(conn) = pool.get() else {
+        return true;
+    };
+    let runtime = conn
+        .query_row(
+            "SELECT COALESCE(s.agent_runtime, r.runtime)
+               FROM sessions s
+               LEFT JOIN runners r ON r.id = s.runner_id
+              WHERE s.id = ?1",
+            params![session_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten();
+    !matches!(runtime.as_deref(), Some("claude-code"))
 }

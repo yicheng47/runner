@@ -66,7 +66,11 @@ import {
   ResumeButton,
   StopButton,
 } from "../components/ui/SessionControl";
-import { chunkIndicatesTuiReady, isFreshSpawn } from "../lib/sessionLifecycle";
+import {
+  chunkIndicatesTuiReady,
+  isFreshSpawn,
+  snapshotIndicatesTuiReady,
+} from "../lib/sessionLifecycle";
 import { terminalGridFromElement } from "../lib/terminalSizing";
 import { useDelayedFlag } from "../lib/useDelayedFlag";
 import { useResizableWidth } from "../hooks/useResizableWidth";
@@ -1419,12 +1423,18 @@ function SlotPtyPane({
     // serially) so by the time this slot pane mounts, the lead's
     // TUI has often already emitted the bracketed-paste / alt-screen
     // ready signal. The live listener missed those bytes; the
-    // snapshot still carries them via output_buffers.
-    void api.session
-      .outputSnapshot(targetId)
-      .then((snapshot) => {
+    // snapshot still carries them via output_buffers. A resumed
+    // claude-code slot re-enters this pill with its pre-resume
+    // chunks retained in the ring (impl 0024) — the watermark keeps
+    // the old PTY's ready escape from clearing the pill before the
+    // new PTY exists.
+    void Promise.all([
+      api.session.outputSnapshot(targetId),
+      api.session.replayWatermark(targetId),
+    ])
+      .then(([snapshot, watermark]) => {
         if (cancelled) return;
-        if (snapshot.some((ev) => chunkIndicatesTuiReady(ev.data))) {
+        if (snapshotIndicatesTuiReady(snapshot, watermark)) {
           finish();
         }
       })

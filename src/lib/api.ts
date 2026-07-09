@@ -205,6 +205,13 @@ export const api = {
       invoke<void>("session_resize", { sessionId, cols, rows }),
     outputSnapshot: (sessionId: string) =>
       invoke<SessionOutputEvent[]>("session_output_snapshot", { sessionId }),
+    /** Seq the output ring had reached when the most recent resume
+     *  started; 0 for sessions that never resumed. The pill effects
+     *  only honor TUI-ready escapes in snapshot chunks above this,
+     *  so retained pre-resume scrollback (claude-code, impl 0024)
+     *  can't clear a resuming overlay early. */
+    replayWatermark: (sessionId: string) =>
+      invoke<number>("session_replay_watermark", { sessionId }),
     pasteImage: (bytes: Uint8Array, mimeType: PasteImageMimeType) =>
       invoke<void>("session_paste_image", {
         bytes: Array.from(bytes),

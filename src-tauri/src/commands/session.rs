@@ -107,6 +107,21 @@ pub async fn session_output_snapshot(
     Ok(state.sessions.output_snapshot(&session_id))
 }
 
+/// The seq the output ring had reached when the session's most
+/// recent resume started (0 for sessions that never resumed). A
+/// dedicated read command rather than a field on the snapshot or the
+/// resume RPC: the snapshot's return shape is consumed as a bare
+/// array by terminal replay, and a resume can be triggered from
+/// another window (impl 0018), so the pill effects can't rely on the
+/// resume response reaching them.
+#[tauri::command]
+pub async fn session_replay_watermark(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<u64> {
+    Ok(state.sessions.replay_watermark(&session_id))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PasteImageFormat {
     extension: &'static str,

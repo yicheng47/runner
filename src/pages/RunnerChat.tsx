@@ -37,7 +37,11 @@ import {
   StartingOverlay,
 } from "../components/SessionEndedOverlay";
 import { api, type DirectSessionEntry } from "../lib/api";
-import { chunkIndicatesTuiReady, isFreshSpawn } from "../lib/sessionLifecycle";
+import {
+  chunkIndicatesTuiReady,
+  isFreshSpawn,
+  snapshotIndicatesTuiReady,
+} from "../lib/sessionLifecycle";
 import { useDelayedFlag } from "../lib/useDelayedFlag";
 import { useResizableWidth } from "../hooks/useResizableWidth";
 import { useTerminalBg } from "../lib/useTerminalBg";
@@ -727,12 +731,17 @@ export default function RunnerChat() {
     const hardTimeout = window.setTimeout(finish, STARTING_HARD_TIMEOUT_MS);
 
     // Snapshot check covers the race where the PTY emitted its
-    // TUI-ready escape before this effect's listener attached.
-    void api.session
-      .outputSnapshot(targetId)
-      .then((snapshot) => {
+    // TUI-ready escape before this effect's listener attached. The
+    // watermark keeps retained pre-resume chunks (impl 0024) from
+    // counting as ready; fresh rows report 0, so the filter is inert
+    // here outside resume flows.
+    void Promise.all([
+      api.session.outputSnapshot(targetId),
+      api.session.replayWatermark(targetId),
+    ])
+      .then(([snapshot, watermark]) => {
         if (cancelled) return;
-        if (snapshot.some((ev) => chunkIndicatesTuiReady(ev.data))) {
+        if (snapshotIndicatesTuiReady(snapshot, watermark)) {
           finish();
         }
       })
@@ -1118,12 +1127,15 @@ export default function RunnerChat() {
   // state. Calls `session_resume`, which respawns a PTY for the same
   // row id and hands the agent CLI its prior `agent_session_key`.
   // Sequence:
-  //   1. Flip into resuming mode and bump clearVersion so the active
-  //      RunnerTerminal wipes its xterm canvas. The backend also
-  //      drops the prior buffer in `purge_output_buffer`, so any
-  //      remount during the resume window starts blank too.
+  //   1. Flip into resuming mode. The mounted RunnerTerminal keeps
+  //      its xterm canvas — the transitional overlay is opacity-0 on
+  //      top of it. The backend stamps a resume watermark at the
+  //      current seq; claude-code keeps its output ring (impl 0024 —
+  //      a remount replays pre-resume scrollback like a terminal
+  //      emulator would), codex still purges (its full-frame repaint
+  //      would stack over retained frames).
   //   2. Await the resume RPC. The new PTY's first chunk continues
-  //      the seq counter (we keep it across forget) so the live
+  //      the seq counter (never reset across resume) so the live
   //      listener doesn't drop the agent's repaint.
   //   3. Flip the local pane status back to running. Clearing the
   //      resuming id waits for the agent's repaint (ResumeSettleTracker).

@@ -444,6 +444,12 @@ struct SessionState {
     handle: Option<SessionHandle>,
     output_buffer: VecDeque<OutputEvent>,
     output_seq: u64,
+    /// `output_seq` at the moment the most recent resume started.
+    /// The pill fast-paths only honor TUI-ready escapes in chunks
+    /// with `seq > resume_watermark_seq`, so pre-resume bytes kept
+    /// in the ring (claude-code) can never clear a resuming overlay
+    /// that's waiting on the *new* PTY. 0 outside resume flows.
+    resume_watermark_seq: u64,
     alt_screen_on: bool,
     bracketed_paste_on: bool,
     resuming: bool,
@@ -455,6 +461,7 @@ impl SessionState {
         self.handle.is_none()
             && self.output_buffer.is_empty()
             && self.output_seq == 0
+            && self.resume_watermark_seq == 0
             && !self.alt_screen_on
             && !self.bracketed_paste_on
             && !self.resuming

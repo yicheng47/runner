@@ -418,6 +418,8 @@ The PTY master writer is shared between the human (via `send_input` command) and
 
 Bounded raw-byte ring per session in SessionManager. It survives tab switches, route changes, and late workspace attachment while the app process is alive. It does not survive app restart, and there is no on-disk scrollback overflow today. The ring sees raw bytes including alt-screen toggles — acceptable because the frontend replays through xterm.js which can absorb them.
 
+Resume preserves the ring for claude-code (impl 0024): it paints inline into the main screen, so kept scrollback + resume banner + tail repaint is what a physical terminal would show, and a later remount replay keeps the pre-resume conversation. The ring stays bounded and process-local as before — old and new bytes share the same cap. Codex still purges on resume: it repaints its whole frame (and its own resume replay restores a deep conversation tail), so retained scrollback under the new frame stacks garbled content. Either way `resume` stamps a seq watermark first; the frontend's starting/resuming pills only honor TUI-ready escapes above it, so retained pre-resume bytes can't clear an overlay that's waiting on the new PTY.
+
 ### 5.9 Death and kill
 
 Reader thread owns the child handle. On EOF, it calls `wait()`, emits `session:{id}:exit`, updates the sessions row. No auto-restart.
