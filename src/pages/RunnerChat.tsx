@@ -78,6 +78,11 @@ import {
   shouldInheritPinOnAdd,
 } from "../lib/groupPinning";
 import {
+  directChatDisplayStatus,
+  summarizeDirectChatGroupStatus,
+  type DirectChatDisplayStatus,
+} from "../lib/directChatStatus";
+import {
   isSecondaryFor,
   reportSubjectsNow,
   useCurrentWindowLabel,
@@ -157,16 +162,6 @@ async function inheritGroupPin(
   } catch (e) {
     console.error("RunnerChat: group pin inherit failed", e);
   }
-}
-
-type DirectChatDisplayStatus = SessionActivityState | "stopped" | "crashed";
-
-function directChatDisplayStatus(
-  status: SessionStatus,
-  activity: SessionActivityState | undefined,
-): DirectChatDisplayStatus {
-  if (status === "stopped" || status === "crashed") return status;
-  return activity ?? "busy";
 }
 
 export default function RunnerChat() {
@@ -1412,24 +1407,27 @@ export default function RunnerChat() {
         ? visiblePaneSessions.map((s) => paneNameFor(s.id)).join(" + ")
         : "Empty group"))
     : null;
-  const runningPaneCount = visiblePaneSessions.filter(
-    (s) => s.status === "running",
-  ).length;
-  const anyPaneBusy = visiblePaneSessions.some(
-    (s) =>
-      s.status === "running" && (activityBySession[s.id] ?? "busy") === "busy",
+  const groupStatus = summarizeDirectChatGroupStatus(
+    visiblePaneSessions.map((s) => paneStatusFor(s.id)),
+    paneCount,
   );
-  const groupStatusLabel = `${runningPaneCount}/${paneCount} running`;
-  const groupStatusDotClass = anyPaneBusy
-    ? "bg-accent"
-    : runningPaneCount > 0
-      ? "bg-accent/35"
-      : "bg-fg-3";
-  const groupStatusBadgeClass = anyPaneBusy
-    ? "bg-accent/10 text-accent"
-    : runningPaneCount > 0
-      ? "bg-accent/5 text-fg-2"
-      : "bg-line-strong text-fg-2";
+  const groupStatusLabel = groupStatus.label;
+  const groupStatusDotClass =
+    groupStatus.status === "busy"
+      ? "bg-accent"
+      : groupStatus.status === "idle"
+        ? "bg-accent/35"
+        : groupStatus.status === "crashed"
+          ? "bg-danger"
+          : "bg-fg-3";
+  const groupStatusBadgeClass =
+    groupStatus.status === "busy"
+      ? "bg-accent/10 text-accent"
+      : groupStatus.status === "idle"
+        ? "bg-accent/5 text-fg-2"
+        : groupStatus.status === "crashed"
+          ? "bg-danger/10 text-danger"
+          : "bg-line-strong text-fg-2";
   // Meta: pane count, plus the working dir when every member shares one.
   const groupCwds = visiblePaneSessions.map((s) => paneRow(s.id)?.cwd ?? null);
   const sharedGroupCwd =

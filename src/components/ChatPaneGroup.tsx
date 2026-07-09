@@ -28,7 +28,8 @@ import {
   type PaneLeaf,
   type PaneNode,
 } from "../lib/paneLayout";
-import type { SessionActivityState, SessionStatus } from "../lib/types";
+import type { DirectChatDisplayStatus } from "../lib/directChatStatus";
+import type { SessionStatus } from "../lib/types";
 import type { SecondaryState } from "../lib/windowFocus";
 import { DuplicateSubjectOverlay } from "./DuplicateSubjectOverlay";
 import {
@@ -47,11 +48,6 @@ interface ExitEvent {
   exit_code: number | null;
   success: boolean;
 }
-
-export type DirectChatDisplayStatus =
-  | SessionActivityState
-  | "stopped"
-  | "crashed";
 
 /** One attached session in the flat terminal stack. */
 export interface PaneChat {
