@@ -7,6 +7,8 @@
 // edit. Splitting them out gives both clean HMR behavior and a more
 // honest home for these as logic primitives, not UI.
 
+import type { SessionOutputEvent } from "./types";
+
 /// True iff `startedAt` is within the last few seconds — the only
 /// case where the StartingOverlay pill should fire. Switching tabs
 /// to a chat that's been running for an hour, or reopening a mission
@@ -68,5 +70,22 @@ export function chunkIndicatesTuiReady(base64: string): boolean {
     bytes.includes("\x1b[?2004h") ||
     bytes.includes("\x1b[?1049h") ||
     bytes.includes("\x1b[?47h")
+  );
+}
+
+/// Watermark-aware variant of the snapshot fast-path check. Since
+/// impl 0024 a claude-code resume keeps the output ring, so a
+/// `session_output_snapshot` taken during the resume window still
+/// contains the *old* PTY's chunks — including its pre-stop
+/// `\x1b[?2004h`. Only chunks with `seq` above the resume watermark
+/// (`api.session.replayWatermark`) can come from the new PTY, so
+/// only those may clear a starting/resuming pill. Watermark 0 (fresh
+/// spawn, never-resumed session) degenerates to "any chunk counts".
+export function snapshotIndicatesTuiReady(
+  events: SessionOutputEvent[],
+  watermark: number,
+): boolean {
+  return events.some(
+    (ev) => ev.seq > watermark && chunkIndicatesTuiReady(ev.data),
   );
 }
