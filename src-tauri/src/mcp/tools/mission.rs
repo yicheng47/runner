@@ -466,6 +466,21 @@ impl RunnerMcpHandler {
         Ok(CallToolResult::success(vec![Content::json(&mission)?]))
     }
 
+    #[tool(
+        description = "Unarchive a mission: clear the archive marker so it reappears in active lists. Status stays completed."
+    )]
+    pub async fn mission_unarchive(
+        &self,
+        Parameters(MissionIdArgs { id }): Parameters<MissionIdArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let app_state = self.state.app_state();
+        let mission = mission::mission_unarchive_impl(&app_state, id)
+            .await
+            .map_err(mcp_error)?;
+        emit_mission_changed(self);
+        Ok(CallToolResult::success(vec![Content::json(&mission)?]))
+    }
+
     #[tool(description = "Pin or unpin a mission.")]
     pub async fn mission_pin(
         &self,
