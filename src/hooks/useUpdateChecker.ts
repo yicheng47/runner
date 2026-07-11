@@ -16,6 +16,36 @@ export type UpdateStatus =
   | "ready"
   | "error";
 
+const UPDATE_STATUSES: readonly UpdateStatus[] = [
+  "idle",
+  "checking",
+  "available",
+  "downloading",
+  "ready",
+  "error",
+];
+
+// Dev-only escape hatch: seed the state machine from localStorage so
+// the update surfaces (About button ladder, sidebar prompt pill/card)
+// can be smoke-tested without staging a real release — outside a
+// signed build, `check()` never yields an update, so "ready" is
+// otherwise unreachable in dev. In the devtools console:
+//   localStorage.setItem("runner.dev.updateStatus", "ready"); location.reload()
+// and remove the key to restore normal behavior. The resting-state
+// guard in checkForUpdate keeps the launch auto-check from clobbering
+// a seeded non-resting status. DEV-gated: release builds never read it.
+function readDevStatusOverride(): UpdateStatus | null {
+  if (!import.meta.env.DEV) return null;
+  try {
+    const raw = localStorage.getItem("runner.dev.updateStatus");
+    return raw && (UPDATE_STATUSES as readonly string[]).includes(raw)
+      ? (raw as UpdateStatus)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface UpdateState {
   status: UpdateStatus;
   update: Update | null;
@@ -27,16 +57,22 @@ export interface UpdateState {
 }
 
 export function useUpdateChecker(): UpdateState {
-  const [status, setStatus] = useState<UpdateStatus>("idle");
+  const [status, setStatus] = useState<UpdateStatus>(
+    () => readDevStatusOverride() ?? "idle",
+  );
   const [update, setUpdate] = useState<Update | null>(null);
-  const [progress, setProgress] = useState(0);
+  // A seeded "downloading" gets a mid-flight progress value so the
+  // About pane's bar reads as a real download, not a frozen 0%.
+  const [progress, setProgress] = useState(() =>
+    readDevStatusOverride() === "downloading" ? 37 : 0,
+  );
   const [error, setError] = useState<string | null>(null);
   // Guard against concurrent checks — auto-check + manual click can race.
   const checking = useRef(false);
   // Mirror of `status` readable from the stable `checkForUpdate`
   // closure (its useCallback deps stay empty so consumers can treat it
   // as stable).
-  const statusRef = useRef<UpdateStatus>("idle");
+  const statusRef = useRef<UpdateStatus>(status);
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
