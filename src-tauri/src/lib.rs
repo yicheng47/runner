@@ -10,6 +10,7 @@ mod repo;
 mod router;
 mod session;
 mod shell_path;
+mod window_state;
 mod windows;
 
 use std::path::{Path, PathBuf};
@@ -129,6 +130,14 @@ pub fn run() {
                 }
             };
             std::fs::create_dir_all(&app_data_dir)?;
+
+            // Restore main-window geometry (impl 0027, hand-rolled —
+            // see window_state.rs for why not the plugin) while the
+            // window is still hidden, so `app_ready` reveals it
+            // directly at the restored frame.
+            if let Some(main) = app.get_webview_window("main") {
+                window_state::restore(&main, &app_data_dir);
+            }
 
             // First line of every app start. Triage-from-log starts here.
             log_startup_banner(app.handle(), &app_data_dir);
@@ -292,6 +301,7 @@ pub fn run() {
             commands::mission::mission_stop,
             commands::mission::mission_archive,
             commands::mission::mission_unarchive,
+            commands::mission::mission_delete,
             commands::mission::mission_reset,
             commands::mission::mission_pin,
             commands::mission::mission_rename,
@@ -307,6 +317,7 @@ pub fn run() {
             commands::session::session_get,
             commands::session::session_archive,
             commands::session::session_unarchive,
+            commands::session::session_delete,
             commands::session::session_rename,
             commands::session::session_pin,
             commands::session::session_resume,
@@ -352,8 +363,19 @@ pub fn run() {
                     // reclaims ownership via the `Focused(true)` hook.
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         state.windows.mark_hidden(&label);
+                        // Geometry checkpoint: a crash after this point
+                        // still restores the frame the window was hidden
+                        // at (impl 0027's crash-resilience open question).
+                        window_state::save(app_handle, &state.app_data_dir);
                     }
                     broadcast_focus_map(app_handle);
+                }
+                tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_),
+                    ..
+                } if label == "main" => {
+                    window_state::note(app_handle);
                 }
                 // Any window gaining focus becomes primary for whatever
                 // subject it's on (spec decision 2). Secondary windows close
@@ -383,6 +405,13 @@ pub fn run() {
                     stop_running_sessions_on_quit(app_handle);
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         state.mcp.stop();
+                    }
+                }
+                // Final geometry write. The window may already be gone
+                // here; `save` falls back to the Moved/Resized cache.
+                tauri::RunEvent::Exit => {
+                    if let Some(state) = app_handle.try_state::<AppState>() {
+                        window_state::save(app_handle, &state.app_data_dir);
                     }
                 }
                 #[cfg(target_os = "macos")]

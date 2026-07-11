@@ -2,7 +2,23 @@
 
 ## Status
 
-Planned. Tracks issue [#271](https://github.com/yicheng47/runner/issues/271) (feature, issue-only by request — no spec file).
+Implemented, hand-rolled (see Pivot below — the plugin approach this doc originally planned shipped, failed multi-monitor smoke, and was replaced in the same branch). Tracks issue [#271](https://github.com/yicheng47/runner/issues/271) (feature, issue-only by request — no spec file).
+
+## Pivot (2026-07-11): hand-rolled logical-coordinate persistence
+
+Phase 1 shipped exactly as planned below, and failed manual smoke on a three-display Mac Studio: a main window on a secondary screen restored to the corner of the primary instead. The save was correct (the state file held the secondary-screen position); the plugin's restore was the failure.
+
+Root cause is upstream, not configuration: on multi-monitor macOS, Tauri reports "physical" coordinates from a fractured space — monitor sizes unscaled, monitor offsets scaled, secondary-screen window positions inconsistent with the primary ([tauri#7890](https://github.com/tauri-apps/tauri/issues/7890), open since 2023-09, untriaged). The plugin stores physical coordinates and gates restore on a physical-space monitor-intersection check, so the check fails for any window on a secondary display and restore silently degrades to OS-default placement. Also reported against the plugin directly as [plugins-workspace#1097](https://github.com/tauri-apps/plugins-workspace/issues/1097) (2024-03, open, no fix).
+
+Replacement: `src-tauri/src/window_state.rs` (~180 lines incl. tests), plugin dependency dropped. Same semantics this doc chose for the plugin — size + position + maximized, main window only, restore in `setup` while the window is hidden so `app_ready` reveals at the restored frame — with these differences:
+
+- **Logical coordinates everywhere.** macOS's native global space is logical points and is consistent across mixed-scale monitors; logical `set_position` round-trips cleanly through tao. This is the actual fix.
+- **State file in `app_data_dir`** (`window-state.json`), so the dev/prod split comes free from the existing `-dev` data-dir suffix — no filename split. The plugin couldn't do this (it hardcodes `app_config_dir`).
+- **Maximized quits keep the last normal frame.** A Moved/Resized hook in the existing `run()` event handler caches the last un-maximized geometry (the plugin kept an equivalent cache), so un-maximize after relaunch lands on a real frame.
+- **Checkpoint on hide-on-close** — closes this doc's crash-resilience open question: a crash after the window was closed still restores the frame it was hidden at. Final write stays on `RunEvent::Exit`, falling back to the cache if the window is already gone.
+- **Off-screen recovery in logical space**: position applies only when the saved frame overlaps some monitor's logical rect (unit-tested, including negative-x secondary screens); otherwise the OS places the window and only the size restores.
+
+The investigation and plugin plan below are kept as history of the evaluated-and-rejected approach.
 
 ## Problem
 
