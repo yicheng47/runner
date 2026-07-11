@@ -162,6 +162,10 @@ export const api = {
     /** Archived missions, newest-archived first (Settings → Archived). */
     listArchived: (crewId?: string) =>
       invoke<Mission[]>("mission_list_archived", crewId ? { crewId } : {}),
+    /** Permanently delete an archived mission: session rows, the
+     *  mission row, and its on-disk event log. Refused unless
+     *  archived — archive is the reversible step, this is not. */
+    delete: (id: string) => invoke<void>("mission_delete", { id }),
     /** Wipe the run context and respawn every slot. Mostly for
      *  testing — keeps the mission row, crew, and slots intact;
      *  drops the event log, agent session keys, and router state. */
@@ -200,6 +204,10 @@ export const api = {
      *  Archived). Same DTO as listRecentDirect, keys withheld. */
     listArchived: () =>
       invoke<DirectSessionEntry[]>("session_list_archived"),
+    /** Permanently delete an archived direct chat. Refused unless
+     *  archived — archive is the reversible step, this is not. */
+    delete: (sessionId: string) =>
+      invoke<void>("session_delete", { sessionId }),
     rename: (sessionId: string, title: string | null) =>
       invoke<void>("session_rename", { sessionId, title }),
     pin: (sessionId: string, pinned: boolean) =>

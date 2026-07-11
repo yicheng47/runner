@@ -11190,6 +11190,206 @@
           ]
         }
       ]
+    },
+    {
+      "type": "frame",
+      "id": "cETDE",
+      "x": 16000,
+      "y": 0,
+      "name": "component/confirm-dialog",
+      "reusable": true,
+      "width": 420,
+      "fill": "$panel",
+      "cornerRadius": 14,
+      "stroke": "$line",
+      "strokeWidth": 1,
+      "strokeAlignment": "inner",
+      "effect": {
+        "type": "shadow",
+        "shadowType": "outer",
+        "color": "#00000066",
+        "offset": {
+          "x": 0,
+          "y": 16
+        },
+        "blur": 48
+      },
+      "layout": "vertical",
+      "gap": 14,
+      "padding": [
+        20,
+        22
+      ],
+      "children": [
+        {
+          "type": "frame",
+          "id": "Pq1er",
+          "name": "header",
+          "width": "fill_container",
+          "gap": 10,
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "icon",
+              "id": "xcOFK",
+              "name": "hdr_icon",
+              "width": 15,
+              "height": 15,
+              "icon": "trash-2",
+              "library": "lucide",
+              "fill": "#F87171"
+            },
+            {
+              "type": "text",
+              "id": "k6lgz",
+              "name": "dlg_title",
+              "fill": "$text-1",
+              "content": "Delete all archived items?",
+              "fontFamily": "$font-ui",
+              "fontSize": 15,
+              "fontWeight": "600"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "N8EtC",
+          "name": "dlg_body",
+          "fill": "$text-2",
+          "textGrowth": "fixed-width",
+          "width": "fill_container",
+          "content": "This permanently deletes all 12 archived chats and missions, including mission event logs. This can't be undone.",
+          "lineHeight": 1.5,
+          "fontFamily": "$font-ui",
+          "fontSize": 13,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "frame",
+          "id": "yVvw2",
+          "name": "footer",
+          "width": "fill_container",
+          "gap": 8,
+          "justifyContent": "end",
+          "children": [
+            {
+              "type": "frame",
+              "id": "DKQEe",
+              "name": "btn_cancel",
+              "fill": "$raised",
+              "cornerRadius": 8,
+              "padding": [
+                7,
+                14
+              ],
+              "children": [
+                {
+                  "type": "text",
+                  "id": "G9V2L3",
+                  "name": "btn_cancel_label",
+                  "fill": "$text-1",
+                  "content": "Cancel",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 12,
+                  "fontWeight": "500"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "wtasO",
+              "name": "btn_danger",
+              "fill": "#2A1416",
+              "cornerRadius": 8,
+              "stroke": "#4A2226",
+              "strokeWidth": 1,
+              "strokeAlignment": "inner",
+              "padding": [
+                7,
+                14
+              ],
+              "children": [
+                {
+                  "type": "text",
+                  "id": "InIQA",
+                  "name": "btn_danger_label",
+                  "fill": "#F87171",
+                  "content": "Delete all",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 12,
+                  "fontWeight": "500"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "IHKhy",
+      "x": 16000,
+      "y": 235,
+      "name": "Spec — Archived Delete all double confirm",
+      "width": 520,
+      "fill": "$bg",
+      "cornerRadius": 14,
+      "stroke": "$line",
+      "strokeWidth": 1,
+      "strokeAlignment": "inner",
+      "layout": "vertical",
+      "gap": 18,
+      "padding": [
+        20,
+        24
+      ],
+      "children": [
+        {
+          "type": "text",
+          "id": "NgYBe",
+          "name": "spec_title",
+          "fill": "$text-1",
+          "content": "Archived — Delete all confirm",
+          "fontFamily": "$font-ui",
+          "fontSize": 14,
+          "fontWeight": "600"
+        },
+        {
+          "type": "frame",
+          "id": "U8wzW",
+          "name": "steps_row",
+          "width": "fill_container",
+          "gap": 48,
+          "children": [
+            {
+              "type": "frame",
+              "id": "Nppi6",
+              "name": "step1_col",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 10,
+              "children": [
+                {
+                  "id": "Jw7fo",
+                  "type": "ref",
+                  "ref": "cETDE",
+                  "name": "step1_dialog"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "note",
+      "id": "q42I1",
+      "x": 17080,
+      "y": 235,
+      "name": "note_delete_all_confirm",
+      "width": 300,
+      "height": 230,
+      "content": "Delete all — confirm dialog (replaces native confirm()):\n\nSingle step. Instances component/confirm-dialog — the per-row trash (also on this screen) reuses the same component later, so styling stays synced.\n\nCopy names the exact archived count and that mission event logs go too; danger button stays quiet-tinted, same family as the Delete all trigger in the title row.\n\nBehavior: centered over the settings surface with a dim scrim; Esc or Cancel aborts; on confirm the danger button disables and reads 'Deleting…' while the loop runs."
     }
   ],
   "variables": {

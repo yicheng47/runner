@@ -1505,6 +1505,58 @@ pub async fn mission_unarchive(
     Ok(mission)
 }
 
+/// Permanent delete of an archived mission: session rows first
+/// (`sessions.mission_id` is `ON DELETE SET NULL` — deleting the
+/// mission row alone would orphan them into the direct-chat lists),
+/// then the mission row, one transaction — then its on-disk footprint:
+/// the mission dir (NDJSON log + roster sidecar) and the
+/// `missions/<id>` scratch dir (per-slot runner shims,
+/// cli_install::install_session_runner_shim). Refused for non-archived
+/// missions: archive is the reversible step, delete is not. Dir
+/// removal happens after commit and only logs on failure — the DB is
+/// the source of truth, and a leaked dir is better than a
+/// deleted-but-still-listed mission.
+pub(crate) fn delete_archived(
+    conn: &mut Connection,
+    app_data_dir: &Path,
+    id: &str,
+) -> Result<Mission> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let mission = repo::mission::get(&tx, id)?
+        .ok_or_else(|| Error::msg(format!("mission not found: {id}")))?;
+    if mission.archived_at.is_none() {
+        return Err(Error::msg(format!(
+            "mission {id} is not archived; archive it before deleting"
+        )));
+    }
+    repo::session::delete_all_for_mission(&tx, id)?;
+    repo::mission::delete_archived(&tx, id)?;
+    tx.commit()?;
+    let mission_dir = event_log::mission_dir(app_data_dir, &mission.crew_id, id);
+    let scratch_dir = app_data_dir.join("missions").join(id);
+    for dir in [mission_dir, scratch_dir] {
+        if let Err(e) = std::fs::remove_dir_all(&dir) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!(
+                    "mission {id} deleted but removing {} failed: {e}",
+                    dir.display()
+                );
+            }
+        }
+    }
+    Ok(mission)
+}
+
+/// Settings → Archived permanent delete (feature 01 Phase 4). Archived
+/// missions have no live PTYs, bus, or router — `mission_archive`
+/// dropped them — so `delete_archived` covers everything.
+#[tauri::command]
+pub async fn mission_delete(state: State<'_, AppState>, id: String) -> Result<()> {
+    let mut conn = state.db.get()?;
+    delete_archived(&mut conn, &state.app_data_dir, &id)?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn mission_list(
     state: State<'_, AppState>,
@@ -1996,6 +2048,99 @@ mod tests {
             "mission_stopped"
         );
         assert_eq!(last.from, "system");
+    }
+
+    #[test]
+    fn delete_refuses_non_archived_mission() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "A", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id,
+                title: "m".into(),
+                goal_override: None,
+                cwd: None,
+            },
+        )
+        .unwrap();
+
+        let err = delete_archived(&mut conn, tmp.path(), &out.mission.id).unwrap_err();
+        assert!(
+            err.to_string().contains("not archived"),
+            "expected archive-first refusal, got: {err}"
+        );
+
+        let unknown = delete_archived(&mut conn, tmp.path(), "no-such-mission").unwrap_err();
+        assert!(unknown.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn delete_archived_removes_mission_and_session_rows() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "A", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                crew_id: crew_id.clone(),
+                title: "m".into(),
+                goal_override: None,
+                cwd: None,
+            },
+        )
+        .unwrap();
+        let id = out.mission.id.clone();
+        // A stopped slot session — the cascade must take it with the
+        // mission instead of leaving an orphan (`mission_id` is
+        // ON DELETE SET NULL, which would leak it into direct lists).
+        conn.execute(
+            "INSERT INTO sessions (id, mission_id, slot_id, status, started_at)
+             VALUES ('s-del', ?1, 's1', 'stopped', '2026-07-11T00:00:00Z')",
+            params![id],
+        )
+        .unwrap();
+        stop(&mut conn, tmp.path(), &id).unwrap();
+
+        // On-disk footprint: the event-log dir (created by start) and
+        // the per-slot shim scratch dir (created at spawn — faked here,
+        // the bookkeeping-layer start doesn't spawn PTYs).
+        let mission_dir = event_log::mission_dir(tmp.path(), &crew_id, &id);
+        assert!(mission_dir.exists());
+        let scratch_dir = tmp.path().join("missions").join(&id);
+        std::fs::create_dir_all(scratch_dir.join("shims").join("lead").join("bin")).unwrap();
+
+        let deleted = delete_archived(&mut conn, tmp.path(), &id).unwrap();
+        assert_eq!(deleted.id, id);
+        assert_eq!(deleted.crew_id, crew_id);
+
+        let missions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM missions WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(missions, 0);
+        let orphans: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = 's-del'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphans, 0, "session rows must die with the mission");
+        assert!(!mission_dir.exists(), "event-log dir must be removed");
+        assert!(!scratch_dir.exists(), "shim scratch dir must be removed");
     }
 
     #[test]

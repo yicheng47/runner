@@ -2,16 +2,18 @@
 // direct chats merged by archive recency, with search (title + cwd)
 // and an All | Missions | Chats segmented filter. Unarchive clears
 // `archived_at` only; the backend events (`mission/changed` /
-// `session/updated`) reinstate the row in the app sidebar live. The
-// design's delete affordances (per-row trash, Delete all) ship dark
-// in v1 — feature-spec Phase 4.
+// `session/updated`) reinstate the row in the app sidebar live.
+// Delete all (title row, feature 01 Phase 4) permanently deletes every
+// archived item behind the ConfirmDialog styled per the design's
+// `component/confirm-dialog`; the per-row trash is still deferred.
 
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Archive, MessageSquare, Rocket, Search } from "lucide-react";
+import { Archive, MessageSquare, Rocket, Search, Trash2 } from "lucide-react";
 
 import { api, type DirectSessionEntry } from "../../lib/api";
 import type { Mission } from "../../lib/types";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { PaneHeader, SettingsCard } from "./shared";
 
 type TypeFilter = "all" | "missions" | "chats";
@@ -107,6 +109,8 @@ export function ArchivedPane() {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<TypeFilter>("all");
+  const [deleting, setDeleting] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -159,11 +163,51 @@ export function ArchivedPane() {
     navigate(item.kind === "mission" ? `/missions/${item.id}` : `/chats/${item.id}`);
   };
 
+  // Deletes everything archived, not just the filtered view — the
+  // dialog body names the full count so the scope is unmissable.
+  // Failed rows stay listed with the first error surfaced. The
+  // `deleting` guard covers the confirm-to-done window: a second
+  // submit would replay the same stale `items` and resurrect
+  // already-deleted rows as not-found failures.
+  const runDeleteAll = async () => {
+    if (deleting || !items || items.length === 0) return;
+    setDeleting(true);
+    try {
+      const failed: ArchivedItem[] = [];
+      let firstError: string | null = null;
+      for (const item of items) {
+        try {
+          if (item.kind === "mission") await api.mission.delete(item.id);
+          else await api.session.delete(item.id);
+        } catch (e) {
+          failed.push(item);
+          firstError ??= e instanceof Error ? e.message : String(e);
+        }
+      }
+      setItems(failed);
+      setError(firstError);
+    } finally {
+      setDeleting(false);
+      setConfirmOpen(false);
+    }
+  };
+
   return (
     <>
       <PaneHeader
         title="Archived chats & missions"
-        subtitle="Everything you've archived — restore anytime; nothing here is deleted."
+        subtitle="Everything you've archived — restore anytime, or delete permanently."
+        action={
+          <button
+            type="button"
+            onClick={() => setConfirmOpen(true)}
+            disabled={deleting || !items || items.length === 0}
+            className="flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-danger/40 bg-danger/10 px-3 text-[12px] font-medium text-danger transition-colors hover:bg-danger/20 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-danger/10"
+          >
+            <Trash2 aria-hidden className="h-3.5 w-3.5" />
+            Delete all
+          </button>
+        }
       />
       <div className="flex items-center gap-3">
         <div className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md border border-line bg-bg px-2.5">
@@ -210,6 +254,18 @@ export function ArchivedPane() {
           )}
         </SettingsCard>
       )}
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Delete all archived items?"
+        body={`This permanently deletes all ${items?.length ?? 0} archived ${
+          items?.length === 1 ? "item" : "items"
+        }, including mission event logs. This can't be undone.`}
+        confirmLabel="Delete all"
+        busyLabel="Deleting…"
+        busy={deleting}
+        onConfirm={() => void runDeleteAll()}
+        onCancel={() => setConfirmOpen(false)}
+      />
     </>
   );
 }

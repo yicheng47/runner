@@ -440,6 +440,33 @@ pub async fn session_unarchive(
     Ok(())
 }
 
+/// Permanently delete an archived direct chat (Settings → Archived
+/// delete, feature 01 Phase 4). Refused for non-archived and
+/// mission-scoped rows — archive is the reversible step, delete is
+/// not. Runner keeps nothing else on disk for a direct chat (the
+/// agent's own JSONL belongs to the agent runtime), so the row delete
+/// is the whole cleanup; the scrollback buffer was already purged at
+/// archive time.
+#[tauri::command]
+pub async fn session_delete(state: State<'_, AppState>, session_id: String) -> Result<()> {
+    let conn = state.db.get()?;
+    let deleted = repo::session::delete_archived_direct(&conn, &session_id)?;
+    if deleted == 0 {
+        // Split not-found from the two refusals the scoped DELETE
+        // can't distinguish, mirroring `session_unarchive`.
+        return match repo::session::get_row(&conn, &session_id)? {
+            None => Err(Error::msg(format!("session not found: {session_id}"))),
+            Some(row) if row.mission_id.is_some() || row.slot_id.is_some() => Err(Error::msg(
+                format!("session {session_id} is mission-scoped; only direct chats can be deleted"),
+            )),
+            Some(_) => Err(Error::msg(format!(
+                "session {session_id} is not archived; archive it before deleting"
+            ))),
+        };
+    }
+    Ok(())
+}
+
 /// Archived direct sessions, newest-archived first — the Settings →
 /// Archived pane's chat list. Same DTO as `session_list_recent_direct`
 /// (keys withheld); archived mission-slot rows stay off this surface.
@@ -822,6 +849,45 @@ mod tests {
         )
         .unwrap();
         id
+    }
+
+    #[test]
+    fn delete_archived_direct_only_deletes_archived_direct_rows() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let runner_id = seed_runner(&conn);
+        let active = insert_direct_session(&conn, &runner_id, false);
+        let archived = insert_direct_session(&conn, &runner_id, true);
+        // Archived slot leftover (mission reset): must survive this
+        // path — it dies with its mission, not through chat delete.
+        let slot_bound = ulid::Ulid::new().to_string();
+        conn.execute(
+            "INSERT INTO sessions
+                (id, mission_id, slot_id, runner_id, status, started_at, archived_at)
+             VALUES (?1, NULL, 'slot-1', ?2, 'stopped', ?3, ?3)",
+            params![slot_bound, runner_id, Utc::now().to_rfc3339()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            repo::session::delete_archived_direct(&conn, &active).unwrap(),
+            0,
+            "active chats must be archived before deletion"
+        );
+        assert_eq!(
+            repo::session::delete_archived_direct(&conn, &slot_bound).unwrap(),
+            0,
+            "slot-bound rows must not be deletable as chats"
+        );
+        assert_eq!(
+            repo::session::delete_archived_direct(&conn, &archived).unwrap(),
+            1
+        );
+
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 2, "only the archived direct row is gone");
     }
 
     #[test]
