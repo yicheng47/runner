@@ -8,13 +8,20 @@ import { Minus, Plus } from "lucide-react";
 export function PaneHeader({
   title,
   subtitle,
+  action,
 }: {
   title: string;
   subtitle: string;
+  /** Right-aligned control on the title row (design: Archived's
+   *  Delete all sits beside the page title, not in the toolbar). */
+  action?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-1">
-      <h2 className="text-[20px] font-semibold text-fg">{title}</h2>
+      <div className="flex items-center justify-between gap-6">
+        <h2 className="text-[20px] font-semibold text-fg">{title}</h2>
+        {action ? <div className="shrink-0">{action}</div> : null}
+      </div>
       <p className="text-[13px] text-fg-2">{subtitle}</p>
     </div>
   );

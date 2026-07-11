@@ -201,6 +201,20 @@ pub fn unarchive(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
     )
 }
 
+/// Hard-delete an archived mission row (Settings → Archived delete).
+/// The `IS NOT NULL` guard turns a non-archived target into a 0-row
+/// no-op the command layer refuses; callers must delete the mission's
+/// session rows first — `sessions.mission_id` is `ON DELETE SET NULL`,
+/// so an unguarded row delete would orphan them into the direct-chat
+/// lists.
+pub fn delete_archived(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM missions
+          WHERE id = ?1 AND archived_at IS NOT NULL",
+        rusqlite::params![id],
+    )
+}
+
 pub fn set_pinned_at(
     conn: &Connection,
     id: &str,

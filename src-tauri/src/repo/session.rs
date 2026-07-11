@@ -269,6 +269,20 @@ pub fn unarchive_direct(conn: &Connection, id: &str) -> rusqlite::Result<usize> 
     )
 }
 
+/// Hard-delete an archived direct chat (Settings → Archived delete).
+/// Scoped like `unarchive_direct`: mission/slot-bound rows are deleted
+/// through `mission_delete`'s cascade, never through this path.
+pub fn delete_archived_direct(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM sessions
+          WHERE id = ?1
+            AND mission_id IS NULL
+            AND slot_id IS NULL
+            AND archived_at IS NOT NULL",
+        rusqlite::params![id],
+    )
+}
+
 /// Archive every non-archived session of a mission (mission reset).
 pub fn archive_all_for_mission(
     conn: &Connection,
