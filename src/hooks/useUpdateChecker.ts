@@ -1,9 +1,9 @@
 // Auto-update hook — wraps `@tauri-apps/plugin-updater` into a simple
 // state machine: idle → checking → available → downloading → ready.
-// Mirrors Quill's `useUpdateChecker` so the surfaces (toast + Updates
-// pane) can share one context and the same UI states.
+// Mirrors Quill's `useUpdateChecker` so the surfaces (sidebar prompt
+// card + About pane) can share one context and the same UI states.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -33,9 +33,26 @@ export function useUpdateChecker(): UpdateState {
   const [error, setError] = useState<string | null>(null);
   // Guard against concurrent checks — auto-check + manual click can race.
   const checking = useRef(false);
+  // Mirror of `status` readable from the stable `checkForUpdate`
+  // closure (its useCallback deps stay empty so consumers can treat it
+  // as stable).
+  const statusRef = useRef<UpdateStatus>("idle");
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   const checkForUpdate = useCallback(async () => {
     if (checking.current) return;
+    // Only re-check from resting states. Multiple surfaces auto-check
+    // (UpdateContext's launch timer, About on mount) and they can
+    // overlap — a late check must not clobber an already-found update
+    // or an in-flight/finished download back to "checking".
+    if (
+      statusRef.current !== "idle" &&
+      statusRef.current !== "error"
+    ) {
+      return;
+    }
     checking.current = true;
     setStatus("checking");
     setError(null);

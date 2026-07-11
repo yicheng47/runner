@@ -11,7 +11,6 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Outlet } from "react-router-dom";
 
 import { Sidebar } from "./Sidebar";
-import { UpdateToast } from "./UpdateToast";
 import {
   STORAGE_SIDEBAR_COLLAPSED,
   readStoredBool,
@@ -21,11 +20,6 @@ import {
 const SIDEBAR_TOGGLE_EVENT = "runner:toggle-sidebar";
 
 export function AppShell({ children }: { children?: ReactNode }) {
-  // Settings modal state hoisted here so both the Sidebar's bottom
-  // Settings row and the UpdateToast's "Update" button can open it.
-  // Toast → settings → download mirrors Quill's flow: the toast just
-  // routes the user, the actual download/install lives in the pane.
-  const [settingsOpen, setSettingsOpen] = useState(false);
   // Sidebar collapsed/expanded lives at the shell so Cmd+S can toggle
   // it from anywhere in the app, not just when the sidebar is the
   // focused subtree.
@@ -56,6 +50,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
   // hidden textarea through so terminal focus doesn't swallow the
   // app-level shortcut. Cmd+\ remains as a legacy alias for anyone who
   // picked it up during development.
+  // Documented in src/lib/keymap.ts (toggle-sidebar).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey) return;
@@ -85,8 +80,6 @@ export function AppShell({ children }: { children?: ReactNode }) {
         />
       ) : null}
       <Sidebar
-        settingsOpen={settingsOpen}
-        onSettingsOpenChange={setSettingsOpen}
         collapsed={collapsed}
         onCollapsedChange={setCollapsed}
         previewOpen={sidebarPreviewOpen}
@@ -99,7 +92,6 @@ export function AppShell({ children }: { children?: ReactNode }) {
         />
         {children ?? <Outlet />}
       </main>
-      <UpdateToast onOpenSettings={() => setSettingsOpen(true)} />
     </div>
   );
 }

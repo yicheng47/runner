@@ -1,8 +1,8 @@
 // Shared helpers for the localStorage-backed settings used by both
-// the Settings modal and the surfaces that consume those settings
+// the Settings page and the surfaces that consume those settings
 // (e.g. UpdateContext). All settings persist via the same `"1"` /
-// `"0"` encoding the modal writes — keep this file the single source
-// of truth so the modal and its consumers can't drift apart.
+// `"0"` encoding the settings panes write — keep this file the single
+// source of truth so the panes and their consumers can't drift apart.
 
 import type { ITheme } from "@xterm/xterm";
 
@@ -46,7 +46,7 @@ export const LIGHT_VARIANT_LABELS: Record<LightVariant, string> = {
   codex: "Codex Light",
   "catppuccin-latte": "Catppuccin Latte",
 };
-// Swatch the SettingsModal dropdown row paints next to each label.
+// Swatch the Appearance pane dropdown row paints next to each label.
 // Matches `--color-accent` for that variant so the picker previews
 // the accent the user is about to switch into.
 export const LIGHT_VARIANT_ACCENTS: Record<LightVariant, string> = {
@@ -83,9 +83,9 @@ const DEFAULT_DARK_VARIANT: DarkVariant = "carbon";
 export const BRAND_MARK_PINNED_COLOR = "#00FF9C";
 
 // Public domain for the App-zoom and Terminal-* controls. Kept here (not
-// in SettingsModal) so the readers can snap/clamp to the same domain the
-// UI presents — boot and storage-event consumers can't drift onto off-
-// step or out-of-range values that the modal would never offer.
+// in the settings panes) so the readers can snap/clamp to the same domain
+// the UI presents — boot and storage-event consumers can't drift onto
+// off-step or out-of-range values that the panes would never offer.
 export const ZOOM_STEPS: readonly number[] = [0.8, 0.9, 1.0, 1.1, 1.25, 1.5];
 export const TERMINAL_FONT_SIZE_MIN = 10;
 export const TERMINAL_FONT_SIZE_MAX = 20;
@@ -650,8 +650,8 @@ export function resolveAppSurface(intent: AppTheme): "light" | "dark" {
 // removed so the `@theme` block in `index.css` cascades unchanged.
 //
 // Call from `main.tsx` once at boot, and again whenever the user
-// changes Theme / Light variant in SettingsModal (handled via the
-// same `storage` event the terminal settings ride on).
+// changes Theme / Light variant in the Appearance pane (handled via
+// the same `storage` event the terminal settings ride on).
 export function applyAppTheme(): void {
   const intent = readAppTheme();
   const surface = resolveAppSurface(intent);

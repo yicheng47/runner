@@ -1,9 +1,9 @@
 // Themed dropdown. The native `<select>` renders the platform's
 // chrome-gradient control on macOS regardless of CSS, which clashes
 // with the dark theme — same reason `RuntimeSelect` exists. This is
-// a generic value/label variant of that pattern, lifted out of
-// `SettingsModal.tsx` so the runner-edit forms can reuse it for the
-// Permission mode picker.
+// a generic value/label variant of that pattern, shared by the
+// settings panes and the runner-edit forms (e.g. the Permission mode
+// picker).
 
 import { useRef, useState } from "react";
 
@@ -41,7 +41,7 @@ export function StyledSelect({
   onChange: (v: string) => void;
   /// Override the wrapper's min-width / width when the caller wants a
   /// wider trigger (e.g. the Permission mode dropdown). Defaults to
-  /// the existing `min-w-[160px]` shape `SettingsModal` shipped with.
+  /// the existing `min-w-[160px]` shape the settings panes ship with.
   className?: string;
   /// Override the trigger's displayed label. Defaults to the matching
   /// option's `label`. Used when the caller wants a fixed prefix

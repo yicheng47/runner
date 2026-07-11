@@ -1028,6 +1028,7 @@ export default function RunnerChat() {
 
   // Cmd+W while split collapses the focused pane. Single-pane keeps the
   // OS default (Close Window) — this listener only exists while split.
+  // Documented in src/lib/keymap.ts (close-pane).
   const closeFocusedPane = useCallback(() => {
     closePaneById(getPaneLayout(sessionId).focusedPaneId);
   }, [closePaneById, sessionId]);
@@ -1051,6 +1052,7 @@ export default function RunnerChat() {
   // points, mirroring the sidebar's pattern: a window capture listener
   // for ordinary keystrokes, plus RunnerTerminal's re-dispatched custom
   // event for keys WKWebView delivers straight to xterm.
+  // Documented in src/lib/keymap.ts (pane-focus).
   const cyclePaneFocus = useCallback(
     (direction: "previous" | "next") => {
       const current = getPaneLayout(sessionId);

@@ -4,6 +4,7 @@ import {
   Routes,
   Route,
   Navigate,
+  useLocation,
   useNavigate,
 } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -19,6 +20,7 @@ import MissionWorkspace from "./pages/MissionWorkspace";
 import Runners from "./pages/Runners";
 import RunnerDetail from "./pages/RunnerDetail";
 import RunnerChat from "./pages/RunnerChat";
+import SettingsPage from "./pages/SettingsPage";
 
 export default function App() {
   // Tell the backend the first frame has painted so it can show + focus the
@@ -49,6 +51,7 @@ export default function App() {
   // Global Cmd/Ctrl +/-/0 zoom shortcuts. Capture phase so xterm's
   // textarea doesn't swallow the key before us; preventDefault only on
   // matches so other Cmd-key combos (copy, paste, etc.) still work.
+  // Documented in src/lib/keymap.ts (app-zoom).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
@@ -82,6 +85,7 @@ export default function App() {
       <ToastProvider>
         <BrowserRouter>
           <InitialRouteBootstrap />
+          <SettingsShortcut />
           <Routes>
             <Route element={<AppShell />}>
               <Route path="/" element={<Navigate to="/runners" replace />} />
@@ -93,11 +97,50 @@ export default function App() {
               <Route path="/missions/:id" element={<MissionWorkspace />} />
               <Route path="*" element={<Navigate to="/runners" replace />} />
             </Route>
+            {/* Settings takes over the whole window — its own two-column
+                surface without the app Sidebar (impl 0025). */}
+            <Route path="/settings/:pane?" element={<SettingsPage />} />
           </Routes>
         </BrowserRouter>
       </ToastProvider>
     </UpdateProvider>
   );
+}
+
+// ⌘, opens the Settings page — the standard macOS binding, wired
+// app-side (not an OS menu accelerator). Like a native menu item it
+// fires even while a text field is focused; it only navigates, so a
+// stray hit is harmless. Two entry points, mirroring the Cmd+S
+// pattern: the window capture listener for ordinary keystrokes, plus
+// RunnerTerminal's re-dispatched custom event for keys WKWebView
+// delivers straight to xterm.
+// Documented in src/lib/keymap.ts (open-settings).
+const OPEN_SETTINGS_EVENT = "runner:open-settings";
+
+function SettingsShortcut() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  useEffect(() => {
+    const openSettings = () => {
+      if (!location.pathname.startsWith("/settings")) {
+        navigate("/settings", { state: { from: location.pathname } });
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      if (e.key !== ",") return;
+      e.preventDefault();
+      e.stopPropagation();
+      openSettings();
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    window.addEventListener(OPEN_SETTINGS_EVENT, openSettings);
+    return () => {
+      window.removeEventListener("keydown", onKey, { capture: true });
+      window.removeEventListener(OPEN_SETTINGS_EVENT, openSettings);
+    };
+  }, [navigate, location.pathname]);
+  return null;
 }
 
 // Secondary windows are opened at `index.html#/missions/<id>` because

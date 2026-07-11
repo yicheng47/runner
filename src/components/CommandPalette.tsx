@@ -12,8 +12,14 @@
 // close.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { Flag, MessageSquare, Terminal, Users } from "lucide-react";
+import { useLocation, useNavigate } from "react-router-dom";
+import {
+  Flag,
+  MessageSquare,
+  Settings as SettingsIcon,
+  Terminal,
+  Users,
+} from "lucide-react";
 
 import { api, type DirectSessionEntry } from "../lib/api";
 import type {
@@ -22,7 +28,7 @@ import type {
   Runner,
 } from "../lib/types";
 
-type Kind = "mission" | "runner" | "crew" | "chat";
+type Kind = "mission" | "runner" | "crew" | "chat" | "settings";
 
 interface PaletteItem {
   kind: Kind;
@@ -46,6 +52,7 @@ interface CommandPaletteProps {
 
 export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
   const [items, setItems] = useState<PaletteItem[]>([]);
@@ -110,11 +117,23 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
           order: i,
         }),
       );
+      // Static entry — the palette's route to the full-page settings
+      // (impl 0025). Threads the current location through state so
+      // "Back to app" returns here.
+      next.push({
+        kind: "settings",
+        id: "settings",
+        label: "Settings",
+        navigate: () =>
+          navigate("/settings", { state: { from: location.pathname } }),
+        searchText: "settings preferences",
+        order: 0,
+      });
       setItems(next);
     } catch {
       // Whole-batch failure: leave items empty.
     }
-  }, [navigate]);
+  }, [navigate, location.pathname]);
 
   useEffect(() => {
     if (!open) return;
@@ -156,7 +175,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       ? items.filter((it) => it.searchText.includes(q))
       : items.slice();
     matched.sort((a, b) => {
-      const kindOrder: Record<Kind, number> = { mission: 0, chat: 1, runner: 2, crew: 3 };
+      const kindOrder: Record<Kind, number> = { mission: 0, chat: 1, runner: 2, crew: 3, settings: 4 };
       if (a.kind !== b.kind) return kindOrder[a.kind] - kindOrder[b.kind];
       return a.order - b.order;
     });
@@ -278,6 +297,7 @@ function KindIcon({ kind }: { kind: Kind }) {
   if (kind === "mission") return <Flag aria-hidden className={cls} />;
   if (kind === "chat") return <MessageSquare aria-hidden className={cls} />;
   if (kind === "runner") return <Terminal aria-hidden className={cls} />;
+  if (kind === "settings") return <SettingsIcon aria-hidden className={cls} />;
   return <Users aria-hidden className={cls} />;
 }
 

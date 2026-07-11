@@ -109,7 +109,7 @@ Runner is a local desktop app. A user configures a **crew** of CLI coding agents
 | File watching | **`notify`** crate | The bus tails the NDJSON file and republishes lines as Tauri events. |
 | Bundled CLI | **`runner` binary** | The agents talk to the bus through this — `runner signal …`, `runner msg post …`, `runner msg read`. Bundled with the app, dropped at `$APPDATA/runner/bin/runner` on first run, PATH-prepended per spawn. |
 | Logging | **`tauri-plugin-log`** + a Rust panic hook | Writes to the OS log dir for the bundle; backtraces captured to the same file. |
-| Auto-update | **`tauri-plugin-updater`** | Signed updates from the GitHub Releases manifest; UI surfaces the toast through download → ready. |
+| Auto-update | **`tauri-plugin-updater`** | Signed updates from the GitHub Releases manifest. Settings → About drives the check → download → restart ladder; a sidebar prompt card surfaces ready-to-install (impl 0025). |
 | MCP | **`rmcp` + Unix socket + `runner-mcp` bridge** | Runner.app owns stateful tool execution; external MCP clients spawn `runner-mcp`, which bridges stdio to the app's local Unix socket. |
 
 **Platform targets.** macOS (Apple Silicon + x64) primary; Linux (x64) best-effort. Windows is deferred — `portable-pty` works there but no one is on the validation loop.
@@ -224,6 +224,15 @@ How sessions are *displayed* is a strictly frontend concern, with three nested c
 Sessions exist independently of all three: closing a pane, replacing a tab, or closing a window never kills a PTY.
 
 Disambiguation: the mission workspace's per-slot terminal switcher (feature 33's "terminal tabs") predates this hierarchy and is a different, mission-scoped UI element — not a Tab in the sense above. If the mission surface ever adopts the tab/pane model, that is feature 19's deferred scope.
+
+### 3.7 Settings surface (frontend only)
+
+Settings is a full-window route, `/settings/:pane?`, rendered outside the app shell: its own sidebar (grouped nav + label search + "Back to app") replaces the app sidebar in the same slot — resizable and sharing the app sidebar's persisted width (`runner.sidebar.width`) so the takeover reads as continuous — with card-grouped panes in the content column (impl 0025, superseding the earlier modal). Entry points — the sidebar Settings row, the command palette entry, and `⌘,` — navigate to the route, threading the caller's location through state so the back button returns there. All settings persist to `localStorage` through the typed helpers in `src/lib/settings.ts`; there is no backend settings store yet.
+
+Two pieces worth naming:
+
+- **Keyboard shortcuts pane** — read-only view over the static registry in `src/lib/keymap.ts` (feature 257 v1). Handlers keep their hardcoded keys; each carries a one-line pointer back at the registry. Rebinding is a designed follow-up.
+- **Update flow** — Updates merged into About: the hero card walks a five-state button ladder (check → download → restart) over the shared `useUpdate()` context, auto-checking on pane mount. When an update is ready to install, `UpdatePromptCard` floats above the app sidebar's Settings row (per-launch dismissable); the old top-center toast is gone.
 
 ## 4. Coordination primitives — *what flows between runners*
 
