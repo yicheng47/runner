@@ -63,6 +63,7 @@ const MAX_PENDING_LIVE_EVENTS = 4096;
 const SIDEBAR_TOGGLE_EVENT = "runner:toggle-sidebar";
 const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
 const CHAT_PANE_CYCLE_EVENT = "runner:cycle-chat-pane";
+const OPEN_SETTINGS_EVENT = "runner:open-settings";
 
 function normalizePasteImageMime(type: string): PasteImageMimeType | null {
   switch (type.trim().toLowerCase()) {
@@ -526,6 +527,14 @@ export const RunnerTerminal = forwardRef<
           window.dispatchEvent(new Event(SIDEBAR_TOGGLE_EVENT));
           return false;
         }
+        // Cmd+, opens Settings (impl 0025). Same bridge reason as
+        // Cmd+S: WKWebView can deliver the key straight to xterm, so
+        // the window listener in App.tsx would never see it.
+        if (e.key === "," && !e.altKey && !e.shiftKey) {
+          e.preventDefault();
+          window.dispatchEvent(new Event(OPEN_SETTINGS_EVENT));
+          return false;
+        }
         // Bracket pair, iTerm2-style: plain Cmd+[ / Cmd+] cycles split-pane
         // focus (impl 0020; no-op outside a split chat), Cmd+Shift+[ /
         // Cmd+Shift+] navigates sidebar pages. Shifted brackets arrive as
@@ -857,8 +866,8 @@ export const RunnerTerminal = forwardRef<
       // No Tauri runtime (dev browser preview).
     }
 
-    // Live updates from SettingsModal. localStorage's `storage` event
-    // doesn't fire in the originating window, so the modal dispatches a
+    // Live updates from the Settings page. localStorage's `storage` event
+    // doesn't fire in the originating window, so the pane dispatches a
     // synthetic one after each write (via `notifySameWindowStorage`). We
     // always re-read through the typed readers so the clamp/normalize
     // path is identical to mount-time — an out-of-range write can't

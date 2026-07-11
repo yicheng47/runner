@@ -1,7 +1,7 @@
 // Auto-update context — single source of update state shared by the
-// shell-level toast (`UpdateToast`) and the Settings → Updates pane.
-// Mirrors Quill's pattern so toast → settings is just two views over
-// the same status, no duplicated polling.
+// sidebar prompt card (`UpdatePromptCard`) and the Settings → About
+// pane. Mirrors Quill's pattern so card → settings is just two views
+// over the same status, no duplicated polling.
 
 import {
   createContext,
@@ -24,8 +24,8 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   // The auto-install toggle owns two separate behaviors: (1) whether
   // we even kick off a check on app start, and (2) whether we go
   // straight to download once an update is detected. Persistent
-  // store is plain localStorage for now (same key the Updates pane
-  // toggle writes to).
+  // store is plain localStorage for now (same key the About pane
+  // toggle and the prompt card checkbox write to).
   const checkedRef = useRef(false);
 
   // Run a single check ~3s after mount. The delay keeps the launch
@@ -46,9 +46,8 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // When the user has auto-install on, advance from "available" →
-  // "downloading" automatically. The toast still shows the available
-  // pill briefly so it doesn't feel like the update happened in
-  // secret. Otherwise the user has to click Download in Settings.
+  // "downloading" automatically. Otherwise the user has to click
+  // Download in Settings → About.
   useEffect(() => {
     if (state.status !== "available") return;
     if (!readStoredBool(STORAGE_AUTO_INSTALL_UPDATES, true)) return;

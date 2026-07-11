@@ -36,11 +36,11 @@ applyAppFont();
 // Tauri app.
 subscribeOsThemeChange();
 
-// Reapply when the SettingsModal flips Theme or Light variant. The
-// modal writes through `writeAppTheme` / `writeLightVariant` and then
-// fires a synthesized `storage` event (via `notifySameWindowStorage`)
-// so other surfaces — including this root listener — pick up the
-// change without a reload.
+// Reapply when the Settings page flips Theme or Light variant. The
+// Appearance pane writes through `writeAppTheme` / `writeLightVariant`
+// and then fires a synthesized `storage` event (via
+// `notifySameWindowStorage`) so other surfaces — including this root
+// listener — pick up the change without a reload.
 window.addEventListener("storage", (e) => {
   if (
     e.key === STORAGE_APP_THEME ||

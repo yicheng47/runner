@@ -1,15 +1,15 @@
-// Pill-style on/off switch. Matches the private Toggle inside
-// SettingsModal.tsx — split out here so the runner-edit forms
-// (CreateRunnerModal, RunnerEditDrawer) can reuse it without
-// cross-component imports.
+// Pill-style on/off switch. Shared by the settings panes and the
+// runner-edit forms (CreateRunnerModal, RunnerEditDrawer).
 
 export function Toggle({
   on,
   onChange,
+  disabled,
   ariaLabel,
 }: {
   on: boolean;
   onChange: (next: boolean) => void;
+  disabled?: boolean;
   ariaLabel?: string;
 }) {
   return (
@@ -18,8 +18,9 @@ export function Toggle({
       role="switch"
       aria-checked={on}
       aria-label={ariaLabel}
+      disabled={disabled}
       onClick={() => onChange(!on)}
-      className={`flex h-[18px] w-8 cursor-pointer items-center rounded-full p-0.5 transition-colors ${
+      className={`flex h-[18px] w-8 cursor-pointer items-center rounded-full p-0.5 transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
         on ? "justify-end bg-accent/15" : "justify-start bg-raised"
       }`}
     >

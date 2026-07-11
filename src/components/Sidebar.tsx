@@ -92,8 +92,8 @@ import type {
 } from "../lib/types";
 import { StartMissionModal } from "./StartMissionModal";
 import { StartChatModal } from "./StartChatModal";
-import { SettingsModal } from "./SettingsModal";
 import { CommandPalette } from "./CommandPalette";
+import { UpdatePromptCard } from "./UpdatePromptCard";
 
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 480;
@@ -121,6 +121,7 @@ interface SidebarNavigationHistory {
 // can cycle split-pane focus in the chat surface (impl 0020), matching
 // iTerm2's pane/tab split. Shifted brackets arrive as "{" / "}" on US
 // layouts, so match on `code` first with the shifted keys as fallback.
+// Documented in src/lib/keymap.ts (page-navigation).
 function sidebarNavigationDirectionFromKey(
   e: KeyboardEvent,
 ): SidebarNavigationDirection | null {
@@ -165,12 +166,6 @@ function setStoredFlag(key: string, value: boolean): void {
 }
 
 interface SidebarProps {
-  // Settings open state lives in AppShell so the UpdateToast can also
-  // open it (toast → settings → download flow). Passing the open
-  // state down keeps the SettingsModal mounted here while letting
-  // outsiders trigger it.
-  settingsOpen: boolean;
-  onSettingsOpenChange: (open: boolean) => void;
   // Collapsed/expanded state lives in AppShell so the global Cmd+S
   // shortcut can toggle it too. The `width` resize state stays local —
   // it's preserved across collapse/expand cycles so users get their last
@@ -182,8 +177,6 @@ interface SidebarProps {
 }
 
 export function Sidebar({
-  settingsOpen,
-  onSettingsOpenChange,
   collapsed,
   onCollapsedChange,
   previewOpen,
@@ -247,10 +240,6 @@ export function Sidebar({
     x: number;
     y: number;
   } | null>(null);
-  // Settings modal toggle. State now lives in AppShell so external
-  // surfaces (e.g. UpdateToast) can also open it; we just mirror the
-  // prop through a stable setter.
-  const setSettingsOpen = onSettingsOpenChange;
   // Command palette toggle. Opened from the search nav row OR the
   // global ⌘K / Ctrl+K shortcut. Mirrors Pencil node `Fkoe8`.
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -392,6 +381,7 @@ export function Sidebar({
   // don't hijack form input. xterm's hidden textarea is not an editor
   // field from the app's point of view, so Meta shortcuts still win
   // there; Ctrl shortcuts stay with the PTY/TUI.
+  // Documented in src/lib/keymap.ts (command-palette, new-chat).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
@@ -1202,14 +1192,26 @@ export function Sidebar({
               </section>
             </div>
 
+            {/* Update prompt card — floats directly above the Settings
+                row when an update is ready to install (impl 0025).
+                Renders null otherwise. */}
+            <UpdatePromptCard />
+
             {/* Settings row — pinned at the bottom of the sidebar
                 column. Mirrors Pencil node `IJsUO` (sidebar settings).
-                The trailing button collapses the sidebar (or, in a
-                hover-preview, pins it open) via the #246 panel glyph. */}
+                Navigates to the full-page settings route (impl 0025),
+                threading the current location through state so "Back
+                to app" can return here. The trailing button collapses
+                the sidebar (or, in a hover-preview, pins it open) via
+                the #246 panel glyph. */}
             <div className="flex shrink-0 items-center gap-2 border-t border-sidebar-selected-border px-3 pt-2">
               <button
                 type="button"
-                onClick={() => setSettingsOpen(true)}
+                onClick={() =>
+                  navigate("/settings", {
+                    state: { from: location.pathname },
+                  })
+                }
                 className="flex flex-1 cursor-pointer items-center gap-2.5 rounded border border-transparent px-2.5 py-2 text-left text-fg-2 transition-colors hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg focus:border-sidebar-selected-border focus:bg-sidebar-selected/40 focus:text-fg focus:outline-none"
               >
                 <SettingsIcon aria-hidden className="h-3.5 w-3.5" />
@@ -1251,11 +1253,6 @@ export function Sidebar({
           />
         ) : null}
       </aside>
-
-      <SettingsModal
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-      />
 
       <CommandPalette
         open={paletteOpen}

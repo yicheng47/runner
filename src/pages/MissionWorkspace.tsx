@@ -751,6 +751,8 @@ export default function MissionWorkspace() {
     return ["feed", ...slotTabs].slice(0, 9);
   }, [isArchived, openTabs, sessions]);
 
+  // ⌘1 = feed, ⌘2–⌘9 = open slot tabs.
+  // Documented in src/lib/keymap.ts (mission-feed, mission-slots).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
