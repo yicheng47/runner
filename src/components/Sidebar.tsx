@@ -1099,7 +1099,13 @@ export function Sidebar({
 
             {/* Brand row — open state only. The drag region extends
                 below the traffic-light strip so the header band reads
-                as one continuous title bar. */}
+                as one continuous title bar. The trailing magnifier
+                opens the command palette (Codex-style: title left,
+                search icon right) — replaced the old WORKSPACE search
+                nav row to give the lists below one more row of space.
+                A child button inside the drag region is safe: Tauri
+                starts a drag only when the mousedown target itself
+                carries the attribute. */}
             <div
               data-tauri-drag-region
               className="flex shrink-0 items-center gap-2 px-5 pb-5 pt-1"
@@ -1108,6 +1114,15 @@ export function Sidebar({
               <span className="text-base font-semibold tracking-tight text-fg">
                 Runner
               </span>
+              <button
+                type="button"
+                onClick={() => setPaletteOpen(true)}
+                title="Search (⌘K)"
+                aria-label="Search"
+                className="ml-auto flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded border border-transparent text-fg-2 transition-colors hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg focus:border-sidebar-selected-border focus:bg-sidebar-selected/40 focus:text-fg focus:outline-none"
+              >
+                <Search aria-hidden className="h-3.5 w-3.5" />
+              </button>
             </div>
             {/* WORKSPACE keeps natural height; it doesn't compete
                 with the scrollable Mission/Chat region below. */}
@@ -1115,14 +1130,6 @@ export function Sidebar({
               <SectionHeader>WORKSPACE</SectionHeader>
               <nav className="flex flex-col gap-0.5 px-3 pb-1">
                 <NewChatNavRow onOpen={handleNewDirectChat} />
-                {/* Search opens a command-palette modal — matches design
-                    `Fkoe8`. Default interaction is click-to-callout, not
-                    type-in-place, so this lives as a nav row alongside
-                    runner/crew rather than an inline input. Placed
-                    first in WORKSPACE because it's the highest-velocity
-                    entry point — jumping to any mission / runner /
-                    crew without scrolling the lists below. */}
-                <SearchNavRow onOpen={() => setPaletteOpen(true)} />
                 <NavRow icon={Terminal} to="/runners" label="runner" />
                 <NavRow icon={Users} to="/crews" label="crew" />
               </nav>
@@ -1450,27 +1457,6 @@ function NewChatNavRow({ onOpen }: { onOpen: () => void }) {
       <span className="min-w-0 flex-1 truncate">new chat</span>
       <span className="shrink-0 rounded border border-line bg-bg px-1.5 py-px font-mono text-[10px] leading-tight text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus:opacity-100">
         ⌘T
-      </span>
-    </button>
-  );
-}
-
-/// Search nav row — visually indistinguishable from runner/crew rows
-/// but opens the CommandPalette modal instead of routing. The ⌘K
-/// keyboard binding (registered above) still works; the shortcut
-/// hint appears on hover/focus.
-function SearchNavRow({ onOpen }: { onOpen: () => void }) {
-  return (
-    <button
-      type="button"
-      title="Search"
-      onClick={onOpen}
-      className="group flex w-full cursor-pointer items-center gap-2 rounded border border-transparent px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg focus:border-sidebar-selected-border focus:bg-sidebar-selected/40 focus:text-fg focus:outline-none"
-    >
-      <Search aria-hidden className="h-3 w-3 text-fg-2" />
-      <span className="min-w-0 flex-1 truncate">search</span>
-      <span className="shrink-0 rounded border border-line bg-bg px-1.5 py-px font-mono text-[10px] leading-tight text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus:opacity-100">
-        ⌘K
       </span>
     </button>
   );
