@@ -226,8 +226,8 @@ export default function SettingsPage() {
           className="pointer-events-auto absolute left-0 right-0 top-0 z-10 h-7"
         />
         <div className="flex-1 overflow-y-auto">
-          <div className="pb-16 pl-[120px] pr-10 pt-14">
-            <div className="flex max-w-[760px] flex-col gap-5">
+          <div className="px-10 pb-16 pt-14">
+            <div className="mx-auto flex max-w-[760px] flex-col gap-5">
               {PANES[pane].render()}
             </div>
           </div>
