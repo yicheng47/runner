@@ -19,7 +19,7 @@ use runner_core::model::{EventDraft, EventKind, KnownSignalType, SignalType};
 use rusqlite::{params, Connection};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, State};
 use ulid::Ulid as UlidGen;
 
 use crate::{
@@ -1479,6 +1479,32 @@ pub async fn mission_archive(state: State<'_, AppState>, id: String) -> Result<M
     mission_archive_impl(&state, id).await
 }
 
+/// Clear a mission's archive marker so it reappears in active lists.
+/// Nothing else changes: the row keeps `status = 'completed'` and its
+/// `stopped_at` — the same state the migration backfill created and
+/// every surface already renders (impl 0026). Idempotent: unarchiving
+/// an active mission is a no-op Ok; unknown ids error via the trailing
+/// `get`.
+pub(crate) async fn mission_unarchive_impl(state: &AppState, id: String) -> Result<Mission> {
+    let conn = state.db.get()?;
+    repo::mission::unarchive(&conn, &id)?;
+    get(&conn, &id)
+}
+
+/// Emits `mission/changed` after the flip — the sidebar's MISSION list
+/// listens on that channel, so the restored row reappears without a
+/// manual refresh.
+#[tauri::command]
+pub async fn mission_unarchive(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<Mission> {
+    let mission = mission_unarchive_impl(&state, id).await?;
+    let _ = app.emit("mission/changed", ());
+    Ok(mission)
+}
+
 #[tauri::command]
 pub async fn mission_list(
     state: State<'_, AppState>,
@@ -1486,6 +1512,17 @@ pub async fn mission_list(
 ) -> Result<Vec<Mission>> {
     let conn = state.db.get()?;
     list(&conn, crew_id.as_deref())
+}
+
+/// Archived missions, newest-archived first — the Settings → Archived
+/// pane's read surface.
+#[tauri::command]
+pub async fn mission_list_archived(
+    state: State<'_, AppState>,
+    crew_id: Option<String>,
+) -> Result<Vec<Mission>> {
+    let conn = state.db.get()?;
+    repo::mission::list_archived(&conn, crew_id.as_deref()).map_err(Into::into)
 }
 
 #[tauri::command]

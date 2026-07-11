@@ -122,6 +122,25 @@ pub fn list(conn: &Connection, crew_id: Option<&str>) -> rusqlite::Result<Vec<Mi
     rows.map(|r| r.map(Mission::from)).collect()
 }
 
+/// Archived missions, optionally filtered by crew, newest-archived
+/// first — the Settings → Archived pane's read surface. Mirror image
+/// of `list()`.
+pub fn list_archived(conn: &Connection, crew_id: Option<&str>) -> rusqlite::Result<Vec<Mission>> {
+    let sql = format!(
+        "SELECT {}
+           FROM missions
+           WHERE (?1 IS NULL OR crew_id = ?1)
+             AND archived_at IS NOT NULL
+           ORDER BY archived_at DESC",
+        select_list(COLUMNS)
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params![crew_id], |row| {
+        from_row::<MissionRow>(row).map_err(de_err)
+    })?;
+    rows.map(|r| r.map(Mission::from)).collect()
+}
+
 /// Terminal stop: flip `running` -> `completed` and stamp `archived_at`
 /// atomically with the status (a terminal stop is by definition an
 /// archive). The `WHERE status = 'running'` guard makes racing stops
@@ -166,6 +185,19 @@ pub fn reset_to_running(
                 archived_at = NULL
           WHERE id = ?2",
         rusqlite::params![started_at.to_rfc3339(), id],
+    )
+}
+
+/// Unarchive: clear the archive marker and nothing else — status and
+/// `stopped_at` stay, so an unarchived mission reappears exactly as the
+/// `completed AND archived_at IS NULL` rows the migration backfill
+/// created. The `IS NOT NULL` guard makes a repeat call a 0-row no-op.
+pub fn unarchive(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE missions
+            SET archived_at = NULL
+          WHERE id = ?1 AND archived_at IS NOT NULL",
+        rusqlite::params![id],
     )
 }
 
@@ -323,6 +355,55 @@ mod tests {
         assert_eq!(m.stopped_at, None);
         assert_eq!(m.archived_at, None);
         assert!(m.pinned_at.is_some(), "pin survives a reset");
+    }
+
+    #[test]
+    fn list_archived_is_the_mirror_image_of_list_newest_first() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        seed_crew(&conn, "c1");
+        insert(&conn, &minimal_row()).unwrap(); // active — hidden here
+        let mut older = full_row();
+        older.id = "m-arch-old".into();
+        older.archived_at = Some(Utc::now() - chrono::Duration::hours(2));
+        insert(&conn, &older).unwrap();
+        let mut newer = full_row();
+        newer.id = "m-arch-new".into();
+        insert(&conn, &newer).unwrap();
+
+        let archived = list_archived(&conn, Some("c1")).unwrap();
+        let ids: Vec<&str> = archived.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["m-arch-new", "m-arch-old"]);
+
+        let active: Vec<String> = list(&conn, Some("c1"))
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            active,
+            vec!["m-min"],
+            "archived rows stay off the active list"
+        );
+    }
+
+    #[test]
+    fn unarchive_clears_only_the_archive_marker() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        seed_crew(&conn, "c1");
+        let row = full_row(); // completed + stopped_at + pinned_at + archived_at
+        insert(&conn, &row).unwrap();
+
+        assert_eq!(unarchive(&conn, "m-full").unwrap(), 1);
+        let m = get(&conn, "m-full").unwrap().unwrap();
+        assert_eq!(m.archived_at, None);
+        assert_eq!(m.status, MissionStatus::Completed, "status is preserved");
+        assert_eq!(m.stopped_at, row.stopped_at, "stopped_at is preserved");
+        assert_eq!(m.pinned_at, row.pinned_at, "pin survives unarchive");
+
+        // Idempotent: an already-active row is a 0-row no-op, not an error.
+        assert_eq!(unarchive(&conn, "m-full").unwrap(), 0);
     }
 
     #[test]

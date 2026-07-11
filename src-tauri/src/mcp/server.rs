@@ -96,6 +96,7 @@ mod tests {
             "mission_start",
             "mission_stop",
             "mission_archive",
+            "mission_unarchive",
             "mission_pin",
             "mission_rename",
             "mission_reset",

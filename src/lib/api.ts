@@ -153,8 +153,15 @@ export const api = {
      *  bring the agents back. */
     stop: (id: string) => invoke<Mission>("mission_stop", { id }),
     /** Terminal end-of-mission. Drops router + bus, flips status to
-     *  `completed`. Cannot be undone. */
+     *  `completed`. Reversible via `unarchive`. */
     archive: (id: string) => invoke<Mission>("mission_archive", { id }),
+    /** Clear the archive marker only — status stays `completed`,
+     *  `stopped_at` survives. The backend emits `mission/changed` so
+     *  the sidebar reinstates the row live. Idempotent. */
+    unarchive: (id: string) => invoke<Mission>("mission_unarchive", { id }),
+    /** Archived missions, newest-archived first (Settings → Archived). */
+    listArchived: (crewId?: string) =>
+      invoke<Mission[]>("mission_list_archived", crewId ? { crewId } : {}),
     /** Wipe the run context and respawn every slot. Mostly for
      *  testing — keeps the mission row, crew, and slots intact;
      *  drops the event log, agent session keys, and router state. */
@@ -184,6 +191,15 @@ export const api = {
       invoke<DirectSessionEntry | null>("session_get", { sessionId }),
     archive: (sessionId: string) =>
       invoke<void>("session_archive", { sessionId }),
+    /** Clear the archive marker; the row rejoins the sidebar CHAT list
+     *  (backend emits `session/updated`). Resume keeps working — the
+     *  agent_session_key survives archive/unarchive. Idempotent. */
+    unarchive: (sessionId: string) =>
+      invoke<void>("session_unarchive", { sessionId }),
+    /** Archived direct chats, newest-archived first (Settings →
+     *  Archived). Same DTO as listRecentDirect, keys withheld. */
+    listArchived: () =>
+      invoke<DirectSessionEntry[]>("session_list_archived"),
     rename: (sessionId: string, title: string | null) =>
       invoke<void>("session_rename", { sessionId, title }),
     pin: (sessionId: string, pinned: boolean) =>

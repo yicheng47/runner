@@ -251,6 +251,24 @@ pub fn archive(conn: &Connection, id: &str, archived_at: Timestamp) -> rusqlite:
     )
 }
 
+/// Clear a direct session's archive marker (Settings → Archived
+/// restore). Scoped to direct chats like `list_archived_direct` —
+/// mission/slot-bound rows (reset leftovers) must stay archived or
+/// they'd leak back into `list_for_mission`. Single-column flip —
+/// status, `agent_session_key`, and title all survive, so a restored
+/// chat can still resume. The guards make a repeat call a 0-row no-op.
+pub fn unarchive_direct(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE sessions
+            SET archived_at = NULL
+          WHERE id = ?1
+            AND mission_id IS NULL
+            AND slot_id IS NULL
+            AND archived_at IS NOT NULL",
+        rusqlite::params![id],
+    )
+}
+
 /// Archive every non-archived session of a mission (mission reset).
 pub fn archive_all_for_mission(
     conn: &Connection,
@@ -400,6 +418,26 @@ pub fn list_recent_direct(conn: &Connection) -> rusqlite::Result<Vec<DirectSessi
           ORDER BY CASE WHEN s.pinned_at IS NOT NULL THEN 0 ELSE 1 END,
                    CASE WHEN s.status = 'running'    THEN 0 ELSE 1 END,
                    COALESCE(s.stopped_at, s.started_at) DESC",
+        qualified_select_list("s", COLUMNS)
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], direct_row)?;
+    rows.collect()
+}
+
+/// Archived direct sessions, newest-archived first — the Settings →
+/// Archived pane's chat list. Same row shape and direct-chat scoping as
+/// `list_recent_direct`; archived mission-slot rows (reset leftovers)
+/// stay off this surface.
+pub fn list_archived_direct(conn: &Connection) -> rusqlite::Result<Vec<DirectSessionRow>> {
+    let sql = format!(
+        "SELECT {}, {DIRECT_EXTRAS}
+           FROM sessions s
+           LEFT JOIN runners r ON r.id = s.runner_id
+          WHERE s.mission_id IS NULL
+            AND s.slot_id IS NULL
+            AND s.archived_at IS NOT NULL
+          ORDER BY s.archived_at DESC",
         qualified_select_list("s", COLUMNS)
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -623,6 +661,117 @@ mod tests {
         assert_eq!(row.runtime, "shell");
         assert!(row.lead);
         assert_eq!(row.agent_session_key.as_deref(), Some("key-1"));
+    }
+
+    #[test]
+    fn list_archived_direct_mirrors_the_active_list_newest_first() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let now = Utc::now();
+        seed_runner(&conn, "r1", "alpha");
+        // Active direct chat — stays off the archived list.
+        conn.execute(
+            "INSERT INTO sessions (id, runner_id, status, started_at)
+             VALUES ('d-active', 'r1', 'stopped', ?1)",
+            rusqlite::params![now.to_rfc3339()],
+        )
+        .unwrap();
+        // Two archived chats, inserted out of archive order.
+        conn.execute(
+            "INSERT INTO sessions (id, runner_id, status, started_at, archived_at)
+             VALUES ('d-arch-old', 'r1', 'stopped', ?1, ?2),
+                    ('d-arch-new', 'r1', 'stopped', ?1, ?1)",
+            rusqlite::params![
+                now.to_rfc3339(),
+                (now - chrono::Duration::hours(2)).to_rfc3339()
+            ],
+        )
+        .unwrap();
+        // Archived mission-slot leftover (mission reset) — slot-bound, so
+        // it must never surface as an archived chat.
+        conn.execute(
+            "INSERT INTO sessions (id, runner_id, slot_id, status, started_at, archived_at)
+             VALUES ('slot-arch', 'r1', 'sl-old', 'stopped', ?1, ?1)",
+            rusqlite::params![now.to_rfc3339()],
+        )
+        .unwrap();
+
+        let ids: Vec<String> = list_archived_direct(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.row.id)
+            .collect();
+        assert_eq!(ids, vec!["d-arch-new", "d-arch-old"]);
+    }
+
+    #[test]
+    fn unarchive_returns_the_row_to_the_active_list() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let now = Utc::now();
+        seed_runner(&conn, "r1", "alpha");
+        conn.execute(
+            "INSERT INTO sessions
+                (id, runner_id, status, started_at, agent_session_key, archived_at)
+             VALUES ('d1', 'r1', 'stopped', ?1, 'resume-key', ?1)",
+            rusqlite::params![now.to_rfc3339()],
+        )
+        .unwrap();
+
+        assert_eq!(unarchive_direct(&conn, "d1").unwrap(), 1);
+        let row = get_row(&conn, "d1").unwrap().unwrap();
+        assert_eq!(row.archived_at, None);
+        assert_eq!(
+            row.agent_session_key.as_deref(),
+            Some("resume-key"),
+            "resume key survives unarchive"
+        );
+        assert_eq!(row.status, SessionStatus::Stopped, "status is preserved");
+        let listed = list_recent_direct(&conn).unwrap();
+        assert!(listed.iter().any(|d| d.row.id == "d1"));
+        assert!(list_archived_direct(&conn).unwrap().is_empty());
+
+        // Idempotent: an already-active row is a 0-row no-op, not an error.
+        assert_eq!(unarchive_direct(&conn, "d1").unwrap(), 0);
+    }
+
+    #[test]
+    fn unarchive_direct_refuses_mission_and_slot_bound_rows() {
+        // The Archived pane only lists direct chats; restoring a reset
+        // leftover here would leak it back into `list_for_mission`.
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let now = Utc::now().to_rfc3339();
+        seed_runner(&conn, "r1", "alpha");
+        conn.execute(
+            "INSERT INTO crews (id, name, created_at, updated_at) VALUES ('c1', 'C', ?1, ?1)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO missions (id, crew_id, title, status, started_at)
+             VALUES ('m1', 'c1', 't', 'completed', ?1)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        // Archived mission session and a slot-bound legacy orphan
+        // (mission_id NULL but still slot-scoped).
+        conn.execute(
+            "INSERT INTO sessions (id, mission_id, runner_id, slot_id, status, started_at, archived_at)
+             VALUES ('se-mission', 'm1', 'r1', NULL, 'stopped', ?1, ?1),
+                    ('se-slot', NULL, 'r1', 'sl-old', 'stopped', ?1, ?1)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+
+        for id in ["se-mission", "se-slot"] {
+            assert_eq!(unarchive_direct(&conn, id).unwrap(), 0);
+            let row = get_row(&conn, id).unwrap().unwrap();
+            assert!(
+                row.archived_at.is_some(),
+                "{id}: mission/slot-bound rows must stay archived"
+            );
+        }
     }
 
     #[test]

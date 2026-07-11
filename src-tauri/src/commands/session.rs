@@ -399,6 +399,59 @@ pub async fn session_archive(
     Ok(())
 }
 
+/// Clear a direct session's archive marker so it rejoins the SESSION
+/// tray (Settings → Archived restore). Single-column flip — status,
+/// title, and `agent_session_key` survive, so a restored chat can
+/// still resume. Idempotent: unarchiving an active direct chat is a
+/// no-op Ok. Unknown ids and mission/slot-bound rows error — the
+/// Archived pane only lists direct chats, and restoring a reset
+/// leftover would leak it back into `session_list` for its mission.
+///
+/// Emits a `session/updated` Tauri event after the flip — the same
+/// channel `session_rename` / `session_pin` use — so the sidebar's
+/// CHAT list picks the restored row back up without a refresh.
+#[tauri::command]
+pub async fn session_unarchive(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<()> {
+    let conn = state.db.get()?;
+    let updated = repo::session::unarchive_direct(&conn, &session_id)?;
+    if updated == 0 {
+        // Split the no-op (already-active direct chat) from the two
+        // refusals the scoped UPDATE can't distinguish.
+        match repo::session::get_row(&conn, &session_id)? {
+            None => {
+                return Err(Error::msg(format!("session not found: {session_id}")));
+            }
+            Some(row) if row.mission_id.is_some() || row.slot_id.is_some() => {
+                return Err(Error::msg(format!(
+                    "session {session_id} is mission-scoped; only direct chats can be unarchived"
+                )));
+            }
+            Some(_) => {}
+        }
+    }
+    let _ = app.emit(
+        "session/updated",
+        serde_json::json!({ "session_id": session_id }),
+    );
+    Ok(())
+}
+
+/// Archived direct sessions, newest-archived first — the Settings →
+/// Archived pane's chat list. Same DTO as `session_list_recent_direct`
+/// (keys withheld); archived mission-slot rows stay off this surface.
+#[tauri::command]
+pub async fn session_list_archived(state: State<'_, AppState>) -> Result<Vec<DirectSessionEntry>> {
+    let conn = state.db.get()?;
+    repo::session::list_archived_direct(&conn)?
+        .into_iter()
+        .map(|d| direct_entry_from_repo(d, /*ship_key*/ false))
+        .collect()
+}
+
 /// Set or clear the user-facing label for a direct-chat session. Pass
 /// `None` (or an all-whitespace string, treated as None) to revert to
 /// the auto-derived label (`@handle · <time>`). Trims surrounding

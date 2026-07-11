@@ -11,6 +11,7 @@
 import { useMemo, useRef, useState, type ComponentType } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
+  Archive,
   ArrowLeft,
   FileText,
   Info,
@@ -25,6 +26,7 @@ import {
 
 import { AboutPane } from "../components/settings/AboutPane";
 import { AppearancePane } from "../components/settings/AppearancePane";
+import { ArchivedPane } from "../components/settings/ArchivedPane";
 import { ChatPane } from "../components/settings/ChatPane";
 import { DiagnosticsPane } from "../components/settings/DiagnosticsPane";
 import { GeneralPane } from "../components/settings/GeneralPane";
@@ -49,7 +51,8 @@ type PaneKey =
   | "shortcuts"
   | "mcp"
   | "diagnostics"
-  | "about";
+  | "about"
+  | "archived";
 
 const PANES: Record<
   PaneKey,
@@ -75,6 +78,11 @@ const PANES: Record<
     render: () => <DiagnosticsPane />,
   },
   about: { label: "About", icon: Info, render: () => <AboutPane /> },
+  archived: {
+    label: "Archived chats & missions",
+    icon: Archive,
+    render: () => <ArchivedPane />,
+  },
 };
 
 const NAV_GROUPS: { label: string; panes: PaneKey[] }[] = [
@@ -84,6 +92,7 @@ const NAV_GROUPS: { label: string; panes: PaneKey[] }[] = [
   },
   { label: "Integrations", panes: ["mcp"] },
   { label: "System", panes: ["diagnostics", "about"] },
+  { label: "Archived", panes: ["archived"] },
 ];
 
 function isPaneKey(value: string | undefined): value is PaneKey {
