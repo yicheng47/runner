@@ -7,14 +7,33 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { listen } from "@tauri-apps/api/event";
+import { SearchX } from "lucide-react";
 
 import { useToast } from "../contexts/ToastContext";
+import { useListControls } from "../hooks/useListControls";
 import { api } from "../lib/api";
+import { buildSearchDoc } from "../lib/listControls";
 import type { CrewListItem } from "../lib/types";
 import { Button } from "../components/ui/Button";
 import { Modal } from "../components/ui/Overlay";
+import { Pager } from "../components/ui/Pager";
+import { SearchInput } from "../components/ui/SearchInput";
 import { Field, Input, Textarea } from "../components/ui/Field";
 import { EmptyStateCard } from "../components/EmptyStateCard";
+
+function crewSearchDocument(crew: CrewListItem) {
+  return buildSearchDoc([
+    crew.name,
+    crew.purpose,
+    crew.goal,
+    crew.system_prompt_addendum,
+    ...crew.members.flatMap((member) => [
+      member.slot_handle,
+      member.runner_handle,
+      member.runtime,
+    ]),
+  ]);
+}
 
 export default function Crews() {
   const [crews, setCrews] = useState<CrewListItem[]>([]);
@@ -25,6 +44,16 @@ export default function Crews() {
   const [deletingCrewId, setDeletingCrewId] = useState<string | null>(null);
   const { showToast } = useToast();
   const navigate = useNavigate();
+  const {
+    query,
+    setQuery,
+    page,
+    setPage,
+    pageItems,
+    filteredCount,
+    totalCount,
+    pageCount,
+  } = useListControls(crews, crewSearchDocument);
 
   const refresh = useCallback(async () => {
     try {
@@ -141,17 +170,59 @@ export default function Crews() {
               }
             />
           ) : (
-            <div className="flex flex-col gap-3">
-              {crews.map((c) => (
-                <CrewCard
-                  key={c.id}
-                  item={c}
-                  deleting={deletingCrewId === c.id}
-                  onOpen={() => navigate(`/crews/${c.id}`)}
-                  onDelete={() => onDelete(c.id, c.name)}
+            <>
+              <div className="flex items-center justify-between gap-4">
+                <SearchInput
+                  value={query}
+                  onChange={setQuery}
+                  label="Search crews"
+                  placeholder="Search crews…"
                 />
-              ))}
-            </div>
+                <span className="shrink-0 font-mono text-[11px] text-fg-2">
+                  {pageItems.length} of {totalCount} crews
+                </span>
+              </div>
+              {filteredCount === 0 ? (
+                <div className="flex w-full flex-col items-center gap-3 rounded-lg border border-line bg-panel px-8 py-14 text-center">
+                  <SearchX aria-hidden className="h-5 w-5 text-fg-3" />
+                  <h2 className="text-sm font-medium text-fg">
+                    No crews match &quot;{query}&quot;
+                  </h2>
+                  <p className="text-xs leading-relaxed text-fg-2">
+                    Search checks names, purposes, goals, system prompts, slot
+                    handles, runner handles, and runtimes.
+                  </p>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setQuery("")}
+                  >
+                    Clear search
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <div className="flex flex-col gap-3">
+                    {pageItems.map((c) => (
+                      <CrewCard
+                        key={c.id}
+                        item={c}
+                        deleting={deletingCrewId === c.id}
+                        onOpen={() => navigate(`/crews/${c.id}`)}
+                        onDelete={() => onDelete(c.id, c.name)}
+                      />
+                    ))}
+                  </div>
+                  <div className="mt-auto flex justify-center pt-3">
+                    <Pager
+                      page={page}
+                      pageCount={pageCount}
+                      onPageChange={setPage}
+                    />
+                  </div>
+                </>
+              )}
+            </>
           )}
         </div>
       </div>
