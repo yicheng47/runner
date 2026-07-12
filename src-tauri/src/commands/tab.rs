@@ -31,9 +31,8 @@ fn validate_layout(layout: &str) -> Result<()> {
 
 #[tauri::command]
 pub fn tab_list(state: State<'_, AppState>) -> Result<Vec<TabRow>> {
-    let conn = state.db.get()?;
-    repo::tab::ensure_active_sessions(&conn)?;
-    Ok(repo::tab::list(&conn)?)
+    let mut conn = state.db.get()?;
+    Ok(repo::tab::list_with_active_sessions(&mut conn)?)
 }
 
 #[tauri::command]
@@ -91,6 +90,29 @@ pub fn tab_move_to_folder(
     let row = repo::tab::get(&conn, &id)?.ok_or_else(|| Error::msg("tab disappeared"))?;
     let _ = app.emit("chat/layout-changed", serde_json::json!({}));
     Ok(row)
+}
+
+#[tauri::command]
+pub fn tab_reorder(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    id: String,
+    folder_id: Option<String>,
+    ordered_ids: Vec<String>,
+) -> Result<Vec<TabRow>> {
+    let mut conn = state.db.get()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if let Some(folder_id) = folder_id.as_deref() {
+        if repo::folder::get(&tx, folder_id)?.is_none() {
+            return Err(Error::msg(format!("folder not found: {folder_id}")));
+        }
+    }
+    repo::tab::move_and_reorder(&tx, &id, folder_id.as_deref(), &ordered_ids)
+        .map_err(|error| Error::msg(format!("reorder tab: {error}")))?;
+    let rows = repo::tab::list(&tx)?;
+    tx.commit()?;
+    let _ = app.emit("chat/layout-changed", serde_json::json!({}));
+    Ok(rows)
 }
 
 #[tauri::command]

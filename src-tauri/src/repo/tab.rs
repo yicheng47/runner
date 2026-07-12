@@ -44,6 +44,14 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<TabRow>> {
     rows
 }
 
+pub fn list_with_active_sessions(conn: &mut Connection) -> rusqlite::Result<Vec<TabRow>> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    ensure_active_sessions(&tx)?;
+    let rows = list(&tx)?;
+    tx.commit()?;
+    Ok(rows)
+}
+
 pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<TabRow>> {
     let sql = format!("SELECT {} FROM tabs WHERE id = ?1", select_list(COLUMNS));
     conn.query_row(&sql, [id], |row| from_row(row).map_err(de_err))
@@ -115,6 +123,42 @@ pub fn move_to_folder(
         "UPDATE tabs SET folder_id = ?2, position = ?3 WHERE id = ?1",
         rusqlite::params![id, folder_id, position],
     )
+}
+
+pub fn move_and_reorder(
+    tx: &Transaction<'_>,
+    id: &str,
+    folder_id: Option<&str>,
+    ordered_ids: &[String],
+) -> rusqlite::Result<()> {
+    if tx.execute(
+        "UPDATE tabs SET folder_id = ?2 WHERE id = ?1",
+        rusqlite::params![id, folder_id],
+    )? == 0
+    {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    let actual: Vec<String> = tx
+        .prepare("SELECT id FROM tabs WHERE folder_id IS ?1")?
+        .query_map([folder_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let expected: HashSet<&str> = actual.iter().map(String::as_str).collect();
+    let provided: HashSet<&str> = ordered_ids.iter().map(String::as_str).collect();
+    if ordered_ids.len() != actual.len()
+        || provided.len() != ordered_ids.len()
+        || provided != expected
+    {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "ordered tab ids do not match destination group".to_owned(),
+        ));
+    }
+    for (position, tab_id) in ordered_ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE tabs SET position = ?2 WHERE id = ?1",
+            rusqlite::params![tab_id, position as i64],
+        )?;
+    }
+    Ok(())
 }
 
 pub fn session_ids(row: &TabRow) -> Vec<String> {
@@ -223,6 +267,8 @@ pub fn delete_folder_tabs_and_archive(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Barrier};
+
     use crate::db;
 
     #[test]
@@ -240,6 +286,46 @@ mod tests {
         let second = super::list(&conn).unwrap();
         assert_eq!(first, second);
         assert_eq!(super::session_ids(&first[0]), ["s1"]);
+    }
+
+    #[test]
+    fn concurrent_active_session_lists_seed_one_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_pool(&dir.path().join("runner.db")).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, status, archived_at) VALUES ('s1', 'stopped', NULL)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let barrier = Arc::new(Barrier::new(3));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let pool = pool.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let mut conn = pool.get().unwrap();
+                    barrier.wait();
+                    super::list_with_active_sessions(&mut conn).unwrap()
+                })
+            })
+            .collect();
+        barrier.wait();
+        for handle in handles {
+            let rows = handle.join().unwrap();
+            assert_eq!(
+                rows.iter().flat_map(super::session_ids).collect::<Vec<_>>(),
+                ["s1"]
+            );
+        }
+
+        let conn = pool.get().unwrap();
+        let rows = super::list(&conn).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(super::session_ids(&rows[0]), ["s1"]);
     }
 
     #[test]
@@ -336,5 +422,72 @@ mod tests {
             super::session_ids(&super::get(&conn, &target.id).unwrap().unwrap()),
             ["b"]
         );
+    }
+
+    #[test]
+    fn move_and_reorder_changes_group_and_persists_exact_order() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        let folder = crate::repo::folder::create(&conn, "Project").unwrap();
+        let a = super::create(
+            &conn,
+            None,
+            "A",
+            0,
+            r#"{"preset":"single","slots":["a"],"sizes":{}}"#,
+        )
+        .unwrap();
+        let b = super::create(
+            &conn,
+            None,
+            "B",
+            1,
+            r#"{"preset":"single","slots":["b"],"sizes":{}}"#,
+        )
+        .unwrap();
+        let c = super::create(
+            &conn,
+            Some(&folder.id),
+            "C",
+            0,
+            r#"{"preset":"single","slots":["c"],"sizes":{}}"#,
+        )
+        .unwrap();
+
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        super::move_and_reorder(&tx, &b.id, Some(&folder.id), &[b.id.clone(), c.id.clone()])
+            .unwrap();
+        tx.commit().unwrap();
+
+        let rows = super::list(&conn).unwrap();
+        let grouped: Vec<_> = rows
+            .iter()
+            .filter(|row| row.folder_id.as_deref() == Some(folder.id.as_str()))
+            .map(|row| row.id.as_str())
+            .collect();
+        assert_eq!(grouped, [b.id.as_str(), c.id.as_str()]);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.folder_id.is_none())
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            [a.id.as_str()]
+        );
+
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        assert!(
+            super::move_and_reorder(&tx, &a.id, Some(&folder.id), std::slice::from_ref(&a.id),)
+                .is_err()
+        );
+        drop(tx);
+        assert!(super::get(&conn, &a.id)
+            .unwrap()
+            .unwrap()
+            .folder_id
+            .is_none());
     }
 }

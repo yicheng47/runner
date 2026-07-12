@@ -306,6 +306,7 @@ pub fn run() {
             commands::tab::tab_upsert,
             commands::tab::tab_delete,
             commands::tab::tab_move_to_folder,
+            commands::tab::tab_reorder,
             commands::tab::tab_import_once,
             commands::mission::mission_start,
             commands::mission::mission_attach,
