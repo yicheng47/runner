@@ -10,17 +10,35 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { listen } from "@tauri-apps/api/event";
-import { MessageSquare } from "lucide-react";
+import { MessageSquare, SearchX } from "lucide-react";
 
 import { useToast } from "../contexts/ToastContext";
+import { useListControls } from "../hooks/useListControls";
 import { api } from "../lib/api";
+import { buildSearchDoc } from "../lib/listControls";
 import { readDefaultWorkingDir } from "../lib/settings";
 import type { RunnerActivityEvent, RunnerWithActivity } from "../lib/types";
 // AppShell is supplied by the layout route in App.tsx; pages render
 // their content as-is and the shell wraps them automatically.
 import { Button } from "../components/ui/Button";
+import { Pager } from "../components/ui/Pager";
+import { SearchInput } from "../components/ui/SearchInput";
 import { CreateRunnerModal } from "../components/CreateRunnerModal";
 import { EmptyStateCard } from "../components/EmptyStateCard";
+
+function runnerSearchDocument(runner: RunnerWithActivity) {
+  return buildSearchDoc([
+    runner.handle,
+    runner.display_name,
+    runner.runtime,
+    runner.command,
+    runner.args.join(" "),
+    runner.model,
+    runner.effort,
+    runner.working_dir,
+    runner.system_prompt,
+  ]);
+}
 
 export default function Runners() {
   const [runners, setRunners] = useState<RunnerWithActivity[]>([]);
@@ -31,6 +49,16 @@ export default function Runners() {
   const { showToast } = useToast();
   const location = useLocation();
   const navigate = useNavigate();
+  const {
+    query,
+    setQuery,
+    page,
+    setPage,
+    pageItems,
+    filteredCount,
+    totalCount,
+    pageCount,
+  } = useListControls(runners, runnerSearchDocument);
 
   const refresh = useCallback(async () => {
     try {
@@ -162,8 +190,8 @@ export default function Runners() {
 
   return (
     <>
-      <div className="flex flex-1 flex-col overflow-y-auto">
-        <div className="flex w-full flex-1 flex-col gap-6 px-8 py-8">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 w-full flex-1 flex-col gap-6 px-8 py-8">
           <header className="flex items-center justify-between gap-4">
             <div className="flex flex-col gap-1">
               <h1 className="text-2xl font-bold tracking-tight text-fg">
@@ -203,18 +231,60 @@ export default function Runners() {
               }
             />
           ) : (
-            <div className="flex flex-col gap-3">
-              {runners.map((r) => (
-                <RunnerCard
-                  key={r.id}
-                  item={r}
-                  onOpen={() => navigate(`/runners/${r.handle}`)}
-                  onChat={() => void onChat(r)}
-                  chatPending={chatPending === r.id}
-                  onDelete={() => onDelete(r.id, r.handle)}
+            <>
+              <div className="flex items-center justify-between gap-4">
+                <SearchInput
+                  value={query}
+                  onChange={setQuery}
+                  label="Search runners"
+                  placeholder="Search runners…"
                 />
-              ))}
-            </div>
+                <span className="shrink-0 font-mono text-[11px] text-fg-2">
+                  {pageItems.length} of {totalCount} runners
+                </span>
+              </div>
+              {filteredCount === 0 ? (
+                <div className="flex w-full flex-col items-center gap-3 rounded-lg border border-line bg-panel px-8 py-14 text-center">
+                  <SearchX aria-hidden className="h-5 w-5 text-fg-3" />
+                  <h2 className="text-sm font-medium text-fg">
+                    No runners match &quot;{query}&quot;
+                  </h2>
+                  <p className="text-xs leading-relaxed text-fg-2">
+                    Search checks handles, names, runtimes, commands, models,
+                    effort, working directories, and system prompts.
+                  </p>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setQuery("")}
+                  >
+                    Clear search
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                    {pageItems.map((r) => (
+                      <RunnerCard
+                        key={r.id}
+                        item={r}
+                        onOpen={() => navigate(`/runners/${r.handle}`)}
+                        onChat={() => void onChat(r)}
+                        chatPending={chatPending === r.id}
+                        onDelete={() => onDelete(r.id, r.handle)}
+                      />
+                    ))}
+                  </div>
+                  <div className="mt-auto flex justify-center pt-3">
+                    <Pager
+                      page={page}
+                      pageCount={pageCount}
+                      onPageChange={setPage}
+                    />
+                  </div>
+                </>
+              )}
+            </>
           )}
         </div>
       </div>

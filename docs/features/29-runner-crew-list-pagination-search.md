@@ -1,6 +1,7 @@
 # 29 — Runner and crew list pagination and search
 
 > Tracking issue: [#220](https://github.com/yicheng47/runner/issues/220)
+> Design: `design/runner-crew-list-search.pen` — search toolbar + pager components, Runners default/filtered/no-match states, Crews page 2 state.
 
 ## Motivation
 
