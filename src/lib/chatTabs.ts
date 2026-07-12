@@ -37,6 +37,38 @@ export function derivedChatTabTitle<
   return members.map(chatTabMemberLabel).join(" + ");
 }
 
+export interface OrderedChatTab {
+  id: string;
+  pinned: boolean;
+}
+
+export function isChatTabDropIndexAllowed(
+  targetTabs: readonly OrderedChatTab[],
+  draggedId: string,
+  draggedPinned: boolean,
+  index: number,
+): boolean {
+  const remaining = targetTabs.filter((tab) => tab.id !== draggedId);
+  const pinnedCount = remaining.filter((tab) => tab.pinned).length;
+  return draggedPinned ? index <= pinnedCount : index >= pinnedCount;
+}
+
+export function orderedChatTabIdsAfterDrop(
+  targetTabs: readonly OrderedChatTab[],
+  draggedId: string,
+  draggedPinned: boolean,
+  requestedIndex: number,
+): string[] {
+  const remaining = targetTabs.filter((tab) => tab.id !== draggedId);
+  const pinnedCount = remaining.filter((tab) => tab.pinned).length;
+  const index = draggedPinned
+    ? Math.max(0, Math.min(requestedIndex, pinnedCount))
+    : Math.max(pinnedCount, Math.min(requestedIndex, remaining.length));
+  const orderedIds = remaining.map((tab) => tab.id);
+  orderedIds.splice(index, 0, draggedId);
+  return orderedIds;
+}
+
 /**
  * Order the CHAT list into groups and loose rows. Backend sort order is
  * preserved: each group is anchored where its best-sorted member already

@@ -133,6 +133,8 @@ export const api = {
     delete: (id: string) => invoke<void>("tab_delete", { id }),
     moveToFolder: (id: string, folderId: string | null) =>
       invoke<TabRow>("tab_move_to_folder", { id, folderId }),
+    reorder: (id: string, folderId: string | null, orderedIds: string[]) =>
+      invoke<TabRow[]>("tab_reorder", { id, folderId, orderedIds }),
     importOnce: (tabs: TabImportInput[]) =>
       invoke<TabRow[]>("tab_import_once", { tabs }),
   },

@@ -15,12 +15,14 @@
 // blink the direct-chat list and vice versa.
 
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
   type ComponentType,
+  type DragEvent,
   type ReactNode,
 } from "react";
 import {
@@ -46,6 +48,7 @@ import {
   Settings as SettingsIcon,
   SquarePen,
   Terminal,
+  Trash2,
   Users,
 } from "lucide-react";
 
@@ -62,8 +65,13 @@ import {
   shouldInheritPinOnAdd,
 } from "../lib/groupPinning";
 import {
+  isChatTabDropIndexAllowed,
+  orderedChatTabIdsAfterDrop,
+} from "../lib/chatTabs";
+import {
   activatePaneLayoutForSession,
   assignSessionToPane,
+  createChatFolder,
   findLeaf,
   focusPane,
   getPaneLayout,
@@ -71,15 +79,18 @@ import {
   newChatTargetPane,
   removeArchivedSessionFromLayout,
   hydratePaneLayoutsFromDb,
+  moveSessionTabToFolder,
   moveTabToFolder,
+  reorderTab,
   setGroupNameForSession,
   useFolders,
   usePaneLayouts,
   visibleSessionIds,
   type PaneLayout,
 } from "../lib/paneLayout";
-import { ChatTabGroup } from "./ChatTabGroup";
+import { CHAT_TAB_DRAG_TYPE, ChatTabGroup } from "./ChatTabGroup";
 import { PanelToggleGlyph } from "./PanelToggleGlyph";
+import { PopoverMenu } from "./ui/PopoverMenu";
 import { useResizableWidth } from "../hooks/useResizableWidth";
 import {
   BRAND_MARK_PINNED_COLOR,
@@ -252,7 +263,6 @@ export function Sidebar({
     name: string;
     count: number;
     currentWasDeleted: boolean;
-    stage: 1 | 2;
   } | null>(null);
   const [deletingFolder, setDeletingFolder] = useState(false);
   // Command palette toggle. Opened from the search nav row OR the
@@ -269,9 +279,23 @@ export function Sidebar({
   // Inline rename: when set, the row whose id matches renders an input
   // instead of its label. Submit (Enter) → session_rename + refresh.
   // Cancel (Escape / blur with no change) → close without write.
-  // CHAT `+` opens the StartChat modal. State is a single boolean —
-  // the modal owns its own field state and runner-list fetch.
+  // CHAT creation state. The `+` and empty-space context menus can start a
+  // chat or insert a focused inline folder-name row.
   const [creatingChat, setCreatingChat] = useState(false);
+  const [newChatFolderId, setNewChatFolderId] = useState<string | null>(null);
+  const [chatAddMenuOpen, setChatAddMenuOpen] = useState(false);
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [chatCreateMenu, setChatCreateMenu] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
+  const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
+  const [tabDropTarget, setTabDropTarget] = useState<{
+    folderId: string | null;
+    index: number;
+    markerKey: string;
+  } | null>(null);
 
   // Identify the currently-open runtime so we can highlight the matching
   // sidebar row. `useMatch` returns null when the URL doesn't match.
@@ -812,16 +836,34 @@ export function Sidebar({
     setGroupNameForSession(first.session_id, proposed);
   }, []);
 
-  const createFolder = useCallback(async () => {
-    const name = window.prompt("Folder name");
-    if (!name?.trim()) return;
+  const beginFolderCreate = useCallback(() => {
+    setChatAddMenuOpen(false);
+    setChatCreateMenu(null);
+    setSessionsOpen(true);
+    setStoredFlag(STORAGE_SESSION_OPEN, true);
+    setCreatingFolder(true);
+  }, []);
+
+  const submitFolderCreate = useCallback(async (name: string) => {
     try {
-      await api.folder.create(name.trim());
-      await hydratePaneLayoutsFromDb();
+      await createChatFolder(name);
+      setCreatingFolder(false);
     } catch (e) {
       console.error("sidebar: folder_create failed", e);
+      throw e;
     }
   }, []);
+
+  const openChatCreateMenu = useCallback(
+    (anchor: { x: number; y: number }) => {
+      setChatAddMenuOpen(false);
+      setChatTabMenu(null);
+      setFolderMenu(null);
+      setMissionMenu(null);
+      setChatCreateMenu(anchor);
+    },
+    [],
+  );
 
   const renameFolder = useCallback(async (id: string, currentName: string) => {
     const name = window.prompt("Rename folder", currentName);
@@ -855,7 +897,6 @@ export function Sidebar({
         name,
         count,
         currentWasDeleted,
-        stage: 1,
       });
     },
     [currentChatSessionId, paneLayouts, tabItems],
@@ -924,8 +965,65 @@ export function Sidebar({
   // a takeover, so we don't pre-expand the SESSION section; the new
   // chat row will be visible on return from the spawned chat URL.
   const handleNewDirectChat = useCallback(() => {
+    setChatAddMenuOpen(false);
+    setChatCreateMenu(null);
+    setCreatingFolder(false);
+    setNewChatFolderId(null);
     setCreatingChat(true);
   }, []);
+
+  const handleNewFolderChat = useCallback((folderId: string) => {
+    setChatAddMenuOpen(false);
+    setChatCreateMenu(null);
+    setCreatingFolder(false);
+    setNewChatFolderId(folderId);
+    setCreatingChat(true);
+  }, []);
+
+  const clearTabDrag = useCallback(() => {
+    setDraggedTabId(null);
+    setDragOverFolderId(null);
+    setTabDropTarget(null);
+  }, []);
+
+  const commitTabDrop = useCallback(
+    async (tabId: string, folderId: string | null, requestedIndex: number) => {
+      const dragged = tabItems.find((item) => item.layout.id === tabId);
+      if (!dragged) {
+        clearTabDrag();
+        return;
+      }
+      const pinned = dragged.members.every((member) => member.pinned);
+      const targetItems = tabItems.filter(
+        (item) =>
+          item.layout.folderId === folderId && item.layout.id !== tabId,
+      );
+      const orderedIds = orderedChatTabIdsAfterDrop(
+        targetItems.map((item) => ({
+          id: item.layout.id,
+          pinned: item.members.every((member) => member.pinned),
+        })),
+        tabId,
+        pinned,
+        requestedIndex,
+      );
+      clearTabDrag();
+      try {
+        await reorderTab(tabId, folderId, orderedIds);
+      } catch (error) {
+        console.error("sidebar: reorder tab failed", error);
+      }
+    },
+    [clearTabDrag, tabItems],
+  );
+
+  const dropTabIntoFolder = useCallback(
+    (tabId: string, folderId: string) => {
+      setDragOverFolderId(null);
+      void commitTabDrop(tabId, folderId, Number.MAX_SAFE_INTEGER);
+    },
+    [commitTabDrop],
+  );
 
   const toggleMissions = useCallback(() => {
     setMissionsOpen((prev) => {
@@ -955,9 +1053,166 @@ export function Sidebar({
         onContextMenu={(anchor) =>
           openChatTabMenu(item.layout, item.members, anchor)
         }
+        onDragStart={(tabId) => {
+          setDraggedTabId(tabId);
+          setDragOverFolderId(null);
+          setTabDropTarget(null);
+        }}
+        onDragEnd={clearTabDrag}
+        dragging={draggedTabId === item.layout.id}
       />
     );
   };
+
+  const renderTabDropDivider = (
+    folderId: string | null,
+    items: typeof tabItems,
+    originalIndex: number,
+    key: string,
+  ) => {
+    if (!draggedTabId) return null;
+    const dragged = tabItems.find((item) => item.layout.id === draggedTabId);
+    if (!dragged) return null;
+    const index = items
+      .slice(0, originalIndex)
+      .filter((item) => item.layout.id !== draggedTabId).length;
+    if (
+      !isChatTabDropIndexAllowed(
+        items.map((item) => ({
+          id: item.layout.id,
+          pinned: item.members.every((member) => member.pinned),
+        })),
+        dragged.layout.id,
+        dragged.members.every((member) => member.pinned),
+        index,
+      )
+    ) {
+      return null;
+    }
+    return (
+      <TabDropDivider
+        key={key}
+        active={
+          tabDropTarget?.folderId === folderId &&
+          tabDropTarget.index === index &&
+          tabDropTarget.markerKey === key
+        }
+        onDragOver={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          event.dataTransfer.dropEffect = "move";
+          setDragOverFolderId(null);
+          setTabDropTarget({ folderId, index, markerKey: key });
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const tabId = event.dataTransfer.getData(CHAT_TAB_DRAG_TYPE);
+          if (tabId) void commitTabDrop(tabId, folderId, index);
+          else clearTabDrag();
+        }}
+      />
+    );
+  };
+
+  const renderTabItems = (
+    items: typeof tabItems,
+    folderId: string | null,
+  ) => (
+    <>
+      {items.map((item, originalIndex) => {
+        const dropIndex = (after: boolean) =>
+          items
+            .slice(0, originalIndex + (after ? 1 : 0))
+            .filter((candidate) => candidate.layout.id !== draggedTabId)
+            .length;
+        const canDropAt = (index: number) => {
+          const dragged = tabItems.find(
+            (candidate) => candidate.layout.id === draggedTabId,
+          );
+          if (!dragged) return false;
+          return isChatTabDropIndexAllowed(
+            items.map((candidate) => ({
+              id: candidate.layout.id,
+              pinned: candidate.members.every((member) => member.pinned),
+            })),
+            dragged.layout.id,
+            dragged.members.every((member) => member.pinned),
+            index,
+          );
+        };
+        const pointerIndex = (event: DragEvent<HTMLDivElement>) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          return dropIndex(event.clientY >= rect.top + rect.height / 2);
+        };
+        return (
+          <Fragment key={item.layout.id}>
+            {renderTabDropDivider(
+              folderId,
+              items,
+              originalIndex,
+              `before-${item.layout.id}`,
+            )}
+            <div
+              onDragOver={(event) => {
+                if (
+                  !Array.from(event.dataTransfer.types).includes(
+                    CHAT_TAB_DRAG_TYPE,
+                  )
+                ) {
+                  return;
+                }
+                const index = pointerIndex(event);
+                if (!canDropAt(index)) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  event.dataTransfer.dropEffect = "none";
+                  setTabDropTarget(null);
+                  return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                event.dataTransfer.dropEffect = "move";
+                setDragOverFolderId(null);
+                const after =
+                  event.clientY >=
+                  event.currentTarget.getBoundingClientRect().top +
+                    event.currentTarget.getBoundingClientRect().height / 2;
+                const markerKey = after
+                  ? originalIndex + 1 < items.length
+                    ? `before-${items[originalIndex + 1].layout.id}`
+                    : `after-${folderId ?? "ungrouped"}`
+                  : `before-${item.layout.id}`;
+                setTabDropTarget({ folderId, index, markerKey });
+              }}
+              onDrop={(event) => {
+                const index = pointerIndex(event);
+                if (!canDropAt(index)) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  clearTabDrag();
+                  return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                const tabId = event.dataTransfer.getData(CHAT_TAB_DRAG_TYPE);
+                if (tabId) void commitTabDrop(tabId, folderId, index);
+                else clearTabDrag();
+              }}
+            >
+              {renderTabItem(item)}
+            </div>
+          </Fragment>
+        );
+      })}
+      {renderTabDropDivider(
+        folderId,
+        items,
+        items.length,
+        `after-${folderId ?? "ungrouped"}`,
+      )}
+    </>
+  );
 
   const sidebarVisible = !collapsed || previewOpen;
   const sidebarPreview = collapsed && previewOpen;
@@ -1048,7 +1303,6 @@ export function Sidebar({
             <div className="shrink-0">
               <SectionHeader>WORKSPACE</SectionHeader>
               <nav className="flex flex-col gap-0.5 px-3 pb-1">
-                <NewChatNavRow onOpen={handleNewDirectChat} />
                 <NavRow icon={Terminal} to="/runners" label="runner" />
                 <NavRow icon={Users} to="/crews" label="crew" />
               </nav>
@@ -1100,21 +1354,59 @@ export function Sidebar({
                   label="CHAT"
                   open={sessionsOpen}
                   onToggle={toggleSessions}
-                  onPlus={handleNewDirectChat}
-                  plusTitle="Start a chat"
-                  plusExpanded={creatingChat}
+                  onPlus={() => {
+                    setChatCreateMenu(null);
+                    setChatAddMenuOpen((open) => !open);
+                  }}
+                  plusTitle="Add chat or folder"
+                  plusExpanded={chatAddMenuOpen}
+                  plusPopup="menu"
+                  onPlusMenuClose={() => setChatAddMenuOpen(false)}
+                  plusMenu={
+                    <div className="flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setChatAddMenuOpen(false);
+                          handleNewDirectChat();
+                        }}
+                        className="flex cursor-pointer items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-fg hover:bg-line"
+                      >
+                        <MessageSquarePlus aria-hidden className="h-3.5 w-3.5" />
+                        New chat
+                      </button>
+                      <button
+                        type="button"
+                        onClick={beginFolderCreate}
+                        className="flex cursor-pointer items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-fg hover:bg-line"
+                      >
+                        <FolderPlus aria-hidden className="h-3.5 w-3.5" />
+                        New folder
+                      </button>
+                    </div>
+                  }
                 />
                 {sessionsOpen ? (
-                  <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                    <button
-                      type="button"
-                      onClick={() => void createFolder()}
-                      className="mb-1 flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1 text-left text-[11px] text-fg-3 transition-colors hover:bg-sidebar-selected/40 hover:text-fg"
-                    >
-                      <FolderPlus aria-hidden className="h-3 w-3" />
-                      New folder
-                    </button>
-                    {folders.length === 0 && tabItems.length === 0 ? (
+                  <div
+                    onContextMenu={(event) => {
+                      if (event.defaultPrevented) return;
+                      event.preventDefault();
+                      openChatCreateMenu({
+                        x: event.clientX,
+                        y: event.clientY,
+                      });
+                    }}
+                    className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                  >
+                    {creatingFolder ? (
+                      <NewFolderRow
+                        onSubmit={submitFolderCreate}
+                        onCancel={() => setCreatingFolder(false)}
+                      />
+                    ) : null}
+                    {folders.length === 0 &&
+                    tabItems.length === 0 &&
+                    !creatingFolder ? (
                       <p className="px-2.5 py-1 text-xs text-fg-3">
                         No chats yet.
                       </p>
@@ -1125,7 +1417,43 @@ export function Sidebar({
                             (item) => item.layout.folderId === folder.id,
                           );
                           return (
-                            <div key={folder.id} className="flex flex-col gap-0.5">
+                            <div
+                              key={folder.id}
+                              onDragOver={(event) => {
+                                if (
+                                  !Array.from(event.dataTransfer.types).includes(
+                                    CHAT_TAB_DRAG_TYPE,
+                                  )
+                                ) {
+                                  return;
+                                }
+                                event.preventDefault();
+                                event.dataTransfer.dropEffect = "move";
+                                setDragOverFolderId(folder.id);
+                                setTabDropTarget(null);
+                              }}
+                              onDragLeave={(event) => {
+                                const next = event.relatedTarget;
+                                if (
+                                  !(next instanceof Node) ||
+                                  !event.currentTarget.contains(next)
+                                ) {
+                                  setDragOverFolderId(null);
+                                }
+                              }}
+                              onDrop={(event) => {
+                                event.preventDefault();
+                                const tabId = event.dataTransfer.getData(
+                                  CHAT_TAB_DRAG_TYPE,
+                                );
+                                if (tabId) {
+                                  void dropTabIntoFolder(tabId, folder.id);
+                                } else {
+                                  setDragOverFolderId(null);
+                                }
+                              }}
+                              className="flex flex-col gap-0.5"
+                            >
                               <div
                                 onContextMenu={(event) => {
                                   event.preventDefault();
@@ -1134,7 +1462,11 @@ export function Sidebar({
                                     y: event.clientY,
                                   });
                                 }}
-                                className="group flex items-center gap-1 rounded px-1 py-1 text-xs text-fg-2 hover:bg-sidebar-selected/40 hover:text-fg"
+                                className={`group flex items-center gap-1.5 rounded border px-2.5 py-1.5 text-xs transition-colors ${
+                                  dragOverFolderId === folder.id
+                                    ? "border-accent bg-accent/10 text-fg"
+                                    : "border-transparent text-fg-2 hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg"
+                                }`}
                               >
                                 <button
                                   type="button"
@@ -1156,6 +1488,20 @@ export function Sidebar({
                                 </button>
                                 <button
                                   type="button"
+                                  onClick={() => {
+                                    if (folder.collapsed) {
+                                      void toggleFolder(folder.id, true);
+                                    }
+                                    handleNewFolderChat(folder.id);
+                                  }}
+                                  className="cursor-pointer rounded p-0.5 text-fg-3 hover:bg-raised hover:text-fg"
+                                  aria-label={`New chat in ${folder.name}`}
+                                  title="New chat in folder"
+                                >
+                                  <Plus aria-hidden className="h-3 w-3" />
+                                </button>
+                                <button
+                                  type="button"
                                   onClick={(event) =>
                                     openFolderMenu(folder, {
                                       x: event.clientX,
@@ -1171,15 +1517,23 @@ export function Sidebar({
                               </div>
                               {folder.collapsed ? null : (
                                 <div className="ml-3 flex flex-col gap-0.5 border-l border-line pl-2">
-                                  {items.map(renderTabItem)}
+                                  {renderTabItems(items, folder.id)}
+                                  {items.length === 0 ? (
+                                    <p className="px-2.5 py-1.5 text-xs text-fg-3">
+                                      Empty folder
+                                    </p>
+                                  ) : null}
                                 </div>
                               )}
                             </div>
                           );
                         })}
-                        {tabItems
-                          .filter((item) => item.layout.folderId === null)
-                          .map(renderTabItem)}
+                        {renderTabItems(
+                          tabItems.filter(
+                            (item) => item.layout.folderId === null,
+                          ),
+                          null,
+                        )}
                       </>
                     )}
                   </div>
@@ -1266,9 +1620,29 @@ export function Sidebar({
 
       <StartChatModal
         open={creatingChat}
-        onClose={() => setCreatingChat(false)}
+        onClose={() => {
+          setCreatingChat(false);
+          setNewChatFolderId(null);
+        }}
         onStarted={(spawned) => {
           setCreatingChat(false);
+          const targetFolderId = newChatFolderId;
+          setNewChatFolderId(null);
+          if (targetFolderId) {
+            void moveSessionTabToFolder(spawned.id, targetFolderId)
+              .catch((error) =>
+                console.error(
+                  "sidebar: create chat tab in folder failed",
+                  error,
+                ),
+              )
+              .finally(() => {
+                navigate(`/chats/${spawned.id}`, {
+                  state: { sessionStatus: "running" },
+                });
+              });
+            return;
+          }
           const chatLayout = activatePaneLayoutForSession(currentChatSessionId);
           const targetPaneId = newChatTargetPane(
             chatLayout,
@@ -1361,28 +1735,29 @@ export function Sidebar({
         />
       ) : null}
 
+      {chatCreateMenu ? (
+        <ChatCreateContextMenu
+          anchorX={chatCreateMenu.x}
+          anchorY={chatCreateMenu.y}
+          onClose={() => setChatCreateMenu(null)}
+          onNewChat={() => {
+            setChatCreateMenu(null);
+            handleNewDirectChat();
+          }}
+          onNewFolder={beginFolderCreate}
+        />
+      ) : null}
+
       <ConfirmDialog
         open={folderDeleteConfirm !== null}
-        title={
-          folderDeleteConfirm?.stage === 2
-            ? `Archive ${folderDeleteConfirm.count} tab${folderDeleteConfirm.count === 1 ? "" : "s"}?`
-            : `Delete folder "${folderDeleteConfirm?.name ?? ""}"?`
-        }
-        body={
-          folderDeleteConfirm?.stage === 2
-            ? `This archives every chat in the ${folderDeleteConfirm.count} member tab${folderDeleteConfirm.count === 1 ? "" : "s"} and removes the folder. The chats will appear in Settings → Archived.`
-            : `This folder contains ${folderDeleteConfirm?.count ?? 0} tab${folderDeleteConfirm?.count === 1 ? "" : "s"}. Deleting it archives every member tab; tabs will not be moved to the ungrouped list.`
-        }
-        confirmLabel={folderDeleteConfirm?.stage === 2 ? "Delete folder" : "Continue"}
+        title={`Delete folder "${folderDeleteConfirm?.name ?? ""}"?`}
+        body={`This folder contains ${folderDeleteConfirm?.count ?? 0} tab${folderDeleteConfirm?.count === 1 ? "" : "s"}. Deleting it archives every chat in those tabs and removes the folder. The chats will appear in Settings → Archived.`}
+        confirmLabel="Delete folder"
         busyLabel="Archiving…"
         busy={deletingFolder}
         onConfirm={() => {
           if (!folderDeleteConfirm) return;
-          if (folderDeleteConfirm.stage === 1) {
-            setFolderDeleteConfirm({ ...folderDeleteConfirm, stage: 2 });
-          } else {
-            void deleteFolder(folderDeleteConfirm);
-          }
+          void deleteFolder(folderDeleteConfirm);
         }}
         onCancel={() => setFolderDeleteConfirm(null)}
       />
@@ -1454,23 +1829,6 @@ function NavRow({
   );
 }
 
-function NewChatNavRow({ onOpen }: { onOpen: () => void }) {
-  return (
-    <button
-      type="button"
-      title="New chat"
-      onClick={onOpen}
-      className="group flex w-full cursor-pointer items-center gap-2 rounded border border-transparent px-2.5 py-1.5 text-left text-sm text-fg-2 transition-colors hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg focus:border-sidebar-selected-border focus:bg-sidebar-selected/40 focus:text-fg focus:outline-none"
-    >
-      <MessageSquarePlus aria-hidden className="h-3 w-3 text-fg-2" />
-      <span className="min-w-0 flex-1 truncate">new chat</span>
-      <span className="shrink-0 rounded border border-line bg-bg px-1.5 py-px font-mono text-[10px] leading-tight text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus:opacity-100">
-        ⌘T
-      </span>
-    </button>
-  );
-}
-
 // ---- collapsible section header ---------------------------------------
 
 function CollapsibleSectionHeader({
@@ -1480,16 +1838,23 @@ function CollapsibleSectionHeader({
   onPlus,
   plusTitle,
   plusExpanded,
+  plusPopup,
+  plusMenu,
+  onPlusMenuClose,
 }: {
   label: string;
   open: boolean;
   onToggle: () => void;
   onPlus: () => void;
   plusTitle: string;
-  /** When the `+` opens a dialog (modal), pass its open state so the
-   *  trigger advertises `aria-haspopup="dialog"` + `aria-expanded`. */
+  /** Pass the popup's open state so the trigger advertises its expanded
+   *  state and the correct dialog/menu relationship. */
   plusExpanded?: boolean;
+  plusPopup?: "dialog" | "menu";
+  plusMenu?: ReactNode;
+  onPlusMenuClose?: () => void;
 }) {
+  const plusRef = useRef<HTMLButtonElement>(null);
   return (
     <div className="flex items-center justify-between gap-2 px-5 pb-1.5">
       <button
@@ -1506,21 +1871,119 @@ function CollapsibleSectionHeader({
         />
       </button>
       <button
+        ref={plusRef}
         type="button"
         onClick={onPlus}
         title={plusTitle}
         aria-label={plusTitle}
-        aria-haspopup={plusExpanded === undefined ? undefined : "dialog"}
+        aria-haspopup={
+          plusExpanded === undefined ? undefined : (plusPopup ?? "dialog")
+        }
         aria-expanded={plusExpanded}
         className="cursor-pointer rounded p-1 text-fg-2 transition-colors hover:bg-bg hover:text-fg"
       >
         <Plus aria-hidden className="h-3 w-3" />
       </button>
+      {plusMenu && onPlusMenuClose ? (
+        <PopoverMenu
+          open={plusExpanded === true}
+          anchorRef={plusRef}
+          onClose={onPlusMenuClose}
+          minWidth={160}
+        >
+          {plusMenu}
+        </PopoverMenu>
+      ) : null}
     </div>
   );
 }
 
 // ---- sidebar list rows ------------------------------------------------
+
+function TabDropDivider({
+  active,
+  onDragOver,
+  onDrop,
+}: {
+  active: boolean;
+  onDragOver: (event: DragEvent<HTMLDivElement>) => void;
+  onDrop: (event: DragEvent<HTMLDivElement>) => void;
+}) {
+  return (
+    <div
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      className="relative z-20 -my-1 h-2 shrink-0"
+    >
+      {active ? (
+        <>
+          <span className="absolute left-0 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-accent" />
+          <span className="absolute inset-x-0 top-1/2 h-0.5 -translate-y-1/2 rounded-full bg-accent" />
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function NewFolderRow({
+  onSubmit,
+  onCancel,
+}: {
+  onSubmit: (name: string) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const submittingRef = useRef(false);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const submit = useCallback(async () => {
+    const name = draft.trim();
+    if (!name) {
+      onCancel();
+      return;
+    }
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    try {
+      await onSubmit(name);
+    } catch {
+      submittingRef.current = false;
+      inputRef.current?.focus();
+    }
+  }, [draft, onCancel, onSubmit]);
+
+  return (
+    <div
+      onContextMenu={(event) => event.stopPropagation()}
+      className="flex items-center gap-1.5 rounded border border-sidebar-selected-border bg-sidebar-selected px-2.5 py-1.5 text-xs shadow-sm"
+    >
+      <ChevronDown aria-hidden className="h-3 w-3 shrink-0 text-fg-2" />
+      <Folder aria-hidden className="h-3 w-3 shrink-0 text-fg-2" />
+      <input
+        ref={inputRef}
+        value={draft}
+        placeholder="Folder name"
+        aria-label="Folder name"
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            void submit();
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            onCancel();
+          }
+        }}
+        onBlur={() => void submit()}
+        className="min-w-0 flex-1 bg-transparent text-xs text-fg outline-none placeholder:text-fg-3"
+      />
+    </div>
+  );
+}
 
 function SidebarListRow({
   selected,
@@ -2028,7 +2491,65 @@ function FolderContextMenu({
       className="z-50 flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
     >
       <ContextMenuItem icon={SquarePen} label="Rename folder" onClick={onRename} />
-      <ContextMenuItem icon={Archive} label="Delete and archive tabs" onClick={onDelete} danger />
+      <ContextMenuItem icon={Trash2} label="Delete" onClick={onDelete} danger />
+    </div>
+  );
+}
+
+function ChatCreateContextMenu({
+  anchorX,
+  anchorY,
+  onClose,
+  onNewChat,
+  onNewFolder,
+}: {
+  anchorX: number;
+  anchorY: number;
+  onClose: () => void;
+  onNewChat: () => void;
+  onNewFolder: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ x: anchorX, y: anchorY });
+  useEffect(() => {
+    if (!ref.current) return;
+    const rect = ref.current.getBoundingClientRect();
+    setPos({
+      x: Math.max(4, Math.min(anchorX, window.innerWidth - rect.width - 4)),
+      y: Math.max(4, Math.min(anchorY, window.innerHeight - rect.height - 4)),
+    });
+  }, [anchorX, anchorY]);
+  useEffect(() => {
+    const onMouseDown = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) onClose();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [onClose]);
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      style={{ position: "fixed", left: pos.x, top: pos.y, width: 160 }}
+      className="z-50 flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
+    >
+      <ContextMenuItem
+        icon={MessageSquarePlus}
+        label="New chat"
+        onClick={onNewChat}
+      />
+      <ContextMenuItem
+        icon={FolderPlus}
+        label="New folder"
+        onClick={onNewFolder}
+      />
     </div>
   );
 }

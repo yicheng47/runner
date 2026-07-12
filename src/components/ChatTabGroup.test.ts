@@ -16,9 +16,13 @@ const session = {
 
 describe("ChatTabGroup", () => {
   it("shows the layout pane count when some panes are empty", () => {
+    const layout = {
+      ...applyPresetPure("cols-3", "A", ["A"]),
+      id: "tab-1",
+    };
     const html = renderToStaticMarkup(
       createElement(ChatTabGroup, {
-        layout: applyPresetPure("cols-3", "A", ["A"]),
+        layout,
         members: [session],
         active: false,
         onActivate: () => {},
@@ -28,5 +32,6 @@ describe("ChatTabGroup", () => {
 
     expect(html).toContain("lucide-columns-3");
     expect(html).toContain(">3</span>");
+    expect(html).toContain('draggable="true"');
   });
 });

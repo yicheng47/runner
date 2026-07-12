@@ -597,24 +597,105 @@ describe("cold-start hydration", () => {
     }));
     const tabUpsert = vi.fn(async () => undefined);
     const tabDelete = vi.fn(async () => undefined);
+    let tabRows: Array<{
+      id: string;
+      folder_id: string | null;
+      name: string;
+      position: number;
+      layout: string;
+      created_at: string;
+    }> = [];
+    let folderRows: Array<{
+      id: string;
+      name: string;
+      position: number;
+      collapsed: boolean;
+      created_at: string;
+    }> = [];
+    let nextFolderList: Promise<typeof folderRows> | null = null;
+    const folderList = vi.fn(() => {
+      if (nextFolderList) {
+        const response = nextFolderList;
+        nextFolderList = null;
+        return response;
+      }
+      return Promise.resolve([...folderRows]);
+    });
+    const folderCreate = vi.fn(async (name: string) => {
+      const row = {
+        id: "01KTESTFOLDER00000000000000",
+        name,
+        position: 0,
+        collapsed: false,
+        created_at: "2026-07-12T00:00:00Z",
+      };
+      folderRows = [row];
+      return row;
+    });
+    const tabMoveToFolder = vi.fn(
+      async (id: string, folderId: string | null) => {
+        const row = tabRows.find((candidate) => candidate.id === id);
+        if (!row) throw new Error(`missing tab: ${id}`);
+        const moved = { ...row, folder_id: folderId };
+        tabRows = tabRows.map((candidate) =>
+          candidate.id === id ? moved : candidate,
+        );
+        return moved;
+      },
+    );
+    let nextTabReorderError: Error | null = null;
+    let nextTabReorderPromise: Promise<void> | null = null;
+    const tabReorder = vi.fn(
+      async (id: string, folderId: string | null, orderedIds: string[]) => {
+        if (nextTabReorderPromise) {
+          const promise = nextTabReorderPromise;
+          nextTabReorderPromise = null;
+          await promise;
+        }
+        if (nextTabReorderError) {
+          const error = nextTabReorderError;
+          nextTabReorderError = null;
+          throw error;
+        }
+        const positions = new Map(
+          orderedIds.map((tabId, position) => [tabId, position]),
+        );
+        tabRows = tabRows.map((row) => {
+          if (row.id === id) {
+            return {
+              ...row,
+              folder_id: folderId,
+              position: positions.get(row.id)!,
+            };
+          }
+          const position = positions.get(row.id);
+          return position === undefined ? row : { ...row, position };
+        });
+        tabRows.sort((a, b) => a.position - b.position);
+        return tabRows;
+      },
+    );
     vi.doMock("./api", () => ({
       api: {
         tab: {
-          importOnce: async (tabs: { name: string; position: number; layout: string }[]) =>
-            tabs.map((tab, index) => ({
+          importOnce: async (tabs: { name: string; position: number; layout: string }[]) => {
+            tabRows = tabs.map((tab, index) => ({
               id: `01KTESTTAB0000000000000000${index}`,
               folder_id: null,
               name: tab.name,
               position: tab.position,
               layout: tab.layout,
               created_at: "2026-07-12T00:00:00Z",
-            })),
-          list: async () => [],
+            }));
+            return tabRows;
+          },
+          list: async () => tabRows,
           upsert: tabUpsert,
           delete: tabDelete,
-          moveToFolder: async () => undefined,
+          moveToFolder: tabMoveToFolder,
+          reorder: tabReorder,
         },
-        folder: { list: async () => [] },
+        folder: { list: folderList, create: folderCreate },
       },
     }));
 
@@ -633,6 +714,122 @@ describe("cold-start hydration", () => {
     ]);
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
 
+    let releaseStale: (rows: typeof folderRows) => void = () => {};
+    nextFolderList = new Promise((resolve) => {
+      releaseStale = resolve;
+    });
+    const staleHydration = mod.hydratePaneLayoutsFromDb();
+    await vi.waitFor(() => expect(folderList).toHaveBeenCalledTimes(2));
+
+    await mod.createChatFolder("Project");
+    releaseStale([]);
+    await staleHydration;
+    expect(folderCreate).toHaveBeenCalledWith("Project");
+    expect(mod.getFolders().map((folder) => folder.name)).toEqual(["Project"]);
+    expect(folderList).toHaveBeenCalledTimes(3);
+
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    nextFolderList = Promise.reject(new Error("temporary read failure"));
+    await expect(mod.createChatFolder("Resilient")).resolves.toMatchObject({
+      name: "Resilient",
+    });
+    expect(mod.getFolders().map((folder) => folder.name)).toEqual([
+      "Resilient",
+    ]);
+    expect(folderCreate).toHaveBeenCalledTimes(2);
+    consoleError.mockRestore();
+
+    const targetFolderId = mod.getFolders()[0].id;
+    const targetTabId = mod.getPaneLayout("A").id;
+    let releaseSuperseded: (rows: typeof folderRows) => void = () => {};
+    nextFolderList = new Promise((resolve) => {
+      releaseSuperseded = resolve;
+    });
+    const folderListCalls = folderList.mock.calls.length;
+    const supersededHydration = mod.hydratePaneLayoutsFromDb();
+    await vi.waitFor(() =>
+      expect(folderList).toHaveBeenCalledTimes(folderListCalls + 1),
+    );
+    await mod.moveSessionTabToFolder("A", targetFolderId);
+    releaseSuperseded(folderRows);
+    await supersededHydration;
+    expect(mod.getPaneLayout("A").folderId).toBe(targetFolderId);
+    expect(tabMoveToFolder).toHaveBeenCalledWith(targetTabId, targetFolderId);
+
+    const secondTabId = "01KTESTTAB000000000000000099";
+    tabRows.push({
+      id: secondTabId,
+      folder_id: targetFolderId,
+      name: "C",
+      position: 1,
+      layout: mod.serializeLayout(mod.applyPresetPure("single", "C", ["C"])),
+      created_at: "2026-07-12T00:00:01Z",
+    });
+    await mod.hydratePaneLayoutsFromDb();
+    await mod.reorderTab(targetTabId, targetFolderId, [
+      secondTabId,
+      targetTabId,
+    ]);
+    expect(
+      mod
+        .getPaneLayouts()
+        .filter((layout) => layout.folderId === targetFolderId)
+        .map((layout) => layout.id),
+    ).toEqual([secondTabId, targetTabId]);
+    expect(tabReorder).toHaveBeenCalledWith(targetTabId, targetFolderId, [
+      secondTabId,
+      targetTabId,
+    ]);
+
+    nextTabReorderError = new Error("write rejected");
+    nextFolderList = Promise.reject(new Error("rollback hydration failed"));
+    await expect(
+      mod.reorderTab(targetTabId, targetFolderId, [
+        targetTabId,
+        secondTabId,
+      ]),
+    ).rejects.toThrow("write rejected");
+    expect(
+      mod
+        .getPaneLayouts()
+        .filter((layout) => layout.folderId === targetFolderId)
+        .map((layout) => layout.id),
+    ).toEqual([secondTabId, targetTabId]);
+
+    let rejectPendingReorder: (error: Error) => void = () => {};
+    nextTabReorderPromise = new Promise((_, reject) => {
+      rejectPendingReorder = reject;
+    });
+    const pendingReorder = mod.reorderTab(targetTabId, targetFolderId, [
+      targetTabId,
+      secondTabId,
+    ]);
+    await vi.waitFor(() =>
+      expect(
+        mod
+          .getPaneLayouts()
+          .filter((layout) => layout.folderId === targetFolderId)
+          .map((layout) => layout.id),
+      ).toEqual([targetTabId, secondTabId]),
+    );
+    tabRows = tabRows.map((row) =>
+      row.id === targetTabId ? { ...row, folder_id: null, position: 0 } : row,
+    );
+    await mod.hydratePaneLayoutsFromDb();
+    nextFolderList = Promise.reject(new Error("reconcile hydration failed"));
+    rejectPendingReorder(new Error("concurrent reorder rejected"));
+    await expect(pendingReorder).rejects.toThrow("concurrent reorder rejected");
+    expect(mod.getPaneLayout(targetTabId).folderId).toBeNull();
+    expect(
+      mod
+        .getPaneLayouts()
+        .filter((layout) => layout.folderId === targetFolderId)
+        .map((layout) => layout.id),
+    ).toEqual([secondTabId]);
+
+    mod.removeArchivedSessionFromLayout("C");
     mod.removeArchivedSessionFromLayout("A");
     mod.removeArchivedSessionFromLayout("B");
     expect(mod.getPaneLayouts()[0].id).toBe("");

@@ -798,6 +798,23 @@ export function useFolders(): FolderRow[] {
   return useSyncExternalStore(subscribePaneLayout, getFolders, getFolders);
 }
 
+export async function createChatFolder(name: string): Promise<FolderRow> {
+  const row = await api.folder.create(name);
+  // A refresh started before folder_create committed must not overwrite the
+  // authoritative row returned by this command with its older folder list.
+  hydrationSequence += 1;
+  folders = [...folders.filter((folder) => folder.id !== row.id), row].sort(
+    (a, b) => a.position - b.position,
+  );
+  for (const listener of listeners) listener();
+  try {
+    await hydratePaneLayoutsFromDb();
+  } catch (error) {
+    console.error("paneLayout: post-create hydration failed", error);
+  }
+  return row;
+}
+
 export async function moveTabToFolder(
   tabId: string,
   folderId: string | null,
@@ -808,6 +825,87 @@ export async function moveTabToFolder(
   next[index] = { ...next[index], folderId };
   applyLayoutSet(next, activeIndex);
   await api.tab.moveToFolder(tabId, folderId);
+}
+
+export async function reorderTab(
+  tabId: string,
+  folderId: string | null,
+  orderedIds: string[],
+): Promise<void> {
+  const dragged = layouts.find((layout) => layout.id === tabId);
+  if (!dragged) return;
+  const previousLayouts = layouts;
+  const activeId = currentLayout().id;
+  const targetIds = new Set(orderedIds);
+  if (!targetIds.has(tabId)) throw new Error("reorder must include dragged tab");
+  const ordered = orderedIds.map((id) => {
+    const layout = layouts.find((candidate) => candidate.id === id);
+    if (!layout) throw new Error(`tab not found: ${id}`);
+    return id === tabId ? { ...layout, folderId } : layout;
+  });
+  const firstTargetIndex = layouts.findIndex((layout) =>
+    targetIds.has(layout.id),
+  );
+  const insertionIndex = layouts
+    .slice(0, Math.max(0, firstTargetIndex))
+    .filter((layout) => !targetIds.has(layout.id)).length;
+  const next = layouts.filter((layout) => !targetIds.has(layout.id));
+  next.splice(insertionIndex, 0, ...ordered);
+  applyLayoutSet(
+    next,
+    Math.max(
+      0,
+      next.findIndex((layout) => layout.id === activeId),
+    ),
+  );
+  const optimisticLayouts = layouts;
+  try {
+    await api.tab.reorder(tabId, folderId, orderedIds);
+  } catch (error) {
+    if (layouts === optimisticLayouts) {
+      applyLayoutSet(
+        previousLayouts,
+        Math.max(
+          0,
+          previousLayouts.findIndex((layout) => layout.id === activeId),
+        ),
+      );
+    }
+    await hydratePaneLayoutsFromDb().catch(() => undefined);
+    throw error;
+  }
+  try {
+    await hydratePaneLayoutsFromDb();
+  } catch (error) {
+    console.error("paneLayout: post-reorder hydration failed", error);
+  }
+}
+
+export async function moveSessionTabToFolder(
+  sessionId: string,
+  folderId: string,
+): Promise<void> {
+  const rows = await api.tab.list();
+  const row = rows.find((candidate) => {
+    const layout = layoutFromTabRow(candidate);
+    return layout ? leafForSession(layout.root, sessionId) !== null : false;
+  });
+  if (!row) throw new Error(`tab not found for session: ${sessionId}`);
+  const moved = layoutFromTabRow(
+    await api.tab.moveToFolder(row.id, folderId),
+  );
+  if (moved) {
+    const index = layouts.findIndex((candidate) => candidate.id === moved.id);
+    const next = [...layouts];
+    if (index >= 0) next[index] = moved;
+    else next.push(moved);
+    applyLayoutSet(next, activeIndex);
+  }
+  try {
+    await hydratePaneLayoutsFromDb();
+  } catch (error) {
+    console.error("paneLayout: post-move hydration failed", error);
+  }
 }
 
 /**

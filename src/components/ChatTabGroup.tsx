@@ -4,18 +4,26 @@ import type { DirectSessionEntry } from "../lib/api";
 import { derivedChatTabTitle } from "../lib/chatTabs";
 import { findLeaf, leaves, type PaneLayout } from "../lib/paneLayout";
 
+export const CHAT_TAB_DRAG_TYPE = "application/x-runner-chat-tab";
+
 export function ChatTabGroup({
   layout,
   members,
   active,
   onActivate,
   onContextMenu,
+  onDragStart,
+  onDragEnd,
+  dragging,
 }: {
   layout: PaneLayout;
   members: DirectSessionEntry[];
   active: boolean;
   onActivate: (session: DirectSessionEntry) => void;
   onContextMenu: (anchor: { x: number; y: number }) => void;
+  onDragStart?: (tabId: string) => void;
+  onDragEnd?: () => void;
+  dragging?: boolean;
 }) {
   const focused = findLeaf(layout.root, layout.focusedPaneId)?.sessionId;
   const target = members.find((member) => member.session_id === focused) ?? members[0];
@@ -28,11 +36,20 @@ export function ChatTabGroup({
 
   return (
     <div
+      draggable={layout.id.length > 0}
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData(CHAT_TAB_DRAG_TYPE, layout.id);
+        onDragStart?.(layout.id);
+      }}
+      onDragEnd={onDragEnd}
       onContextMenu={(event) => {
         event.preventDefault();
         onContextMenu({ x: event.clientX, y: event.clientY });
       }}
-      className={`group relative flex items-center gap-1.5 rounded border px-2.5 py-1.5 text-xs transition-colors ${
+      className={`group relative flex items-center gap-1.5 rounded border px-2.5 py-1.5 text-xs transition-colors transition-opacity ${
+        dragging ? "opacity-40" : ""
+      } ${
         active
           ? "border-sidebar-selected-border bg-sidebar-selected text-fg"
           : "border-transparent text-fg-2 hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg"
