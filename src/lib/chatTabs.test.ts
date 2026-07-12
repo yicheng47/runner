@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildChatListItems,
   derivedChatTabTitle,
+  isChatTabDropIndexAllowed,
+  orderedChatTabIdsAfterDrop,
   type ChatListItem,
 } from "./chatTabs";
 import { applyPresetPure } from "./paneLayout";
@@ -125,5 +127,34 @@ describe("derivedChatTabTitle", () => {
         ),
       ),
     ).toBe("@coder + Runtime chat");
+  });
+});
+
+describe("chat tab drop ordering", () => {
+  const tabs = [
+    { id: "p1", pinned: true },
+    { id: "p2", pinned: true },
+    { id: "a", pinned: false },
+    { id: "b", pinned: false },
+  ];
+
+  it("reorders within a pinned tier", () => {
+    expect(orderedChatTabIdsAfterDrop(tabs, "p2", true, 0)).toEqual([
+      "p2",
+      "p1",
+      "a",
+      "b",
+    ]);
+    expect(isChatTabDropIndexAllowed(tabs, "p2", true, 2)).toBe(false);
+  });
+
+  it("keeps an unpinned tab below every pinned tab", () => {
+    expect(orderedChatTabIdsAfterDrop(tabs, "b", false, 0)).toEqual([
+      "p1",
+      "p2",
+      "b",
+      "a",
+    ]);
+    expect(isChatTabDropIndexAllowed(tabs, "b", false, 1)).toBe(false);
   });
 });

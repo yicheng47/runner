@@ -49,6 +49,7 @@ links to its tracking issue.
   tab accordion (impl 0023), complementing the chat-surface layout picker.
 - [36 — Keyboard shortcut rebinding](./36-keyboard-shortcut-rebinding.md) — customizable keybindings on the Settings shortcuts pane (#257 v2): recording state, unbind/restore, conflict detection, and handler indirection through the keymap registry.
 - [37 — Agent runtime executable settings](./37-agent-runtime-executable-settings.md) — detect and display Claude Code/Codex executables from the user's login-shell environment, fix slow shell initialization failures, and provide explicit per-runtime path overrides.
+- [38 — Sidebar folders for tabs](./38-sidebar-folders-for-tabs.md) — invert the sidebar hierarchy to Folder → Tab: collapsible user folders group chat tabs, every tab (single- or multi-pane) is one row, panes leave the sidebar; folders + tabs persist in SQLite, replacing the localStorage layout store.
 
 ## Archive
 

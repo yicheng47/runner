@@ -77,6 +77,37 @@ export interface DirectSessionEntry {
 
 export type PasteImageMimeType = "image/png" | "image/jpeg";
 
+export interface FolderRow {
+  id: string;
+  name: string;
+  position: number;
+  collapsed: boolean;
+  created_at: string;
+}
+
+export interface TabRow {
+  id: string;
+  folder_id: string | null;
+  name: string;
+  position: number;
+  layout: string;
+  created_at: string;
+}
+
+export interface TabUpsertInput {
+  id: string;
+  folder_id: string | null;
+  name: string;
+  position: number;
+  layout: string;
+}
+
+export interface TabImportInput {
+  name: string;
+  position: number;
+  layout: string;
+}
+
 export interface RuntimeDefinition {
   name: string;
   display_name: string;
@@ -84,6 +115,29 @@ export interface RuntimeDefinition {
 }
 
 export const api = {
+  folder: {
+    list: () => invoke<FolderRow[]>("folder_list"),
+    create: (name: string) => invoke<FolderRow>("folder_create", { name }),
+    rename: (id: string, name: string) =>
+      invoke<FolderRow>("folder_rename", { id, name }),
+    setCollapsed: (id: string, collapsed: boolean) =>
+      invoke<FolderRow>("folder_set_collapsed", { id, collapsed }),
+    reorder: (orderedIds: string[]) =>
+      invoke<FolderRow[]>("folder_reorder", { orderedIds }),
+    delete: (id: string) => invoke<void>("folder_delete", { id }),
+  },
+  tab: {
+    list: () => invoke<TabRow[]>("tab_list"),
+    upsert: (input: TabUpsertInput) =>
+      invoke<TabRow>("tab_upsert", { input }),
+    delete: (id: string) => invoke<void>("tab_delete", { id }),
+    moveToFolder: (id: string, folderId: string | null) =>
+      invoke<TabRow>("tab_move_to_folder", { id, folderId }),
+    reorder: (id: string, folderId: string | null, orderedIds: string[]) =>
+      invoke<TabRow[]>("tab_reorder", { id, folderId, orderedIds }),
+    importOnce: (tabs: TabImportInput[]) =>
+      invoke<TabRow[]>("tab_import_once", { tabs }),
+  },
   crew: {
     list: () => invoke<CrewListItem[]>("crew_list"),
     get: (id: string) => invoke<Crew>("crew_get", { id }),

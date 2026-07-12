@@ -69,6 +69,7 @@ import {
   isGroupActiveFor,
   leafForSession,
   leaves,
+  removeArchivedSessionFromLayout,
   removeSessionFromLayout,
   setGroupName,
   setRouteAnchorSession,
@@ -286,8 +287,8 @@ export default function RunnerChat() {
   // read the meta + go back to the runner.
   const isArchived = chatMeta?.archived_at != null;
 
-  // Split-view layout (impl 0020). Module store shared with Sidebar,
-  // sticky per window and persisted for the main window (decision 6).
+  // Split-view layout (impl 0020). Module snapshot shared with Sidebar;
+  // durable tab structure comes from SQLite while focus stays per-window.
   // The split is a chat GROUP — a binding between specific sessions — not
   // a viewport mode: it renders only while the open chat is one of its
   // members. Any other chat renders the classic single pane, and the
@@ -1306,7 +1307,7 @@ export default function RunnerChat() {
         }
         await api.session.archive(targetId);
         // Empty the pane that showed it (no-op when not visible).
-        removeSessionFromLayout(targetId);
+        removeArchivedSessionFromLayout(targetId);
         if (targetId === sessionId) {
           const survivors = visibleSessionIds(getPaneLayout(sessionId).root);
           const next = survivors.find((id) => id !== targetId);

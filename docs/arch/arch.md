@@ -213,15 +213,16 @@ A session owns:
 
 A session is the only object in the system that actually *executes* code — everything else is metadata, a coordination channel, or a projection over the event log.
 
-### 3.6 Surface hierarchy — *Window → Tab → Pane (frontend only)*
+### 3.6 Surface hierarchy — *Window → Folder → Tab → Pane*
 
-How sessions are *displayed* is a strictly frontend concern, with three nested concepts that must never be blurred (in code, docs, or UI copy):
+How sessions are displayed spans durable organization and ephemeral view state. The concepts must never be blurred in code, docs, or UI copy:
 
 - **Window** — a real OS window (⌘N, `File → New Window`, impl 0018). The backend's only per-window state is the subject registry (`src-tauri/src/windows.rs`) used for duplicate-session ownership arbitration; it knows nothing about tabs or panes.
-- **Tab** — one group of panes rendered on a window's chat surface: the unit the layout picker builds, the sidebar clusters, and `⌘T` creates (formerly called the "chat group" or "the split", impl 0020). A window may hold multiple pane tabs; the URL session selects the tab whose members include it, and opening a non-member chat renders an ephemeral single-pane tab until the user builds panes from it. The main window persists pane tabs to `runner.chat.layout`.
+- **Folder** — a user-created, collapsible sidebar group containing tabs. Folder identity, name, order, and collapse state are persisted in SQLite. Ungrouped tabs have no folder and render below every folder.
+- **Tab** — one stable, ULID-keyed group of panes rendered as exactly one sidebar row. SQLite persists its folder membership, name, order, and JSON layout; the layout picker mutates the same row. Every active direct-chat session belongs to exactly one tab, including single-pane chats. Per-window active-tab selection remains ephemeral.
 - **Pane** — one slot inside a tab, holding exactly one chat session (move-not-copy). Panes are filled from a pane's own New chat button or a sidebar pick into a focused empty pane; `⌘[` / `⌘]` cycle pane focus, `⌘W` closes the focused pane without stopping its session.
 
-Sessions exist independently of all three: closing a pane, replacing a tab, or closing a window never kills a PTY.
+Sessions exist independently of the display tree: closing a pane or window never kills a PTY. Archiving a tab removes the tab row and archives its member sessions. Deleting a folder performs that archive for every member tab in one transaction; the `tabs.folder_id` foreign key is `ON DELETE RESTRICT`, so tabs never fall silently to the ungrouped level.
 
 Disambiguation: the mission workspace's per-slot terminal switcher (feature 33's "terminal tabs") predates this hierarchy and is a different, mission-scoped UI element — not a Tab in the sense above. If the mission surface ever adopts the tab/pane model, that is feature 19's deferred scope.
 
@@ -737,6 +738,23 @@ sessions (
   archived_at TEXT,
   title TEXT,                         -- direct-chat title; null for mission sessions
   pinned_at TEXT
+);
+
+folders (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  collapsed INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+tabs (
+  id TEXT PRIMARY KEY,
+  folder_id TEXT REFERENCES folders(id) ON DELETE RESTRICT,
+  name TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  layout TEXT NOT NULL,              -- JSON: preset, slot assignments, split sizes
+  created_at TEXT NOT NULL
 );
 ```
 

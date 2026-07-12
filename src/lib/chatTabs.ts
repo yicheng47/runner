@@ -1,12 +1,5 @@
-// Sidebar CHAT list grouping (impl 0023): partition the flat recent-direct
-// rows into the tabs that own them. A tab with ≥2 members present in the list
-// renders as an accordion group; every other chat stays a loose leaf row.
-//
-// This generalizes impl 0020's active-only `clusterActiveGroupRows`: instead
-// of clustering just the on-screen tab, it walks the whole tab set so every
-// multi-member tab (active or background) surfaces as one unit. Grouping keys
-// on member count, not pane count — a split tab holding a single chat (its
-// other panes empty) is a leaf, never an empty-child accordion (decision 1).
+// Direct-chat tab labels plus the legacy impl 0023 partition helper retained
+// for its pure tests. Feature 38's sidebar renders PaneLayout rows directly.
 
 import { visibleSessionIds, type PaneLayout } from "./paneLayout";
 
@@ -42,6 +35,38 @@ export function derivedChatTabTitle<
   },
 >(members: readonly T[]): string {
   return members.map(chatTabMemberLabel).join(" + ");
+}
+
+export interface OrderedChatTab {
+  id: string;
+  pinned: boolean;
+}
+
+export function isChatTabDropIndexAllowed(
+  targetTabs: readonly OrderedChatTab[],
+  draggedId: string,
+  draggedPinned: boolean,
+  index: number,
+): boolean {
+  const remaining = targetTabs.filter((tab) => tab.id !== draggedId);
+  const pinnedCount = remaining.filter((tab) => tab.pinned).length;
+  return draggedPinned ? index <= pinnedCount : index >= pinnedCount;
+}
+
+export function orderedChatTabIdsAfterDrop(
+  targetTabs: readonly OrderedChatTab[],
+  draggedId: string,
+  draggedPinned: boolean,
+  requestedIndex: number,
+): string[] {
+  const remaining = targetTabs.filter((tab) => tab.id !== draggedId);
+  const pinnedCount = remaining.filter((tab) => tab.pinned).length;
+  const index = draggedPinned
+    ? Math.max(0, Math.min(requestedIndex, pinnedCount))
+    : Math.max(pinnedCount, Math.min(requestedIndex, remaining.length));
+  const orderedIds = remaining.map((tab) => tab.id);
+  orderedIds.splice(index, 0, draggedId);
+  return orderedIds;
 }
 
 /**
