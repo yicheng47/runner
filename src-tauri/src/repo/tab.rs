@@ -138,20 +138,23 @@ pub fn ensure_active_sessions(conn: &Connection) -> rusqlite::Result<()> {
         .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     drop(stmt);
-    let mut position: i64 = conn.query_row(
+    let position: i64 = conn.query_row(
         "SELECT COALESCE(MAX(position) + 1, 0) FROM tabs WHERE folder_id IS NULL",
         [],
         |row| row.get(0),
     )?;
-    for id in ids.into_iter().filter(|id| !covered.contains(id)) {
+    for (offset, id) in ids
+        .into_iter()
+        .filter(|id| !covered.contains(id))
+        .enumerate()
+    {
         let layout = serde_json::json!({
             "preset": "single",
             "slots": [id],
             "sizes": {},
         })
         .to_string();
-        create(conn, None, "", position, &layout)?;
-        position += 1;
+        create(conn, None, "", position + offset as i64, &layout)?;
     }
     Ok(())
 }
