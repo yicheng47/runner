@@ -380,13 +380,16 @@ pub async fn session_archive(
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<()> {
-    let conn = state.db.get()?;
-    let updated = repo::session::archive(&conn, &session_id, chrono::Utc::now())?;
+    let mut conn = state.db.get()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let updated = repo::session::archive(&tx, &session_id, chrono::Utc::now())?;
     if updated == 0 {
         return Err(Error::msg(
             "session not found or still running (kill before archiving)".to_string(),
         ));
     }
+    repo::tab::remove_session(&tx, &session_id)?;
+    tx.commit()?;
     // Drop the in-memory output buffer for this row. Forget intentionally
     // keeps the buffer alive across PTY exits so the chat can be reopened
     // and replayed; archive is the explicit "I'm done with this chat"

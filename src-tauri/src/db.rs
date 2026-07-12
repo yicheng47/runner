@@ -75,6 +75,9 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // 0008: drops `crews.orchestrator_policy`. Deprecated in #247
 // (superseded by `system_prompt_addendum`) and read-only since; it
 // fed no prompt and was never written, so the drop is behavior-neutral.
+// 0009: persists sidebar folders and stable tab identities. Tab layout
+// remains a JSON blob; folder deletion is RESTRICTed so the command must
+// archive and remove member tabs transactionally.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -99,6 +102,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         8,
         include_str!("../migrations/0008_drop_crews_orchestrator_policy.sql"),
     ),
+    (9, include_str!("../migrations/0009_folders_tabs.sql")),
 ];
 
 // Default-data seed: ships the Build squad starter crew on first launch.
