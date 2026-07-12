@@ -16,8 +16,8 @@ Supersedes the closed feature 17 / [#136](https://github.com/yicheng47/runner/is
 
 - **Folder rows in the CHAT list**: name, tab count, expand/collapse chevron. Collapsed folders hide their tabs. Ungrouped tabs render at top level below the folders — no pseudo-"Inbox" folder.
 - **Tab rows replace chat rows**: every chat belongs to a tab. A single chat is a single-pane tab (today's flat `SessionRow` becomes its row); a multi-pane tab shows its name plus a split-icon/pane-count badge. The impl 0023 accordion member list is removed.
-- **Folder CRUD**: create, rename, collapse/expand. Move a tab into/out of a folder via row context menu in v1 (drag comes with the feature 35 rework).
-- **Folder delete archives its tabs (decided)**: deleting a folder archives every tab inside it — member sessions get `archived_at` and land in Settings → Archived, same as archiving chats individually. Tabs never silently drop to top level. Because this is destructive at folder scale, it sits behind a double confirm that states the tab count before proceeding (same weight as the Settings → Archived "Delete all" dialog).
+- **Folder CRUD and tab ordering**: create, rename, collapse/expand. Create a new chat tab inside a folder from its `+` action. Move a tab into/out of a folder via row context menu or drag, and reorder tabs through the same drag interaction. Dragging shows an Arc-style destination divider at the exact persisted insertion point. Pinned tabs remain the first tier within each folder and within the ungrouped list; manual order is preserved inside each tier.
+- **Folder delete archives its tabs (decided)**: deleting a folder archives every tab inside it — member sessions get `archived_at` and land in Settings → Archived, same as archiving chats individually. Tabs never silently drop to top level. A single confirmation states the tab count and archive behavior before proceeding.
 - **Backend persistence (decided)**: folders and tabs move into SQLite as user data next to sessions — migration `0009` adds `folders (id, name, position, collapsed, created_at)` and `tabs (id, folder_id → folders ON DELETE RESTRICT, name, position, layout, created_at)` where `layout` is a JSON column holding preset, slot→session-id assignments, and split sizes. No `SET NULL` orphaning: `folder_delete` archives the member tabs and removes the folder in one transaction. New `folder_*` / `tab_*` Tauri commands. The frontend `paneLayout` store hydrates from the DB and writes through, replacing the `runner.chat.layout` localStorage persist.
 - **One-time import**: on first launch after the migration, the existing `runner.chat.layout` v2 payload seeds the `tabs` table; sessions not covered by the payload get single-pane tabs.
 
@@ -25,7 +25,7 @@ Supersedes the closed feature 17 / [#136](https://github.com/yicheng47/runner/is
 
 - Nested folders — one level only.
 - Folders for missions — the MISSION section is untouched; this is the CHAT list.
-- Drag-and-drop (tab into folder, chat onto chat) — feature 35 / [#256](https://github.com/yicheng47/runner/issues/256) gets re-scoped onto this hierarchy after it ships.
+- Dragging one chat tab onto another to create a split — feature 35 / [#256](https://github.com/yicheng47/runner/issues/256) gets re-scoped onto this hierarchy after it ships.
 - Per-window folder/tab sets — the tab set stays global; which tab is active remains per-window view state.
 
 ### Key decisions
@@ -48,7 +48,7 @@ Migration `0009_folders_tabs.sql`, repo layer, `commands/folder.rs` (`folder_cre
 
 ### Phase 3 — sidebar UI
 
-Folder rows with expand/collapse; tab rows without member panes (retire `ChatTabGroup`'s member list, fold single chats into single-pane tab rows); folder CRUD + move-to-folder context menu; the double-confirm delete flow (archive-all semantics, tab count in the dialog).
+Folder rows with expand/collapse and an add-tab action; tab rows without member panes (retire `ChatTabGroup`'s member list, fold single chats into single-pane tab rows); folder CRUD + context-menu/drag move-to-folder; drag reorder with a destination divider and pinned-first tiers; the single-confirm delete flow (archive-all semantics, tab count in the dialog).
 
 ### Phase 4 — cleanup + docs
 
@@ -69,7 +69,8 @@ Per the design-first workflow, mock the folder rows, collapsed/expanded states, 
 
 - [ ] Create a folder, move two tabs in, collapse it → rows hide; restart the app → folder, membership, and collapsed state all restore.
 - [ ] Multi-pane tab renders as one row with a pane badge; no member rows anywhere in the sidebar.
-- [ ] Delete a folder → double confirm states the tab count; on confirm every tab inside is archived and its sessions appear in Settings → Archived; cancel leaves everything untouched. No tab ever falls to top level from a delete.
+- [ ] Create a chat from a folder's `+` → its single-pane tab appears inside that folder; drag an existing tab onto or between folder rows → the destination divider matches the final position and membership/order persist after restart. Pinned tabs remain above unpinned tabs.
+- [ ] Delete a folder → confirmation states the tab count; on confirm every tab inside is archived and its sessions appear in Settings → Archived; cancel leaves everything untouched. No tab ever falls to top level from a delete.
 - [ ] Mutate the tab set from a secondary window → restart → the change survived (no more main-window-only persistence).
 - [ ] Existing `runner.chat.layout` payload imports on first launch: prior tabs, names, and pane assignments intact.
 - [ ] `pnpm exec tsc --noEmit`, `pnpm run lint`, `cargo test --workspace` clean.
