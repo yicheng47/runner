@@ -34,6 +34,9 @@ import {
   AppWindow,
   Archive,
   ChevronDown,
+  ChevronRight,
+  Folder,
+  FolderPlus,
   MessageSquarePlus,
   MoreHorizontal,
   Pin,
@@ -58,21 +61,22 @@ import {
   pinnedSessionIds,
   shouldInheritPinOnAdd,
 } from "../lib/groupPinning";
-import { buildChatListItems, type ChatListItem } from "../lib/chatTabs";
 import {
   activatePaneLayoutForSession,
   assignSessionToPane,
   findLeaf,
   focusPane,
   getPaneLayout,
-  isGroupActiveFor,
   leafForSession,
   newChatTargetPane,
-  removeSessionFromLayout,
+  removeArchivedSessionFromLayout,
+  hydratePaneLayoutsFromDb,
+  moveTabToFolder,
   setGroupNameForSession,
-  usePaneLayout,
+  useFolders,
   usePaneLayouts,
   visibleSessionIds,
+  type PaneLayout,
 } from "../lib/paneLayout";
 import { ChatTabGroup } from "./ChatTabGroup";
 import { PanelToggleGlyph } from "./PanelToggleGlyph";
@@ -94,6 +98,7 @@ import { StartMissionModal } from "./StartMissionModal";
 import { StartChatModal } from "./StartChatModal";
 import { CommandPalette } from "./CommandPalette";
 import { UpdatePromptCard } from "./UpdatePromptCard";
+import { ConfirmDialog } from "./settings/ConfirmDialog";
 
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 480;
@@ -208,7 +213,7 @@ export function Sidebar({
   const [directSessions, setDirectSessions] = useState<DirectSessionEntry[]>(
     [],
   );
-  const [directSessionActivity, setDirectSessionActivity] = useState<
+  const [, setDirectSessionActivity] = useState<
     Record<string, SessionActivityState | undefined>
   >({});
   const sidebarNavigationHistoryRef = useRef<SidebarNavigationHistory>({
@@ -230,16 +235,26 @@ export function Sidebar({
   // shows a floating menu with Pin / Rename / Archive next to a session
   // row. We anchor it by clientX/Y so right-click and ellipsis-button
   // both work without per-row refs. `null` = closed.
-  const [sessionMenu, setSessionMenu] = useState<{
-    session: DirectSessionEntry;
-    x: number;
-    y: number;
-  } | null>(null);
   const [chatTabMenu, setChatTabMenu] = useState<{
+    layout: PaneLayout;
     members: DirectSessionEntry[];
     x: number;
     y: number;
   } | null>(null);
+  const [folderMenu, setFolderMenu] = useState<{
+    id: string;
+    name: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [folderDeleteConfirm, setFolderDeleteConfirm] = useState<{
+    id: string;
+    name: string;
+    count: number;
+    currentWasDeleted: boolean;
+    stage: 1 | 2;
+  } | null>(null);
+  const [deletingFolder, setDeletingFolder] = useState(false);
   // Command palette toggle. Opened from the search nav row OR the
   // global ⌘K / Ctrl+K shortcut. Mirrors Pencil node `Fkoe8`.
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -254,8 +269,6 @@ export function Sidebar({
   // Inline rename: when set, the row whose id matches renders an input
   // instead of its label. Submit (Enter) → session_rename + refresh.
   // Cancel (Escape / blur with no change) → close without write.
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-
   // CHAT `+` opens the StartChat modal. State is a single boolean —
   // the modal owns its own field state and runner-list fetch.
   const [creatingChat, setCreatingChat] = useState(false);
@@ -271,33 +284,34 @@ export function Sidebar({
   // session id rather than handle.
   const currentChatSessionId = chatMatch?.params.sessionId ?? null;
 
-  // Split-view state (impl 0020 / 0023). `paneLayout` is the tab holding the
-  // open chat; its focused pane's chat gets the selected fill + accent bar,
-  // and its accordion renders in accent (see ChatTabGroup). `paneLayouts` is
-  // the whole tab set, which the grouped CHAT render below partitions over.
-  const paneLayout = usePaneLayout(currentChatSessionId);
+  // Durable tab/folder state. Every layout renders as one sidebar row;
+  // member panes remain visible only on the chat surface.
   const paneLayouts = usePaneLayouts();
-  const chatGroupActive = isGroupActiveFor(paneLayout, currentChatSessionId);
-  const focusedPaneSessionId = chatGroupActive
-    ? (findLeaf(paneLayout.root, paneLayout.focusedPaneId)?.sessionId ?? null)
-    : null;
+  const folders = useFolders();
 
-  // Partition the flat recent-direct rows into the tabs that own them: each
-  // ≥2-member tab renders as one accordion group (active or background), and
-  // every other chat stays a loose leaf row. Generalizes impl 0020's
-  // active-only clustering; the backend sort stays group-blind.
-  const chatItems = useMemo(
-    () => buildChatListItems(directSessions, paneLayouts),
-    [directSessions, paneLayouts],
-  );
-  // Flat display order (group members expanded in slot order) for keyboard
-  // page-nav, which steps through every chat regardless of grouping.
+  const tabItems = useMemo(() => {
+    const byId = new Map(
+      directSessions.map((session) => [session.session_id, session]),
+    );
+    return paneLayouts
+      .map((layout) => ({
+        layout,
+        members: visibleSessionIds(layout.root)
+          .map((id) => byId.get(id))
+          .filter(
+            (session): session is DirectSessionEntry => session !== undefined,
+          ),
+      }))
+      .filter((item) => item.members.length > 0)
+      .sort(
+        (a, b) =>
+          Number(b.members.every((member) => member.pinned)) -
+          Number(a.members.every((member) => member.pinned)),
+      );
+  }, [directSessions, paneLayouts]);
   const orderedChatRows = useMemo(
-    () =>
-      chatItems.flatMap((item) =>
-        item.kind === "group" ? item.members : [item.row],
-      ),
-    [chatItems],
+    () => tabItems.map((item) => item.members[0]),
+    [tabItems],
   );
 
   const sidebarNavigationEntries = useMemo<SidebarNavigationEntry[]>(
@@ -494,6 +508,7 @@ export function Sidebar({
     try {
       const rows = await api.session.listRecentDirect();
       setDirectSessions(rows);
+      await hydratePaneLayoutsFromDb();
     } catch (e) {
       console.error("sidebar: refreshDirectSessions failed", e);
     }
@@ -610,20 +625,15 @@ export function Sidebar({
   // pointer's position. Used by both right-click on the row and click
   // on the trailing ellipsis button. We clamp to the viewport in the
   // render path so the menu stays visible near the right edge.
-  const openSessionMenu = useCallback(
-    (session: DirectSessionEntry, anchor: { x: number; y: number }) => {
-      setChatTabMenu(null);
-      setMissionMenu(null);
-      setSessionMenu({ session, x: anchor.x, y: anchor.y });
-    },
-    [],
-  );
-  const closeSessionMenu = useCallback(() => setSessionMenu(null), []);
   const openChatTabMenu = useCallback(
-    (members: DirectSessionEntry[], anchor: { x: number; y: number }) => {
-      setSessionMenu(null);
+    (
+      layout: PaneLayout,
+      members: DirectSessionEntry[],
+      anchor: { x: number; y: number },
+    ) => {
       setMissionMenu(null);
-      setChatTabMenu({ members, x: anchor.x, y: anchor.y });
+      setFolderMenu(null);
+      setChatTabMenu({ layout, members, x: anchor.x, y: anchor.y });
     },
     [],
   );
@@ -632,8 +642,17 @@ export function Sidebar({
   const openMissionMenu = useCallback(
     (mission: MissionSummary, anchor: { x: number; y: number }) => {
       setChatTabMenu(null);
-      setSessionMenu(null);
+      setFolderMenu(null);
       setMissionMenu({ mission, x: anchor.x, y: anchor.y });
+    },
+    [],
+  );
+  const closeFolderMenu = useCallback(() => setFolderMenu(null), []);
+  const openFolderMenu = useCallback(
+    (folder: { id: string; name: string }, anchor: { x: number; y: number }) => {
+      setChatTabMenu(null);
+      setMissionMenu(null);
+      setFolderMenu({ ...folder, x: anchor.x, y: anchor.y });
     },
     [],
   );
@@ -697,36 +716,6 @@ export function Sidebar({
     [missions, refreshMissions, setRenamingMissionId],
   );
 
-  // Pin/unpin on a member of the active on-screen group applies to every
-  // member, so the group moves between sidebar clusters as one unit.
-  // Chats outside the active group keep single-session behavior.
-  const togglePin = useCallback(
-    async (session: DirectSessionEntry) => {
-      // Fan the pin across the toggled chat's OWN tab, not just the on-screen
-      // one: impl 0023 renders every multi-member tab with member context
-      // menus, so pinning a background group's member must still move the
-      // whole group as a unit (docs/impls/0023 §Interaction).
-      const layout = getPaneLayout(session.session_id);
-      const groupIds = isGroupActiveFor(layout, session.session_id)
-        ? visibleSessionIds(layout.root)
-        : [];
-      const nextPinned = !session.pinned;
-      const targets = groupPinTargets(
-        session.session_id,
-        groupIds,
-        pinnedSessionIds(directSessions),
-        nextPinned,
-      );
-      try {
-        await Promise.all(targets.map((id) => api.session.pin(id, nextPinned)));
-        await refreshDirectSessions();
-      } catch (e) {
-        console.error("sidebar: session_pin failed", e);
-      }
-    },
-    [directSessions, refreshDirectSessions],
-  );
-
   const archiveSession = useCallback(
     async (session: DirectSessionEntry) => {
       // Mark before the kill so the pill appears immediately on click —
@@ -749,7 +738,7 @@ export function Sidebar({
         await api.session.archive(session.session_id);
         // Archived rows can't stay on screen — empty out any split pane
         // that was showing this chat (no-op when not split / not visible).
-        removeSessionFromLayout(session.session_id);
+        removeArchivedSessionFromLayout(session.session_id);
         await refreshDirectSessions();
         if (currentChatSessionId === session.session_id) {
           // Prefer handing the URL to a surviving group member over
@@ -816,12 +805,78 @@ export function Sidebar({
     if (!first) return;
     const layout = getPaneLayout(first.session_id);
     const proposed = window.prompt(
-      "Rename group (blank = derive from chats)",
+      "Rename tab (blank = derive from chats)",
       layout.name ?? "",
     );
     if (proposed === null) return;
     setGroupNameForSession(first.session_id, proposed);
   }, []);
+
+  const createFolder = useCallback(async () => {
+    const name = window.prompt("Folder name");
+    if (!name?.trim()) return;
+    try {
+      await api.folder.create(name.trim());
+      await hydratePaneLayoutsFromDb();
+    } catch (e) {
+      console.error("sidebar: folder_create failed", e);
+    }
+  }, []);
+
+  const renameFolder = useCallback(async (id: string, currentName: string) => {
+    const name = window.prompt("Rename folder", currentName);
+    if (!name?.trim() || name.trim() === currentName) return;
+    try {
+      await api.folder.rename(id, name.trim());
+      await hydratePaneLayoutsFromDb();
+    } catch (e) {
+      console.error("sidebar: folder_rename failed", e);
+    }
+  }, []);
+
+  const toggleFolder = useCallback(async (id: string, collapsed: boolean) => {
+    try {
+      await api.folder.setCollapsed(id, !collapsed);
+      await hydratePaneLayoutsFromDb();
+    } catch (e) {
+      console.error("sidebar: folder_set_collapsed failed", e);
+    }
+  }, []);
+
+  const requestFolderDelete = useCallback(
+    (id: string, name: string) => {
+      const memberTabs = tabItems.filter((item) => item.layout.folderId === id);
+      const count = paneLayouts.filter((layout) => layout.folderId === id).length;
+      const currentWasDeleted = memberTabs.some((item) =>
+        item.members.some((member) => member.session_id === currentChatSessionId),
+      );
+      setFolderDeleteConfirm({
+        id,
+        name,
+        count,
+        currentWasDeleted,
+        stage: 1,
+      });
+    },
+    [currentChatSessionId, paneLayouts, tabItems],
+  );
+
+  const deleteFolder = useCallback(
+    async (confirm: NonNullable<typeof folderDeleteConfirm>) => {
+      setDeletingFolder(true);
+      try {
+        await api.folder.delete(confirm.id);
+        await Promise.all([refreshDirectSessions(), hydratePaneLayoutsFromDb()]);
+        setFolderDeleteConfirm(null);
+        if (confirm.currentWasDeleted) navigate("/runners");
+      } catch (e) {
+        console.error("sidebar: folder_delete failed", e);
+      } finally {
+        setDeletingFolder(false);
+      }
+    },
+    [navigate, refreshDirectSessions],
+  );
 
   const openChatTabInNewWindow = useCallback((members: DirectSessionEntry[]) => {
     const first = members[0];
@@ -850,117 +905,7 @@ export function Sidebar({
     [archiveSession, currentChatSessionId],
   );
 
-  const submitRename = useCallback(
-    async (sessionId: string, nextTitle: string | null) => {
-      try {
-        await api.session.rename(sessionId, nextTitle);
-        await refreshDirectSessions();
-      } catch (e) {
-        console.error("sidebar: session_rename failed", e);
-      } finally {
-        setRenamingId(null);
-      }
-    },
-    [refreshDirectSessions],
-  );
-
-  // Click on a SESSION row — always just navigate to the chat. The
-  // chat surface owns the running/stopped UI: a stopped session lands
-  // on a dimmed terminal with a "Session ended" overlay, and the user
-  // explicitly clicks **Resume** there to bring the PTY back. Earlier
-  // we auto-resumed on click, but that conflated "I want to look at
-  // this chat" with "I want to relaunch the agent" — the explicit
-  // Resume affordance avoids accidental respawns.
-  //
-  // We pass `sessionStatus` through navigation state so RunnerChat's
-  // attach path can seed the pane with the row's real status. Without
-  // it, the pane briefly renders as running and xterm can forward a
-  // keystroke to `session_inject_stdin` for a session that's no
-  // longer in the live map → "session not found" banner.
-  const openDirectChat = useCallback(
-    (entry: DirectSessionEntry) => {
-      // Split-group semantics (impl 0020): a member chat's row focuses its
-      // pane and the group renders around it. A non-member row is a plain
-      // navigation — the chat opens single-pane and the group stays intact
-      // — EXCEPT when the group is on screen with an empty focused pane:
-      // that's the "or pick a chat from the sidebar" fill, the one row
-      // click that adds a member. Read the store directly so a stale
-      // render can't mis-target the pane.
-      const chatLayout = activatePaneLayoutForSession(currentChatSessionId);
-      let handledPaneTarget = false;
-      if (chatLayout.root.kind === "split") {
-        const memberLeaf = leafForSession(chatLayout.root, entry.session_id);
-        if (memberLeaf) {
-          focusPane(memberLeaf.id);
-          handledPaneTarget = true;
-        } else {
-          const groupOnScreen = isGroupActiveFor(
-            chatLayout,
-            currentChatSessionId,
-          );
-          const focusedLeaf = findLeaf(
-            chatLayout.root,
-            chatLayout.focusedPaneId,
-          );
-          if (groupOnScreen && focusedLeaf && focusedLeaf.sessionId === null) {
-            // Read members before the assign fills the focused pane.
-            const memberIds = visibleSessionIds(chatLayout.root);
-            assignSessionToPane(chatLayout.focusedPaneId, entry.session_id);
-            handledPaneTarget = true;
-            reportSubjectsNow(
-              visibleSessionIds(getPaneLayout(entry.session_id).root).map(
-                (value) => ({
-                  type: "DirectChat",
-                  value,
-                }),
-              ),
-            );
-            // A chat added to a group with a pinned member inherits the
-            // pin, so the group stays one sidebar cluster (add never
-            // unpins).
-            if (
-              shouldInheritPinOnAdd(
-                memberIds,
-                pinnedSessionIds(directSessions),
-                entry.session_id,
-              )
-            ) {
-              void api.session
-                .pin(entry.session_id, true)
-                .then(() => refreshDirectSessions())
-                .catch((e) =>
-                  console.error("sidebar: session_pin on group add failed", e),
-                );
-            }
-          }
-        }
-      }
-      if (!handledPaneTarget) {
-        const entryLayout = activatePaneLayoutForSession(entry.session_id);
-        const entryLeaf = leafForSession(entryLayout.root, entry.session_id);
-        if (entryLeaf) focusPane(entryLeaf.id);
-      }
-      const target = `/chats/${entry.session_id}`;
-      navigate(target, {
-        state: { sessionStatus: entry.status },
-        replace: location.pathname === target,
-      });
-    },
-    [
-      navigate,
-      location.pathname,
-      currentChatSessionId,
-      directSessions,
-      refreshDirectSessions,
-    ],
-  );
-
-  // Accordion header row click: activate the header's OWN tab and open its
-  // focused pane's chat (impl 0023). ChatTabGroup fires this alongside its
-  // expand toggle. Unlike openDirectChat this never routes through the
-  // empty-pane fill — a header is "go to this tab", so it must not pull the
-  // tab's chat into whatever empty pane the current split happens to have.
-  // Member-row clicks keep openDirectChat (spec: unchanged).
+  // A tab-row click activates that tab and opens its focused pane's chat.
   const activateTabChat = useCallback(
     (entry: DirectSessionEntry) => {
       const entryLayout = activatePaneLayoutForSession(entry.session_id);
@@ -996,46 +941,20 @@ export function Sidebar({
     });
   }, []);
 
-  // Render one CHAT-list entry: an accordion for a multi-member tab, a plain
-  // leaf row for a loose chat. A group is "active" when it owns the open chat
-  // — only then does it carry the accent rail + focused-member marks.
-  const renderChatItem = (item: ChatListItem<DirectSessionEntry>) => {
-    if (item.kind === "group") {
-      const active = item.members.some(
-        (m) => m.session_id === currentChatSessionId,
-      );
-      return (
-        <ChatTabGroup
-          key={`group-${item.members[0].session_id}`}
-          layout={item.layout}
-          members={item.members}
-          active={active}
-          focusedSessionId={active ? focusedPaneSessionId : null}
-          activity={directSessionActivity}
-          renamingId={renamingId}
-          onOpenChat={openDirectChat}
-          onActivateTab={activateTabChat}
-          onTabContextMenu={openChatTabMenu}
-          onMemberContextMenu={openSessionMenu}
-          onMemberRenameSubmit={(sessionId, title) =>
-            void submitRename(sessionId, title)
-          }
-          onMemberRenameCancel={() => setRenamingId(null)}
-        />
-      );
-    }
-    const s = item.row;
+  const renderTabItem = (item: (typeof tabItems)[number]) => {
+    const active = item.members.some(
+      (member) => member.session_id === currentChatSessionId,
+    );
     return (
-      <SessionRow
-        key={s.session_id}
-        session={s}
-        activity={directSessionActivity[s.session_id]}
-        selected={s.session_id === currentChatSessionId}
-        renaming={renamingId === s.session_id}
-        onClick={() => openDirectChat(s)}
-        onContextMenu={(anchor) => openSessionMenu(s, anchor)}
-        onRenameSubmit={(nextTitle) => void submitRename(s.session_id, nextTitle)}
-        onRenameCancel={() => setRenamingId(null)}
+      <ChatTabGroup
+        key={item.layout.id}
+        layout={item.layout}
+        members={item.members}
+        active={active}
+        onActivate={activateTabChat}
+        onContextMenu={(anchor) =>
+          openChatTabMenu(item.layout, item.members, anchor)
+        }
       />
     );
   };
@@ -1187,12 +1106,81 @@ export function Sidebar({
                 />
                 {sessionsOpen ? (
                   <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                    {chatItems.length === 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => void createFolder()}
+                      className="mb-1 flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1 text-left text-[11px] text-fg-3 transition-colors hover:bg-sidebar-selected/40 hover:text-fg"
+                    >
+                      <FolderPlus aria-hidden className="h-3 w-3" />
+                      New folder
+                    </button>
+                    {folders.length === 0 && tabItems.length === 0 ? (
                       <p className="px-2.5 py-1 text-xs text-fg-3">
                         No chats yet.
                       </p>
                     ) : (
-                      chatItems.map(renderChatItem)
+                      <>
+                        {folders.map((folder) => {
+                          const items = tabItems.filter(
+                            (item) => item.layout.folderId === folder.id,
+                          );
+                          return (
+                            <div key={folder.id} className="flex flex-col gap-0.5">
+                              <div
+                                onContextMenu={(event) => {
+                                  event.preventDefault();
+                                  openFolderMenu(folder, {
+                                    x: event.clientX,
+                                    y: event.clientY,
+                                  });
+                                }}
+                                className="group flex items-center gap-1 rounded px-1 py-1 text-xs text-fg-2 hover:bg-sidebar-selected/40 hover:text-fg"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    void toggleFolder(folder.id, folder.collapsed)
+                                  }
+                                  className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
+                                >
+                                  {folder.collapsed ? (
+                                    <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
+                                  ) : (
+                                    <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
+                                  )}
+                                  <Folder aria-hidden className="h-3 w-3 shrink-0" />
+                                  <span className="truncate font-medium">{folder.name}</span>
+                                  <span className="ml-auto text-[10px] text-fg-3">
+                                    {items.length}
+                                  </span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(event) =>
+                                    openFolderMenu(folder, {
+                                      x: event.clientX,
+                                      y: event.clientY,
+                                    })
+                                  }
+                                  className="cursor-pointer rounded p-0.5 text-fg-3 opacity-0 hover:bg-raised hover:text-fg group-hover:opacity-100 focus:opacity-100"
+                                  aria-label="Folder actions"
+                                  title="Folder actions"
+                                >
+                                  <MoreHorizontal aria-hidden className="h-3 w-3" />
+                                </button>
+                              </div>
+                              {folder.collapsed ? null : (
+                                <div className="ml-3 flex flex-col gap-0.5 border-l border-line pl-2">
+                                  {items.map(renderTabItem)}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {tabItems
+                          .filter((item) => item.layout.folderId === null)
+                          .map(renderTabItem)}
+                      </>
                     )}
                   </div>
                 ) : null}
@@ -1319,42 +1307,21 @@ export function Sidebar({
         }}
       />
 
-      {sessionMenu ? (
-        <RowContextMenu
-          pinned={sessionMenu.session.pinned}
-          anchorX={sessionMenu.x}
-          anchorY={sessionMenu.y}
-          onClose={closeSessionMenu}
-          onPin={() => {
-            void togglePin(sessionMenu.session);
-            closeSessionMenu();
-          }}
-          onRename={() => {
-            setRenamingId(sessionMenu.session.session_id);
-            closeSessionMenu();
-          }}
-          onOpenInNewWindow={() => {
-            void api.window
-              .open(`/chats/${sessionMenu.session.session_id}`)
-              .catch((e) =>
-                console.error("sidebar: open chat in new window failed", e),
-              );
-            closeSessionMenu();
-          }}
-          onArchive={() => {
-            void archiveSession(sessionMenu.session);
-            closeSessionMenu();
-          }}
-        />
-      ) : null}
-
       {chatTabMenu ? (
         <RowContextMenu
           pinned={chatTabMenu.members.every((member) => member.pinned)}
           anchorX={chatTabMenu.x}
           anchorY={chatTabMenu.y}
-          renameLabel="Rename group"
+          renameLabel="Rename tab"
           archiveLabel="Archive all"
+          folders={folders}
+          currentFolderId={chatTabMenu.layout.folderId}
+          onMoveToFolder={(folderId) => {
+            void moveTabToFolder(chatTabMenu.layout.id, folderId).catch((e) =>
+              console.error("sidebar: tab_move_to_folder failed", e),
+            );
+            closeChatTabMenu();
+          }}
           onClose={closeChatTabMenu}
           onPin={() => {
             void setChatTabPin(
@@ -1377,6 +1344,48 @@ export function Sidebar({
           }}
         />
       ) : null}
+
+      {folderMenu ? (
+        <FolderContextMenu
+          anchorX={folderMenu.x}
+          anchorY={folderMenu.y}
+          onClose={closeFolderMenu}
+          onRename={() => {
+            void renameFolder(folderMenu.id, folderMenu.name);
+            closeFolderMenu();
+          }}
+          onDelete={() => {
+            requestFolderDelete(folderMenu.id, folderMenu.name);
+            closeFolderMenu();
+          }}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={folderDeleteConfirm !== null}
+        title={
+          folderDeleteConfirm?.stage === 2
+            ? `Archive ${folderDeleteConfirm.count} tab${folderDeleteConfirm.count === 1 ? "" : "s"}?`
+            : `Delete folder "${folderDeleteConfirm?.name ?? ""}"?`
+        }
+        body={
+          folderDeleteConfirm?.stage === 2
+            ? `This archives every chat in the ${folderDeleteConfirm.count} member tab${folderDeleteConfirm.count === 1 ? "" : "s"} and removes the folder. The chats will appear in Settings → Archived.`
+            : `This folder contains ${folderDeleteConfirm?.count ?? 0} tab${folderDeleteConfirm?.count === 1 ? "" : "s"}. Deleting it archives every member tab; tabs will not be moved to the ungrouped list.`
+        }
+        confirmLabel={folderDeleteConfirm?.stage === 2 ? "Delete folder" : "Continue"}
+        busyLabel="Archiving…"
+        busy={deletingFolder}
+        onConfirm={() => {
+          if (!folderDeleteConfirm) return;
+          if (folderDeleteConfirm.stage === 1) {
+            setFolderDeleteConfirm({ ...folderDeleteConfirm, stage: 2 });
+          } else {
+            void deleteFolder(folderDeleteConfirm);
+          }
+        }}
+        onCancel={() => setFolderDeleteConfirm(null)}
+      />
 
       {missionMenu ? (
         <RowContextMenu
@@ -1878,6 +1887,9 @@ function RowContextMenu({
   onArchive,
   renameLabel = "Rename",
   archiveLabel = "Archive",
+  folders,
+  currentFolderId,
+  onMoveToFolder,
 }: {
   pinned: boolean;
   anchorX: number;
@@ -1889,6 +1901,9 @@ function RowContextMenu({
   onArchive: () => void;
   renameLabel?: string;
   archiveLabel?: string;
+  folders?: { id: string; name: string }[];
+  currentFolderId?: string | null;
+  onMoveToFolder?: (folderId: string | null) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x: anchorX, y: anchorY });
@@ -1936,12 +1951,84 @@ function RowContextMenu({
         label="Open in New Window"
         onClick={onOpenInNewWindow}
       />
+      {folders && onMoveToFolder ? (
+        <>
+          <div className="my-1 h-px bg-line" />
+          {currentFolderId !== null ? (
+            <ContextMenuItem
+              icon={Folder}
+              label="Move out of folder"
+              onClick={() => onMoveToFolder(null)}
+            />
+          ) : null}
+          {folders
+            .filter((folder) => folder.id !== currentFolderId)
+            .map((folder) => (
+              <ContextMenuItem
+                key={folder.id}
+                icon={Folder}
+                label={`Move to ${folder.name}`}
+                onClick={() => onMoveToFolder(folder.id)}
+              />
+            ))}
+        </>
+      ) : null}
       <ContextMenuItem
         icon={Archive}
         label={archiveLabel}
         onClick={onArchive}
         danger
       />
+    </div>
+  );
+}
+
+function FolderContextMenu({
+  anchorX,
+  anchorY,
+  onClose,
+  onRename,
+  onDelete,
+}: {
+  anchorX: number;
+  anchorY: number;
+  onClose: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ x: anchorX, y: anchorY });
+  useEffect(() => {
+    if (!ref.current) return;
+    const rect = ref.current.getBoundingClientRect();
+    setPos({
+      x: Math.max(4, Math.min(anchorX, window.innerWidth - rect.width - 4)),
+      y: Math.max(4, Math.min(anchorY, window.innerHeight - rect.height - 4)),
+    });
+  }, [anchorX, anchorY]);
+  useEffect(() => {
+    const onMouseDown = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) onClose();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [onClose]);
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      style={{ position: "fixed", left: pos.x, top: pos.y, width: 180 }}
+      className="z-50 flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
+    >
+      <ContextMenuItem icon={SquarePen} label="Rename folder" onClick={onRename} />
+      <ContextMenuItem icon={Archive} label="Delete and archive tabs" onClick={onDelete} danger />
     </div>
   );
 }

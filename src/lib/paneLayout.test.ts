@@ -24,7 +24,6 @@ import {
   setGroupNameForSession,
   setRouteAnchorSession,
   setSizesPure,
-  setTabCollapsed,
   subscribePaneLayout,
   visibleSessionIds,
   type PaneLayout,
@@ -268,45 +267,6 @@ describe("pane layout tabs", () => {
   });
 });
 
-describe("setTabCollapsed", () => {
-  afterEach(() => {
-    resetPaneLayoutsForTest();
-  });
-
-  it("collapses one tab without touching the others", () => {
-    applyPreset("cols-2", "A", ["A", "B"]);
-    applyPreset("cols-2", "C", ["C", "D"]);
-    expect(getPaneLayouts()).toHaveLength(2);
-
-    setTabCollapsed("C", true);
-
-    const [tabA, tabC] = getPaneLayouts();
-    expect(tabA.collapsed ?? false).toBe(false);
-    expect(tabC.collapsed).toBe(true);
-  });
-
-  it("targets a tab by index and no-ops when already in that state", () => {
-    applyPreset("cols-2", "A", ["A", "B"]);
-    const before = getPaneLayouts()[0];
-
-    setTabCollapsed(0, false);
-    expect(getPaneLayouts()[0]).toBe(before);
-
-    setTabCollapsed(0, true);
-    expect(getPaneLayouts()[0].collapsed).toBe(true);
-  });
-
-  it("ignores unknown session ids and out-of-range indices", () => {
-    applyPreset("cols-2", "A", ["A", "B"]);
-    const before = getPaneLayouts();
-
-    setTabCollapsed("missing", true);
-    setTabCollapsed(7, true);
-
-    expect(getPaneLayouts()).toBe(before);
-  });
-});
-
 describe("setGroupNameForSession", () => {
   afterEach(() => {
     resetPaneLayoutsForTest();
@@ -479,19 +439,6 @@ describe("hydrateLayoutSet (cross-window sync)", () => {
     expect(isFreshlyAssigned("just-made-elsewhere")).toBe(true);
   });
 
-  it("converges collapsed state from the broadcasting window", () => {
-    applyPreset("cols-2", "A", ["A", "B"]);
-    expect(getPaneLayouts()[0].collapsed ?? false).toBe(false);
-
-    const remote = serializeLayoutSet(
-      [{ ...applyPresetPure("cols-2", "A", ["A", "B"]), collapsed: true }],
-      0,
-    );
-    hydrateLayoutSet(remote);
-
-    expect(getPaneLayouts()[0].collapsed).toBe(true);
-  });
-
   it("no-ops and returns false on a malformed payload", () => {
     applyPreset("cols-2", "A", ["A", "B"]);
     const before = getPaneLayouts();
@@ -539,8 +486,34 @@ describe("fresh assignments", () => {
   });
 });
 
+describe("archive reconciliation", () => {
+  afterEach(() => {
+    resetPaneLayoutsForTest();
+  });
+
+  it("preserves the active tab by stable id when an earlier tab disappears", async () => {
+    const { removeArchivedSessionFromLayout } = await import("./paneLayout");
+    resetPaneLayoutsForTest(
+      [
+        { ...applyPresetPure("single", "A", ["A"]), id: "tab-a" },
+        { ...applyPresetPure("single", "B", ["B"]), id: "tab-b" },
+        { ...applyPresetPure("single", "C", ["C"]), id: "tab-c" },
+      ],
+      1,
+    );
+
+    removeArchivedSessionFromLayout("A");
+
+    expect(getPaneLayouts().map((layout) => layout.id)).toEqual([
+      "tab-b",
+      "tab-c",
+    ]);
+    expect(getPaneLayout().id).toBe("tab-b");
+  });
+});
+
 describe("serializeLayout / deserializeLayout", () => {
-  it("round-trips preset, slots, sizes, and focus", () => {
+  it("round-trips preset, slots, and sizes while focus stays view state", () => {
     const layout = setSizesPure(
       applyPresetPure("main-2", "B", ["A", "B"]),
       (applyPresetPure("main-2", "B", ["A", "B"]).root as PaneSplit).id,
@@ -551,39 +524,19 @@ describe("serializeLayout / deserializeLayout", () => {
     expect(restored!.preset).toBe("main-2");
     expect(slotSessions(restored!)).toEqual(["B", "A", null]);
     expect((restored!.root as PaneSplit).sizes).toEqual([70, 30]);
-    const focusedBefore = leaves(layout.root).findIndex(
-      (l) => l.id === layout.focusedPaneId,
-    );
     const focusedAfter = leaves(restored!.root).findIndex(
       (l) => l.id === restored!.focusedPaneId,
     );
-    expect(focusedAfter).toBe(focusedBefore);
+    expect(focusedAfter).toBe(0);
   });
 
-  it("round-trips the group name, and drops it for single layouts", () => {
+  it("keeps the tab name out of the layout blob but reads legacy names", () => {
     const named = applyPresetPure("cols-2", "A", ["A", "B"], "review pair");
     expect(named.name).toBe("review pair");
-    const restored = deserializeLayout(serializeLayout(named));
-    expect(restored!.name).toBe("review pair");
-    expect(applyPresetPure("single", "A", ["A"], "review pair").name).toBeNull();
-  });
-
-  it("round-trips the collapsed bit, defaulting missing to expanded", () => {
-    const collapsed = {
-      ...applyPresetPure("cols-2", "A", ["A", "B"]),
-      collapsed: true,
-    };
-    expect(deserializeLayout(serializeLayout(collapsed))!.collapsed).toBe(true);
-
-    // Expanded tabs omit the field entirely so old payloads stay expanded.
-    const expanded = applyPresetPure("cols-2", "A", ["A", "B"]);
-    expect(expanded.collapsed).toBeUndefined();
-    const parsed = JSON.parse(serializeLayout(expanded)) as Record<
-      string,
-      unknown
-    >;
-    expect("collapsed" in parsed).toBe(false);
-    expect(deserializeLayout(serializeLayout(expanded))!.collapsed).toBeUndefined();
+    expect(deserializeLayout(serializeLayout(named))!.name).toBeNull();
+    const legacy = JSON.parse(serializeLayout(named));
+    legacy.name = "review pair";
+    expect(deserializeLayout(JSON.stringify(legacy))!.name).toBe("review pair");
   });
 
   it("rejects malformed payloads", () => {
@@ -615,10 +568,11 @@ describe("cold-start hydration", () => {
     vi.unstubAllGlobals();
     vi.doUnmock("@tauri-apps/api/window");
     vi.doUnmock("@tauri-apps/api/event");
+    vi.doUnmock("./api");
     vi.resetModules();
   });
 
-  it("loads the shared persisted set in a secondary window", async () => {
+  it("imports the local v2 payload once and hydrates the DB rows", async () => {
     // The env's localStorage is a partial shim; back it with a Map so both
     // the seed write and the freshly-imported module see the same store.
     const store = new Map<string, string>();
@@ -639,11 +593,35 @@ describe("cold-start hydration", () => {
       getCurrentWindow: () => ({ label: "window-secondary" }),
     }));
     vi.doMock("@tauri-apps/api/event", () => ({
-      emit: () => Promise.resolve(),
       listen: () => Promise.resolve(() => {}),
+    }));
+    const tabUpsert = vi.fn(async () => undefined);
+    const tabDelete = vi.fn(async () => undefined);
+    vi.doMock("./api", () => ({
+      api: {
+        tab: {
+          importOnce: async (tabs: { name: string; position: number; layout: string }[]) =>
+            tabs.map((tab, index) => ({
+              id: `01KTESTTAB0000000000000000${index}`,
+              folder_id: null,
+              name: tab.name,
+              position: tab.position,
+              layout: tab.layout,
+              created_at: "2026-07-12T00:00:00Z",
+            })),
+          list: async () => [],
+          upsert: tabUpsert,
+          delete: tabDelete,
+          moveToFolder: async () => undefined,
+        },
+        folder: { list: async () => [] },
+      },
     }));
 
     const mod = await import("./paneLayout");
+    await vi.waitFor(() => {
+      expect(mod.getPaneLayouts()[0].id).toContain("01KTESTTAB");
+    });
 
     // Even though a secondary window never WRITES localStorage, it now reads
     // the shared set on cold start, so the tab structure shows immediately.
@@ -653,5 +631,13 @@ describe("cold-start hydration", () => {
       "A",
       "B",
     ]);
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+
+    mod.removeArchivedSessionFromLayout("A");
+    mod.removeArchivedSessionFromLayout("B");
+    expect(mod.getPaneLayouts()[0].id).toBe("");
+    expect(mod.visibleSessionIds(mod.getPaneLayouts()[0].root)).toEqual([]);
+    expect(tabUpsert).not.toHaveBeenCalled();
+    expect(tabDelete).not.toHaveBeenCalled();
   });
 });
