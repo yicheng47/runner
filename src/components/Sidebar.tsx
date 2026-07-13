@@ -79,7 +79,6 @@ import {
   activatePaneLayoutForSession,
   assignSessionToPane,
   createChatFolder,
-  findLeaf,
   focusPane,
   getPaneLayout,
   leafForSession,
@@ -263,6 +262,7 @@ export function Sidebar({
   const [folderMenu, setFolderMenu] = useState<{
     id: string;
     name: string;
+    collapsed: boolean;
     x: number;
     y: number;
   } | null>(null);
@@ -662,10 +662,19 @@ export function Sidebar({
   );
   const closeFolderMenu = useCallback(() => setFolderMenu(null), []);
   const openFolderMenu = useCallback(
-    (folder: { id: string; name: string }, anchor: { x: number; y: number }) => {
+    (
+      folder: { id: string; name: string; collapsed: boolean },
+      anchor: { x: number; y: number },
+    ) => {
       setChatTabMenu(null);
       setMissionMenu(null);
-      setFolderMenu({ ...folder, x: anchor.x, y: anchor.y });
+      setFolderMenu({
+        id: folder.id,
+        name: folder.name,
+        collapsed: folder.collapsed,
+        x: anchor.x,
+        y: anchor.y,
+      });
     },
     [],
   );
@@ -911,19 +920,6 @@ export function Sidebar({
     },
     [navigate, refreshDirectSessions],
   );
-
-  const openChatTabInNewWindow = useCallback((members: DirectSessionEntry[]) => {
-    const first = members[0];
-    if (!first) return;
-    const layout = getPaneLayout(first.session_id);
-    const focusedSessionId =
-      findLeaf(layout.root, layout.focusedPaneId)?.sessionId ?? null;
-    const target =
-      members.find((member) => member.session_id === focusedSessionId) ?? first;
-    void api.window.open(`/chats/${target.session_id}`).catch((e) =>
-      console.error("sidebar: open chat tab in new window failed", e),
-    );
-  }, []);
 
   const archiveChatTab = useCallback(
     async (members: DirectSessionEntry[]) => {
@@ -1471,7 +1467,6 @@ export function Sidebar({
                                   initial={folder.name}
                                   collapsed={folder.collapsed}
                                   attention={folderAttention}
-                                  count={items.length}
                                   onSubmit={(nextName) =>
                                     void submitFolderRename(
                                       folder.id,
@@ -1520,23 +1515,6 @@ export function Sidebar({
                                         folder.collapsed ? folderAttention : null
                                       }
                                     />
-                                    <span className="text-[10px] text-fg-3">
-                                      {items.length}
-                                    </span>
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      if (folder.collapsed) {
-                                        void toggleFolder(folder.id, true);
-                                      }
-                                      handleNewFolderChat(folder.id);
-                                    }}
-                                    className="cursor-pointer rounded p-0.5 text-fg-3 hover:bg-raised hover:text-fg"
-                                    aria-label={`New chat in ${folder.name}`}
-                                    title="New chat in folder"
-                                  >
-                                    <Plus aria-hidden className="h-3 w-3" />
                                   </button>
                                   <button
                                     type="button"
@@ -1747,10 +1725,6 @@ export function Sidebar({
             renameChatTab(chatTabMenu.members);
             closeChatTabMenu();
           }}
-          onOpenInNewWindow={() => {
-            openChatTabInNewWindow(chatTabMenu.members);
-            closeChatTabMenu();
-          }}
           onArchive={() => {
             void archiveChatTab(chatTabMenu.members);
             closeChatTabMenu();
@@ -1763,6 +1737,11 @@ export function Sidebar({
           anchorX={folderMenu.x}
           anchorY={folderMenu.y}
           onClose={closeFolderMenu}
+          onNewChat={() => {
+            if (folderMenu.collapsed) void toggleFolder(folderMenu.id, true);
+            handleNewFolderChat(folderMenu.id);
+            closeFolderMenu();
+          }}
           onRename={() => {
             setRenamingFolderId(folderMenu.id);
             closeFolderMenu();
@@ -2035,14 +2014,12 @@ function FolderRenameRow({
   initial,
   collapsed,
   attention,
-  count,
   onSubmit,
   onCancel,
 }: {
   initial: string;
   collapsed: boolean;
   attention: ChatAttentionState;
-  count: number;
   onSubmit: (name: string) => void;
   onCancel: () => void;
 }) {
@@ -2086,7 +2063,6 @@ function FolderRenameRow({
         className="min-w-0 flex-1 bg-transparent text-xs font-medium text-fg outline-none"
       />
       <ChatAttentionIndicator state={collapsed ? attention : null} />
-      <span className="text-[10px] text-fg-3">{count}</span>
     </div>
   );
 }
@@ -2466,7 +2442,7 @@ function RowContextMenu({
   onClose: () => void;
   onPin: () => void;
   onRename: () => void;
-  onOpenInNewWindow: () => void;
+  onOpenInNewWindow?: () => void;
   onArchive: () => void;
   renameLabel?: string;
   archiveLabel?: string;
@@ -2515,21 +2491,18 @@ function RowContextMenu({
         onClick={onPin}
       />
       <ContextMenuItem icon={SquarePen} label={renameLabel} onClick={onRename} />
-      <ContextMenuItem
-        icon={AppWindow}
-        label="Open in New Window"
-        onClick={onOpenInNewWindow}
-      />
-      {folders && onMoveToFolder ? (
+      {onOpenInNewWindow ? (
+        <ContextMenuItem
+          icon={AppWindow}
+          label="Open in New Window"
+          onClick={onOpenInNewWindow}
+        />
+      ) : null}
+      {folders &&
+      onMoveToFolder &&
+      folders.some((folder) => folder.id !== currentFolderId) ? (
         <>
           <div className="my-1 h-px bg-line" />
-          {currentFolderId !== null ? (
-            <ContextMenuItem
-              icon={Folder}
-              label="Move out of folder"
-              onClick={() => onMoveToFolder(null)}
-            />
-          ) : null}
           {folders
             .filter((folder) => folder.id !== currentFolderId)
             .map((folder) => (
@@ -2556,12 +2529,14 @@ function FolderContextMenu({
   anchorX,
   anchorY,
   onClose,
+  onNewChat,
   onRename,
   onDelete,
 }: {
   anchorX: number;
   anchorY: number;
   onClose: () => void;
+  onNewChat: () => void;
   onRename: () => void;
   onDelete: () => void;
 }) {
@@ -2596,6 +2571,11 @@ function FolderContextMenu({
       style={{ position: "fixed", left: pos.x, top: pos.y, width: 180 }}
       className="z-50 flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
     >
+      <ContextMenuItem
+        icon={MessageSquarePlus}
+        label="New chat in folder"
+        onClick={onNewChat}
+      />
       <ContextMenuItem icon={SquarePen} label="Rename folder" onClick={onRename} />
       <ContextMenuItem icon={Trash2} label="Delete" onClick={onDelete} danger />
     </div>

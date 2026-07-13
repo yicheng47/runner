@@ -15,7 +15,7 @@ const session = {
 } as DirectSessionEntry;
 
 describe("ChatTabGroup", () => {
-  it("shows the layout pane count when some panes are empty", () => {
+  it("marks a multi-pane tab with a split icon and no count badge", () => {
     const layout = {
       ...applyPresetPure("cols-3", "A", ["A"]),
       id: "tab-1",
@@ -32,7 +32,7 @@ describe("ChatTabGroup", () => {
     );
 
     expect(html).toContain("lucide-columns-3");
-    expect(html).toContain(">3</span>");
+    expect(html).not.toContain(">3</span>");
     expect(html).toContain('draggable="true"');
   });
 
@@ -56,9 +56,6 @@ describe("ChatTabGroup", () => {
     expect(working).toContain("origin-center");
     expect(working).toContain("text-fg-3");
     expect(working).not.toContain("text-accent");
-    expect(working.indexOf('aria-label="Agent working"')).toBeLessThan(
-      working.indexOf(">2</span>"),
-    );
 
     const unread = renderToStaticMarkup(
       createElement(ChatTabGroup, {
