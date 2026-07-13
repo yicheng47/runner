@@ -148,10 +148,10 @@ fn mark_tab_viewed_for_window<R: tauri::Runtime>(
         member_ids.into_iter().map(Subject::DirectChat).collect(),
     );
     let conn = state.db.get()?;
-    let row = repo::tab::mark_viewed(&conn, &id, Utc::now())?
+    let row = repo::tab::mark_viewed(&conn, id, Utc::now())?
         .ok_or_else(|| Error::msg(format!("tab not found: {id}")))?;
     let _ = app.emit(ATTENTION_CHANGED_EVENT, serde_json::json!({ "tab_id": id }));
-    crate::broadcast_focus_map(&app);
+    crate::broadcast_focus_map(app);
     Ok(row)
 }
 
