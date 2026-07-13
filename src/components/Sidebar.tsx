@@ -65,6 +65,7 @@ import {
   shouldInheritPinOnAdd,
 } from "../lib/groupPinning";
 import {
+  chatTabArchiveLabel,
   isChatTabDropIndexAllowed,
   orderedChatTabIdsAfterDrop,
 } from "../lib/chatTabs";
@@ -1700,9 +1701,7 @@ export function Sidebar({
           anchorX={chatTabMenu.x}
           anchorY={chatTabMenu.y}
           renameLabel="Rename tab"
-          archiveLabel={
-            chatTabMenu.members.length > 1 ? "Archive all" : "Archive"
-          }
+          archiveLabel={chatTabArchiveLabel(chatTabMenu.layout)}
           folders={folders}
           currentFolderId={chatTabMenu.layout.folderId}
           onMoveToFolder={(folderId) => {

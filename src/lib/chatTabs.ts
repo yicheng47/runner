@@ -1,7 +1,7 @@
 // Direct-chat tab labels plus the legacy impl 0023 partition helper retained
 // for its pure tests. Feature 38's sidebar renders PaneLayout rows directly.
 
-import { visibleSessionIds, type PaneLayout } from "./paneLayout";
+import { leaves, visibleSessionIds, type PaneLayout } from "./paneLayout";
 
 export interface TabGroupItem<T> {
   kind: "group";
@@ -40,6 +40,10 @@ export function derivedChatTabTitle<
 export interface OrderedChatTab {
   id: string;
   pinned: boolean;
+}
+
+export function chatTabArchiveLabel(layout: PaneLayout): string {
+  return leaves(layout.root).length > 1 ? "Archive all" : "Archive";
 }
 
 export function isChatTabDropIndexAllowed(
