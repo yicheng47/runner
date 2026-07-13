@@ -37,6 +37,7 @@ import {
   Archive,
   ChevronDown,
   ChevronRight,
+  Flag,
   Folder,
   FolderPlus,
   MessageSquarePlus,
@@ -66,10 +67,12 @@ import {
 } from "../lib/groupPinning";
 import {
   chatTabArchiveLabel,
+  chatTabIsLive,
   isChatTabDropIndexAllowed,
   orderedChatTabIdsAfterDrop,
 } from "../lib/chatTabs";
 import {
+  missionAttentionState,
   rollupAttentionState,
   tabAttentionState,
   useDirectSessionActivity,
@@ -96,9 +99,13 @@ import {
 } from "../lib/paneLayout";
 import {
   CHAT_TAB_DRAG_TYPE,
-  ChatAttentionIndicator,
   ChatTabGroup,
 } from "./ChatTabGroup";
+import {
+  ChatAttentionIndicator,
+  SidebarTabIcon,
+  SidebarTabRow,
+} from "./SidebarTabRow";
 import { PanelToggleGlyph } from "./PanelToggleGlyph";
 import { PopoverMenu } from "./ui/PopoverMenu";
 import { useResizableWidth } from "../hooks/useResizableWidth";
@@ -110,7 +117,6 @@ import {
 import { reportSubjectsNow } from "../lib/windowFocus";
 import type {
   AppendedEvent,
-  MissionActivityState,
   MissionSummary,
   SessionActivityState,
 } from "../lib/types";
@@ -354,6 +360,18 @@ export function Sidebar({
   const chatAttention = useMemo(
     () => rollupAttentionState(tabItems.map((item) => item.attention)),
     [tabItems],
+  );
+  const missionAttention = useMemo(
+    () =>
+      rollupAttentionState(
+        missions.map((mission) =>
+          missionAttentionState(
+            mission.any_session_live,
+            mission.activity,
+          ),
+        ),
+      ),
+    [missions],
   );
   const orderedChatRows = useMemo(
     () => tabItems.map((item) => item.members[0]),
@@ -1323,6 +1341,8 @@ export function Sidebar({
                 <CollapsibleSectionHeader
                   label="MISSION"
                   open={missionsOpen}
+                  attention={missionsOpen ? null : missionAttention}
+                  attentionWorkingLabel="Mission working"
                   onToggle={toggleMissions}
                   onPlus={() => setCreatingMission(true)}
                   plusTitle="Start mission"
@@ -1424,6 +1444,9 @@ export function Sidebar({
                           const folderAttention = rollupAttentionState(
                             items.map((item) => item.attention),
                           );
+                          const folderLive = items.some((item) =>
+                            chatTabIsLive(item.members),
+                          );
                           return (
                             <div
                               key={folder.id}
@@ -1466,6 +1489,7 @@ export function Sidebar({
                                 <FolderRenameRow
                                   initial={folder.name}
                                   collapsed={folder.collapsed}
+                                  live={folderLive}
                                   attention={folderAttention}
                                   onSubmit={(nextName) =>
                                     void submitFolderRename(
@@ -1506,7 +1530,10 @@ export function Sidebar({
                                     ) : (
                                       <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
                                     )}
-                                    <Folder aria-hidden className="h-3 w-3 shrink-0" />
+                                    <SidebarTabIcon
+                                      icon={Folder}
+                                      active={folderLive}
+                                    />
                                     <span className="min-w-0 flex-1 truncate font-medium">
                                       {folder.name}
                                     </span>
@@ -1860,6 +1887,7 @@ function CollapsibleSectionHeader({
   plusMenu,
   onPlusMenuClose,
   attention,
+  attentionWorkingLabel,
 }: {
   label: string;
   open: boolean;
@@ -1873,6 +1901,7 @@ function CollapsibleSectionHeader({
   plusMenu?: ReactNode;
   onPlusMenuClose?: () => void;
   attention?: ChatAttentionState;
+  attentionWorkingLabel?: string;
 }) {
   const plusRef = useRef<HTMLButtonElement>(null);
   return (
@@ -1892,7 +1921,10 @@ function CollapsibleSectionHeader({
       </button>
       <div className="flex items-center gap-1.5">
         {attention !== undefined ? (
-          <ChatAttentionIndicator state={attention} />
+          <ChatAttentionIndicator
+            state={attention}
+            workingLabel={attentionWorkingLabel}
+          />
         ) : null}
         <button
           ref={plusRef}
@@ -1950,7 +1982,7 @@ function TabDropDivider({
   );
 }
 
-function NewFolderRow({
+export function NewFolderRow({
   onSubmit,
   onCancel,
 }: {
@@ -1987,7 +2019,7 @@ function NewFolderRow({
       className="flex items-center gap-1.5 rounded border border-sidebar-selected-border bg-sidebar-selected px-2.5 py-1.5 text-xs shadow-sm"
     >
       <ChevronDown aria-hidden className="h-3 w-3 shrink-0 text-fg-2" />
-      <Folder aria-hidden className="h-3 w-3 shrink-0 text-fg-2" />
+      <SidebarTabIcon icon={Folder} active={false} />
       <input
         ref={inputRef}
         value={draft}
@@ -2013,12 +2045,14 @@ function NewFolderRow({
 function FolderRenameRow({
   initial,
   collapsed,
+  live,
   attention,
   onSubmit,
   onCancel,
 }: {
   initial: string;
   collapsed: boolean;
+  live: boolean;
   attention: ChatAttentionState;
   onSubmit: (name: string) => void;
   onCancel: () => void;
@@ -2041,7 +2075,10 @@ function FolderRenameRow({
       ) : (
         <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
       )}
-      <Folder aria-hidden className="h-3 w-3 shrink-0" />
+      <SidebarTabIcon
+        icon={Folder}
+        active={live}
+      />
       <input
         ref={inputRef}
         value={draft}
@@ -2063,188 +2100,6 @@ function FolderRenameRow({
         className="min-w-0 flex-1 bg-transparent text-xs font-medium text-fg outline-none"
       />
       <ChatAttentionIndicator state={collapsed ? attention : null} />
-    </div>
-  );
-}
-
-function SidebarListRow({
-  selected,
-  accentBar,
-  label,
-  onClick,
-  onContextMenu,
-  title,
-  mono,
-  dim,
-  dotClassName,
-  pinned,
-  renaming,
-  renameValue,
-  renamePlaceholder,
-  onRenameSubmit,
-  onRenameCancel,
-}: {
-  selected: boolean;
-  /** 2px accent bar on the row's left edge — marks the chat in the
-   *  focused split pane (impl 0020), mirroring the pane focus ring. */
-  accentBar?: boolean;
-  label: string;
-  onClick: () => void;
-  /** Right-click handler. Anchor the menu at clientX/clientY. */
-  onContextMenu?: (anchor: { x: number; y: number }) => void;
-  title?: string;
-  mono?: boolean;
-  /** True when the row represents a non-running runtime (e.g. a stopped
-   *  direct chat that can be resumed). Mutes the status dot so the user
-   *  can tell which sessions are live at a glance. */
-  dim?: boolean;
-  /** Optional explicit status-dot color for rows with richer live state. */
-  dotClassName?: string;
-  /** Pinned rows show a Pin icon next to the label. */
-  pinned?: boolean;
-  /** When true, replaces the label with an inline rename input. */
-  renaming?: boolean;
-  /** Current editable value. Defaults to `label`. */
-  renameValue?: string;
-  /** Placeholder shown while the editable value is empty. */
-  renamePlaceholder?: string;
-  onRenameSubmit?: (next: string) => void;
-  onRenameCancel?: () => void;
-}) {
-  if (renaming && onRenameSubmit && onRenameCancel) {
-    return (
-      <SidebarRowRenameInput
-        initial={renameValue ?? label}
-        placeholder={renamePlaceholder ?? label}
-        title={title}
-        mono={mono}
-        dim={dim}
-        dotClassName={dotClassName}
-        onSubmit={onRenameSubmit}
-        onCancel={onRenameCancel}
-      />
-    );
-  }
-  return (
-    <div
-      onContextMenu={
-        onContextMenu
-          ? (e) => {
-              e.preventDefault();
-              onContextMenu({ x: e.clientX, y: e.clientY });
-            }
-          : undefined
-      }
-      className={`group relative flex w-full items-center gap-2 rounded border px-2.5 py-1.5 text-left text-xs transition-colors ${
-        selected
-          ? "border-sidebar-selected-border bg-sidebar-selected font-semibold text-fg shadow-sm"
-          : "border-transparent text-fg-2 hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg"
-      }`}
-    >
-      {accentBar ? (
-        <span
-          aria-hidden
-          className="absolute inset-y-0.5 left-0 w-0.5 rounded-full bg-accent"
-        />
-      ) : null}
-      <button
-        type="button"
-        onClick={onClick}
-        title={title}
-        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
-      >
-        <span
-          className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${
-            dotClassName ?? (dim ? "bg-fg-3" : "bg-accent")
-          }`}
-        />
-        {pinned ? (
-          <Pin
-            aria-hidden
-            className="h-2.5 w-2.5 shrink-0 -rotate-45 text-fg-3"
-          />
-        ) : null}
-        <span className={`truncate ${mono ? "font-mono" : ""}`}>{label}</span>
-      </button>
-      {/* Kebab anchor for the same context menu the row's
-          right-click triggers. Mirrors SessionRow's affordance so
-          mission rows get a discoverable "..." button on hover —
-          right-click alone isn't an obvious entry point. */}
-      {onContextMenu ? (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onContextMenu({ x: e.clientX, y: e.clientY });
-          }}
-          title="More actions"
-          aria-label="More actions"
-          className="cursor-pointer rounded p-0.5 text-fg-3 opacity-0 transition-opacity hover:bg-raised hover:text-fg group-hover:opacity-100 focus:opacity-100"
-        >
-          <MoreHorizontal aria-hidden className="h-3 w-3" />
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
-function SidebarRowRenameInput({
-  initial,
-  placeholder,
-  title,
-  mono,
-  dim,
-  dotClassName,
-  onSubmit,
-  onCancel,
-}: {
-  initial: string;
-  placeholder: string;
-  title?: string;
-  mono?: boolean;
-  dim?: boolean;
-  dotClassName?: string;
-  onSubmit: (next: string) => void;
-  onCancel: () => void;
-}) {
-  const [draft, setDraft] = useState(initial);
-  const inputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    inputRef.current?.focus();
-    inputRef.current?.select();
-  }, []);
-  return (
-    <div
-      className="flex w-full items-center gap-2 rounded border border-sidebar-selected-border bg-sidebar-selected px-2.5 py-1.5 text-xs shadow-sm"
-      title={title}
-    >
-      <span
-        className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${
-          dotClassName ?? (dim ? "bg-fg-3" : "bg-accent")
-        }`}
-      />
-      <input
-        ref={inputRef}
-        value={draft}
-        placeholder={placeholder}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            onSubmit(draft.trim());
-          } else if (e.key === "Escape") {
-            e.preventDefault();
-            onCancel();
-          }
-        }}
-        onBlur={() => {
-          if (draft.trim() === initial.trim()) onCancel();
-          else onSubmit(draft.trim());
-        }}
-        className={`min-w-0 flex-1 bg-transparent text-xs text-fg outline-none placeholder:text-fg-3 ${
-          mono ? "font-mono" : ""
-        }`}
-      />
     </div>
   );
 }
@@ -2277,20 +2132,7 @@ function directChatDotClassName(status: DirectChatDisplayStatus): string {
   }
 }
 
-function missionActivityDotClassName(
-  activity: MissionActivityState | null,
-): string {
-  switch (activity) {
-    case "busy":
-      return "bg-accent";
-    case "idle":
-      return "bg-accent/30";
-    case null:
-      return "bg-fg-3";
-  }
-}
-
-function MissionRow({
+export function MissionRow({
   mission,
   selected,
   renaming,
@@ -2314,14 +2156,19 @@ function MissionRow({
   }`;
 
   return (
-    <SidebarListRow
+    <SidebarTabRow
       selected={selected}
       label={mission.title}
+      icon={Flag}
+      iconActive={mission.all_sessions_live}
       onClick={onClick}
       onContextMenu={onContextMenu}
       title={tooltip}
-      dim={!mission.any_session_live}
-      dotClassName={missionActivityDotClassName(activity)}
+      attention={missionAttentionState(
+        mission.any_session_live,
+        mission.activity,
+      )}
+      attentionWorkingLabel="Mission working"
       pinned={!!mission.pinned_at}
       renaming={renaming}
       onRenameSubmit={onRenameSubmit}
@@ -2363,7 +2210,7 @@ export function SessionRow({
   }${session.pinned ? " · pinned" : ""}`;
 
   return (
-    <SidebarListRow
+    <SidebarTabRow
       selected={selected}
       accentBar={paneFocused}
       label={label}

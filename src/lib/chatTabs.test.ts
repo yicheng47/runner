@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildChatListItems,
   chatTabArchiveLabel,
+  chatTabIsLive,
   derivedChatTabTitle,
   isChatTabDropIndexAllowed,
   orderedChatTabIdsAfterDrop,
@@ -138,6 +139,17 @@ describe("chatTabArchiveLabel", () => {
     );
     expect(chatTabArchiveLabel(applyPresetPure("cols-2", "A", ["A"]))).toBe(
       "Archive all",
+    );
+  });
+});
+
+describe("chatTabIsLive", () => {
+  it("stays live while any pane session is running", () => {
+    expect(chatTabIsLive([{ status: "running" }, { status: "stopped" }])).toBe(
+      true,
+    );
+    expect(chatTabIsLive([{ status: "stopped" }, { status: "crashed" }])).toBe(
+      false,
     );
   });
 });

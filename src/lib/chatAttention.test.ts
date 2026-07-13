@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { DirectSessionEntry } from "./api";
 import {
   applySessionActivityEvents,
+  missionAttentionState,
   rollupAttentionState,
   tabAttentionState,
 } from "./chatAttention";
@@ -65,5 +66,12 @@ describe("chat attention", () => {
     expect(rollupAttentionState([null, "unread"])).toBe("unread");
     expect(rollupAttentionState(["unread", "working"])).toBe("working");
     expect(rollupAttentionState([null, null])).toBeNull();
+  });
+
+  it("maps mission activity to the chat working indicator", () => {
+    expect(missionAttentionState(true, "busy")).toBe("working");
+    expect(missionAttentionState(true, null)).toBe("working");
+    expect(missionAttentionState(true, "idle")).toBeNull();
+    expect(missionAttentionState(false, "busy")).toBeNull();
   });
 });

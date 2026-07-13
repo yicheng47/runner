@@ -322,14 +322,13 @@ export interface MissionSummary extends Mission {
   crew_name: string;
   pending_ask_count: number;
   /** True iff at least one of the mission's sessions is `status =
-   *  'running'`. Drives the sidebar mission-row status dot — live
-   *  missions get the accent, paused missions (mission.status =
-   *  running but every slot is stopped/crashed) get a muted dot so
-   *  the operator can tell which workspaces accept input without
-   *  entering each one. */
+   *  'running'`. A mission without live sessions never shows the sidebar
+   *  working indicator. */
   any_session_live: boolean;
+  /** True iff every current mission session is running. */
+  all_sessions_live: boolean;
   /** Optional busy/idle projection for live mission slots. Null means
-   *  the mission has no live sessions and should keep the paused styling. */
+   *  the mission has no live sessions and keeps the attention slot clear. */
   activity: MissionActivityState | null;
 }
 
