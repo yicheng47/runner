@@ -308,6 +308,7 @@ pub fn run() {
             commands::tab::tab_move_to_folder,
             commands::tab::tab_reorder,
             commands::tab::tab_import_once,
+            commands::tab::tab_mark_viewed,
             commands::mission::mission_start,
             commands::mission::mission_attach,
             commands::mission::mission_stop,
@@ -335,6 +336,7 @@ pub fn run() {
             commands::session::session_resume,
             commands::session::session_inject_stdin,
             commands::session::session_kill,
+            commands::session::session_activity_snapshot,
             commands::session::session_resize,
             commands::session::session_output_snapshot,
             commands::session::session_replay_watermark,
@@ -400,6 +402,22 @@ pub fn run() {
                 } => {
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         state.windows.mark_focused(&label);
+                        let visible = state.windows.focused_direct_sessions(&label);
+                        if let Err(error) =
+                            commands::tab::mark_direct_sessions_viewed(app_handle, &state, &visible)
+                        {
+                            log::warn!("mark focused window tabs viewed failed: {error}");
+                        }
+                    }
+                    broadcast_focus_map(app_handle);
+                }
+                tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::Focused(false),
+                    ..
+                } => {
+                    if let Some(state) = app_handle.try_state::<AppState>() {
+                        state.windows.mark_blurred(&label);
                     }
                     broadcast_focus_map(app_handle);
                 }
@@ -449,7 +467,7 @@ pub fn run() {
 /// every registry mutation (lifecycle hooks + window commands) so all windows
 /// converge on a consistent picture of who owns what. Broadcast, not
 /// targeted: each window filters by its own subject (spec decision 5).
-pub(crate) fn broadcast_focus_map(app: &AppHandle) {
+pub(crate) fn broadcast_focus_map<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };

@@ -63,7 +63,10 @@ impl SessionManager {
         let (stop, forwarder) = {
             let mut state = state.lock().unwrap();
             match state.handle.take() {
-                Some(mut h) => (h.stop.clone(), h.forwarder.take()),
+                Some(mut h) => {
+                    state.activity = None;
+                    (h.stop.clone(), h.forwarder.take())
+                }
                 None => return Ok(()), // raced with another caller; no-op
             }
         };
@@ -209,6 +212,7 @@ impl SessionManager {
                 .is_some_and(|h| Self::runtime_session_matches(&h.runtime_session, runtime_session))
             {
                 state.handle = None;
+                state.activity = None;
             }
         }
         self.prune_empty_session_state(session_id);

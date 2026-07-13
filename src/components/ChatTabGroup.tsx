@@ -1,6 +1,14 @@
-import { Columns2, Columns3, MessageSquare, MoreHorizontal, Pin } from "lucide-react";
+import {
+  Columns2,
+  Columns3,
+  LoaderCircle,
+  MessageSquare,
+  MoreHorizontal,
+  Pin,
+} from "lucide-react";
 
 import type { DirectSessionEntry } from "../lib/api";
+import type { ChatAttentionState } from "../lib/chatAttention";
 import { derivedChatTabTitle } from "../lib/chatTabs";
 import { findLeaf, leaves, type PaneLayout } from "../lib/paneLayout";
 
@@ -15,6 +23,7 @@ export function ChatTabGroup({
   onDragStart,
   onDragEnd,
   dragging,
+  attention,
 }: {
   layout: PaneLayout;
   members: DirectSessionEntry[];
@@ -24,6 +33,7 @@ export function ChatTabGroup({
   onDragStart?: (tabId: string) => void;
   onDragEnd?: () => void;
   dragging?: boolean;
+  attention: ChatAttentionState;
 }) {
   const focused = findLeaf(layout.root, layout.focusedPaneId)?.sessionId;
   const target = members.find((member) => member.session_id === focused) ?? members[0];
@@ -69,9 +79,12 @@ export function ChatTabGroup({
         ) : (
           <MessageSquare aria-hidden className={`h-3 w-3 shrink-0 ${active ? "text-accent" : "text-fg-2"}`} />
         )}
-        <span className={`truncate ${active ? "font-semibold" : ""}`}>{name}</span>
+        <span className={`min-w-0 flex-1 truncate ${active ? "font-semibold" : ""}`}>
+          {name}
+        </span>
+        <ChatAttentionIndicator state={attention} />
         {paneCount > 1 ? (
-          <span className="ml-auto shrink-0 rounded bg-line px-1 py-px text-[9px] text-fg-3">
+          <span className="shrink-0 rounded bg-line px-1 py-px text-[9px] text-fg-3">
             {paneCount}
           </span>
         ) : null}
@@ -87,4 +100,37 @@ export function ChatTabGroup({
       </button>
     </div>
   );
+}
+
+export function ChatAttentionIndicator({
+  state,
+}: {
+  state: ChatAttentionState;
+}) {
+  if (state === "working") {
+    return (
+      <span
+        className="flex h-3 w-3 shrink-0 items-center justify-center"
+        aria-label="Agent working"
+        title="Agent working"
+      >
+        <LoaderCircle
+          aria-hidden
+          className="h-3 w-3 animate-spin text-accent motion-reduce:animate-none"
+        />
+      </span>
+    );
+  }
+  if (state === "unread") {
+    return (
+      <span
+        className="flex h-3 w-3 shrink-0 items-center justify-center"
+        aria-label="Completed — not viewed"
+        title="Completed — not viewed"
+      >
+        <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-accent" />
+      </span>
+    );
+  }
+  return <span aria-hidden className="h-3 w-3 shrink-0" />;
 }

@@ -52,7 +52,7 @@ Direct chats are one-at-a-time: `RunnerChat` (`/chats/:sessionId`) shows a singl
 
 ## Design
 
-Mocked in `design/runners-design.pen`:
+Mocked in `design/runner-mvp-design.pen`:
 
 - **Layout picker popup** (`Stq9b`) — preset grid, active preset stroked accent, hint "Layout resets when you leave chats".
 - **Runner direct chat — 2-pane split** (`fxfRj`) — layout button left of Stop, focused pane ring, per-pane headers, gutter, sidebar showing open-pane fills + focused accent bar.

@@ -10,6 +10,7 @@
 // directly via `AppHandle::emit`; the frontend subscribes without going
 // through a command.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -21,7 +22,8 @@ use crate::{
     model::{Session, SessionStatus, Timestamp},
     repo,
     session::manager::{
-        runtime_direct_runner, OutputEvent, SessionEvents, SpawnedSession, TauriSessionEvents,
+        runtime_direct_runner, OutputEvent, SessionActivityState, SessionEvents, SpawnedSession,
+        TauriSessionEvents,
     },
     AppState,
 };
@@ -87,6 +89,13 @@ pub async fn session_inject_stdin(
 #[tauri::command]
 pub async fn session_kill(state: State<'_, AppState>, session_id: String) -> Result<()> {
     state.sessions.kill(&session_id)
+}
+
+#[tauri::command]
+pub fn session_activity_snapshot(
+    state: State<'_, AppState>,
+) -> BTreeMap<String, SessionActivityState> {
+    state.sessions.activity_snapshot()
 }
 
 #[tauri::command]

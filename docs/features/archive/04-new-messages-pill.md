@@ -97,7 +97,7 @@ snaps the feed to the bottom. Adopt the same pattern in
 
 ### Phase 3 — design pass + edge cases
 
-- Mock the pill in `design/runners-design.pen` against the existing
+- Mock the pill in `design/runner-mvp-design.pen` against the existing
   workspace dark palette.
 - Verify the pill doesn't overlap the `AskHumanCard` floating affordances
   when both want bottom space.

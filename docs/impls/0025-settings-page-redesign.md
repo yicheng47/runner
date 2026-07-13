@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned. Design complete in `design/runner-setting.pen` (all node IDs below reference that file). Delivers feature #257 (keyboard shortcut settings page) as its v1 read-only scope, and supersedes the modal-era settings design in `runners-design.pen` (the "Settings modal — *" frame family there is legacy once this ships).
+Planned. Design complete in `design/runner-setting.pen` (all node IDs below reference that file). Delivers feature #257 (keyboard shortcut settings page) as its v1 read-only scope, and supersedes the modal-era settings design in `runner-mvp-design.pen` (the "Settings modal — *" frame family there is legacy once this ships).
 
 ## Problem
 
@@ -40,7 +40,7 @@ Layout: settings sidebar (280px in the design canvas; implemented resizable, sha
 - Row-level settings search.
 - Window position persistence (#271).
 - Any change to what settings exist or how they persist (`localStorage` keys, backend commands stay as-is).
-- Porting the legacy modal frames in `runners-design.pen` (left as historical reference).
+- Porting the legacy modal frames in `runner-mvp-design.pen` (left as historical reference).
 
 ## Implementation Phases
 

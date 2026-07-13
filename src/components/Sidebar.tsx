@@ -69,6 +69,12 @@ import {
   orderedChatTabIdsAfterDrop,
 } from "../lib/chatTabs";
 import {
+  rollupAttentionState,
+  tabAttentionState,
+  useDirectSessionActivity,
+  type ChatAttentionState,
+} from "../lib/chatAttention";
+import {
   activatePaneLayoutForSession,
   assignSessionToPane,
   createChatFolder,
@@ -88,7 +94,11 @@ import {
   visibleSessionIds,
   type PaneLayout,
 } from "../lib/paneLayout";
-import { CHAT_TAB_DRAG_TYPE, ChatTabGroup } from "./ChatTabGroup";
+import {
+  CHAT_TAB_DRAG_TYPE,
+  ChatAttentionIndicator,
+  ChatTabGroup,
+} from "./ChatTabGroup";
 import { PanelToggleGlyph } from "./PanelToggleGlyph";
 import { PopoverMenu } from "./ui/PopoverMenu";
 import { useResizableWidth } from "../hooks/useResizableWidth";
@@ -102,7 +112,6 @@ import type {
   AppendedEvent,
   MissionActivityState,
   MissionSummary,
-  SessionActivityEvent,
   SessionActivityState,
 } from "../lib/types";
 import { StartMissionModal } from "./StartMissionModal";
@@ -224,9 +233,7 @@ export function Sidebar({
   const [directSessions, setDirectSessions] = useState<DirectSessionEntry[]>(
     [],
   );
-  const [, setDirectSessionActivity] = useState<
-    Record<string, SessionActivityState | undefined>
-  >({});
+  const directSessionActivity = useDirectSessionActivity();
   const sidebarNavigationHistoryRef = useRef<SidebarNavigationHistory>({
     entries: [],
     index: -1,
@@ -318,21 +325,34 @@ export function Sidebar({
       directSessions.map((session) => [session.session_id, session]),
     );
     return paneLayouts
-      .map((layout) => ({
-        layout,
-        members: visibleSessionIds(layout.root)
+      .map((layout) => {
+        const members = visibleSessionIds(layout.root)
           .map((id) => byId.get(id))
           .filter(
             (session): session is DirectSessionEntry => session !== undefined,
+          );
+        return {
+          layout,
+          members,
+          attention: tabAttentionState(
+            members,
+            directSessionActivity,
+            layout.lastCompletedAt,
+            layout.lastViewedAt,
           ),
-      }))
+        };
+      })
       .filter((item) => item.members.length > 0)
       .sort(
         (a, b) =>
           Number(b.members.every((member) => member.pinned)) -
           Number(a.members.every((member) => member.pinned)),
       );
-  }, [directSessions, paneLayouts]);
+  }, [directSessionActivity, directSessions, paneLayouts]);
+  const chatAttention = useMemo(
+    () => rollupAttentionState(tabItems.map((item) => item.attention)),
+    [tabItems],
+  );
   const orderedChatRows = useMemo(
     () => tabItems.map((item) => item.members[0]),
     [tabItems],
@@ -542,22 +562,6 @@ export function Sidebar({
     void refreshDirectSessions();
   }, [refreshDirectSessions]);
 
-  useEffect(() => {
-    const visibleIds = new Set(directSessions.map((s) => s.session_id));
-    setDirectSessionActivity((prev) => {
-      let changed = false;
-      const next: Record<string, SessionActivityState | undefined> = {};
-      for (const [id, state] of Object.entries(prev)) {
-        if (!visibleIds.has(id)) {
-          changed = true;
-          continue;
-        }
-        next[id] = state;
-      }
-      return changed ? next : prev;
-    });
-  }, [directSessions]);
-
   // session/exit fires when a running PTY reaps (live → stopped flip).
   // runner/activity fires on every spawn/reap and is our cue that a
   // new direct chat row may have appeared. Both refresh the same list.
@@ -566,17 +570,9 @@ export function Sidebar({
     let unlistenActivity: (() => void) | null = null;
     let unlistenArchived: (() => void) | null = null;
     let unlistenUpdated: (() => void) | null = null;
-    let unlistenStatus: (() => void) | null = null;
     let cancelled = false;
     void Promise.all([
-      listen<{ session_id: string }>("session/exit", (event) => {
-        const sessionId = event.payload.session_id;
-        setDirectSessionActivity((prev) => {
-          if (prev[sessionId] == null) return prev;
-          const next = { ...prev };
-          delete next[sessionId];
-          return next;
-        });
+      listen("session/exit", () => {
         void refreshDirectSessions();
         // A mission slot exiting flips `any_session_live` from true →
         // false (if it was the last live slot). Without this, the
@@ -607,26 +603,18 @@ export function Sidebar({
         // refresh.
         void refreshDirectSessions();
       }),
-      listen<SessionActivityEvent>("session/status", (event) => {
-        setDirectSessionActivity((prev) => ({
-          ...prev,
-          [event.payload.session_id]: event.payload.state,
-        }));
-      }),
-    ]).then(([fnExit, fnActivity, fnArchived, fnUpdated, fnStatus]) => {
+    ]).then(([fnExit, fnActivity, fnArchived, fnUpdated]) => {
       if (cancelled) {
         fnExit();
         fnActivity();
         fnArchived();
         fnUpdated();
-        fnStatus();
         return;
       }
       unlistenExit = fnExit;
       unlistenActivity = fnActivity;
       unlistenArchived = fnArchived;
       unlistenUpdated = fnUpdated;
-      unlistenStatus = fnStatus;
     });
     return () => {
       cancelled = true;
@@ -634,7 +622,6 @@ export function Sidebar({
       unlistenActivity?.();
       unlistenArchived?.();
       unlistenUpdated?.();
-      unlistenStatus?.();
     };
   }, [refreshDirectSessions, refreshMissions]);
 
@@ -948,7 +935,19 @@ export function Sidebar({
 
   // A tab-row click activates that tab and opens its focused pane's chat.
   const activateTabChat = useCallback(
-    (entry: DirectSessionEntry) => {
+    (
+      tabId: string,
+      members: DirectSessionEntry[],
+      entry: DirectSessionEntry,
+    ) => {
+      void api.tab
+        .markViewed(
+          tabId,
+          members.map((member) => member.session_id),
+        )
+        .catch((error) =>
+          console.error("sidebar: tab_mark_viewed failed", error),
+        );
       const entryLayout = activatePaneLayoutForSession(entry.session_id);
       const entryLeaf = leafForSession(entryLayout.root, entry.session_id);
       if (entryLeaf) focusPane(entryLeaf.id);
@@ -1049,7 +1048,10 @@ export function Sidebar({
         layout={item.layout}
         members={item.members}
         active={active}
-        onActivate={activateTabChat}
+        attention={item.attention}
+        onActivate={(entry) =>
+          activateTabChat(item.layout.id, item.members, entry)
+        }
         onContextMenu={(anchor) =>
           openChatTabMenu(item.layout, item.members, anchor)
         }
@@ -1353,6 +1355,7 @@ export function Sidebar({
                 <CollapsibleSectionHeader
                   label="CHAT"
                   open={sessionsOpen}
+                  attention={sessionsOpen ? null : chatAttention}
                   onToggle={toggleSessions}
                   onPlus={() => {
                     setChatCreateMenu(null);
@@ -1415,6 +1418,9 @@ export function Sidebar({
                         {folders.map((folder) => {
                           const items = tabItems.filter(
                             (item) => item.layout.folderId === folder.id,
+                          );
+                          const folderAttention = rollupAttentionState(
+                            items.map((item) => item.attention),
                           );
                           return (
                             <div
@@ -1481,8 +1487,15 @@ export function Sidebar({
                                     <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
                                   )}
                                   <Folder aria-hidden className="h-3 w-3 shrink-0" />
-                                  <span className="truncate font-medium">{folder.name}</span>
-                                  <span className="ml-auto text-[10px] text-fg-3">
+                                  <span className="min-w-0 flex-1 truncate font-medium">
+                                    {folder.name}
+                                  </span>
+                                  <ChatAttentionIndicator
+                                    state={
+                                      folder.collapsed ? folderAttention : null
+                                    }
+                                  />
+                                  <span className="text-[10px] text-fg-3">
                                     {items.length}
                                   </span>
                                 </button>
@@ -1841,6 +1854,7 @@ function CollapsibleSectionHeader({
   plusPopup,
   plusMenu,
   onPlusMenuClose,
+  attention,
 }: {
   label: string;
   open: boolean;
@@ -1853,6 +1867,7 @@ function CollapsibleSectionHeader({
   plusPopup?: "dialog" | "menu";
   plusMenu?: ReactNode;
   onPlusMenuClose?: () => void;
+  attention?: ChatAttentionState;
 }) {
   const plusRef = useRef<HTMLButtonElement>(null);
   return (
@@ -1870,20 +1885,25 @@ function CollapsibleSectionHeader({
           }`}
         />
       </button>
-      <button
-        ref={plusRef}
-        type="button"
-        onClick={onPlus}
-        title={plusTitle}
-        aria-label={plusTitle}
-        aria-haspopup={
-          plusExpanded === undefined ? undefined : (plusPopup ?? "dialog")
-        }
-        aria-expanded={plusExpanded}
-        className="cursor-pointer rounded p-1 text-fg-2 transition-colors hover:bg-bg hover:text-fg"
-      >
-        <Plus aria-hidden className="h-3 w-3" />
-      </button>
+      <div className="flex items-center gap-1.5">
+        {attention !== undefined ? (
+          <ChatAttentionIndicator state={attention} />
+        ) : null}
+        <button
+          ref={plusRef}
+          type="button"
+          onClick={onPlus}
+          title={plusTitle}
+          aria-label={plusTitle}
+          aria-haspopup={
+            plusExpanded === undefined ? undefined : (plusPopup ?? "dialog")
+          }
+          aria-expanded={plusExpanded}
+          className="cursor-pointer rounded p-1 text-fg-2 transition-colors hover:bg-bg hover:text-fg"
+        >
+          <Plus aria-hidden className="h-3 w-3" />
+        </button>
+      </div>
       {plusMenu && onPlusMenuClose ? (
         <PopoverMenu
           open={plusExpanded === true}

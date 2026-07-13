@@ -128,6 +128,8 @@ pub fn window_report_subjects(
     subjects: Vec<Subject>,
 ) -> Result<()> {
     state.windows.set_subjects(window.label(), subjects);
+    let visible = state.windows.focused_direct_sessions(window.label());
+    crate::commands::tab::mark_direct_sessions_viewed(&app, &state, &visible)?;
     broadcast_focus_map(&app);
     Ok(())
 }

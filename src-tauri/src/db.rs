@@ -78,6 +78,8 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // 0009: persists sidebar folders and stable tab identities. Tab layout
 // remains a JSON blob; folder deletion is RESTRICTed so the command must
 // archive and remove member tabs transactionally.
+// 0010: persists tab-level completion and viewed watermarks for direct-chat
+// attention indicators across navigation, windows, and app restarts.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -103,6 +105,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/0008_drop_crews_orchestrator_policy.sql"),
     ),
     (9, include_str!("../migrations/0009_folders_tabs.sql")),
+    (10, include_str!("../migrations/0010_tab_attention.sql")),
 ];
 
 // Default-data seed: ships the Build squad starter crew on first launch.

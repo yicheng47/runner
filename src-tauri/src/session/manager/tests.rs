@@ -1530,6 +1530,7 @@ fn direct_chat_status_transition_emits_session_status_busy() {
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let cap = capture();
+    assert!(mgr.activity_snapshot().is_empty());
     let spawned = mgr
         .spawn_direct(
             &runner,
@@ -1543,6 +1544,14 @@ fn direct_chat_status_transition_emits_session_status_busy() {
         )
         .unwrap();
 
+    let seeded = wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Busy);
+    assert_eq!(seeded.source, "spawn");
+    assert_eq!(
+        mgr.activity_snapshot().get(&spawned.id),
+        Some(&SessionActivityState::Busy)
+    );
+    cap.status.lock().unwrap().clear();
+
     fake.push_status(0, RunnerStatus::Busy);
     let ev = wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Busy);
 
@@ -1551,6 +1560,7 @@ fn direct_chat_status_transition_emits_session_status_busy() {
     assert_eq!(ev.source, "forwarder");
 
     mgr.kill(&spawned.id).unwrap();
+    assert!(!mgr.activity_snapshot().contains_key(&spawned.id));
 }
 
 #[test]
@@ -1859,6 +1869,7 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture();
     let spawned = mgr
         .spawn_direct(
             &runner,
@@ -1867,7 +1878,7 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
             None,
             std::path::Path::new("/tmp"),
             Arc::clone(&pool),
-            capture(),
+            Arc::clone(&cap) as Arc<dyn SessionEvents>,
             None,
         )
         .unwrap();
@@ -1911,6 +1922,9 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
         "claude-code spawn must persist an agent_session_key for later resume",
     );
 
+    assert!(!mgr.activity_snapshot().contains_key(&session_id));
+    cap.status.lock().unwrap().clear();
+
     // Resume: same id, same row.
     let resumed = mgr
         .resume(
@@ -1919,10 +1933,16 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
             None,
             std::path::Path::new("/tmp"),
             Arc::clone(&pool),
-            capture(),
+            Arc::clone(&cap) as Arc<dyn SessionEvents>,
         )
         .unwrap();
     assert_eq!(resumed.id, session_id, "resume must reuse the row id");
+    let seeded = wait_for_session_status_event(&cap, &session_id, SessionActivityState::Busy);
+    assert_eq!(seeded.source, "resume");
+    assert_eq!(
+        mgr.activity_snapshot().get(&session_id),
+        Some(&SessionActivityState::Busy)
+    );
 
     // After resume the status is running again with the
     // agent_session_key still populated. We don't pin the

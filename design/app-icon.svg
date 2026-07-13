@@ -10,7 +10,7 @@
 
        The three-chevron mark inside is the same geometry as
        src/components/Sidebar.tsx's BrandMark (frame `88D24` in
-       design/runners-design.pen), uniformly scaled and translated by
+       design/runner-mvp-design.pen), uniformly scaled and translated by
        the safe-area inset via the wrapping <g>. -->
 
   <!-- Canvas left transparent — only the inner rounded square draws.

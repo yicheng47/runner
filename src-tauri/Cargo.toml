@@ -64,6 +64,7 @@ libc = "0.2"
 portable-pty = "0.9"
 
 [dev-dependencies]
+tauri = { version = "2", features = ["test"] }
 # Used by issue #124's forwarder-contention regression test to hold the
 # event-log flock from a second fd; matches the version `runner-core`
 # pulls in transitively so the trait impl resolves identically.

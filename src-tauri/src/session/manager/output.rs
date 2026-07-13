@@ -95,11 +95,12 @@ impl SessionManager {
                                 }
                             }
                         } else {
-                            events.status(&SessionActivityEvent {
-                                session_id: session_id.clone(),
-                                state: state.into(),
-                                source: source.to_string(),
-                            });
+                            manager_t.publish_direct_activity(
+                                &session_id,
+                                state.into(),
+                                source,
+                                events.as_ref(),
+                            );
                         }
                     }
                     Err(RecvTimeoutError::Timeout) => continue,

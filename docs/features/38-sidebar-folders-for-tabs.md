@@ -63,7 +63,7 @@ Drop the localStorage persist path, update arch §3.6 (display grouping is no lo
 
 ## Design first
 
-Per the design-first workflow, mock the folder rows, collapsed/expanded states, tab-row-with-pane-badge, and move-to-folder menu in `design/runners-design.pen` before coding.
+Per the design-first workflow, mock the folder rows, collapsed/expanded states, tab-row-with-pane-badge, and move-to-folder menu in `design/runner-mvp-design.pen` before coding.
 
 ## Verification (sketch)
 

@@ -390,4 +390,5 @@ export interface WindowEntry {
   label: string;
   subjects: Subject[];
   focused_at: Timestamp;
+  focused: boolean;
 }

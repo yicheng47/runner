@@ -1,4 +1,4 @@
-// Crews list — matches design/runners-design.pen frame `nqOot`.
+// Crews list — matches design/runner-mvp-design.pen frame `nqOot`.
 //
 // Vertical stack of dark crew cards. Empty state uses the shared
 // EmptyStateCard so all three list pages stay visually consistent.

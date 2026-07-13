@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned. Design mocked in `design/runners-design.pen` — frame **"Tab accordion — sidebar spec"** (`y6LaRZ`). No tracking issue yet. Builds directly on the pane-layout model (impl 0020) and group pinning (#250); no backend changes.
+Planned. Design mocked in `design/runner-mvp-design.pen` — frame **"Tab accordion — sidebar spec"** (`y6LaRZ`). No tracking issue yet. Builds directly on the pane-layout model (impl 0020) and group pinning (#250); no backend changes.
 
 ## Problem
 
@@ -48,7 +48,7 @@ The tab set is already there. `paneLayout.ts` keeps `layouts: PaneLayout[]` + `a
 
 ## Design
 
-`design/runners-design.pen`, frame **"Tab accordion — sidebar spec"** (`y6LaRZ`): a 240px sidebar slice showing the CHAT section with four tabs plus an annotation column.
+`design/runner-mvp-design.pen`, frame **"Tab accordion — sidebar spec"** (`y6LaRZ`): a 240px sidebar slice showing the CHAT section with four tabs plus an annotation column.
 
 - **Tab A** (`ur60w`) — multi, expanded + active: header ▾ + `columns-2` + green count badge; members under an accent rail; focused member in the selected fill (`c3SUAN`, #333640 / #3b3e49).
 - **Tab B** (`o3lUh`) — single leaf, for contrast.
@@ -91,7 +91,7 @@ The tab set is already there. `paneLayout.ts` keeps `layouts: PaneLayout[]` + `a
 - `src/lib/groupPinning.ts` — `clusterActiveGroupRows` (generalize to `buildChatListItems`), `pinnedSessionIds`, `groupPinTargets`, `shouldInheritPinOnAdd`.
 - `src/components/Sidebar.tsx` — CHAT section render (~1002–1041), pane-open/focused derivation (283–306, 289–294), `SessionRow` (1601), `SidebarListRow` (1338, `selected`/`accentBar`/`pinned`), `CollapsibleSectionHeader` (1293).
 - `src/components/ChatTabGroup.tsx` — new: accordion header + rail.
-- `design/runners-design.pen` — `y6LaRZ` (spec), member selected fill `#333640` / `#3b3e49`.
+- `design/runner-mvp-design.pen` — `y6LaRZ` (spec), member selected fill `#333640` / `#3b3e49`.
 
 ## Open Questions
 
@@ -100,7 +100,7 @@ The tab set is already there. `paneLayout.ts` keeps `layouts: PaneLayout[]` + `a
 
 ## References
 
-- Design: `design/runners-design.pen` frame `y6LaRZ`.
+- Design: `design/runner-mvp-design.pen` frame `y6LaRZ`.
 - arch §3.6 — Window → Tab → Pane (frontend-only display grouping).
 - impl [0020](0020-direct-chat-split-view.md) — pane-layout model, active-group clustering, sidebar pane-state marks.
 - impl [0022](0022-new-chat-pane-fill-window-ownership.md) — pane fill + ownership reporting.

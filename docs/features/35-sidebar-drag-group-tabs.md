@@ -41,7 +41,7 @@ This is the sidebar-side complement to the chat-surface layout picker: same fron
 - Where does a newly formed tab land in sidebar order — at the dropped-on chat's slot, or float per pin rules?
 
 ## Design first
-Per the design-first workflow, mock the drag affordances — merge-onto-row highlight, folder drop target, disband-drag ghost, cap-reject shake — in `design/runners-design.pen` against the feature 38 Folder → Tab frames before coding.
+Per the design-first workflow, mock the drag affordances — merge-onto-row highlight, folder drop target, disband-drag ghost, cap-reject shake — in `design/runner-mvp-design.pen` against the feature 38 Folder → Tab frames before coding.
 
 ## Verification (sketch)
 - [ ] Drag loose chat A onto loose chat B → a 2-pane tab appears with both as members; opening it shows the split on the chat surface.

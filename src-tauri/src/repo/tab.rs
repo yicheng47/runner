@@ -15,6 +15,8 @@ pub struct TabRow {
     pub position: i64,
     pub layout: String,
     pub created_at: String,
+    pub last_completed_at: Option<String>,
+    pub last_viewed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -30,6 +32,8 @@ const COLUMNS: &[&str] = &[
     "position",
     "layout",
     "created_at",
+    "last_completed_at",
+    "last_viewed_at",
 ];
 
 pub fn list(conn: &Connection) -> rusqlite::Result<Vec<TabRow>> {
@@ -60,8 +64,11 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<TabRow>> {
 
 pub fn upsert(conn: &Connection, row: &TabRow) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO tabs (id, folder_id, name, position, layout, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO tabs (
+             id, folder_id, name, position, layout, created_at,
+             last_completed_at, last_viewed_at
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(id) DO UPDATE SET
              folder_id = excluded.folder_id,
              name = excluded.name,
@@ -73,7 +80,9 @@ pub fn upsert(conn: &Connection, row: &TabRow) -> rusqlite::Result<()> {
             row.name,
             row.position,
             row.layout,
-            row.created_at
+            row.created_at,
+            row.last_completed_at,
+            row.last_viewed_at,
         ],
     )?;
     Ok(())
@@ -81,7 +90,7 @@ pub fn upsert(conn: &Connection, row: &TabRow) -> rusqlite::Result<()> {
 
 pub fn upsert_move_not_copy(conn: &Connection, row: &TabRow) -> rusqlite::Result<()> {
     for session_id in session_ids_from_layout(&row.layout) {
-        remove_session(conn, &session_id)?;
+        remove_session_except(conn, &session_id, Some(&row.id))?;
     }
     upsert(conn, row)
 }
@@ -100,6 +109,8 @@ pub fn create(
         position,
         layout: layout.to_owned(),
         created_at: Utc::now().to_rfc3339(),
+        last_completed_at: None,
+        last_viewed_at: None,
     };
     upsert(conn, &row)?;
     Ok(row)
@@ -171,6 +182,72 @@ pub fn session_ids_from_layout(layout: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+pub fn find_for_session(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<TabRow>> {
+    Ok(list(conn)?
+        .into_iter()
+        .find(|row| session_ids(row).iter().any(|id| id == session_id)))
+}
+
+fn max_timestamp(values: &[Option<&str>], now: chrono::DateTime<Utc>) -> String {
+    values
+        .iter()
+        .flatten()
+        .filter_map(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .chain(std::iter::once(now))
+        .max()
+        .expect("now always supplies a timestamp")
+        .to_rfc3339()
+}
+
+pub fn record_completion(
+    conn: &Connection,
+    id: &str,
+    viewed: bool,
+    now: chrono::DateTime<Utc>,
+) -> rusqlite::Result<Option<TabRow>> {
+    let Some(row) = get(conn, id)? else {
+        return Ok(None);
+    };
+    let completed_at = max_timestamp(&[row.last_completed_at.as_deref()], now);
+    let viewed_at = viewed.then(|| {
+        max_timestamp(
+            &[row.last_viewed_at.as_deref(), Some(completed_at.as_str())],
+            now,
+        )
+    });
+    conn.execute(
+        "UPDATE tabs
+         SET last_completed_at = ?2,
+             last_viewed_at = CASE WHEN ?3 THEN ?4 ELSE last_viewed_at END
+         WHERE id = ?1",
+        rusqlite::params![id, completed_at, viewed, viewed_at],
+    )?;
+    get(conn, id)
+}
+
+pub fn mark_viewed(
+    conn: &Connection,
+    id: &str,
+    now: chrono::DateTime<Utc>,
+) -> rusqlite::Result<Option<TabRow>> {
+    let Some(row) = get(conn, id)? else {
+        return Ok(None);
+    };
+    let viewed_at = max_timestamp(
+        &[
+            row.last_viewed_at.as_deref(),
+            row.last_completed_at.as_deref(),
+        ],
+        now,
+    );
+    conn.execute(
+        "UPDATE tabs SET last_viewed_at = ?2 WHERE id = ?1",
+        rusqlite::params![id, viewed_at],
+    )?;
+    get(conn, id)
+}
+
 pub fn ensure_active_sessions(conn: &Connection) -> rusqlite::Result<()> {
     let covered: HashSet<String> = list(conn)?.iter().flat_map(session_ids).collect();
     let mut stmt = conn.prepare(
@@ -204,7 +281,18 @@ pub fn ensure_active_sessions(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 pub fn remove_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
+    remove_session_except(conn, session_id, None)
+}
+
+fn remove_session_except(
+    conn: &Connection,
+    session_id: &str,
+    preserved_tab_id: Option<&str>,
+) -> rusqlite::Result<()> {
     for row in list(conn)? {
+        if preserved_tab_id == Some(row.id.as_str()) {
+            continue;
+        }
         let Ok(mut layout) = serde_json::from_str::<serde_json::Value>(&row.layout) else {
             continue;
         };
@@ -269,7 +357,116 @@ pub fn delete_folder_tabs_and_archive(
 mod tests {
     use std::sync::{Arc, Barrier};
 
+    use chrono::TimeZone;
+
     use crate::db;
+
+    fn parsed(value: Option<&str>) -> chrono::DateTime<chrono::FixedOffset> {
+        chrono::DateTime::parse_from_rfc3339(value.expect("timestamp")).unwrap()
+    }
+
+    #[test]
+    fn attention_watermarks_default_null_and_remain_monotonic() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let row = super::create(
+            &conn,
+            None,
+            "chat",
+            0,
+            r#"{"preset":"single","slots":["s1"],"sizes":{}}"#,
+        )
+        .unwrap();
+        assert_eq!(row.last_completed_at, None);
+        assert_eq!(row.last_viewed_at, None);
+
+        let first = chrono::Utc.timestamp_opt(200, 0).single().unwrap();
+        let earlier = chrono::Utc.timestamp_opt(100, 0).single().unwrap();
+        let later = chrono::Utc.timestamp_opt(300, 0).single().unwrap();
+        let completed = super::record_completion(&conn, &row.id, false, first)
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.last_viewed_at, None);
+
+        let viewed = super::mark_viewed(&conn, &row.id, earlier)
+            .unwrap()
+            .unwrap();
+        assert!(
+            parsed(viewed.last_viewed_at.as_deref()) >= parsed(viewed.last_completed_at.as_deref())
+        );
+
+        let regressed = super::record_completion(&conn, &row.id, false, earlier)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            parsed(regressed.last_completed_at.as_deref()),
+            parsed(viewed.last_completed_at.as_deref())
+        );
+
+        let unread = super::record_completion(&conn, &row.id, false, later)
+            .unwrap()
+            .unwrap();
+        assert!(
+            parsed(unread.last_completed_at.as_deref()) > parsed(unread.last_viewed_at.as_deref())
+        );
+
+        let visible_completion = super::record_completion(&conn, &row.id, true, later)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            parsed(visible_completion.last_completed_at.as_deref()),
+            parsed(visible_completion.last_viewed_at.as_deref())
+        );
+    }
+
+    #[test]
+    fn structural_upsert_preserves_attention_watermarks() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let mut stale = super::create(
+            &conn,
+            None,
+            "chat",
+            0,
+            r#"{"preset":"single","slots":["s1"],"sizes":{}}"#,
+        )
+        .unwrap();
+        let completed_at = chrono::Utc.timestamp_opt(200, 0).single().unwrap();
+        super::record_completion(&conn, &stale.id, true, completed_at).unwrap();
+        let before = super::get(&conn, &stale.id).unwrap().unwrap();
+
+        stale.name = "renamed".into();
+        stale.layout = r#"{"preset":"cols-2","slots":["s1",null],"sizes":{}}"#.into();
+        super::upsert_move_not_copy(&conn, &stale).unwrap();
+
+        let folder = crate::repo::folder::create(&conn, "Project").unwrap();
+        let peer = super::create(
+            &conn,
+            Some(&folder.id),
+            "peer",
+            0,
+            r#"{"preset":"single","slots":["s2"],"sizes":{}}"#,
+        )
+        .unwrap();
+        let mut conn = conn;
+        let tx = conn.transaction().unwrap();
+        super::move_and_reorder(
+            &tx,
+            &stale.id,
+            Some(&folder.id),
+            &[peer.id, stale.id.clone()],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        let after = super::get(&conn, &stale.id).unwrap().unwrap();
+        assert_eq!(after.name, "renamed");
+        assert_eq!(after.layout, stale.layout);
+        assert_eq!(after.folder_id, Some(folder.id));
+        assert_eq!(after.position, 1);
+        assert_eq!(after.last_completed_at, before.last_completed_at);
+        assert_eq!(after.last_viewed_at, before.last_viewed_at);
+    }
 
     #[test]
     fn ensure_active_sessions_creates_stable_single_tabs_once() {

@@ -798,6 +798,12 @@ impl SessionManager {
                 stop: output.stop_flag(),
             },
         );
+        self.publish_direct_activity(
+            &session_id,
+            SessionActivityState::Busy,
+            "spawn",
+            events.as_ref(),
+        );
 
         let forwarder = self.start_forwarder_thread(
             session_id.clone(),
@@ -1177,6 +1183,14 @@ impl SessionManager {
                 stop: output.stop_flag(),
             },
         );
+        if snap.mission_id.is_none() {
+            self.publish_direct_activity(
+                session_id,
+                SessionActivityState::Busy,
+                "resume",
+                events.as_ref(),
+            );
+        }
 
         // (The pre-runtime.spawn purge moved up to right after
         // snapshot collection so the frontend's snapshot fast-path

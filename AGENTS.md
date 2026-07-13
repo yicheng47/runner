@@ -74,8 +74,7 @@ typecheck and lint. For Rust behavior, run relevant `cargo test` targets.
 - Use structured APIs and parsers when available instead of ad hoc string
   manipulation.
 - Keep comments rare and useful. Explain non-obvious intent, not mechanics.
-- Keep UI aligned with `design/runners-design.pen` when a node or frame is
-  referenced by the user.
+- Treat `design/runner-mvp-design.pen` as the historical MVP canvas. Put new product work in a feature-scoped `.pen` file and keep UI aligned with the file and node referenced by the user or feature spec.
 - Do not add repo conventions only to an agent-specific file. Update this file
   and leave tool-specific files as pointers if needed.
 

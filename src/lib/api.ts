@@ -29,6 +29,7 @@ import type {
   StartMissionInput,
   StartMissionOutput,
   Subject,
+  SessionActivityState,
   UpdateCrewInput,
   UpdateRunnerInput,
   UpdateSlotInput,
@@ -92,6 +93,8 @@ export interface TabRow {
   position: number;
   layout: string;
   created_at: string;
+  last_completed_at: string | null;
+  last_viewed_at: string | null;
 }
 
 export interface TabUpsertInput {
@@ -137,6 +140,8 @@ export const api = {
       invoke<TabRow[]>("tab_reorder", { id, folderId, orderedIds }),
     importOnce: (tabs: TabImportInput[]) =>
       invoke<TabRow[]>("tab_import_once", { tabs }),
+    markViewed: (id: string, memberIds: string[]) =>
+      invoke<TabRow>("tab_mark_viewed", { id, memberIds }),
   },
   crew: {
     list: () => invoke<CrewListItem[]>("crew_list"),
@@ -290,6 +295,8 @@ export const api = {
      *  can't clear a resuming overlay early. */
     replayWatermark: (sessionId: string) =>
       invoke<number>("session_replay_watermark", { sessionId }),
+    activitySnapshot: () =>
+      invoke<Record<string, SessionActivityState>>("session_activity_snapshot"),
     pasteImage: (bytes: Uint8Array, mimeType: PasteImageMimeType) =>
       invoke<void>("session_paste_image", {
         bytes: Array.from(bytes),

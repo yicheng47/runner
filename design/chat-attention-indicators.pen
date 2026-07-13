@@ -1,0 +1,923 @@
+{
+  "version": "2.14",
+  "children": [
+    {
+      "type": "frame",
+      "id": "R4LJz",
+      "x": 0,
+      "y": 0,
+      "name": "Chat attention indicators — Issue #285",
+      "clip": true,
+      "width": 1080,
+      "height": 460,
+      "fill": "#0F1014",
+      "cornerRadius": 12,
+      "stroke": "#272930",
+      "strokeWidth": 1,
+      "strokeAlignment": "inner",
+      "layout": "vertical",
+      "gap": 20,
+      "padding": 28,
+      "children": [
+        {
+          "type": "frame",
+          "id": "Kg9g8",
+          "name": "Header",
+          "width": "fill_container",
+          "height": 44,
+          "layout": "vertical",
+          "gap": 5,
+          "children": [
+            {
+              "type": "text",
+              "id": "Y6JY0",
+              "name": "Title",
+              "fill": "#DCDCE0",
+              "content": "Chat working + unread indicators",
+              "fontFamily": "Inter",
+              "fontSize": 18,
+              "fontWeight": "600"
+            },
+            {
+              "type": "text",
+              "id": "q70z0n",
+              "name": "Subtitle",
+              "fill": "#9A9BA5",
+              "textGrowth": "fixed-width",
+              "width": "fill_container",
+              "content": "One fixed trailing status slot per tab. Working overrides unread visually; persisted unread state remains underneath.",
+              "fontFamily": "Inter",
+              "fontSize": 12,
+              "fontWeight": "normal"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "qUKDb",
+          "name": "State columns",
+          "width": "fill_container",
+          "height": 340,
+          "gap": 16,
+          "children": [
+            {
+              "type": "frame",
+              "id": "TEoGG",
+              "name": "Single tabs",
+              "width": 330,
+              "height": 338,
+              "fill": "#15161B",
+              "cornerRadius": 9,
+              "stroke": "#272930",
+              "strokeWidth": 1,
+              "strokeAlignment": "inner",
+              "layout": "vertical",
+              "gap": 10,
+              "padding": 16,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "pdJgx",
+                  "name": "Single tabs heading",
+                  "fill": "#DCDCE0",
+                  "content": "Single tabs",
+                  "fontFamily": "Inter",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "text",
+                  "id": "l82kc",
+                  "name": "Single tabs note",
+                  "fill": "#5A5C66",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "The slot stays present in every state, so the title and kebab never shift.",
+                  "lineHeight": 1.35,
+                  "fontFamily": "Inter",
+                  "fontSize": 10.5,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "frame",
+                  "id": "VhydT",
+                  "name": "Active chat — clear",
+                  "width": "fill_container",
+                  "height": 34,
+                  "fill": "#33353D",
+                  "cornerRadius": 6,
+                  "stroke": "#3B3E49",
+                  "strokeWidth": 1,
+                  "strokeAlignment": "inner",
+                  "gap": 7,
+                  "padding": [
+                    0,
+                    9
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "d67zbl",
+                      "name": "Chat type",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "message-square",
+                      "library": "lucide",
+                      "fill": "#00FF9C"
+                    },
+                    {
+                      "type": "text",
+                      "id": "AGyY2",
+                      "name": "Tab title",
+                      "fill": "#DCDCE0",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Active chat",
+                      "fontFamily": "Inter",
+                      "fontSize": 11.5,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "G80BJ",
+                      "name": "Fixed status slot",
+                      "width": 14,
+                      "height": 14,
+                      "justifyContent": "center",
+                      "alignItems": "center"
+                    },
+                    {
+                      "type": "icon",
+                      "id": "kwKdv",
+                      "name": "More actions",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "ellipsis",
+                      "library": "lucide",
+                      "fill": "#5A5C66"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "SEP5y",
+                  "name": "Implement #285 — working",
+                  "width": "fill_container",
+                  "height": 34,
+                  "fill": "#272930",
+                  "cornerRadius": 6,
+                  "stroke": "#272930",
+                  "strokeWidth": 1,
+                  "strokeAlignment": "inner",
+                  "gap": 7,
+                  "padding": [
+                    0,
+                    9
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "cq3ke",
+                      "name": "Chat type",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "message-square",
+                      "library": "lucide",
+                      "fill": "#9A9BA5"
+                    },
+                    {
+                      "type": "text",
+                      "id": "f7p282",
+                      "name": "Tab title",
+                      "fill": "#9A9BA5",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Implement #285",
+                      "fontFamily": "Inter",
+                      "fontSize": 11.5,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "QFNMm",
+                      "name": "Fixed status slot",
+                      "width": 14,
+                      "height": 14,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "u1h4wE",
+                          "name": "Agent working spinner",
+                          "width": 12,
+                          "height": 12,
+                          "icon": "loader-circle",
+                          "library": "lucide",
+                          "fill": "#00FF9C"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "icon",
+                      "id": "Hc5AC",
+                      "name": "More actions",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "ellipsis",
+                      "library": "lucide",
+                      "fill": "#5A5C66"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "FdHEz",
+                  "name": "Review findings — unread",
+                  "width": "fill_container",
+                  "height": 34,
+                  "fill": "#272930",
+                  "cornerRadius": 6,
+                  "stroke": "#272930",
+                  "strokeWidth": 1,
+                  "strokeAlignment": "inner",
+                  "gap": 7,
+                  "padding": [
+                    0,
+                    9
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "R7jetg",
+                      "name": "Chat type",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "message-square",
+                      "library": "lucide",
+                      "fill": "#9A9BA5"
+                    },
+                    {
+                      "type": "text",
+                      "id": "KuCgL",
+                      "name": "Tab title",
+                      "fill": "#9A9BA5",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Review findings",
+                      "fontFamily": "Inter",
+                      "fontSize": 11.5,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "pYOBa",
+                      "name": "Fixed status slot",
+                      "width": 14,
+                      "height": 14,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "BahWj",
+                          "name": "Completed — not viewed",
+                          "fill": "#00FF9C",
+                          "width": 6,
+                          "height": 6
+                        }
+                      ]
+                    },
+                    {
+                      "type": "icon",
+                      "id": "kad8m",
+                      "name": "More actions",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "ellipsis",
+                      "library": "lucide",
+                      "fill": "#5A5C66"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "tTw3F",
+              "name": "Multi-pane tabs",
+              "width": 330,
+              "height": 338,
+              "fill": "#15161B",
+              "cornerRadius": 9,
+              "stroke": "#272930",
+              "strokeWidth": 1,
+              "strokeAlignment": "inner",
+              "layout": "vertical",
+              "gap": 10,
+              "padding": 16,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "Dc0km",
+                  "name": "Multi-pane tabs heading",
+                  "fill": "#DCDCE0",
+                  "content": "Multi-pane tabs",
+                  "fontFamily": "Inter",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "text",
+                  "id": "u23f8",
+                  "name": "Multi-pane tabs note",
+                  "fill": "#5A5C66",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Activity and attention aggregate at tab level; the slot sits before pane count.",
+                  "lineHeight": 1.35,
+                  "fontFamily": "Inter",
+                  "fontSize": 10.5,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "frame",
+                  "id": "YXNJv",
+                  "name": "Event bus wiring — working",
+                  "width": "fill_container",
+                  "height": 34,
+                  "fill": "#272930",
+                  "cornerRadius": 6,
+                  "stroke": "#272930",
+                  "strokeWidth": 1,
+                  "strokeAlignment": "inner",
+                  "gap": 7,
+                  "padding": [
+                    0,
+                    9
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "toZDS",
+                      "name": "Chat type",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "columns-2",
+                      "library": "lucide",
+                      "fill": "#9A9BA5"
+                    },
+                    {
+                      "type": "text",
+                      "id": "Y8qp7I",
+                      "name": "Tab title",
+                      "fill": "#9A9BA5",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Event bus wiring",
+                      "fontFamily": "Inter",
+                      "fontSize": 11.5,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "ybEBc",
+                      "name": "Fixed status slot",
+                      "width": 14,
+                      "height": 14,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "hN7zr",
+                          "name": "Agent working spinner",
+                          "width": 12,
+                          "height": 12,
+                          "icon": "loader-circle",
+                          "library": "lucide",
+                          "fill": "#00FF9C"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "BwWkz",
+                      "name": "Pane count badge",
+                      "height": 15,
+                      "fill": "#272930",
+                      "cornerRadius": 3,
+                      "padding": [
+                        0,
+                        4
+                      ],
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "Yuf7N",
+                          "name": "Pane count",
+                          "fill": "#5A5C66",
+                          "content": "2",
+                          "fontFamily": "Inter",
+                          "fontSize": 9,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "icon",
+                      "id": "Uy3TR",
+                      "name": "More actions",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "ellipsis",
+                      "library": "lucide",
+                      "fill": "#5A5C66"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "pb53F",
+                  "name": "Repo layer refactor — unread",
+                  "width": "fill_container",
+                  "height": 34,
+                  "fill": "#272930",
+                  "cornerRadius": 6,
+                  "stroke": "#272930",
+                  "strokeWidth": 1,
+                  "strokeAlignment": "inner",
+                  "gap": 7,
+                  "padding": [
+                    0,
+                    9
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "wv6CT",
+                      "name": "Chat type",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "columns-3",
+                      "library": "lucide",
+                      "fill": "#9A9BA5"
+                    },
+                    {
+                      "type": "text",
+                      "id": "ZjpBm",
+                      "name": "Tab title",
+                      "fill": "#9A9BA5",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Repo layer refactor",
+                      "fontFamily": "Inter",
+                      "fontSize": 11.5,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Dd1Ar",
+                      "name": "Fixed status slot",
+                      "width": 14,
+                      "height": 14,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "xrua7",
+                          "name": "Completed — not viewed",
+                          "fill": "#00FF9C",
+                          "width": 6,
+                          "height": 6
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "i7HOZ",
+                      "name": "Pane count badge",
+                      "height": 15,
+                      "fill": "#272930",
+                      "cornerRadius": 3,
+                      "padding": [
+                        0,
+                        4
+                      ],
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "OOmyu",
+                          "name": "Pane count",
+                          "fill": "#5A5C66",
+                          "content": "3",
+                          "fontFamily": "Inter",
+                          "fontSize": 9,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "icon",
+                      "id": "sLGTW",
+                      "name": "More actions",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "ellipsis",
+                      "library": "lucide",
+                      "fill": "#5A5C66"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "DpCl6",
+                  "name": "Unread retention note",
+                  "fill": "#9A9BA5",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "If unread work starts again, the spinner wins. When it settles, the unread dot returns until viewed.",
+                  "lineHeight": 1.4,
+                  "fontFamily": "Inter",
+                  "fontSize": 10.5,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "s1mw44",
+              "name": "Collapsed rollups",
+              "width": 330,
+              "height": 338,
+              "fill": "#15161B",
+              "cornerRadius": 9,
+              "stroke": "#272930",
+              "strokeWidth": 1,
+              "strokeAlignment": "inner",
+              "layout": "vertical",
+              "gap": 10,
+              "padding": 16,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "TaxSA",
+                  "name": "Collapsed rollups heading",
+                  "fill": "#DCDCE0",
+                  "content": "Collapsed rollups",
+                  "fontFamily": "Inter",
+                  "fontSize": 13,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "text",
+                  "id": "SjUaL",
+                  "name": "Collapsed rollups note",
+                  "fill": "#5A5C66",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Only collapsed containers repeat hidden child attention; priority is working → unread → clear.",
+                  "lineHeight": 1.35,
+                  "fontFamily": "Inter",
+                  "fontSize": 10.5,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "frame",
+                  "id": "GNnxe",
+                  "name": "Backend — working",
+                  "width": "fill_container",
+                  "height": 34,
+                  "fill": "#272930",
+                  "cornerRadius": 6,
+                  "gap": 7,
+                  "padding": [
+                    0,
+                    9
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "skLQj",
+                      "name": "Collapsed chevron",
+                      "width": 11,
+                      "height": 11,
+                      "icon": "chevron-right",
+                      "library": "lucide",
+                      "fill": "#9A9BA5"
+                    },
+                    {
+                      "type": "icon",
+                      "id": "t1DKk",
+                      "name": "Folder",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "folder",
+                      "library": "lucide",
+                      "fill": "#9A9BA5"
+                    },
+                    {
+                      "type": "text",
+                      "id": "d0O6kR",
+                      "name": "Container label",
+                      "fill": "#9A9BA5",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Backend",
+                      "fontFamily": "Inter",
+                      "fontSize": 11.5,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "M2o7aY",
+                      "name": "Fixed status slot",
+                      "width": 14,
+                      "height": 14,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "z1ZkR",
+                          "name": "Agent working spinner",
+                          "width": 12,
+                          "height": 12,
+                          "icon": "loader-circle",
+                          "library": "lucide",
+                          "fill": "#00FF9C"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "AQn29",
+                  "name": "Frontend — unread",
+                  "width": "fill_container",
+                  "height": 34,
+                  "fill": "#272930",
+                  "cornerRadius": 6,
+                  "gap": 7,
+                  "padding": [
+                    0,
+                    9
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "OH1vT",
+                      "name": "Collapsed chevron",
+                      "width": 11,
+                      "height": 11,
+                      "icon": "chevron-right",
+                      "library": "lucide",
+                      "fill": "#9A9BA5"
+                    },
+                    {
+                      "type": "icon",
+                      "id": "UlY0G",
+                      "name": "Folder",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "folder",
+                      "library": "lucide",
+                      "fill": "#9A9BA5"
+                    },
+                    {
+                      "type": "text",
+                      "id": "rKR7P",
+                      "name": "Container label",
+                      "fill": "#9A9BA5",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Frontend",
+                      "fontFamily": "Inter",
+                      "fontSize": 11.5,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "jYdNu",
+                      "name": "Fixed status slot",
+                      "width": 14,
+                      "height": 14,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "rZpJT",
+                          "name": "Completed — not viewed",
+                          "fill": "#00FF9C",
+                          "width": 6,
+                          "height": 6
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "vCpcn",
+                  "name": "CHAT · 6 — working",
+                  "width": "fill_container",
+                  "height": 34,
+                  "fill": "#272930",
+                  "cornerRadius": 6,
+                  "gap": 7,
+                  "padding": [
+                    0,
+                    9
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "Sn1Hr",
+                      "name": "Collapsed chevron",
+                      "width": 11,
+                      "height": 11,
+                      "icon": "chevron-right",
+                      "library": "lucide",
+                      "fill": "#9A9BA5"
+                    },
+                    {
+                      "type": "text",
+                      "id": "DOUtD",
+                      "name": "Container label",
+                      "fill": "#9A9BA5",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "CHAT · 6",
+                      "fontFamily": "JetBrains Mono",
+                      "fontSize": 10,
+                      "fontWeight": "600",
+                      "letterSpacing": 0.8
+                    },
+                    {
+                      "type": "frame",
+                      "id": "KVR6d",
+                      "name": "Fixed status slot",
+                      "width": 14,
+                      "height": 14,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "D1maD",
+                          "name": "Agent working spinner",
+                          "width": 12,
+                          "height": 12,
+                          "icon": "loader-circle",
+                          "library": "lucide",
+                          "fill": "#00FF9C"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "KFkgY",
+                  "name": "CHAT · 6 — unread",
+                  "width": "fill_container",
+                  "height": 34,
+                  "fill": "#272930",
+                  "cornerRadius": 6,
+                  "gap": 7,
+                  "padding": [
+                    0,
+                    9
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "Drw7T",
+                      "name": "Collapsed chevron",
+                      "width": 11,
+                      "height": 11,
+                      "icon": "chevron-right",
+                      "library": "lucide",
+                      "fill": "#9A9BA5"
+                    },
+                    {
+                      "type": "text",
+                      "id": "jzbI8",
+                      "name": "Container label",
+                      "fill": "#9A9BA5",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "CHAT · 6",
+                      "fontFamily": "JetBrains Mono",
+                      "fontSize": 10,
+                      "fontWeight": "600",
+                      "letterSpacing": 0.8
+                    },
+                    {
+                      "type": "frame",
+                      "id": "LlX31",
+                      "name": "Fixed status slot",
+                      "width": 14,
+                      "height": 14,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "ellipse",
+                          "id": "i6al2Q",
+                          "name": "Completed — not viewed",
+                          "fill": "#00FF9C",
+                          "width": 6,
+                          "height": 6
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variables": {
+    "bg": {
+      "type": "color",
+      "value": "#15161B"
+    },
+    "panel": {
+      "type": "color",
+      "value": "#1D1E23"
+    },
+    "raised": {
+      "type": "color",
+      "value": "#272930"
+    },
+    "line": {
+      "type": "color",
+      "value": "#272930"
+    },
+    "hairline": {
+      "type": "color",
+      "value": "#24262C"
+    },
+    "text-1": {
+      "type": "color",
+      "value": "#DCDCE0"
+    },
+    "text-2": {
+      "type": "color",
+      "value": "#9A9BA5"
+    },
+    "text-3": {
+      "type": "color",
+      "value": "#5A5C66"
+    },
+    "accent": {
+      "type": "color",
+      "value": "#00FF9C"
+    },
+    "toggle-off": {
+      "type": "color",
+      "value": "#33353D"
+    },
+    "font-ui": {
+      "type": "string",
+      "value": "Inter"
+    },
+    "font-mono": {
+      "type": "string",
+      "value": "JetBrains Mono"
+    },
+    "sidebar": {
+      "type": "color",
+      "value": "#272930"
+    },
+    "sidebar-selected": {
+      "type": "color",
+      "value": "#333640"
+    },
+    "sidebar-selected-border": {
+      "type": "color",
+      "value": "#3B3E49"
+    }
+  },
+  "fileToken": "f3d3aa8e-f869-4655-9b5e-487953df369b"
+}

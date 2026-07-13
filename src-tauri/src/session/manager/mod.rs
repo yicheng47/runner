@@ -290,9 +290,9 @@ pub struct SessionActivityEvent {
 
 /// Emitter for the real Tauri app — emits `session/output`, `session/exit`,
 /// `session/updated`, and `runner/activity`.
-pub struct TauriSessionEvents(pub tauri::AppHandle);
+pub struct TauriSessionEvents<R: tauri::Runtime = tauri::Wry>(pub tauri::AppHandle<R>);
 
-impl SessionEvents for TauriSessionEvents {
+impl<R: tauri::Runtime> SessionEvents for TauriSessionEvents<R> {
     fn output(&self, ev: &OutputEvent) {
         use tauri::Emitter;
         let _ = self.0.emit("session/output", ev);
@@ -307,6 +307,16 @@ impl SessionEvents for TauriSessionEvents {
     }
     fn status(&self, ev: &SessionActivityEvent) {
         use tauri::Emitter;
+        if ev.state == SessionActivityState::Idle {
+            if let Err(error) =
+                crate::commands::tab::record_session_completion(&self.0, &ev.session_id)
+            {
+                log::warn!(
+                    "record direct-chat completion for {} failed: {error}",
+                    ev.session_id
+                );
+            }
+        }
         let _ = self.0.emit("session/status", ev);
     }
     fn runner_activity(&self, ev: &RunnerActivityEvent) {
@@ -442,6 +452,7 @@ struct CodexCaptureContext {
 #[derive(Default)]
 struct SessionState {
     handle: Option<SessionHandle>,
+    activity: Option<SessionActivityState>,
     output_buffer: VecDeque<OutputEvent>,
     output_seq: u64,
     /// `output_seq` at the moment the most recent resume started.
@@ -459,6 +470,7 @@ struct SessionState {
 impl SessionState {
     fn is_empty(&self) -> bool {
         self.handle.is_none()
+            && self.activity.is_none()
             && self.output_buffer.is_empty()
             && self.output_seq == 0
             && self.resume_watermark_seq == 0
@@ -643,6 +655,37 @@ impl SessionManager {
                 handle.forwarder = Some(forwarder);
             }
         }
+    }
+
+    pub(crate) fn publish_direct_activity(
+        &self,
+        session_id: &str,
+        state: SessionActivityState,
+        source: &str,
+        events: &dyn SessionEvents,
+    ) {
+        let session = self.session_state_or_insert(session_id);
+        session.lock().unwrap().activity = Some(state);
+        events.status(&SessionActivityEvent {
+            session_id: session_id.to_string(),
+            state,
+            source: source.to_string(),
+        });
+    }
+
+    pub fn activity_snapshot(&self) -> BTreeMap<String, SessionActivityState> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(id, session)| {
+                session
+                    .lock()
+                    .unwrap()
+                    .activity
+                    .map(|activity| (id.clone(), activity))
+            })
+            .collect()
     }
 
     fn codex_capture_context(&self, session_id: &str) -> Option<CodexCaptureContext> {
