@@ -19,6 +19,8 @@
     "tauri:before:build": "node scripts/stage-runner-cli.mjs && npm run build"
   },
   "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
     "@fontsource-variable/geist": "^5.2.9",
     "@fontsource-variable/inter": "^5.2.8",
     "@fontsource-variable/roboto": "^5.2.10",
