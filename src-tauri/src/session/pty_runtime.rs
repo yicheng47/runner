@@ -34,6 +34,14 @@ const RUNTIME_LABEL: &str = "native-pty";
 const READ_BUF: usize = 8 * 1024;
 const DEFAULT_IDLE_THRESHOLD: Duration = Duration::from_millis(750);
 const IDLE_MONITOR_POLL: Duration = Duration::from_millis(50);
+/// Window right after a `resize` (SIGWINCH) during which repaint bytes
+/// from the child's TUI are not treated as fresh activity. Without this,
+/// resizing the window while a session is idle flips it to Busy for a
+/// full idle threshold — the agent redraws its prompt, and silence-based
+/// detection can't tell a repaint from real output. Kept under
+/// `DEFAULT_IDLE_THRESHOLD` so genuine work started right after a resize
+/// still surfaces promptly.
+const RESIZE_GRACE: Duration = Duration::from_millis(500);
 // PTYs can boot before their frontend xterm pane is ready to answer startup
 // probes. Answer them here so Codex does not cache fallback colors first.
 const TERMINAL_QUERY_STARTUP_BUDGET: usize = 8 * 1024;
@@ -80,6 +88,10 @@ struct SessionHandle {
     /// `false` once the reader thread breaks. `status()` reads this
     /// for the trait's `SessionStatus.alive`.
     alive: AtomicBool,
+    /// Timestamp of the last `resize` call. The reader thread consults it
+    /// to ignore SIGWINCH repaint bursts for `RESIZE_GRACE` (see
+    /// `IdleDetector`), so resizing an idle session doesn't read as Busy.
+    last_resize: Mutex<Option<Instant>>,
     pid: Option<i32>,
     command: String,
 }
@@ -175,6 +187,7 @@ impl SessionRuntime for PtyRuntime {
             child: Arc::clone(&child_slot),
             exit_code: AtomicI32::new(EXIT_UNSET),
             alive: AtomicBool::new(true),
+            last_resize: Mutex::new(None),
             pid,
             command: format_command_summary(&spec.command, &spec.args),
         });
@@ -230,15 +243,20 @@ impl SessionRuntime for PtyRuntime {
 
     fn resize(&self, session: &RuntimeSession, cols: u16, rows: u16) -> RuntimeResult<()> {
         let handle = lookup(self, &session.session_id)?;
-        let master = handle.master.lock().expect("master poisoned");
-        master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| RuntimeError::Msg(format!("MasterPty::resize: {e}")))?;
+        {
+            let master = handle.master.lock().expect("master poisoned");
+            master
+                .resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|e| RuntimeError::Msg(format!("MasterPty::resize: {e}")))?;
+        }
+        // Open the grace window only after the SIGWINCH is delivered, so the
+        // repaint burst it triggers doesn't read as fresh activity.
+        *handle.last_resize.lock().expect("last_resize poisoned") = Some(Instant::now());
         Ok(())
     }
 
@@ -301,6 +319,17 @@ impl IdleDetector {
         } else {
             None
         }
+    }
+
+    /// Byte arrival during a resize grace window: keep the idle timer
+    /// fresh (a genuinely busy session that was also resized must not
+    /// idle early) but never flip Idle→Busy, so a SIGWINCH repaint on an
+    /// idle session stays idle.
+    fn on_bytes_quiet_at(&mut self, n: usize, now: Instant) {
+        if n == 0 {
+            return;
+        }
+        self.last_byte = now;
     }
 
     fn tick(&mut self) -> Option<RunnerStatus> {
@@ -384,9 +413,19 @@ fn reader_thread(
             Ok(0) => break, // EOF
             Ok(n) => {
                 answer_terminal_queries(&mut query_responder, &buf[..n], &handle, &session_id);
+                let in_resize_grace = handle
+                    .last_resize
+                    .lock()
+                    .expect("last_resize poisoned")
+                    .is_some_and(|t| t.elapsed() < RESIZE_GRACE);
                 let transition = {
                     let mut detector = detector.lock().expect("idle detector poisoned");
-                    detector.on_bytes(n)
+                    if in_resize_grace {
+                        detector.on_bytes_quiet_at(n, Instant::now());
+                        None
+                    } else {
+                        detector.on_bytes(n)
+                    }
                 };
                 if let Some(state) = transition {
                     if tx
@@ -751,6 +790,36 @@ mod tests {
         assert_eq!(
             detector.on_bytes_at(1, start + threshold + Duration::from_millis(2)),
             None
+        );
+    }
+
+    #[test]
+    fn resize_grace_bytes_do_not_wake_idle_detector() {
+        // Models the reader loop's grace branch: an idle session that
+        // emits a SIGWINCH repaint burst stays idle, and its idle timer
+        // is kept fresh so it doesn't immediately re-flip on the next tick.
+        let threshold = Duration::from_millis(750);
+        let start = Instant::now();
+        let mut detector = IdleDetector::new_at(threshold, start);
+
+        assert_eq!(
+            detector.tick_at(start + threshold),
+            Some(RunnerStatus::Idle)
+        );
+
+        // Repaint bytes during the grace window: no Busy transition.
+        let repaint = start + threshold + Duration::from_millis(10);
+        detector.on_bytes_quiet_at(1, repaint);
+
+        // Still idle (a real byte outside grace would have flipped Busy).
+        assert_eq!(detector.tick_at(repaint + Duration::from_millis(1)), None);
+
+        // The quiet burst refreshed last_byte, so a genuinely busy session
+        // that was resized mid-work would not idle early. A later real byte
+        // still wakes it.
+        assert_eq!(
+            detector.on_bytes_at(1, repaint + Duration::from_millis(20)),
+            Some(RunnerStatus::Busy)
         );
     }
 

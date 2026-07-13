@@ -83,11 +83,6 @@ export function ChatTabGroup({
           {name}
         </span>
         <ChatAttentionIndicator state={attention} />
-        {paneCount > 1 ? (
-          <span className="shrink-0 rounded bg-line px-1 py-px text-[9px] text-fg-3">
-            {paneCount}
-          </span>
-        ) : null}
       </button>
       <button
         type="button"

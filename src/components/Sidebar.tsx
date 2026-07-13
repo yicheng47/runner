@@ -79,7 +79,6 @@ import {
   activatePaneLayoutForSession,
   assignSessionToPane,
   createChatFolder,
-  findLeaf,
   focusPane,
   getPaneLayout,
   leafForSession,
@@ -263,6 +262,7 @@ export function Sidebar({
   const [folderMenu, setFolderMenu] = useState<{
     id: string;
     name: string;
+    collapsed: boolean;
     x: number;
     y: number;
   } | null>(null);
@@ -293,6 +293,7 @@ export function Sidebar({
   const [newChatFolderId, setNewChatFolderId] = useState<string | null>(null);
   const [chatAddMenuOpen, setChatAddMenuOpen] = useState(false);
   const [creatingFolder, setCreatingFolder] = useState(false);
+  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [chatCreateMenu, setChatCreateMenu] = useState<{
     x: number;
     y: number;
@@ -661,10 +662,19 @@ export function Sidebar({
   );
   const closeFolderMenu = useCallback(() => setFolderMenu(null), []);
   const openFolderMenu = useCallback(
-    (folder: { id: string; name: string }, anchor: { x: number; y: number }) => {
+    (
+      folder: { id: string; name: string; collapsed: boolean },
+      anchor: { x: number; y: number },
+    ) => {
       setChatTabMenu(null);
       setMissionMenu(null);
-      setFolderMenu({ ...folder, x: anchor.x, y: anchor.y });
+      setFolderMenu({
+        id: folder.id,
+        name: folder.name,
+        collapsed: folder.collapsed,
+        x: anchor.x,
+        y: anchor.y,
+      });
     },
     [],
   );
@@ -853,16 +863,20 @@ export function Sidebar({
     [],
   );
 
-  const renameFolder = useCallback(async (id: string, currentName: string) => {
-    const name = window.prompt("Rename folder", currentName);
-    if (!name?.trim() || name.trim() === currentName) return;
-    try {
-      await api.folder.rename(id, name.trim());
-      await hydratePaneLayoutsFromDb();
-    } catch (e) {
-      console.error("sidebar: folder_rename failed", e);
-    }
-  }, []);
+  const submitFolderRename = useCallback(
+    async (id: string, currentName: string, nextName: string) => {
+      const trimmed = nextName.trim();
+      setRenamingFolderId(null);
+      if (!trimmed || trimmed === currentName.trim()) return;
+      try {
+        await api.folder.rename(id, trimmed);
+        await hydratePaneLayoutsFromDb();
+      } catch (e) {
+        console.error("sidebar: folder_rename failed", e);
+      }
+    },
+    [],
+  );
 
   const toggleFolder = useCallback(async (id: string, collapsed: boolean) => {
     try {
@@ -906,19 +920,6 @@ export function Sidebar({
     },
     [navigate, refreshDirectSessions],
   );
-
-  const openChatTabInNewWindow = useCallback((members: DirectSessionEntry[]) => {
-    const first = members[0];
-    if (!first) return;
-    const layout = getPaneLayout(first.session_id);
-    const focusedSessionId =
-      findLeaf(layout.root, layout.focusedPaneId)?.sessionId ?? null;
-    const target =
-      members.find((member) => member.session_id === focusedSessionId) ?? first;
-    void api.window.open(`/chats/${target.session_id}`).catch((e) =>
-      console.error("sidebar: open chat tab in new window failed", e),
-    );
-  }, []);
 
   const archiveChatTab = useCallback(
     async (members: DirectSessionEntry[]) => {
@@ -1461,74 +1462,76 @@ export function Sidebar({
                               }}
                               className="flex flex-col gap-0.5"
                             >
-                              <div
-                                onContextMenu={(event) => {
-                                  event.preventDefault();
-                                  openFolderMenu(folder, {
-                                    x: event.clientX,
-                                    y: event.clientY,
-                                  });
-                                }}
-                                className={`group flex items-center gap-1.5 rounded border px-2.5 py-1.5 text-xs transition-colors ${
-                                  dragOverFolderId === folder.id
-                                    ? "border-accent bg-accent/10 text-fg"
-                                    : "border-transparent text-fg-2 hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg"
-                                }`}
-                              >
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void toggleFolder(folder.id, folder.collapsed)
+                              {renamingFolderId === folder.id ? (
+                                <FolderRenameRow
+                                  initial={folder.name}
+                                  collapsed={folder.collapsed}
+                                  attention={folderAttention}
+                                  onSubmit={(nextName) =>
+                                    void submitFolderRename(
+                                      folder.id,
+                                      folder.name,
+                                      nextName,
+                                    )
                                   }
-                                  className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
-                                >
-                                  {folder.collapsed ? (
-                                    <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
-                                  ) : (
-                                    <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
-                                  )}
-                                  <Folder aria-hidden className="h-3 w-3 shrink-0" />
-                                  <span className="min-w-0 flex-1 truncate font-medium">
-                                    {folder.name}
-                                  </span>
-                                  <ChatAttentionIndicator
-                                    state={
-                                      folder.collapsed ? folderAttention : null
-                                    }
-                                  />
-                                  <span className="text-[10px] text-fg-3">
-                                    {items.length}
-                                  </span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    if (folder.collapsed) {
-                                      void toggleFolder(folder.id, true);
-                                    }
-                                    handleNewFolderChat(folder.id);
-                                  }}
-                                  className="cursor-pointer rounded p-0.5 text-fg-3 hover:bg-raised hover:text-fg"
-                                  aria-label={`New chat in ${folder.name}`}
-                                  title="New chat in folder"
-                                >
-                                  <Plus aria-hidden className="h-3 w-3" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(event) =>
+                                  onCancel={() => setRenamingFolderId(null)}
+                                />
+                              ) : (
+                                <div
+                                  onContextMenu={(event) => {
+                                    event.preventDefault();
                                     openFolderMenu(folder, {
                                       x: event.clientX,
                                       y: event.clientY,
-                                    })
-                                  }
-                                  className="cursor-pointer rounded p-0.5 text-fg-3 opacity-0 hover:bg-raised hover:text-fg group-hover:opacity-100 focus:opacity-100"
-                                  aria-label="Folder actions"
-                                  title="Folder actions"
+                                    });
+                                  }}
+                                  className={`group flex items-center gap-1.5 rounded border px-2.5 py-1.5 text-xs transition-colors ${
+                                    dragOverFolderId === folder.id
+                                      ? "border-accent bg-accent/10 text-fg"
+                                      : "border-transparent text-fg-2 hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg"
+                                  }`}
                                 >
-                                  <MoreHorizontal aria-hidden className="h-3 w-3" />
-                                </button>
-                              </div>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void toggleFolder(
+                                        folder.id,
+                                        folder.collapsed,
+                                      )
+                                    }
+                                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
+                                  >
+                                    {folder.collapsed ? (
+                                      <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
+                                    ) : (
+                                      <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
+                                    )}
+                                    <Folder aria-hidden className="h-3 w-3 shrink-0" />
+                                    <span className="min-w-0 flex-1 truncate font-medium">
+                                      {folder.name}
+                                    </span>
+                                    <ChatAttentionIndicator
+                                      state={
+                                        folder.collapsed ? folderAttention : null
+                                      }
+                                    />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(event) =>
+                                      openFolderMenu(folder, {
+                                        x: event.clientX,
+                                        y: event.clientY,
+                                      })
+                                    }
+                                    className="cursor-pointer rounded p-0.5 text-fg-3 opacity-0 hover:bg-raised hover:text-fg group-hover:opacity-100 focus:opacity-100"
+                                    aria-label="Folder actions"
+                                    title="Folder actions"
+                                  >
+                                    <MoreHorizontal aria-hidden className="h-3 w-3" />
+                                  </button>
+                                </div>
+                              )}
                               {folder.collapsed ? null : (
                                 <div className="ml-3 flex flex-col gap-0.5 border-l border-line pl-2">
                                   {renderTabItems(items, folder.id)}
@@ -1722,10 +1725,6 @@ export function Sidebar({
             renameChatTab(chatTabMenu.members);
             closeChatTabMenu();
           }}
-          onOpenInNewWindow={() => {
-            openChatTabInNewWindow(chatTabMenu.members);
-            closeChatTabMenu();
-          }}
           onArchive={() => {
             void archiveChatTab(chatTabMenu.members);
             closeChatTabMenu();
@@ -1738,8 +1737,13 @@ export function Sidebar({
           anchorX={folderMenu.x}
           anchorY={folderMenu.y}
           onClose={closeFolderMenu}
+          onNewChat={() => {
+            if (folderMenu.collapsed) void toggleFolder(folderMenu.id, true);
+            handleNewFolderChat(folderMenu.id);
+            closeFolderMenu();
+          }}
           onRename={() => {
-            void renameFolder(folderMenu.id, folderMenu.name);
+            setRenamingFolderId(folderMenu.id);
             closeFolderMenu();
           }}
           onDelete={() => {
@@ -2002,6 +2006,63 @@ function NewFolderRow({
         onBlur={() => void submit()}
         className="min-w-0 flex-1 bg-transparent text-xs text-fg outline-none placeholder:text-fg-3"
       />
+    </div>
+  );
+}
+
+function FolderRenameRow({
+  initial,
+  collapsed,
+  attention,
+  onSubmit,
+  onCancel,
+}: {
+  initial: string;
+  collapsed: boolean;
+  attention: ChatAttentionState;
+  onSubmit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(initial);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  return (
+    <div
+      onContextMenu={(event) => event.stopPropagation()}
+      className="flex items-center gap-1.5 rounded border border-sidebar-selected-border bg-sidebar-selected px-2.5 py-1.5 text-xs text-fg shadow-sm"
+    >
+      {collapsed ? (
+        <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
+      ) : (
+        <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
+      )}
+      <Folder aria-hidden className="h-3 w-3 shrink-0" />
+      <input
+        ref={inputRef}
+        value={draft}
+        aria-label="Folder name"
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            onSubmit(draft.trim());
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            onCancel();
+          }
+        }}
+        onBlur={() => {
+          if (draft.trim() === initial.trim()) onCancel();
+          else onSubmit(draft.trim());
+        }}
+        className="min-w-0 flex-1 bg-transparent text-xs font-medium text-fg outline-none"
+      />
+      <ChatAttentionIndicator state={collapsed ? attention : null} />
     </div>
   );
 }
@@ -2381,7 +2442,7 @@ function RowContextMenu({
   onClose: () => void;
   onPin: () => void;
   onRename: () => void;
-  onOpenInNewWindow: () => void;
+  onOpenInNewWindow?: () => void;
   onArchive: () => void;
   renameLabel?: string;
   archiveLabel?: string;
@@ -2430,21 +2491,18 @@ function RowContextMenu({
         onClick={onPin}
       />
       <ContextMenuItem icon={SquarePen} label={renameLabel} onClick={onRename} />
-      <ContextMenuItem
-        icon={AppWindow}
-        label="Open in New Window"
-        onClick={onOpenInNewWindow}
-      />
-      {folders && onMoveToFolder ? (
+      {onOpenInNewWindow ? (
+        <ContextMenuItem
+          icon={AppWindow}
+          label="Open in New Window"
+          onClick={onOpenInNewWindow}
+        />
+      ) : null}
+      {folders &&
+      onMoveToFolder &&
+      folders.some((folder) => folder.id !== currentFolderId) ? (
         <>
           <div className="my-1 h-px bg-line" />
-          {currentFolderId !== null ? (
-            <ContextMenuItem
-              icon={Folder}
-              label="Move out of folder"
-              onClick={() => onMoveToFolder(null)}
-            />
-          ) : null}
           {folders
             .filter((folder) => folder.id !== currentFolderId)
             .map((folder) => (
@@ -2471,12 +2529,14 @@ function FolderContextMenu({
   anchorX,
   anchorY,
   onClose,
+  onNewChat,
   onRename,
   onDelete,
 }: {
   anchorX: number;
   anchorY: number;
   onClose: () => void;
+  onNewChat: () => void;
   onRename: () => void;
   onDelete: () => void;
 }) {
@@ -2511,6 +2571,11 @@ function FolderContextMenu({
       style={{ position: "fixed", left: pos.x, top: pos.y, width: 180 }}
       className="z-50 flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
     >
+      <ContextMenuItem
+        icon={MessageSquarePlus}
+        label="New chat in folder"
+        onClick={onNewChat}
+      />
       <ContextMenuItem icon={SquarePen} label="Rename folder" onClick={onRename} />
       <ContextMenuItem icon={Trash2} label="Delete" onClick={onDelete} danger />
     </div>
