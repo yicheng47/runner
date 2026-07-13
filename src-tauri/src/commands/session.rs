@@ -80,10 +80,15 @@ pub async fn session_list(
 #[tauri::command]
 pub async fn session_inject_stdin(
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
     session_id: String,
     text: String,
 ) -> Result<()> {
-    state.sessions.inject_stdin(&session_id, text.as_bytes())
+    state.sessions.inject_direct_stdin(
+        &session_id,
+        text.as_bytes(),
+        &crate::session::manager::TauriSessionEvents(app),
+    )
 }
 
 #[tauri::command]

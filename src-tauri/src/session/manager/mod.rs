@@ -453,6 +453,7 @@ struct CodexCaptureContext {
 struct SessionState {
     handle: Option<SessionHandle>,
     activity: Option<SessionActivityState>,
+    suppress_local_input_busy: bool,
     output_buffer: VecDeque<OutputEvent>,
     output_seq: u64,
     /// `output_seq` at the moment the most recent resume started.
@@ -471,6 +472,7 @@ impl SessionState {
     fn is_empty(&self) -> bool {
         self.handle.is_none()
             && self.activity.is_none()
+            && !self.suppress_local_input_busy
             && self.output_buffer.is_empty()
             && self.output_seq == 0
             && self.resume_watermark_seq == 0
@@ -665,7 +667,28 @@ impl SessionManager {
         events: &dyn SessionEvents,
     ) {
         let session = self.session_state_or_insert(session_id);
-        session.lock().unwrap().activity = Some(state);
+        let should_emit = {
+            let mut session = session.lock().unwrap();
+            if source == "forwarder"
+                && state == SessionActivityState::Busy
+                && session.suppress_local_input_busy
+            {
+                false
+            } else {
+                if state == SessionActivityState::Idle {
+                    session.suppress_local_input_busy = false;
+                }
+                if session.activity == Some(state) {
+                    false
+                } else {
+                    session.activity = Some(state);
+                    true
+                }
+            }
+        };
+        if !should_emit {
+            return;
+        }
         events.status(&SessionActivityEvent {
             session_id: session_id.to_string(),
             state,

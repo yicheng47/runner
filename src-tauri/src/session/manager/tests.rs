@@ -343,6 +343,25 @@ fn wait_for_session_status_event(
     }
 }
 
+fn wait_for_output_event(cap: &Capture, session_id: &str) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if cap
+            .output
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|ev| ev.session_id == session_id)
+        {
+            return;
+        }
+        if Instant::now() > deadline {
+            panic!("session/output event never arrived for {session_id}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn join_forwarder_for_test(mgr: &SessionManager, session_id: &str) {
     let forwarder = mgr.session_state(session_id).and_then(|state| {
         let mut state = state.lock().unwrap();
@@ -1552,6 +1571,9 @@ fn direct_chat_status_transition_emits_session_status_busy() {
     );
     cap.status.lock().unwrap().clear();
 
+    fake.push_status(0, RunnerStatus::Idle);
+    wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Idle);
+    cap.status.lock().unwrap().clear();
     fake.push_status(0, RunnerStatus::Busy);
     let ev = wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Busy);
 
@@ -1608,6 +1630,74 @@ fn direct_chat_status_transition_emits_session_status_idle() {
     assert_eq!(ev.session_id, spawned.id);
     assert_eq!(ev.state, SessionActivityState::Idle);
     assert_eq!(ev.source, "forwarder");
+
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn direct_chat_typing_stays_idle_until_submit() {
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'directtyping', 'Direct Typing', 'shell', '/bin/cat',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+    }
+
+    let mut runner = runner("/bin/cat", &[]);
+    runner.id = runner_id;
+    runner.handle = "directtyping".into();
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture();
+    let spawned = mgr
+        .spawn_direct(
+            &runner,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            Arc::clone(&cap) as Arc<dyn SessionEvents>,
+            None,
+        )
+        .unwrap();
+
+    fake.push_status(0, RunnerStatus::Idle);
+    wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Idle);
+    cap.status.lock().unwrap().clear();
+
+    mgr.inject_direct_stdin(&spawned.id, b"x", cap.as_ref())
+        .unwrap();
+    fake.push_status(0, RunnerStatus::Busy);
+    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_output(0, b"typing-echo-drained");
+    wait_for_output_event(&cap, &spawned.id);
+
+    assert!(cap.status.lock().unwrap().is_empty());
+    assert_eq!(
+        mgr.activity_snapshot().get(&spawned.id),
+        Some(&SessionActivityState::Idle)
+    );
+
+    mgr.inject_direct_stdin(&spawned.id, b"\r", cap.as_ref())
+        .unwrap();
+    let submitted = wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Busy);
+    assert_eq!(submitted.source, "input-submit");
+    assert_eq!(
+        mgr.activity_snapshot().get(&spawned.id),
+        Some(&SessionActivityState::Busy)
+    );
 
     mgr.kill(&spawned.id).unwrap();
 }

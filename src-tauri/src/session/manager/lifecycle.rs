@@ -65,6 +65,7 @@ impl SessionManager {
             match state.handle.take() {
                 Some(mut h) => {
                     state.activity = None;
+                    state.suppress_local_input_busy = false;
                     (h.stop.clone(), h.forwarder.take())
                 }
                 None => return Ok(()), // raced with another caller; no-op
@@ -213,6 +214,7 @@ impl SessionManager {
             {
                 state.handle = None;
                 state.activity = None;
+                state.suppress_local_input_busy = false;
             }
         }
         self.prune_empty_session_state(session_id);

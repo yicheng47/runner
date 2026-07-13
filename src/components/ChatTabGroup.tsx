@@ -114,10 +114,12 @@ export function ChatAttentionIndicator({
         aria-label="Agent working"
         title="Agent working"
       >
-        <LoaderCircle
+        <span
           aria-hidden
-          className="h-3 w-3 animate-spin text-accent motion-reduce:animate-none"
-        />
+          className="flex h-3 w-3 origin-center animate-spin items-center justify-center text-fg-3 motion-reduce:animate-none"
+        >
+          <LoaderCircle className="block h-3 w-3" />
+        </span>
       </span>
     );
   }

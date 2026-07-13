@@ -53,6 +53,9 @@ describe("ChatTabGroup", () => {
     );
     expect(working).toContain('aria-label="Agent working"');
     expect(working).toContain("animate-spin");
+    expect(working).toContain("origin-center");
+    expect(working).toContain("text-fg-3");
+    expect(working).not.toContain("text-accent");
     expect(working.indexOf('aria-label="Agent working"')).toBeLessThan(
       working.indexOf(">2</span>"),
     );

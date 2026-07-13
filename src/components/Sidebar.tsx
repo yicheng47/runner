@@ -1700,7 +1700,9 @@ export function Sidebar({
           anchorX={chatTabMenu.x}
           anchorY={chatTabMenu.y}
           renameLabel="Rename tab"
-          archiveLabel="Archive all"
+          archiveLabel={
+            chatTabMenu.members.length > 1 ? "Archive all" : "Archive"
+          }
           folders={folders}
           currentFolderId={chatTabMenu.layout.folderId}
           onMoveToFolder={(folderId) => {
