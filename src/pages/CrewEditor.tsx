@@ -1,4 +1,4 @@
-// Crew detail — matches design/runners-design.pen frame `CUKjM`.
+// Crew detail — matches design/runner-mvp-design.pen frame `CUKjM`.
 //
 // Layout: top toolbar (back to Crews + inline name field + Save + Start
 // mission) above a body of sections: Purpose, Default goal, Team

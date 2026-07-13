@@ -113,7 +113,7 @@ cover the rest of the auto-update lifecycle.
 
 ### Phase 3 — design + edge cases
 
-- Mock the three states in `design/runners-design.pen` against the
+- Mock the three states in `design/runner-mvp-design.pen` against the
   current dark palette. Reference the existing `To8GR` node Bryce used
   for the available-state pill.
 - Verify the toast position doesn't fight any modal that opens

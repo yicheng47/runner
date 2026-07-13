@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildChatListItems,
+  chatTabArchiveLabel,
   derivedChatTabTitle,
   isChatTabDropIndexAllowed,
   orderedChatTabIdsAfterDrop,
@@ -127,6 +128,17 @@ describe("derivedChatTabTitle", () => {
         ),
       ),
     ).toBe("@coder + Runtime chat");
+  });
+});
+
+describe("chatTabArchiveLabel", () => {
+  it("uses pane count even when a multi-pane tab has empty panes", () => {
+    expect(chatTabArchiveLabel(applyPresetPure("single", "A", ["A"]))).toBe(
+      "Archive",
+    );
+    expect(chatTabArchiveLabel(applyPresetPure("cols-2", "A", ["A"]))).toBe(
+      "Archive all",
+    );
   });
 });
 

@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* Carbon & Plasma — dark surfaces, neon-green accent. Mirrors the
-   design system frame `hqxnM` in design/runners-design.pen. Class
+   design system frame `hqxnM` in design/runner-mvp-design.pen. Class
    utilities: `bg-bg`, `bg-panel`, `bg-raised`, `border-line`,
    `text-fg`, `text-fg-2`, `text-fg-3`, `bg-accent`, `text-accent`. */
 @theme {
@@ -34,7 +34,7 @@
 }
 
 /* Codex Light — pure-white surfaces, near-black ink, sky-blue accent.
-   Mirrors the design system frame `YFawc` in design/runners-design.pen.
+   Mirrors the design system frame `YFawc` in design/runner-mvp-design.pen.
    Applied when `<html data-theme="codex">` is set by `applyAppTheme()`
    in `src/lib/settings.ts`. Carbon stays as the unattributed default
    so dark mode is a no-op fallback when no data-theme is present. */

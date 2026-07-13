@@ -95,11 +95,12 @@ impl SessionManager {
                                 }
                             }
                         } else {
-                            events.status(&SessionActivityEvent {
-                                session_id: session_id.clone(),
-                                state: state.into(),
-                                source: source.to_string(),
-                            });
+                            manager_t.publish_direct_activity(
+                                &session_id,
+                                state.into(),
+                                source,
+                                events.as_ref(),
+                            );
                         }
                     }
                     Err(RecvTimeoutError::Timeout) => continue,
@@ -183,23 +184,91 @@ impl SessionManager {
     /// `\n`.
     pub fn inject_stdin(&self, session_id: &str, bytes: &[u8]) -> Result<()> {
         let rt_session = self.live_runtime_session(session_id)?;
+        self.write_stdin(session_id, &rt_session, bytes)
+    }
+
+    pub fn inject_direct_stdin(
+        &self,
+        session_id: &str,
+        bytes: &[u8],
+        events: &dyn SessionEvents,
+    ) -> Result<()> {
+        let rt_session = self.live_runtime_session(session_id)?;
+        let submitted = bytes == b"\r";
+        let session = self.session_state(session_id);
+        let transition = if let Some(session) = session.as_ref() {
+            let mut session = session.lock().unwrap();
+            let previous_activity = session.activity;
+            let previous_suppression = session.suppress_local_input_busy;
+            let transition = if previous_activity.is_some() && submitted {
+                session.suppress_local_input_busy = false;
+                if previous_activity == Some(SessionActivityState::Idle) {
+                    session.activity = Some(SessionActivityState::Busy);
+                    Some(SessionActivityEvent {
+                        session_id: session_id.to_string(),
+                        state: SessionActivityState::Busy,
+                        source: "input-submit".to_string(),
+                    })
+                } else {
+                    None
+                }
+            } else {
+                if previous_activity == Some(SessionActivityState::Idle) {
+                    session.suppress_local_input_busy = true;
+                }
+                None
+            };
+            if let Err(error) = self.write_stdin_bytes(&rt_session, bytes) {
+                session.activity = previous_activity;
+                session.suppress_local_input_busy = previous_suppression;
+                return Err(error);
+            }
+            transition
+        } else {
+            self.write_stdin_bytes(&rt_session, bytes)?;
+            None
+        };
+        if submitted {
+            self.capture_codex_session_key(session_id);
+        }
+        if let Some(transition) = transition.as_ref() {
+            events.status(transition);
+        }
+        Ok(())
+    }
+
+    fn write_stdin(
+        &self,
+        session_id: &str,
+        rt_session: &RuntimeSession,
+        bytes: &[u8],
+    ) -> Result<()> {
+        self.write_stdin_bytes(rt_session, bytes)?;
+        if bytes == b"\r" {
+            self.capture_codex_session_key(session_id);
+        }
+        Ok(())
+    }
+
+    fn write_stdin_bytes(&self, rt_session: &RuntimeSession, bytes: &[u8]) -> Result<()> {
         // ASCII CR (0x0D) is what claude-code's TUI editor reads as
         // "Enter" — bare-byte writes that just contain `\r` map to
         // `send_key("Enter")`. Everything else routes as a literal
         // byte stream.
         if bytes == b"\r" {
             self.runtime
-                .send_key(&rt_session, "Enter")
+                .send_key(rt_session, "Enter")
                 .map_err(Into::into)
-                .map(|_| {
-                    if let Some(ctx) = self.codex_capture_context(session_id) {
-                        self.spawn_codex_capture_if_unkeyed(session_id, &ctx);
-                    }
-                })
         } else {
             self.runtime
-                .send_bytes(&rt_session, bytes)
+                .send_bytes(rt_session, bytes)
                 .map_err(Into::into)
+        }
+    }
+
+    fn capture_codex_session_key(&self, session_id: &str) {
+        if let Some(ctx) = self.codex_capture_context(session_id) {
+            self.spawn_codex_capture_if_unkeyed(session_id, &ctx);
         }
     }
 

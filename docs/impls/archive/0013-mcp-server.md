@@ -240,7 +240,7 @@ The existing `CreateCrewInput`, `UpdateCrewInput`, `CreateRunnerInput`, `UpdateR
 
 ## Phase 3 — Pencil design
 
-Design the MCP settings pane in `design/runners-design.pen` before writing any frontend code. Covers:
+Design the MCP settings pane in `design/runner-mvp-design.pen` before writing any frontend code. Covers:
 - Toggle for enabling/disabling MCP (controls whether the socket listener runs)
 - "Copy Claude Code config" / "Copy Codex config" buttons
 - Connection status indicator

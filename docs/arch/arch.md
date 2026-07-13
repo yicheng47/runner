@@ -217,9 +217,9 @@ A session is the only object in the system that actually *executes* code — eve
 
 How sessions are displayed spans durable organization and ephemeral view state. The concepts must never be blurred in code, docs, or UI copy:
 
-- **Window** — a real OS window (⌘N, `File → New Window`, impl 0018). The backend's only per-window state is the subject registry (`src-tauri/src/windows.rs`) used for duplicate-session ownership arbitration; it knows nothing about tabs or panes.
+- **Window** — a real OS window (⌘N, `File → New Window`, impl 0018). The backend's per-window subject registry (`src-tauri/src/windows.rs`) tracks every visible direct-chat subject, focus recency for duplicate-session ownership, and explicit current focus for viewed-attention semantics; it knows no tab layout beyond the reported session subjects.
 - **Folder** — a user-created, collapsible sidebar group containing tabs. Folder identity, name, order, and collapse state are persisted in SQLite. Ungrouped tabs have no folder and render below every folder.
-- **Tab** — one stable, ULID-keyed group of panes rendered as exactly one sidebar row. SQLite persists its folder membership, name, order, and JSON layout; the layout picker mutates the same row. Every active direct-chat session belongs to exactly one tab, including single-pane chats. Per-window active-tab selection remains ephemeral.
+- **Tab** — one stable, ULID-keyed group of panes rendered as exactly one sidebar row. SQLite persists its folder membership, name, order, JSON layout, and nullable completion/viewed watermarks; the layout picker mutates the same row without resetting attention state. Every active direct-chat session belongs to exactly one tab, including single-pane chats. Per-window active-tab selection remains ephemeral.
 - **Pane** — one slot inside a tab, holding exactly one chat session (move-not-copy). Panes are filled from a pane's own New chat button or a sidebar pick into a focused empty pane; `⌘[` / `⌘]` cycle pane focus, `⌘W` closes the focused pane without stopping its session.
 
 Sessions exist independently of the display tree: closing a pane or window never kills a PTY. Archiving a tab removes the tab row and archives its member sessions. Deleting a folder performs that archive for every member tab in one transaction; the `tabs.folder_id` foreign key is `ON DELETE RESTRICT`, so tabs never fall silently to the ungrouped level.
@@ -438,9 +438,11 @@ Kill: drop master → SIGHUP via `portable-pty`; escalate to SIGKILL if the chil
 
 ### 5.10 Busy / idle inference
 
-Per-runner busy/idle is inferred from PTY-byte silence by the session forwarder, not reported by the agent via `runner status`. When the PTY emits no bytes for a configurable silence window, the forwarder emits a `runner_status` event with `source: "forwarder"` into the mission log. The router maps that into the in-memory status map and the workspace rail flips the indicator. Direct chats are skipped (they aren't on a bus). The `runner status busy
-| idle` CLI verb is kept as a back-compat alias only — it stamps
-`source: "agent"` so debug tooling can tell them apart, prints a stderr deprecation notice, and is slated for removal.
+Per-runner busy/idle is inferred from PTY-byte silence by the session forwarder, not reported by the agent via `runner status`. For mission sessions the forwarder appends a `runner_status` event with `source: "forwarder"` to the mission log, and the router maps it into the workspace status projection. Direct chats stay off-bus: `SessionManager` retains their latest live activity, exposes it through `session_activity_snapshot`, and emits `session/status` transitions to every window. Direct spawn/resume stores and emits an initial busy state before the first PTY byte; teardown removes the snapshot entry without synthesizing a completion.
+
+The sidebar subscribes to `session/status` before hydrating the snapshot and replays any transitions that raced with the request. It aggregates activity at the durable tab level: any busy running member shows the spinner, and the final busy-to-idle transition records `tabs.last_completed_at`. A focused window displaying any tab member records the same completion as viewed; otherwise `last_completed_at > last_viewed_at` restores the unread dot across navigation, windows, and restart. Tab activation reports the target tab's full subject set and advances its viewed watermark in one backend command, while `chat/tab-attention-changed` rehydrates every window without masquerading as a layout mutation.
+
+The `runner status busy|idle` CLI verb is kept as a back-compat alias only — it stamps `source: "agent"` so debug tooling can tell agent-reported events apart from forwarder inference, prints a stderr deprecation notice, and is slated for removal.
 
 ## 6. System prompt composition
 
@@ -754,7 +756,9 @@ tabs (
   name TEXT NOT NULL,
   position INTEGER NOT NULL,
   layout TEXT NOT NULL,              -- JSON: preset, slot assignments, split sizes
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  last_completed_at TEXT,
+  last_viewed_at TEXT
 );
 ```
 

@@ -426,7 +426,7 @@ on-disk files are the "survive any compaction" layer.
 ### Phase 5 — Pencil design + polish
 
 - Design the Skills page, MCPs page, and the two new
-  runner-edit sections in `design/runners-design.pen`. Reuse
+  runner-edit sections in `design/runner-mvp-design.pen`. Reuse
   Runners list page styling and existing checkbox-row primitives.
 - Confirm empty-state copy for: no skills/MCPs defined, no
   attachments on a runner, MCP transport-conditional fields.

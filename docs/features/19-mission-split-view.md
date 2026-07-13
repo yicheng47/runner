@@ -18,7 +18,7 @@ This spec predates **direct-chat split view** (feature 34 / impl 0020), which sh
 3. **The feed** stays the mission's own surface. Whether it can occupy a pane (as this spec originally proposed) or remains the fixed feed panel while only PTYs split is an open design call — the runner-session split is the core; feed-in-a-pane is optional.
 4. **Interaction: reuse the layout picker**, not drag-tab-to-edge. Direct chat shipped the picker; use the same one to choose how many runner sessions to show side by side. Drag-to-reshape belongs to feature 35 (sidebar) or a mission-center follow-up.
 
-**Why it "might be hard to design":** the feed-plus-N-PTYs tree, per-pane Stop/Resume + status chrome, and how resume/geometry interact across a mission restart are the genuinely tricky parts. Mock the mission workspace in `design/runners-design.pen` first — the way direct-chat split was mocked (`fxfRj` / `WQmol`) — before coding.
+**Why it "might be hard to design":** the feed-plus-N-PTYs tree, per-pane Stop/Resume + status chrome, and how resume/geometry interact across a mission restart are the genuinely tricky parts. Mock the mission workspace in `design/runner-mvp-design.pen` first — the way direct-chat split was mocked (`fxfRj` / `WQmol`) — before coding.
 
 The original proposal below is kept for its motivation and invariants (move-not-copy, one feed); read the model + DnD sections as historical.
 

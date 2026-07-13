@@ -304,7 +304,7 @@ export default function Runners() {
 
 function TerminalIcon() {
   // 22x22 terminal-prompt glyph, mirrors the empty-state badge in
-  // design/runners-design.pen (frame `GmFmi`).
+  // design/runner-mvp-design.pen (frame `GmFmi`).
   return (
     <svg
       width="22"

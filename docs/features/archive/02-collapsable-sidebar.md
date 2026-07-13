@@ -122,7 +122,7 @@ that affordance.
 
 ### Phase 4 — Pencil design + visual polish
 
-- Design both states (full + rail) in `design/runners-design.pen`
+- Design both states (full + rail) in `design/runner-mvp-design.pen`
   before locking in spacing and icon sizes. Confirm tooltip style
   matches the existing kebab-menu / row-hover design language.
 

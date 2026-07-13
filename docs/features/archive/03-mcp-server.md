@@ -153,7 +153,7 @@ agent.
 
 ### Phase 4 — Pencil design + polish
 
-- Design the Settings section in `design/runners-design.pen` —
+- Design the Settings section in `design/runner-mvp-design.pen` —
   matches the existing Settings sections' spacing, copy-button
   affordance, code-block styling for the snippet preview.
 - Confirm error states: port already bound, server start failure

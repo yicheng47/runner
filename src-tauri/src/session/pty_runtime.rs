@@ -34,9 +34,8 @@ const RUNTIME_LABEL: &str = "native-pty";
 const READ_BUF: usize = 8 * 1024;
 const DEFAULT_IDLE_THRESHOLD: Duration = Duration::from_millis(750);
 const IDLE_MONITOR_POLL: Duration = Duration::from_millis(50);
-// Mission PTYs boot while their frontend xterm panes are often hidden on
-// the feed tab. Answer Codex's startup terminal probes here so the process
-// does not cache fallback colors before xterm has a chance to attach.
+// PTYs can boot before their frontend xterm pane is ready to answer startup
+// probes. Answer them here so Codex does not cache fallback colors first.
 const TERMINAL_QUERY_STARTUP_BUDGET: usize = 8 * 1024;
 const TERMINAL_QUERY_TAIL: usize = 16;
 const DEFAULT_OSC10_FG_REPLY: &[u8] = b"\x1b]10;rgb:dcdc/dcdc/e0e0\x1b\\";
@@ -188,7 +187,7 @@ impl SessionRuntime for PtyRuntime {
         let stop_for_reader = Arc::clone(&stop);
         let handle_for_reader = Arc::clone(&handle);
         let session_id_for_reader = spec.session_id.clone();
-        let query_responder = spec.mission.then(TerminalQueryResponder::default);
+        let query_responder = TerminalQueryResponder::default();
         thread::Builder::new()
             .name(format!("pty-reader-{}", spec.session_id))
             .spawn(move || {
@@ -355,7 +354,7 @@ fn reader_thread(
     stop: Arc<AtomicBool>,
     handle: Arc<SessionHandle>,
     session_id: String,
-    mut query_responder: Option<TerminalQueryResponder>,
+    mut query_responder: TerminalQueryResponder,
 ) {
     let detector = Arc::new(Mutex::new(IdleDetector::new(DEFAULT_IDLE_THRESHOLD)));
     let monitor_done = Arc::new(AtomicBool::new(false));
@@ -384,9 +383,7 @@ fn reader_thread(
         match reader.read(&mut buf) {
             Ok(0) => break, // EOF
             Ok(n) => {
-                if let Some(responder) = query_responder.as_mut() {
-                    answer_terminal_queries(responder, &buf[..n], &handle, &session_id);
-                }
+                answer_terminal_queries(&mut query_responder, &buf[..n], &handle, &session_id);
                 let transition = {
                     let mut detector = detector.lock().expect("idle detector poisoned");
                     detector.on_bytes(n)

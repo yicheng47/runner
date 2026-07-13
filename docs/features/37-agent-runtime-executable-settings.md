@@ -24,7 +24,7 @@ Runtime-only direct chats have no configurable command, and the create/edit runn
 - **Slow shell initialization.** Replace the current all-or-nothing two-second startup probe with a non-blocking or otherwise startup-safe discovery flow that accommodates realistic zsh/Oh My Zsh initialization. Preserve the last known good result on timeout and expose the timeout as a diagnosable state instead of silently dropping to launchd's stripped environment.
 - **Diagnostics.** Log the selected shell, discovery duration, success/failure reason, and resolved runtime executable paths without logging unrelated environment values. Surface enough status in Settings for a user to distinguish Not installed from Shell probe timed out.
 - **Backend persistence.** Store overrides in backend-owned app settings so all windows and all Rust spawn paths share the same value; do not make localStorage the source of truth for executable selection.
-- **Design first.** Add the settings pane and its detected/override/error/refresh states to `design/runners-design.pen` before implementation.
+- **Design first.** Add the settings pane and its detected/override/error/refresh states to `design/runner-mvp-design.pen` before implementation.
 
 ### Out of scope
 
@@ -39,7 +39,7 @@ Runtime-only direct chats have no configurable command, and the create/edit runn
 
 ### Phase 1 — UX design and settings contract
 
-- Design Settings → Integrations → Agent runtimes in `design/runners-design.pen`, including detected, overridden, not-found, probing, timeout, validation-error, and refresh states.
+- Design Settings → Integrations → Agent runtimes in `design/runner-mvp-design.pen`, including detected, overridden, not-found, probing, timeout, validation-error, and refresh states.
 - Define a backend runtime-settings shape keyed by stable runtime name with an optional executable override.
 - Define the effective-command precedence and legacy `runner.command` compatibility rules in tests before changing spawn behavior.
 

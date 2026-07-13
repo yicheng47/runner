@@ -123,7 +123,7 @@ This is the main correctness risk. If resume keeps assuming `runner_id` is a str
 - Runtime mode does not expose model, effort, permission, args, env, or system prompt; those come from the default ephemeral runner config above.
 - Start button is enabled when the selected mode has the required selection: runner id for runner mode, runtime name for runtime mode.
 
-Design pass required before implementation: update `design/runners-design.pen` for the segmented modal state and confirm the dropdown/cwd spacing. The Pencil file was not open during this planning pass, so this plan does not claim node-level validation.
+Design pass required before implementation: update `design/runner-mvp-design.pen` for the segmented modal state and confirm the dropdown/cwd spacing. The Pencil file was not open during this planning pass, so this plan does not claim node-level validation.
 
 ## Step 7: Chat settings
 

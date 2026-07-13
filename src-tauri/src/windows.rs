@@ -43,6 +43,7 @@ pub struct WindowEntry {
     pub label: String,
     pub subjects: Vec<Subject>,
     pub focused_at: DateTime<Utc>,
+    pub focused: bool,
 }
 
 /// `Mutex<HashMap<label, WindowEntry>>`, mirroring the shape used by the
@@ -86,6 +87,7 @@ impl WindowRegistry {
                         label: label.to_string(),
                         subjects,
                         focused_at: Utc::now(),
+                        focused: false,
                     },
                 );
             }
@@ -98,6 +100,12 @@ impl WindowRegistry {
         self.mark_focused_at(label, Utc::now());
     }
 
+    pub fn mark_blurred(&self, label: &str) {
+        if let Some(entry) = self.entries.lock().unwrap().get_mut(label) {
+            entry.focused = false;
+        }
+    }
+
     /// Demote a window's focus rank to the floor without dropping its subject.
     ///
     /// `main` is hidden (not destroyed) on close, so it never emits
@@ -108,7 +116,10 @@ impl WindowRegistry {
     /// subject so a later reshow + `Focused(true)` reclaims primary. A hidden
     /// sole-holder still wins `primary_for` (nothing visible to hand off to).
     pub fn mark_hidden(&self, label: &str) {
-        self.mark_focused_at(label, DateTime::<Utc>::MIN_UTC);
+        if let Some(entry) = self.entries.lock().unwrap().get_mut(label) {
+            entry.focused_at = DateTime::<Utc>::MIN_UTC;
+            entry.focused = false;
+        }
     }
 
     /// Snapshot of every registered window, for the `window_focus_map`
@@ -134,6 +145,31 @@ impl WindowRegistry {
             .map(|e| e.label.clone())
     }
 
+    pub fn focused_direct_sessions(&self, label: &str) -> Vec<String> {
+        self.entries
+            .lock()
+            .unwrap()
+            .get(label)
+            .filter(|entry| entry.focused)
+            .into_iter()
+            .flat_map(|entry| entry.subjects.iter())
+            .filter_map(|subject| match subject {
+                Subject::DirectChat(session_id) => Some(session_id.clone()),
+                Subject::Mission(_) => None,
+            })
+            .collect()
+    }
+
+    pub fn any_focused_displaying(&self, session_ids: &[String]) -> bool {
+        self.entries.lock().unwrap().values().any(|entry| {
+            entry.focused
+                && entry.subjects.iter().any(|subject| match subject {
+                    Subject::DirectChat(session_id) => session_ids.contains(session_id),
+                    Subject::Mission(_) => false,
+                })
+        })
+    }
+
     // --- internals / test seams -----------------------------------------
 
     fn register_at(&self, label: &str, focused_at: DateTime<Utc>) {
@@ -143,6 +179,7 @@ impl WindowRegistry {
                 label: label.to_string(),
                 subjects: Vec::new(),
                 focused_at,
+                focused: false,
             },
         );
     }
@@ -153,7 +190,10 @@ impl WindowRegistry {
     fn mark_focused_at(&self, label: &str, focused_at: DateTime<Utc>) {
         let mut map = self.entries.lock().unwrap();
         match map.get_mut(label) {
-            Some(entry) => entry.focused_at = focused_at,
+            Some(entry) => {
+                entry.focused_at = focused_at;
+                entry.focused = true;
+            }
             None => {
                 map.insert(
                     label.to_string(),
@@ -161,6 +201,7 @@ impl WindowRegistry {
                         label: label.to_string(),
                         subjects: Vec::new(),
                         focused_at,
+                        focused: true,
                     },
                 );
             }
@@ -213,6 +254,58 @@ mod tests {
         reg.register_at("main", ts(100));
         reg.mark_focused_at("main", ts(200));
         assert_eq!(reg.snapshot()[0].focused_at, ts(200));
+        assert!(reg.snapshot()[0].focused);
+        reg.mark_blurred("main");
+        assert!(!reg.snapshot()[0].focused);
+        assert_eq!(reg.snapshot()[0].focused_at, ts(200));
+    }
+
+    #[test]
+    fn only_focused_windows_count_as_viewing_direct_chats() {
+        let reg = WindowRegistry::new();
+        reg.register_at("main", ts(100));
+        reg.register_at("window-a", ts(100));
+        reg.set_subjects(
+            "main",
+            vec![
+                Subject::DirectChat("a".into()),
+                Subject::DirectChat("b".into()),
+            ],
+        );
+        reg.set_subjects("window-a", vec![Subject::DirectChat("b".into())]);
+
+        reg.mark_focused_at("main", ts(200));
+        assert!(reg.any_focused_displaying(&["a".into()]));
+        assert!(reg.any_focused_displaying(&["b".into()]));
+        assert_eq!(reg.focused_direct_sessions("main"), ["a", "b"]);
+
+        reg.mark_blurred("main");
+        assert!(!reg.any_focused_displaying(&["a".into(), "b".into()]));
+        assert!(reg.focused_direct_sessions("main").is_empty());
+
+        reg.mark_focused_at("window-a", ts(300));
+        assert!(!reg.any_focused_displaying(&["a".into()]));
+        assert!(reg.any_focused_displaying(&["b".into()]));
+    }
+
+    #[test]
+    fn tab_switch_replaces_focused_visibility_immediately() {
+        let reg = WindowRegistry::new();
+        reg.register_at("main", ts(100));
+        reg.mark_focused_at("main", ts(200));
+        reg.set_subjects("main", vec![Subject::DirectChat("a".into())]);
+        assert!(reg.any_focused_displaying(&["a".into()]));
+
+        reg.set_subjects(
+            "main",
+            vec![
+                Subject::DirectChat("b".into()),
+                Subject::DirectChat("c".into()),
+            ],
+        );
+        assert!(!reg.any_focused_displaying(&["a".into()]));
+        assert!(reg.any_focused_displaying(&["b".into()]));
+        assert!(reg.any_focused_displaying(&["c".into()]));
     }
 
     #[test]

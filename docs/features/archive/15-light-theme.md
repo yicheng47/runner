@@ -20,7 +20,7 @@ rest of their desktop is themed:
 - **Codex Light** — pure-white surfaces, near-black ink, sky-blue
   accent. The Codex / ChatGPT desktop aesthetic. Frame `q92Ji`
   (Runners page) + `zS3Pe` (Mission workspace) +
-  DS `YFawc` in `design/runners-design.pen`.
+  DS `YFawc` in `design/runner-mvp-design.pen`.
 - **Solarized Paper** — Solarized Light surfaces with olive-green
   accent. Easier on the eyes in long sessions. Frame `pLbNm`
   (Mission workspace) + DS `iBOyT`.
@@ -73,7 +73,7 @@ chrome to match.
   - (`darkVariant: "carbon"` exists as a future hook but only has the
     one option for v1, so the UI just shows it locked.)
 - **Settings UI.** New "Appearance" pane in `SettingsModal.tsx`
-  (mock: frame `cxNBX` in `design/runners-design.pen`):
+  (mock: frame `cxNBX` in `design/runner-mvp-design.pen`):
   - Theme segmented control: `Auto · Light · Dark`.
   - Light theme dropdown: `Codex Light` · `Solarized Paper`. Each
     row shows a 12×12 accent swatch + name. Live-applies on select.

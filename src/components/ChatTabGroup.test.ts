@@ -25,6 +25,7 @@ describe("ChatTabGroup", () => {
         layout,
         members: [session],
         active: false,
+        attention: null,
         onActivate: () => {},
         onContextMenu: () => {},
       }),
@@ -33,5 +34,42 @@ describe("ChatTabGroup", () => {
     expect(html).toContain("lucide-columns-3");
     expect(html).toContain(">3</span>");
     expect(html).toContain('draggable="true"');
+  });
+
+  it("renders working and unread states in the fixed trailing slot", () => {
+    const layout = {
+      ...applyPresetPure("cols-2", "A", ["A"]),
+      id: "tab-1",
+    };
+    const working = renderToStaticMarkup(
+      createElement(ChatTabGroup, {
+        layout,
+        members: [session],
+        active: false,
+        attention: "working",
+        onActivate: () => {},
+        onContextMenu: () => {},
+      }),
+    );
+    expect(working).toContain('aria-label="Agent working"');
+    expect(working).toContain("animate-spin");
+    expect(working).toContain("origin-center");
+    expect(working).toContain("text-fg-3");
+    expect(working).not.toContain("text-accent");
+    expect(working.indexOf('aria-label="Agent working"')).toBeLessThan(
+      working.indexOf(">2</span>"),
+    );
+
+    const unread = renderToStaticMarkup(
+      createElement(ChatTabGroup, {
+        layout,
+        members: [session],
+        active: false,
+        attention: "unread",
+        onActivate: () => {},
+        onContextMenu: () => {},
+      }),
+    );
+    expect(unread).toContain('aria-label="Completed — not viewed"');
   });
 });

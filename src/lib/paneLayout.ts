@@ -60,6 +60,8 @@ export interface PaneLayout {
   /** User-given group name; null = derive from member chat names. Only
    *  meaningful while split — a fresh group starts unnamed. */
   name: string | null;
+  lastCompletedAt?: string | null;
+  lastViewedAt?: string | null;
 }
 
 // ---- pure helpers -------------------------------------------------------
@@ -639,6 +641,7 @@ function setCurrent(next: PaneLayout): void {
 // ---- DB hydration + cross-window sync -----------------------------------
 
 const LAYOUT_CHANGED_EVENT = "chat/layout-changed";
+const ATTENTION_CHANGED_EVENT = "chat/tab-attention-changed";
 
 /**
  * Apply a layout set received from another window: hydrate the in-memory
@@ -690,6 +693,8 @@ function layoutFromTabRow(row: TabRow): PaneLayout | null {
     id: row.id,
     folderId: row.folder_id,
     name: row.name.trim() || null,
+    lastCompletedAt: row.last_completed_at,
+    lastViewedAt: row.last_viewed_at,
   };
 }
 
@@ -751,6 +756,13 @@ if (windowLabel !== null) {
   void listen(LAYOUT_CHANGED_EVENT, () => {
     void hydratePaneLayoutsFromDb().catch((e) =>
       console.error("paneLayout: cross-window hydration failed", e),
+    );
+  }).catch(() => {
+    // Tauri unavailable — cross-window sync simply no-ops.
+  });
+  void listen(ATTENTION_CHANGED_EVENT, () => {
+    void hydratePaneLayoutsFromDb().catch((e) =>
+      console.error("paneLayout: attention hydration failed", e),
     );
   }).catch(() => {
     // Tauri unavailable — cross-window sync simply no-ops.

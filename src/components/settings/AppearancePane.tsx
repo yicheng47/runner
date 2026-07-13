@@ -123,7 +123,7 @@ export function AppearancePane() {
 }
 
 // Segmented Auto · Light · Dark control. Mirrors the Pencil node `J0lKR`
-// in `runners-design.pen` — 3 cells inside a rounded container, active
+// in `runner-mvp-design.pen` — 3 cells inside a rounded container, active
 // cell carries the raised surface + accent label, inactive cells stay
 // muted on the bg.
 function ThemeSegmented({
