@@ -42,6 +42,12 @@ export interface OrderedChatTab {
   pinned: boolean;
 }
 
+export function chatTabIsLive(
+  members: readonly { status: string }[],
+): boolean {
+  return members.some((member) => member.status === "running");
+}
+
 export function chatTabArchiveLabel(layout: PaneLayout): string {
   return leaves(layout.root).length > 1 ? "Archive all" : "Archive";
 }

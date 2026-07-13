@@ -3,7 +3,11 @@ import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import { api, type DirectSessionEntry } from "./api";
-import type { SessionActivityEvent, SessionActivityState } from "./types";
+import type {
+  MissionActivityState,
+  SessionActivityEvent,
+  SessionActivityState,
+} from "./types";
 
 export type ChatAttentionState = "working" | "unread" | null;
 export type SessionActivityMap = Record<
@@ -55,6 +59,14 @@ export function rollupAttentionState(
   if (states.includes("working")) return "working";
   if (states.includes("unread")) return "unread";
   return null;
+}
+
+export function missionAttentionState(
+  anySessionLive: boolean,
+  activity: MissionActivityState | null,
+): ChatAttentionState {
+  if (!anySessionLive || activity === "idle") return null;
+  return "working";
 }
 
 export function useDirectSessionActivity(): SessionActivityMap {

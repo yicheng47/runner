@@ -102,15 +102,15 @@ pub struct MissionSummary {
     pub crew_name: String,
     pub pending_ask_count: usize,
     /// True iff at least one of the mission's session rows is `status =
-    /// 'running'`. Drives the sidebar mission-row status dot: live
-    /// missions paint with the accent, "paused" missions (status =
-    /// running but every slot is stopped/crashed) mute the dot so the
-    /// human can tell which workspaces will accept input at a glance,
-    /// without entering each one.
+    /// 'running'`. A mission without live sessions never shows the sidebar
+    /// working indicator.
     pub any_session_live: bool,
+    /// True iff every current, unarchived session row is `running`.
+    /// Partial crash/resume states keep the sidebar mission icon muted.
+    pub all_sessions_live: bool,
     /// Optional live activity projection derived from per-slot
     /// `runner_status` events. `None` means the mission has no live
-    /// sessions, preserving the existing paused/no-live sidebar behavior.
+    /// sessions and keeps the sidebar attention slot clear.
     pub activity: Option<MissionActivityState>,
 }
 
@@ -1704,6 +1704,19 @@ fn live_session_handles(conn: &Connection, mission_id: &str) -> rusqlite::Result
     rows.collect()
 }
 
+fn all_mission_sessions_live(conn: &Connection, mission_id: &str) -> rusqlite::Result<bool> {
+    let (total, running): (usize, usize) = conn.query_row(
+        "SELECT COUNT(*),
+                COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0)
+           FROM sessions
+          WHERE mission_id = ?1
+            AND archived_at IS NULL",
+        params![mission_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(total > 0 && running == total)
+}
+
 pub(crate) async fn mission_list_summary_impl(
     state: &AppState,
     crew_id: Option<String>,
@@ -1740,6 +1753,7 @@ pub(crate) async fn mission_list_summary_impl(
         // `activity` overlays busy/idle only for live mission slots.
         let live_handles = live_session_handles(&conn, &m.id).unwrap_or_default();
         let any_session_live = !live_handles.is_empty();
+        let all_sessions_live = all_mission_sessions_live(&conn, &m.id).unwrap_or(false);
         let activity = if any_session_live {
             let mission_dir = event_log::mission_dir(&state.app_data_dir, &m.crew_id, &m.id);
             mission_activity_from_log(&mission_dir, &live_handles)
@@ -1751,6 +1765,7 @@ pub(crate) async fn mission_list_summary_impl(
             crew_name,
             pending_ask_count,
             any_session_live,
+            all_sessions_live,
             activity,
         });
     }
@@ -2547,6 +2562,10 @@ mod tests {
             vec!["lead".to_string()],
             "projection must key live sessions by slot_handle"
         );
+        assert!(
+            !all_mission_sessions_live(&conn, &out.mission.id).unwrap(),
+            "one stopped slot keeps the mission-level live state false"
+        );
 
         let mission_dir = event_log::mission_dir(tmp.path(), &crew_id, &out.mission.id);
         let log = EventLog::open(&mission_dir).unwrap();
@@ -2556,6 +2575,16 @@ mod tests {
             mission_activity_from_log(&mission_dir, &handles),
             Some(MissionActivityState::Idle),
             "stopped slot statuses must not keep the mission busy"
+        );
+
+        conn.execute(
+            "UPDATE sessions SET status = 'running' WHERE mission_id = ?1",
+            params![out.mission.id],
+        )
+        .unwrap();
+        assert!(
+            all_mission_sessions_live(&conn, &out.mission.id).unwrap(),
+            "all running slots make the mission-level live state true"
         );
     }
 
