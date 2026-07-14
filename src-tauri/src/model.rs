@@ -102,6 +102,7 @@ pub enum MissionStatus {
 pub struct Mission {
     pub id: String,
     pub crew_id: String,
+    pub project_id: Option<String>,
     pub title: String,
     pub status: MissionStatus,
     pub goal_override: Option<String>,

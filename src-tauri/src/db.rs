@@ -80,6 +80,8 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // archive and remove member tabs transactionally.
 // 0010: persists tab-level completion and viewed watermarks for direct-chat
 // attention indicators across navigation, windows, and app restarts.
+// 0011: adds cwd-bound projects and nullable project membership on sessions
+// and missions. Deleting a project unbinds its work via ON DELETE SET NULL.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -106,6 +108,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (9, include_str!("../migrations/0009_folders_tabs.sql")),
     (10, include_str!("../migrations/0010_tab_attention.sql")),
+    (11, include_str!("../migrations/0011_projects.sql")),
 ];
 
 // Default-data seed: ships the Build squad starter crew on first launch.

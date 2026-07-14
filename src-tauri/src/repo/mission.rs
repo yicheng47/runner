@@ -3,10 +3,10 @@
 // Lifecycle orchestration (event-log writes, router/bus mounting,
 // rollback decisions) stays in `commands::mission`; this module owns the
 // row struct and the statements. Transaction boundaries are the
-// caller's: every function takes `&Connection` and composes inside the
-// existing `mission_start` / `mission_reset` transactions unchanged.
+// caller's except for project reassignment, which owns the transaction that
+// keeps the mission and its session rows in sync.
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_rusqlite::{from_row, to_params_named};
 
@@ -18,6 +18,7 @@ use super::{de_err, insert_sql, select_list, ser_err};
 pub struct MissionRow {
     pub id: String,
     pub crew_id: String,
+    pub project_id: Option<String>,
     pub title: String,
     pub status: MissionStatus,
     pub goal_override: Option<String>,
@@ -35,6 +36,7 @@ pub struct MissionRow {
 pub const COLUMNS: &[&str] = &[
     "id",
     "crew_id",
+    "project_id",
     "title",
     "status",
     "goal_override",
@@ -50,6 +52,7 @@ impl From<MissionRow> for Mission {
         Mission {
             id: r.id,
             crew_id: r.crew_id,
+            project_id: r.project_id,
             title: r.title,
             status: r.status,
             goal_override: r.goal_override,
@@ -67,6 +70,7 @@ impl From<&Mission> for MissionRow {
         MissionRow {
             id: m.id.clone(),
             crew_id: m.crew_id.clone(),
+            project_id: m.project_id.clone(),
             title: m.title.clone(),
             status: m.status,
             goal_override: m.goal_override.clone(),
@@ -85,6 +89,27 @@ pub fn insert(conn: &Connection, row: &MissionRow) -> rusqlite::Result<()> {
         to_params_named(row).map_err(ser_err)?.to_slice().as_slice(),
     )?;
     Ok(())
+}
+
+pub fn set_project(
+    conn: &mut Connection,
+    id: &str,
+    project_id: Option<&str>,
+) -> rusqlite::Result<usize> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let updated = tx.execute(
+        "UPDATE missions SET project_id = ?2 WHERE id = ?1",
+        rusqlite::params![id, project_id],
+    )?;
+    if updated == 0 {
+        return Ok(0);
+    }
+    tx.execute(
+        "UPDATE sessions SET project_id = ?2 WHERE mission_id = ?1",
+        rusqlite::params![id, project_id],
+    )?;
+    tx.commit()?;
+    Ok(updated)
 }
 
 pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Mission>> {
@@ -253,6 +278,7 @@ mod tests {
         MissionRow {
             id: "m-full".into(),
             crew_id: "c1".into(),
+            project_id: None,
             title: "Ship it".into(),
             status: MissionStatus::Completed,
             goal_override: Some("override".into()),
@@ -268,6 +294,7 @@ mod tests {
         MissionRow {
             id: "m-min".into(),
             crew_id: "c1".into(),
+            project_id: None,
             title: "Bare".into(),
             status: MissionStatus::Running,
             goal_override: None,
@@ -289,6 +316,50 @@ mod tests {
             let read = get(&conn, &row.id).unwrap().unwrap();
             assert_eq!(MissionRow::from(&read), row);
         }
+    }
+
+    #[test]
+    fn project_move_keeps_existing_session_rows_in_sync() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        seed_crew(&conn, "c1");
+        let project_a = crate::repo::project::create(&conn, "A", "/tmp/a").unwrap();
+        let project_b = crate::repo::project::create(&conn, "B", "/tmp/b").unwrap();
+        let mut mission = minimal_row();
+        mission.project_id = Some(project_a.id.clone());
+        insert(&conn, &mission).unwrap();
+        let mut session = crate::repo::session::SessionRowDb::new_running("s1".into());
+        session.mission_id = Some(mission.id.clone());
+        session.project_id = Some(project_a.id);
+        crate::repo::session::insert(&conn, &session).unwrap();
+
+        assert_eq!(
+            set_project(&mut conn, &mission.id, Some(&project_b.id)).unwrap(),
+            1
+        );
+        assert_eq!(
+            get(&conn, &mission.id).unwrap().unwrap().project_id,
+            Some(project_b.id.clone())
+        );
+        assert_eq!(
+            crate::repo::session::get_row(&conn, &session.id)
+                .unwrap()
+                .unwrap()
+                .project_id,
+            Some(project_b.id)
+        );
+
+        assert_eq!(set_project(&mut conn, &mission.id, None).unwrap(), 1);
+        assert!(get(&conn, &mission.id)
+            .unwrap()
+            .unwrap()
+            .project_id
+            .is_none());
+        assert!(crate::repo::session::get_row(&conn, &session.id)
+            .unwrap()
+            .unwrap()
+            .project_id
+            .is_none());
     }
 
     #[test]

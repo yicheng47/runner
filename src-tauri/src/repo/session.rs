@@ -9,7 +9,7 @@
 // PTY hot path where statement shape and timing are load-bearing. Do not
 // consolidate them.
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_rusqlite::{from_row, to_params_named};
 
@@ -21,6 +21,7 @@ use super::{de_err, insert_sql, qualified_select_list, select_list, ser_err};
 pub struct SessionRowDb {
     pub id: String,
     pub mission_id: Option<String>,
+    pub project_id: Option<String>,
     pub runner_id: Option<String>,
     pub slot_id: Option<String>,
     pub cwd: Option<String>,
@@ -55,6 +56,7 @@ impl SessionRowDb {
         SessionRowDb {
             id,
             mission_id: None,
+            project_id: None,
             runner_id: None,
             slot_id: None,
             cwd: None,
@@ -81,6 +83,7 @@ impl SessionRowDb {
 pub const COLUMNS: &[&str] = &[
     "id",
     "mission_id",
+    "project_id",
     "runner_id",
     "slot_id",
     "cwd",
@@ -130,6 +133,29 @@ pub fn delete_all_for_mission(conn: &Connection, mission_id: &str) -> rusqlite::
         "DELETE FROM sessions WHERE mission_id = ?1",
         rusqlite::params![mission_id],
     )
+}
+
+pub fn set_project_for_direct_sessions(
+    conn: &mut Connection,
+    ids: &[String],
+    project_id: Option<&str>,
+) -> rusqlite::Result<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    for id in ids {
+        let updated = tx.execute(
+            "UPDATE sessions
+                SET project_id = ?2
+              WHERE id = ?1
+                AND mission_id IS NULL
+                AND slot_id IS NULL
+                AND archived_at IS NULL",
+            rusqlite::params![id, project_id],
+        )?;
+        if updated == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+    }
+    tx.commit()
 }
 
 /// Persist the runtime-side identity after the PTY forks.
@@ -503,6 +529,7 @@ mod tests {
         SessionRowDb {
             id: "sess-full".into(),
             mission_id: None,
+            project_id: None,
             runner_id: Some("r1".into()),
             slot_id: None,
             cwd: Some("/tmp/work".into()),
@@ -537,6 +564,44 @@ mod tests {
         for row in [full_row(), minimal_row()] {
             insert(&conn, &row).unwrap();
             assert_eq!(get_row(&conn, &row.id).unwrap().unwrap(), row);
+        }
+    }
+
+    #[test]
+    fn direct_session_projects_move_atomically() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        seed_runner(&conn, "r1", "alpha");
+        let project_a = crate::repo::project::create(&conn, "A", "/tmp/a").unwrap();
+        let project_b = crate::repo::project::create(&conn, "B", "/tmp/b").unwrap();
+        let ids = ["sess-a".to_string(), "sess-b".to_string()];
+        for id in &ids {
+            let mut row = SessionRowDb::new_running(id.clone());
+            row.runner_id = Some("r1".into());
+            row.project_id = Some(project_a.id.clone());
+            insert(&conn, &row).unwrap();
+        }
+
+        set_project_for_direct_sessions(&mut conn, &ids, Some(&project_b.id)).unwrap();
+        for id in &ids {
+            assert_eq!(
+                get_row(&conn, id).unwrap().unwrap().project_id,
+                Some(project_b.id.clone())
+            );
+        }
+
+        let missing_member = [ids[0].clone(), "missing".to_string()];
+        assert!(set_project_for_direct_sessions(&mut conn, &missing_member, None).is_err());
+        for id in &ids {
+            assert_eq!(
+                get_row(&conn, id).unwrap().unwrap().project_id,
+                Some(project_b.id.clone())
+            );
+        }
+
+        set_project_for_direct_sessions(&mut conn, &ids, None).unwrap();
+        for id in &ids {
+            assert!(get_row(&conn, id).unwrap().unwrap().project_id.is_none());
         }
     }
 

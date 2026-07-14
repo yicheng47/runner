@@ -20,6 +20,7 @@
 pub mod crew;
 pub mod folder;
 pub mod mission;
+pub mod project;
 pub mod runner;
 pub mod serde;
 pub mod session;
