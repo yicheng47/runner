@@ -16,6 +16,13 @@ const session = {
   status: "running",
 } as DirectSessionEntry;
 
+const reviewerSession = {
+  ...session,
+  session_id: "B",
+  handle: "reviewer",
+  display_name: "Reviewer",
+} as DirectSessionEntry;
+
 describe("ChatTabGroup", () => {
   it("marks a multi-pane tab with a split icon and no count badge", () => {
     const layout = {
@@ -79,6 +86,49 @@ describe("ChatTabGroup", () => {
     expect(html).toContain('fill="none"');
     expect(html).toContain("text-accent");
     expect(html).not.toContain('fill="var(--color-accent)"');
+  });
+
+  it("renders the durable tab name as a controlled inline rename", () => {
+    const layout = {
+      ...applyPresetPure("cols-2", "A", ["A", "B"], "Review pair"),
+      id: "tab-1",
+    };
+    const html = renderToStaticMarkup(
+      createElement(ChatTabGroup, {
+        layout,
+        members: [session, reviewerSession],
+        active: false,
+        attention: null,
+        renaming: true,
+        onActivate: () => {},
+        onContextMenu: () => {},
+        onRenameSubmit: () => {},
+        onRenameCancel: () => {},
+      }),
+    );
+
+    expect(html).toContain('value="Review pair"');
+    expect(html).toContain('placeholder="@coder + @reviewer"');
+    expect(html).toContain("lucide-columns-2");
+  });
+
+  it("shows the derived member label when the durable name is clear", () => {
+    const layout = {
+      ...applyPresetPure("cols-2", "A", ["A", "B"]),
+      id: "tab-1",
+    };
+    const html = renderToStaticMarkup(
+      createElement(ChatTabGroup, {
+        layout,
+        members: [session, reviewerSession],
+        active: false,
+        attention: null,
+        onActivate: () => {},
+        onContextMenu: () => {},
+      }),
+    );
+
+    expect(html).toContain("@coder + @reviewer");
   });
 
   it("mutes a fully stopped tab icon", () => {
