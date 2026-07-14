@@ -22,7 +22,6 @@ import {
   useRef,
   useState,
   type ComponentType,
-  type CSSProperties,
   type ReactNode,
 } from "react";
 import {
@@ -2130,27 +2129,15 @@ function SortableChatTab({
   children: ReactNode;
 }) {
   const {
-    isDragging,
     listeners,
     setNodeRef,
-    transform,
-    transition,
   } = useSortable({
     id: tabDndId(tabId),
     data: { kind: "tab", tabId, folderId } satisfies ChatTabDndData,
   });
-  const style: CSSProperties = {
-    position: isDragging ? "relative" : undefined,
-    zIndex: isDragging ? 30 : undefined,
-    transform: transform
-      ? `translate3d(${transform.x}px, ${transform.y}px, 0) scaleX(${transform.scaleX}) scaleY(${transform.scaleY})`
-      : undefined,
-    transition,
-    touchAction: "none",
-  };
 
   return (
-    <div ref={setNodeRef} style={style} {...listeners}>
+    <div ref={setNodeRef} style={{ touchAction: "none" }} {...listeners}>
       {children}
     </div>
   );
