@@ -73,22 +73,6 @@ pub fn project_set_cwd(
 }
 
 #[tauri::command]
-pub fn project_set_collapsed(
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
-    id: String,
-    collapsed: bool,
-) -> Result<ProjectRow> {
-    let conn = state.db.get()?;
-    if repo::project::set_collapsed(&conn, &id, collapsed)? == 0 {
-        return Err(Error::msg(format!("project not found: {id}")));
-    }
-    let row = repo::project::get(&conn, &id)?.ok_or_else(|| Error::msg("project disappeared"))?;
-    emit_changed(&app);
-    Ok(row)
-}
-
-#[tauri::command]
 pub fn project_reorder(
     state: State<'_, AppState>,
     app: tauri::AppHandle,

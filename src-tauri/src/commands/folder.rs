@@ -49,22 +49,6 @@ pub fn folder_rename(
 }
 
 #[tauri::command]
-pub fn folder_set_collapsed(
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
-    id: String,
-    collapsed: bool,
-) -> Result<FolderRow> {
-    let conn = state.db.get()?;
-    if repo::folder::set_collapsed(&conn, &id, collapsed)? == 0 {
-        return Err(Error::msg(format!("folder not found: {id}")));
-    }
-    let row = repo::folder::get(&conn, &id)?.ok_or_else(|| Error::msg("folder disappeared"))?;
-    let _ = app.emit("chat/layout-changed", serde_json::json!({}));
-    Ok(row)
-}
-
-#[tauri::command]
 pub fn folder_reorder(
     state: State<'_, AppState>,
     app: tauri::AppHandle,

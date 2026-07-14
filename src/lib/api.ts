@@ -83,7 +83,6 @@ export interface FolderRow {
   id: string;
   name: string;
   position: number;
-  collapsed: boolean;
   created_at: string;
 }
 
@@ -92,7 +91,6 @@ export interface ProjectRow {
   name: string;
   cwd: string;
   position: number;
-  collapsed: boolean;
   created_at: string;
 }
 
@@ -136,8 +134,6 @@ export const api = {
       invoke<ProjectRow>("project_rename", { id, name }),
     setCwd: (id: string, cwd: string) =>
       invoke<ProjectRow>("project_set_cwd", { id, cwd }),
-    setCollapsed: (id: string, collapsed: boolean) =>
-      invoke<ProjectRow>("project_set_collapsed", { id, collapsed }),
     reorder: (orderedIds: string[]) =>
       invoke<ProjectRow[]>("project_reorder", { orderedIds }),
     delete: (id: string) => invoke<void>("project_delete", { id }),
@@ -147,8 +143,6 @@ export const api = {
     create: (name: string) => invoke<FolderRow>("folder_create", { name }),
     rename: (id: string, name: string) =>
       invoke<FolderRow>("folder_rename", { id, name }),
-    setCollapsed: (id: string, collapsed: boolean) =>
-      invoke<FolderRow>("folder_set_collapsed", { id, collapsed }),
     reorder: (orderedIds: string[]) =>
       invoke<FolderRow[]>("folder_reorder", { orderedIds }),
     delete: (id: string) => invoke<void>("folder_delete", { id }),
