@@ -121,7 +121,6 @@ vi.mock("../lib/api", () => ({
           id: "folder-1",
           name: "Review",
           position: 0,
-          collapsed: false,
           created_at: "2026-07-14T00:00:00Z",
         },
       ]),

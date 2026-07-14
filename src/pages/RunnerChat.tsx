@@ -137,7 +137,7 @@ const STORAGE_PANEL_OPEN = "runner.chat.panel.open";
 const STORAGE_PANEL_WIDTH = "runner.chat.panel.width";
 // Dispatched by RunnerTerminal's key handler for plain Cmd+[ / Cmd+]
 // keystrokes that land inside xterm; mirrors SIDEBAR_NAVIGATE_EVENT.
-const CHAT_PANE_CYCLE_EVENT = "runner:cycle-chat-pane";
+const RUNNER_TERMINAL_CYCLE_EVENT = "runner:cycle-terminal";
 const PANEL_MIN = 200;
 const PANEL_MAX = 480;
 const PANEL_DEFAULT = 320;
@@ -1092,10 +1092,10 @@ export default function RunnerChat() {
       }
     };
     window.addEventListener("keydown", onKey, { capture: true });
-    window.addEventListener(CHAT_PANE_CYCLE_EVENT, onCycle);
+    window.addEventListener(RUNNER_TERMINAL_CYCLE_EVENT, onCycle);
     return () => {
       window.removeEventListener("keydown", onKey, { capture: true });
-      window.removeEventListener(CHAT_PANE_CYCLE_EVENT, onCycle);
+      window.removeEventListener(RUNNER_TERMINAL_CYCLE_EVENT, onCycle);
     };
   }, [splitActive, cyclePaneFocus]);
 

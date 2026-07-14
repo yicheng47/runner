@@ -48,18 +48,16 @@ import {
   useNavigate,
 } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
-import { basename, join } from "@tauri-apps/api/path";
-import { mkdir } from "@tauri-apps/plugin-fs";
+import { basename } from "@tauri-apps/api/path";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
-  ArrowDown,
-  ArrowUp,
   AppWindow,
   Archive,
   ChevronDown,
   ChevronRight,
   Flag,
   Folder,
+  FolderCode,
   FolderPlus,
   MessageSquarePlus,
   MoreHorizontal,
@@ -130,8 +128,6 @@ import {
 } from "./SidebarTabRow";
 import { PanelToggleGlyph } from "./PanelToggleGlyph";
 import { PopoverMenu } from "./ui/PopoverMenu";
-import { Modal } from "./ui/Overlay";
-import { Button } from "./ui/Button";
 import { useResizableWidth } from "../hooks/useResizableWidth";
 import {
   BRAND_MARK_PINNED_COLOR,
@@ -321,9 +317,8 @@ export function Sidebar({
     string | null
   >(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const [projectAddMenuOpen, setProjectAddMenuOpen] = useState(false);
-  const [projectDraftParent, setProjectDraftParent] = useState<string | null>(
-    null,
+  const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(
+    () => new Set(),
   );
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(
     null,
@@ -350,10 +345,12 @@ export function Sidebar({
   const [folderMenu, setFolderMenu] = useState<{
     id: string;
     name: string;
-    collapsed: boolean;
     x: number;
     y: number;
   } | null>(null);
+  const [collapsedFolderIds, setCollapsedFolderIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [folderDeleteConfirm, setFolderDeleteConfirm] = useState<{
     id: string;
     name: string;
@@ -893,7 +890,7 @@ export function Sidebar({
   const closeFolderMenu = useCallback(() => setFolderMenu(null), []);
   const openFolderMenu = useCallback(
     (
-      folder: { id: string; name: string; collapsed: boolean },
+      folder: { id: string; name: string },
       anchor: { x: number; y: number },
     ) => {
       setChatTabMenu(null);
@@ -902,7 +899,6 @@ export function Sidebar({
       setFolderMenu({
         id: folder.id,
         name: folder.name,
-        collapsed: folder.collapsed,
         x: anchor.x,
         y: anchor.y,
       });
@@ -994,56 +990,15 @@ export function Sidebar({
     [refreshProjects],
   );
 
-  const toggleProject = useCallback(
-    async (project: ProjectRow) => {
-      setActiveProjectId(project.id);
-      try {
-        await api.project.setCollapsed(project.id, !project.collapsed);
-        await refreshProjects();
-      } catch (e) {
-        console.error("sidebar: project_set_collapsed failed", e);
-      }
-    },
-    [refreshProjects],
-  );
-
-  const rebindProject = useCallback(
-    async (project: ProjectRow) => {
-      try {
-        const picked = await openDialog({
-          directory: true,
-          multiple: false,
-          title: `Choose folder for ${project.name}`,
-          defaultPath: project.cwd,
-        });
-        if (typeof picked !== "string") return;
-        await api.project.setCwd(project.id, picked);
-        await refreshProjects();
-      } catch (e) {
-        console.error("sidebar: project_set_cwd failed", e);
-      }
-    },
-    [refreshProjects],
-  );
-
-  const reorderProject = useCallback(
-    async (id: string, direction: -1 | 1) => {
-      const index = projects.findIndex((project) => project.id === id);
-      const nextIndex = index + direction;
-      if (index < 0 || nextIndex < 0 || nextIndex >= projects.length) return;
-      const orderedIds = projects.map((project) => project.id);
-      [orderedIds[index], orderedIds[nextIndex]] = [
-        orderedIds[nextIndex],
-        orderedIds[index],
-      ];
-      try {
-        setProjects(await api.project.reorder(orderedIds));
-      } catch (e) {
-        console.error("sidebar: project_reorder failed", e);
-      }
-    },
-    [projects],
-  );
+  const toggleProject = useCallback((project: ProjectRow) => {
+    setActiveProjectId(project.id);
+    setCollapsedProjectIds((current) => {
+      const next = new Set(current);
+      if (next.has(project.id)) next.delete(project.id);
+      else next.add(project.id);
+      return next;
+    });
+  }, []);
 
   const deleteProject = useCallback(
     async (project: ProjectRow) => {
@@ -1235,13 +1190,13 @@ export function Sidebar({
     [],
   );
 
-  const toggleFolder = useCallback(async (id: string, collapsed: boolean) => {
-    try {
-      await api.folder.setCollapsed(id, !collapsed);
-      await hydratePaneLayoutsFromDb();
-    } catch (e) {
-      console.error("sidebar: folder_set_collapsed failed", e);
-    }
+  const toggleFolder = useCallback((id: string) => {
+    setCollapsedFolderIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }, []);
 
   const requestFolderDelete = useCallback(
@@ -1341,7 +1296,6 @@ export function Sidebar({
   }, []);
 
   const handleNewProjectChat = useCallback((projectId: string) => {
-    setProjectAddMenuOpen(false);
     setChatCreateMenu(null);
     setCreatingFolder(false);
     setNewChatFolderId(null);
@@ -1356,13 +1310,12 @@ export function Sidebar({
     setCreatingMission(true);
   }, []);
 
-  const createProjectFromExistingFolder = useCallback(async () => {
-    setProjectAddMenuOpen(false);
+  const addProject = useCallback(async () => {
     try {
       const picked = await openDialog({
         directory: true,
         multiple: false,
-        title: "Use an existing folder",
+        title: "Add a project",
       });
       if (typeof picked !== "string") return;
       const project = await api.project.create(await basename(picked), picked);
@@ -1371,41 +1324,9 @@ export function Sidebar({
       setActiveProjectId(project.id);
       await refreshProjects();
     } catch (e) {
-      console.error("sidebar: project_create existing folder failed", e);
+      console.error("sidebar: project_create failed", e);
     }
   }, [refreshProjects]);
-
-  const beginProjectFromScratch = useCallback(async () => {
-    setProjectAddMenuOpen(false);
-    try {
-      const parent = await openDialog({
-        directory: true,
-        multiple: false,
-        title: "Choose a parent folder",
-      });
-      if (typeof parent === "string") setProjectDraftParent(parent);
-    } catch (e) {
-      console.error("sidebar: choose project parent failed", e);
-    }
-  }, []);
-
-  const createProjectFromScratch = useCallback(
-    async (name: string) => {
-      if (!projectDraftParent) return;
-      if (name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
-        throw new Error("Project name must be a single directory name.");
-      }
-      const cwd = await join(projectDraftParent, name);
-      await mkdir(cwd);
-      const project = await api.project.create(name, cwd);
-      setProjectDraftParent(null);
-      setProjectsOpen(true);
-      setStoredFlag(STORAGE_PROJECTS_OPEN, true);
-      setActiveProjectId(project.id);
-      await refreshProjects();
-    },
-    [projectDraftParent, refreshProjects],
-  );
 
   const clearTabDrag = useCallback(() => {
     setDraggedTabId(null);
@@ -1899,35 +1820,12 @@ export function Sidebar({
             <div className="flex min-h-0 flex-1 flex-col pb-3">
               <section className="flex shrink-0 flex-col">
                 <CollapsibleSectionHeader
-                  label="PROJECTS"
+                  label="PROJECT"
                   open={projectsOpen}
                   attention={projectsOpen ? null : projectAttention}
                   onToggle={toggleProjects}
-                  onPlus={() => setProjectAddMenuOpen((open) => !open)}
+                  onPlus={() => void addProject()}
                   plusTitle="Add project"
-                  plusExpanded={projectAddMenuOpen}
-                  plusPopup="menu"
-                  onPlusMenuClose={() => setProjectAddMenuOpen(false)}
-                  plusMenu={
-                    <div className="flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]">
-                      <button
-                        type="button"
-                        onClick={() => void beginProjectFromScratch()}
-                        className="flex cursor-pointer items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-fg hover:bg-line"
-                      >
-                        <FolderPlus aria-hidden className="h-3.5 w-3.5" />
-                        Start from scratch
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void createProjectFromExistingFolder()}
-                        className="flex cursor-pointer items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-fg hover:bg-line"
-                      >
-                        <Folder aria-hidden className="h-3.5 w-3.5" />
-                        Use an existing folder
-                      </button>
-                    </div>
-                  }
                 />
                 {projectsOpen ? (
                   <div className="flex max-h-[34vh] flex-col gap-0.5 overflow-y-auto px-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -1959,6 +1857,9 @@ export function Sidebar({
                           nestedTabs.some((item) =>
                             chatTabIsLive(item.members),
                           );
+                        const projectCollapsed = collapsedProjectIds.has(
+                          project.id,
+                        );
                         return (
                           <div
                             key={project.id}
@@ -1967,7 +1868,7 @@ export function Sidebar({
                             {renamingProjectId === project.id ? (
                               <FolderRenameRow
                                 initial={project.name}
-                                collapsed={project.collapsed}
+                                collapsed={projectCollapsed}
                                 live={live}
                                 attention={nestedAttention}
                                 inputLabel="Project name"
@@ -2001,20 +1902,18 @@ export function Sidebar({
                                   className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
                                   title={project.cwd}
                                 >
-                                  {project.collapsed ? (
+                                  {projectCollapsed ? (
                                     <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
                                   ) : (
                                     <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
                                   )}
-                                  <SidebarTabIcon icon={Folder} active={live} />
+                                  <SidebarTabIcon icon={FolderCode} active={live} />
                                   <span className="min-w-0 flex-1 truncate font-medium">
                                     {project.name}
                                   </span>
                                   <ChatAttentionIndicator
                                     state={
-                                      project.collapsed
-                                        ? nestedAttention
-                                        : null
+                                      projectCollapsed ? nestedAttention : null
                                     }
                                   />
                                 </button>
@@ -2034,7 +1933,7 @@ export function Sidebar({
                                 </button>
                               </div>
                             )}
-                            {project.collapsed ? null : (
+                            {projectCollapsed ? null : (
                               <div className="ml-3 flex flex-col gap-0.5 border-l border-line pl-2">
                                 {nestedMissions.map((mission) => (
                                   <MissionRow
@@ -2198,8 +2097,11 @@ export function Sidebar({
                           const folderLive = items.some((item) =>
                             chatTabIsLive(item.members),
                           );
+                          const folderCollapsed = collapsedFolderIds.has(
+                            folder.id,
+                          );
                           const visuallyCollapsed =
-                            folder.collapsed &&
+                            folderCollapsed &&
                             collapsedFolderDropId !== folder.id;
                           return (
                             <div
@@ -2209,7 +2111,7 @@ export function Sidebar({
                               {renamingFolderId === folder.id ? (
                                 <FolderRenameRow
                                   initial={folder.name}
-                                  collapsed={folder.collapsed}
+                                  collapsed={folderCollapsed}
                                   live={folderLive}
                                   attention={folderAttention}
                                   onSubmit={(nextName) =>
@@ -2225,7 +2127,7 @@ export function Sidebar({
                                 <CollapsedFolderDropRow
                                   folderId={folder.id}
                                   enabled={
-                                    folder.collapsed && draggedTabId !== null
+                                    folderCollapsed && draggedTabId !== null
                                   }
                                   active={
                                     collapsedFolderDropId === folder.id
@@ -2236,12 +2138,7 @@ export function Sidebar({
                                 >
                                   <button
                                     type="button"
-                                    onClick={() =>
-                                      void toggleFolder(
-                                        folder.id,
-                                        folder.collapsed,
-                                      )
-                                    }
+                                    onClick={() => toggleFolder(folder.id)}
                                     className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
                                   >
                                     {visuallyCollapsed ? (
@@ -2524,7 +2421,9 @@ export function Sidebar({
           anchorY={folderMenu.y}
           onClose={closeFolderMenu}
           onNewChat={() => {
-            if (folderMenu.collapsed) void toggleFolder(folderMenu.id, true);
+            if (collapsedFolderIds.has(folderMenu.id)) {
+              toggleFolder(folderMenu.id);
+            }
             handleNewFolderChat(folderMenu.id);
             closeFolderMenu();
           }}
@@ -2556,21 +2455,17 @@ export function Sidebar({
         <ProjectContextMenu
           anchorX={projectMenu.x}
           anchorY={projectMenu.y}
-          canMoveUp={projects[0]?.id !== projectMenu.project.id}
-          canMoveDown={
-            projects[projects.length - 1]?.id !== projectMenu.project.id
-          }
           onClose={closeProjectMenu}
           onNewChat={() => {
-            if (projectMenu.project.collapsed) {
-              void toggleProject(projectMenu.project);
+            if (collapsedProjectIds.has(projectMenu.project.id)) {
+              toggleProject(projectMenu.project);
             }
             handleNewProjectChat(projectMenu.project.id);
             closeProjectMenu();
           }}
           onNewMission={() => {
-            if (projectMenu.project.collapsed) {
-              void toggleProject(projectMenu.project);
+            if (collapsedProjectIds.has(projectMenu.project.id)) {
+              toggleProject(projectMenu.project);
             }
             handleNewProjectMission(projectMenu.project.id);
             closeProjectMenu();
@@ -2579,31 +2474,12 @@ export function Sidebar({
             setRenamingProjectId(projectMenu.project.id);
             closeProjectMenu();
           }}
-          onRebind={() => {
-            void rebindProject(projectMenu.project);
-            closeProjectMenu();
-          }}
-          onMoveUp={() => {
-            void reorderProject(projectMenu.project.id, -1);
-            closeProjectMenu();
-          }}
-          onMoveDown={() => {
-            void reorderProject(projectMenu.project.id, 1);
-            closeProjectMenu();
-          }}
           onDelete={() => {
             setProjectDeleteConfirm(projectMenu.project);
             closeProjectMenu();
           }}
         />
       ) : null}
-
-      <ProjectNameModal
-        open={projectDraftParent !== null}
-        parent={projectDraftParent ?? ""}
-        onClose={() => setProjectDraftParent(null)}
-        onSubmit={createProjectFromScratch}
-      />
 
       <ConfirmDialog
         open={projectDeleteConfirm !== null}
@@ -3330,7 +3206,7 @@ function RowContextMenu({
           <div className="my-1 h-px bg-line" />
           {currentProjectId !== null ? (
             <ContextMenuItem
-              icon={Folder}
+              icon={FolderCode}
               label="Remove from project"
               onClick={() => onMoveToProject(null)}
             />
@@ -3340,7 +3216,7 @@ function RowContextMenu({
             .map((project) => (
               <ContextMenuItem
                 key={project.id}
-                icon={Folder}
+                icon={FolderCode}
                 label={`Move to ${project.name}`}
                 onClick={() => onMoveToProject(project.id)}
               />
@@ -3360,28 +3236,18 @@ function RowContextMenu({
 function ProjectContextMenu({
   anchorX,
   anchorY,
-  canMoveUp,
-  canMoveDown,
   onClose,
   onNewChat,
   onNewMission,
   onRename,
-  onRebind,
-  onMoveUp,
-  onMoveDown,
   onDelete,
 }: {
   anchorX: number;
   anchorY: number;
-  canMoveUp: boolean;
-  canMoveDown: boolean;
   onClose: () => void;
   onNewChat: () => void;
   onNewMission: () => void;
   onRename: () => void;
-  onRebind: () => void;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
   onDelete: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -3427,106 +3293,9 @@ function ProjectContextMenu({
       />
       <div className="my-1 h-px bg-line" />
       <ContextMenuItem icon={SquarePen} label="Rename project" onClick={onRename} />
-      <ContextMenuItem icon={Folder} label="Change folder" onClick={onRebind} />
-      <ContextMenuItem
-        icon={ArrowUp}
-        label="Move up"
-        onClick={onMoveUp}
-        disabled={!canMoveUp}
-      />
-      <ContextMenuItem
-        icon={ArrowDown}
-        label="Move down"
-        onClick={onMoveDown}
-        disabled={!canMoveDown}
-      />
       <div className="my-1 h-px bg-line" />
       <ContextMenuItem icon={Trash2} label="Delete project" onClick={onDelete} danger />
     </div>
-  );
-}
-
-function ProjectNameModal({
-  open,
-  parent,
-  onClose,
-  onSubmit,
-}: {
-  open: boolean;
-  parent: string;
-  onClose: () => void;
-  onSubmit: (name: string) => Promise<void>;
-}) {
-  const [name, setName] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    setName("");
-    setSubmitting(false);
-    setError(null);
-  }, [open]);
-  const submit = async () => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    setSubmitting(true);
-    setError(null);
-    try {
-      await onSubmit(trimmed);
-    } catch (e) {
-      setError(String(e));
-      setSubmitting(false);
-    }
-  };
-  return (
-    <Modal
-      open={open}
-      onClose={submitting ? () => {} : onClose}
-      title="Start a project from scratch"
-      widthClass="w-full max-w-[480px]"
-      footer={
-        <>
-          <Button onClick={onClose} disabled={submitting}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            onClick={() => void submit()}
-            disabled={submitting || !name.trim()}
-          >
-            {submitting ? "Creating…" : "Create project"}
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-3">
-        {error ? (
-          <div className="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
-            {error}
-          </div>
-        ) : null}
-        <label className="flex flex-col gap-1.5 text-xs font-semibold text-fg">
-          Project name
-          <input
-            autoFocus
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                void submit();
-              }
-            }}
-            disabled={submitting}
-            placeholder="my-project"
-            className="rounded-md border border-line bg-bg px-3 py-2 text-[13px] font-normal text-fg placeholder:text-fg-3 focus:border-fg-3 focus:outline-none"
-          />
-        </label>
-        <p className="truncate font-mono text-[11px] text-fg-3" title={parent}>
-          Parent: {parent}
-        </p>
-      </div>
-    </Modal>
   );
 }
 

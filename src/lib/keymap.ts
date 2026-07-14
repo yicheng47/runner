@@ -80,7 +80,7 @@ export const KEYMAP: readonly KeymapEntry[] = [
   {
     // Handler: RunnerChat.tsx cyclePaneFocus listener.
     id: "pane-focus",
-    title: "Focus previous / next pane",
+    title: "Previous / next chat pane",
     description: "Cycle focus across panes while a chat is split.",
     keys: ["⌘[", "⌘]"],
     scope: "chat-split",
@@ -94,19 +94,11 @@ export const KEYMAP: readonly KeymapEntry[] = [
     scope: "chat-split",
   },
   {
-    // Handler: MissionWorkspace.tsx ⌘1–9 listener.
-    id: "mission-feed",
-    title: "Mission feed",
-    description: "Jump to the event feed tab in a mission workspace.",
-    keys: ["⌘1"],
-    scope: "mission",
-  },
-  {
-    // Handler: MissionWorkspace.tsx ⌘1–9 listener.
-    id: "mission-slots",
-    title: "Runner slots",
-    description: "Jump to an open runner terminal tab in a mission workspace.",
-    keys: ["⌘2–⌘9"],
+    // Handler: MissionWorkspace.tsx mission-tab cycle listener.
+    id: "mission-tabs",
+    title: "Previous / next mission tab",
+    description: "Cycle through the feed and open runner tabs in a mission workspace.",
+    keys: ["⌘[", "⌘]"],
     scope: "mission",
   },
 ];

@@ -62,7 +62,7 @@ interface ExitEvent {
 const MAX_PENDING_LIVE_EVENTS = 4096;
 const SIDEBAR_TOGGLE_EVENT = "runner:toggle-sidebar";
 const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
-const CHAT_PANE_CYCLE_EVENT = "runner:cycle-chat-pane";
+const RUNNER_TERMINAL_CYCLE_EVENT = "runner:cycle-terminal";
 const OPEN_SETTINGS_EVENT = "runner:open-settings";
 
 function normalizePasteImageMime(type: string): PasteImageMimeType | null {
@@ -535,10 +535,10 @@ export const RunnerTerminal = forwardRef<
           window.dispatchEvent(new Event(OPEN_SETTINGS_EVENT));
           return false;
         }
-        // Bracket pair, iTerm2-style: plain Cmd+[ / Cmd+] cycles split-pane
-        // focus (impl 0020; no-op outside a split chat), Cmd+Shift+[ /
-        // Cmd+Shift+] navigates sidebar pages. Shifted brackets arrive as
-        // "{" / "}" on US layouts, hence the code-first match.
+        // Bracket pair, iTerm2-style: plain Cmd+[ / Cmd+] cycles the current
+        // terminal surface (split-chat panes or mission tabs), while
+        // Cmd+Shift+[ / Cmd+Shift+] navigates sidebar pages. Shifted brackets
+        // arrive as "{" / "}" on US layouts, hence the code-first match.
         if (
           !e.altKey &&
           (e.code === "BracketLeft" || e.key === "[" || e.key === "{")
@@ -546,7 +546,9 @@ export const RunnerTerminal = forwardRef<
           e.preventDefault();
           window.dispatchEvent(
             new CustomEvent(
-              e.shiftKey ? SIDEBAR_NAVIGATE_EVENT : CHAT_PANE_CYCLE_EVENT,
+              e.shiftKey
+                ? SIDEBAR_NAVIGATE_EVENT
+                : RUNNER_TERMINAL_CYCLE_EVENT,
               { detail: { direction: "previous" } },
             ),
           );
@@ -559,7 +561,9 @@ export const RunnerTerminal = forwardRef<
           e.preventDefault();
           window.dispatchEvent(
             new CustomEvent(
-              e.shiftKey ? SIDEBAR_NAVIGATE_EVENT : CHAT_PANE_CYCLE_EVENT,
+              e.shiftKey
+                ? SIDEBAR_NAVIGATE_EVENT
+                : RUNNER_TERMINAL_CYCLE_EVENT,
               { detail: { direction: "next" } },
             ),
           );

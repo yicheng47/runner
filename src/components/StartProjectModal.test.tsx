@@ -64,7 +64,6 @@ const project: ProjectRow = {
   name: "Runner",
   cwd: "/projects/runner",
   position: 0,
-  collapsed: true,
   created_at: "2026-07-14T00:00:00Z",
 };
 
@@ -132,7 +131,7 @@ describe("project-scoped start modals", () => {
     await changeField(field(container, "cwd"), "/custom/mission");
 
     await act(async () => {
-      root.render(render({ ...project, collapsed: false }));
+      root.render(render({ ...project, name: "Runner renamed" }));
     });
 
     expect(field(container, "title").value).toBe("Keep this title");
@@ -155,7 +154,7 @@ describe("project-scoped start modals", () => {
     await changeField(field(container, "cwd"), "/custom/chat");
 
     await act(async () => {
-      root.render(render({ ...project, collapsed: false }));
+      root.render(render({ ...project, name: "Runner renamed" }));
     });
 
     expect(field(container, "title").value).toBe("Keep this chat");

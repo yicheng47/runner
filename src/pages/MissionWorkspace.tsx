@@ -81,6 +81,10 @@ import {
   setLastMissionTerminalId,
 } from "../lib/missionLastTerminal";
 import {
+  missionTabInDirection,
+  type MissionTabCycleDirection,
+} from "../lib/missionTabNavigation";
+import {
   markArchivingMission,
   unmarkArchivingMission,
   useArchivingMission,
@@ -90,6 +94,7 @@ const RAIL_STORAGE_WIDTH = "runner.mission.rail.width";
 const RAIL_MIN = 200;
 const RAIL_MAX = 480;
 const RAIL_DEFAULT = 288;
+const RUNNER_TERMINAL_CYCLE_EVENT = "runner:cycle-terminal";
 
 /// Compute cols/rows for the would-be terminal area from the Pane
 /// container's bounding rect + xterm/FitAddon using the user's current
@@ -742,32 +747,59 @@ export default function MissionWorkspace() {
     [id, isArchived, sessions],
   );
 
-  const shortcutTabs = useMemo<Array<"feed" | string>>(() => {
-    if (isArchived) return ["feed"];
-    const slotTabs = openTabs
+  const openSessionTabIds = useMemo(() => {
+    if (isArchived || isSecondary) return [];
+    return openTabs
       .map((tabId) => sessions.find((s) => s.id === tabId))
       .filter((s): s is SessionRow => s !== undefined)
       .map((s) => s.id);
-    return ["feed", ...slotTabs].slice(0, 9);
-  }, [isArchived, openTabs, sessions]);
+  }, [isArchived, isSecondary, openTabs, sessions]);
 
-  // ⌘1 = feed, ⌘2–⌘9 = open slot tabs.
-  // Documented in src/lib/keymap.ts (mission-feed, mission-slots).
+  const cycleMissionTab = useCallback(
+    (direction: MissionTabCycleDirection) => {
+      const target = missionTabInDirection(
+        openSessionTabIds,
+        activeTab,
+        direction,
+      );
+      if (target === "feed") selectFeed();
+      else if (target) selectPty(target);
+    },
+    [activeTab, openSessionTabIds, selectFeed, selectPty],
+  );
+
+  // ⌘[ / ⌘] cycle the feed and open runner terminal tabs. RunnerTerminal
+  // re-dispatches the same event when WKWebView delivers the keystroke
+  // straight to xterm. Documented in src/lib/keymap.ts (mission-tabs).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
-      if (!/^[1-9]$/.test(e.key)) return;
-      const target = shortcutTabs[Number(e.key) - 1];
-      if (!target) return;
+      const direction =
+        e.code === "BracketLeft" || e.key === "["
+          ? "previous"
+          : e.code === "BracketRight" || e.key === "]"
+            ? "next"
+            : null;
+      if (!direction) return;
       e.preventDefault();
       e.stopPropagation();
-      if (target === "feed") selectFeed();
-      else selectPty(target);
+      cycleMissionTab(direction);
+    };
+    const onCycle = (event: globalThis.Event) => {
+      const direction = (
+        event as globalThis.CustomEvent<{ direction?: unknown }>
+      ).detail?.direction;
+      if (direction === "previous" || direction === "next") {
+        cycleMissionTab(direction);
+      }
     };
     window.addEventListener("keydown", onKeyDown, { capture: true });
-    return () =>
+    window.addEventListener(RUNNER_TERMINAL_CYCLE_EVENT, onCycle);
+    return () => {
       window.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, [selectFeed, selectPty, shortcutTabs]);
+      window.removeEventListener(RUNNER_TERMINAL_CYCLE_EVENT, onCycle);
+    };
+  }, [cycleMissionTab]);
 
   // Project ask_human → human_question pairings + human_response
   // resolutions out of the feed. Mirrors the router's reconstruct_from_log
@@ -1091,11 +1123,7 @@ export default function MissionWorkspace() {
       ) : (
         <div className="flex flex-1 min-h-0 flex-col">
           <div className="flex h-[38px] items-end gap-1 border-b border-line bg-panel px-6">
-            <TabButton
-              active={feedActive}
-              onClick={selectFeed}
-              shortcut="⌘1"
-            >
+            <TabButton active={feedActive} onClick={selectFeed}>
               feed
             </TabButton>
             {/* Archived missions render feed only — skip the per-PTY
@@ -1107,14 +1135,13 @@ export default function MissionWorkspace() {
               ? openTabs
                   .map((tabId) => sessions.find((s) => s.id === tabId))
                   .filter((s): s is SessionRow => s !== undefined)
-                  .map((s, index) => (
+                  .map((s) => (
                     <PtyTabButton
                       key={s.id}
                       handle={s.handle}
                       active={activeTab === s.id}
                       onClick={() => selectPty(s.id)}
                       onClose={() => onCloseTab(s.id)}
-                      shortcut={index < 8 ? `⌘${index + 2}` : undefined}
                     />
                   ))
               : null}
@@ -1550,12 +1577,10 @@ function TabButton({
   active,
   onClick,
   children,
-  shortcut,
 }: {
   active: boolean;
   onClick: () => void;
   children: React.ReactNode;
-  shortcut?: string;
 }) {
   return (
     <button
@@ -1568,11 +1593,6 @@ function TabButton({
       }`}
     >
       {children}
-      {shortcut ? (
-        <span className="ml-3 font-mono text-[11px] font-normal leading-none text-fg-3">
-          {shortcut}
-        </span>
-      ) : null}
     </button>
   );
 }
@@ -1586,13 +1606,11 @@ function PtyTabButton({
   active,
   onClick,
   onClose,
-  shortcut,
 }: {
   handle: string;
   active: boolean;
   onClick: () => void;
   onClose: () => void;
-  shortcut?: string;
 }) {
   return (
     <button
@@ -1607,11 +1625,6 @@ function PtyTabButton({
     >
       <Terminal aria-hidden className="h-3 w-3 shrink-0" />
       <span className="max-w-[140px] truncate font-mono">@{handle}</span>
-      {shortcut ? (
-        <span className="ml-1 font-mono text-[11px] font-normal leading-none text-fg-3">
-          {shortcut}
-        </span>
-      ) : null}
       <span
         role="button"
         aria-label={`Close @${handle} tab`}
