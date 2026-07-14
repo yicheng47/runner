@@ -332,15 +332,15 @@ export function Sidebar({
     x: number;
     y: number;
   } | null>(null);
-  // Inline rename: when set, the row whose id matches renders an input
-  // instead of its label. Submit (Enter) → session_rename + refresh.
-  // Cancel (Escape / blur with no change) → close without write.
   // CHAT creation state. The `+` and empty-space context menus can start a
   // chat or insert a focused inline folder-name row.
   const [creatingChat, setCreatingChat] = useState(false);
   const [newChatFolderId, setNewChatFolderId] = useState<string | null>(null);
   const [chatAddMenuOpen, setChatAddMenuOpen] = useState(false);
   const [creatingFolder, setCreatingFolder] = useState(false);
+  const [renamingChatTabId, setRenamingChatTabId] = useState<string | null>(
+    null,
+  );
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [chatCreateMenu, setChatCreateMenu] = useState<{
     x: number;
@@ -886,17 +886,13 @@ export function Sidebar({
     [directSessions, refreshDirectSessions],
   );
 
-  const renameChatTab = useCallback((members: DirectSessionEntry[]) => {
-    const first = members[0];
-    if (!first) return;
-    const layout = getPaneLayout(first.session_id);
-    const proposed = window.prompt(
-      "Rename tab (blank = derive from chats)",
-      layout.name ?? "",
-    );
-    if (proposed === null) return;
-    setGroupNameForSession(first.session_id, proposed);
-  }, []);
+  const submitChatTabRename = useCallback(
+    (sessionId: string, nextName: string) => {
+      setRenamingChatTabId(null);
+      setGroupNameForSession(sessionId, nextName);
+    },
+    [],
+  );
 
   const beginFolderCreate = useCallback(() => {
     setChatAddMenuOpen(false);
@@ -1300,6 +1296,7 @@ export function Sidebar({
         key={item.layout.id}
         tabId={item.layout.id}
         folderId={item.layout.folderId}
+        disabled={renamingChatTabId === item.layout.id}
       >
         <ChatTabGroup
           layout={item.layout}
@@ -1313,6 +1310,11 @@ export function Sidebar({
             openChatTabMenu(item.layout, item.members, anchor)
           }
           dragging={draggedTabId === item.layout.id}
+          renaming={renamingChatTabId === item.layout.id}
+          onRenameSubmit={(nextName) =>
+            submitChatTabRename(item.members[0].session_id, nextName)
+          }
+          onRenameCancel={() => setRenamingChatTabId(null)}
         />
       </SortableChatTab>
     );
@@ -1911,7 +1913,7 @@ export function Sidebar({
             closeChatTabMenu();
           }}
           onRename={() => {
-            renameChatTab(chatTabMenu.members);
+            setRenamingChatTabId(chatTabMenu.layout.id);
             closeChatTabMenu();
           }}
           onArchive={() => {
@@ -2122,10 +2124,12 @@ function CollapsibleSectionHeader({
 function SortableChatTab({
   tabId,
   folderId,
+  disabled,
   children,
 }: {
   tabId: string;
   folderId: string | null;
+  disabled: boolean;
   children: ReactNode;
 }) {
   const {
@@ -2133,6 +2137,7 @@ function SortableChatTab({
     setNodeRef,
   } = useSortable({
     id: tabDndId(tabId),
+    disabled,
     data: { kind: "tab", tabId, folderId } satisfies ChatTabDndData,
   });
 

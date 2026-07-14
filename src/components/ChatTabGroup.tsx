@@ -18,6 +18,9 @@ export function ChatTabGroup({
   onContextMenu,
   dragging,
   attention,
+  renaming,
+  onRenameSubmit,
+  onRenameCancel,
 }: {
   layout: PaneLayout;
   members: DirectSessionEntry[];
@@ -26,12 +29,16 @@ export function ChatTabGroup({
   onContextMenu: (anchor: { x: number; y: number }) => void;
   dragging?: boolean;
   attention: ChatAttentionState;
+  renaming?: boolean;
+  onRenameSubmit?: (name: string) => void;
+  onRenameCancel?: () => void;
 }) {
   const focused = findLeaf(layout.root, layout.focusedPaneId)?.sessionId;
   const target = members.find((member) => member.session_id === focused) ?? members[0];
   if (!target) return null;
 
-  const name = layout.name ?? derivedChatTabTitle(members);
+  const derivedName = derivedChatTabTitle(members);
+  const name = layout.name ?? derivedName;
   const pinned = members.length > 0 && members.every((member) => member.pinned);
   const live = chatTabIsLive(members);
   const paneCount = leaves(layout.root).length;
@@ -49,6 +56,11 @@ export function ChatTabGroup({
       onClick={() => onActivate(target)}
       onContextMenu={onContextMenu}
       title={name}
+      renaming={renaming}
+      renameValue={layout.name ?? ""}
+      renamePlaceholder={derivedName}
+      onRenameSubmit={onRenameSubmit}
+      onRenameCancel={onRenameCancel}
     />
   );
 }

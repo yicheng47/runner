@@ -714,6 +714,23 @@ describe("cold-start hydration", () => {
     ]);
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
 
+    mod.setGroupNameForSession("A", "Review pair");
+    await vi.waitFor(() =>
+      expect(tabUpsert).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: tabs[0].id, name: "Review pair" }),
+      ),
+    );
+    expect(mod.getPaneLayout("A").name).toBe("Review pair");
+
+    mod.setGroupNameForSession("A", "   ");
+    await vi.waitFor(() =>
+      expect(tabUpsert).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: tabs[0].id, name: "" }),
+      ),
+    );
+    expect(mod.getPaneLayout("A").name).toBeNull();
+    tabUpsert.mockClear();
+
     let releaseStale: (rows: typeof folderRows) => void = () => {};
     nextFolderList = new Promise((resolve) => {
       releaseStale = resolve;
