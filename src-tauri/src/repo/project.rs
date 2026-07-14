@@ -11,11 +11,10 @@ pub struct ProjectRow {
     pub name: String,
     pub cwd: String,
     pub position: i64,
-    pub collapsed: bool,
     pub created_at: String,
 }
 
-const COLUMNS: &[&str] = &["id", "name", "cwd", "position", "collapsed", "created_at"];
+const COLUMNS: &[&str] = &["id", "name", "cwd", "position", "created_at"];
 
 pub fn list(conn: &Connection) -> rusqlite::Result<Vec<ProjectRow>> {
     let sql = format!(
@@ -46,8 +45,8 @@ pub fn create(conn: &Connection, name: &str, cwd: &str) -> rusqlite::Result<Proj
         |row| row.get(0),
     )?;
     conn.execute(
-        "INSERT INTO projects (id, name, cwd, position, collapsed, created_at)
-         VALUES (?1, ?2, ?3, ?4, 0, ?5)",
+        "INSERT INTO projects (id, name, cwd, position, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![id, name, cwd, position, Utc::now().to_rfc3339()],
     )?;
     get(conn, &id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
@@ -64,13 +63,6 @@ pub fn set_cwd(conn: &Connection, id: &str, cwd: &str) -> rusqlite::Result<usize
     conn.execute(
         "UPDATE projects SET cwd = ?2 WHERE id = ?1",
         rusqlite::params![id, cwd],
-    )
-}
-
-pub fn set_collapsed(conn: &Connection, id: &str, collapsed: bool) -> rusqlite::Result<usize> {
-    conn.execute(
-        "UPDATE projects SET collapsed = ?2 WHERE id = ?1",
-        rusqlite::params![id, collapsed],
     )
 }
 
@@ -93,13 +85,12 @@ mod tests {
     use crate::db;
 
     #[test]
-    fn projects_keep_cwd_position_and_collapse_state() {
+    fn projects_keep_cwd_and_position() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         let a = super::create(&conn, "A", "/tmp/a").unwrap();
         let b = super::create(&conn, "B", "/tmp/b").unwrap();
         super::set_cwd(&conn, &a.id, "/tmp/a-next").unwrap();
-        super::set_collapsed(&conn, &b.id, true).unwrap();
         super::reorder(&conn, &[b.id.clone(), a.id.clone()]).unwrap();
 
         let rows = super::list(&conn).unwrap();
@@ -107,7 +98,6 @@ mod tests {
             rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
             ["B", "A"]
         );
-        assert!(rows[0].collapsed);
         assert_eq!(rows[1].cwd, "/tmp/a-next");
     }
 

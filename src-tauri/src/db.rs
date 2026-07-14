@@ -82,6 +82,8 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // attention indicators across navigation, windows, and app restarts.
 // 0011: adds cwd-bound projects and nullable project membership on sessions
 // and missions. Deleting a project unbinds its work via ON DELETE SET NULL.
+// 0012: removes folder/project collapse state from SQLite. Expansion is
+// per-window view state owned by the sidebar.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -109,6 +111,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (9, include_str!("../migrations/0009_folders_tabs.sql")),
     (10, include_str!("../migrations/0010_tab_attention.sql")),
     (11, include_str!("../migrations/0011_projects.sql")),
+    (
+        12,
+        include_str!("../migrations/0012_drop_collapsed_view_state.sql"),
+    ),
 ];
 
 // Default-data seed: ships the Build squad starter crew on first launch.
@@ -416,6 +422,24 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn container_collapse_state_is_not_in_the_database() {
+        let pool = open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+
+        for table in ["folders", "projects"] {
+            let mut stmt = conn
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap();
+            let columns = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert!(!columns.iter().any(|column| column == "collapsed"));
+        }
     }
 
     // The "at most one lead per crew" invariant moves to the slot
