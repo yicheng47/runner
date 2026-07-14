@@ -48,7 +48,12 @@ import {
   useNavigate,
 } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
+import { basename, join } from "@tauri-apps/api/path";
+import { mkdir } from "@tauri-apps/plugin-fs";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
+  ArrowDown,
+  ArrowUp,
   AppWindow,
   Archive,
   ChevronDown,
@@ -69,7 +74,11 @@ import {
   Users,
 } from "lucide-react";
 
-import { api, type DirectSessionEntry } from "../lib/api";
+import {
+  api,
+  type DirectSessionEntry,
+  type ProjectRow,
+} from "../lib/api";
 import {
   markArchivingMission,
   markArchivingSession,
@@ -121,6 +130,8 @@ import {
 } from "./SidebarTabRow";
 import { PanelToggleGlyph } from "./PanelToggleGlyph";
 import { PopoverMenu } from "./ui/PopoverMenu";
+import { Modal } from "./ui/Overlay";
+import { Button } from "./ui/Button";
 import { useResizableWidth } from "../hooks/useResizableWidth";
 import {
   BRAND_MARK_PINNED_COLOR,
@@ -128,6 +139,10 @@ import {
   STORAGE_APP_BRAND_TINT,
 } from "../lib/settings";
 import { reportSubjectsNow } from "../lib/windowFocus";
+import {
+  projectIdForTab,
+  setActiveProjectScope,
+} from "../lib/projectScope";
 import type {
   AppendedEvent,
   MissionSummary,
@@ -143,6 +158,7 @@ const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 480;
 const SIDEBAR_DEFAULT = 240;
 const STORAGE_WIDTH = "runner.sidebar.width";
+const STORAGE_PROJECTS_OPEN = "runner.sidebar.projects.open";
 const STORAGE_MISSION_OPEN = "runner.sidebar.mission.open";
 const STORAGE_SESSION_OPEN = "runner.sidebar.session.open";
 const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
@@ -274,6 +290,8 @@ export function Sidebar({
   });
 
   // Runtime state.
+  const [projects, setProjects] = useState<ProjectRow[]>([]);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
   const [missions, setMissions] = useState<MissionSummary[]>([]);
   // Flat list of un-archived direct chats. Running ones first, then
   // stopped/crashed ordered by recency. Refreshed on session/exit and
@@ -288,6 +306,9 @@ export function Sidebar({
   });
 
   // Section toggles, persisted so users don't have to re-expand each visit.
+  const [projectsOpen, setProjectsOpen] = useState<boolean>(() =>
+    getStoredFlag(STORAGE_PROJECTS_OPEN, true),
+  );
   const [missionsOpen, setMissionsOpen] = useState<boolean>(() =>
     getStoredFlag(STORAGE_MISSION_OPEN, true),
   );
@@ -296,6 +317,25 @@ export function Sidebar({
   );
 
   const [creatingMission, setCreatingMission] = useState(false);
+  const [newMissionProjectId, setNewMissionProjectId] = useState<
+    string | null
+  >(null);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [projectAddMenuOpen, setProjectAddMenuOpen] = useState(false);
+  const [projectDraftParent, setProjectDraftParent] = useState<string | null>(
+    null,
+  );
+  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(
+    null,
+  );
+  const [projectMenu, setProjectMenu] = useState<{
+    project: ProjectRow;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [projectDeleteConfirm, setProjectDeleteConfirm] =
+    useState<ProjectRow | null>(null);
+  const [deletingProject, setDeletingProject] = useState(false);
 
   // Per-row context menu state. The Pencil design (P5CLA inside u6woG)
   // shows a floating menu with Pin / Rename / Archive next to a session
@@ -335,6 +375,7 @@ export function Sidebar({
   // CHAT creation state. The `+` and empty-space context menus can start a
   // chat or insert a focused inline folder-name row.
   const [creatingChat, setCreatingChat] = useState(false);
+  const [newChatProjectId, setNewChatProjectId] = useState<string | null>(null);
   const [newChatFolderId, setNewChatFolderId] = useState<string | null>(null);
   const [chatAddMenuOpen, setChatAddMenuOpen] = useState(false);
   const [creatingFolder, setCreatingFolder] = useState(false);
@@ -385,6 +426,7 @@ export function Sidebar({
         return {
           layout,
           members,
+          projectId: projectIdForTab(members),
           attention: tabAttentionState(
             members,
             directSessionActivity,
@@ -400,28 +442,73 @@ export function Sidebar({
           Number(a.members.every((member) => member.pinned)),
       );
   }, [directSessionActivity, directSessions, paneLayouts]);
-  const chatAttention = useMemo(
-    () => rollupAttentionState(tabItems.map((item) => item.attention)),
+  const projectTabItems = useMemo(
+    () => tabItems.filter((item) => item.projectId !== null),
     [tabItems],
+  );
+  const chatSectionTabItems = useMemo(
+    () => tabItems.filter((item) => item.projectId === null),
+    [tabItems],
+  );
+  const projectMissions = useMemo(
+    () => missions.filter((mission) => mission.project_id !== null),
+    [missions],
+  );
+  const ungroupedMissions = useMemo(
+    () => missions.filter((mission) => mission.project_id === null),
+    [missions],
+  );
+  const chatAttention = useMemo(
+    () =>
+      rollupAttentionState(
+        chatSectionTabItems.map((item) => item.attention),
+      ),
+    [chatSectionTabItems],
   );
   const missionAttention = useMemo(
     () =>
       rollupAttentionState(
-        missions.map((mission) =>
+        ungroupedMissions.map((mission) =>
           missionAttentionState(
             mission.any_session_live,
             mission.activity,
           ),
         ),
       ),
-    [missions],
+    [ungroupedMissions],
   );
-  const draggedTabItem = tabItems.find(
+  const projectAttention = useMemo(
+    () =>
+      rollupAttentionState([
+        ...projectTabItems.map((item) => item.attention),
+        ...projectMissions.map((mission) =>
+          missionAttentionState(
+            mission.any_session_live,
+            mission.activity,
+          ),
+        ),
+      ]),
+    [projectMissions, projectTabItems],
+  );
+  const draggedTabItem = chatSectionTabItems.find(
     (item) => item.layout.id === draggedTabId,
   );
   const orderedChatRows = useMemo(
     () => tabItems.map((item) => item.members[0]),
     [tabItems],
+  );
+  const activeProject = useMemo(
+    () => projects.find((project) => project.id === activeProjectId) ?? null,
+    [activeProjectId, projects],
+  );
+  const newChatProject = useMemo(
+    () => projects.find((project) => project.id === newChatProjectId) ?? null,
+    [newChatProjectId, projects],
+  );
+  const newMissionProject = useMemo(
+    () =>
+      projects.find((project) => project.id === newMissionProjectId) ?? null,
+    [newMissionProjectId, projects],
   );
 
   const sidebarNavigationEntries = useMemo<SidebarNavigationEntry[]>(
@@ -434,6 +521,82 @@ export function Sidebar({
     ],
     [orderedChatRows, missions],
   );
+
+  const refreshProjects = useCallback(async () => {
+    try {
+      const rows = await api.project.list();
+      setProjects(rows);
+      setProjectsLoaded(true);
+    } catch (e) {
+      console.error("sidebar: refreshProjects failed", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshProjects();
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void listen("project/changed", () => {
+      void refreshProjects();
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [refreshProjects]);
+
+  useEffect(() => {
+    if (
+      projectsLoaded &&
+      activeProjectId &&
+      !projects.some((project) => project.id === activeProjectId)
+    ) {
+      setActiveProjectId(null);
+    }
+  }, [activeProjectId, projects, projectsLoaded]);
+
+  useEffect(() => {
+    setActiveProjectScope(activeProject);
+  }, [activeProject]);
+
+  useEffect(() => {
+    if (!projectsLoaded) return;
+    if (currentMissionId) {
+      const mission = missions.find((item) => item.id === currentMissionId);
+      if (mission) {
+        setActiveProjectId(
+          mission.project_id &&
+            projects.some((project) => project.id === mission.project_id)
+            ? mission.project_id
+            : null,
+        );
+      }
+      return;
+    }
+    if (currentChatSessionId) {
+      const session = directSessions.find(
+        (item) => item.session_id === currentChatSessionId,
+      );
+      if (session) {
+        setActiveProjectId(
+          session.project_id &&
+            projects.some((project) => project.id === session.project_id)
+            ? session.project_id
+            : null,
+        );
+      }
+    }
+  }, [
+    currentChatSessionId,
+    currentMissionId,
+    directSessions,
+    missions,
+    projects,
+    projectsLoaded,
+  ]);
 
   const refreshMissions = useCallback(async () => {
     try {
@@ -529,12 +692,13 @@ export function Sidebar({
       } else if (e.key === "t" || e.key === "T") {
         e.preventDefault();
         e.stopPropagation();
+        setNewChatProjectId(activeProjectId);
         setCreatingChat(true);
       }
     };
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
-  }, []);
+  }, [activeProjectId]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -710,6 +874,7 @@ export function Sidebar({
     ) => {
       setMissionMenu(null);
       setFolderMenu(null);
+      setProjectMenu(null);
       setChatTabMenu({ layout, members, x: anchor.x, y: anchor.y });
     },
     [],
@@ -720,6 +885,7 @@ export function Sidebar({
     (mission: MissionSummary, anchor: { x: number; y: number }) => {
       setChatTabMenu(null);
       setFolderMenu(null);
+      setProjectMenu(null);
       setMissionMenu({ mission, x: anchor.x, y: anchor.y });
     },
     [],
@@ -732,6 +898,7 @@ export function Sidebar({
     ) => {
       setChatTabMenu(null);
       setMissionMenu(null);
+      setProjectMenu(null);
       setFolderMenu({
         id: folder.id,
         name: folder.name,
@@ -743,6 +910,16 @@ export function Sidebar({
     [],
   );
   const closeMissionMenu = useCallback(() => setMissionMenu(null), []);
+  const openProjectMenu = useCallback(
+    (project: ProjectRow, anchor: { x: number; y: number }) => {
+      setChatTabMenu(null);
+      setMissionMenu(null);
+      setFolderMenu(null);
+      setProjectMenu({ project, x: anchor.x, y: anchor.y });
+    },
+    [],
+  );
+  const closeProjectMenu = useCallback(() => setProjectMenu(null), []);
 
   const archiveMission = useCallback(
     async (mission: MissionSummary) => {
@@ -800,6 +977,125 @@ export function Sidebar({
       }
     },
     [missions, refreshMissions, setRenamingMissionId],
+  );
+
+  const submitProjectRename = useCallback(
+    async (id: string, currentName: string, nextName: string) => {
+      const trimmed = nextName.trim();
+      setRenamingProjectId(null);
+      if (!trimmed || trimmed === currentName.trim()) return;
+      try {
+        await api.project.rename(id, trimmed);
+        await refreshProjects();
+      } catch (e) {
+        console.error("sidebar: project_rename failed", e);
+      }
+    },
+    [refreshProjects],
+  );
+
+  const toggleProject = useCallback(
+    async (project: ProjectRow) => {
+      setActiveProjectId(project.id);
+      try {
+        await api.project.setCollapsed(project.id, !project.collapsed);
+        await refreshProjects();
+      } catch (e) {
+        console.error("sidebar: project_set_collapsed failed", e);
+      }
+    },
+    [refreshProjects],
+  );
+
+  const rebindProject = useCallback(
+    async (project: ProjectRow) => {
+      try {
+        const picked = await openDialog({
+          directory: true,
+          multiple: false,
+          title: `Choose folder for ${project.name}`,
+          defaultPath: project.cwd,
+        });
+        if (typeof picked !== "string") return;
+        await api.project.setCwd(project.id, picked);
+        await refreshProjects();
+      } catch (e) {
+        console.error("sidebar: project_set_cwd failed", e);
+      }
+    },
+    [refreshProjects],
+  );
+
+  const reorderProject = useCallback(
+    async (id: string, direction: -1 | 1) => {
+      const index = projects.findIndex((project) => project.id === id);
+      const nextIndex = index + direction;
+      if (index < 0 || nextIndex < 0 || nextIndex >= projects.length) return;
+      const orderedIds = projects.map((project) => project.id);
+      [orderedIds[index], orderedIds[nextIndex]] = [
+        orderedIds[nextIndex],
+        orderedIds[index],
+      ];
+      try {
+        setProjects(await api.project.reorder(orderedIds));
+      } catch (e) {
+        console.error("sidebar: project_reorder failed", e);
+      }
+    },
+    [projects],
+  );
+
+  const deleteProject = useCallback(
+    async (project: ProjectRow) => {
+      setDeletingProject(true);
+      try {
+        await api.project.delete(project.id);
+        setProjectDeleteConfirm(null);
+        if (activeProjectId === project.id) setActiveProjectId(null);
+        await Promise.all([
+          refreshProjects(),
+          refreshMissions(),
+          refreshDirectSessions(),
+        ]);
+      } catch (e) {
+        console.error("sidebar: project_delete failed", e);
+      } finally {
+        setDeletingProject(false);
+      }
+    },
+    [
+      activeProjectId,
+      refreshDirectSessions,
+      refreshMissions,
+      refreshProjects,
+    ],
+  );
+
+  const moveMissionToProject = useCallback(
+    async (mission: MissionSummary, projectId: string | null) => {
+      try {
+        await api.mission.setProject(mission.id, projectId);
+        await refreshMissions();
+      } catch (e) {
+        console.error("sidebar: mission_set_project failed", e);
+      }
+    },
+    [refreshMissions],
+  );
+
+  const moveChatTabToProject = useCallback(
+    async (members: DirectSessionEntry[], projectId: string | null) => {
+      try {
+        await api.session.setProject(
+          members.map((member) => member.session_id),
+          projectId,
+        );
+        await refreshDirectSessions();
+      } catch (e) {
+        console.error("sidebar: session_set_project failed", e);
+      }
+    },
+    [refreshDirectSessions],
   );
 
   const archiveSession = useCallback(
@@ -918,6 +1214,7 @@ export function Sidebar({
       setChatTabMenu(null);
       setFolderMenu(null);
       setMissionMenu(null);
+      setProjectMenu(null);
       setChatCreateMenu(anchor);
     },
     [],
@@ -1030,6 +1327,7 @@ export function Sidebar({
     setChatCreateMenu(null);
     setCreatingFolder(false);
     setNewChatFolderId(null);
+    setNewChatProjectId(null);
     setCreatingChat(true);
   }, []);
 
@@ -1038,8 +1336,76 @@ export function Sidebar({
     setChatCreateMenu(null);
     setCreatingFolder(false);
     setNewChatFolderId(folderId);
+    setNewChatProjectId(null);
     setCreatingChat(true);
   }, []);
+
+  const handleNewProjectChat = useCallback((projectId: string) => {
+    setProjectAddMenuOpen(false);
+    setChatCreateMenu(null);
+    setCreatingFolder(false);
+    setNewChatFolderId(null);
+    setNewChatProjectId(projectId);
+    setActiveProjectId(projectId);
+    setCreatingChat(true);
+  }, []);
+
+  const handleNewProjectMission = useCallback((projectId: string) => {
+    setNewMissionProjectId(projectId);
+    setActiveProjectId(projectId);
+    setCreatingMission(true);
+  }, []);
+
+  const createProjectFromExistingFolder = useCallback(async () => {
+    setProjectAddMenuOpen(false);
+    try {
+      const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Use an existing folder",
+      });
+      if (typeof picked !== "string") return;
+      const project = await api.project.create(await basename(picked), picked);
+      setProjectsOpen(true);
+      setStoredFlag(STORAGE_PROJECTS_OPEN, true);
+      setActiveProjectId(project.id);
+      await refreshProjects();
+    } catch (e) {
+      console.error("sidebar: project_create existing folder failed", e);
+    }
+  }, [refreshProjects]);
+
+  const beginProjectFromScratch = useCallback(async () => {
+    setProjectAddMenuOpen(false);
+    try {
+      const parent = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Choose a parent folder",
+      });
+      if (typeof parent === "string") setProjectDraftParent(parent);
+    } catch (e) {
+      console.error("sidebar: choose project parent failed", e);
+    }
+  }, []);
+
+  const createProjectFromScratch = useCallback(
+    async (name: string) => {
+      if (!projectDraftParent) return;
+      if (name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+        throw new Error("Project name must be a single directory name.");
+      }
+      const cwd = await join(projectDraftParent, name);
+      await mkdir(cwd);
+      const project = await api.project.create(name, cwd);
+      setProjectDraftParent(null);
+      setProjectsOpen(true);
+      setStoredFlag(STORAGE_PROJECTS_OPEN, true);
+      setActiveProjectId(project.id);
+      await refreshProjects();
+    },
+    [projectDraftParent, refreshProjects],
+  );
 
   const clearTabDrag = useCallback(() => {
     setDraggedTabId(null);
@@ -1050,13 +1416,15 @@ export function Sidebar({
 
   const commitTabDrop = useCallback(
     async (tabId: string, folderId: string | null, requestedIndex: number) => {
-      const dragged = tabItems.find((item) => item.layout.id === tabId);
+      const dragged = chatSectionTabItems.find(
+        (item) => item.layout.id === tabId,
+      );
       if (!dragged) {
         clearTabDrag();
         return;
       }
       const pinned = dragged.members.every((member) => member.pinned);
-      const targetItems = tabItems.filter(
+      const targetItems = chatSectionTabItems.filter(
         (item) =>
           item.layout.folderId === folderId && item.layout.id !== tabId,
       );
@@ -1076,7 +1444,7 @@ export function Sidebar({
         console.error("sidebar: reorder tab failed", error);
       }
     },
-    [clearTabDrag, tabItems],
+    [chatSectionTabItems, clearTabDrag],
   );
 
   const resolveTabDropTarget = useCallback(
@@ -1089,13 +1457,13 @@ export function Sidebar({
         | undefined;
       if (activeData?.kind !== "tab" || !overData) return null;
 
-      const dragged = tabItems.find(
+      const dragged = chatSectionTabItems.find(
         (item) => item.layout.id === activeData.tabId,
       );
       if (!dragged) return null;
 
       if (overData.kind === "position") {
-        const targetItems = tabItems.filter(
+        const targetItems = chatSectionTabItems.filter(
           (item) => item.layout.folderId === overData.folderId,
         );
         const allowed = isChatTabDropIndexAllowed(
@@ -1117,7 +1485,7 @@ export function Sidebar({
       }
 
       if (overData.kind !== "tab") return null;
-      const targetItems = tabItems.filter(
+      const targetItems = chatSectionTabItems.filter(
         (item) => item.layout.folderId === overData.folderId,
       );
       const overIndex = targetItems.findIndex(
@@ -1159,14 +1527,16 @@ export function Sidebar({
             : `after-${overData.folderId ?? "ungrouped"}`,
       };
     },
-    [tabItems],
+    [chatSectionTabItems],
   );
 
   const resolveCollapsedFolderDropTarget = useCallback(
     (tabId: string, folderId: string): TabDropTarget | null => {
-      const dragged = tabItems.find((item) => item.layout.id === tabId);
+      const dragged = chatSectionTabItems.find(
+        (item) => item.layout.id === tabId,
+      );
       if (!dragged) return null;
-      const targetItems = tabItems.filter(
+      const targetItems = chatSectionTabItems.filter(
         (item) => item.layout.folderId === folderId,
       );
       const orderedIds = orderedChatTabIdsAfterDrop(
@@ -1192,7 +1562,7 @@ export function Sidebar({
             : `after-${folderId}`,
       };
     },
-    [tabItems],
+    [chatSectionTabItems],
   );
 
   const handleTabDragStart = useCallback((event: DragStartEvent) => {
@@ -1280,6 +1650,13 @@ export function Sidebar({
     });
   }, []);
 
+  const toggleProjects = useCallback(() => {
+    setProjectsOpen((prev) => {
+      setStoredFlag(STORAGE_PROJECTS_OPEN, !prev);
+      return !prev;
+    });
+  }, []);
+
   const toggleSessions = useCallback(() => {
     setSessionsOpen((prev) => {
       setStoredFlag(STORAGE_SESSION_OPEN, !prev);
@@ -1287,10 +1664,35 @@ export function Sidebar({
     });
   }, []);
 
-  const renderTabItem = (item: (typeof tabItems)[number]) => {
+  const renderTabItem = (
+    item: (typeof tabItems)[number],
+    draggable = true,
+  ) => {
     const active = item.members.some(
       (member) => member.session_id === currentChatSessionId,
     );
+    const row = (
+      <ChatTabGroup
+        layout={item.layout}
+        members={item.members}
+        active={active}
+        attention={item.attention}
+        onActivate={(entry) => {
+          setActiveProjectId(item.projectId);
+          activateTabChat(item.layout.id, item.members, entry);
+        }}
+        onContextMenu={(anchor) =>
+          openChatTabMenu(item.layout, item.members, anchor)
+        }
+        dragging={draggedTabId === item.layout.id}
+        renaming={renamingChatTabId === item.layout.id}
+        onRenameSubmit={(nextName) =>
+          submitChatTabRename(item.members[0].session_id, nextName)
+        }
+        onRenameCancel={() => setRenamingChatTabId(null)}
+      />
+    );
+    if (!draggable) return <Fragment key={item.layout.id}>{row}</Fragment>;
     return (
       <SortableChatTab
         key={item.layout.id}
@@ -1298,24 +1700,7 @@ export function Sidebar({
         folderId={item.layout.folderId}
         disabled={renamingChatTabId === item.layout.id}
       >
-        <ChatTabGroup
-          layout={item.layout}
-          members={item.members}
-          active={active}
-          attention={item.attention}
-          onActivate={(entry) =>
-            activateTabChat(item.layout.id, item.members, entry)
-          }
-          onContextMenu={(anchor) =>
-            openChatTabMenu(item.layout, item.members, anchor)
-          }
-          dragging={draggedTabId === item.layout.id}
-          renaming={renamingChatTabId === item.layout.id}
-          onRenameSubmit={(nextName) =>
-            submitChatTabRename(item.members[0].session_id, nextName)
-          }
-          onRenameCancel={() => setRenamingChatTabId(null)}
-        />
+        {row}
       </SortableChatTab>
     );
   };
@@ -1326,7 +1711,9 @@ export function Sidebar({
     originalIndex: number,
     key: string,
   ) => {
-    const dragged = tabItems.find((item) => item.layout.id === draggedTabId);
+    const dragged = chatSectionTabItems.find(
+      (item) => item.layout.id === draggedTabId,
+    );
     const index = items
       .slice(0, originalIndex)
       .filter((item) => item.layout.id !== draggedTabId).length;
@@ -1362,7 +1749,9 @@ export function Sidebar({
   const renderTabItems = (
     items: typeof tabItems,
     folderId: string | null,
+    draggable = true,
   ) => {
+    if (!draggable) return items.map((item) => renderTabItem(item, false));
     if (items.length === 0) {
       const markerKey = `after-${folderId ?? "ungrouped"}`;
       return (
@@ -1505,34 +1894,215 @@ export function Sidebar({
 
             <div className="h-5 shrink-0" />
 
-            {/* Mission and Chat get INDEPENDENT scroll regions so a long
-                chat list can't scroll the mission tray out of view. The
-                mission tray is capped and self-scrolls; Chat fills and
-                scrolls the rest. */}
+            {/* Projects and Mission are capped independent trays; Chat fills
+                the remaining height. */}
             <div className="flex min-h-0 flex-1 flex-col pb-3">
               <section className="flex shrink-0 flex-col">
+                <CollapsibleSectionHeader
+                  label="PROJECTS"
+                  open={projectsOpen}
+                  attention={projectsOpen ? null : projectAttention}
+                  onToggle={toggleProjects}
+                  onPlus={() => setProjectAddMenuOpen((open) => !open)}
+                  plusTitle="Add project"
+                  plusExpanded={projectAddMenuOpen}
+                  plusPopup="menu"
+                  onPlusMenuClose={() => setProjectAddMenuOpen(false)}
+                  plusMenu={
+                    <div className="flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]">
+                      <button
+                        type="button"
+                        onClick={() => void beginProjectFromScratch()}
+                        className="flex cursor-pointer items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-fg hover:bg-line"
+                      >
+                        <FolderPlus aria-hidden className="h-3.5 w-3.5" />
+                        Start from scratch
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void createProjectFromExistingFolder()}
+                        className="flex cursor-pointer items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-fg hover:bg-line"
+                      >
+                        <Folder aria-hidden className="h-3.5 w-3.5" />
+                        Use an existing folder
+                      </button>
+                    </div>
+                  }
+                />
+                {projectsOpen ? (
+                  <div className="flex max-h-[34vh] flex-col gap-0.5 overflow-y-auto px-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                    {projects.length === 0 ? (
+                      <p className="px-2.5 py-1 text-xs text-fg-3">
+                        No projects yet.
+                      </p>
+                    ) : (
+                      projects.map((project) => {
+                        const nestedMissions = projectMissions.filter(
+                          (mission) => mission.project_id === project.id,
+                        );
+                        const nestedTabs = projectTabItems.filter(
+                          (item) => item.projectId === project.id,
+                        );
+                        const nestedAttention = rollupAttentionState([
+                          ...nestedTabs.map((item) => item.attention),
+                          ...nestedMissions.map((mission) =>
+                            missionAttentionState(
+                              mission.any_session_live,
+                              mission.activity,
+                            ),
+                          ),
+                        ]);
+                        const live =
+                          nestedMissions.some(
+                            (mission) => mission.any_session_live,
+                          ) ||
+                          nestedTabs.some((item) =>
+                            chatTabIsLive(item.members),
+                          );
+                        return (
+                          <div
+                            key={project.id}
+                            className="flex flex-col gap-0.5"
+                          >
+                            {renamingProjectId === project.id ? (
+                              <FolderRenameRow
+                                initial={project.name}
+                                collapsed={project.collapsed}
+                                live={live}
+                                attention={nestedAttention}
+                                inputLabel="Project name"
+                                onSubmit={(nextName) =>
+                                  void submitProjectRename(
+                                    project.id,
+                                    project.name,
+                                    nextName,
+                                  )
+                                }
+                                onCancel={() => setRenamingProjectId(null)}
+                              />
+                            ) : (
+                              <div
+                                onContextMenu={(event) => {
+                                  event.preventDefault();
+                                  openProjectMenu(project, {
+                                    x: event.clientX,
+                                    y: event.clientY,
+                                  });
+                                }}
+                                className={`group flex items-center gap-1.5 rounded border px-2.5 py-1.5 text-xs transition-colors ${
+                                  activeProjectId === project.id
+                                    ? "border-sidebar-selected-border bg-sidebar-selected text-fg shadow-sm"
+                                    : "border-transparent text-fg-2 hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg"
+                                }`}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => void toggleProject(project)}
+                                  className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
+                                  title={project.cwd}
+                                >
+                                  {project.collapsed ? (
+                                    <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
+                                  ) : (
+                                    <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
+                                  )}
+                                  <SidebarTabIcon icon={Folder} active={live} />
+                                  <span className="min-w-0 flex-1 truncate font-medium">
+                                    {project.name}
+                                  </span>
+                                  <ChatAttentionIndicator
+                                    state={
+                                      project.collapsed
+                                        ? nestedAttention
+                                        : null
+                                    }
+                                  />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(event) =>
+                                    openProjectMenu(project, {
+                                      x: event.clientX,
+                                      y: event.clientY,
+                                    })
+                                  }
+                                  className="cursor-pointer rounded p-0.5 text-fg-3 opacity-0 hover:bg-raised hover:text-fg group-hover:opacity-100 focus:opacity-100"
+                                  aria-label="Project actions"
+                                  title="Project actions"
+                                >
+                                  <MoreHorizontal aria-hidden className="h-3 w-3" />
+                                </button>
+                              </div>
+                            )}
+                            {project.collapsed ? null : (
+                              <div className="ml-3 flex flex-col gap-0.5 border-l border-line pl-2">
+                                {nestedMissions.map((mission) => (
+                                  <MissionRow
+                                    key={mission.id}
+                                    mission={mission}
+                                    selected={mission.id === currentMissionId}
+                                    onClick={() => {
+                                      setActiveProjectId(project.id);
+                                      openMission(mission.id);
+                                    }}
+                                    onContextMenu={(anchor) =>
+                                      openMissionMenu(mission, anchor)
+                                    }
+                                    renaming={renamingMissionId === mission.id}
+                                    onRenameSubmit={(next) =>
+                                      void submitMissionRename(mission.id, next)
+                                    }
+                                    onRenameCancel={() =>
+                                      setRenamingMissionId(null)
+                                    }
+                                  />
+                                ))}
+                                {renderTabItems(nestedTabs, null, false)}
+                                {nestedMissions.length === 0 &&
+                                nestedTabs.length === 0 ? (
+                                  <p className="px-2.5 py-1 text-xs text-fg-3">
+                                    No chats or missions yet.
+                                  </p>
+                                ) : null}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                ) : null}
+              </section>
+
+              <section className="mt-5 flex shrink-0 flex-col">
                 <CollapsibleSectionHeader
                   label="MISSION"
                   open={missionsOpen}
                   attention={missionsOpen ? null : missionAttention}
                   attentionWorkingLabel="Mission working"
                   onToggle={toggleMissions}
-                  onPlus={() => setCreatingMission(true)}
+                  onPlus={() => {
+                    setNewMissionProjectId(null);
+                    setCreatingMission(true);
+                  }}
                   plusTitle="Start mission"
                 />
                 {missionsOpen ? (
                   <div className="flex max-h-[38vh] flex-col gap-0.5 overflow-y-auto px-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                    {missions.length === 0 ? (
+                    {ungroupedMissions.length === 0 ? (
                       <p className="px-2.5 py-1 text-xs text-fg-3">
                         No live missions.
                       </p>
                     ) : (
-                      missions.map((m) => (
+                      ungroupedMissions.map((m) => (
                         <MissionRow
                           key={m.id}
                           mission={m}
                           selected={m.id === currentMissionId}
-                          onClick={() => openMission(m.id)}
+                          onClick={() => {
+                            setActiveProjectId(null);
+                            openMission(m.id);
+                          }}
                           onContextMenu={(anchor) => openMissionMenu(m, anchor)}
                           renaming={renamingMissionId === m.id}
                           onRenameSubmit={(next) =>
@@ -1611,7 +2181,7 @@ export function Sidebar({
                       />
                     ) : null}
                     {folders.length === 0 &&
-                    tabItems.length === 0 &&
+                    chatSectionTabItems.length === 0 &&
                     !creatingFolder ? (
                       <p className="px-2.5 py-1 text-xs text-fg-3">
                         No chats yet.
@@ -1619,7 +2189,7 @@ export function Sidebar({
                     ) : (
                       <>
                         {folders.map((folder) => {
-                          const items = tabItems.filter(
+                          const items = chatSectionTabItems.filter(
                             (item) => item.layout.folderId === folder.id,
                           );
                           const folderAttention = rollupAttentionState(
@@ -1719,7 +2289,7 @@ export function Sidebar({
                           );
                         })}
                         {renderTabItems(
-                          tabItems.filter(
+                          chatSectionTabItems.filter(
                             (item) => item.layout.folderId === null,
                           ),
                           null,
@@ -1818,9 +2388,15 @@ export function Sidebar({
 
       <StartMissionModal
         open={creatingMission}
-        onClose={() => setCreatingMission(false)}
+        project={newMissionProject}
+        onClose={() => {
+          setCreatingMission(false);
+          setNewMissionProjectId(null);
+        }}
         onStarted={(mission) => {
           setCreatingMission(false);
+          setNewMissionProjectId(null);
+          setActiveProjectId(mission.project_id);
           void refreshMissions();
           navigate(`/missions/${mission.id}`);
         }}
@@ -1828,14 +2404,27 @@ export function Sidebar({
 
       <StartChatModal
         open={creatingChat}
+        project={newChatProject}
         onClose={() => {
           setCreatingChat(false);
           setNewChatFolderId(null);
+          setNewChatProjectId(null);
         }}
         onStarted={(spawned) => {
           setCreatingChat(false);
           const targetFolderId = newChatFolderId;
+          const targetProjectId = newChatProjectId;
           setNewChatFolderId(null);
+          setNewChatProjectId(null);
+          if (targetProjectId) {
+            setActiveProjectId(targetProjectId);
+            void refreshDirectSessions().finally(() => {
+              navigate(`/chats/${spawned.id}`, {
+                state: { sessionStatus: "running" },
+              });
+            });
+            return;
+          }
           if (targetFolderId) {
             void moveSessionTabToFolder(spawned.id, targetFolderId)
               .catch((error) =>
@@ -1904,6 +2493,12 @@ export function Sidebar({
             );
             closeChatTabMenu();
           }}
+          projects={projects}
+          currentProjectId={projectIdForTab(chatTabMenu.members)}
+          onMoveToProject={(projectId) => {
+            void moveChatTabToProject(chatTabMenu.members, projectId);
+            closeChatTabMenu();
+          }}
           onClose={closeChatTabMenu}
           onPin={() => {
             void setChatTabPin(
@@ -1957,6 +2552,72 @@ export function Sidebar({
         />
       ) : null}
 
+      {projectMenu ? (
+        <ProjectContextMenu
+          anchorX={projectMenu.x}
+          anchorY={projectMenu.y}
+          canMoveUp={projects[0]?.id !== projectMenu.project.id}
+          canMoveDown={
+            projects[projects.length - 1]?.id !== projectMenu.project.id
+          }
+          onClose={closeProjectMenu}
+          onNewChat={() => {
+            if (projectMenu.project.collapsed) {
+              void toggleProject(projectMenu.project);
+            }
+            handleNewProjectChat(projectMenu.project.id);
+            closeProjectMenu();
+          }}
+          onNewMission={() => {
+            if (projectMenu.project.collapsed) {
+              void toggleProject(projectMenu.project);
+            }
+            handleNewProjectMission(projectMenu.project.id);
+            closeProjectMenu();
+          }}
+          onRename={() => {
+            setRenamingProjectId(projectMenu.project.id);
+            closeProjectMenu();
+          }}
+          onRebind={() => {
+            void rebindProject(projectMenu.project);
+            closeProjectMenu();
+          }}
+          onMoveUp={() => {
+            void reorderProject(projectMenu.project.id, -1);
+            closeProjectMenu();
+          }}
+          onMoveDown={() => {
+            void reorderProject(projectMenu.project.id, 1);
+            closeProjectMenu();
+          }}
+          onDelete={() => {
+            setProjectDeleteConfirm(projectMenu.project);
+            closeProjectMenu();
+          }}
+        />
+      ) : null}
+
+      <ProjectNameModal
+        open={projectDraftParent !== null}
+        parent={projectDraftParent ?? ""}
+        onClose={() => setProjectDraftParent(null)}
+        onSubmit={createProjectFromScratch}
+      />
+
+      <ConfirmDialog
+        open={projectDeleteConfirm !== null}
+        title={`Delete project "${projectDeleteConfirm?.name ?? ""}"?`}
+        body="Chats and missions in this project will move back to the ungrouped sections. The on-disk directory and all of its files will remain untouched."
+        confirmLabel="Delete project"
+        busyLabel="Deleting…"
+        busy={deletingProject}
+        onConfirm={() => {
+          if (projectDeleteConfirm) void deleteProject(projectDeleteConfirm);
+        }}
+        onCancel={() => setProjectDeleteConfirm(null)}
+      />
+
       <ConfirmDialog
         open={folderDeleteConfirm !== null}
         title={`Delete folder "${folderDeleteConfirm?.name ?? ""}"?`}
@@ -1983,6 +2644,12 @@ export function Sidebar({
           }}
           onRename={() => {
             setRenamingMissionId(missionMenu.mission.id);
+            closeMissionMenu();
+          }}
+          projects={projects}
+          currentProjectId={missionMenu.mission.project_id}
+          onMoveToProject={(projectId) => {
+            void moveMissionToProject(missionMenu.mission, projectId);
             closeMissionMenu();
           }}
           onOpenInNewWindow={() => {
@@ -2332,6 +2999,7 @@ function FolderRenameRow({
   collapsed,
   live,
   attention,
+  inputLabel = "Folder name",
   onSubmit,
   onCancel,
 }: {
@@ -2339,6 +3007,7 @@ function FolderRenameRow({
   collapsed: boolean;
   live: boolean;
   attention: ChatAttentionState;
+  inputLabel?: string;
   onSubmit: (name: string) => void;
   onCancel: () => void;
 }) {
@@ -2367,7 +3036,7 @@ function FolderRenameRow({
       <input
         ref={inputRef}
         value={draft}
-        aria-label="Folder name"
+        aria-label={inputLabel}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Enter") {
@@ -2567,6 +3236,9 @@ function RowContextMenu({
   folders,
   currentFolderId,
   onMoveToFolder,
+  projects,
+  currentProjectId,
+  onMoveToProject,
 }: {
   pinned: boolean;
   anchorX: number;
@@ -2581,6 +3253,9 @@ function RowContextMenu({
   folders?: { id: string; name: string }[];
   currentFolderId?: string | null;
   onMoveToFolder?: (folderId: string | null) => void;
+  projects?: { id: string; name: string }[];
+  currentProjectId?: string | null;
+  onMoveToProject?: (projectId: string | null) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x: anchorX, y: anchorY });
@@ -2647,6 +3322,31 @@ function RowContextMenu({
             ))}
         </>
       ) : null}
+      {projects &&
+      onMoveToProject &&
+      (currentProjectId !== null ||
+        projects.some((project) => project.id !== currentProjectId)) ? (
+        <>
+          <div className="my-1 h-px bg-line" />
+          {currentProjectId !== null ? (
+            <ContextMenuItem
+              icon={Folder}
+              label="Remove from project"
+              onClick={() => onMoveToProject(null)}
+            />
+          ) : null}
+          {projects
+            .filter((project) => project.id !== currentProjectId)
+            .map((project) => (
+              <ContextMenuItem
+                key={project.id}
+                icon={Folder}
+                label={`Move to ${project.name}`}
+                onClick={() => onMoveToProject(project.id)}
+              />
+            ))}
+        </>
+      ) : null}
       <ContextMenuItem
         icon={Archive}
         label={archiveLabel}
@@ -2654,6 +3354,179 @@ function RowContextMenu({
         danger
       />
     </div>
+  );
+}
+
+function ProjectContextMenu({
+  anchorX,
+  anchorY,
+  canMoveUp,
+  canMoveDown,
+  onClose,
+  onNewChat,
+  onNewMission,
+  onRename,
+  onRebind,
+  onMoveUp,
+  onMoveDown,
+  onDelete,
+}: {
+  anchorX: number;
+  anchorY: number;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onClose: () => void;
+  onNewChat: () => void;
+  onNewMission: () => void;
+  onRename: () => void;
+  onRebind: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onDelete: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ x: anchorX, y: anchorY });
+  useEffect(() => {
+    if (!ref.current) return;
+    const rect = ref.current.getBoundingClientRect();
+    setPos({
+      x: Math.max(4, Math.min(anchorX, window.innerWidth - rect.width - 4)),
+      y: Math.max(4, Math.min(anchorY, window.innerHeight - rect.height - 4)),
+    });
+  }, [anchorX, anchorY]);
+  useEffect(() => {
+    const onMouseDown = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) onClose();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [onClose]);
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      style={{ position: "fixed", left: pos.x, top: pos.y, width: 200 }}
+      className="z-50 flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
+    >
+      <ContextMenuItem
+        icon={MessageSquarePlus}
+        label="New chat in project"
+        onClick={onNewChat}
+      />
+      <ContextMenuItem
+        icon={Flag}
+        label="New mission in project"
+        onClick={onNewMission}
+      />
+      <div className="my-1 h-px bg-line" />
+      <ContextMenuItem icon={SquarePen} label="Rename project" onClick={onRename} />
+      <ContextMenuItem icon={Folder} label="Change folder" onClick={onRebind} />
+      <ContextMenuItem
+        icon={ArrowUp}
+        label="Move up"
+        onClick={onMoveUp}
+        disabled={!canMoveUp}
+      />
+      <ContextMenuItem
+        icon={ArrowDown}
+        label="Move down"
+        onClick={onMoveDown}
+        disabled={!canMoveDown}
+      />
+      <div className="my-1 h-px bg-line" />
+      <ContextMenuItem icon={Trash2} label="Delete project" onClick={onDelete} danger />
+    </div>
+  );
+}
+
+function ProjectNameModal({
+  open,
+  parent,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean;
+  parent: string;
+  onClose: () => void;
+  onSubmit: (name: string) => Promise<void>;
+}) {
+  const [name, setName] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    setName("");
+    setSubmitting(false);
+    setError(null);
+  }, [open]);
+  const submit = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onSubmit(trimmed);
+    } catch (e) {
+      setError(String(e));
+      setSubmitting(false);
+    }
+  };
+  return (
+    <Modal
+      open={open}
+      onClose={submitting ? () => {} : onClose}
+      title="Start a project from scratch"
+      widthClass="w-full max-w-[480px]"
+      footer={
+        <>
+          <Button onClick={onClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => void submit()}
+            disabled={submitting || !name.trim()}
+          >
+            {submitting ? "Creating…" : "Create project"}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3">
+        {error ? (
+          <div className="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
+            {error}
+          </div>
+        ) : null}
+        <label className="flex flex-col gap-1.5 text-xs font-semibold text-fg">
+          Project name
+          <input
+            autoFocus
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void submit();
+              }
+            }}
+            disabled={submitting}
+            placeholder="my-project"
+            className="rounded-md border border-line bg-bg px-3 py-2 text-[13px] font-normal text-fg placeholder:text-fg-3 focus:border-fg-3 focus:outline-none"
+          />
+        </label>
+        <p className="truncate font-mono text-[11px] text-fg-3" title={parent}>
+          Parent: {parent}
+        </p>
+      </div>
+    </Modal>
   );
 }
 

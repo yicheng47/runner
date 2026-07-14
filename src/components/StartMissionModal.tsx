@@ -11,7 +11,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
 
-import { api } from "../lib/api";
+import { api, type ProjectRow } from "../lib/api";
 import { readDefaultWorkingDir } from "../lib/settings";
 import { estimateMissionTerminalGrid } from "../lib/terminalSizing";
 import type { CrewListItem, Mission, SlotWithRunner } from "../lib/types";
@@ -27,6 +27,7 @@ interface StartMissionModalProps {
   /** Pre-pick a crew when present. Lets the Crew Detail page open the
    *  modal already scoped to its crew. */
   initialCrewId?: string | null;
+  project?: ProjectRow | null;
 }
 
 export function StartMissionModal({
@@ -34,7 +35,10 @@ export function StartMissionModal({
   onClose,
   onStarted,
   initialCrewId = null,
+  project = null,
 }: StartMissionModalProps) {
+  const projectId = project?.id ?? null;
+  const projectCwd = project?.cwd ?? null;
   const formId = useId();
   const crewPickerButtonId = `${formId}-crew`;
   const titleInputId = `${formId}-title`;
@@ -61,7 +65,7 @@ export function StartMissionModal({
     setSubmitting(false);
     setTitle("");
     setGoal("");
-    setCwd(readDefaultWorkingDir());
+    setCwd(projectCwd ?? readDefaultWorkingDir());
     setAdvancedOpen(false);
     setCrewPickerOpen(false);
     setCrewSlots([]);
@@ -77,7 +81,7 @@ export function StartMissionModal({
         setCrewId(preferred?.id ?? "");
       })
       .catch((e) => setError(String(e)));
-  }, [open, initialCrewId]);
+  }, [open, initialCrewId, projectCwd, projectId]);
 
   useEffect(() => {
     if (!open || !crewId) {
@@ -146,6 +150,7 @@ export function StartMissionModal({
     try {
       const out = await api.mission.start({
         crew_id: crewId,
+        project_id: projectId,
         title: title.trim(),
         goal_override: goal.trim() ? goal.trim() : null,
         cwd: cwd.trim() ? cwd.trim() : null,

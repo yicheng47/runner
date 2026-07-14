@@ -78,6 +78,7 @@ import {
   type PaneLeaf,
   type PresetKind,
 } from "../lib/paneLayout";
+import { useActiveProjectScope } from "../lib/projectScope";
 import {
   pinnedSessionIds,
   shouldInheritPinOnAdd,
@@ -175,6 +176,7 @@ export default function RunnerChat() {
   }>();
   const location = useLocation();
   const navigate = useNavigate();
+  const activeProject = useActiveProjectScope();
   const state = location.state as RunnerChatLocationState | null;
 
   const sessionId = sessionIdParam ?? null;
@@ -1812,6 +1814,7 @@ export default function RunnerChat() {
           session lands in the target pane. */}
       <StartChatModal
         open={paneModalTarget !== null}
+        project={activeProject}
         onClose={() => setPaneModalTarget(null)}
         defaultRunnerId={chatMeta?.runner_id ?? undefined}
         onStarted={(spawned) => {

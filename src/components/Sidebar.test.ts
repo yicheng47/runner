@@ -4,6 +4,7 @@ import { Folder } from "lucide-react";
 import { describe, expect, it } from "vitest";
 
 import type { MissionSummary } from "../lib/types";
+import { projectIdForTab } from "../lib/projectScope";
 import { MissionRow, NewFolderRow } from "./Sidebar";
 import { SidebarTabIcon } from "./SidebarTabRow";
 
@@ -103,5 +104,17 @@ describe("SidebarTabIcon", () => {
     expect(html).toContain("lucide-folder");
     expect(html).toContain('fill="none"');
     expect(html).toContain("text-fg-2");
+  });
+});
+
+describe("projectIdForTab", () => {
+  it("groups a tab only when every pane shares the same project", () => {
+    expect(
+      projectIdForTab([{ project_id: "project-a" }, { project_id: "project-a" }]),
+    ).toBe("project-a");
+    expect(
+      projectIdForTab([{ project_id: "project-a" }, { project_id: null }]),
+    ).toBeNull();
+    expect(projectIdForTab([{ project_id: null }])).toBeNull();
   });
 });
