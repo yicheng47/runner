@@ -181,4 +181,37 @@ describe("chat tab drop ordering", () => {
     ]);
     expect(isChatTabDropIndexAllowed(tabs, "b", false, 1)).toBe(false);
   });
+
+  it("clamps cross-list appends to the dragged tab's pin tier", () => {
+    const target = [
+      { id: "p1", pinned: true },
+      { id: "a", pinned: false },
+    ];
+
+    expect(
+      orderedChatTabIdsAfterDrop(
+        target,
+        "incoming-pinned",
+        true,
+        Number.MAX_SAFE_INTEGER,
+      ),
+    ).toEqual(["p1", "incoming-pinned", "a"]);
+    expect(
+      orderedChatTabIdsAfterDrop(
+        target,
+        "incoming",
+        false,
+        Number.MAX_SAFE_INTEGER,
+      ),
+    ).toEqual(["p1", "a", "incoming"]);
+    expect(
+      orderedChatTabIdsAfterDrop(target, "incoming", false, 0),
+    ).toEqual(["p1", "incoming", "a"]);
+    expect(
+      isChatTabDropIndexAllowed(target, "incoming-pinned", true, 2),
+    ).toBe(false);
+    expect(isChatTabDropIndexAllowed(target, "incoming", false, 0)).toBe(
+      false,
+    );
+  });
 });

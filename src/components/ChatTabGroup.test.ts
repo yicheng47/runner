@@ -35,7 +35,7 @@ describe("ChatTabGroup", () => {
 
     expect(html).toContain("lucide-columns-3");
     expect(html).not.toContain(">3</span>");
-    expect(html).toContain('draggable="true"');
+    expect(html).not.toContain("draggable=");
     expect(html).toContain('fill="none"');
   });
 

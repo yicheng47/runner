@@ -22,9 +22,25 @@ import {
   useRef,
   useState,
   type ComponentType,
-  type DragEvent,
   type ReactNode,
 } from "react";
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  pointerWithin,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
 import {
   NavLink,
   useLocation,
@@ -97,10 +113,7 @@ import {
   visibleSessionIds,
   type PaneLayout,
 } from "../lib/paneLayout";
-import {
-  CHAT_TAB_DRAG_TYPE,
-  ChatTabGroup,
-} from "./ChatTabGroup";
+import { ChatTabGroup } from "./ChatTabGroup";
 import {
   ChatAttentionIndicator,
   SidebarTabIcon,
@@ -134,6 +147,30 @@ const STORAGE_MISSION_OPEN = "runner.sidebar.mission.open";
 const STORAGE_SESSION_OPEN = "runner.sidebar.session.open";
 const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
 const SIDEBAR_NAVIGATION_HISTORY_LIMIT = 64;
+
+type TabDropTarget = {
+  folderId: string | null;
+  index: number;
+  markerKey: string;
+};
+
+type ChatTabDndData =
+  | {
+      kind: "tab";
+      tabId: string;
+      folderId: string | null;
+    }
+  | ({ kind: "position" } & TabDropTarget)
+  | {
+      kind: "collapsed-folder";
+      folderId: string;
+    };
+
+const tabDndId = (tabId: string) => `chat-tab:${tabId}`;
+const tabDropDndId = (folderId: string | null, markerKey: string) =>
+  `chat-tab-drop:${folderId ?? "ungrouped"}:${markerKey}`;
+const collapsedFolderDndId = (folderId: string) =>
+  `chat-folder-drop:${folderId}`;
 
 type SidebarNavigationDirection = "previous" | "next";
 
@@ -215,6 +252,11 @@ export function Sidebar({
 }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const tabDragSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 5 },
+    }),
+  );
 
   // Width + resize state. The right-edge handle below grows the
   // sidebar when dragged rightward. The aside ref lets the hook
@@ -304,13 +346,14 @@ export function Sidebar({
     x: number;
     y: number;
   } | null>(null);
-  const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
+  const [collapsedFolderDropId, setCollapsedFolderDropId] = useState<
+    string | null
+  >(null);
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
-  const [tabDropTarget, setTabDropTarget] = useState<{
-    folderId: string | null;
-    index: number;
-    markerKey: string;
-  } | null>(null);
+  const [tabDropTarget, setTabDropTarget] = useState<TabDropTarget | null>(
+    null,
+  );
+  const tabDropTargetRef = useRef<TabDropTarget | null>(null);
 
   // Identify the currently-open runtime so we can highlight the matching
   // sidebar row. `useMatch` returns null when the URL doesn't match.
@@ -372,6 +415,9 @@ export function Sidebar({
         ),
       ),
     [missions],
+  );
+  const draggedTabItem = tabItems.find(
+    (item) => item.layout.id === draggedTabId,
   );
   const orderedChatRows = useMemo(
     () => tabItems.map((item) => item.members[0]),
@@ -1001,8 +1047,9 @@ export function Sidebar({
 
   const clearTabDrag = useCallback(() => {
     setDraggedTabId(null);
-    setDragOverFolderId(null);
+    setCollapsedFolderDropId(null);
     setTabDropTarget(null);
+    tabDropTargetRef.current = null;
   }, []);
 
   const commitTabDrop = useCallback(
@@ -1036,12 +1083,198 @@ export function Sidebar({
     [clearTabDrag, tabItems],
   );
 
-  const dropTabIntoFolder = useCallback(
-    (tabId: string, folderId: string) => {
-      setDragOverFolderId(null);
-      void commitTabDrop(tabId, folderId, Number.MAX_SAFE_INTEGER);
+  const resolveTabDropTarget = useCallback(
+    (event: DragOverEvent | DragEndEvent): TabDropTarget | null => {
+      const activeData = event.active.data.current as
+        | ChatTabDndData
+        | undefined;
+      const overData = event.over?.data.current as
+        | ChatTabDndData
+        | undefined;
+      if (activeData?.kind !== "tab" || !overData) return null;
+
+      const dragged = tabItems.find(
+        (item) => item.layout.id === activeData.tabId,
+      );
+      if (!dragged) return null;
+
+      if (overData.kind === "position") {
+        const targetItems = tabItems.filter(
+          (item) => item.layout.folderId === overData.folderId,
+        );
+        const allowed = isChatTabDropIndexAllowed(
+          targetItems.map((item) => ({
+            id: item.layout.id,
+            pinned: item.members.every((member) => member.pinned),
+          })),
+          dragged.layout.id,
+          dragged.members.every((member) => member.pinned),
+          overData.index,
+        );
+        return allowed
+          ? {
+              folderId: overData.folderId,
+              index: overData.index,
+              markerKey: overData.markerKey,
+            }
+          : null;
+      }
+
+      if (overData.kind !== "tab") return null;
+      const targetItems = tabItems.filter(
+        (item) => item.layout.folderId === overData.folderId,
+      );
+      const overIndex = targetItems.findIndex(
+        (item) => item.layout.id === overData.tabId,
+      );
+      if (overIndex < 0 || !event.over) return null;
+
+      const activeRect =
+        event.active.rect.current.translated ??
+        event.active.rect.current.initial;
+      const after = activeRect
+        ? activeRect.top + activeRect.height / 2 >=
+          event.over.rect.top + event.over.rect.height / 2
+        : false;
+      const originalIndex = overIndex + (after ? 1 : 0);
+      const index = targetItems
+        .slice(0, originalIndex)
+        .filter((item) => item.layout.id !== dragged.layout.id).length;
+      if (
+        !isChatTabDropIndexAllowed(
+          targetItems.map((item) => ({
+            id: item.layout.id,
+            pinned: item.members.every((member) => member.pinned),
+          })),
+          dragged.layout.id,
+          dragged.members.every((member) => member.pinned),
+          index,
+        )
+      ) {
+        return null;
+      }
+
+      return {
+        folderId: overData.folderId,
+        index,
+        markerKey:
+          originalIndex < targetItems.length
+            ? `before-${targetItems[originalIndex].layout.id}`
+            : `after-${overData.folderId ?? "ungrouped"}`,
+      };
     },
-    [commitTabDrop],
+    [tabItems],
+  );
+
+  const resolveCollapsedFolderDropTarget = useCallback(
+    (tabId: string, folderId: string): TabDropTarget | null => {
+      const dragged = tabItems.find((item) => item.layout.id === tabId);
+      if (!dragged) return null;
+      const targetItems = tabItems.filter(
+        (item) => item.layout.folderId === folderId,
+      );
+      const orderedIds = orderedChatTabIdsAfterDrop(
+        targetItems.map((item) => ({
+          id: item.layout.id,
+          pinned: item.members.every((member) => member.pinned),
+        })),
+        tabId,
+        dragged.members.every((member) => member.pinned),
+        Number.MAX_SAFE_INTEGER,
+      );
+      const index = orderedIds.indexOf(tabId);
+      const remaining = targetItems.filter(
+        (item) => item.layout.id !== tabId,
+      );
+      if (index < 0) return null;
+      return {
+        folderId,
+        index,
+        markerKey:
+          index < remaining.length
+            ? `before-${remaining[index].layout.id}`
+            : `after-${folderId}`,
+      };
+    },
+    [tabItems],
+  );
+
+  const handleTabDragStart = useCallback((event: DragStartEvent) => {
+    const data = event.active.data.current as ChatTabDndData | undefined;
+    if (data?.kind !== "tab") return;
+    setDraggedTabId(data.tabId);
+    setCollapsedFolderDropId(null);
+    setTabDropTarget(null);
+    tabDropTargetRef.current = null;
+  }, []);
+
+  const handleTabDragOver = useCallback(
+    (event: DragOverEvent) => {
+      const activeData = event.active.data.current as
+        | ChatTabDndData
+        | undefined;
+      const overData = event.over?.data.current as
+        | ChatTabDndData
+        | undefined;
+      if (
+        activeData?.kind === "tab" &&
+        overData?.kind === "collapsed-folder"
+      ) {
+        const target = resolveCollapsedFolderDropTarget(
+          activeData.tabId,
+          overData.folderId,
+        );
+        setCollapsedFolderDropId(overData.folderId);
+        setTabDropTarget(target);
+        tabDropTargetRef.current = target;
+        return;
+      }
+
+      setCollapsedFolderDropId((folderId) => {
+        if (
+          folderId &&
+          (overData?.kind === "position" || overData?.kind === "tab") &&
+          overData.folderId === folderId
+        ) {
+          return folderId;
+        }
+        return null;
+      });
+      const target = resolveTabDropTarget(event);
+      setTabDropTarget(target);
+      tabDropTargetRef.current = target;
+    },
+    [resolveCollapsedFolderDropTarget, resolveTabDropTarget],
+  );
+
+  const handleTabDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const activeData = event.active.data.current as
+        | ChatTabDndData
+        | undefined;
+      const overData = event.over?.data.current as
+        | ChatTabDndData
+        | undefined;
+      if (activeData?.kind !== "tab") {
+        clearTabDrag();
+        return;
+      }
+      if (overData?.kind === "collapsed-folder") {
+        void commitTabDrop(
+          activeData.tabId,
+          overData.folderId,
+          Number.MAX_SAFE_INTEGER,
+        );
+        return;
+      }
+      const target = resolveTabDropTarget(event) ?? tabDropTargetRef.current;
+      if (target) {
+        void commitTabDrop(activeData.tabId, target.folderId, target.index);
+      } else {
+        clearTabDrag();
+      }
+    },
+    [clearTabDrag, commitTabDrop, resolveTabDropTarget],
   );
 
   const toggleMissions = useCallback(() => {
@@ -1063,26 +1296,25 @@ export function Sidebar({
       (member) => member.session_id === currentChatSessionId,
     );
     return (
-      <ChatTabGroup
+      <SortableChatTab
         key={item.layout.id}
-        layout={item.layout}
-        members={item.members}
-        active={active}
-        attention={item.attention}
-        onActivate={(entry) =>
-          activateTabChat(item.layout.id, item.members, entry)
-        }
-        onContextMenu={(anchor) =>
-          openChatTabMenu(item.layout, item.members, anchor)
-        }
-        onDragStart={(tabId) => {
-          setDraggedTabId(tabId);
-          setDragOverFolderId(null);
-          setTabDropTarget(null);
-        }}
-        onDragEnd={clearTabDrag}
-        dragging={draggedTabId === item.layout.id}
-      />
+        tabId={item.layout.id}
+        folderId={item.layout.folderId}
+      >
+        <ChatTabGroup
+          layout={item.layout}
+          members={item.members}
+          active={active}
+          attention={item.attention}
+          onActivate={(entry) =>
+            activateTabChat(item.layout.id, item.members, entry)
+          }
+          onContextMenu={(anchor) =>
+            openChatTabMenu(item.layout, item.members, anchor)
+          }
+          dragging={draggedTabId === item.layout.id}
+        />
+      </SortableChatTab>
     );
   };
 
@@ -1092,47 +1324,35 @@ export function Sidebar({
     originalIndex: number,
     key: string,
   ) => {
-    if (!draggedTabId) return null;
     const dragged = tabItems.find((item) => item.layout.id === draggedTabId);
-    if (!dragged) return null;
     const index = items
       .slice(0, originalIndex)
       .filter((item) => item.layout.id !== draggedTabId).length;
-    if (
-      !isChatTabDropIndexAllowed(
-        items.map((item) => ({
-          id: item.layout.id,
-          pinned: item.members.every((member) => member.pinned),
-        })),
-        dragged.layout.id,
-        dragged.members.every((member) => member.pinned),
-        index,
-      )
-    ) {
-      return null;
-    }
+    const enabled = Boolean(
+      dragged &&
+        isChatTabDropIndexAllowed(
+          items.map((item) => ({
+            id: item.layout.id,
+            pinned: item.members.every((member) => member.pinned),
+          })),
+          dragged.layout.id,
+          dragged.members.every((member) => member.pinned),
+          index,
+        ),
+    );
     return (
       <TabDropDivider
         key={key}
+        id={tabDropDndId(folderId, key)}
+        enabled={enabled}
+        folderId={folderId}
+        index={index}
+        markerKey={key}
         active={
           tabDropTarget?.folderId === folderId &&
           tabDropTarget.index === index &&
           tabDropTarget.markerKey === key
         }
-        onDragOver={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          event.dataTransfer.dropEffect = "move";
-          setDragOverFolderId(null);
-          setTabDropTarget({ folderId, index, markerKey: key });
-        }}
-        onDrop={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          const tabId = event.dataTransfer.getData(CHAT_TAB_DRAG_TYPE);
-          if (tabId) void commitTabDrop(tabId, folderId, index);
-          else clearTabDrag();
-        }}
       />
     );
   };
@@ -1140,34 +1360,33 @@ export function Sidebar({
   const renderTabItems = (
     items: typeof tabItems,
     folderId: string | null,
-  ) => (
-    <>
-      {items.map((item, originalIndex) => {
-        const dropIndex = (after: boolean) =>
-          items
-            .slice(0, originalIndex + (after ? 1 : 0))
-            .filter((candidate) => candidate.layout.id !== draggedTabId)
-            .length;
-        const canDropAt = (index: number) => {
-          const dragged = tabItems.find(
-            (candidate) => candidate.layout.id === draggedTabId,
-          );
-          if (!dragged) return false;
-          return isChatTabDropIndexAllowed(
-            items.map((candidate) => ({
-              id: candidate.layout.id,
-              pinned: candidate.members.every((member) => member.pinned),
-            })),
-            dragged.layout.id,
-            dragged.members.every((member) => member.pinned),
-            index,
-          );
-        };
-        const pointerIndex = (event: DragEvent<HTMLDivElement>) => {
-          const rect = event.currentTarget.getBoundingClientRect();
-          return dropIndex(event.clientY >= rect.top + rect.height / 2);
-        };
-        return (
+  ) => {
+    if (items.length === 0) {
+      const markerKey = `after-${folderId ?? "ungrouped"}`;
+      return (
+        <SortableContext items={[]} strategy={verticalListSortingStrategy}>
+          <EmptyTabDropArea
+            id={tabDropDndId(folderId, markerKey)}
+            enabled={draggedTabId !== null}
+            folderId={folderId}
+            markerKey={markerKey}
+            active={
+              tabDropTarget?.folderId === folderId &&
+              tabDropTarget.index === 0 &&
+              tabDropTarget.markerKey === markerKey
+            }
+            label={folderId === null ? null : "Empty folder"}
+          />
+        </SortableContext>
+      );
+    }
+
+    return (
+      <SortableContext
+        items={items.map((item) => tabDndId(item.layout.id))}
+        strategy={verticalListSortingStrategy}
+      >
+        {items.map((item, originalIndex) => (
           <Fragment key={item.layout.id}>
             {renderTabDropDivider(
               folderId,
@@ -1175,66 +1394,18 @@ export function Sidebar({
               originalIndex,
               `before-${item.layout.id}`,
             )}
-            <div
-              onDragOver={(event) => {
-                if (
-                  !Array.from(event.dataTransfer.types).includes(
-                    CHAT_TAB_DRAG_TYPE,
-                  )
-                ) {
-                  return;
-                }
-                const index = pointerIndex(event);
-                if (!canDropAt(index)) {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  event.dataTransfer.dropEffect = "none";
-                  setTabDropTarget(null);
-                  return;
-                }
-                event.preventDefault();
-                event.stopPropagation();
-                event.dataTransfer.dropEffect = "move";
-                setDragOverFolderId(null);
-                const after =
-                  event.clientY >=
-                  event.currentTarget.getBoundingClientRect().top +
-                    event.currentTarget.getBoundingClientRect().height / 2;
-                const markerKey = after
-                  ? originalIndex + 1 < items.length
-                    ? `before-${items[originalIndex + 1].layout.id}`
-                    : `after-${folderId ?? "ungrouped"}`
-                  : `before-${item.layout.id}`;
-                setTabDropTarget({ folderId, index, markerKey });
-              }}
-              onDrop={(event) => {
-                const index = pointerIndex(event);
-                if (!canDropAt(index)) {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  clearTabDrag();
-                  return;
-                }
-                event.preventDefault();
-                event.stopPropagation();
-                const tabId = event.dataTransfer.getData(CHAT_TAB_DRAG_TYPE);
-                if (tabId) void commitTabDrop(tabId, folderId, index);
-                else clearTabDrag();
-              }}
-            >
-              {renderTabItem(item)}
-            </div>
+            {renderTabItem(item)}
           </Fragment>
-        );
-      })}
-      {renderTabDropDivider(
-        folderId,
-        items,
-        items.length,
-        `after-${folderId ?? "ungrouped"}`,
-      )}
-    </>
-  );
+        ))}
+        {renderTabDropDivider(
+          folderId,
+          items,
+          items.length,
+          `after-${folderId ?? "ungrouped"}`,
+        )}
+      </SortableContext>
+    );
+  };
 
   const sidebarVisible = !collapsed || previewOpen;
   const sidebarPreview = collapsed && previewOpen;
@@ -1423,6 +1594,14 @@ export function Sidebar({
                     }}
                     className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                   >
+                    <DndContext
+                      sensors={tabDragSensors}
+                      collisionDetection={pointerWithin}
+                      onDragStart={handleTabDragStart}
+                      onDragOver={handleTabDragOver}
+                      onDragEnd={handleTabDragEnd}
+                      onDragCancel={clearTabDrag}
+                    >
                     {creatingFolder ? (
                       <NewFolderRow
                         onSubmit={submitFolderCreate}
@@ -1447,42 +1626,12 @@ export function Sidebar({
                           const folderLive = items.some((item) =>
                             chatTabIsLive(item.members),
                           );
+                          const visuallyCollapsed =
+                            folder.collapsed &&
+                            collapsedFolderDropId !== folder.id;
                           return (
                             <div
                               key={folder.id}
-                              onDragOver={(event) => {
-                                if (
-                                  !Array.from(event.dataTransfer.types).includes(
-                                    CHAT_TAB_DRAG_TYPE,
-                                  )
-                                ) {
-                                  return;
-                                }
-                                event.preventDefault();
-                                event.dataTransfer.dropEffect = "move";
-                                setDragOverFolderId(folder.id);
-                                setTabDropTarget(null);
-                              }}
-                              onDragLeave={(event) => {
-                                const next = event.relatedTarget;
-                                if (
-                                  !(next instanceof Node) ||
-                                  !event.currentTarget.contains(next)
-                                ) {
-                                  setDragOverFolderId(null);
-                                }
-                              }}
-                              onDrop={(event) => {
-                                event.preventDefault();
-                                const tabId = event.dataTransfer.getData(
-                                  CHAT_TAB_DRAG_TYPE,
-                                );
-                                if (tabId) {
-                                  void dropTabIntoFolder(tabId, folder.id);
-                                } else {
-                                  setDragOverFolderId(null);
-                                }
-                              }}
                               className="flex flex-col gap-0.5"
                             >
                               {renamingFolderId === folder.id ? (
@@ -1501,19 +1650,17 @@ export function Sidebar({
                                   onCancel={() => setRenamingFolderId(null)}
                                 />
                               ) : (
-                                <div
-                                  onContextMenu={(event) => {
-                                    event.preventDefault();
-                                    openFolderMenu(folder, {
-                                      x: event.clientX,
-                                      y: event.clientY,
-                                    });
-                                  }}
-                                  className={`group flex items-center gap-1.5 rounded border px-2.5 py-1.5 text-xs transition-colors ${
-                                    dragOverFolderId === folder.id
-                                      ? "border-accent bg-accent/10 text-fg"
-                                      : "border-transparent text-fg-2 hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg"
-                                  }`}
+                                <CollapsedFolderDropRow
+                                  folderId={folder.id}
+                                  enabled={
+                                    folder.collapsed && draggedTabId !== null
+                                  }
+                                  active={
+                                    collapsedFolderDropId === folder.id
+                                  }
+                                  onContextMenu={(anchor) =>
+                                    openFolderMenu(folder, anchor)
+                                  }
                                 >
                                   <button
                                     type="button"
@@ -1525,7 +1672,7 @@ export function Sidebar({
                                     }
                                     className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
                                   >
-                                    {folder.collapsed ? (
+                                    {visuallyCollapsed ? (
                                       <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
                                     ) : (
                                       <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
@@ -1539,7 +1686,9 @@ export function Sidebar({
                                     </span>
                                     <ChatAttentionIndicator
                                       state={
-                                        folder.collapsed ? folderAttention : null
+                                        visuallyCollapsed
+                                          ? folderAttention
+                                          : null
                                       }
                                     />
                                   </button>
@@ -1557,16 +1706,11 @@ export function Sidebar({
                                   >
                                     <MoreHorizontal aria-hidden className="h-3 w-3" />
                                   </button>
-                                </div>
+                                </CollapsedFolderDropRow>
                               )}
-                              {folder.collapsed ? null : (
+                              {visuallyCollapsed ? null : (
                                 <div className="ml-3 flex flex-col gap-0.5 border-l border-line pl-2">
                                   {renderTabItems(items, folder.id)}
-                                  {items.length === 0 ? (
-                                    <p className="px-2.5 py-1.5 text-xs text-fg-3">
-                                      Empty folder
-                                    </p>
-                                  ) : null}
                                 </div>
                               )}
                             </div>
@@ -1580,6 +1724,24 @@ export function Sidebar({
                         )}
                       </>
                     )}
+                    <DragOverlay dropAnimation={null}>
+                      {draggedTabItem ? (
+                        <div className="shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
+                          <ChatTabGroup
+                            layout={draggedTabItem.layout}
+                            members={draggedTabItem.members}
+                            active={draggedTabItem.members.some(
+                              (member) =>
+                                member.session_id === currentChatSessionId,
+                            )}
+                            attention={draggedTabItem.attention}
+                            onActivate={() => undefined}
+                            onContextMenu={() => undefined}
+                          />
+                        </div>
+                      ) : null}
+                    </DragOverlay>
+                    </DndContext>
                   </div>
                 ) : null}
               </section>
@@ -1957,21 +2119,139 @@ function CollapsibleSectionHeader({
 
 // ---- sidebar list rows ------------------------------------------------
 
-function TabDropDivider({
-  active,
-  onDragOver,
-  onDrop,
+function SortableChatTab({
+  tabId,
+  folderId,
+  children,
 }: {
-  active: boolean;
-  onDragOver: (event: DragEvent<HTMLDivElement>) => void;
-  onDrop: (event: DragEvent<HTMLDivElement>) => void;
+  tabId: string;
+  folderId: string | null;
+  children: ReactNode;
 }) {
+  const {
+    listeners,
+    setNodeRef,
+  } = useSortable({
+    id: tabDndId(tabId),
+    data: { kind: "tab", tabId, folderId } satisfies ChatTabDndData,
+  });
+
+  return (
+    <div ref={setNodeRef} style={{ touchAction: "none" }} {...listeners}>
+      {children}
+    </div>
+  );
+}
+
+function CollapsedFolderDropRow({
+  folderId,
+  enabled,
+  active,
+  onContextMenu,
+  children,
+}: {
+  folderId: string;
+  enabled: boolean;
+  active: boolean;
+  onContextMenu: (anchor: { x: number; y: number }) => void;
+  children: ReactNode;
+}) {
+  const { setNodeRef } = useDroppable({
+    id: collapsedFolderDndId(folderId),
+    disabled: !enabled,
+    data: {
+      kind: "collapsed-folder",
+      folderId,
+    } satisfies ChatTabDndData,
+  });
+
   return (
     <div
-      onDragOver={onDragOver}
-      onDrop={onDrop}
-      className="relative z-20 -my-1 h-2 shrink-0"
+      ref={setNodeRef}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onContextMenu({ x: event.clientX, y: event.clientY });
+      }}
+      className={`group flex items-center gap-1.5 rounded border px-2.5 py-1.5 text-xs transition-colors ${
+        active
+          ? "border-accent bg-accent/10 text-fg"
+          : "border-transparent text-fg-2 hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg"
+      }`}
     >
+      {children}
+    </div>
+  );
+}
+
+function EmptyTabDropArea({
+  id,
+  enabled,
+  folderId,
+  markerKey,
+  active,
+  label,
+}: {
+  id: string;
+  enabled: boolean;
+  folderId: string | null;
+  markerKey: string;
+  active: boolean;
+  label: string | null;
+}) {
+  const { setNodeRef } = useDroppable({
+    id,
+    disabled: !enabled,
+    data: {
+      kind: "position",
+      folderId,
+      index: 0,
+      markerKey,
+    } satisfies ChatTabDndData,
+  });
+
+  return (
+    <div ref={setNodeRef} className="relative min-h-7 shrink-0">
+      {active ? (
+        <>
+          <span className="absolute left-0 top-1 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-accent" />
+          <span className="absolute inset-x-0 top-1 h-0.5 -translate-y-1/2 rounded-full bg-accent" />
+        </>
+      ) : null}
+      {label ? (
+        <p className="px-2.5 py-1.5 text-xs text-fg-3">{label}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function TabDropDivider({
+  id,
+  enabled,
+  folderId,
+  index,
+  markerKey,
+  active,
+}: {
+  id: string;
+  enabled: boolean;
+  folderId: string | null;
+  index: number;
+  markerKey: string;
+  active: boolean;
+}) {
+  const { setNodeRef } = useDroppable({
+    id,
+    disabled: !enabled,
+    data: {
+      kind: "position",
+      folderId,
+      index,
+      markerKey,
+    } satisfies ChatTabDndData,
+  });
+
+  return (
+    <div ref={setNodeRef} className="relative z-20 -my-1 h-2 shrink-0">
       {active ? (
         <>
           <span className="absolute left-0 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-accent" />

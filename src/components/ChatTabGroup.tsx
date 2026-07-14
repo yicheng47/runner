@@ -10,16 +10,12 @@ import { chatTabIsLive, derivedChatTabTitle } from "../lib/chatTabs";
 import { findLeaf, leaves, type PaneLayout } from "../lib/paneLayout";
 import { SidebarTabRow } from "./SidebarTabRow";
 
-export const CHAT_TAB_DRAG_TYPE = "application/x-runner-chat-tab";
-
 export function ChatTabGroup({
   layout,
   members,
   active,
   onActivate,
   onContextMenu,
-  onDragStart,
-  onDragEnd,
   dragging,
   attention,
 }: {
@@ -28,8 +24,6 @@ export function ChatTabGroup({
   active: boolean;
   onActivate: (session: DirectSessionEntry) => void;
   onContextMenu: (anchor: { x: number; y: number }) => void;
-  onDragStart?: (tabId: string) => void;
-  onDragEnd?: () => void;
   dragging?: boolean;
   attention: ChatAttentionState;
 }) {
@@ -45,13 +39,6 @@ export function ChatTabGroup({
 
   return (
     <SidebarTabRow
-      draggable={layout.id.length > 0}
-      onDragStart={(event) => {
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData(CHAT_TAB_DRAG_TYPE, layout.id);
-        onDragStart?.(layout.id);
-      }}
-      onDragEnd={onDragEnd}
       dragging={dragging}
       selected={active}
       label={name}
