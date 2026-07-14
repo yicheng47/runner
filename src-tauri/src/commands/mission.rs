@@ -23,7 +23,7 @@ use tauri::{Emitter, State};
 use ulid::Ulid as UlidGen;
 
 use crate::{
-    commands::{crew, slot},
+    commands::{crew, project, slot},
     error::{Error, Result},
     model::{Mission, MissionStatus, SessionStatus, Timestamp},
     repo, AppState,
@@ -32,6 +32,7 @@ use crate::{
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct StartMissionInput {
     pub crew_id: String,
+    /// Optional project membership. Its cwd is used when cwd is omitted.
     #[serde(default)]
     pub project_id: Option<String>,
     pub title: String,
@@ -42,6 +43,7 @@ pub struct StartMissionInput {
     #[serde(default)]
     pub goal_override: Option<String>,
     /// Working directory exposed to every session as `$MISSION_CWD`.
+    /// An explicit value overrides the project's bound cwd.
     #[serde(default)]
     pub cwd: Option<String>,
 }
@@ -172,7 +174,7 @@ fn ensure_first_turn_fits(slot_handle: &str, body: &str) -> Result<()> {
 pub fn start(
     conn: &mut Connection,
     app_data_dir: &Path,
-    input: StartMissionInput,
+    mut input: StartMissionInput,
 ) -> Result<StartMissionOutput> {
     let title = input.title.trim().to_string();
     if title.is_empty() {
@@ -181,6 +183,7 @@ pub fn start(
     if let Some(g) = input.goal_override.as_deref() {
         validate_mission_goal(g)?;
     }
+    input.cwd = project::resolve_cwd(conn, input.project_id.as_deref(), input.cwd)?;
 
     // Validate crew exists and is launchable.
     let crew = crew::get(conn, &input.crew_id)?;
@@ -1982,13 +1985,14 @@ mod tests {
                 crew_id: crew_id.clone(),
                 title: "first mission".into(),
                 goal_override: None,
-                cwd: Some("/tmp/work".into()),
+                cwd: None,
             },
         )
         .unwrap();
 
         assert_eq!(out.mission.title, "first mission");
         assert_eq!(out.mission.project_id.as_deref(), Some(project.id.as_str()));
+        assert_eq!(out.mission.cwd.as_deref(), Some("/tmp/work"));
         assert_eq!(out.mission.status, MissionStatus::Running);
         assert_eq!(out.goal, "Ship v0");
 
@@ -2025,6 +2029,63 @@ mod tests {
             !stale_sidecar.exists(),
             "mission_start must not write the legacy signal_types.json sidecar"
         );
+    }
+
+    #[test]
+    fn start_explicit_cwd_overrides_project_default() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "Alpha", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let project = repo::project::create(&conn, "Runner", "/project").unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                project_id: Some(project.id),
+                crew_id,
+                title: "override cwd".into(),
+                goal_override: None,
+                cwd: Some("/override".into()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(out.mission.cwd.as_deref(), Some("/override"));
+    }
+
+    #[test]
+    fn start_unknown_project_creates_no_mission() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "Alpha", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let error = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                project_id: Some("missing".into()),
+                crew_id,
+                title: "unknown project".into(),
+                goal_override: None,
+                cwd: None,
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "project not found: missing");
+        let mission_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM missions", [], |row| row.get(0))
+            .unwrap();
+        let session_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mission_count, 0);
+        assert_eq!(session_count, 0);
     }
 
     #[test]

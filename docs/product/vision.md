@@ -94,7 +94,7 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 
 ### 4.9 External control
 
-- **MCP** — external Claude Code / Codex sessions can inspect and operate Runner through the bundled `runner-mcp` bridge: crew/runner/slot CRUD plus mission lifecycle, feed, and status tools. Runner.app remains the state owner; MCP is a local control surface, not a remote server.
+- **MCP** — external Claude Code / Codex sessions can inspect and operate Runner through the bundled `runner-mcp` bridge: project discovery, crew/runner/slot CRUD, project-aware mission/direct-chat creation, and mission lifecycle, feed, and status tools. Runner.app remains the state owner; MCP is a local control surface, not a remote server.
 
 ## 5. The demo loop
 

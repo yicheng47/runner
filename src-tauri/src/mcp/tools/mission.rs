@@ -425,7 +425,9 @@ impl RunnerMcpHandler {
         Ok(CallToolResult::success(vec![Content::json(&snapshot)?]))
     }
 
-    #[tool(description = "Start a mission for a crew using the same semantics as the app.")]
+    #[tool(
+        description = "Start a mission for a crew. A project's cwd is used unless cwd is explicitly provided."
+    )]
     pub async fn mission_start(
         &self,
         Parameters(input): Parameters<mission::StartMissionInput>,
