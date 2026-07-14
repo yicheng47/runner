@@ -1,7 +1,7 @@
 {
   "name": "runner",
   "private": true,
-  "version": "0.3.11",
+  "version": "0.3.12",
   "type": "module",
   "engines": {
     "node": ">=22.12.0",
