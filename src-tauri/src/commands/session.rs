@@ -17,9 +17,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
 
 use crate::{
-    commands::runner,
+    commands::{project, runner},
     error::{Error, Result},
-    model::{Session, SessionStatus, Timestamp},
+    model::{Runner, Session, SessionStatus, Timestamp},
     repo,
     session::manager::{
         runtime_direct_runner, OutputEvent, SessionActivityState, SessionEvents, SpawnedSession,
@@ -287,6 +287,14 @@ pub struct DirectSessionEntry {
     /// direct URL. `listRecentDirect` filters these out at SQL, so
     /// rows from that surface always carry `archived_at: None`.
     pub archived_at: Option<Timestamp>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StartDirectSessionOutput {
+    #[serde(flatten)]
+    pub session: SpawnedSession,
+    pub project_id: Option<String>,
+    pub cwd: Option<String>,
 }
 
 /// Assemble the IPC entry from a repo direct-session row. `ship_key`
@@ -621,10 +629,57 @@ pub async fn session_resume(
 /// Detail page's "Chat now" button: the user picks a working directory
 /// and gets a one-on-one terminal with the agent's CLI.
 ///
-/// `cwd` defaults to the runner's own `working_dir` when None — that's
-/// what the spawn path resolves anyway, but exposing it on the row gives
-/// future UI surfaces (session list, recent chats) something to show
-/// without a second lookup against the runner config.
+/// Working-directory precedence is explicit `cwd`, project cwd, then the
+/// runner's own `working_dir`.
+pub(crate) fn resolve_direct_start(
+    conn: &rusqlite::Connection,
+    runner_id: &str,
+    project_id: Option<&str>,
+    cwd: Option<String>,
+) -> Result<(Runner, Option<String>)> {
+    let cwd = project::resolve_cwd(conn, project_id, cwd)?;
+    let runner = runner::get(conn, runner_id)?;
+    let effective_cwd = cwd.or_else(|| runner.working_dir.clone());
+    Ok((runner, effective_cwd))
+}
+
+pub(crate) fn session_start_direct_impl(
+    state: &AppState,
+    app: &tauri::AppHandle,
+    runner_id: String,
+    project_id: Option<String>,
+    cwd: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<StartDirectSessionOutput> {
+    let (runner, effective_cwd) = {
+        let conn = state.db.get()?;
+        resolve_direct_start(&conn, &runner_id, project_id.as_deref(), cwd)?
+    };
+    let first_turn =
+        crate::router::prompt::compose_direct_first_turn(runner.system_prompt.as_deref());
+    let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app.clone()));
+    let session = state
+        .sessions
+        .spawn_direct(
+            &runner,
+            project_id.as_deref(),
+            effective_cwd.as_deref(),
+            cols,
+            rows,
+            &state.app_data_dir,
+            state.db.clone(),
+            emitter,
+            first_turn,
+        )
+        .map_err(|e| Error::msg(format!("session_start_direct: {e}")))?;
+    Ok(StartDirectSessionOutput {
+        session,
+        project_id,
+        cwd: effective_cwd,
+    })
+}
+
 #[tauri::command]
 pub async fn session_start_direct(
     state: State<'_, AppState>,
@@ -635,38 +690,7 @@ pub async fn session_start_direct(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
-    // Look up the runner under a short-lived connection so we don't hold
-    // a pool slot across the spawn (which itself grabs a connection to
-    // insert the `sessions` row).
-    let runner = {
-        let conn = state.db.get()?;
-        runner::get(&conn, &runner_id)?
-    };
-    // Compose the persona first-user-turn body upstream so the spawn
-    // path can deliver it via the positional `[PROMPT]` argv at
-    // process boot — eliminating the post-spawn paste race the
-    // verify loop was working around. Direct chats are off-bus, so
-    // the body is just the runner's `system_prompt` (no worker
-    // coordination preamble). See
-    // `docs/impls/archive/0007-spawn-time-prompt-delivery.md`.
-    let first_turn =
-        crate::router::prompt::compose_direct_first_turn(runner.system_prompt.as_deref());
-    let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app));
-    let spawned = state
-        .sessions
-        .spawn_direct(
-            &runner,
-            project_id.as_deref(),
-            cwd.as_deref(),
-            cols,
-            rows,
-            &state.app_data_dir,
-            state.db.clone(),
-            emitter,
-            first_turn,
-        )
-        .map_err(|e| Error::msg(format!("session_start_direct: {e}")))?;
-    Ok(spawned)
+    Ok(session_start_direct_impl(&state, &app, runner_id, project_id, cwd, cols, rows)?.session)
 }
 
 #[tauri::command]
@@ -874,6 +898,53 @@ mod tests {
         )
         .unwrap();
         runner_id
+    }
+
+    #[test]
+    fn resolve_direct_start_defaults_cwd_from_project() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let runner_id = seed_runner(&conn);
+        let project = repo::project::create(&conn, "Runner", "/project").unwrap();
+
+        let (runner, cwd) =
+            resolve_direct_start(&conn, &runner_id, Some(&project.id), None).unwrap();
+
+        assert_eq!(runner.id, runner_id);
+        assert_eq!(cwd.as_deref(), Some("/project"));
+    }
+
+    #[test]
+    fn resolve_direct_start_explicit_cwd_overrides_project() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let runner_id = seed_runner(&conn);
+        let project = repo::project::create(&conn, "Runner", "/project").unwrap();
+
+        let (_, cwd) = resolve_direct_start(
+            &conn,
+            &runner_id,
+            Some(&project.id),
+            Some("/override".into()),
+        )
+        .unwrap();
+
+        assert_eq!(cwd.as_deref(), Some("/override"));
+    }
+
+    #[test]
+    fn resolve_direct_start_unknown_project_creates_no_session() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let runner_id = seed_runner(&conn);
+
+        let error = resolve_direct_start(&conn, &runner_id, Some("missing"), None).unwrap_err();
+
+        assert_eq!(error.to_string(), "project not found: missing");
+        let session_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(session_count, 0);
     }
 
     fn insert_direct_session(

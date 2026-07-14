@@ -17,10 +17,30 @@ fn emit_changed(app: &tauri::AppHandle) {
     let _ = app.emit("project/changed", serde_json::json!({}));
 }
 
+pub fn list(conn: &rusqlite::Connection) -> Result<Vec<ProjectRow>> {
+    Ok(repo::project::list(conn)?)
+}
+
+pub fn get(conn: &rusqlite::Connection, id: &str) -> Result<ProjectRow> {
+    repo::project::get(conn, id)?.ok_or_else(|| Error::msg(format!("project not found: {id}")))
+}
+
+pub(crate) fn resolve_cwd(
+    conn: &rusqlite::Connection,
+    project_id: Option<&str>,
+    cwd: Option<String>,
+) -> Result<Option<String>> {
+    let Some(project_id) = project_id else {
+        return Ok(cwd);
+    };
+    let project = get(conn, project_id)?;
+    Ok(cwd.or(Some(project.cwd)))
+}
+
 #[tauri::command]
 pub fn project_list(state: State<'_, AppState>) -> Result<Vec<ProjectRow>> {
     let conn = state.db.get()?;
-    Ok(repo::project::list(&conn)?)
+    list(&conn)
 }
 
 #[tauri::command]
@@ -99,11 +119,38 @@ pub fn project_delete(state: State<'_, AppState>, app: tauri::AppHandle, id: Str
 
 #[cfg(test)]
 mod tests {
-    use super::clean_value;
+    use super::{clean_value, resolve_cwd};
+    use crate::{db, repo};
 
     #[test]
     fn clean_value_trims_and_rejects_blank() {
         assert_eq!(clean_value("  Runner  ".into(), "name").unwrap(), "Runner");
         assert!(clean_value("  ".into(), "cwd").is_err());
+    }
+
+    #[test]
+    fn resolve_cwd_defaults_from_project_and_preserves_override() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let project = repo::project::create(&conn, "Runner", "/project").unwrap();
+
+        assert_eq!(
+            resolve_cwd(&conn, Some(&project.id), None).unwrap(),
+            Some("/project".into())
+        );
+        assert_eq!(
+            resolve_cwd(&conn, Some(&project.id), Some("/override".into())).unwrap(),
+            Some("/override".into())
+        );
+    }
+
+    #[test]
+    fn resolve_cwd_rejects_unknown_project() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+
+        let error = resolve_cwd(&conn, Some("missing"), None).unwrap_err();
+
+        assert_eq!(error.to_string(), "project not found: missing");
     }
 }

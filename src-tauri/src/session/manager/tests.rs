@@ -1422,6 +1422,10 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
     let mut runner = runner("/bin/sh", &["-c", "echo direct"]);
     runner.id = runner_id.clone();
     runner.handle = "directrunner".into();
+    let project = {
+        let conn = pool.get().unwrap();
+        crate::repo::project::create(&conn, "Runner", "/project").unwrap()
+    };
 
     let cap = capture();
     let fake = fake_runtime();
@@ -1429,8 +1433,8 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
     let spawned = mgr
         .spawn_direct(
             &runner,
-            None,
-            Some("/tmp"),
+            Some(&project.id),
+            Some(&project.cwd),
             None,
             None,
             std::path::Path::new("/tmp"),
@@ -1441,6 +1445,17 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
         .unwrap();
     assert_eq!(spawned.mission_id, None);
     assert_eq!(spawned.runner_id, Some(runner_id.clone()));
+    let (stored_project_id, stored_cwd): (Option<String>, Option<String>) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT project_id, cwd FROM sessions WHERE id = ?1",
+            params![&spawned.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored_project_id.as_deref(), Some(project.id.as_str()));
+    assert_eq!(stored_cwd.as_deref(), Some(project.cwd.as_str()));
 
     // Direct chat must NOT have a mission-side shim or
     // bundled-bin in its SpawnSpec — the off-bus invariant.

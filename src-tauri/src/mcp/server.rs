@@ -22,7 +22,9 @@ impl RunnerMcpHandler {
         r.merge(Self::crew_router());
         r.merge(Self::runner_router());
         r.merge(Self::slot_router());
+        r.merge(Self::project_router());
         r.merge(Self::mission_router());
+        r.merge(Self::session_router());
         r
     }
 }
@@ -36,8 +38,8 @@ impl ServerHandler for RunnerMcpHandler {
             .with_protocol_version(ProtocolVersion::LATEST)
             .with_server_info(implementation)
             .with_instructions(
-                "Runner MCP server. Access crews, runners, slots, and mission \
-                 lifecycle/status tools for operating a Runner workspace.",
+                "Runner MCP server. Access projects, crews, runners, slots, direct chats, \
+                 and mission lifecycle/status tools for operating a Runner workspace.",
             )
     }
 }
@@ -88,6 +90,8 @@ mod tests {
             "slot_delete",
             "slot_set_lead",
             "slot_reorder",
+            "project_list",
+            "project_get",
             "mission_list",
             "mission_get",
             "mission_list_summary",
@@ -101,11 +105,12 @@ mod tests {
             "mission_rename",
             "mission_reset",
             "mission_post_human_signal",
+            "session_start_direct",
         ]
         .iter()
         .map(|s| s.to_string())
         .collect();
-        assert_eq!(names, expected, "MCP tool registry diverged from Phase 2");
+        assert_eq!(names, expected, "MCP tool registry diverged");
     }
 
     // Regression for #240. A bare `serde_json::Value` field derives a
