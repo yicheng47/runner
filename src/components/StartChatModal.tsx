@@ -12,7 +12,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, X } from "lucide-react";
 
-import { api, type RuntimeDefinition } from "../lib/api";
+import { api, type ProjectRow, type RuntimeDefinition } from "../lib/api";
 import {
   readDefaultChatRuntime,
   readDefaultWorkingDir,
@@ -33,6 +33,7 @@ interface StartChatModalProps {
    *  passes the focused chat's runner so the same config is one Enter
    *  away; the picker stays fully changeable. */
   defaultRunnerId?: string;
+  project?: ProjectRow | null;
 }
 
 type ChatMode = "runner" | "runtime";
@@ -43,7 +44,10 @@ export function StartChatModal({
   onClose,
   onStarted,
   defaultRunnerId,
+  project = null,
 }: StartChatModalProps) {
+  const projectId = project?.id ?? null;
+  const projectCwd = project?.cwd ?? null;
   const formId = useId();
   const runnerPickerButtonId = `${formId}-runner`;
   const runtimePickerButtonId = `${formId}-runtime`;
@@ -103,6 +107,10 @@ export function StartChatModal({
   useEffect(() => {
     if (open && defaultRunnerId) setModeState("runner");
   }, [open, defaultRunnerId]);
+
+  useEffect(() => {
+    if (open && projectCwd) setCwd(projectCwd);
+  }, [open, projectCwd]);
 
   useEffect(() => {
     if (!open) return;
@@ -248,12 +256,14 @@ export function StartChatModal({
                   : (readDefaultWorkingDir() || null),
               null,
               null,
+              projectId,
             )
           : await api.session.startRuntime(
               selectedRuntime!.name,
               trimmedCwd.length > 0 ? trimmedCwd : (readDefaultWorkingDir() || null),
               null,
               null,
+              projectId,
             );
       const trimmedTitle = title.trim();
       if (trimmedTitle.length > 0) {

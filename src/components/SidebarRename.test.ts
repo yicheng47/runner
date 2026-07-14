@@ -56,6 +56,9 @@ vi.mock("@dnd-kit/sortable", () => ({
 
 vi.mock("../lib/api", () => ({
   api: {
+    project: {
+      list: vi.fn(async () => []),
+    },
     mission: {
       listSummary: vi.fn(async () => []),
     },
@@ -63,6 +66,7 @@ vi.mock("../lib/api", () => ({
       listRecentDirect: vi.fn(async () => [
         {
           session_id: "A",
+          project_id: null,
           handle: "alpha",
           display_name: "Alpha",
           title: null,
@@ -71,6 +75,7 @@ vi.mock("../lib/api", () => ({
         },
         {
           session_id: "B",
+          project_id: null,
           handle: "beta",
           display_name: "Beta",
           title: null,
@@ -79,6 +84,7 @@ vi.mock("../lib/api", () => ({
         },
         {
           session_id: "C",
+          project_id: null,
           handle: "coder",
           display_name: "Coder",
           title: null,
@@ -87,6 +93,7 @@ vi.mock("../lib/api", () => ({
         },
         {
           session_id: "D",
+          project_id: null,
           handle: "reviewer",
           display_name: "Reviewer",
           title: null,
@@ -114,7 +121,6 @@ vi.mock("../lib/api", () => ({
           id: "folder-1",
           name: "Review",
           position: 0,
-          collapsed: false,
           created_at: "2026-07-14T00:00:00Z",
         },
       ]),
@@ -197,6 +203,13 @@ describe("Sidebar chat tab rename", () => {
 
   beforeEach(async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const storage = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      clear: () => storage.clear(),
+      getItem: (key: string) => storage.get(key) ?? null,
+      removeItem: (key: string) => storage.delete(key),
+      setItem: (key: string, value: string) => storage.set(key, value),
+    });
     localStorage.clear();
     mocks.tabRows[0].name = "";
     mocks.tabRows[1].name = "";

@@ -609,7 +609,6 @@ describe("cold-start hydration", () => {
       id: string;
       name: string;
       position: number;
-      collapsed: boolean;
       created_at: string;
     }> = [];
     let nextFolderList: Promise<typeof folderRows> | null = null;
@@ -626,7 +625,6 @@ describe("cold-start hydration", () => {
         id: "01KTESTFOLDER00000000000000",
         name,
         position: 0,
-        collapsed: false,
         created_at: "2026-07-12T00:00:00Z",
       };
       folderRows = [row];

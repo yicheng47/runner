@@ -18,7 +18,7 @@ Supersedes the closed feature 17 / [#136](https://github.com/yicheng47/runner/is
 - **Tab rows replace chat rows**: every chat belongs to a tab. A single chat is a single-pane tab (today's flat `SessionRow` becomes its row); a multi-pane tab shows its name plus a split-icon/pane-count badge. The impl 0023 accordion member list is removed.
 - **Folder CRUD and tab ordering**: create, rename, collapse/expand. Create a new chat tab inside a folder from its `+` action. Move a tab into/out of a folder via row context menu or drag, and reorder tabs through the same drag interaction. Dragging shows an Arc-style destination divider at the exact persisted insertion point. Pinned tabs remain the first tier within each folder and within the ungrouped list; manual order is preserved inside each tier.
 - **Folder delete archives its tabs (decided)**: deleting a folder archives every tab inside it — member sessions get `archived_at` and land in Settings → Archived, same as archiving chats individually. Tabs never silently drop to top level. A single confirmation states the tab count and archive behavior before proceeding.
-- **Backend persistence (decided)**: folders and tabs move into SQLite as user data next to sessions — migration `0009` adds `folders (id, name, position, collapsed, created_at)` and `tabs (id, folder_id → folders ON DELETE RESTRICT, name, position, layout, created_at)` where `layout` is a JSON column holding preset, slot→session-id assignments, and split sizes. No `SET NULL` orphaning: `folder_delete` archives the member tabs and removes the folder in one transaction. New `folder_*` / `tab_*` Tauri commands. The frontend `paneLayout` store hydrates from the DB and writes through, replacing the `runner.chat.layout` localStorage persist.
+- **Backend persistence (decided)**: folders and tabs move into SQLite as user data next to sessions — migration `0009` adds the initial tables, and migration `0012` removes folder collapse from durable state, leaving `folders (id, name, position, created_at)` and `tabs (id, folder_id → folders ON DELETE RESTRICT, name, position, layout, created_at)` where `layout` is a JSON column holding preset, slot→session-id assignments, and split sizes. No `SET NULL` orphaning: `folder_delete` archives the member tabs and removes the folder in one transaction. New `folder_*` / `tab_*` Tauri commands. The frontend `paneLayout` store hydrates durable organization from the DB, replacing the `runner.chat.layout` localStorage persist.
 - **One-time import**: on first launch after the migration, the existing `runner.chat.layout` v2 payload seeds the `tabs` table; sessions not covered by the payload get single-pane tabs.
 
 ### Out of scope (deferred)
@@ -33,14 +33,14 @@ Supersedes the closed feature 17 / [#136](https://github.com/yicheng47/runner/is
 1. **Backend DB is the source of truth** (decided over extending localStorage). With panes gone from the sidebar, tabs are the thing users curate — names, folder membership, order — and that is user data, not view state. DB storage also retires the main-window-only persistence hack: today secondary-window tabs evaporate on restart because only `main` writes `runner.chat.layout` (`paneLayout.ts:451`); with write-through commands every window mutates the same rows. MCP tools gain visibility for free.
 2. **Tabs get stable identity.** `PaneLayout` is positional today — no id. Folder membership needs a stable key, so tabs become ULID-keyed rows. This also unlocks later per-tab state (feature 33-style).
 3. **Layout detail stays a JSON blob, not normalized pane rows.** Preset/slots/sizes go in one `layout` column; the frontend already sweeps dangling session ids after the chat-list fetch (`paneLayout.ts:825`), so FK-per-pane ceremony buys nothing.
-4. **Ephemeral view state stays frontend**: per-window active tab, focused pane, route anchoring. Folder `collapsed` goes in the DB so collapse state syncs across windows and restarts through the one store.
+4. **Ephemeral view state stays frontend**: per-window active tab, focused pane, route anchoring, and folder collapse. Collapse does not sync across windows or survive a sidebar remount.
 5. **Cross-window sync keeps the existing shape**: mutations broadcast `chat/layout-changed` after the DB write, other windows re-hydrate — same event, DB-backed payload.
 
 ## Implementation Phases
 
 ### Phase 1 — schema + commands
 
-Migration `0009_folders_tabs.sql`, repo layer, `commands/folder.rs` (`folder_create/list/rename/delete/set_collapsed/reorder`) and tab commands (`tab_upsert/list/delete/move_to_folder`).
+Migration `0009_folders_tabs.sql`, repo layer, `commands/folder.rs` (`folder_create/list/rename/delete/reorder`) and tab commands (`tab_upsert/list/delete/move_to_folder`). Migration `0012_drop_collapsed_view_state.sql` removes the original durable collapse column.
 
 ### Phase 2 — store rewiring
 
@@ -67,7 +67,7 @@ Per the design-first workflow, mock the folder rows, collapsed/expanded states, 
 
 ## Verification (sketch)
 
-- [ ] Create a folder, move two tabs in, collapse it → rows hide; restart the app → folder, membership, and collapsed state all restore.
+- [ ] Create a folder, move two tabs in, and collapse it → rows hide in that window; another window and a restart default the folder to expanded while folder membership remains intact.
 - [ ] Multi-pane tab renders as one row with a pane badge; no member rows anywhere in the sidebar.
 - [ ] Create a chat from a folder's `+` → its single-pane tab appears inside that folder; drag an existing tab onto or between folder rows → the destination divider matches the final position and membership/order persist after restart. Pinned tabs remain above unpinned tabs.
 - [ ] Delete a folder → confirmation states the tab count; on confirm every tab inside is archived and its sessions appear in Settings → Archived; cancel leaves everything untouched. No tab ever falls to top level from a delete.

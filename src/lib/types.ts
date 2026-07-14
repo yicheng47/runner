@@ -150,6 +150,7 @@ export type MissionStatus = "running" | "completed" | "aborted";
 export interface Mission {
   id: string;
   crew_id: string;
+  project_id: string | null;
   title: string;
   status: MissionStatus;
   goal_override: string | null;
@@ -299,6 +300,7 @@ export interface UpdateSlotInput {
 
 export interface StartMissionInput {
   crew_id: string;
+  project_id?: string | null;
   title: string;
   goal_override?: string | null;
   cwd?: string | null;

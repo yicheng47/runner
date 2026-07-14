@@ -55,6 +55,7 @@ export interface SessionRow extends Session {
  */
 export interface DirectSessionEntry {
   session_id: string;
+  project_id: string | null;
   runner_id: string | null;
   handle: string | null;
   agent_runtime: string;
@@ -82,7 +83,14 @@ export interface FolderRow {
   id: string;
   name: string;
   position: number;
-  collapsed: boolean;
+  created_at: string;
+}
+
+export interface ProjectRow {
+  id: string;
+  name: string;
+  cwd: string;
+  position: number;
   created_at: string;
 }
 
@@ -118,13 +126,23 @@ export interface RuntimeDefinition {
 }
 
 export const api = {
+  project: {
+    list: () => invoke<ProjectRow[]>("project_list"),
+    create: (name: string, cwd: string) =>
+      invoke<ProjectRow>("project_create", { name, cwd }),
+    rename: (id: string, name: string) =>
+      invoke<ProjectRow>("project_rename", { id, name }),
+    setCwd: (id: string, cwd: string) =>
+      invoke<ProjectRow>("project_set_cwd", { id, cwd }),
+    reorder: (orderedIds: string[]) =>
+      invoke<ProjectRow[]>("project_reorder", { orderedIds }),
+    delete: (id: string) => invoke<void>("project_delete", { id }),
+  },
   folder: {
     list: () => invoke<FolderRow[]>("folder_list"),
     create: (name: string) => invoke<FolderRow>("folder_create", { name }),
     rename: (id: string, name: string) =>
       invoke<FolderRow>("folder_rename", { id, name }),
-    setCollapsed: (id: string, collapsed: boolean) =>
-      invoke<FolderRow>("folder_set_collapsed", { id, collapsed }),
     reorder: (orderedIds: string[]) =>
       invoke<FolderRow[]>("folder_reorder", { orderedIds }),
     delete: (id: string) => invoke<void>("folder_delete", { id }),
@@ -236,6 +254,8 @@ export const api = {
     /** Rename a mission. Title is trimmed and rejected if empty. */
     rename: (id: string, title: string) =>
       invoke<Mission>("mission_rename", { id, title }),
+    setProject: (id: string, projectId: string | null) =>
+      invoke<Mission>("mission_set_project", { id, projectId }),
     eventsReplay: (missionId: string) =>
       invoke<Event[]>("mission_events_replay", { missionId }),
     postHumanSignal: (input: PostHumanSignalInput) =>
@@ -271,6 +291,8 @@ export const api = {
       invoke<void>("session_rename", { sessionId, title }),
     pin: (sessionId: string, pinned: boolean) =>
       invoke<void>("session_pin", { sessionId, pinned }),
+    setProject: (sessionIds: string[], projectId: string | null) =>
+      invoke<void>("session_set_project", { sessionIds, projectId }),
     resume: (
       sessionId: string,
       cols: number | null,
@@ -307,9 +329,11 @@ export const api = {
       cwd: string | null,
       cols: number | null,
       rows: number | null,
+      projectId: string | null = null,
     ) =>
       invoke<SpawnedSession>("session_start_direct", {
         runnerId,
+        projectId,
         cwd,
         cols,
         rows,
@@ -319,9 +343,11 @@ export const api = {
       cwd: string | null,
       cols: number | null,
       rows: number | null,
+      projectId: string | null = null,
     ) =>
       invoke<SpawnedSession>("session_start_runtime", {
         runtime,
+        projectId,
         cwd,
         cols,
         rows,

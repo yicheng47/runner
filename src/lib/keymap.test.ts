@@ -10,8 +10,10 @@ describe("keymap registry", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("has no duplicate key chips", () => {
-    const keys = KEYMAP.flatMap((entry) => entry.keys);
+  it("has no duplicate key chips within a scope", () => {
+    const keys = KEYMAP.flatMap((entry) =>
+      entry.keys.map((key) => `${entry.scope}:${key}`),
+    );
     expect(new Set(keys).size).toBe(keys.length);
   });
 

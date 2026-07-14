@@ -265,6 +265,7 @@ impl SessionManager {
             let conn = pool.get()?;
             let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
             row.mission_id = Some(mission.id.clone());
+            row.project_id = mission.project_id.clone();
             row.runner_id = Some(runner.id.clone());
             row.slot_id = Some(slot.id.clone());
             row.cwd = resolved_cwd.clone();
@@ -598,6 +599,7 @@ impl SessionManager {
     pub fn spawn_direct(
         self: &Arc<Self>,
         runner: &Runner,
+        project_id: Option<&str>,
         cwd: Option<&str>,
         cols: Option<u16>,
         rows: Option<u16>,
@@ -609,6 +611,7 @@ impl SessionManager {
         self.spawn_direct_inner(
             runner,
             Some(runner.id.as_str()),
+            project_id,
             cwd,
             cols,
             rows,
@@ -624,6 +627,7 @@ impl SessionManager {
     pub fn spawn_runtime_direct(
         self: &Arc<Self>,
         runner: &Runner,
+        project_id: Option<&str>,
         cwd: Option<&str>,
         cols: Option<u16>,
         rows: Option<u16>,
@@ -634,6 +638,7 @@ impl SessionManager {
         self.spawn_direct_inner(
             runner,
             None,
+            project_id,
             cwd,
             cols,
             rows,
@@ -650,6 +655,7 @@ impl SessionManager {
         self: &Arc<Self>,
         runner: &Runner,
         persisted_runner_id: Option<&str>,
+        project_id: Option<&str>,
         cwd: Option<&str>,
         cols: Option<u16>,
         rows: Option<u16>,
@@ -705,6 +711,7 @@ impl SessionManager {
         {
             let conn = pool.get()?;
             let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
+            row.project_id = project_id.map(str::to_string);
             row.runner_id = persisted_runner_id.map(str::to_string);
             row.cwd = resolved_cwd.clone();
             row.started_at = Some(started_at_dt);

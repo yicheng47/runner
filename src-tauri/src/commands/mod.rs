@@ -9,6 +9,7 @@ pub mod crew;
 pub mod folder;
 pub mod mcp;
 pub mod mission;
+pub mod project;
 pub mod runner;
 pub mod runtime;
 pub mod session;
