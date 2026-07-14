@@ -30,7 +30,7 @@ The mission workspace today is a one-pane-at-a-time view: the user picks
 between **feed** and one of the per-runner PTY tabs, and `activeTab`
 holds a single subject (`"feed" | sessionId`). For an editor where the
 job is "watch the lead and the worker coordinate," that's a constant
-flip — Cmd-1 to the lead, Cmd-2 to the worker, back to the feed, repeat.
+flip — ⌘[ / ⌘] through the feed, lead, and worker, repeat.
 You can never *see* the handoff happen.
 
 Multi-window (spec 12) doesn't fix this. Two windows on the same mission
