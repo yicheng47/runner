@@ -252,6 +252,7 @@ pub async fn session_paste_image(bytes: Vec<u8>, mime_type: String) -> Result<()
 #[derive(Debug, Clone, Serialize)]
 pub struct DirectSessionEntry {
     pub session_id: String,
+    pub project_id: Option<String>,
     pub runner_id: Option<String>,
     pub handle: Option<String>,
     pub agent_runtime: String,
@@ -312,6 +313,7 @@ fn direct_entry_from_repo(
         .unwrap_or_else(|| crate::router::runtime::runtime_display_name(&agent_runtime));
     Ok(DirectSessionEntry {
         session_id: d.row.id,
+        project_id: d.row.project_id,
         runner_id: d.row.runner_id,
         handle,
         agent_runtime,
@@ -628,6 +630,7 @@ pub async fn session_start_direct(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     runner_id: String,
+    project_id: Option<String>,
     cwd: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
@@ -653,6 +656,7 @@ pub async fn session_start_direct(
         .sessions
         .spawn_direct(
             &runner,
+            project_id.as_deref(),
             cwd.as_deref(),
             cols,
             rows,
@@ -670,6 +674,7 @@ pub async fn session_start_runtime(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     runtime: String,
+    project_id: Option<String>,
     cwd: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
@@ -680,6 +685,7 @@ pub async fn session_start_runtime(
         .sessions
         .spawn_runtime_direct(
             &runner,
+            project_id.as_deref(),
             cwd.as_deref(),
             cols,
             rows,
@@ -693,6 +699,30 @@ pub async fn session_start_runtime(
         serde_json::json!({ "session_id": spawned.id }),
     );
     Ok(spawned)
+}
+
+#[tauri::command]
+pub async fn session_set_project(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    session_ids: Vec<String>,
+    project_id: Option<String>,
+) -> Result<()> {
+    let mut conn = state.db.get()?;
+    repo::session::set_project_for_direct_sessions(&mut conn, &session_ids, project_id.as_deref())
+        .map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => {
+                Error::msg("one or more direct sessions were not found or are archived")
+            }
+            error => error.into(),
+        })?;
+    if let Some(session_id) = session_ids.first() {
+        let _ = app.emit(
+            "session/updated",
+            serde_json::json!({ "session_id": session_id }),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

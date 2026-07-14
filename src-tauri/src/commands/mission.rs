@@ -32,6 +32,8 @@ use crate::{
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct StartMissionInput {
     pub crew_id: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
     pub title: String,
     /// Optional override of the crew's default goal. When `None`, the crew's
     /// `goal` column is used; if that is also unset the mission starts with
@@ -222,6 +224,7 @@ pub fn start(
         &repo::mission::MissionRow {
             id: id.clone(),
             crew_id: crew.id.clone(),
+            project_id: input.project_id.clone(),
             title: title.clone(),
             status: MissionStatus::Running,
             goal_override: input.goal_override.clone(),
@@ -1111,6 +1114,22 @@ pub async fn mission_rename(
     mission_rename_impl(&state, id, title).await
 }
 
+#[tauri::command]
+pub async fn mission_set_project(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    id: String,
+    project_id: Option<String>,
+) -> Result<Mission> {
+    let mut conn = state.db.get()?;
+    if repo::mission::set_project(&mut conn, &id, project_id.as_deref())? == 0 {
+        return Err(Error::msg(format!("mission not found: {id}")));
+    }
+    let mission = get(&conn, &id)?;
+    let _ = app.emit("mission/changed", serde_json::json!({ "mission_id": id }));
+    Ok(mission)
+}
+
 /// Reset a mission: wipe the run context (event log, agent session
 /// keys, router state) and respawn every slot fresh against the same
 /// mission row. Mostly for testing — gives you a clean slate without
@@ -1885,6 +1904,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id,
                 title: "Try".into(),
                 goal_override: Some(oversized),
@@ -1907,6 +1927,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id,
                 title: "Try".into(),
                 goal_override: None,
@@ -1933,6 +1954,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id,
                 title: "   ".into(),
                 goal_override: None,
@@ -1949,12 +1971,14 @@ mod tests {
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "Alpha", Some("Ship v0"));
         add_runner(&mut conn, &crew_id, "lead");
+        let project = repo::project::create(&conn, "Runner", "/tmp/work").unwrap();
         let tmp = tempfile::tempdir().unwrap();
 
         let out = start(
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: Some(project.id.clone()),
                 crew_id: crew_id.clone(),
                 title: "first mission".into(),
                 goal_override: None,
@@ -1964,6 +1988,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(out.mission.title, "first mission");
+        assert_eq!(out.mission.project_id.as_deref(), Some(project.id.as_str()));
         assert_eq!(out.mission.status, MissionStatus::Running);
         assert_eq!(out.goal, "Ship v0");
 
@@ -2014,6 +2039,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id,
                 title: "m".into(),
                 goal_override: Some("override goal".into()),
@@ -2037,6 +2063,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "m".into(),
                 goal_override: Some("go".into()),
@@ -2077,6 +2104,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id,
                 title: "m".into(),
                 goal_override: None,
@@ -2107,6 +2135,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "m".into(),
                 goal_override: None,
@@ -2170,6 +2199,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id,
                 title: "m".into(),
                 goal_override: Some("go".into()),
@@ -2198,6 +2228,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: a.clone(),
                 title: "first".into(),
                 goal_override: Some("x".into()),
@@ -2218,6 +2249,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: a.clone(),
                 title: "second".into(),
                 goal_override: Some("y".into()),
@@ -2230,6 +2262,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: b,
                 title: "other crew".into(),
                 goal_override: Some("z".into()),
@@ -2264,6 +2297,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "first".into(),
                 goal_override: Some("go".into()),
@@ -2276,6 +2310,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "second".into(),
                 goal_override: Some("go".into()),
@@ -2341,6 +2376,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "m".into(),
                 goal_override: Some("go".into()),
@@ -2410,6 +2446,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "m".into(),
                 goal_override: None,
@@ -2444,6 +2481,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "m".into(),
                 goal_override: None,
@@ -2508,6 +2546,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "m".into(),
                 goal_override: None,
@@ -2606,6 +2645,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "m".into(),
                 goal_override: None,
@@ -2689,6 +2729,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "m".into(),
                 goal_override: Some("go".into()),
@@ -2724,6 +2765,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "live".into(),
                 goal_override: Some("go".into()),
@@ -2770,6 +2812,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id,
                 title: "m".into(),
                 goal_override: Some("go".into()),
@@ -2801,6 +2844,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "m".into(),
                 goal_override: Some("go".into()),
@@ -2844,6 +2888,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "m".into(),
                 goal_override: Some("go".into()),
@@ -2902,6 +2947,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "old".into(),
                 goal_override: Some("g".into()),
@@ -2960,6 +3006,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "running-1".into(),
                 goal_override: Some("g".into()),
@@ -2973,6 +3020,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "running-2".into(),
                 goal_override: Some("g".into()),
@@ -2986,6 +3034,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id: crew_id.clone(),
                 title: "completed".into(),
                 goal_override: Some("g".into()),
@@ -3004,6 +3053,7 @@ mod tests {
             &mut conn,
             tmp.path(),
             StartMissionInput {
+                project_id: None,
                 crew_id,
                 title: "running-archived".into(),
                 goal_override: Some("g".into()),

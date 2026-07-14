@@ -304,6 +304,7 @@ fn mission() -> Mission {
     Mission {
         id: ulid::Ulid::new().to_string(),
         crew_id: "crew-ignored-in-tests".into(),
+        project_id: None,
         title: "t".into(),
         status: MissionStatus::Running,
         goal_override: None,
@@ -634,8 +635,13 @@ fn spawn_marks_session_stopped_after_runtime_channel_closes() {
             .unwrap();
         id
     };
+    let project = {
+        let conn = pool.get().unwrap();
+        crate::repo::project::create(&conn, "Runner", "/tmp/runner").unwrap()
+    };
     let mission = Mission {
         id: fresh_mission_id,
+        project_id: Some(project.id.clone()),
         ..mission
     };
 
@@ -683,6 +689,16 @@ fn spawn_marks_session_stopped_after_runtime_channel_closes() {
         std::thread::sleep(Duration::from_millis(20));
     };
     assert_eq!(final_status, "stopped");
+    let stored_project: Option<String> = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT project_id FROM sessions WHERE id = ?1",
+            params![spawned.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_project, Some(project.id));
 
     // Exit event should have fired with success=true.
     let exits = cap.exit.lock().unwrap();
@@ -837,6 +853,7 @@ fn direct_chat_persona_lands_as_trailing_positional_argv_without_worker_preamble
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -1412,6 +1429,7 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -1553,6 +1571,7 @@ fn direct_chat_status_transition_emits_session_status_busy() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -1614,6 +1633,7 @@ fn direct_chat_status_transition_emits_session_status_idle() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -1663,6 +1683,7 @@ fn direct_chat_typing_stays_idle_until_submit() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -1824,6 +1845,7 @@ fn login_shell_proxy_env_reaches_spawn_with_runner_env_taking_precedence() {
     );
     mgr.spawn_direct(
         &runner,
+        None,
         Some("/tmp"),
         None,
         None,
@@ -1880,6 +1902,7 @@ fn output_snapshot_replays_live_session_and_clears_after_forget() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -1963,6 +1986,7 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -2144,6 +2168,7 @@ fn resume_keeps_scrollback_for_claude_code() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -2249,6 +2274,7 @@ fn resume_purges_scrollback_for_codex() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -2688,6 +2714,7 @@ fn output_snapshot_prepends_alt_screen_enter_when_session_in_alt_screen() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -2753,6 +2780,7 @@ fn output_snapshot_prepends_bracketed_paste_enable_when_session_has_it_enabled()
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -2811,6 +2839,7 @@ fn output_snapshot_combines_alt_screen_and_bracketed_paste_prefixes() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
             Some("/tmp"),
             None,
             None,
