@@ -16,6 +16,7 @@ import {
   readStoredBool,
   writeStoredBool,
 } from "../lib/settings";
+import { eventMatchesShortcut } from "../lib/keymap";
 
 const SIDEBAR_TOGGLE_EVENT = "runner:toggle-sidebar";
 
@@ -46,16 +47,11 @@ export function AppShell({ children }: { children?: ReactNode }) {
     return () => window.removeEventListener(SIDEBAR_TOGGLE_EVENT, onToggle);
   }, []);
 
-  // Cmd+S toggles the sidebar. Skip real text fields, but let xterm's
-  // hidden textarea through so terminal focus doesn't swallow the
-  // app-level shortcut. Cmd+\ remains as a legacy alias for anyone who
-  // picked it up during development.
-  // Documented in src/lib/keymap.ts (toggle-sidebar).
+  // Skip real text fields, but let xterm's hidden textarea through so
+  // terminal focus doesn't swallow the app-level shortcut.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!e.metaKey) return;
-      const key = e.key.toLowerCase();
-      if (key !== "s" && e.key !== "\\") return;
+      if (!eventMatchesShortcut(e, "toggle-sidebar")) return;
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName?.toLowerCase();
       const isTextInput =

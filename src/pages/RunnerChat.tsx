@@ -104,6 +104,7 @@ import type {
   Subject,
   WarningEvent,
 } from "../lib/types";
+import { eventMatchesShortcut } from "../lib/keymap";
 
 interface ExitEvent {
   session_id: string;
@@ -1026,9 +1027,8 @@ export default function RunnerChat() {
     [sessionId, navigate],
   );
 
-  // Cmd+W while split collapses the focused pane. Single-pane keeps the
-  // OS default (Close Window) — this listener only exists while split.
-  // Documented in src/lib/keymap.ts (close-pane).
+  // Closing a pane only applies while split. Single-pane keeps the OS
+  // default because this listener only exists while split.
   const closeFocusedPane = useCallback(() => {
     closePaneById(getPaneLayout(sessionId).focusedPaneId);
   }, [closePaneById, sessionId]);
@@ -1036,8 +1036,7 @@ export default function RunnerChat() {
   useEffect(() => {
     if (!splitActive) return;
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
-      if (e.key !== "w" && e.key !== "W") return;
+      if (!eventMatchesShortcut(e, "close-pane")) return;
       e.preventDefault();
       e.stopPropagation();
       closeFocusedPane();
@@ -1047,12 +1046,9 @@ export default function RunnerChat() {
       window.removeEventListener("keydown", onKey, { capture: true });
   }, [splitActive, closeFocusedPane]);
 
-  // Cmd+[ / Cmd+] cycle pane focus while split — iTerm2's pane-switch
-  // keys; sidebar page navigation lives on the shifted pair. Two entry
-  // points, mirroring the sidebar's pattern: a window capture listener
-  // for ordinary keystrokes, plus RunnerTerminal's re-dispatched custom
-  // event for keys WKWebView delivers straight to xterm.
-  // Documented in src/lib/keymap.ts (pane-focus).
+  // Two entry points mirror the sidebar's pattern: a window capture
+  // listener for ordinary keystrokes, plus RunnerTerminal's
+  // re-dispatched custom event for keys delivered straight to xterm.
   const cyclePaneFocus = useCallback(
     (direction: "previous" | "next") => {
       const current = getPaneLayout(sessionId);
@@ -1069,11 +1065,10 @@ export default function RunnerChat() {
   useEffect(() => {
     if (!splitActive) return;
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
       const direction =
-        e.code === "BracketLeft" || e.key === "["
+        eventMatchesShortcut(e, "pane-previous")
           ? "previous"
-          : e.code === "BracketRight" || e.key === "]"
+          : eventMatchesShortcut(e, "pane-next")
             ? "next"
             : null;
       if (!direction) return;

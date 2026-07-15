@@ -44,6 +44,7 @@ import {
   shouldDelayTerminalResize,
   type TerminalGridSize,
 } from "../lib/terminalResize";
+import { eventMatchesShortcut } from "../lib/keymap";
 
 interface OutputEvent {
   session_id: string;
@@ -521,51 +522,55 @@ export const RunnerTerminal = forwardRef<
     // false for that event (see #99).
     term.attachCustomKeyEventHandler((e) => {
       if (e.type === "keydown" && e.metaKey) {
-        const key = e.key.toLowerCase();
-        if (key === "s" || e.key === "\\") {
+        if (eventMatchesShortcut(e, "toggle-sidebar")) {
           e.preventDefault();
           window.dispatchEvent(new Event(SIDEBAR_TOGGLE_EVENT));
           return false;
         }
-        // Cmd+, opens Settings (impl 0025). Same bridge reason as
-        // Cmd+S: WKWebView can deliver the key straight to xterm, so
-        // the window listener in App.tsx would never see it.
-        if (e.key === "," && !e.altKey && !e.shiftKey) {
+        if (eventMatchesShortcut(e, "open-settings")) {
           e.preventDefault();
           window.dispatchEvent(new Event(OPEN_SETTINGS_EVENT));
           return false;
         }
-        // Bracket pair, iTerm2-style: plain Cmd+[ / Cmd+] cycles the current
-        // terminal surface (split-chat panes or mission tabs), while
-        // Cmd+Shift+[ / Cmd+Shift+] navigates sidebar pages. Shifted brackets
-        // arrive as "{" / "}" on US layouts, hence the code-first match.
-        if (
-          !e.altKey &&
-          (e.code === "BracketLeft" || e.key === "[" || e.key === "{")
-        ) {
+        if (eventMatchesShortcut(e, "page-previous")) {
           e.preventDefault();
           window.dispatchEvent(
-            new CustomEvent(
-              e.shiftKey
-                ? SIDEBAR_NAVIGATE_EVENT
-                : RUNNER_TERMINAL_CYCLE_EVENT,
-              { detail: { direction: "previous" } },
-            ),
+            new CustomEvent(SIDEBAR_NAVIGATE_EVENT, {
+              detail: { direction: "previous" },
+            }),
+          );
+          return false;
+        }
+        if (eventMatchesShortcut(e, "page-next")) {
+          e.preventDefault();
+          window.dispatchEvent(
+            new CustomEvent(SIDEBAR_NAVIGATE_EVENT, {
+              detail: { direction: "next" },
+            }),
           );
           return false;
         }
         if (
-          !e.altKey &&
-          (e.code === "BracketRight" || e.key === "]" || e.key === "}")
+          eventMatchesShortcut(e, "pane-previous") ||
+          eventMatchesShortcut(e, "mission-tab-previous")
         ) {
           e.preventDefault();
           window.dispatchEvent(
-            new CustomEvent(
-              e.shiftKey
-                ? SIDEBAR_NAVIGATE_EVENT
-                : RUNNER_TERMINAL_CYCLE_EVENT,
-              { detail: { direction: "next" } },
-            ),
+            new CustomEvent(RUNNER_TERMINAL_CYCLE_EVENT, {
+              detail: { direction: "previous" },
+            }),
+          );
+          return false;
+        }
+        if (
+          eventMatchesShortcut(e, "pane-next") ||
+          eventMatchesShortcut(e, "mission-tab-next")
+        ) {
+          e.preventDefault();
+          window.dispatchEvent(
+            new CustomEvent(RUNNER_TERMINAL_CYCLE_EVENT, {
+              detail: { direction: "next" },
+            }),
           );
           return false;
         }
