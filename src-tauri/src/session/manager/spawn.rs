@@ -445,6 +445,9 @@ impl SessionManager {
                 stop,
             },
         );
+        if first_turn_delivered_via_argv {
+            self.arm_completion(&session_id);
+        }
 
         let spawn_emit_ctx = open_mission_event_log(&app_data_dir, &mission.crew_id, &mission.id)
             .map(|event_log| ForwarderEmitCtx {
@@ -805,6 +808,9 @@ impl SessionManager {
                 stop: output.stop_flag(),
             },
         );
+        if first_turn_delivered_via_argv {
+            self.arm_completion(&session_id);
+        }
         self.publish_direct_activity(
             &session_id,
             SessionActivityState::Busy,

@@ -880,6 +880,14 @@ fn direct_chat_persona_lands_as_trailing_positional_argv_without_worker_preamble
         "argv delivery must suppress the post-spawn byte injection fallback; got writes = {:?}",
         fake.bytes_writes()
     );
+    assert!(
+        mgr.take_completion_armed(std::slice::from_ref(&spawned.id)),
+        "argv first-turn delivery must arm the initial busy episode",
+    );
+    assert!(
+        !mgr.take_completion_armed(std::slice::from_ref(&spawned.id)),
+        "taking the argv completion arm must consume it",
+    );
 
     mgr.kill(&spawned.id).unwrap();
 }
@@ -1715,6 +1723,10 @@ fn direct_chat_typing_stays_idle_until_submit() {
 
     mgr.inject_direct_stdin(&spawned.id, b"x", cap.as_ref())
         .unwrap();
+    assert!(
+        !mgr.take_completion_armed(std::slice::from_ref(&spawned.id)),
+        "typing without submit must not arm completion",
+    );
     fake.push_status(0, RunnerStatus::Busy);
     fake.push_status(0, RunnerStatus::Idle);
     fake.push_output(0, b"typing-echo-drained");
@@ -1733,6 +1745,20 @@ fn direct_chat_typing_stays_idle_until_submit() {
     assert_eq!(
         mgr.activity_snapshot().get(&spawned.id),
         Some(&SessionActivityState::Busy)
+    );
+    assert!(
+        mgr.take_completion_armed(std::slice::from_ref(&spawned.id)),
+        "xterm Enter submit must arm completion",
+    );
+    assert!(
+        !mgr.take_completion_armed(std::slice::from_ref(&spawned.id)),
+        "taking the submit completion arm must consume it",
+    );
+
+    mgr.inject_paste(&spawned.id, b"pasted prompt").unwrap();
+    assert!(
+        mgr.take_completion_armed(std::slice::from_ref(&spawned.id)),
+        "paste-then-Enter delivery must arm completion",
     );
 
     mgr.kill(&spawned.id).unwrap();
@@ -2071,6 +2097,10 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
     assert_eq!(
         mgr.activity_snapshot().get(&session_id),
         Some(&SessionActivityState::Busy)
+    );
+    assert!(
+        !mgr.take_completion_armed(std::slice::from_ref(&session_id)),
+        "resume busy seeding must not arm completion",
     );
 
     // After resume the status is running again with the

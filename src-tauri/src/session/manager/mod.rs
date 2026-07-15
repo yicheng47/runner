@@ -454,6 +454,7 @@ struct SessionState {
     handle: Option<SessionHandle>,
     activity: Option<SessionActivityState>,
     suppress_local_input_busy: bool,
+    completion_armed: bool,
     output_buffer: VecDeque<OutputEvent>,
     output_seq: u64,
     /// `output_seq` at the moment the most recent resume started.
@@ -473,6 +474,7 @@ impl SessionState {
         self.handle.is_none()
             && self.activity.is_none()
             && !self.suppress_local_input_busy
+            && !self.completion_armed
             && self.output_buffer.is_empty()
             && self.output_seq == 0
             && self.resume_watermark_seq == 0
@@ -694,6 +696,26 @@ impl SessionManager {
             state,
             source: source.to_string(),
         });
+    }
+
+    pub(crate) fn arm_completion(&self, session_id: &str) {
+        self.session_state_or_insert(session_id)
+            .lock()
+            .unwrap()
+            .completion_armed = true;
+    }
+
+    pub(crate) fn take_completion_armed(&self, session_ids: &[String]) -> bool {
+        let sessions = self.sessions.lock().unwrap();
+        let mut armed = false;
+        for session_id in session_ids {
+            if let Some(session) = sessions.get(session_id) {
+                let mut session = session.lock().unwrap();
+                armed |= session.completion_armed;
+                session.completion_armed = false;
+            }
+        }
+        armed
     }
 
     pub fn activity_snapshot(&self) -> BTreeMap<String, SessionActivityState> {

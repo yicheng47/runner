@@ -223,6 +223,9 @@ impl SessionManager {
                 session.suppress_local_input_busy = previous_suppression;
                 return Err(error);
             }
+            if submitted {
+                session.completion_armed = true;
+            }
             transition
         } else {
             self.write_stdin_bytes(&rt_session, bytes)?;
@@ -285,10 +288,21 @@ impl SessionManager {
         let rt_session = self.live_runtime_session(session_id)?;
         self.runtime.send_bytes(&rt_session, payload)?;
         std::thread::sleep(std::time::Duration::from_millis(120));
-        let result = self
-            .runtime
-            .send_key(&rt_session, "Enter")
-            .map_err(Into::into);
+        let result = if let Some(session) = self.session_state(session_id) {
+            let mut session = session.lock().unwrap();
+            let result = self
+                .runtime
+                .send_key(&rt_session, "Enter")
+                .map_err(Into::into);
+            if result.is_ok() {
+                session.completion_armed = true;
+            }
+            result
+        } else {
+            self.runtime
+                .send_key(&rt_session, "Enter")
+                .map_err(Into::into)
+        };
         if result.is_ok() {
             if let Some(ctx) = self.codex_capture_context(session_id) {
                 self.spawn_codex_capture_if_unkeyed(session_id, &ctx);

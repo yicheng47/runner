@@ -25,7 +25,7 @@ Supersedes the closed feature 17 / [#136](https://github.com/yicheng47/runner/is
 
 - Nested folders — one level only.
 - Folders for missions — the MISSION section is untouched; this is the CHAT list.
-- Dragging one chat tab onto another to create a split — feature 35 / [#256](https://github.com/yicheng47/runner/issues/256) gets re-scoped onto this hierarchy after it ships.
+- Dragging one chat tab onto another to create a split.
 - Per-window folder/tab sets — the tab set stays global; which tab is active remains per-window view state.
 
 ### Key decisions
@@ -52,7 +52,7 @@ Folder rows with expand/collapse and an add-tab action; tab rows without member 
 
 ### Phase 4 — cleanup + docs
 
-Drop the localStorage persist path, update arch §3.6 (display grouping is no longer frontend-only), re-scope feature 35 (#256) around the new hierarchy.
+Drop the localStorage persist path and update arch §3.6 (display grouping is no longer frontend-only).
 
 ## Open design questions
 

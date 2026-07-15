@@ -85,7 +85,6 @@ import {
 } from "../lib/groupPinning";
 import {
   directChatDisplayStatus,
-  summarizeDirectChatGroupStatus,
   type DirectChatDisplayStatus,
 } from "../lib/directChatStatus";
 import {
@@ -278,8 +277,6 @@ export default function RunnerChat() {
 
   const activeSession = directSessions.find((s) => s.id === sessionId) ?? null;
   const status = activeSession?.status ?? chatMeta?.status ?? "running";
-  const latestActivity = sessionId ? activityBySession[sessionId] : undefined;
-  const displayStatus = directChatDisplayStatus(status, latestActivity);
   const exitCode = activeSession?.exitCode ?? null;
   const backTarget = chatMeta?.handle ? `/runners/${chatMeta.handle}` : "/runners";
   const backLabel = chatMeta?.handle ? "Back to runner" : "Back to runners";
@@ -1339,34 +1336,6 @@ export default function RunnerChat() {
     ],
   );
 
-  // Header layout mirrors Pencil node `NLa0k` inside `u6woG`:
-  // 36px terminal-icon avatar, vertical title stack (handle + DIRECT
-  // chip + meta line), and a right cluster of status pill + Stop +
-  // kebab. `resuming` is a transitional control state; the steady
-  // display model is busy / idle / stopped / crashed.
-  type ChatState = DirectChatDisplayStatus | "resuming";
-  const chatState: ChatState = resuming ? "resuming" : displayStatus;
-  const statusBadgeClass =
-    chatState === "busy"
-      ? "bg-accent/10 text-accent"
-      : chatState === "idle"
-        ? "bg-accent/5 text-fg-2"
-        : chatState === "crashed"
-          ? "bg-danger/10 text-danger"
-          : chatState === "resuming"
-            ? "bg-info/15 text-info"
-            : "bg-line-strong text-fg-2";
-  const statusDotClass =
-    chatState === "busy"
-      ? "bg-accent"
-      : chatState === "idle"
-        ? "bg-accent/35"
-        : chatState === "crashed"
-          ? "bg-danger"
-          : chatState === "resuming"
-            ? "bg-info"
-            : "bg-fg-3";
-  const statusLabel = chatState === "resuming" ? "resuming…" : displayStatus;
   const titleLabel =
     chatMeta?.title ??
     (chatMeta?.handle
@@ -1415,7 +1384,7 @@ export default function RunnerChat() {
 
   // Group identity for the topbar while split (the controls up there are
   // group-scoped — Stop all / Resume all / Archive all — so the title,
-  // chip, status, and meta describe the group, not one member). Name:
+  // chip, and meta describe the group, not one member). Name:
   // user-given via kebab Rename, else derived from member chat names.
   const paneCount = splitActive ? leaves(layout.root).length : 0;
   const groupTitle = splitActive
@@ -1424,27 +1393,6 @@ export default function RunnerChat() {
         ? visiblePaneSessions.map((s) => paneNameFor(s.id)).join(" + ")
         : "Empty group"))
     : null;
-  const groupStatus = summarizeDirectChatGroupStatus(
-    visiblePaneSessions.map((s) => paneStatusFor(s.id)),
-    paneCount,
-  );
-  const groupStatusLabel = groupStatus.label;
-  const groupStatusDotClass =
-    groupStatus.status === "busy"
-      ? "bg-accent"
-      : groupStatus.status === "idle"
-        ? "bg-accent/35"
-        : groupStatus.status === "crashed"
-          ? "bg-danger"
-          : "bg-fg-3";
-  const groupStatusBadgeClass =
-    groupStatus.status === "busy"
-      ? "bg-accent/10 text-accent"
-      : groupStatus.status === "idle"
-        ? "bg-accent/5 text-fg-2"
-        : groupStatus.status === "crashed"
-          ? "bg-danger/10 text-danger"
-          : "bg-line-strong text-fg-2";
   // Meta: pane count, plus the working dir when every member shares one.
   const groupCwds = visiblePaneSessions.map((s) => paneRow(s.id)?.cwd ?? null);
   const sharedGroupCwd =
@@ -1492,7 +1440,7 @@ export default function RunnerChat() {
     }
     return archiving ? (
       <ArchivingOverlay withScrim />
-    ) : chatState === "resuming" ? (
+    ) : resuming ? (
       <ResumingOverlay />
     ) : starting && activeSession ? (
       <StartingOverlay label="Starting chat…" />
@@ -1557,32 +1505,6 @@ export default function RunnerChat() {
               <span className="rounded bg-line-strong px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-fg-2">
                 {splitActive ? "Group" : "Chat"}
               </span>
-              {/* Status pill moved next to the title so it stops
-                  competing with the Stop / Resume control on the
-                  right — the action button already implies the
-                  current state, and a pill at the same edge read
-                  redundant. */}
-              {splitActive ? (
-                <span
-                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${groupStatusBadgeClass}`}
-                  title={`focused session ${sessionId ? sessionId.slice(-6) : "—"}`}
-                >
-                  <span
-                    className={`inline-block h-1.5 w-1.5 rounded-full ${groupStatusDotClass}`}
-                  />
-                  {groupStatusLabel}
-                </span>
-              ) : (
-                <span
-                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${statusBadgeClass}`}
-                  title={`session ${sessionId ? sessionId.slice(-6) : "—"}`}
-                >
-                  <span
-                    className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass}`}
-                  />
-                  {sessionId ? statusLabel : "starting"}
-                </span>
-              )}
               {isArchived ? (
                 <span className="inline-flex shrink-0 items-center rounded border border-line bg-raised px-2 py-0.5 text-[10px] font-medium text-fg-2">
                   Archived · read-only
@@ -1635,7 +1557,7 @@ export default function RunnerChat() {
             ) : (
               <ResumeButton onClick={resumeAllPanes}>Resume all</ResumeButton>
             )
-          ) : chatState === "resuming" ? (
+          ) : resuming ? (
             <ResumingButton />
           ) : status === "running" && sessionId ? (
             <StopButton onClick={() => void stopSession(sessionId)} />
