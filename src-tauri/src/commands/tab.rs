@@ -178,6 +178,10 @@ pub(crate) fn record_session_completion<R: tauri::Runtime>(
         tx.commit()?;
         return Ok(());
     }
+    if !state.sessions.take_completion_armed(&member_ids) {
+        tx.commit()?;
+        return Ok(());
+    }
     let viewed = state.windows.any_focused_displaying(&member_ids);
     let row = repo::tab::record_completion(&tx, &tab.id, viewed, Utc::now())?;
     tx.commit()?;
@@ -335,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn final_idle_in_focused_window_completes_and_views_tab() {
+    fn armed_final_idle_in_focused_window_completes_and_views_tab() {
         let app = test_app();
         let state = app.state::<AppState>();
         let tab = create_tab(&state, &["a"]);
@@ -349,6 +353,7 @@ mod tests {
         state
             .sessions
             .publish_direct_activity("a", SessionActivityState::Busy, "test", &events);
+        state.sessions.arm_completion("a");
         state
             .sessions
             .publish_direct_activity("a", SessionActivityState::Idle, "test", &events);
@@ -361,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn final_idle_in_background_marks_tab_unread() {
+    fn armed_final_idle_in_background_marks_tab_unread() {
         let app = test_app();
         let state = app.state::<AppState>();
         let tab = create_tab(&state, &["a"]);
@@ -374,6 +379,7 @@ mod tests {
         state
             .sessions
             .publish_direct_activity("a", SessionActivityState::Busy, "test", &events);
+        state.sessions.arm_completion("a");
         state
             .sessions
             .publish_direct_activity("a", SessionActivityState::Idle, "test", &events);
@@ -386,7 +392,30 @@ mod tests {
     }
 
     #[test]
-    fn idle_member_does_not_complete_tab_while_peer_is_busy() {
+    fn spontaneous_settle_does_not_complete_tab_or_emit_invalidation() {
+        let app = test_app();
+        let state = app.state::<AppState>();
+        let tab = create_tab(&state, &["a"]);
+        let observed = attention_events(app.handle());
+        let events = TauriSessionEvents(app.handle().clone());
+
+        state
+            .sessions
+            .publish_direct_activity("a", SessionActivityState::Busy, "test", &events);
+        state
+            .sessions
+            .publish_direct_activity("a", SessionActivityState::Idle, "test", &events);
+
+        let row = repo::tab::get(&state.db.get().unwrap(), &tab.id)
+            .unwrap()
+            .unwrap();
+        assert!(row.last_completed_at.is_none());
+        assert!(row.last_viewed_at.is_none());
+        assert_eq!(observed.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn armed_member_waits_for_busy_peer_before_completing_tab() {
         let app = test_app();
         let state = app.state::<AppState>();
         let tab = create_tab(&state, &["a", "b"]);
@@ -398,6 +427,7 @@ mod tests {
         state
             .sessions
             .publish_direct_activity("b", SessionActivityState::Busy, "test", &events);
+        state.sessions.arm_completion("a");
         state
             .sessions
             .publish_direct_activity("a", SessionActivityState::Idle, "test", &events);
@@ -407,6 +437,51 @@ mod tests {
             .unwrap();
         assert!(row.last_completed_at.is_none());
         assert!(row.last_viewed_at.is_none());
+
+        state
+            .sessions
+            .publish_direct_activity("b", SessionActivityState::Idle, "test", &events);
+
+        let row = repo::tab::get(&state.db.get().unwrap(), &tab.id)
+            .unwrap()
+            .unwrap();
+        assert!(row.last_completed_at.is_some());
+        assert!(row.last_viewed_at.is_none());
+    }
+
+    #[test]
+    fn completion_arm_is_consumed_after_recording() {
+        let app = test_app();
+        let state = app.state::<AppState>();
+        let tab = create_tab(&state, &["a"]);
+        let observed = attention_events(app.handle());
+        let events = TauriSessionEvents(app.handle().clone());
+
+        state
+            .sessions
+            .publish_direct_activity("a", SessionActivityState::Busy, "test", &events);
+        state.sessions.arm_completion("a");
+        state
+            .sessions
+            .publish_direct_activity("a", SessionActivityState::Idle, "test", &events);
+        let first = repo::tab::get(&state.db.get().unwrap(), &tab.id)
+            .unwrap()
+            .unwrap()
+            .last_completed_at
+            .expect("armed settle should record completion");
+
+        state
+            .sessions
+            .publish_direct_activity("a", SessionActivityState::Busy, "test", &events);
+        state
+            .sessions
+            .publish_direct_activity("a", SessionActivityState::Idle, "test", &events);
+
+        let row = repo::tab::get(&state.db.get().unwrap(), &tab.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.last_completed_at.as_deref(), Some(first.as_str()));
+        assert_eq!(observed.load(Ordering::SeqCst), 1);
     }
 
     #[test]
