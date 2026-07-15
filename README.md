@@ -8,11 +8,15 @@
 <p align="center">
   Spawn a runner. Create your crew. Ship the feature.
   <br />
-  A local desktop app for orchestrating crews of CLI coding agents — Claude Code, Codex, and friends.
+  A local agentic development environment (ADE) — orchestrate crews of CLI coding agents: Claude Code, Codex, and friends.
 </p>
 
 <p align="center">
   <a href="#about">About</a>
+  ·
+  <a href="#features">Features</a>
+  ·
+  <a href="#drive-it-from-your-agents-mcp">MCP</a>
   ·
   <a href="#example-crew">Crew example</a>
   ·
@@ -25,7 +29,7 @@
 
 ---
 
-> Status: pre-alpha, actively shipping. macOS today; Linux on the way.
+> Status: alpha, actively shipping. macOS today; Linux on the way.
 
 ---
 
@@ -33,46 +37,109 @@
 
 Runner is what happens when you stop juggling four terminal windows for four AI agents and put them in one workspace instead.
 
-You assemble a **Crew** — a small party of CLI agents (Claude Code, Codex, custom shells). You give each runner a role, a system prompt, and a working directory. You hit **Start mission** and Runner forks a real PTY per slot into a tabbed workspace, wires them together through an append-only event bus, and lets you watch the work unfold from one window. When an agent needs you, it fires `ask_human` and the question surfaces in the feed. When you want to talk to a single agent without the orchestration scaffolding, **Direct chat** is a one-click 1:1 PTY.
+In the vocabulary settling in around this workflow, Runner is an **ADE** — an agentic development environment. Where an IDE arranges buffers and a debugger around code you write, an ADE arranges terminals, crews, and event feeds around agents that write it. You operate the fleet: assign roles, start missions, watch the panes, review the diffs, answer the questions.
 
-The terminal is a real xterm.js + WebGL canvas — claude-code, codex, and any modern TUI render with their actual ANSI palette, mouse tracking, and live redraws. Sessions are resumable across app restarts (the event log is the source of truth). Themes are first-class: Auto / Light / Dark across four bundled palettes (Runner, Codex Light, Catppuccin Mocha, Catppuccin Latte) with a bundled font picker (Inter / Geist / Roboto / System UI) that works offline.
+You assemble a **Crew** — a small party of CLI agents (Claude Code, Codex, custom shells). You give each runner a role, a system prompt, and a working directory. You hit **Start mission** and Runner forks a real PTY per slot into a tabbed workspace, wires them together through an append-only event bus, and lets you watch the work unfold from one window. When an agent needs you, it fires `ask_human` and the question surfaces in the feed.
+
+Runner is also an **MCP server** — any MCP client can create crews, start missions, and steer them from the outside. See [Drive it from your agents](#drive-it-from-your-agents-mcp).
 
 ## Download
 
 Latest macOS build (Apple Silicon + Intel `.dmg`) on the [releases page](https://github.com/yicheng47/runner/releases/latest). Linux builds coming with the v1 cut.
 
-## Demo
+<!-- TODO(demo): add a "## Demo" section here once the new hero video is recorded — a Peer
+     Coding Crew mission on a real repo (mission start from a project → feed + per-slot
+     terminals → coder/reviewer handoffs via the Runner CLI → ask_human surfacing → done). -->
 
-A three-runner crew shipping a tic-tac-toe game end-to-end — `@architect` decomposes the goal, `@impl` writes the code, `@reviewer` reads the diff.
-
-https://github.com/user-attachments/assets/f02e949b-117c-4d44-980a-58a9c76c49fe
-
-## Screenshots
+## Features
 
 <table>
-  <tr>
-    <td width="50%"><img src="assets/mission_feed.png" alt="Mission workspace — event feed tab" width="100%" /></td>
-    <td width="50%"><img src="assets/mission_terminal.png" alt="Mission workspace — per-slot PTY terminal tab" width="100%" /></td>
-  </tr>
-  <tr>
-    <td align="center"><em>Mission feed — every signal between the crew + human</em></td>
-    <td align="center"><em>Mission terminal — one PTY per slot, live</em></td>
-  </tr>
+<tr>
+<td width="50%" valign="middle">
+
+### Missions — a crew working one goal
+
+**Runners** are reusable agent templates: a CLI runtime plus a role, system prompt, and working directory. **Crews** group them with exactly one lead. A **mission** spawns one live PTY per slot into a tabbed workspace where the crew coordinates over an append-only event log — every signal is persisted and replayable, so missions survive a quit or crash, and `ask_human` questions surface in the feed.
+
+[Architecture →](./docs/arch/arch.md)
+
+</td>
+<td width="50%">
+  <!-- TODO(screenshot): re-capture at current UI — this shot is from the earliest demo build. -->
+  <img src="assets/mission_feed.png" alt="Mission workspace — the event feed between crew and human" width="100%" />
+</td>
+</tr>
+<tr>
+<td width="50%" valign="middle">
+
+### Chats — tabs, split panes, folders
+
+Every chat is a real 1:1 PTY with a runner, no mission required. Tabs hold up to three side-by-side panes — run a Claude Code and a Codex on the same problem in one view. The sidebar groups tabs into collapsible folders; every tab shows a spinner while a pane is still working and a dot when one finished while you were elsewhere, so a wall of parallel agents stays scannable.
+
+</td>
+<td width="50%">
+  <!-- TODO(screenshot): assets/chat_split.png — the hero shot. One chat tab with three panes
+       (claude-code + codex side by side), sidebar visible with PROJECT section, folders,
+       one working spinner and one unread dot. Uncomment when captured:
+  <img src="assets/chat_split.png" alt="Chat tab with three split panes and organized sidebar" width="100%" />
+  -->
+</td>
+</tr>
+<tr>
+<td width="50%" valign="middle">
+
+### A real terminal
+
+xterm.js on a WebGL canvas — claude-code, codex, and any modern TUI render with their actual ANSI palette, mouse tracking, and live redraws. Sessions are resumable across app restarts; the event log is the source of truth.
+
+</td>
+<td width="50%">
+  <!-- TODO(screenshot): re-capture at current UI — this shot is from the earliest demo build. -->
+  <img src="assets/mission_terminal.png" alt="Per-slot PTY terminal, live" width="100%" />
+</td>
+</tr>
+<tr>
+<td width="50%" valign="middle">
+
+### Themes
+
+Auto / Light / Dark chrome with two variants per side (Runner and Catppuccin Mocha dark; Codex Light and Catppuccin Latte light), independent terminal palettes (Runner, Catppuccin Mocha, Solarized Dark), and a bundled font picker (Inter / Geist / Roboto / System UI) that works offline.
+
+</td>
+<td width="50%">
+  <!-- TODO(screenshot): assets/themes.png — 2×2 theme grid: Runner (Carbon), Catppuccin Mocha,
+       Codex Light, Catppuccin Latte. Same content in all four, only the palette changes.
+       Uncomment when captured:
+  <img src="assets/themes.png" alt="Four bundled themes" width="100%" />
+  -->
+</td>
+</tr>
 </table>
 
-## What it does
+### Also in the box
 
-- **Crews** — group runners with exactly one lead.
-- **Runners** — each runner is a local CLI runtime (claude, codex, …) with its own role, system prompt, and working directory.
-- **Missions** — spawn one PTY session per slot into a tabbed workspace where the crew works toward a shared goal.
-- **Direct chats** — quick 1:1 PTY with a single runner, no mission required.
-- **Event feed** — every signal between agents and the human, persisted to disk and replayable so missions resume cleanly after a quit or crash.
+- **Projects** — bind a working directory once; chats and missions started inside a project inherit its cwd and stay grouped in their own sidebar section.
+- **Multi-window** — `⌘N` opens additional OS windows; when two windows show the same session, one owns the PTY and the other gets a hand-off overlay instead of a corrupted terminal.
+- **Bundled `runner` CLI** — spawned agents message each other, check the crew roster, and post signals from inside their own PTYs.
+- **Auto-updates** — new builds ship through the built-in updater.
 
-For the wire-level architecture (event bus, signal router, runtime contracts) see [`docs/`](./docs/) — start with [`docs/arch/arch.md`](./docs/arch/arch.md).
+### Drive it from your agents (MCP)
+
+Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar that proxies to the running app — **Settings → MCP** has one-click config snippets for Claude Code and Codex, no URL or args to manage.
+
+Once connected, an agent can operate Runner the way you do:
+
+- `runner_create` / `crew_create` / `slot_create` — define runners and assemble crews.
+- `mission_start` — launch a crew at a goal, attached to a project so it inherits the right working directory.
+- `mission_feed` / `mission_status` / `mission_post_human_signal` — follow the run and steer it mid-flight.
+- `session_start_direct` — spin up a 1:1 chat with any runner.
+- `project_list` / `crew_list` / `mission_list_summary` — discover what exists before acting.
+
+The compounding trick: your daily driver agent plans a fix, then calls `mission_start` to hand implementation to a coder/reviewer crew and keeps working — agents dispatching crews of agents, with every session still a real PTY you can open and watch.
 
 ## Example crew
 
-The crew in the demo above is the **default Runner shape** — a three-runner engineering party where one decomposes, one builds, one audits. Lives in [`examples/dev-crew/`](./examples/dev-crew/) — drop the system prompts into a new Crew, hand it a goal, and the three tabs work the problem in one window.
+The **default Runner shape** — a three-runner engineering party where one decomposes, one builds, one audits. Lives in [`examples/dev-crew/`](./examples/dev-crew/) — drop the system prompts into a new Crew, hand it a goal, and the three tabs work the problem in one window.
 
 | Runner | Runtime | Role | System prompt |
 | --- | --- | --- | --- |
