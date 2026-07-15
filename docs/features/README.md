@@ -12,9 +12,11 @@ links to its tracking issue.
 
 - [01 — Archived tab](./01-archived-tab.md) — view and unarchive
   missions and chats that fell off the active sidebar.
-- [05 — Skills + MCPs management per runner](./05-runner-skills.md) —
-  attach reusable skills and MCP servers to runner templates; injected
-  natively at spawn via a per-session synthetic agent home.
+- [05 — Cross-platform, agent-agnostic MCP & skills management](./05-runner-skills.md) —
+  one central catalog of MCP servers and skills, stored in a neutral
+  shape and materialized per agent (claude-code JSON, codex TOML,
+  skill dirs) with a cross-platform apply mechanism; informed by the
+  skills-manager reference analysis.
 - [12 — Multi-window frontend](./12-multi-window.md) — spawn
   additional Tauri windows for missions / chats; Arc-style overlay
   when two windows look at the same subject; PTY mounts only in the
