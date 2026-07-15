@@ -13,6 +13,7 @@ import { AppShell } from "./components/AppShell";
 import { ToastProvider } from "./contexts/ToastContext";
 import { UpdateProvider } from "./contexts/UpdateContext";
 import { nudgeAppZoom } from "./lib/appZoom";
+import { eventMatchesShortcut } from "./lib/keymap";
 import { readAppZoom } from "./lib/settings";
 import Crews from "./pages/Crews";
 import CrewEditor from "./pages/CrewEditor";
@@ -48,33 +49,23 @@ export default function App() {
     }
   }, []);
 
-  // Global Cmd/Ctrl +/-/0 zoom shortcuts. Capture phase so xterm's
-  // textarea doesn't swallow the key before us; preventDefault only on
-  // matches so other Cmd-key combos (copy, paste, etc.) still work.
-  // Documented in src/lib/keymap.ts (app-zoom).
+  // Zoom shortcuts (keymap: zoom-in / zoom-out / zoom-reset). Capture
+  // phase so xterm's textarea doesn't swallow the key before us;
+  // preventDefault only on matches so other Cmd-key combos (copy,
+  // paste, etc.) still work.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      if (e.altKey) return;
-      // `+` is reached via Shift+`=` on US layouts, so we must accept
-      // Shift specifically for the zoom-in branch. `-` and `0` are
-      // unshifted keys — Shift there is something else (e.g. Cmd+Shift+0
-      // is Safari's "Show downloads"), so we don't claim it.
-      if (e.key === "+" || e.key === "=") {
-        e.preventDefault();
-        e.stopPropagation();
-        nudgeAppZoom(1);
-      } else if (e.key === "-") {
-        if (e.shiftKey) return;
-        e.preventDefault();
-        e.stopPropagation();
-        nudgeAppZoom(-1);
-      } else if (e.key === "0") {
-        if (e.shiftKey) return;
-        e.preventDefault();
-        e.stopPropagation();
-        nudgeAppZoom("reset");
-      }
+      const action = eventMatchesShortcut(e, "zoom-in")
+        ? (1 as const)
+        : eventMatchesShortcut(e, "zoom-out")
+          ? (-1 as const)
+          : eventMatchesShortcut(e, "zoom-reset")
+            ? ("reset" as const)
+            : null;
+      if (action === null) return;
+      e.preventDefault();
+      e.stopPropagation();
+      nudgeAppZoom(action);
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
@@ -107,14 +98,13 @@ export default function App() {
   );
 }
 
-// ⌘, opens the Settings page — the standard macOS binding, wired
-// app-side (not an OS menu accelerator). Like a native menu item it
-// fires even while a text field is focused; it only navigates, so a
-// stray hit is harmless. Two entry points, mirroring the Cmd+S
-// pattern: the window capture listener for ordinary keystrokes, plus
+// Settings shortcut (keymap: open-settings) — wired app-side, not an
+// OS menu accelerator. Like a native menu item it fires even while a
+// text field is focused; it only navigates, so a stray hit is
+// harmless. Two entry points, mirroring the toggle-sidebar pattern:
+// the window capture listener for ordinary keystrokes, plus
 // RunnerTerminal's re-dispatched custom event for keys WKWebView
 // delivers straight to xterm.
-// Documented in src/lib/keymap.ts (open-settings).
 const OPEN_SETTINGS_EVENT = "runner:open-settings";
 
 function SettingsShortcut() {
@@ -127,8 +117,7 @@ function SettingsShortcut() {
       }
     };
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
-      if (e.key !== ",") return;
+      if (!eventMatchesShortcut(e, "open-settings")) return;
       e.preventDefault();
       e.stopPropagation();
       openSettings();

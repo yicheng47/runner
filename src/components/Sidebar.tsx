@@ -149,6 +149,7 @@ import { StartChatModal } from "./StartChatModal";
 import { CommandPalette } from "./CommandPalette";
 import { UpdatePromptCard } from "./UpdatePromptCard";
 import { ConfirmDialog } from "./settings/ConfirmDialog";
+import { eventMatchesShortcut } from "../lib/keymap";
 
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 480;
@@ -196,24 +197,14 @@ interface SidebarNavigationHistory {
   index: number;
 }
 
-// Cmd+Shift+[ / Cmd+Shift+] — page navigation moved to the shifted pair
-// (the tab-switch idiom in iTerm2/Safari/VS Code) so plain Cmd+[ / Cmd+]
-// can cycle split-pane focus in the chat surface (impl 0020), matching
-// iTerm2's pane/tab split. Shifted brackets arrive as "{" / "}" on US
-// layouts, so match on `code` first with the shifted keys as fallback.
-// Documented in src/lib/keymap.ts (page-navigation).
 function sidebarNavigationDirectionFromKey(
   e: KeyboardEvent,
 ): SidebarNavigationDirection | null {
-  if (!(e.metaKey || e.ctrlKey)) return null;
-  if (e.altKey || !e.shiftKey) return null;
-  if (e.code === "BracketLeft" || e.key === "[" || e.key === "{") {
-    return "previous";
-  }
-  if (e.code === "BracketRight" || e.key === "]" || e.key === "}") {
-    return "next";
-  }
-  return null;
+  return eventMatchesShortcut(e, "page-previous")
+    ? "previous"
+    : eventMatchesShortcut(e, "page-next")
+      ? "next"
+      : null;
 }
 
 function sidebarRuntimeKeyForPath(pathname: string): string | null {
@@ -657,18 +648,12 @@ export function Sidebar({
     [location.pathname, navigate, sidebarNavigationEntries],
   );
 
-  // ⌘K / Ctrl+K opens the command palette. ⌘T / Ctrl+T opens the Start
-  // Chat modal (browser/terminal convention: ⌘T = new tab/chat, ⌘N =
-  // new window). ⌘N is owned by the File → New Window menu accelerator
-  // (impl 0018) at the OS level, so it's deliberately absent here to
-  // avoid a double-fire. Skip while editing text controls so shortcuts
-  // don't hijack form input. xterm's hidden textarea is not an editor
-  // field from the app's point of view, so Meta shortcuts still win
-  // there; Ctrl shortcuts stay with the PTY/TUI.
-  // Documented in src/lib/keymap.ts (command-palette, new-chat).
+  // Skip while editing text controls so shortcuts don't hijack form
+  // input. xterm's hidden textarea is not an editor field from the
+  // app's point of view, so Meta shortcuts still win there; Ctrl
+  // shortcuts stay with the PTY/TUI.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName?.toLowerCase();
       const isXtermInput = !!target?.closest(".xterm");
@@ -682,11 +667,11 @@ export function Sidebar({
         return;
       }
       if (isXtermInput && !e.metaKey) return;
-      if (e.key === "k" || e.key === "K") {
+      if (eventMatchesShortcut(e, "command-palette")) {
         e.preventDefault();
         e.stopPropagation();
         setPaletteOpen(true);
-      } else if (e.key === "t" || e.key === "T") {
+      } else if (eventMatchesShortcut(e, "new-chat")) {
         e.preventDefault();
         e.stopPropagation();
         setNewChatProjectId(activeProjectId);

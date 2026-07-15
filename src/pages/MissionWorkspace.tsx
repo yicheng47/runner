@@ -89,6 +89,7 @@ import {
   unmarkArchivingMission,
   useArchivingMission,
 } from "../lib/archivingState";
+import { eventMatchesShortcut } from "../lib/keymap";
 
 const RAIL_STORAGE_WIDTH = "runner.mission.rail.width";
 const RAIL_MIN = 200;
@@ -768,16 +769,14 @@ export default function MissionWorkspace() {
     [activeTab, openSessionTabIds, selectFeed, selectPty],
   );
 
-  // ⌘[ / ⌘] cycle the feed and open runner terminal tabs. RunnerTerminal
-  // re-dispatches the same event when WKWebView delivers the keystroke
-  // straight to xterm. Documented in src/lib/keymap.ts (mission-tabs).
+  // RunnerTerminal re-dispatches the same event when WKWebView delivers
+  // a mission-tab shortcut straight to xterm.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
       const direction =
-        e.code === "BracketLeft" || e.key === "["
+        eventMatchesShortcut(e, "mission-tab-previous")
           ? "previous"
-          : e.code === "BracketRight" || e.key === "]"
+          : eventMatchesShortcut(e, "mission-tab-next")
             ? "next"
             : null;
       if (!direction) return;
