@@ -1666,6 +1666,15 @@ fn direct_chat_status_transition_emits_session_status_idle() {
             None,
         )
         .unwrap();
+    assert!(
+        mgr.session_state(&spawned.id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .mission_status_sink
+            .is_none(),
+        "direct chats must not carry a mission status sink",
+    );
 
     fake.push_status(0, RunnerStatus::Idle);
     let ev = wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Idle);
@@ -1765,7 +1774,7 @@ fn direct_chat_typing_stays_idle_until_submit() {
 }
 
 #[test]
-fn mission_status_transition_appends_runner_status_without_session_status_event() {
+fn mission_status_transition_appends_once_without_session_status_event() {
     let pool = pool_with_schema();
     let mission_base = Mission {
         crew_id: "c".into(),
@@ -1809,22 +1818,29 @@ fn mission_status_transition_appends_runner_status_without_session_status_event(
         .unwrap();
 
     fake.push_status(0, RunnerStatus::Busy);
+    fake.push_status(0, RunnerStatus::Busy);
     fake.close_spawn(0);
     join_forwarder_for_test(&mgr, &spawned.id);
 
     let log = EventLog::open(&mission_dir).unwrap();
-    let event = log
+    let events: Vec<_> = log
         .read_from(0)
         .unwrap()
         .into_iter()
         .map(|entry| entry.event)
-        .find(|event| {
+        .filter(|event| {
             event
                 .signal_type
                 .as_ref()
                 .is_some_and(|ty| ty.as_str() == "runner_status")
         })
-        .expect("runner_status event should be appended before the forwarder exits");
+        .collect();
+    assert_eq!(
+        events.len(),
+        1,
+        "unchanged mission states must not append duplicate rows",
+    );
+    let event = &events[0];
 
     assert_eq!(event.from, runner.handle);
     assert_eq!(event.payload["state"], "busy");
@@ -1833,6 +1849,168 @@ fn mission_status_transition_appends_runner_status_without_session_status_event(
         cap.status.lock().unwrap().is_empty(),
         "mission sessions must not emit live session/status events",
     );
+}
+
+#[test]
+fn mission_typing_stays_idle_until_submit() {
+    let pool = pool_with_schema();
+    let mission_base = Mission {
+        crew_id: "c".into(),
+        ..mission()
+    };
+    let runner = runner("/bin/cat", &[]);
+    let slot_id = insert_crew_runner(&pool, &mission_base.id, &runner.id);
+    let fresh_mission_id: String = {
+        let conn = pool.get().unwrap();
+        conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
+            .unwrap()
+    };
+    let mission = Mission {
+        id: fresh_mission_id,
+        ..mission_base
+    };
+    let mut slot = slot_for(&runner);
+    slot.id = slot_id;
+    slot.crew_id = mission.crew_id.clone();
+
+    let app_data = tempfile::tempdir().unwrap();
+    let events_log_path =
+        runner_core::event_log::path::events_path(app_data.path(), &mission.crew_id, &mission.id);
+    let mission_dir =
+        runner_core::event_log::path::mission_dir(app_data.path(), &mission.crew_id, &mission.id);
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture();
+    let spawned = mgr
+        .spawn(
+            &mission,
+            &runner,
+            &slot,
+            app_data.path(),
+            events_log_path,
+            Arc::clone(&pool),
+            Arc::clone(&cap) as Arc<dyn SessionEvents>,
+            None,
+        )
+        .unwrap();
+
+    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_output(0, b"initial-idle-synced");
+    wait_for_output_event(&cap, &spawned.id);
+    cap.output.lock().unwrap().clear();
+
+    let log = EventLog::open(&mission_dir).unwrap();
+    let read_statuses = || {
+        log.read_from(0)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.event)
+            .filter(|event| {
+                event
+                    .signal_type
+                    .as_ref()
+                    .is_some_and(|ty| ty.as_str() == "runner_status")
+            })
+            .collect::<Vec<_>>()
+    };
+    let initial_statuses = read_statuses();
+    assert_eq!(initial_statuses.len(), 1);
+    assert_eq!(initial_statuses[0].payload["state"], "idle");
+    assert_eq!(initial_statuses[0].payload["source"], "forwarder");
+
+    mgr.inject_direct_stdin(&spawned.id, b"x", cap.as_ref())
+        .unwrap();
+    fake.push_status(0, RunnerStatus::Busy);
+    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_output(0, b"typing-echo-drained");
+    wait_for_output_event(&cap, &spawned.id);
+
+    assert_eq!(
+        read_statuses().len(),
+        1,
+        "suppressed echo-busy and the unchanged idle transition must append nothing",
+    );
+    assert_eq!(
+        mgr.activity_snapshot().get(&spawned.id),
+        Some(&SessionActivityState::Idle),
+    );
+    assert!(
+        !mgr.session_state(&spawned.id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .suppress_local_input_busy,
+        "the idle transition must clear local-input suppression",
+    );
+
+    use fs2::FileExt;
+    use std::fs::OpenOptions;
+    let blocker = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(log.path())
+        .unwrap();
+    blocker.lock_exclusive().unwrap();
+
+    let submit_mgr = Arc::clone(&mgr);
+    let submit_cap = Arc::clone(&cap);
+    let submit_session_id = spawned.id.clone();
+    let (submit_done_tx, submit_done_rx) = std::sync::mpsc::channel();
+    let submit = std::thread::spawn(move || {
+        let result = submit_mgr
+            .inject_direct_stdin(&submit_session_id, b"\r", submit_cap.as_ref())
+            .map_err(|error| error.to_string());
+        submit_done_tx.send(result).unwrap();
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !fake
+        .keys()
+        .iter()
+        .any(|(session_id, key)| session_id == &spawned.id && key == "Enter")
+    {
+        assert!(
+            Instant::now() <= deadline,
+            "submit never reached the PTY while the event log was contended",
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(matches!(
+        submit_done_rx.recv_timeout(Duration::from_millis(50)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+
+    blocker.unlock().unwrap();
+    submit_done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    submit.join().unwrap();
+
+    let statuses = read_statuses();
+    assert_eq!(statuses.len(), 2);
+    assert_eq!(statuses[1].payload["state"], "busy");
+    assert_eq!(statuses[1].payload["source"], "input-submit");
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|event| event.payload["source"] == "input-submit")
+            .count(),
+        1,
+    );
+    assert_eq!(
+        mgr.activity_snapshot().get(&spawned.id),
+        Some(&SessionActivityState::Busy),
+    );
+    assert!(
+        cap.status.lock().unwrap().is_empty(),
+        "mission typing and submit must not emit live session/status events",
+    );
+
+    mgr.kill(&spawned.id).unwrap();
 }
 
 #[test]

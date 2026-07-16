@@ -70,6 +70,13 @@ impl SessionManager {
                     }
                     Ok(RuntimeOutput::StatusTransition { state, source }) => {
                         if let Some(ctx) = emit_ctx.as_ref() {
+                            if !manager_t.note_forwarder_transition(
+                                &session_id,
+                                state.into(),
+                                source,
+                            ) {
+                                continue;
+                            }
                             let outcome = ctx.try_append_runner_status(state, source);
                             match outcome {
                                 AppendOutcome::Ok => {
@@ -196,46 +203,60 @@ impl SessionManager {
         let rt_session = self.live_runtime_session(session_id)?;
         let submitted = bytes == b"\r";
         let session = self.session_state(session_id);
-        let transition = if let Some(session) = session.as_ref() {
-            let mut session = session.lock().unwrap();
-            let previous_activity = session.activity;
-            let previous_suppression = session.suppress_local_input_busy;
-            let transition = if previous_activity.is_some() && submitted {
-                session.suppress_local_input_busy = false;
-                if previous_activity == Some(SessionActivityState::Idle) {
-                    session.activity = Some(SessionActivityState::Busy);
-                    Some(SessionActivityEvent {
-                        session_id: session_id.to_string(),
-                        state: SessionActivityState::Busy,
-                        source: "input-submit".to_string(),
-                    })
+        let (transition, mission_status_sink, mission_scoped) =
+            if let Some(session) = session.as_ref() {
+                let mut session = session.lock().unwrap();
+                let previous_activity = session.activity;
+                let previous_suppression = session.suppress_local_input_busy;
+                let mission_status_sink = session.mission_status_sink.clone();
+                let mission_scoped = session
+                    .handle
+                    .as_ref()
+                    .is_some_and(|handle| handle.mission_id.is_some());
+                let transition = if previous_activity.is_some() && submitted {
+                    session.suppress_local_input_busy = false;
+                    if previous_activity == Some(SessionActivityState::Idle) {
+                        session.activity = Some(SessionActivityState::Busy);
+                        Some(SessionActivityEvent {
+                            session_id: session_id.to_string(),
+                            state: SessionActivityState::Busy,
+                            source: "input-submit".to_string(),
+                        })
+                    } else {
+                        None
+                    }
                 } else {
+                    if previous_activity == Some(SessionActivityState::Idle) {
+                        session.suppress_local_input_busy = true;
+                    }
                     None
+                };
+                if let Err(error) = self.write_stdin_bytes(&rt_session, bytes) {
+                    session.activity = previous_activity;
+                    session.suppress_local_input_busy = previous_suppression;
+                    return Err(error);
                 }
+                if submitted {
+                    session.completion_armed = true;
+                }
+                (transition, mission_status_sink, mission_scoped)
             } else {
-                if previous_activity == Some(SessionActivityState::Idle) {
-                    session.suppress_local_input_busy = true;
-                }
-                None
+                self.write_stdin_bytes(&rt_session, bytes)?;
+                (None, None, false)
             };
-            if let Err(error) = self.write_stdin_bytes(&rt_session, bytes) {
-                session.activity = previous_activity;
-                session.suppress_local_input_busy = previous_suppression;
-                return Err(error);
-            }
-            if submitted {
-                session.completion_armed = true;
-            }
-            transition
-        } else {
-            self.write_stdin_bytes(&rt_session, bytes)?;
-            None
-        };
         if submitted {
             self.capture_codex_session_key(session_id);
         }
         if let Some(transition) = transition.as_ref() {
-            events.status(transition);
+            if let Some(sink) = mission_status_sink.as_ref() {
+                if let Err(error) = sink.append_runner_status(RunnerStatus::Busy, "input-submit") {
+                    log::error!(
+                        "append input-submit runner_status failed for {session_id}: {error}"
+                    );
+                }
+            } else if !mission_scoped {
+                events.status(transition);
+            }
         }
         Ok(())
     }

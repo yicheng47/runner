@@ -431,6 +431,13 @@ impl SessionManager {
             None
         };
 
+        let spawn_emit_ctx = open_mission_event_log(&app_data_dir, &mission.crew_id, &mission.id)
+            .map(|event_log| ForwarderEmitCtx {
+                crew_id: mission.crew_id.clone(),
+                mission_id: mission.id.clone(),
+                handle: slot_handle.clone(),
+                event_log,
+            });
         let stop = output.stop_flag();
         let runtime_session_for_log = rt_session.session_id.clone();
         self.install_handle(
@@ -444,18 +451,12 @@ impl SessionManager {
                 forwarder: None,
                 stop,
             },
+            spawn_emit_ctx.clone(),
         );
         if first_turn_delivered_via_argv {
             self.arm_completion(&session_id);
         }
 
-        let spawn_emit_ctx = open_mission_event_log(&app_data_dir, &mission.crew_id, &mission.id)
-            .map(|event_log| ForwarderEmitCtx {
-                crew_id: mission.crew_id.clone(),
-                mission_id: mission.id.clone(),
-                handle: slot_handle.clone(),
-                event_log,
-            });
         let forwarder = self.start_forwarder_thread(
             session_id.clone(),
             Some(mission.id.clone()),
@@ -807,6 +808,7 @@ impl SessionManager {
                 forwarder: None,
                 stop: output.stop_flag(),
             },
+            None,
         );
         if first_turn_delivered_via_argv {
             self.arm_completion(&session_id);
@@ -1184,6 +1186,16 @@ impl SessionManager {
             None
         };
 
+        let resume_emit_ctx = mission_ctx.as_ref().and_then(|ctx| {
+            open_mission_event_log(app_data_dir, &ctx.crew_id, &ctx.mission_id).map(|event_log| {
+                ForwarderEmitCtx {
+                    crew_id: ctx.crew_id.clone(),
+                    mission_id: ctx.mission_id.clone(),
+                    handle: ctx.slot_handle.clone(),
+                    event_log,
+                }
+            })
+        });
         self.install_handle(
             session_id,
             SessionHandle {
@@ -1195,6 +1207,7 @@ impl SessionManager {
                 forwarder: None,
                 stop: output.stop_flag(),
             },
+            resume_emit_ctx.clone(),
         );
         if snap.mission_id.is_none() {
             self.publish_direct_activity(
@@ -1211,16 +1224,6 @@ impl SessionManager {
         // window. See the call site above this function's mission
         // lookup.)
 
-        let resume_emit_ctx = mission_ctx.as_ref().and_then(|ctx| {
-            open_mission_event_log(app_data_dir, &ctx.crew_id, &ctx.mission_id).map(|event_log| {
-                ForwarderEmitCtx {
-                    crew_id: ctx.crew_id.clone(),
-                    mission_id: ctx.mission_id.clone(),
-                    handle: ctx.slot_handle.clone(),
-                    event_log,
-                }
-            })
-        });
         let forwarder = self.start_forwarder_thread(
             session_id.to_string(),
             snap.mission_id.clone(),

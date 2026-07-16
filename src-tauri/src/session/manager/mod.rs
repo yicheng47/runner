@@ -190,6 +190,20 @@ enum AppendOutcome {
 }
 
 impl ForwarderEmitCtx {
+    fn runner_status_draft(&self, state: RunnerStatus, source: &'static str) -> EventDraft {
+        let state_str = match state {
+            RunnerStatus::Busy => "busy",
+            RunnerStatus::Idle => "idle",
+        };
+        EventDraft::signal(
+            self.crew_id.clone(),
+            self.mission_id.clone(),
+            self.handle.clone(),
+            SignalType::new("runner_status"),
+            serde_json::json!({ "state": state_str, "source": source }),
+        )
+    }
+
     /// Non-blocking append of a forwarder-emitted `runner_status`
     /// row. The consumer thread runs this on every status
     /// transition; it must not block (it shares the mpsc receiver
@@ -198,22 +212,24 @@ impl ForwarderEmitCtx {
     /// `cli/src/signal.rs::run_status` so router / UI projections
     /// can't tell the two apart except by `payload.source`.
     fn try_append_runner_status(&self, state: RunnerStatus, source: &'static str) -> AppendOutcome {
-        let state_str = match state {
-            RunnerStatus::Busy => "busy",
-            RunnerStatus::Idle => "idle",
-        };
-        let draft = EventDraft::signal(
-            self.crew_id.clone(),
-            self.mission_id.clone(),
-            self.handle.clone(),
-            SignalType::new("runner_status"),
-            serde_json::json!({ "state": state_str, "source": source }),
-        );
-        match self.event_log.try_append(draft) {
+        match self
+            .event_log
+            .try_append(self.runner_status_draft(state, source))
+        {
             Ok(_) => AppendOutcome::Ok,
             Err(TryAppendError::Contended) => AppendOutcome::Contended,
             Err(TryAppendError::Failed(_)) => AppendOutcome::Failed,
         }
+    }
+
+    fn append_runner_status(
+        &self,
+        state: RunnerStatus,
+        source: &'static str,
+    ) -> runner_core::Result<()> {
+        self.event_log
+            .append(self.runner_status_draft(state, source))
+            .map(|_| ())
     }
 }
 
@@ -454,6 +470,7 @@ struct SessionState {
     handle: Option<SessionHandle>,
     activity: Option<SessionActivityState>,
     suppress_local_input_busy: bool,
+    mission_status_sink: Option<ForwarderEmitCtx>,
     completion_armed: bool,
     output_buffer: VecDeque<OutputEvent>,
     output_seq: u64,
@@ -474,6 +491,7 @@ impl SessionState {
         self.handle.is_none()
             && self.activity.is_none()
             && !self.suppress_local_input_busy
+            && self.mission_status_sink.is_none()
             && !self.completion_armed
             && self.output_buffer.is_empty()
             && self.output_seq == 0
@@ -646,10 +664,16 @@ impl SessionManager {
         }
     }
 
-    fn install_handle(&self, session_id: &str, handle: SessionHandle) {
+    fn install_handle(
+        &self,
+        session_id: &str,
+        handle: SessionHandle,
+        mission_status_sink: Option<ForwarderEmitCtx>,
+    ) {
         let state = self.session_state_or_insert(session_id);
         let mut state = state.lock().unwrap();
         state.handle = Some(handle);
+        state.mission_status_sink = mission_status_sink;
         state.killed = false;
     }
 
@@ -661,6 +685,30 @@ impl SessionManager {
         }
     }
 
+    pub(crate) fn note_forwarder_transition(
+        &self,
+        session_id: &str,
+        state: SessionActivityState,
+        source: &str,
+    ) -> bool {
+        let session = self.session_state_or_insert(session_id);
+        let mut session = session.lock().unwrap();
+        if source == "forwarder"
+            && state == SessionActivityState::Busy
+            && session.suppress_local_input_busy
+        {
+            return false;
+        }
+        if state == SessionActivityState::Idle {
+            session.suppress_local_input_busy = false;
+        }
+        if session.activity == Some(state) {
+            return false;
+        }
+        session.activity = Some(state);
+        true
+    }
+
     pub(crate) fn publish_direct_activity(
         &self,
         session_id: &str,
@@ -668,27 +716,7 @@ impl SessionManager {
         source: &str,
         events: &dyn SessionEvents,
     ) {
-        let session = self.session_state_or_insert(session_id);
-        let should_emit = {
-            let mut session = session.lock().unwrap();
-            if source == "forwarder"
-                && state == SessionActivityState::Busy
-                && session.suppress_local_input_busy
-            {
-                false
-            } else {
-                if state == SessionActivityState::Idle {
-                    session.suppress_local_input_busy = false;
-                }
-                if session.activity == Some(state) {
-                    false
-                } else {
-                    session.activity = Some(state);
-                    true
-                }
-            }
-        };
-        if !should_emit {
+        if !self.note_forwarder_transition(session_id, state, source) {
             return;
         }
         events.status(&SessionActivityEvent {
