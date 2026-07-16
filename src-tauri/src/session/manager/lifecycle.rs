@@ -66,6 +66,7 @@ impl SessionManager {
                 Some(mut h) => {
                     state.activity = None;
                     state.suppress_local_input_busy = false;
+                    state.mission_status_sink = None;
                     state.completion_armed = false;
                     (h.stop.clone(), h.forwarder.take())
                 }
@@ -216,6 +217,7 @@ impl SessionManager {
                 state.handle = None;
                 state.activity = None;
                 state.suppress_local_input_busy = false;
+                state.mission_status_sink = None;
                 state.completion_armed = false;
             }
         }
