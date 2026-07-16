@@ -4,9 +4,9 @@
 // keep them alive while switching between tabs/routes. Output keeps streaming
 // into hidden instances so each PTY's scrollback survives UI switches.
 //
-// Setup: WebGL renderer for cell-row alignment, base64 PTY frames to preserve
-// raw bytes, backend snapshot replay for late attach, and SIGWINCH dance on
-// attach so claude-code/codex repaint onto a fresh grid.
+// Setup: active-pane WebGL renderer for cell-row alignment, base64 PTY frames
+// to preserve raw bytes, backend snapshot replay for late attach, and SIGWINCH
+// dance on attach so claude-code/codex repaint onto a fresh grid.
 
 import {
   forwardRef,
@@ -177,15 +177,10 @@ export const RunnerTerminal = forwardRef<
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  // Live WebglAddon handle so the font-change listeners below can call
-  // `clearTextureAtlas()` on it. The WebGL renderer caches every distinct
-  // (codepoint, fg, bg, style) cell into a GPU texture atlas keyed by
-  // rendered pixel size, so a font-size / font-family change must evict
-  // the atlas or a band of pre-change glyphs lingers at the old metrics
-  // until something else rebuilds it. (The old cross-pane atlas-corruption
-  // mitigation is gone: that "wrong glyph" bug was an upstream atlas
-  // page-merge defect, fixed in @xterm/addon-webgl — see the renderer
-  // setup below.)
+  // Live active-pane WebglAddon handle so the font-change listeners below
+  // can call `clearTextureAtlas()` on it. Hidden terminals retain their xterm
+  // buffer but release their GPU context, keeping the long-lived chat pane
+  // pool below WKWebView's context limit.
   const webglRef = useRef<WebglAddon | null>(null);
   const sessionIdRef = useRef<string>(sessionId);
   const onExitRef = useRef(onExit);
@@ -230,6 +225,9 @@ export const RunnerTerminal = forwardRef<
   // sessionId change so a stale closure can't keep writing into the
   // previous session's xterm grid.
   const tryDrainReplayRef = useRef<(() => boolean) | null>(null);
+  // Activation leaves its refresh here until it succeeds. The container
+  // ResizeObserver retries it when a display:none pane becomes measurable.
+  const activationRefreshRef = useRef<(() => boolean) | null>(null);
   const replayFlushPendingRef = useRef(false);
   const replayAfterFlushRef = useRef<Array<() => void>>([]);
   const pendingLiveOverflowRef = useRef(false);
@@ -439,30 +437,6 @@ export const RunnerTerminal = forwardRef<
     });
     term.loadAddon(webLinks);
     term.open(containerRef.current);
-    // WebGL renderer + context-loss recovery. The glyph-atlas corruption
-    // that used to garble sibling panes under agentic-CLI output — a wide
-    // range of styled glyphs forces atlas page merges, and a merge bug
-    // sampled the wrong page → correct layout, wrong glyphs — is fixed
-    // upstream in @xterm/addon-webgl >=0.20.0-beta.219 (xtermjs/xterm.js
-    // #5883). So we no longer coordinate atlases across panes; each
-    // terminal just guards its own context loss. Without the onContextLoss
-    // hook, a GPU reset / driver hiccup / dev HMR remount would leave
-    // xterm rendering against a dead context and the canvas freezes
-    // mid-frame. Disposing the addon on loss reverts this terminal to the
-    // DOM renderer for the rest of the mount — degraded but functional,
-    // and it also covers the rarer GPU-process-death corruption the
-    // atlas-merge fix doesn't (the VSCode dom-fallback pattern).
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => {
-        webgl.dispose();
-        webglRef.current = null;
-      });
-      term.loadAddon(webgl);
-      webglRef.current = webgl;
-    } catch {
-      // No WebGL — xterm keeps its DOM renderer. RunnerChat does the same.
-    }
     const initialRect = containerRef.current.getBoundingClientRect();
     if (initialRect.width > 0 && initialRect.height > 0) {
       fit.fit();
@@ -769,7 +743,15 @@ export const RunnerTerminal = forwardRef<
     // CSS-driven size changes; refitAndPush's activeRef + measurable-
     // rect guards keep hidden panes from pushing stale geometry to
     // the backend.
-    const ro = new ResizeObserver(() => refitAndPush());
+    const ro = new ResizeObserver(() => {
+      const activationRefresh = activationRefreshRef.current;
+      if (activationRefresh?.()) {
+        if (activationRefreshRef.current === activationRefresh) {
+          activationRefreshRef.current = null;
+        }
+      }
+      refitAndPush();
+    });
     ro.observe(containerRef.current);
 
     const onVisibility = () => {
@@ -932,11 +914,46 @@ export const RunnerTerminal = forwardRef<
       clearStableResizeSchedule();
       textarea?.removeEventListener("paste", onPaste, { capture: true });
       onDataDisposable.dispose();
+      webglRef.current = null;
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
     };
   }, [refreshActiveTerminal]);
+
+  // A mounted hidden terminal still owns its CPU-side xterm buffer, but it
+  // must not hold a WebGL context: RunnerChat deliberately keeps every
+  // attached session mounted, and WKWebView starts evicting old contexts at
+  // roughly 16. Active chat splits and mission tabs need at most three.
+  //
+  // A genuine GPU context loss disposes the addon immediately so xterm falls
+  // back to its DOM renderer. The next inactive -> active transition runs
+  // this effect again and restores WebGL instead of degrading permanently.
+  useEffect(() => {
+    if (!active) return;
+    const term = termRef.current;
+    if (!term) return;
+
+    let webgl: WebglAddon | null = null;
+    try {
+      webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        webgl?.dispose();
+        if (webglRef.current === webgl) webglRef.current = null;
+      });
+      term.loadAddon(webgl);
+      webglRef.current = webgl;
+    } catch {
+      webgl?.dispose();
+      // No WebGL — xterm keeps its DOM renderer.
+    }
+
+    return () => {
+      if (!webgl || webglRef.current !== webgl) return;
+      webglRef.current = null;
+      webgl.dispose();
+    };
+  }, [active]);
 
   // Subscribe to the bound session's output + exit. The listener is registered
   // before snapshot replay so live chunks that arrive during the command round
@@ -1137,37 +1154,32 @@ export const RunnerTerminal = forwardRef<
     if (!active) wasTransitionalRef.current = disabledRef.current;
   }, [active]);
 
-  // Activation effect: when this tab moves to the front, wait for the pane
-  // to become measurable, fit to its container, repaint the WebGL/canvas
-  // renderer with the current scrollback, and grab focus so keystrokes flow
-  // into the expected PTY.
+  // Activation effect: when this tab moves to the front, fit to its container,
+  // repaint the freshly-created WebGL renderer with the current scrollback,
+  // and grab focus so keystrokes flow into the expected PTY. If layout is not
+  // measurable yet, the container ResizeObserver keeps retrying this refresh.
   useEffect(() => {
-    if (!active) return;
-    let cancelled = false;
-    let raf1 = 0;
-    let raf2 = 0;
-
-    const activate = () => {
-      if (cancelled) return;
-      const dance = !wasTransitionalRef.current;
-      console.info(
-        `[terminal] activate session=${sessionIdRef.current} dance=${dance}`,
-      );
+    if (!active) {
+      activationRefreshRef.current = null;
+      return;
+    }
+    const dance = !wasTransitionalRef.current;
+    console.info(
+      `[terminal] activate session=${sessionIdRef.current} dance=${dance}`,
+    );
+    const refresh = () =>
       refreshActiveTerminal({
         focus: autoFocusRef.current,
         forceResizeDance: dance,
         pushBackendSize: !dance,
       });
-    };
-
-    raf1 = window.requestAnimationFrame(() => {
-      raf2 = window.requestAnimationFrame(activate);
-    });
+    activationRefreshRef.current = refresh;
+    if (refresh()) activationRefreshRef.current = null;
 
     return () => {
-      cancelled = true;
-      window.cancelAnimationFrame(raf1);
-      window.cancelAnimationFrame(raf2);
+      if (activationRefreshRef.current === refresh) {
+        activationRefreshRef.current = null;
+      }
     };
   }, [active, sessionId, refreshActiveTerminal]);
 
