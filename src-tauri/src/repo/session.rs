@@ -386,7 +386,7 @@ pub fn list_for_mission(
     let sql = format!(
         "SELECT {},
                 COALESCE(sl.slot_handle, r.handle) AS handle,
-                r.runtime AS runner_runtime,
+                COALESCE(s.agent_runtime, r.runtime) AS runner_runtime,
                 COALESCE(sl.lead, 0) AS lead
            FROM sessions s
            JOIN runners r ON r.id = s.runner_id

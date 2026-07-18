@@ -53,6 +53,10 @@ export interface Slot {
   slot_handle: string;
   position: number;
   lead: boolean;
+  /** Per-slot engine choice (feature 41). NULL = the runner's own
+   *  runtime. When set, mission spawns run this runtime with registry
+   *  defaults while the runner's persona carries over. */
+  runtime_override: string | null;
   added_at: Timestamp;
 }
 
@@ -292,10 +296,16 @@ export interface CreateSlotInput {
   crew_id: string;
   runner_id: string;
   slot_handle: string;
+  /** Omit / null for "Runner default"; a runtime registry name to
+   *  override the engine for this slot. */
+  runtime_override?: string | null;
 }
 
 export interface UpdateSlotInput {
   slot_handle?: string;
+  /** Omit to preserve; null to clear back to "Runner default"; a
+   *  runtime registry name to override. */
+  runtime_override?: string | null;
 }
 
 export interface StartMissionInput {

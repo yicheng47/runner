@@ -12,6 +12,13 @@ use crate::mcp::server::RunnerMcpHandler;
 pub struct StartDirectSessionArgs {
     /// Runner template ID.
     pub runner_id: String,
+    /// Optional runtime override (registry name, e.g. "codex" or
+    /// "claude-code"). Omit to use the runner's own runtime. When it
+    /// differs, the chat spawns that engine with registry defaults
+    /// while the runner's persona (system prompt, working dir, env)
+    /// carries over.
+    #[serde(default)]
+    pub runtime: Option<String>,
     /// Optional project membership. Its cwd is used when cwd is omitted.
     #[serde(default)]
     pub project_id: Option<String>,
@@ -41,6 +48,7 @@ impl RunnerMcpHandler {
             &app_state,
             &self.state.app_handle,
             args.runner_id,
+            args.runtime,
             args.project_id,
             args.cwd,
             None,

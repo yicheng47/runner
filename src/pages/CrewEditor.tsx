@@ -23,6 +23,8 @@ import { AddSlotModal } from "../components/AddSlotModal";
 import { RunnerEditDrawer } from "../components/RunnerEditDrawer";
 import { StartMissionModal } from "../components/StartMissionModal";
 import { Button } from "../components/ui/Button";
+import { PopoverMenu } from "../components/ui/PopoverMenu";
+import { RUNTIME_OPTIONS } from "../components/ui/runtimes";
 
 export default function CrewEditor() {
   const { crewId } = useParams<{ crewId: string }>();
@@ -189,6 +191,18 @@ export default function CrewEditor() {
   const onSetLead = async (slotId: string) => {
     try {
       await api.slot.setLead(slotId);
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const onSetRuntimeOverride = async (
+    slotId: string,
+    runtimeOverride: string | null,
+  ) => {
+    try {
+      await api.slot.update(slotId, { runtime_override: runtimeOverride });
       await refresh();
     } catch (e) {
       setError(String(e));
@@ -481,6 +495,7 @@ export default function CrewEditor() {
                 slots={slots}
                 reordering={reordering}
                 onSetLead={onSetLead}
+                onSetRuntimeOverride={onSetRuntimeOverride}
                 onEdit={(s) => setEditing(s.runner)}
                 onRemove={onRemoveSlot}
                 onReorder={onCommitReorder}
@@ -529,6 +544,7 @@ function SlotList({
   slots,
   reordering,
   onSetLead,
+  onSetRuntimeOverride,
   onEdit,
   onRemove,
   onReorder,
@@ -536,6 +552,7 @@ function SlotList({
   slots: SlotWithRunner[];
   reordering: boolean;
   onSetLead: (slotId: string) => void;
+  onSetRuntimeOverride: (slotId: string, runtimeOverride: string | null) => void;
   onEdit: (s: SlotWithRunner) => void;
   onRemove: (s: SlotWithRunner) => void;
   onReorder: (newOrder: SlotWithRunner[]) => void;
@@ -561,6 +578,7 @@ function SlotList({
           total={slots.length}
           dragDisabled={reordering}
           onSetLead={() => onSetLead(s.id)}
+          onSetRuntimeOverride={(runtime) => onSetRuntimeOverride(s.id, runtime)}
           onEdit={() => onEdit(s)}
           onRemove={() => onRemove(s)}
           onReorderDrop={(fromIndex) => {
@@ -587,6 +605,7 @@ function SlotRow({
   total,
   dragDisabled,
   onSetLead,
+  onSetRuntimeOverride,
   onEdit,
   onRemove,
   onReorderDrop,
@@ -596,6 +615,7 @@ function SlotRow({
   total: number;
   dragDisabled: boolean;
   onSetLead: () => void;
+  onSetRuntimeOverride: (runtimeOverride: string | null) => void;
   onEdit: () => void;
   onRemove: () => void;
   onReorderDrop: (fromIndex: number) => void;
@@ -624,9 +644,19 @@ function SlotRow({
 
   const runner = slot.runner;
   const summary = useMemo(() => {
+    const override = slot.runtime_override;
+    if (override && override !== runner.runtime) {
+      // Overridden slots spawn the registry command with that
+      // runtime's default flags — the runner's own command/args are
+      // engine config for its default runtime and don't apply.
+      const cmd =
+        RUNTIME_OPTIONS.find((o) => o.value === override)?.defaultCommand ??
+        override;
+      return `${cmd} (runtime defaults)`;
+    }
     const parts = [runner.command, ...runner.args];
     return parts.filter(Boolean).join(" ");
-  }, [runner.command, runner.args]);
+  }, [slot.runtime_override, runner.runtime, runner.command, runner.args]);
 
   return (
     <li
@@ -660,9 +690,7 @@ function SlotRow({
               Lead
             </span>
           ) : null}
-          <span className="rounded bg-raised px-1.5 py-0.5 text-[10px] font-medium text-fg-2">
-            {runner.runtime}
-          </span>
+          <SlotRuntimeSelect slot={slot} onChange={onSetRuntimeOverride} />
           <span className="font-mono text-[11px] text-fg-3">
             from @{runner.handle}
           </span>
@@ -686,6 +714,98 @@ function SlotRow({
         onRemove={onRemove}
       />
     </li>
+  );
+}
+
+// Compact runtime dropdown living where the roster row's static
+// runtime badge used to be. Shows the slot's *effective* runtime
+// (`runtime_override ?? runner.runtime`); when an override diverges
+// from the runner default the badge paints accent so a mixed-engine
+// crew is visible at a glance. The menu offers "Runner default"
+// plus each registry runtime (feature 41).
+function SlotRuntimeSelect({
+  slot,
+  onChange,
+}: {
+  slot: SlotWithRunner;
+  onChange: (runtimeOverride: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  const override = slot.runtime_override;
+  const effective = override ?? slot.runner.runtime;
+  const overridden = override !== null && override !== slot.runner.runtime;
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        onMouseDown={(e) => e.stopPropagation()}
+        title={
+          overridden
+            ? `Runtime override — runner default is ${slot.runner.runtime}`
+            : "Runtime (runner default)"
+        }
+        className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+          overridden
+            ? "bg-accent/10 text-accent hover:bg-accent/20"
+            : "bg-raised text-fg-2 hover:text-fg"
+        }`}
+      >
+        {effective}
+        <span aria-hidden className={open ? "rotate-180" : ""}>
+          ▾
+        </span>
+      </button>
+      <PopoverMenu
+        open={open}
+        anchorRef={rootRef}
+        onClose={() => setOpen(false)}
+        minWidth={220}
+      >
+        <ul
+          role="listbox"
+          className="flex w-full flex-col rounded border border-line-strong bg-panel py-1 shadow-xl"
+        >
+          {[
+            {
+              value: "",
+              label: `Runner default (${slot.runner.runtime})`,
+            },
+            ...RUNTIME_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
+          ].map((opt) => {
+            const active = (override ?? "") === opt.value;
+            return (
+              <li key={opt.value || "__default__"} role="option" aria-selected={active}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    if ((override ?? "") !== opt.value) {
+                      onChange(opt.value || null);
+                    }
+                  }}
+                  className={`flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-raised ${
+                    active ? "bg-raised text-fg" : "text-fg-2"
+                  }`}
+                >
+                  <span className="font-mono">{opt.label}</span>
+                  {active ? (
+                    <span className="text-accent" aria-hidden>
+                      ✓
+                    </span>
+                  ) : null}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </PopoverMenu>
+    </div>
   );
 }
 

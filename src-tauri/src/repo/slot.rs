@@ -20,6 +20,7 @@ pub struct SlotRow {
     pub slot_handle: String,
     pub position: i64,
     pub lead: bool,
+    pub runtime_override: Option<String>,
     #[serde(with = "crate::repo::serde::rfc3339")]
     pub added_at: Timestamp,
 }
@@ -31,6 +32,7 @@ pub const COLUMNS: &[&str] = &[
     "slot_handle",
     "position",
     "lead",
+    "runtime_override",
     "added_at",
 ];
 
@@ -43,6 +45,7 @@ impl From<SlotRow> for Slot {
             slot_handle: r.slot_handle,
             position: r.position,
             lead: r.lead,
+            runtime_override: r.runtime_override,
             added_at: r.added_at,
         }
     }
@@ -57,6 +60,7 @@ impl From<&Slot> for SlotRow {
             slot_handle: s.slot_handle.clone(),
             position: s.position,
             lead: s.lead,
+            runtime_override: s.runtime_override.clone(),
             added_at: s.added_at,
         }
     }
@@ -119,6 +123,17 @@ pub fn set_slot_handle(conn: &Connection, id: &str, slot_handle: &str) -> rusqli
     conn.execute(
         "UPDATE slots SET slot_handle = ?1 WHERE id = ?2",
         rusqlite::params![slot_handle, id],
+    )
+}
+
+pub fn set_runtime_override(
+    conn: &Connection,
+    id: &str,
+    runtime_override: Option<&str>,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE slots SET runtime_override = ?1 WHERE id = ?2",
+        rusqlite::params![runtime_override, id],
     )
 }
 
@@ -187,6 +202,7 @@ mod tests {
             slot_handle: "architect".into(),
             position: 3,
             lead: true,
+            runtime_override: Some("claude-code".into()),
             added_at: Utc::now(),
         }
     }
@@ -199,6 +215,7 @@ mod tests {
             slot_handle: "worker".into(),
             position: 0,
             lead: false,
+            runtime_override: None,
             added_at: Utc::now(),
         }
     }

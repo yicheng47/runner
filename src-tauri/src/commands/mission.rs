@@ -1847,7 +1847,10 @@ mod tests {
             },
         )
         .unwrap();
-        slot::create(conn, crew_id, &r.id, handle).unwrap().slot.id
+        slot::create(conn, crew_id, &r.id, handle, None)
+            .unwrap()
+            .slot
+            .id
     }
 
     fn append_runner_status(

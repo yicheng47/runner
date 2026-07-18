@@ -872,6 +872,66 @@ fn capture_cwd(explicit: Option<String>) -> Option<String> {
         .and_then(|p| p.into_os_string().into_string().ok())
 }
 
+/// Outcome of resolving a runtime override against a runner row
+/// (feature 41).
+#[derive(Debug)]
+pub(crate) struct RuntimeOverrideResolution {
+    /// Rebuilt runner config when the override names a *different*
+    /// runtime than the runner's: registry command, the default
+    /// permission mode's canonical args (same as a bare runtime
+    /// chat), `model` / `effort` cleared; persona fields
+    /// (`system_prompt`, `working_dir`, `env`, handles) carry over.
+    /// `None` = spawn from the runner row untouched, byte-identical
+    /// to no override.
+    pub effective: Option<Runner>,
+    /// True when a non-blank override was explicitly requested —
+    /// including one matching the runner's current runtime. Spawn
+    /// paths record the effective runtime on the session row for
+    /// pinned spawns so a later edit to the runner template's
+    /// runtime can't silently re-engine this session's resume (and
+    /// hand its native session key to a different CLI).
+    pub pinned: bool,
+}
+
+/// Resolve the runner config a spawn should actually use when a
+/// runtime override is in play (feature 41). Effective runtime =
+/// `override ?? runner.runtime`; a matching override keeps the spawn
+/// byte-identical but still pins. Unknown differing runtime names
+/// error.
+pub(crate) fn resolve_runtime_override(
+    runner: &Runner,
+    runtime_override: Option<&str>,
+) -> Result<RuntimeOverrideResolution> {
+    let Some(name) = runtime_override.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(RuntimeOverrideResolution {
+            effective: None,
+            pinned: false,
+        });
+    };
+    if name == runner.runtime {
+        return Ok(RuntimeOverrideResolution {
+            effective: None,
+            pinned: true,
+        });
+    }
+    let def = router::runtime::runtime_definition(name)
+        .ok_or_else(|| Error::msg(format!("unknown runtime: {name}")))?;
+    let mut effective = runner.clone();
+    effective.runtime = def.name.to_string();
+    effective.command = def.command.to_string();
+    effective.args = router::runtime::apply_permission_mode(
+        def.name,
+        &[],
+        crate::commands::runner::default_permission_mode(),
+    );
+    effective.model = None;
+    effective.effort = None;
+    Ok(RuntimeOverrideResolution {
+        effective: Some(effective),
+        pinned: true,
+    })
+}
+
 pub(crate) fn runtime_direct_runner(runtime: &str, command: Option<&str>) -> Result<Runner> {
     let runtime = runtime.trim();
     if runtime.is_empty() {

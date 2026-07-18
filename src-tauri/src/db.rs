@@ -84,6 +84,9 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // and missions. Deleting a project unbinds its work via ON DELETE SET NULL.
 // 0012: removes folder/project collapse state from SQLite. Expansion is
 // per-window view state owned by the sidebar.
+// 0013: adds nullable `slots.runtime_override` — per-slot engine choice
+// resolved as `slot.runtime_override ?? runner.runtime` at spawn.
+// Validated against the runtime registry on write (feature 41).
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -114,6 +117,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         12,
         include_str!("../migrations/0012_drop_collapsed_view_state.sql"),
+    ),
+    (
+        13,
+        include_str!("../migrations/0013_slot_runtime_override.sql"),
     ),
 ];
 

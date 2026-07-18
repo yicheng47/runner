@@ -183,6 +183,15 @@ impl SessionManager {
         first_turn: Option<String>,
         initial_size: Option<(u16, u16)>,
     ) -> Result<PendingMissionSpawn> {
+        // Slot-level runtime override (feature 41): the effective
+        // runtime is `slot.runtime_override ?? runner.runtime`. On a
+        // differing override the spawn uses registry command/default
+        // args and drops model/effort; persona fields carry over. A
+        // matching override spawns byte-identically but still pins.
+        let resolution = resolve_runtime_override(runner, slot.runtime_override.as_deref())?;
+        let pinned = resolution.pinned;
+        let runner = resolution.effective.as_ref().unwrap_or(runner);
+
         // Agent-native session resume: this is a *fresh* session row, so
         // there's no prior key to inherit. The runtime adapter still
         // self-assigns a UUID for claude-code (`--session-id <uuid>`) so
@@ -271,6 +280,14 @@ impl SessionManager {
             row.cwd = resolved_cwd.clone();
             row.started_at = Some(started_at_dt);
             row.agent_session_key = plan.assigned_key.clone();
+            if pinned {
+                // Record the effective runtime so respawn/resume
+                // keeps this session's engine even if the slot's
+                // override — or the runner template's runtime — is
+                // edited later. No-override rows stay NULL.
+                row.agent_runtime = Some(runner.runtime.clone());
+                row.agent_command = Some(runner.command.clone());
+            }
             crate::repo::session::insert(&conn, &row)?;
         }
 
@@ -599,10 +616,15 @@ impl SessionManager {
     /// trailing positional at spawn. Pass `None` when there's no
     /// persona to deliver, or for tests that don't care about boot
     /// context.
+    /// `runtime_override` is the chat-level engine choice (feature 41):
+    /// `None` spawns the runner's own runtime unchanged; a differing
+    /// registry runtime spawns that engine with registry command /
+    /// default args while the runner's persona fields carry over.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_direct(
         self: &Arc<Self>,
         runner: &Runner,
+        runtime_override: Option<&str>,
         project_id: Option<&str>,
         cwd: Option<&str>,
         cols: Option<u16>,
@@ -614,6 +636,7 @@ impl SessionManager {
     ) -> Result<SpawnedSession> {
         self.spawn_direct_inner(
             runner,
+            runtime_override,
             Some(runner.id.as_str()),
             project_id,
             cwd,
@@ -642,6 +665,7 @@ impl SessionManager {
         self.spawn_direct_inner(
             runner,
             None,
+            None,
             project_id,
             cwd,
             cols,
@@ -658,6 +682,7 @@ impl SessionManager {
     fn spawn_direct_inner(
         self: &Arc<Self>,
         runner: &Runner,
+        runtime_override: Option<&str>,
         persisted_runner_id: Option<&str>,
         project_id: Option<&str>,
         cwd: Option<&str>,
@@ -670,6 +695,12 @@ impl SessionManager {
         emit_activity: bool,
     ) -> Result<SpawnedSession> {
         let _ = app_data_dir; // direct chats don't get the bundled CLI on PATH
+
+        // Chat-level runtime override (feature 41) — same resolution
+        // rule as mission spawns.
+        let resolution = resolve_runtime_override(runner, runtime_override)?;
+        let pinned = resolution.pinned;
+        let runner = resolution.effective.as_ref().unwrap_or(runner);
 
         // Agent-native session resume: `spawn_direct` always opens a *new*
         // chat. The runtime adapter self-assigns a fresh
@@ -711,7 +742,10 @@ impl SessionManager {
         // Insert the row first so a fast-failing spawn doesn't leave
         // a half-row. Runtime-only chats (no persisted runner template)
         // carry their agent identity on the row via agent_runtime /
-        // agent_command; runner-backed chats leave those NULL.
+        // agent_command; runner-backed chats leave those NULL unless a
+        // runtime override was explicitly requested — then the row
+        // records the effective runtime so resume respawns the same
+        // engine even if the runner template is edited later.
         {
             let conn = pool.get()?;
             let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
@@ -720,7 +754,7 @@ impl SessionManager {
             row.cwd = resolved_cwd.clone();
             row.started_at = Some(started_at_dt);
             row.agent_session_key = plan.assigned_key.clone();
-            if persisted_runner_id.is_none() {
+            if persisted_runner_id.is_none() || pinned {
                 row.agent_runtime = Some(runner.runtime.clone());
                 row.agent_command = Some(runner.command.clone());
             }
@@ -1002,9 +1036,17 @@ impl SessionManager {
 
         // Pull the runner config fresh for runner-backed rows; rebuild
         // the default runtime config for runtime-only direct chats.
+        // Runner-backed rows that recorded an effective runtime at
+        // spawn (runtime override, feature 41) re-apply it here so the
+        // respawn keeps this session's engine regardless of later
+        // slot/override edits.
         let runner = if let Some(runner_id) = snap.runner_id.as_deref() {
             let conn = pool.get()?;
-            crate::commands::runner::get(&conn, runner_id)?
+            let runner = crate::commands::runner::get(&conn, runner_id)?;
+            match resolve_runtime_override(&runner, snap.agent_runtime.as_deref())?.effective {
+                Some(effective) => effective,
+                None => runner,
+            }
         } else {
             let runtime = snap.agent_runtime.as_deref().ok_or_else(|| {
                 Error::msg(format!(

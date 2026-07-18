@@ -78,6 +78,13 @@ pub struct Slot {
     pub slot_handle: String,
     pub position: i64,
     pub lead: bool,
+    /// Per-slot engine choice. NULL = use the runner's own `runtime`.
+    /// When set (validated against the runtime registry on write),
+    /// mission spawns resolve the effective runtime as
+    /// `runtime_override ?? runner.runtime` and reset runtime-specific
+    /// fields (command, args, model, effort) to registry defaults.
+    #[serde(default)]
+    pub runtime_override: Option<String>,
     pub added_at: Timestamp,
 }
 

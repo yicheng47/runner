@@ -35,8 +35,10 @@ pub struct SessionRow {
     /// Handle of the runner this session instantiates — denormalized so the
     /// frontend can render `@coder`-style labels without a second lookup.
     pub handle: String,
-    /// Runtime kind from the runner row (`"claude-code"`, `"codex"`,
-    /// `"shell"`, …). Denormalized onto SessionRow so the frontend's
+    /// Effective runtime kind for this session (`"claude-code"`,
+    /// `"codex"`, `"shell"`, …): `sessions.agent_runtime` when the row
+    /// recorded one (runtime-override spawns), else the runner row's
+    /// `runtime`. Denormalized onto SessionRow so the frontend's
     /// terminal pane can gate per-runtime UX decisions
     /// (clear-on-resize for full-screen TUIs, etc.) without a second
     /// runner lookup. See docs/impls/archive/0011 §"Per-runtime clear-on-resize".
@@ -643,10 +645,12 @@ pub(crate) fn resolve_direct_start(
     Ok((runner, effective_cwd))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn session_start_direct_impl(
     state: &AppState,
     app: &tauri::AppHandle,
     runner_id: String,
+    runtime: Option<String>,
     project_id: Option<String>,
     cwd: Option<String>,
     cols: Option<u16>,
@@ -663,6 +667,7 @@ pub(crate) fn session_start_direct_impl(
         .sessions
         .spawn_direct(
             &runner,
+            runtime.as_deref(),
             project_id.as_deref(),
             effective_cwd.as_deref(),
             cols,
@@ -681,16 +686,21 @@ pub(crate) fn session_start_direct_impl(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn session_start_direct(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     runner_id: String,
+    runtime: Option<String>,
     project_id: Option<String>,
     cwd: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
-    Ok(session_start_direct_impl(&state, &app, runner_id, project_id, cwd, cols, rows)?.session)
+    Ok(session_start_direct_impl(
+        &state, &app, runner_id, runtime, project_id, cwd, cols, rows,
+    )?
+    .session)
 }
 
 #[tauri::command]
@@ -1119,6 +1129,62 @@ mod tests {
         assert_eq!(rows[0].session.id, session_id);
         assert_eq!(rows[0].handle, "coder");
         assert_eq!(rows[0].agent_session_key.as_deref(), Some(key.as_str()));
+    }
+
+    #[test]
+    fn session_list_prefers_recorded_effective_runtime() {
+        // Feature 41: mission rows spawned under a slot runtime
+        // override record the effective runtime in
+        // `sessions.agent_runtime`; session_list must surface that
+        // (not the runner row's default) so terminal UX gating and
+        // badges track the engine actually running.
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let runner_id = seed_runner(&conn); // runtime 'shell'
+        let crew_id = ulid::Ulid::new().to_string();
+        let slot_id = ulid::Ulid::new().to_string();
+        let mission_id = ulid::Ulid::new().to_string();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO crews (id, name, created_at, updated_at)
+             VALUES (?1, 'C', ?2, ?2)",
+            params![crew_id, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO slots
+                (id, crew_id, runner_id, slot_handle, position, lead, added_at)
+             VALUES (?1, ?2, ?3, 'coder', 0, 1, ?4)",
+            params![slot_id, crew_id, runner_id, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO missions
+                (id, crew_id, title, status, started_at)
+             VALUES (?1, ?2, 't', 'running', ?3)",
+            params![mission_id, crew_id, now],
+        )
+        .unwrap();
+        let overridden = ulid::Ulid::new().to_string();
+        let plain = ulid::Ulid::new().to_string();
+        conn.execute(
+            "INSERT INTO sessions
+                (id, mission_id, runner_id, slot_id, status, started_at, agent_runtime)
+             VALUES (?1, ?2, ?3, ?4, 'running', ?5, 'claude-code'),
+                    (?6, ?2, ?3, ?4, 'running', ?5, NULL)",
+            params![overridden, mission_id, runner_id, slot_id, now, plain],
+        )
+        .unwrap();
+
+        let rows = list_for_mission(&conn, &mission_id).unwrap();
+        let runtime_for = |id: &str| {
+            rows.iter()
+                .find(|r| r.session.id == id)
+                .map(|r| r.runtime.clone())
+                .unwrap()
+        };
+        assert_eq!(runtime_for(&overridden), "claude-code");
+        assert_eq!(runtime_for(&plain), "shell");
     }
 
     #[test]

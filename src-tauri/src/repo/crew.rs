@@ -137,8 +137,12 @@ pub struct MemberPreviewRow {
 }
 
 pub fn list_member_previews(conn: &Connection) -> rusqlite::Result<Vec<MemberPreviewRow>> {
+    // `runtime` is the slot's *effective* engine — the per-slot
+    // override when set (feature 41), else the runner's default — so
+    // the Crews cards label mixed-engine crews honestly.
     let mut stmt = conn.prepare(
-        "SELECT s.crew_id, s.slot_handle, s.lead, r.handle AS runner_handle, r.runtime
+        "SELECT s.crew_id, s.slot_handle, s.lead, r.handle AS runner_handle,
+                COALESCE(s.runtime_override, r.runtime) AS runtime
            FROM slots s
            JOIN runners r ON r.id = s.runner_id
           ORDER BY s.crew_id ASC, s.position ASC",
@@ -253,24 +257,44 @@ mod tests {
             [],
         )
         .unwrap();
+        // Overridden slot: the preview must report the effective
+        // engine, not the runner default (feature 41).
+        conn.execute(
+            "INSERT INTO slots
+                (id, crew_id, runner_id, slot_handle, position, lead,
+                 runtime_override, added_at)
+             VALUES ('s2', 'c-full', 'r1', 'override-slot', 1, 0,
+                     'claude-code', '2026-04-22T00:00:00Z')",
+            [],
+        )
+        .unwrap();
 
         let listed = list_with_runner_count(&conn).unwrap();
         assert_eq!(listed.len(), 2);
         let full = listed.iter().find(|(c, _)| c.id == "c-full").unwrap();
-        assert_eq!(full.1, 1);
+        assert_eq!(full.1, 2);
         let min = listed.iter().find(|(c, _)| c.id == "c-min").unwrap();
         assert_eq!(min.1, 0);
 
         let previews = list_member_previews(&conn).unwrap();
         assert_eq!(
             previews,
-            vec![MemberPreviewRow {
-                crew_id: "c-full".into(),
-                slot_handle: "lead-slot".into(),
-                runner_handle: "lead".into(),
-                runtime: "shell".into(),
-                lead: true,
-            }]
+            vec![
+                MemberPreviewRow {
+                    crew_id: "c-full".into(),
+                    slot_handle: "lead-slot".into(),
+                    runner_handle: "lead".into(),
+                    runtime: "shell".into(),
+                    lead: true,
+                },
+                MemberPreviewRow {
+                    crew_id: "c-full".into(),
+                    slot_handle: "override-slot".into(),
+                    runner_handle: "lead".into(),
+                    runtime: "claude-code".into(),
+                    lead: false,
+                },
+            ]
         );
     }
 }

@@ -1500,6 +1500,19 @@ export default function RunnerChat() {
               <span className="rounded bg-line-strong px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-fg-2">
                 {splitActive ? "Group" : "Chat"}
               </span>
+              {/* Effective-runtime badge (feature 41): only when this
+                  chat runs an engine other than its runner's default. */}
+              {!splitActive &&
+              chatMeta?.runner_id &&
+              runner &&
+              chatMeta.agent_runtime !== runner.runtime ? (
+                <span
+                  title={`Runtime override — runner default is ${runner.runtime}`}
+                  className="rounded bg-accent/10 px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-accent"
+                >
+                  {chatMeta.agent_runtime}
+                </span>
+              ) : null}
               {isArchived ? (
                 <span className="inline-flex shrink-0 items-center rounded border border-line bg-raised px-2 py-0.5 text-[10px] font-medium text-fg-2">
                   Archived · read-only

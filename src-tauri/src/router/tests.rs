@@ -148,6 +148,7 @@ fn slot_with_runner(handle: &str, lead: bool) -> SlotWithRunner {
             slot_handle: handle.into(),
             position: 0,
             lead,
+            runtime_override: None,
             added_at: Utc::now(),
         },
         runner,

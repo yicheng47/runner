@@ -50,6 +50,44 @@ pub struct CrewMembership {
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct UpdateSlotInput {
     pub slot_handle: Option<String>,
+    /// Per-slot engine choice. Omit to preserve, pass `null` to clear
+    /// (back to the runner's own runtime), pass a registry runtime
+    /// name to override. Validated against the runtime registry.
+    #[serde(default, deserialize_with = "double_option")]
+    pub runtime_override: Option<Option<String>>,
+}
+
+/// Present-vs-missing deserializer for the clear/preserve/set field.
+/// With plain serde, `Option<Option<T>>` swallows an explicit JSON
+/// `null` into the *outer* `None`, making "clear" arrive as
+/// "preserve". Any present value — including `null` — lands here and
+/// wraps in `Some`; only a missing key falls through to
+/// `#[serde(default)]`.
+fn double_option<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
+/// Normalize + validate a runtime-override value against the runtime
+/// registry. Blank (after trim) collapses to None — the "Runner
+/// default" sentinel.
+fn validate_runtime_override(value: Option<&str>) -> Result<Option<String>> {
+    let Some(name) = value.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    if crate::router::runtime::runtime_definition(name).is_none() {
+        return Err(Error::msg(format!(
+            "unknown runtime '{name}' — valid runtimes: {}",
+            crate::router::runtime::runtime_definitions()
+                .iter()
+                .map(|r| r.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    Ok(Some(name.to_string()))
 }
 
 fn new_id() -> String {
@@ -151,6 +189,7 @@ pub fn create(
     crew_id: &str,
     runner_id: &str,
     slot_handle: &str,
+    runtime_override: Option<&str>,
 ) -> Result<SlotWithRunner> {
     if !crew_exists(conn, crew_id)? {
         return Err(Error::msg(format!("crew not found: {crew_id}")));
@@ -162,6 +201,7 @@ pub fn create(
     if slot_handle.is_empty() {
         return Err(Error::msg("slot_handle must not be empty"));
     }
+    let runtime_override = validate_runtime_override(runtime_override)?;
 
     let id = new_id();
     let added_at = now();
@@ -188,6 +228,7 @@ pub fn create(
             slot_handle: slot_handle.to_string(),
             position: next_position,
             lead: is_first,
+            runtime_override,
             added_at,
         },
     )
@@ -206,9 +247,11 @@ pub fn create(
         .ok_or_else(|| Error::msg("slot_create: inserted row vanished"))
 }
 
-/// Edit a slot's `slot_handle`. Trims and rejects empty values. Slot
-/// id, crew membership, runner template ref, position, and lead flag
-/// are unchanged.
+/// Edit a slot's `slot_handle` and/or `runtime_override`. Trims and
+/// rejects empty handles; `runtime_override: Some(None)` clears the
+/// override, `Some(Some(name))` validates against the runtime
+/// registry, `None` preserves. Slot id, crew membership, runner
+/// template ref, position, and lead flag are unchanged.
 pub fn update(
     conn: &mut Connection,
     slot_id: &str,
@@ -226,8 +269,18 @@ pub fn update(
         }
         None => existing.slot_handle.clone(),
     };
+    let runtime_override = input
+        .runtime_override
+        .map(|v| validate_runtime_override(v.as_deref()))
+        .transpose()?;
 
-    repo::slot::set_slot_handle(conn, slot_id, &slot_handle).map_err(|e| {
+    // Both fields commit atomically: a handle collision must not
+    // leave a half-applied runtime change behind (or vice versa).
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if let Some(runtime_override) = &runtime_override {
+        repo::slot::set_runtime_override(&tx, slot_id, runtime_override.as_deref())?;
+    }
+    repo::slot::set_slot_handle(&tx, slot_id, &slot_handle).map_err(|e| {
         match e.sqlite_error_code() {
             Some(rusqlite::ErrorCode::ConstraintViolation) => Error::msg(format!(
                 "slot_handle '{slot_handle}' is already used in this crew"
@@ -235,6 +288,7 @@ pub fn update(
             _ => e.into(),
         }
     })?;
+    tx.commit()?;
 
     list(conn, &existing.crew_id)?
         .into_iter()
@@ -387,6 +441,10 @@ pub struct CreateSlotInput {
     pub crew_id: String,
     pub runner_id: String,
     pub slot_handle: String,
+    /// Optional per-slot engine choice. Omit (or blank) for the
+    /// "Runner default" behavior; otherwise a runtime registry name.
+    #[serde(default)]
+    pub runtime_override: Option<String>,
 }
 
 #[tauri::command]
@@ -400,6 +458,7 @@ pub async fn slot_create(
         &input.crew_id,
         &input.runner_id,
         &input.slot_handle,
+        input.runtime_override.as_deref(),
     )
 }
 
@@ -484,7 +543,7 @@ mod tests {
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "Alpha");
         let r = seed_runner(&conn, "lead-template");
-        let added = create(&mut conn, &c, &r, "lead-slot").unwrap();
+        let added = create(&mut conn, &c, &r, "lead-slot", None).unwrap();
         assert!(added.slot.lead);
         assert_eq!(added.slot.position, 0);
         assert_eq!(added.slot.slot_handle, "lead-slot");
@@ -497,8 +556,8 @@ mod tests {
         let c = seed_crew(&conn, "Alpha");
         let r1 = seed_runner(&conn, "alpha");
         let r2 = seed_runner(&conn, "beta");
-        create(&mut conn, &c, &r1, "alpha").unwrap();
-        let second = create(&mut conn, &c, &r2, "beta").unwrap();
+        create(&mut conn, &c, &r1, "alpha", None).unwrap();
+        let second = create(&mut conn, &c, &r2, "beta", None).unwrap();
         assert!(!second.slot.lead);
         assert_eq!(second.slot.position, 1);
     }
@@ -510,8 +569,8 @@ mod tests {
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "Alpha");
         let r = seed_runner(&conn, "claude");
-        create(&mut conn, &c, &r, "architect").unwrap();
-        create(&mut conn, &c, &r, "reviewer").unwrap();
+        create(&mut conn, &c, &r, "architect", None).unwrap();
+        create(&mut conn, &c, &r, "reviewer", None).unwrap();
         let roster = list(&conn, &c).unwrap();
         assert_eq!(roster.len(), 2);
         assert_eq!(roster[0].slot.runner_id, roster[1].slot.runner_id);
@@ -525,8 +584,8 @@ mod tests {
         let c1 = seed_crew(&conn, "A");
         let c2 = seed_crew(&conn, "B");
         let r = seed_runner(&conn, "shared");
-        create(&mut conn, &c1, &r, "shared-a").unwrap();
-        create(&mut conn, &c2, &r, "shared-b").unwrap();
+        create(&mut conn, &c1, &r, "shared-a", None).unwrap();
+        create(&mut conn, &c2, &r, "shared-b", None).unwrap();
         let in_c1 = list(&conn, &c1).unwrap();
         let in_c2 = list(&conn, &c2).unwrap();
         assert_eq!(in_c1.len(), 1);
@@ -543,8 +602,8 @@ mod tests {
         let c = seed_crew(&conn, "A");
         let r1 = seed_runner(&conn, "alpha");
         let r2 = seed_runner(&conn, "beta");
-        create(&mut conn, &c, &r1, "shared-handle").unwrap();
-        let err = create(&mut conn, &c, &r2, "shared-handle").unwrap_err();
+        create(&mut conn, &c, &r1, "shared-handle", None).unwrap();
+        let err = create(&mut conn, &c, &r2, "shared-handle", None).unwrap_err();
         assert!(err.to_string().contains("already used"));
     }
 
@@ -555,8 +614,8 @@ mod tests {
         let c = seed_crew(&conn, "A");
         let r1 = seed_runner(&conn, "one");
         let r2 = seed_runner(&conn, "two");
-        let s1 = create(&mut conn, &c, &r1, "one").unwrap();
-        let s2 = create(&mut conn, &c, &r2, "two").unwrap();
+        let s1 = create(&mut conn, &c, &r1, "one", None).unwrap();
+        let s2 = create(&mut conn, &c, &r2, "two", None).unwrap();
 
         let promoted = set_lead(&mut conn, &s2.slot.id).unwrap();
         assert!(promoted.slot.lead);
@@ -590,9 +649,9 @@ mod tests {
         let r1 = seed_runner(&conn, "alpha");
         let r2 = seed_runner(&conn, "beta");
         let r3 = seed_runner(&conn, "gamma");
-        let s1 = create(&mut conn, &c, &r1, "alpha").unwrap();
-        create(&mut conn, &c, &r2, "beta").unwrap();
-        let s3 = create(&mut conn, &c, &r3, "gamma").unwrap();
+        let s1 = create(&mut conn, &c, &r1, "alpha", None).unwrap();
+        create(&mut conn, &c, &r2, "beta", None).unwrap();
+        let s3 = create(&mut conn, &c, &r3, "gamma", None).unwrap();
         set_lead(&mut conn, &s3.slot.id).unwrap();
 
         delete(&mut conn, &s3.slot.id).unwrap();
@@ -613,7 +672,7 @@ mod tests {
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
         let r = seed_runner(&conn, "only");
-        let s = create(&mut conn, &c, &r, "only").unwrap();
+        let s = create(&mut conn, &c, &r, "only", None).unwrap();
         delete(&mut conn, &s.slot.id).unwrap();
         assert!(list(&conn, &c).unwrap().is_empty());
     }
@@ -626,9 +685,9 @@ mod tests {
         let r1 = seed_runner(&conn, "alpha");
         let r2 = seed_runner(&conn, "beta");
         let r3 = seed_runner(&conn, "gamma");
-        let s1 = create(&mut conn, &c, &r1, "alpha").unwrap();
-        let s2 = create(&mut conn, &c, &r2, "beta").unwrap();
-        let s3 = create(&mut conn, &c, &r3, "gamma").unwrap();
+        let s1 = create(&mut conn, &c, &r1, "alpha", None).unwrap();
+        let s2 = create(&mut conn, &c, &r2, "beta", None).unwrap();
+        let s3 = create(&mut conn, &c, &r3, "gamma", None).unwrap();
 
         let roster = reorder(
             &mut conn,
@@ -662,9 +721,9 @@ mod tests {
         let r1 = seed_runner(&conn, "alpha");
         let r2 = seed_runner(&conn, "beta");
         let r3 = seed_runner(&conn, "gamma");
-        create(&mut conn, &c, &r1, "alpha").unwrap();
-        let s2 = create(&mut conn, &c, &r2, "beta").unwrap();
-        create(&mut conn, &c, &r3, "gamma").unwrap();
+        create(&mut conn, &c, &r1, "alpha", None).unwrap();
+        let s2 = create(&mut conn, &c, &r2, "beta", None).unwrap();
+        create(&mut conn, &c, &r3, "gamma", None).unwrap();
 
         delete(&mut conn, &s2.slot.id).unwrap();
 
@@ -677,7 +736,7 @@ mod tests {
         );
 
         let r4 = seed_runner(&conn, "delta");
-        let added = create(&mut conn, &c, &r4, "delta").unwrap();
+        let added = create(&mut conn, &c, &r4, "delta", None).unwrap();
         assert_eq!(
             added.slot.position, 2,
             "new slot appends at the dense next position"
@@ -694,11 +753,11 @@ mod tests {
         let a2 = seed_runner(&conn, "a2");
         let b1 = seed_runner(&conn, "b1");
         let b2 = seed_runner(&conn, "b2");
-        create(&mut conn, &c1, &a2, "a2").unwrap();
-        create(&mut conn, &c1, &shared, "shared-a").unwrap();
-        create(&mut conn, &c2, &b1, "b1").unwrap();
-        create(&mut conn, &c2, &shared, "shared-b").unwrap();
-        create(&mut conn, &c2, &b2, "b2").unwrap();
+        create(&mut conn, &c1, &a2, "a2", None).unwrap();
+        create(&mut conn, &c1, &shared, "shared-a", None).unwrap();
+        create(&mut conn, &c2, &b1, "b1", None).unwrap();
+        create(&mut conn, &c2, &shared, "shared-b", None).unwrap();
+        create(&mut conn, &c2, &b2, "b2", None).unwrap();
 
         runner::delete(&mut conn, &shared).unwrap();
 
@@ -717,12 +776,13 @@ mod tests {
         let mut conn = pool.get().unwrap();
         let c = seed_crew(&conn, "A");
         let r = seed_runner(&conn, "alpha");
-        let s = create(&mut conn, &c, &r, "old").unwrap();
+        let s = create(&mut conn, &c, &r, "old", None).unwrap();
         let updated = update(
             &mut conn,
             &s.slot.id,
             UpdateSlotInput {
                 slot_handle: Some("new".into()),
+                ..Default::default()
             },
         )
         .unwrap();
@@ -736,16 +796,185 @@ mod tests {
         let c = seed_crew(&conn, "A");
         let r1 = seed_runner(&conn, "alpha");
         let r2 = seed_runner(&conn, "beta");
-        create(&mut conn, &c, &r1, "alpha").unwrap();
-        let s2 = create(&mut conn, &c, &r2, "beta").unwrap();
+        create(&mut conn, &c, &r1, "alpha", None).unwrap();
+        let s2 = create(&mut conn, &c, &r2, "beta", None).unwrap();
         let err = update(
             &mut conn,
             &s2.slot.id,
             UpdateSlotInput {
                 slot_handle: Some("alpha".into()),
+                ..Default::default()
             },
         )
         .unwrap_err();
         assert!(err.to_string().contains("already used"));
+    }
+
+    #[test]
+    fn create_persists_valid_runtime_override_and_blank_collapses_to_none() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let c = seed_crew(&conn, "A");
+        let r1 = seed_runner(&conn, "alpha");
+        let r2 = seed_runner(&conn, "beta");
+
+        let with_override = create(&mut conn, &c, &r1, "alpha", Some("claude-code")).unwrap();
+        assert_eq!(
+            with_override.slot.runtime_override.as_deref(),
+            Some("claude-code")
+        );
+
+        let blank = create(&mut conn, &c, &r2, "beta", Some("   ")).unwrap();
+        assert_eq!(blank.slot.runtime_override, None);
+    }
+
+    #[test]
+    fn create_rejects_unknown_runtime_override() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let c = seed_crew(&conn, "A");
+        let r = seed_runner(&conn, "alpha");
+        let err = create(&mut conn, &c, &r, "alpha", Some("aider-future")).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown runtime 'aider-future'"),
+            "got: {err}",
+        );
+        assert!(list(&conn, &c).unwrap().is_empty(), "no row on rejection");
+    }
+
+    #[test]
+    fn update_sets_preserves_and_clears_runtime_override() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let c = seed_crew(&conn, "A");
+        let r = seed_runner(&conn, "alpha");
+        let s = create(&mut conn, &c, &r, "alpha", None).unwrap();
+
+        // Set.
+        let set = update(
+            &mut conn,
+            &s.slot.id,
+            UpdateSlotInput {
+                runtime_override: Some(Some("codex".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(set.slot.runtime_override.as_deref(), Some("codex"));
+
+        // Omitted field preserves.
+        let preserved = update(
+            &mut conn,
+            &s.slot.id,
+            UpdateSlotInput {
+                slot_handle: Some("renamed".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(preserved.slot.runtime_override.as_deref(), Some("codex"));
+        assert_eq!(preserved.slot.slot_handle, "renamed");
+
+        // Explicit null clears back to Runner default.
+        let cleared = update(
+            &mut conn,
+            &s.slot.id,
+            UpdateSlotInput {
+                runtime_override: Some(None),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(cleared.slot.runtime_override, None);
+    }
+
+    #[test]
+    fn update_slot_input_wire_shape_distinguishes_missing_null_and_value() {
+        // IPC/MCP callers speak JSON. The three wire shapes must map
+        // to the three actions: missing key = preserve, explicit
+        // null = clear, string = set. Plain serde would fold the
+        // null into the outer Option and turn "clear" into a no-op —
+        // the `double_option` deserializer is what keeps this test
+        // green.
+        let missing: UpdateSlotInput = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(missing.runtime_override, None);
+
+        let null: UpdateSlotInput = serde_json::from_str(r#"{"runtime_override": null}"#).unwrap();
+        assert_eq!(null.runtime_override, Some(None));
+
+        let set: UpdateSlotInput =
+            serde_json::from_str(r#"{"runtime_override": "codex"}"#).unwrap();
+        assert_eq!(set.runtime_override, Some(Some("codex".into())));
+    }
+
+    #[test]
+    fn update_clears_override_from_wire_null() {
+        // End-to-end for the clear action as the frontend/MCP send
+        // it: a JSON body with an explicit null must clear the
+        // stored override.
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let c = seed_crew(&conn, "A");
+        let r = seed_runner(&conn, "alpha");
+        let s = create(&mut conn, &c, &r, "alpha", Some("codex")).unwrap();
+
+        let input: UpdateSlotInput = serde_json::from_str(r#"{"runtime_override": null}"#).unwrap();
+        let cleared = update(&mut conn, &s.slot.id, input).unwrap();
+        assert_eq!(cleared.slot.runtime_override, None);
+    }
+
+    #[test]
+    fn update_is_atomic_when_handle_collides() {
+        // A combined patch (valid runtime + colliding handle) must
+        // fail as a unit: the runtime change must not persist after
+        // the handle update errors.
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let c = seed_crew(&conn, "A");
+        let r1 = seed_runner(&conn, "alpha");
+        let r2 = seed_runner(&conn, "beta");
+        create(&mut conn, &c, &r1, "alpha", None).unwrap();
+        let b = create(&mut conn, &c, &r2, "beta", None).unwrap();
+
+        let err = update(
+            &mut conn,
+            &b.slot.id,
+            UpdateSlotInput {
+                slot_handle: Some("alpha".into()),
+                runtime_override: Some(Some("codex".into())),
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("already used"), "got: {err}");
+
+        let roster = list(&conn, &c).unwrap();
+        let b_after = roster.iter().find(|s| s.slot.id == b.slot.id).unwrap();
+        assert_eq!(b_after.slot.slot_handle, "beta", "handle unchanged");
+        assert_eq!(
+            b_after.slot.runtime_override, None,
+            "runtime change must roll back with the failed handle update",
+        );
+    }
+
+    #[test]
+    fn update_rejects_unknown_runtime_override() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let c = seed_crew(&conn, "A");
+        let r = seed_runner(&conn, "alpha");
+        let s = create(&mut conn, &c, &r, "alpha", Some("codex")).unwrap();
+        let err = update(
+            &mut conn,
+            &s.slot.id,
+            UpdateSlotInput {
+                runtime_override: Some(Some("aider-future".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown runtime"), "got: {err}");
+        // Rejection leaves the stored override untouched.
+        let roster = list(&conn, &c).unwrap();
+        assert_eq!(roster[0].slot.runtime_override.as_deref(), Some("codex"));
     }
 }

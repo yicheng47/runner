@@ -51,6 +51,7 @@ export function StartChatModal({
   const formId = useId();
   const runnerPickerButtonId = `${formId}-runner`;
   const runtimePickerButtonId = `${formId}-runtime`;
+  const runnerRuntimeOverrideId = `${formId}-runner-runtime-override`;
   const titleInputId = `${formId}-title`;
   const cwdInputId = `${formId}-cwd`;
   const [runners, setRunners] = useState<Runner[]>([]);
@@ -58,6 +59,9 @@ export function StartChatModal({
   const [mode, setModeState] = useState<ChatMode>(() => readStartChatMode());
   const [runnerId, setRunnerId] = useState<string>("");
   const [runtimeName, setRuntimeName] = useState<string>("");
+  // Runner mode's optional engine override (feature 41). "" is the
+  // "Runner default" sentinel — spawn with the runner's own runtime.
+  const [runnerRuntimeOverride, setRunnerRuntimeOverride] = useState("");
   const [runnerPickerOpen, setRunnerPickerOpen] = useState(false);
   const [title, setTitle] = useState("");
   // Tracks whether the user has typed in the title field. While false
@@ -85,6 +89,7 @@ export function StartChatModal({
     setRuntimes([]);
     setRunnerId("");
     setRuntimeName("");
+    setRunnerRuntimeOverride("");
     setRunnerPickerOpen(false);
     setModeState(readStartChatMode());
     setTitle("");
@@ -257,6 +262,7 @@ export function StartChatModal({
               null,
               null,
               projectId,
+              runnerRuntimeOverride || null,
             )
           : await api.session.startRuntime(
               selectedRuntime!.name,
@@ -356,6 +362,7 @@ export function StartChatModal({
         </div>
 
         {mode === "runner" ? (
+          <>
           <Field label="Runner" htmlFor={runnerPickerButtonId}>
             <div ref={runnerPickerRef} className="relative">
               <button
@@ -415,6 +422,33 @@ export function StartChatModal({
               </p>
             ) : null}
           </Field>
+          <Field
+            label="Agent runtime"
+            subtitle="Overriding runs this persona on another engine with that runtime's default flags."
+            htmlFor={runnerRuntimeOverrideId}
+          >
+            <StyledSelect
+              id={runnerRuntimeOverrideId}
+              className="w-full"
+              value={runnerRuntimeOverride}
+              options={[
+                {
+                  value: "",
+                  label: `Runner default${
+                    selectedRunner
+                      ? ` (${runtimeDisplayName(runtimes, selectedRunner.runtime)})`
+                      : ""
+                  }`,
+                },
+                ...runtimes.map((runtime) => ({
+                  value: runtime.name,
+                  label: runtime.display_name,
+                })),
+              ]}
+              onChange={setRunnerRuntimeOverride}
+            />
+          </Field>
+          </>
         ) : (
           <Field label="Agent runtime" htmlFor={runtimePickerButtonId}>
             <StyledSelect
@@ -507,6 +541,13 @@ function summarizeRunner(runner: Runner | null): string {
   if (!runner) return "Create a runner first.";
   const wd = runner.working_dir ?? "no working dir";
   return `${runner.runtime} · ${wd}`;
+}
+
+function runtimeDisplayName(
+  runtimes: RuntimeDefinition[],
+  name: string,
+): string {
+  return runtimes.find((r) => r.name === name)?.display_name ?? name;
 }
 
 // Default Chat name when the user hasn't typed anything. Uses the

@@ -68,6 +68,7 @@ impl RunnerMcpHandler {
             &input.crew_id,
             &input.runner_id,
             &input.slot_handle,
+            input.runtime_override.as_deref(),
         )
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         self.state.app_handle.emit("slot/changed", ()).ok();

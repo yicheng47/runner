@@ -330,9 +330,11 @@ export const api = {
       cols: number | null,
       rows: number | null,
       projectId: string | null = null,
+      runtime: string | null = null,
     ) =>
       invoke<SpawnedSession>("session_start_direct", {
         runnerId,
+        runtime,
         projectId,
         cwd,
         cols,

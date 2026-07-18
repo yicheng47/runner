@@ -12,6 +12,8 @@ import type { RunnerWithActivity } from "../lib/types";
 import { Button } from "./ui/Button";
 import { Modal } from "./ui/Overlay";
 import { Field } from "./ui/Field";
+import { StyledSelect } from "./ui/StyledSelect";
+import { RUNTIME_OPTIONS } from "./ui/runtimes";
 
 const HANDLE_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
@@ -37,6 +39,8 @@ export function AddSlotModal({
   const [selectedRunnerId, setSelectedRunnerId] = useState("");
   const [slotHandle, setSlotHandle] = useState("");
   const [slotHandleEdited, setSlotHandleEdited] = useState(false);
+  // "" = the "Runner default" sentinel — no per-slot override.
+  const [runtimeOverride, setRuntimeOverride] = useState("");
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,6 +53,7 @@ export function AddSlotModal({
     setSelectedRunnerId("");
     setSlotHandle("");
     setSlotHandleEdited(false);
+    setRuntimeOverride("");
     setError(null);
     setSubmitting(false);
     setLoading(true);
@@ -145,6 +150,7 @@ export function AddSlotModal({
         crew_id: crewId,
         runner_id: selectedRunner.id,
         slot_handle: slotHandle,
+        runtime_override: runtimeOverride || null,
       });
       await onCreated();
     } catch (e) {
@@ -278,6 +284,33 @@ export function AddSlotModal({
               className="flex-1 bg-transparent font-mono text-fg outline-none placeholder:text-fg-3"
             />
           </div>
+        </Field>
+
+        <Field
+          id="add-slot-runtime"
+          label="Runtime"
+          hint="engine this slot runs — overriding keeps the runner's persona but uses the runtime's default command and flags"
+        >
+          <StyledSelect
+            id="add-slot-runtime"
+            className="w-full"
+            value={runtimeOverride}
+            options={[
+              {
+                value: "",
+                label: `Runner default${
+                  selectedRunner ? ` (${selectedRunner.runtime})` : ""
+                }`,
+                description: "Use the runtime configured on the runner.",
+              },
+              ...RUNTIME_OPTIONS.map((o) => ({
+                value: o.value,
+                label: o.label,
+                description: o.description,
+              })),
+            ]}
+            onChange={setRuntimeOverride}
+          />
         </Field>
 
         <section className="flex flex-col gap-2 opacity-70">
