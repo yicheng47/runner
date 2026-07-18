@@ -349,16 +349,30 @@ impl SessionManager {
         let rt_session = self.live_runtime_session(session_id)?;
         self.runtime.resize(&rt_session, cols, rows)?;
         // Full-repaint TUI runtimes (claude-code, codex) redraw the whole
-        // frame on SIGWINCH, so bytes buffered before this resize describe
-        // a stale grid width. Replaying them into the new grid on a later
-        // snapshot re-attach wraps their absolute-positioned frames wrong
-        // — box-drawing borders shredded into scrollback garbage (seen
-        // dogfooding split view, impl 0020). Drop them: the incoming
+        // frame on SIGWINCH, so bytes buffered before a *width* change
+        // describe a stale grid width. Replaying them into the new grid on
+        // a later snapshot re-attach wraps their absolute-positioned frames
+        // wrong — box-drawing borders shredded into scrollback garbage
+        // (seen dogfooding split view, impl 0020). Drop them: the incoming
         // repaint rebuilds the buffer at the new width, and the frontend
         // already hard-clears its local viewport for these runtimes on
-        // resize. Shells keep their buffer — no repaint would arrive, and
-        // their history is meaningful.
-        if runtime_clears_on_resize(session_id, pool) {
+        // width changes.
+        //
+        // Rows-only resizes keep the ring: reflow depends on cols alone,
+        // and the frontend's activation dance nudges rows (rows-1 → rows)
+        // with width held constant on every tab return — purging there
+        // threw away claude-code history that snapshot replay could have
+        // restored (the #306 symptom: remount shows only the latest
+        // frame). Shells keep their buffer unconditionally — no repaint
+        // would arrive, and their history is meaningful.
+        let cols_changed = {
+            let state = self.session_state_or_insert(session_id);
+            let mut state = state.lock().unwrap();
+            let changed = state.last_pty_cols != Some(cols);
+            state.last_pty_cols = Some(cols);
+            changed
+        };
+        if cols_changed && runtime_clears_on_resize(session_id, pool) {
             self.purge_output_buffer_keep_modes(session_id);
         }
         Ok(())
@@ -424,6 +438,7 @@ impl SessionManager {
             state.resume_watermark_seq = 0;
             state.alt_screen_on = false;
             state.bracketed_paste_on = false;
+            state.last_pty_cols = None;
         }
         self.prune_empty_session_state(session_id);
     }

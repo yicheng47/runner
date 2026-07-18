@@ -482,6 +482,12 @@ struct SessionState {
     resume_watermark_seq: u64,
     alt_screen_on: bool,
     bracketed_paste_on: bool,
+    /// Cols of the last PTY winsize applied (seeded at spawn, updated by
+    /// `resize`). Gates the resize ring purge: rows-only changes — the
+    /// frontend's SIGWINCH nudge dance on every tab return — can't garble
+    /// replay reflow (wrap depends on cols alone), so the ring survives
+    /// them; only a real width change still purges.
+    last_pty_cols: Option<u16>,
     resuming: bool,
     killed: bool,
 }
@@ -498,6 +504,7 @@ impl SessionState {
             && self.resume_watermark_seq == 0
             && !self.alt_screen_on
             && !self.bracketed_paste_on
+            && self.last_pty_cols.is_none()
             && !self.resuming
             && !self.killed
     }
@@ -669,12 +676,17 @@ impl SessionManager {
         session_id: &str,
         handle: SessionHandle,
         mission_status_sink: Option<ForwarderEmitCtx>,
+        initial_size: Option<(u16, u16)>,
     ) {
         let state = self.session_state_or_insert(session_id);
         let mut state = state.lock().unwrap();
         state.handle = Some(handle);
         state.mission_status_sink = mission_status_sink;
         state.killed = false;
+        // Seed the resize purge gate with the cols the PTY actually opened
+        // at (the runtime defaults unsized spawns to 80×24), so the first
+        // same-width resize after spawn/resume doesn't purge the ring.
+        state.last_pty_cols = Some(initial_size.map_or(80, |(cols, _)| cols));
     }
 
     fn install_forwarder(&self, session_id: &str, forwarder: thread::JoinHandle<()>) {
