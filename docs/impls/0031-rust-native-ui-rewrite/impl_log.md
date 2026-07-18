@@ -1,0 +1,38 @@
+# 0031 impl log
+
+Progress record for the Rust-native UI rewrite ([plan](plan.md), issue [#307](https://github.com/yicheng47/runner/issues/307)). Newest entries at the bottom. Keep entries short: what happened, what's next, blockers.
+
+## 2026-07-18 — Phase 1 kickoff
+
+- Plan doc committed on `rust-ui-nightly` (`163c048`), then moved into this dedicated dir (`docs/impls/0031-rust-native-ui-rewrite/`).
+- Branch strategy per Jason: Phase 1 work happens on `phase1-terminal-spike` (off `rust-ui-nightly`); merge back into nightly only after the spike works.
+- Scaffolded `crates/native-spike/` as a new workspace member. Dependency versions resolved: `gpui 0.2.2`, `alacritty_terminal 0.26.0`, `portable-pty 0.9` (matches `src-tauri`).
+- Next: fixture recorder + replay harness (no GUI dependency), then the GPUI window wiring PTY → `Term` → grid element, then composer/IME, then the throwaway .app packaging pass.
+
+## 2026-07-18 — Phase 1 spike built (same session)
+
+- Environment: gpui's shader build needed the Xcode 26 Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`) — installed once; noted as a build prerequisite.
+- `crates/native-spike/` complete: `terminal.rs` (portable-pty ⇄ `alacritty_terminal::Term`, event pump answers PtyWrite/ColorRequest/TextAreaSize queries), `terminal_element.rs` (custom GPUI element: bg quads + shaped runs + cursor; ASCII spans shaped together, wide/non-ASCII glyphs shaped per cell at their own column origin so fallback-font advances can't skew the grid), `composer.rs` (full `EntityInputHandler` IME field adapted from gpui's Apache-2.0 input example), `main.rs` (window, focus, keybindings, scroll, paste).
+- gpui is optional behind the default-on `gui` feature; harness + recorder build without Metal via `--no-default-features`.
+- Fixture corpus started (spec 42 debt): `record-fixture` bin logs real PTY bytes to NDJSON; replay tests snapshot the grid. Corpus: real interactive `claude-session` (boot → prompt → streamed reply → /exit palette), `top-busy`, `width-torture`. 10/10 tests green, including wide-char spacers, combining marks, leading-spacer wrap, reflow round-trip (asserts alacritty's real cursor-pinned scrollback-push semantics), alt-screen restore, scrollback clamp.
+- Packaging criterion: `package.sh` builds release, assembles `Runner Native Spike.app`, codesigns with the local Developer ID (validates). Notarization prepared (`--notarize`, NOTARY_PROFILE or APPLE_ID trio) — needs Jason's credentials.
+- Licensing note: Zed's `terminal`/`terminal_view` crates (GPL) were used as architectural reference only; all code here is original or adapted from the Apache-2.0 `gpui` crate itself (its `examples/input.rs`).
+- Pending: human-eyes criteria (busy-output smoothness, IME typing, resize feel, notarize+staple) — checklist in `crates/native-spike/README.md`; reviewer pass on the working-tree diff.
+
+## 2026-07-18 — Review round 1 (same session)
+
+- Reviewer found 6 issues; all addressed:
+  1. (High) `TerminalSession` Arc cycle — event thread held the session while blocking on the event receiver whose senders the session (transitively) owned, so Drop never ran and the PTY child leaked. Event thread now holds only writer/size/title Arcs; Drop kills **and reaps** the child. Regression: `tests/session_lifecycle.rs` proves dropping the last session Arc terminates the child.
+  2. OSC 10/11/12 color queries clamped named slots (256/257/258) into the 0-255 palette — every probe got grayscale slot 255. Added `palette::resolve_index` handling alacritty's named color-table slots; `tests/osc_color_query.rs` asserts the emitted OSC 10/11/12/4 replies and the DA `PtyWrite` path.
+  3. Renderer span extension let an ASCII cell join a span started by a narrow non-ASCII glyph (box drawing/braille), re-creating the fallback-advance skew. Spans now track `ascii_only`; only pure-ASCII spans extend.
+  4. IME marked-text selection offsets were converted against the whole content; NSTextInputClient sends them relative to the marked string. Extracted `text_util::marked_selection` (convert against `new_text`, then anchor) with multibyte-prefix tests.
+  5. Composer navigation/backspace used scalar boundaries, tearing ZWJ emoji/skin tones/flags/combining marks. Now grapheme-cluster boundaries via `unicode-segmentation` (`text_util`), tested against exactly the width-torture classes.
+  6. Spec gap: plan said "spawn via the existing session manager"; the mission brief explicitly allowed direct portable-pty for the spike. Recorded as an explicit deviation in the decision memo and narrowed its claims — integration seam validation is Phase 2/3, not spike-validated.
+- Post-fix: fmt/clippy clean, 23 native-spike tests green (10 fixture + 6 OSC + 6 text_util + 1 lifecycle), full workspace battery (fmt --check, clippy --workspace, test --workspace) re-run green.
+
+## 2026-07-18 — Review round 2 (same session)
+
+- Re-review passed findings 1/3/4/5 and accepted the documented session-manager deviation. One must-fix remained from finding 2: color-query replies ignored runtime OSC overrides (a program that sets OSC 10 then queries it got the static default, disagreeing with the renderer which reads `content.colors`).
+- Fix: new `terminal::query_color` prefers `Term::colors()[index]` then falls back to `palette::resolve_index`; the event pump reaches the Term through a `Weak` (upgrade per query) so the drop-cycle fix from round 1 stays intact. The OSC tests now resolve replies through `query_color` against the live Term — including set-then-query (OSC 10, OSC 4;1) and OSC 104 reset-then-query coverage.
+- Final state: 26 native-spike tests green, workspace battery green (fmt clean, clippy zero warnings, 473 tests passing).
+- Round 3: reviewer's sandbox denies `ps`, which made the lifecycle regression environment-dependent (it treated any `ps` failure as process-dead). Rewritten hermetically: hold `Weak<TerminalSession>`, drop the last Arc, assert `upgrade()` is None — the exact signal the original event-thread Arc cycle trips — with child teardown implied by Drop's synchronous kill+wait. 6/6 isolated runs green.

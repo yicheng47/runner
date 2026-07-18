@@ -111,3 +111,28 @@ Criteria: 2+ weeks daily-driving the native app exclusively, all Phase 4 slices 
 - Windows/Linux support (premature for a personal IDE; GPUI choice reflects this).
 - Feature additions during the rewrite — parity only, divergence recorded as issues.
 - Rewriting the backend, CLI, event-log format, or SQLite schema — explicitly frozen interfaces for this effort.
+
+## Phase 1 decision memo (2026-07-18, provisional — human criteria pending)
+
+Spike built on `phase1-terminal-spike` as `crates/native-spike/` (GPUI 0.2.2 + alacritty_terminal 0.26 + portable-pty, ~1.4k LOC). Verification state per exit criterion:
+
+| # | Criterion | Status | Evidence |
+|---|-----------|--------|----------|
+| 1 | Busy-output rendering | needs eyes | Live claude session renders; coalesced wakeups (PTY thread → channel → one notify/frame). Human: watch a chatty claude run for tearing/lag. |
+| 2 | CJK/emoji/box-drawing width | machine-green, needs eyes | Replay tests assert WIDE_CHAR/spacer/zerowidth/leading-spacer cell semantics; renderer paints wide + non-ASCII glyphs at per-cell column origins so fallback advances can't skew the grid. Human: run `width-torture.sh` in the spike window. |
+| 3 | IME in composer | needs eyes | Full `EntityInputHandler` (marked-range composition, candidate-window anchoring via `bounds_for_range`, Enter-guard during composition). Human: Pinyin typing test. |
+| 4 | Resize reflow | machine-green, needs eyes | PTY + Term resize wired to element layout; tests pin alacritty's reflow semantics incl. cursor-line pinning and scrollback push (#308 class). Human: violent resize during live output. |
+| 5 | .app + codesign + notarize | 2/3 done | `package.sh`: release build → .app assembly → Developer ID codesign validates. Notarize/staple scripted, needs credentials (NOTARY_PROFILE or APPLE_ID trio). |
+
+Fixture corpus (spec 42 debt) exists and gates regressions: real claude-code interactive session, busy alt-screen `top`, glyph width-torture — recorded as raw PTY byte logs, replayed into the grid, snapshot-compared (10/10 green). Every later terminal change replays these.
+
+Findings for the framework decision:
+
+- GPUI worked as advertised: the terminal element (grid → quads + shaped runs) is ~350 lines; IME needed no platform code, just the input-handler protocol. API-churn risk is real (crates.io docs thin; the vendored source + bundled examples were the actual reference) but never blocking.
+- One environment cost discovered: gpui's Metal shader build requires the Xcode 26 Metal Toolchain component (one-time ~3 GB download). Recorded in the spike README; CI runners will need it for Phase 3+.
+- alacritty_terminal ships no default color palette; the embedder owns the 256-color table (done in `palette.rs`, Tokyo Night base 16). Its `term::test` module (public at runtime) gives `TermSize`/`mock_term` — useful beyond tests.
+- No serialization boundary exists anywhere in the pipeline: reader thread locks the Term, advances the parser, UI paints from the same grid under the same lock. The #307 architecture holds.
+
+Deviation from this plan's Phase 1 wire description ("spawn via the existing session manager"): the spike spawns through its own minimal portable-pty lifecycle, per the mission brief's explicit allowance ("PTY wiring may use portable-pty directly for the spike; reuse of the existing session manager is optional"). Consequence stated plainly: this spike validates the rendering/input/packaging risks only. The session-manager/app-core integration seam — canonical PATH/env composition, lifecycle, the query-responder behavior `pty_runtime.rs` already implements — is NOT validated here and remains Phase 2/3 work; the spike's local session code is throwaway and will be superseded by the existing runtime at integration time.
+
+Provisional recommendation: **go on GPUI** — criteria 2/4/5 have machine evidence, nothing structural failed, and the iced fallback was never needed. Final go/no-go flips to definitive once Jason confirms criteria 1–4 by hand and one notarize pass completes.
