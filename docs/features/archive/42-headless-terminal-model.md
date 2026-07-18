@@ -1,5 +1,7 @@
 # 42 — Headless terminal model for durable session scrollback
 
+> **Status: closed unshipped** (2026-07-18). Issue #306 closed as not planned — the interim symptom fix shipped as PR #308 (rows-only resize ring gate + measurable WebGL attach), and the recorded long-term direction is the Rust-native UI rewrite (#307), which dissolves the parity problem this spec's Phase 0 existed to de-risk. Archived for the failure analysis (Motivation) and the fixture-corpus / round-trip-harness design, which #307 inherits as its regression suite.
+
 Tracking issue: https://github.com/yicheng47/runner/issues/306
 
 ## Motivation
@@ -26,6 +28,8 @@ Each mechanism guards against a real prior regression (frame stacking, box-drawi
 The calculus has changed since 0011: the "pure UX patch" ring has itself grown a compensation web (purge-on-resize with a per-runtime DB probe, frontend 2J clears, the activation resize dance, synthetic alt-screen/bracketed-paste prefixes derived from regex chunk scans, overflow snapshot refetch), and the remaining user-facing cost — claude-code history loss — is the top dogfooding friction and has resisted multiple patch rounds. That is the same fragility signal that justified the 0011 pivot, now pointing back the other way.
 
 This is also the industry-standard shape: VS Code's pty host feeds every persistent terminal's bytes into `@xterm/headless` and reattaches by replaying a `SerializeAddon` stream; tmux, mosh, WezTerm mux, and shpool all keep the terminal state machine with the PTY and treat the client as a repaintable view.
+
+**Field validation — Orca** (`~/repos/orca`, Electron, same product category: parallel claude-code/codex orchestration) ships exactly this design in production: a daemon-side `TerminalHost` with a per-session write-only `HeadlessEmulator` (`@xterm/headless` + `SerializeAddon` + Unicode11), snapshot restore via serialized ANSI + explicit mode-rehydrate sequences, PTY lifetime decoupled from view lifetime, and an on-disk framed history log for restart-survivable replay. Their fidelity bug inventory (`src/main/daemon/headless-emulator.ts` comments) is the field-tested checklist for our Phase 0 fixtures: partial escape sequences split across chunk boundaries, Unicode/emoji width parity between mirror and renderer, SerializeAddon's relative-cursor restore bug, SGR reset before alt-screen re-enter, and query-reply double-answer races. Notably they hit all of these *with the same xterm engine on both sides*; a Rust-crate mirror has a strictly harder parity problem and must budget for it.
 
 ## Design
 
@@ -55,7 +59,17 @@ Out of scope: process-survival sidecar (0011's decision stands — agents die wi
 
 ### Phase 0 — Fixture corpus + crate spike
 
-Capture real byte logs (temporary forwarder tap): a long claude-code conversation including resizes, a codex session with alt-screen + the startup query handshake, a plain shell. Evaluate candidate crates against the corpus: `vt100` (ships `contents_formatted`/`state_formatted` — a built-in SerializeAddon analog), `alacritty_terminal` (battle-tested grid, serializer hand-written), `wezterm-term`. Deliverable: crate decision + fixtures checked into `src-tauri/tests/fixtures/` + a round-trip harness (feed bytes → serialize → feed serialization into a fresh model → grids must match).
+Capture real byte logs (temporary forwarder tap): a long claude-code conversation including resizes, a codex session with alt-screen + the startup query handshake, a plain shell. Evaluate candidate crates against the corpus: `vt100` (ships `contents_formatted`/`state_formatted` — a built-in SerializeAddon analog), `alacritty_terminal` (battle-tested grid, serializer hand-written), `wezterm-term`.
+
+Hard gate for candidates: **resize reflow must match xterm.js semantics** — wrapped lines tracked as wrapped and re-flowed through width changes, so scrollback serialized after a resize matches what a live xterm that watched the same stream would hold. Resize reflow is the exact failure this feature exists to fix (the ring purge existed because old-width bytes replay wrong), so a model that truncates/pads on resize is disqualified regardless of its other merits. This is the known risk for `vt100`; if it fails the gate, fall back to `alacritty_terminal`.
+
+Second hard gate: **Unicode width parity with xterm.js** — the model must advance the cursor over emoji/ZWJ/wide characters exactly as the renderer does (xterm.js uses Unicode 11 tables in modern setups). Claude-code's status line is emoji-dense; a width mismatch accumulates cell-shifted tears in the mirror that a restore then paints back as garbage. Orca hit exactly this even with xterm-on-both-sides and fixed it by forcing matching unicode providers. Fixtures must include emoji-dense claude-code status-line output, and the round-trip harness must compare grids cell-by-cell, not line text.
+
+Serializer detail learned from Orca: a chunk ending mid-escape leaves the partial sequence in the parser, not the grid, so a snapshot taken at that moment drops it and the next live chunk's continuation renders as literal text. The model must carry the partial-escape tail across chunk boundaries and the snapshot must ship it as a separate field the frontend writes *last* (after any reset), so the next live chunk completes it. Fixtures must include escape sequences split across chunk boundaries — the same hazard `update_terminal_mode_state`'s "boundary caveat" comment acknowledges today.
+
+Head start for the `alacritty_terminal` path: PR #157's branch already contains an `alacritty_terminal::Term` mirror + `screen_to_ansi` serializer that compiled and passed tests. It was closed for architectural reasons (sidecar, IPC, seq races, host-side key translation) that do not apply to the passive in-process design — resurrect the serializer from that branch as the spike's starting point rather than rewriting it.
+
+Deliverable: crate decision + fixtures checked into `src-tauri/tests/fixtures/` + a round-trip harness (feed bytes → serialize → feed serialization into a fresh model → grids must match).
 
 ### Phase 1 — Model plumbing, no behavior change
 
@@ -85,5 +99,7 @@ Drop the raw ring (`output_buffer`, `MAX_OUTPUT_BUFFER_CHUNKS`) and dead per-run
 
 - Scrollback restore cap: VS Code defaults to ~100 lines; Runner wants far more. Proposal: model cap 10k lines, serialize up to the frontend's configured xterm scrollback.
 - Whether the resume flow keeps the SIGWINCH dance after the snapshot swap, or resume also becomes serialize-first.
-- Crate choice (phase 0 decides; `vt100` first look for the built-in serializer, `alacritty_terminal` fallback for fidelity).
-- Whether a later phase persists serialized state to disk for restart-survivable scrollback (currently out of scope; `--resume` covers restarts).
+- Crate choice (phase 0 decides against the reflow gate; `vt100` first look for the built-in serializer, `alacritty_terminal` + the PR #157 serializer as fallback).
+- Whether a later phase persists serialized state to disk for restart-survivable scrollback (currently out of scope; `--resume` covers restarts). If revisited, Orca's shape is the proven one: an incremental framed append-log (length-prefixed output/resize/clear frames with a generation header) so a torn final append truncates cleanly instead of replaying half an escape sequence, replayed into the model on startup.
+
+If the parity fallback ladder is exhausted in practice after this ships, the recorded long-term option is the Rust-native UI rewrite (#307) — one parser as both model and renderer. This spec's fixture corpus doubles as that rewrite's regression suite either way.

@@ -271,6 +271,33 @@ export const RunnerTerminal = forwardRef<
     autoFocusRef.current = autoFocus ?? true;
   }, [autoFocus]);
 
+  // Attach the WebGL renderer only from refreshActiveTerminal, i.e. only
+  // once the pane is active AND its container has a measurable rect. The
+  // addon reads canvas geometry at load; attaching it on a bare `active`
+  // flip could initialize against a hidden / not-yet-settled layout, and
+  // when the subsequent fit resolves the SAME cols/rows, xterm never
+  // fires the resize that would correct the renderer — the pane paints
+  // stale until a real grid change (the "wrong until I resize the
+  // window" tab-return artifact). Deferring creation to the measurable
+  // path closes that window.
+  const ensureWebglRenderer = useCallback(() => {
+    const term = termRef.current;
+    if (!term || webglRef.current) return;
+    let webgl: WebglAddon | null = null;
+    try {
+      webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        webgl?.dispose();
+        if (webglRef.current === webgl) webglRef.current = null;
+      });
+      term.loadAddon(webgl);
+      webglRef.current = webgl;
+    } catch {
+      webgl?.dispose();
+      // No WebGL — xterm keeps its DOM renderer.
+    }
+  }, []);
+
   const refreshActiveTerminal = useCallback(
     ({
       focus = false,
@@ -300,6 +327,7 @@ export const RunnerTerminal = forwardRef<
               `pushBackend=${pushBackendSize}`,
           );
         }
+        ensureWebglRenderer();
         tryDrainReplayRef.current?.();
         if (replayFlushPendingRef.current) {
           if (focus && !disabledRef.current) t.focus();
@@ -393,7 +421,7 @@ export const RunnerTerminal = forwardRef<
         return false;
       }
     },
-    [],
+    [ensureWebglRenderer],
   );
 
   useEffect(() => {
@@ -926,32 +954,17 @@ export const RunnerTerminal = forwardRef<
   // attached session mounted, and WKWebView starts evicting old contexts at
   // roughly 16. Active chat splits and mission tabs need at most three.
   //
-  // A genuine GPU context loss disposes the addon immediately so xterm falls
-  // back to its DOM renderer. The next inactive -> active transition runs
-  // this effect again and restores WebGL instead of degrading permanently.
+  // Creation lives in `ensureWebglRenderer` (invoked by
+  // refreshActiveTerminal once the pane is measurable); this effect only
+  // releases the context when the pane leaves the foreground. A genuine
+  // GPU context loss disposes the addon immediately so xterm falls back
+  // to its DOM renderer; the next activation/wake refresh restores WebGL
+  // instead of degrading permanently.
   useEffect(() => {
     if (!active) return;
-    const term = termRef.current;
-    if (!term) return;
-
-    let webgl: WebglAddon | null = null;
-    try {
-      webgl = new WebglAddon();
-      webgl.onContextLoss(() => {
-        webgl?.dispose();
-        if (webglRef.current === webgl) webglRef.current = null;
-      });
-      term.loadAddon(webgl);
-      webglRef.current = webgl;
-    } catch {
-      webgl?.dispose();
-      // No WebGL — xterm keeps its DOM renderer.
-    }
-
     return () => {
-      if (!webgl || webglRef.current !== webgl) return;
+      webglRef.current?.dispose();
       webglRef.current = null;
-      webgl.dispose();
     };
   }, [active]);
 
