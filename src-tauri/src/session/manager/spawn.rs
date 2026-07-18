@@ -388,6 +388,7 @@ impl SessionManager {
         }
 
         let spawn_started_at_dt = Utc::now();
+        let initial_size = spec.initial_size;
         let (rt_session, output) = self
             .runtime
             .spawn(spec)
@@ -469,6 +470,7 @@ impl SessionManager {
                 stop,
             },
             spawn_emit_ctx.clone(),
+            initial_size,
         );
         if first_turn_delivered_via_argv {
             self.arm_completion(&session_id);
@@ -843,6 +845,7 @@ impl SessionManager {
                 stop: output.stop_flag(),
             },
             None,
+            initial_size,
         );
         if first_turn_delivered_via_argv {
             self.arm_completion(&session_id);
@@ -1250,6 +1253,7 @@ impl SessionManager {
                 stop: output.stop_flag(),
             },
             resume_emit_ctx.clone(),
+            initial_size,
         );
         if snap.mission_id.is_none() {
             self.publish_direct_activity(

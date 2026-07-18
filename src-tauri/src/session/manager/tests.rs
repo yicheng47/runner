@@ -3258,6 +3258,80 @@ fn runtime_clears_on_resize_resolves_runner_backed_runtimes() {
     assert!(!super::output::runtime_clears_on_resize("s-missing", &pool));
 }
 
+// The resize ring purge must gate on a *width* change. The frontend's
+// activation dance resizes rows-1 → rows with cols held constant on
+// every tab return; purging there wiped claude-code's replayable
+// history even though rows-only SIGWINCHes can't garble reflow (wrap
+// depends on cols alone) — the #306 "remount shows only the latest
+// frame" symptom. Spawn seeds the gate, so even the first same-width
+// resize keeps the ring.
+#[test]
+fn resize_purges_ring_only_on_cols_change() {
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'colsgate', 'ColsGate', 'claude-code', '/bin/cat',
+                         NULL, NULL, NULL, NULL, ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+    }
+
+    let mut runner = runner("/bin/cat", &[]);
+    runner.id = runner_id;
+    runner.handle = "colsgate".into();
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let spawned = mgr
+        .spawn_direct(
+            &runner,
+            None,
+            None,
+            Some("/tmp"),
+            Some(120),
+            Some(30),
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+
+    fake.push_output(0, b"history to keep");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while mgr.output_snapshot(&spawned.id).is_empty() {
+        if Instant::now() > deadline {
+            panic!("output never reached the ring");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // Rows-only nudge (the activation dance): ring must survive both legs.
+    mgr.resize(&spawned.id, 120, 29, &pool).unwrap();
+    mgr.resize(&spawned.id, 120, 30, &pool).unwrap();
+    assert!(
+        !mgr.output_snapshot(&spawned.id).is_empty(),
+        "rows-only resize must keep the replay ring"
+    );
+
+    // Width change: stale-width bytes must still purge.
+    mgr.resize(&spawned.id, 100, 30, &pool).unwrap();
+    assert!(
+        mgr.output_snapshot(&spawned.id).is_empty(),
+        "cols change must purge the replay ring"
+    );
+
+    mgr.kill(&spawned.id).unwrap();
+}
+
 // ---------------------------------------------------------------------
 // Feature 41 — runtime override (per slot / per direct chat)
 // ---------------------------------------------------------------------
