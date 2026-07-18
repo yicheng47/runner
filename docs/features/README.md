@@ -50,7 +50,7 @@ links to its tracking issue.
 - [38 — Sidebar folders for tabs](./38-sidebar-folders-for-tabs.md) — invert the sidebar hierarchy to Folder → Tab: collapsible user folders group chat tabs, every tab (single- or multi-pane) is one row, panes leave the sidebar; folders + tabs persist in SQLite, replacing the localStorage layout store.
 - [39 — Chat working and unread-completion indicators](./39-chat-working-unread-indicators.md) — replace the removed sidebar lifecycle dot with a trailing tab spinner while any pane is working and a durable unread dot when the tab settles outside the focused visible chat; collapsed folders and CHAT roll hidden state upward.
 - [40 — Projects](./40-projects.md) — cwd-bound project containers grouping chats and missions in a Codex-style PROJECT sidebar section; a `projects` table plus `project_id` on sessions and missions, direct folder-picker creation, and cwd inheritance for work started inside a project.
-- [41 — Runner runtime override](./41-runner-runtime-override.md) — treat `runner.runtime` as a default and override it per crew slot (`slots.runtime_override`) and per direct chat, so one persona can run on any engine without duplicating runner rows; runtime-specific flags reset to registry defaults on override.
+- [42 — Headless terminal model](./42-headless-terminal-model.md) — in-process vt model per session fed by the PTY forwarder; `output_snapshot` serializes screen + scrollback + modes instead of replaying a purged raw-byte ring, making claude-code history survive replay and deleting the resize purge / 2J clear / resize-dance compensation web.
 
 ## Archive
 
