@@ -1,0 +1,20 @@
+{"v":1,"cols":80,"rows":24,"command":"sh","args":["crates/native-spike/fixtures/width-torture.sh"],"note":"synthetic glyph classes: CJK, emoji, box drawing, SGR"}
+{"ms":6,"data":"YXNjaWkgICB8YWJjZGVmZ2hpanwNCg=="}
+{"ms":6,"data":"Y2prICAgICB85Lit5paH5a695bqm5rWL6K+VfA0KY2prLW1peCB8YeS4rWLmlodj5a69ZHwNCmZ1bGx3aWQgfO+8oe+8ou+8o++8ke+8ku+8k++8jOOAgnwNCg=="}
+{"ms":6,"data":"a2FuYSAgICB844OG44K544OI44CB44Gy44KJ44GM44GqfA0KaGFuZ3VsICB87ZWc6rWt7Ja07YWM7Iqk7Yq4fA0K"}
+{"ms":6,"data":"ZW1vamkgICB88J+YgPCfjonwn5qA8J+UpXwNCg=="}
+{"ms":6,"data":"c2tpbnRvbmV88J+RjfCfj73wn5GL8J+Pv3wNCg=="}
+{"ms":6,"data":"endqICAgICB88J+RqOKAjfCfkanigI3wn5Gn4oCN8J+RpvCfkanigI3wn5K7fA0KZmxhZyAgICB88J+HqPCfh7Pwn4e68J+HuHwNCg=="}
+{"ms":6,"data":"Y29tYmluZSB8ZcyBYcyIbsyDfA0K"}
+{"ms":6,"data":"Ym94ICAgICB84pSM4pSA4pSs4pSA4pSQfA0K"}
+{"ms":6,"data":"Ym94MiAgICB84pSc4pSA4pS84pSA4pSkfA0K"}
+{"ms":6,"data":"Ym94MyAgICB84pSU4pSA4pS04pSA4pSYfA0K"}
+{"ms":6,"data":"cm91bmRlZCB84pWt4pWu4pWw4pWvfA0K"}
+{"ms":6,"data":"ZG91YmxlICB84pWU4pWQ4pWm4pWX4pWRfA0K"}
+{"ms":6,"data":"YmxvY2tzICB84paI4paT4paS4paR4paM4paQfA0K"}
+{"ms":6,"data":"YnJhaWxsZSB84qCL4qCZ4qC54qC44qC8fA0K"}
+{"ms":6,"data":"c2dyICAgICB8G1szMW3nuqIbWzBtG1sxOzMybWJvbGTnu78bWzBtG1s0OzM0beS4i+WIkue6vxtbMG18DQo="}
+{"ms":6,"data":"c2dyMjU2ICB8G1szODs1OzIwOG1vcmFuZ2UbWzBtG1s0ODs1OzE5beiTneW6lRtbMG18DQo="}
+{"ms":6,"data":"c2dydHJ1ZSB8G1szODsyOzI1NTsxMDA7MG10cnVlY29sb3IbWzBtfA0K"}
+{"ms":6,"data":"ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg5LitDQplbmQgICAgIHxkb25lfA0K"}
+{"ms":6,"exit":0}
