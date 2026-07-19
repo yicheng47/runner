@@ -76,3 +76,10 @@ Progress record for the Rust-native UI rewrite ([plan](plan.md), issue [#307](ht
 - Reviewer found three branch-composition issues: the authoritative plan still described Phase 2 as present on `main` and left Makefile/CI undecided; a Tauri sidecar-staging script and release skill survived their deleted targets; CI did not install GPUI's Metal Toolchain prerequisite.
 - Fixed all three: the plan now records the extraction's actual branch and the completed pioneer-line decisions, stale Tauri automation is removed, and CI installs the Metal Toolchain component before building. The bug skill's adjacent version lookup now reads `crates/runner-app/Cargo.toml`.
 - Post-fix validation is green: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, and `git diff --check`.
+
+## 2026-07-19 — Human smoke-test follow-ups
+
+- The walking skeleton rendered and drove existing direct chats successfully; Jason confirmed the final switch/reattach fix and authorized merge back to `gpui-nightly`.
+- `make run-native` incorrectly used a release build and therefore opened the production database during testing. The working-tree fix switches the development command to the debug profile and its `com.wycstudios.runner-dev` database; reviewer found the delta clean.
+- Chinese IME works in the composer but not the focused terminal because the terminal handles raw key events without a GPUI input handler. Jason declared terminal IME a pre-release requirement; it is now explicit in the Phase 4 direct-chat slice and remains a Phase 6 cutover blocker.
+- Switching between running chats replayed cursor-addressed TUI output at a hard-coded `100×30` before resizing, corrupting the grid when the live PTY used the actual pane width. The fix inherits the outgoing rendered size for resume and reattach; reviewer found it clean and Jason confirmed it by retest. Known parity limitation: after resizing the window while a shell-runtime chat is inactive, its old-width snapshot can remain mis-wrapped because shells do not repaint on `SIGWINCH`; Claude Code and Codex repaint after the genuine width change.

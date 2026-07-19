@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress. Phases 1 and 2 are complete; Phase 3 is implemented on `phase3-walking-skeleton` pending review, human smoke-test confirmation, and merge back to the persistent `gpui-nightly` branch. Tracking issue: [#307](https://github.com/yicheng47/runner/issues/307). See [Branch strategy](#branch-strategy).
+In progress. Phases 1–3 are complete on the persistent `gpui-nightly` branch; Phase 4 parity slices are next. Tracking issue: [#307](https://github.com/yicheng47/runner/issues/307). See [Branch strategy](#branch-strategy).
 
 ## End state
 
@@ -45,7 +45,7 @@ Revised 2026-07-19 by Jason's decision, superseding the original fold-into-main-
 
 - **Phase 1 (spike)** lived on `phase1-terminal-spike` off `gpui-nightly`. Messy, throwaway-friendly, rebase allowed while private.
 - **Phase 2 (core extraction)** is commit `461356e` on `refactor/0031-app-core`. PR #310 reads merged, but `main` was reset afterward and does not contain the extraction; the Tauri app on `main` therefore still owns the unextracted backend. Nightly composition sources `crates/runner-app` by merging the extraction branch directly.
-- **Nightly composition** is delivered on `phase3-walking-skeleton` pending merge back after human verification. It merges current `origin/main` plus the Phase 2 extraction, then deletes `src/` (React), `src-tauri/`, and the JS toolchain. The branch keeps only the shared backend (`crates/runner-app`, `crates/runner-core`, `cli/`) plus `crates/runner-native/`; the superseded `crates/native-spike/` is removed.
+- **Nightly composition** landed through `phase3-walking-skeleton` after review and human verification. It merged current `origin/main` plus the Phase 2 extraction, then deleted `src/` (React), `src-tauri/`, and the JS toolchain. The branch keeps only the shared backend (`crates/runner-app`, `crates/runner-core`, `cli/`) plus `crates/runner-native/`; the superseded `crates/native-spike/` is removed.
 - Merge direction stays `main` → nightly on cadence, never the reverse until cutover; cherry-pick incidental fixes (including backend fixes authored on nightly) to `main` immediately. **Accepted cost**: until the extraction re-lands on `main`, main-side backend changes originate under the deleted `src-tauri/` tree and require an explicit hand-port into `crates/runner-app` during cadence merges. Every modify/delete conflict is resolved by keeping the deletion only after checking for that backend half.
 - **Cutover (Phase 6)** becomes a merge of nightly into `main` — the deletion arrives with the merge — rather than an in-place deletion commit on main.
 
@@ -79,11 +79,13 @@ This is the intended strangler seam. The pioneer branch uses it now; the Tauri l
 
 `runner-native` binary: boots the app core against the same SQLite DB + logs dir, shows a minimal sidebar listing existing chats, opens one direct chat with a live terminal and working composer (IME included). One vertical slice, end to end, dogfoodable for a single chat.
 
+Phase 3 validates IME in the composer only. Terminal-pane IME is an explicit Phase 4 direct-chat requirement and a cutover blocker: the focused terminal must support marked-text composition and candidate-window positioning, forward only committed UTF-8 text through `SessionManager`, and preserve raw handling for control, navigation, and function keys.
+
 ### Phase 4 — Parity slices, in dogfood order
 
 Each slice ships when it's daily-drivable; use it for real work before starting the next:
 
-1. Direct chats: tabs, panes, layout picker, working/unread indicators, session resume.
+1. Direct chats: tabs, panes, layout picker, working/unread indicators, session resume, and terminal IME input.
 2. Sidebar: projects, folders, tab accordion, drag-reorder, rename, archive.
 3. Missions: event feed, mission workspace terminals, signals, mission lifecycle.
 4. Runners/Crews CRUD: list pages, editors, modals, pagination/search.
