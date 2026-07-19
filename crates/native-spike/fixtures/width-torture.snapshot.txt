@@ -1,0 +1,25 @@
+cols=80 rows=24 cursor=23,0
+|ascii   |abcdefghij|
+|cjk     |中文宽度测试|
+|cjk-mix |a中b文c宽d|
+|fullwid |ＡＢＣ１２３，。|
+|kana    |テスト、ひらがな|
+|hangul  |한국어테스트|
+|emoji   |😀🎉🚀🔥|
+|skintone|👍🏽👋🏿|
+|zwj     |👨‍👩‍👧‍👦👩‍💻|
+|flag    |🇨🇳🇺🇸|
+|combine |éäñ|
+|box     |┌─┬─┐|
+|box2    |├─┼─┤|
+|box3    |└─┴─┘|
+|rounded |╭╮╰╯|
+|double  |╔═╦╗║|
+|blocks  |█▓▒░▌▐|
+|braille |⠋⠙⠹⠸⠼|
+|sgr     |红bold绿下划线|
+|sgr256  |orange蓝底|
+|sgrtrue |truecolor|
+|                                                                              中
+|end     |done|
+|

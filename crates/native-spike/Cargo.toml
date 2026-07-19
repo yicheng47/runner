@@ -1,0 +1,38 @@
+[package]
+name = "native-spike"
+version = "0.0.0"
+edition.workspace = true
+authors.workspace = true
+publish = false
+default-run = "native-spike"
+
+# Phase 1 spike for impl 0031: alacritty_terminal rendered by GPUI.
+# Throwaway-friendly; nothing here is a public API.
+
+[[bin]]
+name = "native-spike"
+path = "src/main.rs"
+required-features = ["gui"]
+
+[[bin]]
+name = "record-fixture"
+path = "src/bin/record_fixture.rs"
+
+[features]
+default = ["gui"]
+# The GUI needs the Metal toolchain to build gpui's shaders; the
+# fixture harness and recorder build without it via
+# --no-default-features.
+gui = ["dep:gpui"]
+
+[dependencies]
+alacritty_terminal = "0.26"
+anyhow = "1"
+base64 = "0.22"
+clap.workspace = true
+futures = "0.3"
+gpui = { version = "0.2", optional = true }
+portable-pty = "0.9"
+serde.workspace = true
+serde_json.workspace = true
+unicode-segmentation = "1"

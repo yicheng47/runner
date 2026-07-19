@@ -1,0 +1,31 @@
+cols=100 rows=30 cursor=29,0
+| ▐▛███▜▌   Claude Code v2.1.214
+|▝▜█████▛▘  Fable 5 with xhigh effort · Claude Max
+|  ▘▘ ▝▝    ~/go/src/github.com/yicheng47/runner
+|
+|
+|❯ reply with exactly this text and nothing else: native spike fixture ok
+|
+|⏺ native spike fixture ok
+|
+|✻ Cogitated for 2s
+|
+|────────────────────────────────────────────────────────────────────────────────────────────────────
+|❯ /exit
+|────────────────────────────────────────────────────────────────────────────────────────────────────
+|/exit                          Exit the CLI
+|/portfolio-analysis            Analyze portfolio positions, calculate P&L metrics, review
+|                               allocation, assess risk, trade management (stop levels, exit sig…
+|/context                       Visualize current context usage as a colored grid
+|/usage-credits                 Configure usage credits or request them from your admin when you
+|                               hit a limit
+|/doctor                        Health-check the user's Claude Code setup and fix issues:
+|                               diagnose installation health — what the `claude doctor` terminal…
+|/verify                        Verify that a code change actually does what it's supposed to by
+|                               exercising it end-to-end and observing behavior — drive the affe…
+|/agents                        (removed) Ask Claude to create/manage subagents, or edit
+|                               .claude/agents/
+|/memory                        Open a memory file in your editor
+|/ultraplan                     Draft an editable plan in Claude Code on the web (a few minutes)
+|                               · See https://code.claude.com/docs/en/claude-code-on-the-web
+|
