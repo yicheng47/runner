@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, Weak};
@@ -54,6 +55,7 @@ pub struct TerminalSession {
     pub term: Arc<FairMutex<Term<EventProxy>>>,
     core: AppCore,
     session_id: String,
+    feed_gate: Mutex<()>,
     parser: Mutex<Processor>,
     sequence: Mutex<SequenceState>,
     size: Arc<Mutex<(u16, u16)>>,
@@ -85,6 +87,7 @@ impl TerminalSession {
             term: Arc::clone(&term),
             core: core.clone(),
             session_id: session_id.clone(),
+            feed_gate: Mutex::new(()),
             parser: Mutex::new(Processor::new()),
             sequence: Mutex::new(SequenceState::default()),
             size: Arc::clone(&size),
@@ -147,7 +150,31 @@ impl TerminalSession {
         self.feed_encoded(event.seq, &event.data)
     }
 
+    pub fn feed_snapshot(&self, events: &[OutputEvent]) -> Result<()> {
+        let _feed = self.feed_gate.lock().unwrap();
+        self.feed_snapshot_locked(events)
+    }
+
+    #[cfg(test)]
+    fn feed_snapshot_with_hook(&self, events: &[OutputEvent], hook: impl FnOnce()) -> Result<()> {
+        let _feed = self.feed_gate.lock().unwrap();
+        hook();
+        self.feed_snapshot_locked(events)
+    }
+
+    fn feed_snapshot_locked(&self, events: &[OutputEvent]) -> Result<()> {
+        for event in events {
+            self.feed_encoded_locked(event.seq, &event.data)?;
+        }
+        Ok(())
+    }
+
     fn feed_encoded(&self, seq: u64, data: &str) -> Result<()> {
+        let _feed = self.feed_gate.lock().unwrap();
+        self.feed_encoded_locked(seq, data)
+    }
+
+    fn feed_encoded_locked(&self, seq: u64, data: &str) -> Result<()> {
         let bytes = B64.decode(data).context("decode session output")?;
         let mut sequence = self.sequence.lock().unwrap();
         if seq == 0 {
@@ -295,7 +322,7 @@ impl TerminalSession {
 
 pub struct TerminalBridge {
     core: AppCore,
-    active: Mutex<Option<Arc<TerminalSession>>>,
+    attached: Mutex<HashMap<String, Weak<TerminalSession>>>,
     refresh_sessions: AtomicBool,
     waker: Arc<dyn Fn() + Send + Sync>,
 }
@@ -305,7 +332,7 @@ impl TerminalBridge {
         let mut receiver = core.events.subscribe();
         let bridge = Arc::new(Self {
             core,
-            active: Mutex::new(None),
+            attached: Mutex::new(HashMap::new()),
             refresh_sessions: AtomicBool::new(false),
             waker,
         });
@@ -324,7 +351,7 @@ impl TerminalBridge {
                         let Some(bridge) = weak.upgrade() else {
                             break;
                         };
-                        bridge.resync_active();
+                        bridge.resync_attached();
                         bridge.refresh_sessions.store(true, Ordering::Release);
                         (bridge.waker)();
                     }
@@ -336,14 +363,15 @@ impl TerminalBridge {
     }
 
     pub fn attach(&self, session: Arc<TerminalSession>) -> Result<()> {
-        let mut active = self.active.lock().unwrap();
-        let snapshot =
-            runner_app::ops::session::session_output_snapshot(&self.core, session.session_id())
-                .context("load terminal output snapshot")?;
-        for event in &snapshot {
-            session.feed_output(event)?;
-        }
-        *active = Some(session);
+        let session_id = session.session_id().to_owned();
+        let _feed = session.feed_gate.lock().unwrap();
+        self.attached
+            .lock()
+            .unwrap()
+            .insert(session_id.clone(), Arc::downgrade(&session));
+        let snapshot = runner_app::ops::session::session_output_snapshot(&self.core, &session_id)
+            .context("load terminal output snapshot")?;
+        session.feed_snapshot_locked(&snapshot)?;
         Ok(())
     }
 
@@ -364,11 +392,14 @@ impl TerminalBridge {
                 let Some(data) = event.payload.get("data").and_then(|v| v.as_str()) else {
                     return;
                 };
-                let active = self.active.lock().unwrap();
-                if let Some(session) = active.as_ref() {
-                    if session.session_id() == session_id {
-                        let _ = session.feed_encoded(seq, data);
-                    }
+                let session = self
+                    .attached
+                    .lock()
+                    .unwrap()
+                    .get(session_id)
+                    .and_then(Weak::upgrade);
+                if let Some(session) = session {
+                    let _ = session.feed_encoded(seq, data);
                 }
             }
             "session/exit" | "session/updated" | "session/archived" => {
@@ -379,17 +410,92 @@ impl TerminalBridge {
         }
     }
 
-    fn resync_active(&self) {
-        let active = self.active.lock().unwrap();
-        let Some(session) = active.as_ref() else {
-            return;
+    fn resync_attached(&self) {
+        let sessions = {
+            let mut attached = self.attached.lock().unwrap();
+            attached.retain(|_, session| session.strong_count() > 0);
+            attached
+                .values()
+                .filter_map(Weak::upgrade)
+                .collect::<Vec<_>>()
         };
-        if let Ok(snapshot) =
-            runner_app::ops::session::session_output_snapshot(&self.core, session.session_id())
-        {
-            for event in &snapshot {
-                let _ = session.feed_output(event);
+        for session in sessions {
+            let _feed = session.feed_gate.lock().unwrap();
+            if let Ok(snapshot) =
+                runner_app::ops::session::session_output_snapshot(&self.core, session.session_id())
+            {
+                let _ = session.feed_snapshot_locked(&snapshot);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use std::time::Duration;
+
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine as _;
+    use runner_app::session::manager::OutputEvent;
+
+    use super::TerminalSession;
+    use crate::bootstrap::{boot_core, NativePaths};
+    use crate::replay::visible_lines;
+
+    fn output(seq: u64, text: &str) -> OutputEvent {
+        OutputEvent {
+            session_id: "replay-race".into(),
+            mission_id: None,
+            seq,
+            data: B64.encode(text),
+        }
+    }
+
+    #[test]
+    fn snapshot_batch_blocks_newer_live_output_until_replay_finishes() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = boot_core(&NativePaths::new(
+            temp.path().join("app-data"),
+            temp.path().join("logs"),
+        ))
+        .unwrap();
+        let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+        let terminal = TerminalSession::attach(core, "replay-race".into(), 80, 24, waker).unwrap();
+        let gate_held = Arc::new(Barrier::new(2));
+        let live_returned = Arc::new(AtomicBool::new(false));
+
+        let live_terminal = Arc::clone(&terminal);
+        let live_barrier = Arc::clone(&gate_held);
+        let live_done = Arc::clone(&live_returned);
+        let live = thread::spawn(move || {
+            live_barrier.wait();
+            live_terminal
+                .feed_output(&output(2, "live-marker"))
+                .unwrap();
+            live_done.store(true, Ordering::Release);
+        });
+        let replay_terminal = Arc::clone(&terminal);
+        let replay_barrier = Arc::clone(&gate_held);
+        let replay_live_returned = Arc::clone(&live_returned);
+        let replay = thread::spawn(move || {
+            replay_terminal
+                .feed_snapshot_with_hook(&[output(1, "snapshot-marker")], || {
+                    replay_barrier.wait();
+                    thread::sleep(Duration::from_millis(30));
+                    assert!(!replay_live_returned.load(Ordering::Acquire));
+                })
+                .unwrap();
+        });
+        replay.join().unwrap();
+        live.join().unwrap();
+
+        let rendered = {
+            let term = terminal.term.lock();
+            visible_lines(&*term).join("\n")
+        };
+        assert!(rendered.contains("snapshot-markerlive-marker"));
     }
 }
