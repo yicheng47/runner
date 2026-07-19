@@ -41,10 +41,15 @@ Runner is macOS-only today and that stays true for this rewrite (non-goal below)
 
 ## Branch strategy
 
-- **Phase 1 (spike)** lives on `rust-ui-nightly`. Messy, throwaway-friendly, rebase allowed while private.
-- **Phase 2 (core extraction)** lands on `main` — it is a behavior-preserving refactor the current app benefits from (testability, thinner command layer) and it shrinks the branch's conflict surface to near zero.
-- **Phase 3+** adds the native binary as a new workspace member (`crates/runner-native/` or similar) — additive code. Fold it into `main` behind a second binary target as soon as the walking skeleton is real, per the pattern-2 discussion: `rust-ui-nightly` then becomes a release channel (nightly builds of the native binary from main), not a diverging code line.
-- While the branch exists: merge `main` → branch on cadence, never the reverse until a phase is complete; cherry-pick incidental fixes to `main` immediately.
+Revised 2026-07-19 by Jason's decision, superseding the original fold-into-main-behind-a-second-binary plan: `rust-ui-nightly` is a **Tauri-free pioneer branch**. It shares the backend with the Tauri app on `main` and carries the native UI; the two frontends never coexist in one tree.
+
+- **Phase 1 (spike)** lived on `rust-ui-nightly`. Messy, throwaway-friendly, rebase allowed while private.
+- **Phase 2 (core extraction)** landed on `main` (PR #310) — a behavior-preserving refactor the current app benefits from (testability, thinner command layer). The shared backend now lives in `crates/runner-app`; the Tauri app is a thin frontend over it.
+- **Nightly composition**: after `main` (with Phase 2) merges in, the Tauri frontend is deleted from nightly — `src/` (React), `src-tauri/`, and the JS toolchain. Nightly keeps only the shared backend (`crates/runner-app`, `crates/runner-core`, `cli/`) plus the native UI (Phase 3+ `crates/runner-native/`). The spike crate (`crates/native-spike/`) is superseded by `runner-native` and removed when the walking skeleton lands.
+- Merge direction stays `main` → nightly on cadence, never the reverse until cutover; cherry-pick incidental fixes (including backend fixes authored on nightly) to `main` immediately. Backend changes flow through `crates/` and merge cleanly. **Accepted cost**: main-side changes under the deleted trees (`src/`, `src-tauri/`) surface as modify/delete conflicts at each merge — resolved by keeping the deletion, after hand-checking whether the change has a backend half that belongs in `crates/runner-app` (the thin command wrappers are the usual case).
+- **Cutover (Phase 6)** becomes a merge of nightly into `main` — the deletion arrives with the merge — rather than an in-place deletion commit on main.
+
+To be decided when the deletion lands on nightly: what replaces the Makefile/CI targets that assume the Tauri app (`make dev`, `pnpm` gates, the release workflow), and whether nightly gets its own CI job building only the Rust workspace.
 
 ## Phases
 
