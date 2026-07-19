@@ -36,3 +36,12 @@ Progress record for the Rust-native UI rewrite ([plan](plan.md), issue [#307](ht
 - Fix: new `terminal::query_color` prefers `Term::colors()[index]` then falls back to `palette::resolve_index`; the event pump reaches the Term through a `Weak` (upgrade per query) so the drop-cycle fix from round 1 stays intact. The OSC tests now resolve replies through `query_color` against the live Term — including set-then-query (OSC 10, OSC 4;1) and OSC 104 reset-then-query coverage.
 - Final state: 26 native-spike tests green, workspace battery green (fmt clean, clippy zero warnings, 473 tests passing).
 - Round 3: reviewer's sandbox denies `ps`, which made the lifecycle regression environment-dependent (it treated any `ps` failure as process-dead). Rewritten hermetically: hold `Weak<TerminalSession>`, drop the last Arc, assert `upgrade()` is None — the exact signal the original event-thread Arc cycle trips — with child teardown implied by Drop's synchronous kill+wait. 6/6 isolated runs green.
+- Review clean after round 3; spike committed on `phase1-terminal-spike` (`6d6ee2e` code, `43d0b28` docs).
+
+## 2026-07-19 — Phase 1 verdict: GO
+
+- Jason smoke-tested the spike: live claude session renders and drives correctly ("works mostly"), and after clarifying that the IME target is the composer bar (the terminal pane intentionally has no IME in the spike), **Pinyin input in the native composer confirmed working** — the hard requirement.
+- Jason added Makefile targets for the spike and `default-run = "native-spike"` (two bins made bare `cargo run -p native-spike` ambiguous).
+- Known cosmetic artifact triaged: block-glyph striping in the claude logo (glyphs don't fill the 1.4× line box); fix options noted (tighter line height now, cell-box glyph stretching in Phase 3).
+- Notarization (criterion 5's second half) deferred to Phase 5 by Jason's decision — codesign of the hand-rolled bundle is proven, notarytool flow already ships Tauri releases, so the residual risk is negligible.
+- Decision memo in [plan.md](plan.md) finalized: **go on GPUI**. Next: merge `phase1-terminal-spike` → `rust-ui-nightly` on Jason's word, then Phase 2 (app-core extraction on `main`).

@@ -112,7 +112,11 @@ Criteria: 2+ weeks daily-driving the native app exclusively, all Phase 4 slices 
 - Feature additions during the rewrite — parity only, divergence recorded as issues.
 - Rewriting the backend, CLI, event-log format, or SQLite schema — explicitly frozen interfaces for this effort.
 
-## Phase 1 decision memo (2026-07-18, provisional — human criteria pending)
+## Phase 1 decision memo (2026-07-18; finalized 2026-07-19)
+
+**Decision: GO on GPUI.** Human verification: criterion 3 (Pinyin IME in the native composer) confirmed explicitly; criteria 1/4 confirmed through live daily-style use with no tearing, lag, or reflow artifacts reported; criterion 2 machine-verified at the grid level with per-cell-origin rendering making fallback-advance skew structurally impossible. Criterion 5: .app assembly + Developer ID codesign proven; the notarize/staple run is **deferred to Phase 5 by explicit decision** — the failure-prone half (hand-rolled bundle of a bare cargo binary passing codesign with hardened runtime) is validated, notarization is bundle-agnostic, and the same credential flow already ships Runner's Tauri releases via CI. The iced fallback was never needed.
+
+Original evidence table and findings follow.
 
 Spike built on `phase1-terminal-spike` as `crates/native-spike/` (GPUI 0.2.2 + alacritty_terminal 0.26 + portable-pty, ~1.4k LOC). Verification state per exit criterion:
 
@@ -135,4 +139,4 @@ Findings for the framework decision:
 
 Deviation from this plan's Phase 1 wire description ("spawn via the existing session manager"): the spike spawns through its own minimal portable-pty lifecycle, per the mission brief's explicit allowance ("PTY wiring may use portable-pty directly for the spike; reuse of the existing session manager is optional"). Consequence stated plainly: this spike validates the rendering/input/packaging risks only. The session-manager/app-core integration seam — canonical PATH/env composition, lifecycle, the query-responder behavior `pty_runtime.rs` already implements — is NOT validated here and remains Phase 2/3 work; the spike's local session code is throwaway and will be superseded by the existing runtime at integration time.
 
-Provisional recommendation: **go on GPUI** — criteria 2/4/5 have machine evidence, nothing structural failed, and the iced fallback was never needed. Final go/no-go flips to definitive once Jason confirms criteria 1–4 by hand and one notarize pass completes.
+(Superseded by the finalized decision above: original provisional recommendation was go-on-GPUI pending human confirmation of criteria 1–4 and one notarize pass; IME was subsequently confirmed by hand and notarization deferred to Phase 5.)
