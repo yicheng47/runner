@@ -57,3 +57,9 @@ Progress record for the Rust-native UI rewrite ([plan](plan.md), issue [#307](ht
 
 - `rust-ui-nightly` renamed to `gpui-nightly` (local + remote, old ref deleted, same SHA `8584caa`) — the branch is a GPUI bet specifically, so the name should say so. plan.md references updated; historical log entries above keep the old name.
 - Jason reset `main` after merging #310, so the PR reads MERGED on GitHub but its tree is not on `main`; the extraction lives on `refactor/0031-app-core` (`461356e`). Nightly composition therefore sources `crates/runner-app` by merging that branch (plus current `main`) rather than getting it via `main`. Whether the extraction ever re-lands on `main` is open — not needed for the nightly line.
+
+## 2026-07-19 — Nightly composition
+
+- Created `phase3-walking-skeleton` from `gpui-nightly`, merged current `origin/main` (frontend fixes #309/#311 plus v0.3.17), then merged the Phase 2 extraction from `refactor/0031-app-core` (`461356e`). Hand-check confirmed #309/#311 have no backend half to preserve; their `src/` changes are pure deletions on the Tauri-free line.
+- Deleted the React/Tauri trees and JS toolchain. `crates/runner-app` is the surviving backend and was aligned to v0.3.17; the workspace lockfile drops the Tauri dependency graph.
+- Build decision: the Makefile exposes only `fmt`, `clippy`, `test`, and `run-native`; CI is one `macos-26` Rust-workspace job for pushes/PRs targeting `gpui-nightly`. The obsolete Tauri release workflow is removed, with native packaging intentionally deferred to Phase 5.

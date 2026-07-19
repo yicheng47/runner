@@ -1,9 +1,6 @@
 [package]
 name = "runner-app"
-# Kept in lockstep with src-tauri / package.json / tauri.conf.json by the
-# release bump. The MCP server no longer reads this (it advertises the
-# app version passed through AppCore), but drift is still confusing.
-version = "0.3.16"
+version = "0.3.17"
 description = "UI-agnostic application core for Runner: command bodies, session manager, event bus, router, and MCP server"
 edition.workspace = true
 authors.workspace = true
