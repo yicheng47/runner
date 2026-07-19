@@ -73,6 +73,35 @@ export function terminalGridFromElement(
   return terminalGridFromPixels(rect.width, rect.height, framePaddingPx);
 }
 
+/**
+ * Source priority for the dims passed to a mission-wide respawn
+ * (reset / resume-all). Freshness beats availability:
+ *
+ *   1. The active slot tab's terminal — its pane is visible, so
+ *      `measure()` runs a real fit against the current layout.
+ *   2. The pane-container probe — reads the container's CURRENT rect
+ *      (covers the feed tab, where no slot terminal is visible).
+ *   3. A hidden terminal's cached last-fit dims. display:none panes
+ *      can't fit, so `measure()` returns whatever cols the pane had
+ *      when it was last visible — stale after any rail/sidebar/window
+ *      width change, and respawning at stale cols re-arms the ring
+ *      purge the sized respawn exists to prevent. Last resort only.
+ *
+ * Sources are thunks so losing tiers aren't computed (the container
+ * probe opens a throwaway xterm).
+ */
+export function pickRespawnDims(sources: {
+  measureActiveSlot: () => TerminalGridSize | null;
+  probeContainer: () => TerminalGridSize | null;
+  readHiddenCache: () => TerminalGridSize | null;
+}): TerminalGridSize | null {
+  return (
+    sources.measureActiveSlot() ??
+    sources.probeContainer() ??
+    sources.readHiddenCache()
+  );
+}
+
 export function estimateMissionTerminalGrid(): TerminalGridSize | null {
   const main = document.querySelector("main");
   const rect = main?.getBoundingClientRect();

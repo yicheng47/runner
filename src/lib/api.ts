@@ -246,7 +246,20 @@ export const api = {
     /** Wipe the run context and respawn every slot. Mostly for
      *  testing — keeps the mission row, crew, and slots intact;
      *  drops the event log, agent session keys, and router state. */
-    reset: (id: string) => invoke<Mission>("mission_reset", { id }),
+    /** Wipe the run and respawn every slot. `initialSize` forks the
+     *  fresh PTYs at the workspace's real grid — unsized respawns
+     *  land at 80×24, and the first slot-tab activation's real-cols
+     *  push purges the ring (cols-gate), dropping the agents' opening
+     *  output. */
+    reset: (
+      id: string,
+      initialSize?: { cols: number; rows: number } | null,
+    ) =>
+      invoke<Mission>("mission_reset", {
+        id,
+        initialCols: initialSize?.cols ?? null,
+        initialRows: initialSize?.rows ?? null,
+      }),
     /** Toggle a mission's pin. Pinned missions float to the top of
      *  the sidebar's MISSION list. */
     pin: (id: string, pinned: boolean) =>

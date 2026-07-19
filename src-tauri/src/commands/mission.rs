@@ -1142,6 +1142,7 @@ pub(crate) async fn mission_reset_impl(
     state: &AppState,
     app: &tauri::AppHandle,
     id: String,
+    initial_size: Option<(u16, u16)>,
 ) -> Result<Mission> {
     use crate::event_bus::{BusEmitter, TauriBusEvents};
     use crate::router::{
@@ -1355,6 +1356,12 @@ pub(crate) async fn mission_reset_impl(
     // see the analogous block in `mission_start`. See issue #171.
     for (idx, member) in roster.iter().enumerate() {
         let first_turn = first_turns.get(idx).cloned().flatten();
+        // `initial_size` matters beyond first paint: an unsized respawn
+        // forks at 80×24 and seeds the resize purge gate at 80 cols, so
+        // the agent's launch frames land in the ring at 80 cols and the
+        // first slot-tab activation's real-cols push purges them all
+        // (`SessionManager::resize` cols-gate). Sized respawns make that
+        // push a same-width no-op and the opening history survives.
         let register_res = state.sessions.register_mission_session(
             &mission_for_spawn,
             &member.runner,
@@ -1363,7 +1370,7 @@ pub(crate) async fn mission_reset_impl(
             events_log_path.clone(),
             state.db.clone(),
             first_turn,
-            None,
+            initial_size,
         );
         match register_res {
             Ok(pending) => {
@@ -1478,8 +1485,13 @@ pub async fn mission_reset(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     id: String,
+    initial_cols: Option<u16>,
+    initial_rows: Option<u16>,
 ) -> Result<Mission> {
-    mission_reset_impl(&state, &app, id).await
+    let initial_size = initial_cols
+        .zip(initial_rows)
+        .filter(|(cols, rows)| *cols > 0 && *rows > 0);
+    mission_reset_impl(&state, &app, id, initial_size).await
 }
 
 /// Terminal end-of-mission. Kills every live PTY, writes the
