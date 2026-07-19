@@ -109,20 +109,25 @@ impl NativeRoot {
         if entry.archived_at.is_some() {
             bail!("this chat is archived");
         }
+        let (cols, rows) = self
+            .terminal
+            .as_ref()
+            .map(|terminal| terminal.size())
+            .unwrap_or((INITIAL_COLS, INITIAL_ROWS));
         if entry.status != SessionStatus::Running {
             runner_app::ops::session::session_resume(
                 &self.core,
                 &session_id,
-                Some(INITIAL_COLS),
-                Some(INITIAL_ROWS),
+                Some(cols),
+                Some(rows),
             )?;
         }
 
         let terminal = TerminalSession::attach(
             self.core.clone(),
             session_id.clone(),
-            INITIAL_COLS,
-            INITIAL_ROWS,
+            cols,
+            rows,
             Arc::clone(&self.waker),
         )?;
         self.bridge.attach(Arc::clone(&terminal))?;
@@ -132,6 +137,7 @@ impl NativeRoot {
         self.selected_id = Some(session_id);
         self.terminal = Some(terminal);
         self.composer = Some(composer);
+        self.scroll_accumulator = 0.;
         Ok(())
     }
 

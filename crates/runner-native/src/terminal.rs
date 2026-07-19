@@ -280,6 +280,10 @@ impl TerminalSession {
             .resize(TermSize::new(cols as usize, rows as usize));
     }
 
+    pub fn size(&self) -> (u16, u16) {
+        *self.size.lock().unwrap()
+    }
+
     pub fn scroll(&self, delta_lines: i32) {
         self.term.lock().scroll_display(Scroll::Delta(delta_lines));
     }
