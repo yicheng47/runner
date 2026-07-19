@@ -1,17 +1,6 @@
-mod cli_install;
 mod commands;
-mod db;
-mod error;
-mod event_bus;
-mod mcp;
-mod model;
 mod panic_hook;
-mod repo;
-mod router;
-mod session;
-mod shell_path;
 mod window_state;
-mod windows;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,6 +11,13 @@ use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, Wry};
 use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
 
+use runner_app::{cli_install, db, event_bus, events, mcp, router, session, shell_path, windows};
+
+/// The app's shared state is the UI-agnostic core (impl 0031 Phase 2);
+/// the Tauri layer manages it and delegates every command to
+/// `runner_app::ops`.
+pub use runner_app::AppCore as AppState;
+
 /// Bundle identifier as declared in `tauri.conf.json`. Used by:
 ///
 /// 1. The pre-builder fallback panic-log path (so panics that fire
@@ -31,34 +27,6 @@ use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKi
 ///    `tauri.conf.json` against this constant — catches a silent
 ///    rename in either direction.
 pub const APP_IDENTIFIER: &str = "com.wycstudios.runner";
-
-pub struct AppState {
-    pub db: Arc<db::DbPool>,
-    /// Root of the app's per-user data tree — `$APPDATA/runner/` on real
-    /// installs, a tempdir in tests. Mission commands resolve event-log paths
-    /// relative to this via `runner_core::event_log::path`.
-    pub app_data_dir: PathBuf,
-    /// Live per-mission session manager. Created at app
-    /// start, shared across all Tauri commands and the per-session
-    /// forwarder threads it spawns.
-    pub sessions: Arc<session::SessionManager>,
-    /// Live per-mission event-bus watchers. Mounted by `mission_start` once
-    /// the opening events are durable; unmounted by `mission_stop` and on
-    /// any rollback path.
-    pub buses: Arc<event_bus::BusRegistry>,
-    /// Live per-mission signal routers. Mounted alongside the bus so the
-    /// router observes the bootstrap `mission_goal` event during initial
-    /// replay and pushes the launch prompt into the lead's stdin.
-    pub routers: Arc<router::RouterRegistry>,
-    /// MCP server lifecycle handle (impl 0013). Unix socket listener
-    /// that external clients connect to via the `runner-mcp` bridge.
-    pub mcp: Arc<mcp::McpHandle>,
-    /// Cross-window coordination map (impl 0018). Tracks which subject
-    /// (mission / direct chat) each webview window is looking at + when it
-    /// was last focused, so exactly one window owns a duplicated subject's
-    /// PTY. `main` is registered in `setup`.
-    pub windows: Arc<windows::WindowRegistry>,
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -190,51 +158,64 @@ pub fn run() {
 
             let sessions = session::SessionManager::new(login_shell_env, runtime);
 
-            // Build the AppState up front so the startup mission-bus
+            // Build the AppCore up front so the startup mission-bus
             // remount has access to the bus + router registries it
             // needs.
-            let buses = event_bus::BusRegistry::new();
-            let routers = router::RouterRegistry::new();
-            let mcp_handle = Arc::new(mcp::McpHandle::new());
             // Window registry seeded with `main` — it exists before any
             // frontend reports a subject, and the snapshot must reflect it
-            // from the first broadcast. Shared with `McpState` so the
-            // MCP-reconstructed `AppState` sees the same map.
+            // from the first broadcast.
             let window_registry = Arc::new(windows::WindowRegistry::new());
             window_registry.register("main");
-            let mcp_state = mcp::state::McpState {
-                db: Arc::clone(&pool),
-                app_data_dir: app_data_dir.clone(),
-                sessions: Arc::clone(&sessions),
-                buses: Arc::clone(&buses),
-                routers: Arc::clone(&routers),
-                mcp: Arc::clone(&mcp_handle),
-                windows: Arc::clone(&window_registry),
-                app_handle: app.handle().clone(),
-            };
-            if let Err(e) = mcp_handle.start(&app_data_dir.join("mcp.sock"), mcp_state) {
-                log::error!("mcp: failed to start listener: {e}");
-            }
-
             let state = AppState {
                 db: Arc::clone(&pool),
-                app_data_dir,
-                sessions: Arc::clone(&sessions),
-                buses,
-                routers,
-                mcp: mcp_handle,
+                app_data_dir: app_data_dir.clone(),
+                sessions,
+                buses: event_bus::BusRegistry::new(),
+                routers: router::RouterRegistry::new(),
+                mcp: Arc::new(mcp::McpHandle::new()),
                 windows: window_registry,
+                events: events::EventChannel::new(),
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
             };
+
+            // The Tauri layer is one subscriber on the core's event
+            // channel: every AppEvent is re-emitted to the webview under
+            // the same name with the same JSON payload. Subscribed before
+            // the mission-bus remount below so replayed events forward.
+            let mut event_rx = state.events.subscribe();
+            let forward_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use tokio::sync::broadcast::error::RecvError;
+                loop {
+                    match event_rx.recv().await {
+                        Ok(ev) => {
+                            let _ = forward_handle.emit(ev.name, ev.payload);
+                        }
+                        Err(RecvError::Lagged(n)) => {
+                            log::warn!("webview event forwarder lagged; dropped {n} events");
+                        }
+                        Err(RecvError::Closed) => break,
+                    }
+                }
+            });
+
+            let tauri::async_runtime::RuntimeHandle::Tokio(rt_handle) =
+                tauri::async_runtime::handle();
+            if let Err(e) =
+                state
+                    .mcp
+                    .start(&app_data_dir.join("mcp.sock"), state.clone(), &rt_handle)
+            {
+                log::error!("mcp: failed to start listener: {e}");
+            }
 
             // Mount router + bus for every `running` mission before
             // stale session rows are demoted. The NDJSON log is the
             // durable source of truth; this is purely about restoring
             // the in-memory fanout layer for mission events.
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::block_on(commands::mission::mount_all_running_mission_routers(
-                &state,
-                &app_handle,
-            ));
+            tauri::async_runtime::block_on(
+                runner_app::ops::mission::mount_all_running_mission_routers(&state),
+            );
 
             // Agents die with this Tauri process under the pty
             // runtime — any `running` row in the DB at this point
@@ -411,7 +392,7 @@ pub fn run() {
                         state.windows.mark_focused(&label);
                         let visible = state.windows.focused_direct_sessions(&label);
                         if let Err(error) =
-                            commands::tab::mark_direct_sessions_viewed(app_handle, &state, &visible)
+                            runner_app::ops::tab::mark_direct_sessions_viewed(&state, &visible)
                         {
                             log::warn!("mark focused window tabs viewed failed: {error}");
                         }
@@ -463,25 +444,24 @@ pub fn run() {
                     }
                 }
                 tauri::RunEvent::Resumed => {
-                    let _ = app_handle.emit("app/resumed", ());
+                    if let Some(state) = app_handle.try_state::<AppState>() {
+                        state.events.emit("app/resumed", &());
+                    }
                 }
                 _ => {}
             }
         });
 }
 
-/// Broadcast the current window→subject map to every webview. Called after
-/// every registry mutation (lifecycle hooks + window commands) so all windows
-/// converge on a consistent picture of who owns what. Broadcast, not
-/// targeted: each window filters by its own subject (spec decision 5).
+/// Broadcast the current window→subject map to every webview via the core
+/// event channel. Guarded lifecycle-hook wrapper around
+/// `AppCore::broadcast_focus_map` for the window events that can fire
+/// before `setup` manages the state.
 pub(crate) fn broadcast_focus_map<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
-    let snapshot = state.windows.snapshot();
-    if let Err(e) = app.emit("window_focus_map", snapshot) {
-        log::error!("broadcast window_focus_map failed: {e}");
-    }
+    state.broadcast_focus_map();
 }
 
 fn hide_main_window_on_close(app_handle: &AppHandle) {

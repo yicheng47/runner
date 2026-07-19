@@ -3841,6 +3841,30 @@ dependencies = [
 name = "runner"
 version = "0.3.16"
 dependencies = [
+ "chrono",
+ "log",
+ "runner-app",
+ "runner-core",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-log",
+ "tauri-plugin-opener",
+ "tauri-plugin-process",
+ "tauri-plugin-shell",
+ "tauri-plugin-updater",
+ "tempfile",
+ "tokio",
+ "ulid",
+]
+
+[[package]]
+name = "runner-app"
+version = "0.3.16"
+dependencies = [
  "base64 0.22.1",
  "chrono",
  "fs2",
@@ -3857,15 +3881,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_rusqlite",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-log",
- "tauri-plugin-opener",
- "tauri-plugin-process",
- "tauri-plugin-shell",
- "tauri-plugin-updater",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",

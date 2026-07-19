@@ -6,8 +6,8 @@ use tauri::AppHandle;
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 
-use crate::error::Error;
 use crate::log_dir_for_build;
+use runner_app::error::Error;
 
 /// Called by the frontend after React has mounted and painted its first frame.
 /// Shows the **calling** window — every window (main + secondaries) starts
@@ -15,7 +15,7 @@ use crate::log_dir_for_build;
 /// a blank webview. Resolving the window from the invoking webview (rather
 /// than hard-coding `main`) is what lets secondary windows reveal themselves.
 #[tauri::command]
-pub fn app_ready(window: tauri::WebviewWindow) -> crate::error::Result<()> {
+pub fn app_ready(window: tauri::WebviewWindow) -> runner_app::error::Result<()> {
     window.show().map_err(|e| Error::msg(e.to_string()))?;
     window.set_focus().map_err(|e| Error::msg(e.to_string()))?;
     Ok(())
@@ -25,7 +25,7 @@ pub fn app_ready(window: tauri::WebviewWindow) -> crate::error::Result<()> {
 /// (dock-icon click with no visible windows); `app_ready` shows the calling
 /// window directly, so this is dead code on other platforms.
 #[cfg(target_os = "macos")]
-pub(crate) fn show_main_window(app: &AppHandle) -> crate::error::Result<()> {
+pub(crate) fn show_main_window(app: &AppHandle) -> runner_app::error::Result<()> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| Error::msg("main window not found"))?;
@@ -43,12 +43,12 @@ pub(crate) fn show_main_window(app: &AppHandle) -> crate::error::Result<()> {
 /// the Settings → Diagnostics pane; both routes call this same
 /// command.
 #[tauri::command]
-pub fn runner_logs_reveal(app: AppHandle) -> crate::error::Result<()> {
+pub fn runner_logs_reveal(app: AppHandle) -> runner_app::error::Result<()> {
     reveal_logs_dir(&app)
 }
 
 /// Shared backend for both menu and Settings-pane entry points.
-pub(crate) fn reveal_logs_dir(app: &AppHandle) -> crate::error::Result<()> {
+pub(crate) fn reveal_logs_dir(app: &AppHandle) -> runner_app::error::Result<()> {
     // Must mirror the dev/prod-split path the plugin-log builder is
     // wired with in `lib.rs`. `app.path().app_log_dir()` ignores the
     // `-dev` segment and would point at the prod dir in dev builds —
