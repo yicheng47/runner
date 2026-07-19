@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress. Phases 1–3 are complete on the persistent `gpui-nightly` branch; Phase 4 parity slices are next. Tracking issue: [#307](https://github.com/yicheng47/runner/issues/307). See [Branch strategy](#branch-strategy).
+In progress. Phases 1–3 are complete, and the pioneer line now lives in its own repository — [yicheng47/runner-gpui](https://github.com/yicheng47/runner-gpui), this repo — split from the `runner` repo's `gpui-nightly` branch on 2026-07-19. Phase 4 parity slices are next. Tracking issue: [runner#307](https://github.com/yicheng47/runner/issues/307). See [Branch strategy](#branch-strategy).
 
 ## End state
 
@@ -46,10 +46,13 @@ Revised 2026-07-19 by Jason's decision, superseding the original fold-into-main-
 - **Phase 1 (spike)** lived on `phase1-terminal-spike` off `gpui-nightly`. Messy, throwaway-friendly, rebase allowed while private.
 - **Phase 2 (core extraction)** is commit `461356e` on `refactor/0031-app-core`. PR #310 reads merged, but `main` was reset afterward and does not contain the extraction; the Tauri app on `main` therefore still owns the unextracted backend. Nightly composition sources `crates/runner-app` by merging the extraction branch directly.
 - **Nightly composition** landed through `phase3-walking-skeleton` after review and human verification. It merged current `origin/main` plus the Phase 2 extraction, then deleted `src/` (React), `src-tauri/`, and the JS toolchain. The branch keeps only the shared backend (`crates/runner-app`, `crates/runner-core`, `cli/`) plus `crates/runner-native/`; the superseded `crates/native-spike/` is removed.
-- Merge direction stays `main` → nightly on cadence, never the reverse until cutover; cherry-pick incidental fixes (including backend fixes authored on nightly) to `main` immediately. **Accepted cost**: until the extraction re-lands on `main`, main-side backend changes originate under the deleted `src-tauri/` tree and require an explicit hand-port into `crates/runner-app` during cadence merges. Every modify/delete conflict is resolved by keeping the deletion only after checking for that backend half.
-- **Cutover (Phase 6)** becomes a merge of nightly into `main` — the deletion arrives with the merge — rather than an in-place deletion commit on main.
+Revised again 2026-07-19 (repo split, superseding the branch model above for everything after Phase 3): the pioneer line moved to its own repository, **runner-gpui**, seeded by pushing `gpui-nightly` (`7da6fea`) as `main` with full history. The `gpui-nightly` branch and the `runner-wt1` worktree are retired. Rationale: with the extraction absent from runner's `main`, the two backends live at different paths (`src-tauri/src/*` vs `crates/runner-app/*`), so cadence merges would have depended on rename detection plus modify/delete conflict rituals — monorepo cost without monorepo guarantees.
 
-Build decision: the pioneer line has Rust-only `fmt`, `clippy`, `test`, and `run-native` Make targets. CI is one macOS Rust-workspace job for pushes and pull requests targeting `gpui-nightly`, including the GPUI Metal Toolchain component; native release packaging remains deferred to Phase 5.
+- **Cross-repo flow** replaces cadence merges: the `runner` repo is the `upstream` remote here; backend fixes on the Tauri line are ported by conscious cherry-pick (hand-relocated into `crates/runner-app` paths). Nothing flows automatically in either direction.
+- **Phase work** happens on task branches off this repo's `main` (e.g. `phase4-direct-chats`), merged back only after human verification — the same convention the nightly branch used.
+- **Cutover (Phase 6)** becomes a rebrand: archive the `runner` repo, rename `runner-gpui`. No tree-swap merge. The name says the framework on purpose; "runner-native" was rejected because "native" implies multi-platform, and this line is macOS-only by plan.
+
+Build decision: the pioneer line has Rust-only `fmt`, `clippy`, `test`, and `run-native` Make targets. CI is one macOS Rust-workspace job for pushes and pull requests (originally scoped to `gpui-nightly`; now this repo's `main` and PRs), including the GPUI Metal Toolchain component; native release packaging remains deferred to Phase 5.
 
 ## Phases
 
