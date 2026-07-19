@@ -52,3 +52,34 @@ Progress record for the Rust-native UI rewrite ([plan](plan.md), issue [#307](ht
 - Review clean in one round (no must-fix; reviewer confirmed command-registration parity, zero tauri deps in runner-app via cargo tree, and accepted the two documented tradeoffs: Weak session-manager upgrade in the emitter, bounded 8192 broadcast queue). `make ci` green (441 tests); PR [#310](https://github.com/yicheng47/runner/pull/310) open against `main`, CI green. Reviewer's maintenance note applied: release skill now bumps `crates/runner-app/Cargo.toml` too.
 - **Branch-strategy change (Jason's decision)**: `rust-ui-nightly` becomes a Tauri-free pioneer branch — after `main` merges in post-#310, delete `src/`, `src-tauri/`, and the JS toolchain from nightly; nightly = shared backend crates + native UI only. Cutover becomes merging nightly into `main`. Modify/delete merge conflicts on the deleted trees are the accepted cost. Details in [plan.md](plan.md) §Branch strategy.
 - Next: Jason merges #310 → merge `main` into nightly → Tauri-deletion commit on nightly (incl. Makefile/CI adjustments, TBD in plan) → Phase 3 walking skeleton as `crates/runner-native/`.
+
+## 2026-07-19 — Branch renamed to `gpui-nightly`; #310 re-homed off `main`
+
+- `rust-ui-nightly` renamed to `gpui-nightly` (local + remote, old ref deleted, same SHA `8584caa`) — the branch is a GPUI bet specifically, so the name should say so. plan.md references updated; historical log entries above keep the old name.
+- Jason reset `main` after merging #310, so the PR reads MERGED on GitHub but its tree is not on `main`; the extraction lives on `refactor/0031-app-core` (`461356e`). Nightly composition therefore sources `crates/runner-app` by merging that branch (plus current `main`) rather than getting it via `main`. Whether the extraction ever re-lands on `main` is open — not needed for the nightly line.
+
+## 2026-07-19 — Nightly composition
+
+- Created `phase3-walking-skeleton` from `gpui-nightly`, merged current `origin/main` (frontend fixes #309/#311 plus v0.3.17), then merged the Phase 2 extraction from `refactor/0031-app-core` (`461356e`). Hand-check confirmed #309/#311 have no backend half to preserve; their `src/` changes are pure deletions on the Tauri-free line.
+- Deleted the React/Tauri trees and JS toolchain. `crates/runner-app` is the surviving backend and was aligned to v0.3.17; the workspace lockfile drops the Tauri dependency graph.
+- Build decision: the Makefile exposes only `fmt`, `clippy`, `test`, and `run-native`; CI is one `macos-26` Rust-workspace job for pushes/PRs targeting `gpui-nightly`. The obsolete Tauri release workflow is removed, with native packaging intentionally deferred to Phase 5.
+
+## 2026-07-19 — Phase 3 walking skeleton
+
+- Replaced `crates/native-spike/` with `crates/runner-native/`, preserving its GPUI terminal element, palette, IME-capable composer, and terminal fixture corpus. The binary boots `runner_app::AppCore` against the same release/debug SQLite database and logs directories as Tauri, lists existing direct chats, and opens or resumes a selected chat in a live terminal with a working composer.
+- Repaired the Phase 1 deviation at the integration seam: `runner-app`'s canonical `SessionManager` now owns spawn/resume, environment composition, input, resize, and lifecycle. `runner-native` only attaches an `alacritty_terminal::Term` to the manager snapshot plus `AppCore` broadcasts; it has no direct `portable-pty` lifecycle. A `/bin/cat` integration test proves direct-session output reaches the rendered grid through that path.
+- Removed the superseded spike and its throwaway recorder, lifecycle test, and packaging script; updated the workspace default binary and `make run-native` to `runner-native`. Native validation covers 27 tests, including all recorded PTY fixture replays; `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green.
+- Next: Jason smoke-tests with `make run-native`, clicks a direct chat, verifies terminal input/output, scrolling, resize, and Pinyin composition in the composer. The branch remains local and unmerged until that confirmation.
+
+## 2026-07-19 — Phase 3 review round 1
+
+- Reviewer found three branch-composition issues: the authoritative plan still described Phase 2 as present on `main` and left Makefile/CI undecided; a Tauri sidecar-staging script and release skill survived their deleted targets; CI did not install GPUI's Metal Toolchain prerequisite.
+- Fixed all three: the plan now records the extraction's actual branch and the completed pioneer-line decisions, stale Tauri automation is removed, and CI installs the Metal Toolchain component before building. The bug skill's adjacent version lookup now reads `crates/runner-app/Cargo.toml`.
+- Post-fix validation is green: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, and `git diff --check`.
+
+## 2026-07-19 — Human smoke-test follow-ups
+
+- The walking skeleton rendered and drove existing direct chats successfully; Jason confirmed the final switch/reattach fix and authorized merge back to `gpui-nightly`.
+- `make run-native` incorrectly used a release build and therefore opened the production database during testing. The working-tree fix switches the development command to the debug profile and its `com.wycstudios.runner-dev` database; reviewer found the delta clean.
+- Chinese IME works in the composer but not the focused terminal because the terminal handles raw key events without a GPUI input handler. Jason declared terminal IME a pre-release requirement; it is now explicit in the Phase 4 direct-chat slice and remains a Phase 6 cutover blocker.
+- Switching between running chats replayed cursor-addressed TUI output at a hard-coded `100×30` before resizing, corrupting the grid when the live PTY used the actual pane width. The fix inherits the outgoing rendered size for resume and reattach; reviewer found it clean and Jason confirmed it by retest. Known parity limitation: after resizing the window while a shell-runtime chat is inactive, its old-width snapshot can remain mis-wrapped because shells do not repaint on `SIGWINCH`; Claude Code and Codex repaint after the genuine width change.

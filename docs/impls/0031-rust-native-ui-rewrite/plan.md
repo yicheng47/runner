@@ -2,20 +2,20 @@
 
 ## Status
 
-Planning. Tracking issue [#307](https://github.com/yicheng47/runner/issues/307). Work happens on the persistent `rust-ui-nightly` branch during the exploratory phase, then folds into `main` in-tree (see [Branch strategy](#branch-strategy)).
+In progress. Phases 1–3 are complete on the persistent `gpui-nightly` branch; Phase 4 parity slices are next. Tracking issue: [#307](https://github.com/yicheng47/runner/issues/307). See [Branch strategy](#branch-strategy).
 
 ## End state
 
 One native Rust binary. No webview, no JS, no Tauri. The UI is rendered by a Rust GUI framework with `alacritty_terminal` as both the terminal model and the renderer's buffer — one parser, one grid, no serialization boundary. This dissolves the JS/Rust parity tax, the WebGL glyph-atlas bug class, and the WKWebView GPU-context limits by construction (#307).
 
-"Drop Tauri" is the end state, not step one. Tauri currently provides, beyond the webview: app packaging/codesigning/notarization, the updater, native dialogs (folder picker), multi-window management + position restore, logging, process restart, and URL opening. Each needs a native replacement (Phase 5) before Tauri can actually be deleted.
+"Drop Tauri" is the end state, not step one. The Tauri app on `main` currently provides, beyond the webview: app packaging/codesigning/notarization, the updater, native dialogs (folder picker), multi-window management + position restore, logging, process restart, and URL opening. Each needs a native replacement (Phase 5) before the Tauri app can be deleted from `main` at cutover; its trees are already absent from the pioneer branch.
 
 ## What we keep vs. rewrite
 
-Keep (~33k LOC Rust, UI-agnostic already):
+Keep (~33k LOC Rust, now extracted into UI-agnostic crates):
 
-- `src-tauri/src/session/` — PTY session manager (`portable-pty`).
-- `src-tauri/src/router/`, `src-tauri/src/event_bus/`, `src-tauri/src/repo/` + `db.rs` (SQLite), `src-tauri/src/mcp/`, `model.rs`, `error.rs`.
+- `crates/runner-app/src/session/` — PTY session manager (`portable-pty`).
+- `crates/runner-app/src/router/`, `event_bus/`, `repo/`, `db.rs` (SQLite), `mcp/`, `model.rs`, and `error.rs`.
 - `crates/runner-core/`, `cli/` — untouched.
 - The SQLite schema and NDJSON event-log format — the native app reads the same data; you can switch between old and new app against the same state.
 
@@ -41,15 +41,15 @@ Runner is macOS-only today and that stays true for this rewrite (non-goal below)
 
 ## Branch strategy
 
-Revised 2026-07-19 by Jason's decision, superseding the original fold-into-main-behind-a-second-binary plan: `rust-ui-nightly` is a **Tauri-free pioneer branch**. It shares the backend with the Tauri app on `main` and carries the native UI; the two frontends never coexist in one tree.
+Revised 2026-07-19 by Jason's decision, superseding the original fold-into-main-behind-a-second-binary plan: `gpui-nightly` is a **Tauri-free pioneer branch**. It shares the backend with the Tauri app on `main` and carries the native UI; the two frontends never coexist in one tree.
 
-- **Phase 1 (spike)** lived on `rust-ui-nightly`. Messy, throwaway-friendly, rebase allowed while private.
-- **Phase 2 (core extraction)** landed on `main` (PR #310) — a behavior-preserving refactor the current app benefits from (testability, thinner command layer). The shared backend now lives in `crates/runner-app`; the Tauri app is a thin frontend over it.
-- **Nightly composition**: after `main` (with Phase 2) merges in, the Tauri frontend is deleted from nightly — `src/` (React), `src-tauri/`, and the JS toolchain. Nightly keeps only the shared backend (`crates/runner-app`, `crates/runner-core`, `cli/`) plus the native UI (Phase 3+ `crates/runner-native/`). The spike crate (`crates/native-spike/`) is superseded by `runner-native` and removed when the walking skeleton lands.
-- Merge direction stays `main` → nightly on cadence, never the reverse until cutover; cherry-pick incidental fixes (including backend fixes authored on nightly) to `main` immediately. Backend changes flow through `crates/` and merge cleanly. **Accepted cost**: main-side changes under the deleted trees (`src/`, `src-tauri/`) surface as modify/delete conflicts at each merge — resolved by keeping the deletion, after hand-checking whether the change has a backend half that belongs in `crates/runner-app` (the thin command wrappers are the usual case).
+- **Phase 1 (spike)** lived on `phase1-terminal-spike` off `gpui-nightly`. Messy, throwaway-friendly, rebase allowed while private.
+- **Phase 2 (core extraction)** is commit `461356e` on `refactor/0031-app-core`. PR #310 reads merged, but `main` was reset afterward and does not contain the extraction; the Tauri app on `main` therefore still owns the unextracted backend. Nightly composition sources `crates/runner-app` by merging the extraction branch directly.
+- **Nightly composition** landed through `phase3-walking-skeleton` after review and human verification. It merged current `origin/main` plus the Phase 2 extraction, then deleted `src/` (React), `src-tauri/`, and the JS toolchain. The branch keeps only the shared backend (`crates/runner-app`, `crates/runner-core`, `cli/`) plus `crates/runner-native/`; the superseded `crates/native-spike/` is removed.
+- Merge direction stays `main` → nightly on cadence, never the reverse until cutover; cherry-pick incidental fixes (including backend fixes authored on nightly) to `main` immediately. **Accepted cost**: until the extraction re-lands on `main`, main-side backend changes originate under the deleted `src-tauri/` tree and require an explicit hand-port into `crates/runner-app` during cadence merges. Every modify/delete conflict is resolved by keeping the deletion only after checking for that backend half.
 - **Cutover (Phase 6)** becomes a merge of nightly into `main` — the deletion arrives with the merge — rather than an in-place deletion commit on main.
 
-To be decided when the deletion lands on nightly: what replaces the Makefile/CI targets that assume the Tauri app (`make dev`, `pnpm` gates, the release workflow), and whether nightly gets its own CI job building only the Rust workspace.
+Build decision: the pioneer line has Rust-only `fmt`, `clippy`, `test`, and `run-native` Make targets. CI is one macOS Rust-workspace job for pushes and pull requests targeting `gpui-nightly`, including the GPUI Metal Toolchain component; native release packaging remains deferred to Phase 5.
 
 ## Phases
 
@@ -69,21 +69,23 @@ Deliverable: a go/no-go decision memo appended to this doc, plus the spike code 
 
 Also in this phase: start the **terminal fixture corpus** spec 42 promised but never built (#306 closed) — record real claude-code/codex PTY byte logs, snapshot `alacritty_terminal` grid state as the regression suite. The spike renders these fixtures; every later terminal change replays them.
 
-### Phase 2 — Extract the app core (on main)
+### Phase 2 — Extract the app core
 
-Create an app-core crate (name TBD, e.g. `crates/runner-app/`): move the 85 command bodies to plain async fns over `Db`/`SessionManager`/etc.; `#[tauri::command]` wrappers become one-liners. Swap event-bus fanout to a broadcast channel with the Tauri emitter as a subscriber. No behavior change; existing tests are the contract (same shape as impl 0021's repo-layer move).
+Implemented as `crates/runner-app/` at `461356e` on `refactor/0031-app-core`: the 85 command bodies are plain async fns over `Db`/`SessionManager`/etc.; the extraction branch's `#[tauri::command]` wrappers are one-liners. Event-bus fanout uses a broadcast channel with the Tauri emitter as a subscriber. The extraction remains off `main` after its post-merge reset and is consumed directly by the pioneer branch.
 
-This is the strangler seam: after it, the native UI and the Tauri app are two thin frontends over one core, and the rewrite stops touching anything `main` churns.
+This is the intended strangler seam. The pioneer branch uses it now; the Tauri line gains the two-thin-frontends benefit only if the extraction is deliberately re-landed on `main`.
 
 ### Phase 3 — Walking skeleton
 
 `runner-native` binary: boots the app core against the same SQLite DB + logs dir, shows a minimal sidebar listing existing chats, opens one direct chat with a live terminal and working composer (IME included). One vertical slice, end to end, dogfoodable for a single chat.
 
+Phase 3 validates IME in the composer only. Terminal-pane IME is an explicit Phase 4 direct-chat requirement and a cutover blocker: the focused terminal must support marked-text composition and candidate-window positioning, forward only committed UTF-8 text through `SessionManager`, and preserve raw handling for control, navigation, and function keys.
+
 ### Phase 4 — Parity slices, in dogfood order
 
 Each slice ships when it's daily-drivable; use it for real work before starting the next:
 
-1. Direct chats: tabs, panes, layout picker, working/unread indicators, session resume.
+1. Direct chats: tabs, panes, layout picker, working/unread indicators, session resume, and terminal IME input.
 2. Sidebar: projects, folders, tab accordion, drag-reorder, rename, archive.
 3. Missions: event feed, mission workspace terminals, signals, mission lifecycle.
 4. Runners/Crews CRUD: list pages, editors, modals, pagination/search.
@@ -105,7 +107,7 @@ Criteria: 2+ weeks daily-driving the native app exclusively, all Phase 4 slices 
 
 ## Risks
 
-- **Parity treadmill** — the killer risk. `main` keeps growing while nightly chases it. Mitigations: Phase 2 seam (backend features land once, in the core, both UIs get them), dogfood-ordered slices (pressure to finish is intrinsic), and a soft feature-freeze on new *frontend* surface once Phase 3 lands.
+- **Parity treadmill** — the killer risk. `main` keeps growing while nightly chases it. The Phase 2 seam mitigates this only after the extraction exists on both lines; while it remains off `main`, cadence merges require hand-porting backend changes from `src-tauri/` into `crates/runner-app`. The other mitigations are dogfood-ordered slices (pressure to finish is intrinsic) and a soft feature-freeze on new *frontend* surface once Phase 3 lands.
 - **Scale honesty**: this replaces 28k LOC of UI. Solo with agent crews, expect months of part-time sessions, not weeks. The phase gates exist so the project survives motivation dips — every phase ends with something you use.
 - **GPUI churn/docs**: mitigated by the spike and by Zed's terminal code as a living reference; iced is a genuine fallback, not a fig leaf (cosmic-term proves it).
 - **Packaging/notarization** first-time cost: mitigated by doing it once in Phase 1, not at the end.
