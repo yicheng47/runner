@@ -17,10 +17,8 @@ import { eventMatchesShortcut } from "./lib/keymap";
 import { readAppZoom } from "./lib/settings";
 import Crews from "./pages/Crews";
 import CrewEditor from "./pages/CrewEditor";
-import MissionWorkspace from "./pages/MissionWorkspace";
 import Runners from "./pages/Runners";
 import RunnerDetail from "./pages/RunnerDetail";
-import RunnerChat from "./pages/RunnerChat";
 import SettingsPage from "./pages/SettingsPage";
 
 export default function App() {
@@ -84,8 +82,13 @@ export default function App() {
               <Route path="/crews/:crewId" element={<CrewEditor />} />
               <Route path="/runners" element={<Runners />} />
               <Route path="/runners/:handle" element={<RunnerDetail />} />
-              <Route path="/chats/:sessionId" element={<RunnerChat />} />
-              <Route path="/missions/:id" element={<MissionWorkspace />} />
+              {/* Null elements on purpose: the chat surface and mission
+                  workspace render through AppShell's PersistentSurfaces
+                  layer, which keeps them mounted across route changes so
+                  terminals survive visits to the list pages. The routes
+                  still exist so matching works and `*` doesn't redirect. */}
+              <Route path="/chats/:sessionId" element={null} />
+              <Route path="/missions/:id" element={null} />
               <Route path="*" element={<Navigate to="/runners" replace />} />
             </Route>
             {/* Settings takes over the whole window — its own two-column

@@ -11,7 +11,7 @@
 // snapshot covers bytes emitted before a pane first mounts.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -116,8 +116,18 @@ function workspaceDimsFromContainer(
   return terminalGridFromElement(container);
 }
 
-export default function MissionWorkspace() {
-  const { id } = useParams<{ id: string }>();
+// Rendered by PersistentSurfaces (not a route element), which passes the
+// route param in and keeps this surface mounted — `visible: false` —
+// while a non-mission route is shown. Hidden, the workspace must not
+// report its window subject, hold global shortcut listeners, or keep the
+// active slot's terminal active; the gates below key off `visible`.
+export default function MissionWorkspace({
+  missionId: id,
+  visible,
+}: {
+  missionId: string;
+  visible: boolean;
+}) {
   const navigate = useNavigate();
   const [mission, setMission] = useState<Mission | null>(null);
   const [crew, setCrew] = useState<Crew | null>(null);
@@ -161,7 +171,12 @@ export default function MissionWorkspace() {
     () => (id ? { type: "Mission", value: id } : null),
     [id],
   );
-  useReportSubject(subject);
+  // Hidden (keep-alive) workspaces are inert reporters — not active
+  // reporters of []. The hide-flip cleanup releases this window's claim
+  // exactly as unmounting did before PersistentSurfaces (impl 0018),
+  // while staying out of the shared debounce that the newly visible
+  // surface is writing its subjects into.
+  useReportSubject(subject, visible);
   const { secondary: isSecondary, primaryLabel } = isSecondaryFor(
     focusMap,
     myWindowLabel,
@@ -770,8 +785,12 @@ export default function MissionWorkspace() {
   );
 
   // RunnerTerminal re-dispatches the same event when WKWebView delivers
-  // a mission-tab shortcut straight to xterm.
+  // a mission-tab shortcut straight to xterm. Gated on `visible`: a
+  // hidden keep-alive workspace must not cycle its tabs off keystrokes
+  // meant for the visible surface (the chat surface listens for the
+  // same RUNNER_TERMINAL_CYCLE_EVENT).
   useEffect(() => {
+    if (!visible) return;
     const onKeyDown = (e: KeyboardEvent) => {
       const direction =
         eventMatchesShortcut(e, "mission-tab-previous")
@@ -798,7 +817,7 @@ export default function MissionWorkspace() {
       window.removeEventListener("keydown", onKeyDown, { capture: true });
       window.removeEventListener(RUNNER_TERMINAL_CYCLE_EVENT, onCycle);
     };
-  }, [cycleMissionTab]);
+  }, [visible, cycleMissionTab]);
 
   // Project ask_human → human_question pairings + human_response
   // resolutions out of the feed. Mirrors the router's reconstruct_from_log
@@ -1161,7 +1180,10 @@ export default function MissionWorkspace() {
                 events={events}
                 resolvedAsks={resolvedAsks}
                 askersByQuestion={askersByQuestion}
-                active={feedActive}
+                // `visible` gate: a hidden keep-alive workspace keeps
+                // feedActive, but the feed must see itself inactive so
+                // the tab-return re-anchor fires on surface return too.
+                active={visible && feedActive}
                 onError={setError}
               />
               {/* Secondary windows can't send input: human_said is
@@ -1215,7 +1237,10 @@ export default function MissionWorkspace() {
                     <Pane key={s.id} active={activeTab === s.id}>
                       <SlotPtyPane
                         session={s}
-                        active={activeTab === s.id}
+                        // `visible` gate: a hidden keep-alive workspace
+                        // deactivates even its front tab's terminal so it
+                        // releases WebGL and skips geometry pushes.
+                        active={visible && activeTab === s.id}
                         forcedResuming={resumingAll && !archivingMission}
                         anySessionLive={anySessionLive}
                         onError={setError}
