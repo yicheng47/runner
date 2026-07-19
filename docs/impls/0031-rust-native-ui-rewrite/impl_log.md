@@ -70,3 +70,9 @@ Progress record for the Rust-native UI rewrite ([plan](plan.md), issue [#307](ht
 - Repaired the Phase 1 deviation at the integration seam: `runner-app`'s canonical `SessionManager` now owns spawn/resume, environment composition, input, resize, and lifecycle. `runner-native` only attaches an `alacritty_terminal::Term` to the manager snapshot plus `AppCore` broadcasts; it has no direct `portable-pty` lifecycle. A `/bin/cat` integration test proves direct-session output reaches the rendered grid through that path.
 - Removed the superseded spike and its throwaway recorder, lifecycle test, and packaging script; updated the workspace default binary and `make run-native` to `runner-native`. Native validation covers 27 tests, including all recorded PTY fixture replays; `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green.
 - Next: Jason smoke-tests with `make run-native`, clicks a direct chat, verifies terminal input/output, scrolling, resize, and Pinyin composition in the composer. The branch remains local and unmerged until that confirmation.
+
+## 2026-07-19 — Phase 3 review round 1
+
+- Reviewer found three branch-composition issues: the authoritative plan still described Phase 2 as present on `main` and left Makefile/CI undecided; a Tauri sidecar-staging script and release skill survived their deleted targets; CI did not install GPUI's Metal Toolchain prerequisite.
+- Fixed all three: the plan now records the extraction's actual branch and the completed pioneer-line decisions, stale Tauri automation is removed, and CI installs the Metal Toolchain component before building. The bug skill's adjacent version lookup now reads `crates/runner-app/Cargo.toml`.
+- Post-fix validation is green: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, and `git diff --check`.
