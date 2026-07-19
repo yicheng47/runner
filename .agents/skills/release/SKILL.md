@@ -11,12 +11,12 @@ Create a new versioned release for Runners.
 
 1. Ask the user for the version number (e.g. `0.3.0`) if not provided as an argument.
 
-2. Bump version in all three files. **IMPORTANT: Do NOT use `sed` for version bumps.** Instead:
+2. Bump version in all four files. **IMPORTANT: Do NOT use `sed` for version bumps.** Instead:
    - Confirm you're on `main` and the working tree is clean (`git status`). If not, stop and report.
    - Read each file first with the Read tool to confirm the current version string.
-   - Use the Edit tool to replace the version in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`.
+   - Use the Edit tool to replace the version in `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `crates/runner-app/Cargo.toml`.
    - Run `cargo check` in `src-tauri/` to update `Cargo.lock`.
-   - Stage the four changed files (`package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `Cargo.lock`) and commit with message `chore: bump version to v{version}`.
+   - Stage the five changed files (`package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `crates/runner-app/Cargo.toml`, `Cargo.lock`) and commit with message `chore: bump version to v{version}`.
    - Push directly to `main`: `git push origin main`. No PR, no release branch.
 
 3. Tag and push: `git tag -a v{version} -m "v{version}" && git push origin v{version}`

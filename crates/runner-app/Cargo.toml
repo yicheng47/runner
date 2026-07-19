@@ -1,0 +1,61 @@
+[package]
+name = "runner-app"
+# Kept in lockstep with src-tauri / package.json / tauri.conf.json by the
+# release bump. The MCP server no longer reads this (it advertises the
+# app version passed through AppCore), but drift is still confusing.
+version = "0.3.16"
+description = "UI-agnostic application core for Runner: command bodies, session manager, event bus, router, and MCP server"
+edition.workspace = true
+authors.workspace = true
+
+[lib]
+name = "runner_app"
+
+[dependencies]
+runner-core = { path = "../runner-core" }
+log = "0.4"
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = "0.22"
+rusqlite = { version = "0.32", features = ["bundled", "chrono", "serde_json"] }
+# Derived row<->struct mapping for the repo layer (impl 0021). 0.36.x is
+# the release whose rusqlite dependency is 0.32, matching the workspace
+# rusqlite exactly so the Row types unify.
+serde_rusqlite = "0.36"
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+chrono = { workspace = true }
+thiserror = { workspace = true }
+ulid = { workspace = true }
+uuid = { workspace = true }
+# Regular dep (not dev-only) because the sidecar writer needs
+# NamedTempFile::persist for a Windows-safe atomic replace.
+tempfile = "3"
+# Filesystem watcher for the per-mission event-log tail (C7). The
+# `macos_fsevent` backend is the default on macOS; on Linux it falls back to
+# inotify, on Windows to ReadDirectoryChangesW.
+notify = "6"
+# MCP server (impl 0013): Unix socket listener for external clients.
+# The `runner-mcp` sidecar bridges stdio ↔ this socket.
+rmcp = { version = "1.7", features = ["server"] }
+schemars = "1"
+tokio = { version = "1", features = ["net", "rt", "io-util", "sync"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+# Codex MCP config lives in ~/.codex/config.toml; toml_edit preserves
+# user-authored comments + formatting on round-trip writes.
+toml_edit = "0.25"
+
+# Unix-only deps:
+#  - libc: FIFO mkfifo + poll() inside session::tmux_runtime.
+#  - portable-pty: backing crate for session::pty_runtime, the
+#    in-process replacement for tmux (impl 0011). Windows keeps the
+#    tmux fallback until a named-pipe equivalent lands.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+portable-pty = "0.9"
+
+[dev-dependencies]
+# Used by issue #124's forwarder-contention regression test to hold the
+# event-log flock from a second fd; matches the version `runner-core`
+# pulls in transitively so the trait impl resolves identically.
+fs2 = "0.4"

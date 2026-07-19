@@ -5,12 +5,17 @@
 // needed — the frontend only ever *invokes* these commands. Each new window
 // mounts the same React bundle; an optional initial route rides as a URL hash
 // fragment that a tiny frontend bootstrap consumes on mount.
+//
+// These commands stay in the Tauri layer: they drive real OS windows, which
+// the app core has no concept of. Only the registry bookkeeping lives in
+// `runner_app::windows`.
 
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
-use crate::error::{Error, Result};
-use crate::windows::{Subject, WindowEntry};
-use crate::{broadcast_focus_map, AppState};
+use runner_app::error::{Error, Result};
+use runner_app::windows::{Subject, WindowEntry};
+
+use crate::AppState;
 
 /// Shared window-building path used by both the `window_open` command and the
 /// `File → New Window` menu handler. Kept out of the command wrapper so
@@ -72,7 +77,7 @@ pub fn open_window(
     }
 
     state.windows.register(&label);
-    broadcast_focus_map(app);
+    state.broadcast_focus_map();
     Ok(label)
 }
 
@@ -124,13 +129,12 @@ pub fn window_focus_other(app: AppHandle, label: String) -> Result<()> {
 pub fn window_report_subjects(
     window: tauri::WebviewWindow,
     state: State<AppState>,
-    app: AppHandle,
     subjects: Vec<Subject>,
 ) -> Result<()> {
     state.windows.set_subjects(window.label(), subjects);
     let visible = state.windows.focused_direct_sessions(window.label());
-    crate::commands::tab::mark_direct_sessions_viewed(&app, &state, &visible)?;
-    broadcast_focus_map(&app);
+    runner_app::ops::tab::mark_direct_sessions_viewed(&state, &visible)?;
+    state.broadcast_focus_map();
     Ok(())
 }
 
