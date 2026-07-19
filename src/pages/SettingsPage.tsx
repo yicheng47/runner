@@ -4,12 +4,17 @@
 // same persisted width, deliberately, so the takeover reads as
 // continuous). Per-window, like any route.
 //
+// Rendered by AppShell's takeover layer, NOT as the matched route
+// element — the shell (and PersistentSurfaces' terminals) must stay
+// mounted underneath. That means `useParams` can't see `:pane?` here;
+// the pane comes from `matchPath` on the location instead.
+//
 // "Back to app" returns to the location the user came from — entry
 // points pass it via navigation state (`{ from }`); direct loads fall
 // back to `/`.
 
 import { useMemo, useRef, useState, type ComponentType } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { matchPath, useLocation, useNavigate } from "react-router-dom";
 import {
   Archive,
   ArrowLeft,
@@ -102,7 +107,8 @@ function isPaneKey(value: string | undefined): value is PaneKey {
 export default function SettingsPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { pane: paneParam } = useParams();
+  const paneParam = matchPath("/settings/:pane?", location.pathname)?.params
+    .pane;
   const pane: PaneKey = isPaneKey(paneParam) ? paneParam : "general";
   const [query, setQuery] = useState("");
   // Where "Back to app" returns. Captured once — pane switches
