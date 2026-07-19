@@ -71,7 +71,11 @@ import {
   isFreshSpawn,
   snapshotIndicatesTuiReady,
 } from "../lib/sessionLifecycle";
-import { terminalGridFromElement } from "../lib/terminalSizing";
+import {
+  pickRespawnDims,
+  terminalGridFromElement,
+  type TerminalGridSize,
+} from "../lib/terminalSizing";
 import { useDelayedFlag } from "../lib/useDelayedFlag";
 import { useResizableWidth } from "../hooks/useResizableWidth";
 import { useTerminalBg } from "../lib/useTerminalBg";
@@ -573,6 +577,35 @@ export default function MissionWorkspace({
     }
   }, [mission, navigate]);
 
+  // Shared cols/rows source for the respawn paths (reset + resume).
+  // Every slot pane shares the same container rect, so ONE current
+  // measurement serves every slot. Priority lives in
+  // `pickRespawnDims`: the active slot fits fresh, the container
+  // probe reads the current rect, and a hidden terminal's cached
+  // dims — stale after any rail/sidebar/window width change, which
+  // would re-arm the ring purge — are the last resort only.
+  const measureSlotDims = useCallback(
+    (): TerminalGridSize | null =>
+      pickRespawnDims({
+        measureActiveSlot: () =>
+          activeTab !== "feed"
+            ? (terminalsRef.current.get(activeTab)?.measure() ?? null)
+            : null,
+        probeContainer: () =>
+          paneContainerRef.current
+            ? workspaceDimsFromContainer(paneContainerRef.current)
+            : null,
+        readHiddenCache: () => {
+          for (const s of sessions) {
+            const d = terminalsRef.current.get(s.id)?.measure();
+            if (d) return d;
+          }
+          return null;
+        },
+      }),
+    [activeTab, sessions],
+  );
+
   // Reset = wipe the run, respawn slots, keep the mission row. Used
   // for testing — you get the same mission back with a clean event
   // log and fresh PTYs. Confirmed via a modal (`MissionResetConfirm`)
@@ -581,7 +614,11 @@ export default function MissionWorkspace({
   const resetMission = useCallback(async () => {
     if (!mission) return;
     try {
-      const next = await api.mission.reset(mission.id);
+      // Sized respawn: an unsized reset forks PTYs at 80×24 and seeds
+      // the ring purge gate at 80 cols, so the first slot-tab
+      // activation's real-cols push purges the agents' opening output
+      // (see api.mission.reset).
+      const next = await api.mission.reset(mission.id, measureSlotDims());
       setMission(next);
       // Refresh sessions + events. The reset path archives the old
       // session rows and inserts fresh ones, so session_list returns
@@ -610,7 +647,7 @@ export default function MissionWorkspace({
     } catch (e) {
       setError(String(e));
     }
-  }, [mission, setResetConfirmOpen]);
+  }, [mission, setResetConfirmOpen, measureSlotDims]);
 
   // Resume all = iterate stopped/crashed sessions and respawn each.
   // Hits the same `session_resume` path the per-slot Resume button
@@ -621,46 +658,27 @@ export default function MissionWorkspace({
     setResumingAll(true);
     let firstErr: string | null = null;
     try {
-      // Pre-walk for a shared fallback dim. Hidden tabs (display:none
-      // Pane wrappers) have 0×0 rects so their `measure()` may return
-      // null; without a fallback the resume RPC sends (null, null),
+      // ONE current measurement for every stopped slot (see
+      // `measureSlotDims` for the freshness priority). All panes share
+      // the container grid, and a hidden slot's own `measure()` only
+      // returns cached — possibly stale — dims, so per-slot
+      // measurement would just reintroduce the stale-cols respawn.
+      // Without any dims the resume RPC sends (null, null), the
       // backend spawns at 80×24, and the agent paints its `--resume`
-      // conversation history at 80 cols. For main-screen TUIs those
-      // hard-wrapped narrow lines stick in scrollback. Three-tier
-      // fallback:
-      //   1. The clicked-from tab's own `measure()` (always works when
-      //      a slot tab is active).
-      //   2. Any other slot terminal that has been activated before
-      //      and remembers its last-fit dims (every Pane shares the
-      //      same container rect, so any one's dims work for all).
-      //   3. A direct measurement of the Pane container + DOM cell-
-      //      size probe. This catches the "Resume clicked from the
-      //      feed tab with no slot ever activated" path — every slot
-      //      terminal is still at the 80×24 sentinel so (1)/(2) both
-      //      return null.
-      let sharedDims: { cols: number; rows: number } | null = null;
-      for (const s of sessions) {
-        const d = terminalsRef.current.get(s.id)?.measure();
-        if (d) {
-          sharedDims = d;
-          break;
-        }
-      }
-      if (!sharedDims && paneContainerRef.current) {
-        sharedDims = workspaceDimsFromContainer(paneContainerRef.current);
-      }
+      // conversation history at 80 cols — for main-screen TUIs those
+      // hard-wrapped narrow lines stick in scrollback.
+      const sharedDims = measureSlotDims();
       // Best-effort over every stopped slot. Don't bail on the first
       // failure — earlier slots may have already resumed, and the
       // user wants the UI to reflect whatever actually came up.
       // Errors are collected and surfaced after the refresh.
       for (const s of sessions) {
         if (s.status === "running") continue;
-        const dims = terminalsRef.current.get(s.id)?.measure() ?? sharedDims;
         try {
           await api.session.resume(
             s.id,
-            dims?.cols ?? null,
-            dims?.rows ?? null,
+            sharedDims?.cols ?? null,
+            sharedDims?.rows ?? null,
           );
         } catch (e) {
           if (firstErr == null) firstErr = String(e);
@@ -689,7 +707,7 @@ export default function MissionWorkspace({
       if (firstErr != null) setError(firstErr);
       setResumingAll(false);
     }
-  }, [mission, sessions]);
+  }, [mission, sessions, measureSlotDims]);
 
   const archivingMission = useArchivingMission(mission?.id);
 

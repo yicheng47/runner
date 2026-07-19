@@ -14,6 +14,7 @@ import {
   useEffect,
   useImperativeHandle,
   useRef,
+  useState,
 } from "react";
 
 import { listen } from "@tauri-apps/api/event";
@@ -40,6 +41,10 @@ import {
   STORAGE_TERMINAL_SCROLLBACK,
   STORAGE_TERMINAL_THEME,
 } from "../lib/settings";
+import {
+  blankDanceDecision,
+  createBlankRecheckGate,
+} from "../lib/terminalBlank";
 import {
   shouldDelayTerminalResize,
   type TerminalGridSize,
@@ -238,6 +243,18 @@ export const RunnerTerminal = forwardRef<
   // clear those cells first or Codex can repaint text without the
   // gray input background.
   const replayJustDrainedRef = useRef(false);
+  // Live writes still queued in xterm's async write buffer. The
+  // blank-grid dance check (#312) reads the parsed buffer
+  // synchronously, so bytes in this window are invisible to it — a
+  // pane whose repaint is queued would misread as blank and dance,
+  // defeating the transitional latch. While writes are pending,
+  // blank-driven dances defer; the gate coalesces however many defer
+  // observations into ONE recheck when the queue drains (see
+  // createBlankRecheckGate). The gate tracks the terminal, not the
+  // session: writes from a previous session flush into the same xterm
+  // instance, so the write count deliberately survives session swaps —
+  // only the recheck request is cancelled there.
+  const [blankGate] = useState(createBlankRecheckGate);
 
   // Keep the latest sessionId visible to the data/resize callbacks without
   // re-creating the terminal on prop change. The session listener below
@@ -359,7 +376,38 @@ export const RunnerTerminal = forwardRef<
         if (!sid) return true;
         const cols = t.cols;
         const rows = t.rows;
-        if (!forceResizeDance) {
+        // Blank grid must dance (#312). A running session behind an
+        // empty grid has nothing to lose to a forced repaint and no
+        // other way to gain content: the plain push below dedupes
+        // against lastPushed, and even a sent same-size TIOCSWINSZ is
+        // a kernel no-op — so without the dance nothing ever asks the
+        // agent to paint. The transitional latch exists to protect
+        // retained content from a double repaint; a blank grid has
+        // none, so the latch's guarantee is untouched for non-blank
+        // panes (evaluated fresh on every retry — content that
+        // arrived in between keeps the plain-push path). A blank read
+        // taken while live bytes sit unparsed in xterm's async write
+        // queue is stale — the queued bytes may BE the repaint — so
+        // that case defers: plain push now, re-check after the queue
+        // flushes.
+        let mustDance = forceResizeDance;
+        if (!mustDance) {
+          const decision = blankDanceDecision(t, blankGate.pendingWrites());
+          if (decision === "dance") {
+            mustDance = true;
+            console.info(
+              `[terminal] blank-dance session=${sid} cols=${cols} rows=${rows} ` +
+                `lastPushed=${lastPushedColsRef.current}x${lastPushedRowsRef.current}`,
+            );
+          } else if (decision === "defer") {
+            console.info(
+              `[terminal] blank-dance-defer session=${sid} ` +
+                `pendingWrites=${blankGate.pendingWrites()}`,
+            );
+            blankGate.requestRecheck();
+          }
+        }
+        if (!mustDance) {
           if (
             cols === lastPushedColsRef.current &&
             rows === lastPushedRowsRef.current
@@ -421,7 +469,7 @@ export const RunnerTerminal = forwardRef<
         return false;
       }
     },
-    [ensureWebglRenderer],
+    [ensureWebglRenderer, blankGate],
   );
 
   useEffect(() => {
@@ -984,12 +1032,31 @@ export const RunnerTerminal = forwardRef<
     replayDoneRef.current = false;
     replayFlushPendingRef.current = false;
     replayAfterFlushRef.current = [];
+    // The gate's write count is NOT reset: queued writes from the
+    // previous session still flush into this same xterm instance and
+    // decrement it. Only the deferred recheck request is stale.
+    blankGate.cancelRecheck();
     pendingLiveOverflowRef.current = false;
     snapshotRefreshPendingRef.current = false;
     replayJustDrainedRef.current = false;
 
     const writeOutput = (ev: OutputEvent) => {
-      termRef.current?.write(decodeBase64Chunk(ev.data));
+      const t = termRef.current;
+      if (!t) return;
+      // Counted so the blank-dance check can tell "settled blank grid"
+      // from "repaint still queued in xterm's async parser" — see
+      // blankGate. The write callback fires after the chunk is parsed
+      // into the buffer; when the queue drains, at most one deferred
+      // recheck runs against the settled content. Fixed opts: defer
+      // only ever replaces a plain backend push (a forced dance never
+      // defers), and the original pass already applied its focus.
+      blankGate.beginWrite();
+      t.write(decodeBase64Chunk(ev.data), () => {
+        if (!blankGate.endWrite()) return;
+        window.requestAnimationFrame(() => {
+          refreshActiveTerminal({ pushBackendSize: true });
+        });
+      });
     };
 
     // Replay drains only when (a) the snapshot RPC has returned,
@@ -1147,10 +1214,11 @@ export const RunnerTerminal = forwardRef<
       cancelled = true;
       tryDrainReplayRef.current = null;
       replayAfterFlushRef.current = [];
+      blankGate.cancelRecheck();
       unlistenOutput?.();
       unlistenExit?.();
     };
-  }, [sessionId, refreshActiveTerminal]);
+  }, [sessionId, refreshActiveTerminal, blankGate]);
 
   // Latch WHY this terminal is inactive. `active=false` with
   // `disabled=true` is the transitional resume/start window — the canvas

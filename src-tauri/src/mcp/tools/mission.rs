@@ -515,7 +515,9 @@ impl RunnerMcpHandler {
         Parameters(MissionIdArgs { id }): Parameters<MissionIdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let app_state = self.state.app_state();
-        let mission = mission::mission_reset_impl(&app_state, &self.state.app_handle, id)
+        // Headless caller — no workspace to measure, so the respawned
+        // PTYs take the 80×24 default (same as before sizing existed).
+        let mission = mission::mission_reset_impl(&app_state, &self.state.app_handle, id, None)
             .await
             .map_err(mcp_error)?;
         emit_mission_changed(self);

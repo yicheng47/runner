@@ -10,12 +10,20 @@
 // The chat surface and mission workspace don't render through the Outlet
 // at all: PersistentSurfaces keeps them mounted across route changes so
 // their terminals survive visits to the list pages (see that file).
+//
+// Settings (impl 0025) is a full-window takeover without the app
+// Sidebar, but it must not unmount the shell: PersistentSurfaces lives
+// in <main>, and unmounting it cold-remounts every terminal — the
+// half-width-repaint path #309 removed for list pages. The chrome
+// hides (display:none, subtree retained) under a Settings layer
+// instead, and returning is the same active-flip the list pages use.
 
 import { useEffect, useState, type ReactNode } from "react";
-import { Outlet } from "react-router-dom";
+import { matchPath, Outlet, useLocation } from "react-router-dom";
 
 import { PersistentSurfaces } from "./PersistentSurfaces";
 import { Sidebar } from "./Sidebar";
+import SettingsPage from "../pages/SettingsPage";
 import {
   STORAGE_SIDEBAR_COLLAPSED,
   readStoredBool,
@@ -26,6 +34,9 @@ import { eventMatchesShortcut } from "../lib/keymap";
 const SIDEBAR_TOGGLE_EVENT = "runner:toggle-sidebar";
 
 export function AppShell({ children }: { children?: ReactNode }) {
+  const location = useLocation();
+  const settingsActive =
+    matchPath("/settings/:pane?", location.pathname) != null;
   // Sidebar collapsed/expanded lives at the shell so Cmd+S can toggle
   // it from anywhere in the app, not just when the sidebar is the
   // focused subtree.
@@ -46,15 +57,19 @@ export function AppShell({ children }: { children?: ReactNode }) {
     if (!collapsed) setSidebarPreviewOpen(false);
   }, [collapsed]);
 
+  // Both toggle listeners go inert while Settings covers the window —
+  // the hidden chrome must not flip state the user can't see.
   useEffect(() => {
+    if (settingsActive) return;
     const onToggle = () => setCollapsed((prev) => !prev);
     window.addEventListener(SIDEBAR_TOGGLE_EVENT, onToggle);
     return () => window.removeEventListener(SIDEBAR_TOGGLE_EVENT, onToggle);
-  }, []);
+  }, [settingsActive]);
 
   // Skip real text fields, but let xterm's hidden textarea through so
   // terminal focus doesn't swallow the app-level shortcut.
   useEffect(() => {
+    if (settingsActive) return;
     const onKey = (e: KeyboardEvent) => {
       if (!eventMatchesShortcut(e, "toggle-sidebar")) return;
       const target = e.target as HTMLElement | null;
@@ -69,31 +84,41 @@ export function AppShell({ children }: { children?: ReactNode }) {
     };
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
-  }, []);
+  }, [settingsActive]);
 
   return (
     <div className="relative flex h-screen overflow-hidden bg-bg text-fg">
-      {collapsed ? (
-        <div
-          aria-hidden
-          onMouseEnter={() => setSidebarPreviewOpen(true)}
-          className="absolute left-0 top-0 z-30 h-full w-4"
+      {/* `contents` keeps Sidebar and <main> direct flex items; `hidden`
+          swaps to display:none under the Settings takeover without
+          unmounting the subtree (terminals keep their buffers). */}
+      <div className={settingsActive ? "hidden" : "contents"}>
+        {collapsed ? (
+          <div
+            aria-hidden
+            onMouseEnter={() => setSidebarPreviewOpen(true)}
+            className="absolute left-0 top-0 z-30 h-full w-4"
+          />
+        ) : null}
+        <Sidebar
+          collapsed={collapsed}
+          onCollapsedChange={setCollapsed}
+          previewOpen={sidebarPreviewOpen}
+          onPreviewOpenChange={setSidebarPreviewOpen}
         />
+        <main className="relative flex flex-1 flex-col overflow-hidden">
+          <div
+            data-tauri-drag-region
+            className="pointer-events-auto absolute left-0 right-0 top-0 z-10 h-7"
+          />
+          {children ?? <Outlet />}
+          <PersistentSurfaces />
+        </main>
+      </div>
+      {settingsActive ? (
+        <div className="absolute inset-0 z-40">
+          <SettingsPage />
+        </div>
       ) : null}
-      <Sidebar
-        collapsed={collapsed}
-        onCollapsedChange={setCollapsed}
-        previewOpen={sidebarPreviewOpen}
-        onPreviewOpenChange={setSidebarPreviewOpen}
-      />
-      <main className="relative flex flex-1 flex-col overflow-hidden">
-        <div
-          data-tauri-drag-region
-          className="pointer-events-auto absolute left-0 right-0 top-0 z-10 h-7"
-        />
-        {children ?? <Outlet />}
-        <PersistentSurfaces />
-      </main>
     </div>
   );
 }

@@ -19,7 +19,6 @@ import Crews from "./pages/Crews";
 import CrewEditor from "./pages/CrewEditor";
 import Runners from "./pages/Runners";
 import RunnerDetail from "./pages/RunnerDetail";
-import SettingsPage from "./pages/SettingsPage";
 
 export default function App() {
   // Tell the backend the first frame has painted so it can show + focus the
@@ -89,11 +88,16 @@ export default function App() {
                   still exist so matching works and `*` doesn't redirect. */}
               <Route path="/chats/:sessionId" element={null} />
               <Route path="/missions/:id" element={null} />
+              {/* Settings takes over the whole window (impl 0025) but
+                  renders through AppShell's takeover layer, not the
+                  Outlet: routing it outside AppShell unmounted the
+                  shell — and with it PersistentSurfaces — so every
+                  Settings round-trip cold-remounted the terminals
+                  (the half-width-repaint path #309 closed for list
+                  pages). */}
+              <Route path="/settings/:pane?" element={null} />
               <Route path="*" element={<Navigate to="/runners" replace />} />
             </Route>
-            {/* Settings takes over the whole window — its own two-column
-                surface without the app Sidebar (impl 0025). */}
-            <Route path="/settings/:pane?" element={<SettingsPage />} />
           </Routes>
         </BrowserRouter>
       </ToastProvider>

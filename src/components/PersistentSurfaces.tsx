@@ -22,8 +22,9 @@
 //
 // Retention is bounded: at most one chat surface and one mission
 // workspace, keyed to the last-visited id. Settings is a full-window
-// takeover route outside the AppShell, so a Settings round-trip still
-// remounts — that path keeps the cold-mount hardening from #308.
+// takeover but renders through AppShell's takeover layer (this host
+// stays mounted underneath), so a Settings round-trip is the same
+// hide/show flip as a list-page visit.
 
 import { useEffect, useState } from "react";
 import { matchPath, useLocation } from "react-router-dom";

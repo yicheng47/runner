@@ -254,6 +254,10 @@ export function Sidebar({
 }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  // Settings takeover (see AppShell): the sidebar stays mounted but
+  // hidden while `/settings` is shown, so its global shortcuts must go
+  // inert — Cmd+T here would spawn a chat under the takeover.
+  const settingsActive = location.pathname.startsWith("/settings");
   const tabDragSensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 5 },
@@ -652,6 +656,7 @@ export function Sidebar({
   // app's point of view, so Meta shortcuts still win there; Ctrl
   // shortcuts stay with the PTY/TUI.
   useEffect(() => {
+    if (settingsActive) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName?.toLowerCase();
@@ -679,9 +684,10 @@ export function Sidebar({
     };
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
-  }, [activeProjectId]);
+  }, [activeProjectId, settingsActive]);
 
   useEffect(() => {
+    if (settingsActive) return;
     const onKey = (e: KeyboardEvent) => {
       const direction = sidebarNavigationDirectionFromKey(e);
       if (!direction) return;
@@ -715,7 +721,7 @@ export function Sidebar({
       window.removeEventListener("keydown", onKey, { capture: true });
       window.removeEventListener(SIDEBAR_NAVIGATE_EVENT, onNavigate);
     };
-  }, [navigateSidebarPage]);
+  }, [navigateSidebarPage, settingsActive]);
 
   useEffect(() => {
     let unlistenEvents: (() => void) | null = null;
