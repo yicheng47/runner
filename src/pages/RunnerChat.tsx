@@ -10,7 +10,7 @@
 // can't interpret the control sequences these agents emit.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -170,10 +170,18 @@ async function inheritGroupPin(
   }
 }
 
-export default function RunnerChat() {
-  const { sessionId: sessionIdParam } = useParams<{
-    sessionId: string;
-  }>();
+// Rendered by PersistentSurfaces (not a route element), which passes the
+// route param in and keeps this surface mounted — `visible: false` —
+// while a non-chat route is shown. Hidden, the surface must not report
+// window subjects, hold global shortcut listeners, or keep terminals
+// active; every gate below keys off `visible`.
+export default function RunnerChat({
+  sessionId: sessionIdParam,
+  visible,
+}: {
+  sessionId: string;
+  visible: boolean;
+}) {
   const location = useLocation();
   const navigate = useNavigate();
   const activeProject = useActiveProjectScope();
@@ -324,8 +332,14 @@ export default function RunnerChat() {
     sessionId && !paneSessionIds.includes(sessionId)
       ? [sessionId, ...paneSessionIds]
       : paneSessionIds;
+  // Hidden (keep-alive) surfaces report no subjects: navigating to a
+  // list page must release this window's claim exactly as unmounting
+  // did before PersistentSurfaces, or another window could never become
+  // primary for these chats (impl 0018).
   useReportSubjects(
-    subjectIds.map((value) => ({ type: "DirectChat", value }) as Subject),
+    visible
+      ? subjectIds.map((value) => ({ type: "DirectChat", value }) as Subject)
+      : [],
   );
   const secondaryBySession = new Map<string, SecondaryState>(
     subjectIds.map((value) => [
@@ -1034,7 +1048,7 @@ export default function RunnerChat() {
   }, [closePaneById, sessionId]);
 
   useEffect(() => {
-    if (!splitActive) return;
+    if (!visible || !splitActive) return;
     const onKey = (e: KeyboardEvent) => {
       if (!eventMatchesShortcut(e, "close-pane")) return;
       e.preventDefault();
@@ -1044,7 +1058,7 @@ export default function RunnerChat() {
     window.addEventListener("keydown", onKey, { capture: true });
     return () =>
       window.removeEventListener("keydown", onKey, { capture: true });
-  }, [splitActive, closeFocusedPane]);
+  }, [visible, splitActive, closeFocusedPane]);
 
   // Two entry points mirror the sidebar's pattern: a window capture
   // listener for ordinary keystrokes, plus RunnerTerminal's
@@ -1063,7 +1077,7 @@ export default function RunnerChat() {
   );
 
   useEffect(() => {
-    if (!splitActive) return;
+    if (!visible || !splitActive) return;
     const onKey = (e: KeyboardEvent) => {
       const direction =
         eventMatchesShortcut(e, "pane-previous")
@@ -1089,7 +1103,7 @@ export default function RunnerChat() {
       window.removeEventListener("keydown", onKey, { capture: true });
       window.removeEventListener(RUNNER_TERMINAL_CYCLE_EVENT, onCycle);
     };
-  }, [splitActive, cyclePaneFocus]);
+  }, [visible, splitActive, cyclePaneFocus]);
 
   // Stop/resume take a session id: split pane headers control their own
   // session, the topbar controls the URL chat (single) or every visible
@@ -1689,6 +1703,7 @@ export default function RunnerChat() {
           // renders an empty group until the branch above takes over.
           <>
             <ChatPaneGroup
+              surfaceVisible={visible}
               layout={viewLayout}
               grouped={splitActive}
               chats={directSessions}
