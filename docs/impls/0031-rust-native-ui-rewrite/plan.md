@@ -2,7 +2,7 @@
 
 ## Status
 
-Planning. Tracking issue [#307](https://github.com/yicheng47/runner/issues/307). Work happens on the persistent `rust-ui-nightly` branch during the exploratory phase, then folds into `main` in-tree (see [Branch strategy](#branch-strategy)).
+Planning. Tracking issue [#307](https://github.com/yicheng47/runner/issues/307). Work happens on the persistent `gpui-nightly` branch during the exploratory phase, then folds into `main` in-tree (see [Branch strategy](#branch-strategy)).
 
 ## End state
 
@@ -41,9 +41,9 @@ Runner is macOS-only today and that stays true for this rewrite (non-goal below)
 
 ## Branch strategy
 
-Revised 2026-07-19 by Jason's decision, superseding the original fold-into-main-behind-a-second-binary plan: `rust-ui-nightly` is a **Tauri-free pioneer branch**. It shares the backend with the Tauri app on `main` and carries the native UI; the two frontends never coexist in one tree.
+Revised 2026-07-19 by Jason's decision, superseding the original fold-into-main-behind-a-second-binary plan: `gpui-nightly` is a **Tauri-free pioneer branch**. It shares the backend with the Tauri app on `main` and carries the native UI; the two frontends never coexist in one tree.
 
-- **Phase 1 (spike)** lived on `rust-ui-nightly`. Messy, throwaway-friendly, rebase allowed while private.
+- **Phase 1 (spike)** lived on `gpui-nightly`. Messy, throwaway-friendly, rebase allowed while private.
 - **Phase 2 (core extraction)** landed on `main` (PR #310) — a behavior-preserving refactor the current app benefits from (testability, thinner command layer). The shared backend now lives in `crates/runner-app`; the Tauri app is a thin frontend over it.
 - **Nightly composition**: after `main` (with Phase 2) merges in, the Tauri frontend is deleted from nightly — `src/` (React), `src-tauri/`, and the JS toolchain. Nightly keeps only the shared backend (`crates/runner-app`, `crates/runner-core`, `cli/`) plus the native UI (Phase 3+ `crates/runner-native/`). The spike crate (`crates/native-spike/`) is superseded by `runner-native` and removed when the walking skeleton lands.
 - Merge direction stays `main` → nightly on cadence, never the reverse until cutover; cherry-pick incidental fixes (including backend fixes authored on nightly) to `main` immediately. Backend changes flow through `crates/` and merge cleanly. **Accepted cost**: main-side changes under the deleted trees (`src/`, `src-tauri/`) surface as modify/delete conflicts at each merge — resolved by keeping the deletion, after hand-checking whether the change has a backend half that belongs in `crates/runner-app` (the thin command wrappers are the usual case).
