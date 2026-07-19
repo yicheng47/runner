@@ -8,7 +8,7 @@ Phase 3 walking skeleton for [impl 0031](../../docs/impls/0031-rust-native-ui-re
 make run-native
 ```
 
-The release-profile command uses `~/Library/Application Support/com.wycstudios.runner/runner.db`, matching the packaged Tauri app. Debug builds use the matching `-dev` directory. Close the packaged Runner app before launching the native build, click an existing direct chat in the sidebar, then use either the terminal or composer.
+The development command uses `~/Library/Application Support/com.wycstudios.runner-dev/runner.db`, matching the Tauri development environment and keeping production state isolated. A future packaged release build will use the production directory. Click an existing direct chat in the sidebar, then use either the terminal or composer.
 
 GPUI requires the Xcode 26 Metal Toolchain component, already installed on the development machine.
 
@@ -25,6 +25,6 @@ Current corpus: `claude-session` (real interactive TUI boot → prompt → strea
 
 ## Smoke test
 
-1. Close the packaged Runner app, run `make run-native`, and click a stopped direct chat in the sidebar. It should resume the same agent conversation and render its live terminal.
+1. Run `make run-native` and click a stopped direct chat in the sidebar. It should resume the same development conversation and render its live terminal.
 2. Type in the terminal, submit a prompt, scroll, and resize the window. Output, input, and PTY geometry should remain live.
 3. Click the composer, switch to Pinyin, type `中文测试`, choose a candidate, and press Enter once more. Composition should stay anchored in the field and the committed text should submit to the selected chat.
