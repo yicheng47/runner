@@ -6,10 +6,15 @@
 // listener — and any event emitted during the brief reattach window
 // (e.g., the activity event from `session_start_direct` triggered on
 // the chat page's mount) gets lost, leaving the SESSION list stale.
+//
+// The chat surface and mission workspace don't render through the Outlet
+// at all: PersistentSurfaces keeps them mounted across route changes so
+// their terminals survive visits to the list pages (see that file).
 
 import { useEffect, useState, type ReactNode } from "react";
 import { Outlet } from "react-router-dom";
 
+import { PersistentSurfaces } from "./PersistentSurfaces";
 import { Sidebar } from "./Sidebar";
 import {
   STORAGE_SIDEBAR_COLLAPSED,
@@ -87,6 +92,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
           className="pointer-events-auto absolute left-0 right-0 top-0 z-10 h-7"
         />
         {children ?? <Outlet />}
+        <PersistentSurfaces />
       </main>
     </div>
   );

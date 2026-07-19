@@ -56,6 +56,11 @@ export interface PaneChat {
 }
 
 export interface ChatPaneGroupProps {
+  /** False while the whole chat surface is hidden by the keep-alive host
+   *  (PersistentSurfaces): every pane must go inactive so terminals
+   *  release their WebGL context and stop pushing geometry from a
+   *  display:none rect. The buffers stay; re-show is an active flip. */
+  surfaceVisible: boolean;
   /** The layout to render: the store group when the open chat is a member,
    *  else an ephemeral single-leaf layout for it. */
   layout: PaneLayout;
@@ -92,6 +97,7 @@ export interface ChatPaneGroupProps {
 }
 
 export function ChatPaneGroup({
+  surfaceVisible,
   layout,
   grouped,
   chats,
@@ -348,7 +354,7 @@ export function ChatPaneGroup({
             // While the resume/start loader is up the canvas is hidden, so
             // xterm behaves as inactive (no resize pushes, no focus); when
             // the flag clears, the activation effect fits + repaints.
-            active={visible && !transitional}
+            active={surfaceVisible && visible && !transitional}
             autoFocus={visible && paneLeaf.id === layout.focusedPaneId}
             disabled={dead || transitional}
             onExit={onTerminalExit}
