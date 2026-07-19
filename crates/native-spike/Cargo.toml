@@ -4,6 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 authors.workspace = true
 publish = false
+default-run = "native-spike"
 
 # Phase 1 spike for impl 0031: alacritty_terminal rendered by GPUI.
 # Throwaway-friendly; nothing here is a public API.

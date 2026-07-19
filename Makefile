@@ -1,4 +1,4 @@
-.PHONY: dev dev-web build package install lint lint-frontend lint-rust typecheck test test-rust test-ts check fmt fmt-check ci clean clean-all stage-runner-cli-binaries
+.PHONY: dev dev-web build package install lint lint-frontend lint-rust typecheck test test-rust test-ts check fmt fmt-check ci clean clean-all stage-runner-cli-binaries native native-run
 
 # Start Tauri app (frontend + Rust backend) in dev mode
 dev:
@@ -18,6 +18,15 @@ package:
 	@echo "\nPackaged:"
 	@ls -lh src-tauri/target/release/bundle/dmg/*.dmg 2>/dev/null || true
 	@ls -lh src-tauri/target/release/bundle/macos/*.app 2>/dev/null || true
+
+# Build the native UI spike (impl 0031, crates/native-spike)
+native:
+	cargo build -p native-spike
+
+# Run the spike GUI. Release profile — judging the rendering exit
+# criteria on a debug build of gpui would be misleading.
+native-run:
+	cargo run -p native-spike --release
 
 # Install JS deps
 install:
