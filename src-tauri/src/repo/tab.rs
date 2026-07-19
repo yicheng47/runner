@@ -248,6 +248,54 @@ pub fn mark_viewed(
     get(conn, id)
 }
 
+/// Rust mirror of the frontend's `tabHasUnreadCompletion`
+/// (chatAttention.ts): parsed comparison, not string order —
+/// chrono's RFC3339 fractional-second width varies.
+fn has_unread_completion(completed_at: Option<&str>, viewed_at: Option<&str>) -> bool {
+    let Some(completed) =
+        completed_at.and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+    else {
+        return false;
+    };
+    let Some(viewed) = viewed_at.and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+    else {
+        return true;
+    };
+    completed > viewed
+}
+
+/// Startup sweep, run alongside the stale-`running` session demotion:
+/// a completion recorded by a prior app process points at output whose
+/// in-memory ring died with it, so a carried-over unread dot would
+/// advertise a result the app can no longer show. Stamp those tabs
+/// viewed. Returns the number of tabs cleared.
+pub fn clear_unread_on_startup(
+    conn: &Connection,
+    now: chrono::DateTime<Utc>,
+) -> rusqlite::Result<usize> {
+    let mut cleared = 0;
+    for row in list(conn)? {
+        if !has_unread_completion(
+            row.last_completed_at.as_deref(),
+            row.last_viewed_at.as_deref(),
+        ) {
+            continue;
+        }
+        let viewed_at = max_timestamp(
+            &[
+                row.last_viewed_at.as_deref(),
+                row.last_completed_at.as_deref(),
+            ],
+            now,
+        );
+        cleared += conn.execute(
+            "UPDATE tabs SET last_viewed_at = ?2 WHERE id = ?1",
+            rusqlite::params![row.id, viewed_at],
+        )?;
+    }
+    Ok(cleared)
+}
+
 pub fn ensure_active_sessions(conn: &Connection) -> rusqlite::Result<()> {
     let covered: HashSet<String> = list(conn)?.iter().flat_map(session_ids).collect();
     let mut stmt = conn.prepare(
@@ -417,6 +465,56 @@ mod tests {
             parsed(visible_completion.last_completed_at.as_deref()),
             parsed(visible_completion.last_viewed_at.as_deref())
         );
+    }
+
+    #[test]
+    fn startup_clear_stamps_only_unread_completions_viewed() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let unread = super::create(
+            &conn,
+            None,
+            "unread",
+            0,
+            r#"{"preset":"single","slots":["s1"],"sizes":{}}"#,
+        )
+        .unwrap();
+        let viewed = super::create(
+            &conn,
+            None,
+            "viewed",
+            1,
+            r#"{"preset":"single","slots":["s2"],"sizes":{}}"#,
+        )
+        .unwrap();
+        let fresh = super::create(
+            &conn,
+            None,
+            "fresh",
+            2,
+            r#"{"preset":"single","slots":["s3"],"sizes":{}}"#,
+        )
+        .unwrap();
+
+        let completed_at = chrono::Utc.timestamp_opt(200, 0).single().unwrap();
+        super::record_completion(&conn, &unread.id, false, completed_at).unwrap();
+        super::record_completion(&conn, &viewed.id, true, completed_at).unwrap();
+        let viewed_before = super::get(&conn, &viewed.id).unwrap().unwrap();
+
+        let now = chrono::Utc.timestamp_opt(300, 0).single().unwrap();
+        assert_eq!(super::clear_unread_on_startup(&conn, now).unwrap(), 1);
+
+        let unread_after = super::get(&conn, &unread.id).unwrap().unwrap();
+        assert!(
+            parsed(unread_after.last_viewed_at.as_deref())
+                >= parsed(unread_after.last_completed_at.as_deref())
+        );
+        let viewed_after = super::get(&conn, &viewed.id).unwrap().unwrap();
+        assert_eq!(viewed_after.last_viewed_at, viewed_before.last_viewed_at);
+        let fresh_after = super::get(&conn, &fresh.id).unwrap().unwrap();
+        assert_eq!(fresh_after.last_viewed_at, None);
+
+        assert_eq!(super::clear_unread_on_startup(&conn, now).unwrap(), 0);
     }
 
     #[test]

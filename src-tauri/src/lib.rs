@@ -248,6 +248,24 @@ pub fn run() {
                 }
             }
 
+            // Same staleness rule for tab attention: an unviewed
+            // completion from a prior process points at output whose
+            // in-memory ring died with it, so the sidebar's unread
+            // dot would advertise a result the app can no longer
+            // show. Stamp them viewed.
+            match pool.get() {
+                Ok(conn) => match repo::tab::clear_unread_on_startup(&conn, chrono::Utc::now()) {
+                    Ok(cleared) if cleared > 0 => {
+                        log::info!(
+                            "startup cleanup: cleared {cleared} stale unread tab completion(s)"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => log::warn!("tab unread startup cleanup failed: {e}"),
+                },
+                Err(e) => log::warn!("tab unread startup cleanup failed: {e}"),
+            }
+
             app.manage(state);
 
             // Build the app menu and wire the `runner_logs_reveal`
