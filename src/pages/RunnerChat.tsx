@@ -332,14 +332,14 @@ export default function RunnerChat({
     sessionId && !paneSessionIds.includes(sessionId)
       ? [sessionId, ...paneSessionIds]
       : paneSessionIds;
-  // Hidden (keep-alive) surfaces report no subjects: navigating to a
-  // list page must release this window's claim exactly as unmounting
-  // did before PersistentSurfaces, or another window could never become
-  // primary for these chats (impl 0018).
+  // Hidden (keep-alive) surfaces are inert reporters — not active
+  // reporters of []. The hide-flip cleanup releases this window's claim
+  // exactly as unmounting did before PersistentSurfaces (impl 0018),
+  // while staying out of the shared debounce that the newly visible
+  // surface is writing its subjects into.
   useReportSubjects(
-    visible
-      ? subjectIds.map((value) => ({ type: "DirectChat", value }) as Subject)
-      : [],
+    subjectIds.map((value) => ({ type: "DirectChat", value }) as Subject),
+    visible,
   );
   const secondaryBySession = new Map<string, SecondaryState>(
     subjectIds.map((value) => [
@@ -794,15 +794,27 @@ export default function RunnerChat({
   }, [starting, sessionId]);
 
   // Surface non-fatal session warnings (today: agent-resume fallback).
-  // Mounted once per page — only one direct chat is in view at a time,
-  // so we don't need to filter by session id here. Re-subscribing on
-  // every directSessions change would tear down and recreate the
-  // listener constantly during spawn handshakes.
+  // Mounted once for the surface's lifetime — re-subscribing on every
+  // directSessions change would tear down and recreate the listener
+  // constantly during spawn handshakes. This surface stays mounted while
+  // hidden (PersistentSurfaces), so it can no longer assume it is the
+  // only page alive: filter to direct-chat warnings for sessions this
+  // surface shows, or a mission resume fallback captured while hidden
+  // would render later as an unrelated chat banner. The ref keeps the
+  // filter current without re-subscribing.
+  const warningSessionIdsRef = useRef<string[]>([]);
+  useEffect(() => {
+    warningSessionIdsRef.current = subjectIds;
+  });
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
     void (async () => {
       const fn = await listen<WarningEvent>("session/warning", (event) => {
+        if (event.payload.mission_id !== null) return;
+        if (!warningSessionIdsRef.current.includes(event.payload.session_id)) {
+          return;
+        }
         setWarning(event.payload.message);
       });
       if (cancelled) {

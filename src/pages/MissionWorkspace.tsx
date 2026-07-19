@@ -171,10 +171,12 @@ export default function MissionWorkspace({
     () => (id ? { type: "Mission", value: id } : null),
     [id],
   );
-  // Hidden (keep-alive) workspaces report no subject: navigating away
-  // must release this window's claim exactly as unmounting did before
-  // PersistentSurfaces (impl 0018).
-  useReportSubject(visible ? subject : null);
+  // Hidden (keep-alive) workspaces are inert reporters — not active
+  // reporters of []. The hide-flip cleanup releases this window's claim
+  // exactly as unmounting did before PersistentSurfaces (impl 0018),
+  // while staying out of the shared debounce that the newly visible
+  // surface is writing its subjects into.
+  useReportSubject(subject, visible);
   const { secondary: isSecondary, primaryLabel } = isSecondaryFor(
     focusMap,
     myWindowLabel,
@@ -1178,7 +1180,10 @@ export default function MissionWorkspace({
                 events={events}
                 resolvedAsks={resolvedAsks}
                 askersByQuestion={askersByQuestion}
-                active={feedActive}
+                // `visible` gate: a hidden keep-alive workspace keeps
+                // feedActive, but the feed must see itself inactive so
+                // the tab-return re-anchor fires on surface return too.
+                active={visible && feedActive}
                 onError={setError}
               />
               {/* Secondary windows can't send input: human_said is

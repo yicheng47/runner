@@ -105,29 +105,40 @@ export function reportSubjectsNow(subjects: Subject[]): void {
 }
 
 /**
- * Report `subjects` on mount and clear them (report []) on unmount. Subject
- * pages (MissionWorkspace, RunnerChat) call this; the unmount-clear is what
- * lets the focus map go empty when the user navigates to a non-subject page
- * that doesn't report anything itself. RunnerChat passes one subject per
- * visible pane so a split window owns every session it shows (impl 0020).
+ * Report `subjects` while `enabled` and clear them (report []) when the
+ * reporter is disabled or unmounts. Subject pages (MissionWorkspace,
+ * RunnerChat) call this; the disable/unmount-clear is what lets the focus
+ * map go empty when the user navigates to a non-subject page that doesn't
+ * report anything itself. RunnerChat passes one subject per visible pane so
+ * a split window owns every session it shows (impl 0020).
+ *
+ * `enabled: false` makes the reporter fully inert rather than an active
+ * reporter of []. Both keep-alive surfaces (PersistentSurfaces) stay
+ * mounted and share the module-global last-write-wins debounce above, so a
+ * hidden surface that kept reporting [] would race the newly visible
+ * surface's report and could erase this window's claim (its create-effect
+ * runs after the visible surface's in mount order). Inert means the only
+ * [] report is the cleanup on the visible → hidden flip, which React runs
+ * before the other surface's create-effect in the same commit.
  */
-export function useReportSubjects(subjects: Subject[]): void {
+export function useReportSubjects(subjects: Subject[], enabled = true): void {
   // Key by content, not array identity, so the effect re-fires only on a
   // real subject-set change rather than every render.
   const key = subjects.map((s) => `${s.type}:${s.value}`).join(",");
   useEffect(() => {
+    if (!enabled) return;
     reportSubjects(subjects);
     return () => {
       reportSubjects([]);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, enabled]);
 }
 
 /** Single-subject convenience over `useReportSubjects` for surfaces that
  *  only ever show one subject (MissionWorkspace). */
-export function useReportSubject(subject: Subject | null): void {
-  useReportSubjects(subject ? [subject] : []);
+export function useReportSubject(subject: Subject | null, enabled = true): void {
+  useReportSubjects(subject ? [subject] : [], enabled);
 }
 
 function sameSubject(a: Subject | null, b: Subject | null): boolean {
