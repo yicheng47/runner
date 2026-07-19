@@ -1,7 +1,7 @@
 //! The regression harness (impl 0031 Phase 1): recorded PTY byte
 //! logs replayed into `alacritty_terminal`, visible grid compared
 //! against blessed snapshots. Re-bless after intentional changes:
-//! `UPDATE_SNAPSHOTS=1 cargo test -p native-spike`.
+//! `UPDATE_SNAPSHOTS=1 cargo test -p runner-native`.
 
 use std::path::{Path, PathBuf};
 
@@ -10,8 +10,8 @@ use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
 
-use native_spike::fixtures::Fixture;
-use native_spike::replay::{
+use runner_native::fixtures::Fixture;
+use runner_native::replay::{
     feed, new_term, replay_bytes, replay_fixture, screen_snapshot, visible_lines,
 };
 
@@ -39,7 +39,7 @@ fn fixture_corpus_snapshots() {
         } else {
             let expected = std::fs::read_to_string(&expected_path).unwrap_or_else(|_| {
                 panic!(
-                    "missing {} — run UPDATE_SNAPSHOTS=1 cargo test -p native-spike",
+                    "missing {} — run UPDATE_SNAPSHOTS=1 cargo test -p runner-native",
                     expected_path.display()
                 )
             });
@@ -138,8 +138,14 @@ fn resize_reflows_wrapped_lines() {
 
     term.resize(TermSize::new(10, 6));
     assert_eq!(term.history_size(), 2);
-    assert_eq!(native_spike::replay::row_to_string(&term, -2), "abcdefghij");
-    assert_eq!(native_spike::replay::row_to_string(&term, -1), "klmnopqrst");
+    assert_eq!(
+        runner_native::replay::row_to_string(&term, -2),
+        "abcdefghij"
+    );
+    assert_eq!(
+        runner_native::replay::row_to_string(&term, -1),
+        "klmnopqrst"
+    );
     assert_eq!(visible_lines(&term)[0], "uvwxyz0123");
     assert_eq!(
         term.grid().cursor.point,

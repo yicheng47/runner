@@ -1,3 +1,4 @@
+pub mod bootstrap;
 pub mod fixtures;
 pub mod palette;
 pub mod replay;

@@ -29,21 +29,16 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 
 ## Stack
 
-- Frontend: React 19, TypeScript, Tailwind CSS 4, Vite, React Router.
-- Desktop/backend: Tauri 2, Rust, SQLite via `rusqlite`.
+- Native UI: GPUI with `alacritty_terminal` as the terminal model and render buffer.
+- Application core: Rust, SQLite via `rusqlite`, exposed by `crates/runner-app`.
 - PTY runtime: `portable-pty`.
 - Event transport: append-only NDJSON logs watched through `notify`.
 - Bundled CLI: `runner`, built from the `cli/` workspace member.
 
 ## Project Map
 
-- `src/`: React frontend.
-- `src/components/`: shared UI and runtime components.
-- `src/pages/`: route-level screens.
-- `src-tauri/src/commands/`: Tauri command handlers.
-- `src-tauri/src/session/`: PTY session manager.
-- `src-tauri/src/event_bus/`: mission log watcher and Tauri event fanout.
-- `src-tauri/src/router/`: signal router and runtime prompt adapter.
+- `crates/runner-native/`: GPUI application, terminal renderer, composer, and terminal fixture corpus.
+- `crates/runner-app/`: UI-agnostic application core, including SQLite, session manager, event bus, router, and MCP server.
 - `cli/`: bundled `runner` CLI used by spawned agents.
 - `crates/runner-core/`: shared event-log primitives.
 - `design/`: Pencil source files.
@@ -55,15 +50,12 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 
 ## Development Commands
 
-- Install deps: `pnpm install`.
-- Start app in dev: `pnpm tauri dev` or `make dev`.
-- Frontend typecheck: `pnpm exec tsc --noEmit` or `make typecheck`.
-- Frontend lint: `pnpm run lint` or `make lint`.
-- Rust tests: `cargo test --workspace` or `make test-rust`.
-- Full local test target: `make test`.
+- Start the native app in release mode: `make run-native`.
+- Format: `make fmt`.
+- Clippy: `make clippy`.
+- Workspace tests: `make test`.
 
-Prefer the smallest check that covers the change. For frontend changes, run
-typecheck and lint. For Rust behavior, run relevant `cargo test` targets.
+Prefer the smallest check that covers the change. For native UI changes, run the `runner-native` tests plus workspace clippy; for core behavior, run the relevant crate tests.
 
 ## Engineering Conventions
 

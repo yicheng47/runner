@@ -1,4 +1,4 @@
-//! Tokyo Night constants for the spike chrome (grid colors come from
+//! Tokyo Night constants for the native shell (grid colors come from
 //! `palette`).
 
 use gpui::{rgb, rgba, Hsla};

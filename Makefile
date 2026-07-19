@@ -10,4 +10,4 @@ test:
 	cargo test --workspace
 
 run-native:
-	cargo run -p native-spike --release
+	cargo run -p runner-native --release

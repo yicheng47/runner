@@ -3578,22 +3578,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "native-spike"
-version = "0.0.0"
-dependencies = [
- "alacritty_terminal",
- "anyhow",
- "base64",
- "clap",
- "futures",
- "gpui",
- "portable-pty",
- "serde",
- "serde_json",
- "unicode-segmentation",
-]
-
-[[package]]
 name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4942,6 +4926,23 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "ulid",
+]
+
+[[package]]
+name = "runner-native"
+version = "0.3.17"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "base64",
+ "futures",
+ "gpui",
+ "runner-app",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "unicode-segmentation",
 ]
 
 [[package]]

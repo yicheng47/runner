@@ -14,8 +14,8 @@ use gpui::{
     Styled as _, TextRun, UTF16Selection, UnderlineStyle, Window,
 };
 
-use native_spike::terminal::TerminalSession;
-use native_spike::text_util;
+use runner_native::terminal::TerminalSession;
+use runner_native::text_util;
 
 use crate::theme;
 
@@ -55,7 +55,7 @@ impl Composer {
             focus_handle,
             session,
             content: "".into(),
-            placeholder: "Type here (IME test field) — Enter sends to the terminal".into(),
+            placeholder: "Message this chat — Enter to send".into(),
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -69,9 +69,10 @@ impl Composer {
         if self.marked_range.is_some() || self.content.is_empty() {
             return;
         }
-        let mut bytes = self.content.as_bytes().to_vec();
-        bytes.push(b'\r');
-        self.session.write_bytes(&bytes);
+        if let Err(error) = self.session.submit_text(&self.content) {
+            self.placeholder = format!("Send failed: {error}").into();
+            return;
+        }
         self.content = "".into();
         self.selected_range = 0..0;
         self.marked_range = None;

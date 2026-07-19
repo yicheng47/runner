@@ -1,0 +1,391 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex, Weak};
+use std::thread;
+
+use alacritty_terminal::event::{Event, EventListener, WindowSize};
+use alacritty_terminal::grid::Scroll;
+use alacritty_terminal::sync::FairMutex;
+use alacritty_terminal::term::test::TermSize;
+use alacritty_terminal::term::{Config, Term, TermMode};
+use alacritty_terminal::vte::ansi::Processor;
+use anyhow::{Context as _, Result};
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
+use runner_app::events::AppEvent;
+use runner_app::session::manager::OutputEvent;
+use runner_app::AppCore;
+use tokio::sync::broadcast::error::RecvError;
+
+use crate::palette;
+
+pub struct EventProxy {
+    tx: Sender<Event>,
+    waker: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl EventListener for EventProxy {
+    fn send_event(&self, event: Event) {
+        let _ = self.tx.send(event);
+        (self.waker)();
+    }
+}
+
+pub fn query_color<T>(
+    term: &Term<T>,
+    index: usize,
+    base: &[alacritty_terminal::vte::ansi::Rgb; 256],
+) -> alacritty_terminal::vte::ansi::Rgb {
+    let stored = if index < alacritty_terminal::term::color::COUNT {
+        term.colors()[index]
+    } else {
+        None
+    };
+    stored.unwrap_or_else(|| palette::resolve_index(index, base))
+}
+
+#[derive(Default)]
+struct SequenceState {
+    last: u64,
+    synthetic_prefix_seen: bool,
+}
+
+pub struct TerminalSession {
+    pub term: Arc<FairMutex<Term<EventProxy>>>,
+    core: AppCore,
+    session_id: String,
+    parser: Mutex<Processor>,
+    sequence: Mutex<SequenceState>,
+    size: Arc<Mutex<(u16, u16)>>,
+    title: Arc<Mutex<String>>,
+    waker: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl TerminalSession {
+    pub fn attach(
+        core: AppCore,
+        session_id: String,
+        cols: u16,
+        rows: u16,
+        waker: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Arc<Self>> {
+        let (tx, rx) = mpsc::channel::<Event>();
+        let proxy = EventProxy {
+            tx,
+            waker: Arc::clone(&waker),
+        };
+        let term = Arc::new(FairMutex::new(Term::new(
+            Config::default(),
+            &TermSize::new(cols as usize, rows as usize),
+            proxy,
+        )));
+        let size = Arc::new(Mutex::new((cols, rows)));
+        let title = Arc::new(Mutex::new(String::new()));
+        let session = Arc::new(Self {
+            term: Arc::clone(&term),
+            core: core.clone(),
+            session_id: session_id.clone(),
+            parser: Mutex::new(Processor::new()),
+            sequence: Mutex::new(SequenceState::default()),
+            size: Arc::clone(&size),
+            title: Arc::clone(&title),
+            waker,
+        });
+
+        let term_for_events = Arc::downgrade(&term);
+        thread::Builder::new()
+            .name(format!("native-term-events-{session_id}"))
+            .spawn(move || {
+                let base = palette::base_palette();
+                let write = |bytes: &[u8]| {
+                    let _ = core.sessions.inject_stdin(&session_id, bytes);
+                };
+                while let Ok(event) = rx.recv() {
+                    match event {
+                        Event::PtyWrite(text) => write(text.as_bytes()),
+                        Event::ColorRequest(index, format) => {
+                            let rgb = term_for_events
+                                .upgrade()
+                                .map(|term| query_color(&*term.lock_unfair(), index, &base))
+                                .unwrap_or_else(|| palette::resolve_index(index, &base));
+                            write(format(rgb).as_bytes());
+                        }
+                        Event::TextAreaSizeRequest(format) => {
+                            let (cols, rows) = *size.lock().unwrap();
+                            let reply = format(WindowSize {
+                                num_lines: rows,
+                                num_cols: cols,
+                                cell_width: 0,
+                                cell_height: 0,
+                            });
+                            write(reply.as_bytes());
+                        }
+                        Event::Title(new_title) => {
+                            *title.lock().unwrap() = new_title;
+                        }
+                        Event::ResetTitle => {
+                            title.lock().unwrap().clear();
+                        }
+                        _ => {}
+                    }
+                }
+            })
+            .context("spawn terminal event thread")?;
+
+        Ok(session)
+    }
+
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub fn title(&self) -> String {
+        self.title.lock().unwrap().clone()
+    }
+
+    pub fn feed_output(&self, event: &OutputEvent) -> Result<()> {
+        self.feed_encoded(event.seq, &event.data)
+    }
+
+    fn feed_encoded(&self, seq: u64, data: &str) -> Result<()> {
+        let bytes = B64.decode(data).context("decode session output")?;
+        let mut sequence = self.sequence.lock().unwrap();
+        if seq == 0 {
+            if sequence.synthetic_prefix_seen {
+                return Ok(());
+            }
+            sequence.synthetic_prefix_seen = true;
+        } else {
+            if seq <= sequence.last {
+                return Ok(());
+            }
+            sequence.last = seq;
+        }
+        let mut parser = self.parser.lock().unwrap();
+        let mut term = self.term.lock();
+        parser.advance(&mut *term, &bytes);
+        drop(term);
+        drop(parser);
+        drop(sequence);
+        (self.waker)();
+        Ok(())
+    }
+
+    pub fn submit_text(&self, text: &str) -> runner_app::error::Result<()> {
+        self.write_user_bytes(text.as_bytes())?;
+        self.write_user_bytes(b"\r")
+    }
+
+    pub fn write_user_bytes(&self, bytes: &[u8]) -> runner_app::error::Result<()> {
+        self.core
+            .sessions
+            .inject_direct_stdin(&self.session_id, bytes, &self.core.session_events())
+    }
+
+    pub fn send_key(
+        &self,
+        key: &str,
+        ctrl: bool,
+        alt: bool,
+        key_char: Option<&str>,
+    ) -> runner_app::error::Result<bool> {
+        let app_cursor = self
+            .term
+            .lock_unfair()
+            .mode()
+            .contains(TermMode::APP_CURSOR);
+        let mut bytes: Vec<u8> = Vec::new();
+        if ctrl {
+            let encoded = match key {
+                k if k.len() == 1 && k.as_bytes()[0].is_ascii_alphabetic() => {
+                    Some(k.as_bytes()[0].to_ascii_uppercase() - b'@')
+                }
+                "space" | "@" => Some(0),
+                "[" => Some(0x1b),
+                "\\" => Some(0x1c),
+                "]" => Some(0x1d),
+                _ => None,
+            };
+            match encoded {
+                Some(byte) => bytes.push(byte),
+                None => return Ok(false),
+            }
+        } else {
+            let sequence: &[u8] = match key {
+                "enter" => b"\r",
+                "backspace" => b"\x7f",
+                "tab" => b"\t",
+                "escape" => b"\x1b",
+                "up" if app_cursor => b"\x1bOA",
+                "down" if app_cursor => b"\x1bOB",
+                "right" if app_cursor => b"\x1bOC",
+                "left" if app_cursor => b"\x1bOD",
+                "up" => b"\x1b[A",
+                "down" => b"\x1b[B",
+                "right" => b"\x1b[C",
+                "left" => b"\x1b[D",
+                "home" => b"\x1b[H",
+                "end" => b"\x1b[F",
+                "pageup" => b"\x1b[5~",
+                "pagedown" => b"\x1b[6~",
+                "delete" => b"\x1b[3~",
+                "space" => b" ",
+                _ => match key_char {
+                    Some(text) if !text.is_empty() => text.as_bytes(),
+                    _ => return Ok(false),
+                },
+            };
+            bytes.extend_from_slice(sequence);
+        }
+        if alt {
+            bytes.insert(0, 0x1b);
+        }
+        self.write_user_bytes(&bytes)?;
+        Ok(true)
+    }
+
+    pub fn paste(&self, text: &str) -> runner_app::error::Result<()> {
+        let bracketed = self
+            .term
+            .lock_unfair()
+            .mode()
+            .contains(TermMode::BRACKETED_PASTE);
+        let sanitized = text.replace('\x1b', "");
+        if bracketed {
+            let mut bytes = b"\x1b[200~".to_vec();
+            bytes.extend_from_slice(sanitized.as_bytes());
+            bytes.extend_from_slice(b"\x1b[201~");
+            self.write_user_bytes(&bytes)
+        } else {
+            self.write_user_bytes(sanitized.as_bytes())
+        }
+    }
+
+    pub fn resize(&self, cols: u16, rows: u16) {
+        let cols = cols.max(2);
+        let rows = rows.max(2);
+        {
+            let mut size = self.size.lock().unwrap();
+            if *size == (cols, rows) {
+                return;
+            }
+            *size = (cols, rows);
+        }
+        let _ = self
+            .core
+            .sessions
+            .resize(&self.session_id, cols, rows, &self.core.db);
+        self.term
+            .lock()
+            .resize(TermSize::new(cols as usize, rows as usize));
+    }
+
+    pub fn scroll(&self, delta_lines: i32) {
+        self.term.lock().scroll_display(Scroll::Delta(delta_lines));
+    }
+
+    pub fn scroll_to_bottom(&self) {
+        self.term.lock().scroll_display(Scroll::Bottom);
+    }
+}
+
+pub struct TerminalBridge {
+    core: AppCore,
+    active: Mutex<Option<Arc<TerminalSession>>>,
+    refresh_sessions: AtomicBool,
+    waker: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl TerminalBridge {
+    pub fn new(core: AppCore, waker: Arc<dyn Fn() + Send + Sync>) -> Result<Arc<Self>> {
+        let mut receiver = core.events.subscribe();
+        let bridge = Arc::new(Self {
+            core,
+            active: Mutex::new(None),
+            refresh_sessions: AtomicBool::new(false),
+            waker,
+        });
+        let weak: Weak<Self> = Arc::downgrade(&bridge);
+        thread::Builder::new()
+            .name("native-app-events".into())
+            .spawn(move || loop {
+                match receiver.blocking_recv() {
+                    Ok(event) => {
+                        let Some(bridge) = weak.upgrade() else {
+                            break;
+                        };
+                        bridge.handle_event(event);
+                    }
+                    Err(RecvError::Lagged(_)) => {
+                        let Some(bridge) = weak.upgrade() else {
+                            break;
+                        };
+                        bridge.resync_active();
+                        bridge.refresh_sessions.store(true, Ordering::Release);
+                        (bridge.waker)();
+                    }
+                    Err(RecvError::Closed) => break,
+                }
+            })
+            .context("spawn app event thread")?;
+        Ok(bridge)
+    }
+
+    pub fn attach(&self, session: Arc<TerminalSession>) -> Result<()> {
+        let mut active = self.active.lock().unwrap();
+        let snapshot =
+            runner_app::ops::session::session_output_snapshot(&self.core, session.session_id())
+                .context("load terminal output snapshot")?;
+        for event in &snapshot {
+            session.feed_output(event)?;
+        }
+        *active = Some(session);
+        Ok(())
+    }
+
+    pub fn take_session_refresh(&self) -> bool {
+        self.refresh_sessions.swap(false, Ordering::AcqRel)
+    }
+
+    fn handle_event(&self, event: AppEvent) {
+        match event.name {
+            "session/output" => {
+                let Some(session_id) = event.payload.get("session_id").and_then(|v| v.as_str())
+                else {
+                    return;
+                };
+                let Some(seq) = event.payload.get("seq").and_then(|v| v.as_u64()) else {
+                    return;
+                };
+                let Some(data) = event.payload.get("data").and_then(|v| v.as_str()) else {
+                    return;
+                };
+                let active = self.active.lock().unwrap();
+                if let Some(session) = active.as_ref() {
+                    if session.session_id() == session_id {
+                        let _ = session.feed_encoded(seq, data);
+                    }
+                }
+            }
+            "session/exit" | "session/updated" | "session/archived" => {
+                self.refresh_sessions.store(true, Ordering::Release);
+                (self.waker)();
+            }
+            _ => {}
+        }
+    }
+
+    fn resync_active(&self) {
+        let active = self.active.lock().unwrap();
+        let Some(session) = active.as_ref() else {
+            return;
+        };
+        if let Ok(snapshot) =
+            runner_app::ops::session::session_output_snapshot(&self.core, session.session_id())
+        {
+            for event in &snapshot {
+                let _ = session.feed_output(event);
+            }
+        }
+    }
+}
