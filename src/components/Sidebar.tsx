@@ -112,7 +112,6 @@ import {
   removeArchivedSessionFromLayout,
   hydratePaneLayoutsFromDb,
   moveSessionTabToFolder,
-  moveTabToFolder,
   reorderTab,
   setGroupNameForSession,
   useFolders,
@@ -1009,33 +1008,6 @@ export function Sidebar({
       refreshMissions,
       refreshProjects,
     ],
-  );
-
-  const moveMissionToProject = useCallback(
-    async (mission: MissionSummary, projectId: string | null) => {
-      try {
-        await api.mission.setProject(mission.id, projectId);
-        await refreshMissions();
-      } catch (e) {
-        console.error("sidebar: mission_set_project failed", e);
-      }
-    },
-    [refreshMissions],
-  );
-
-  const moveChatTabToProject = useCallback(
-    async (members: DirectSessionEntry[], projectId: string | null) => {
-      try {
-        await api.session.setProject(
-          members.map((member) => member.session_id),
-          projectId,
-        );
-        await refreshDirectSessions();
-      } catch (e) {
-        console.error("sidebar: session_set_project failed", e);
-      }
-    },
-    [refreshDirectSessions],
   );
 
   const archiveSession = useCallback(
@@ -2367,20 +2339,6 @@ export function Sidebar({
           anchorY={chatTabMenu.y}
           renameLabel="Rename tab"
           archiveLabel={chatTabArchiveLabel(chatTabMenu.layout)}
-          folders={folders}
-          currentFolderId={chatTabMenu.layout.folderId}
-          onMoveToFolder={(folderId) => {
-            void moveTabToFolder(chatTabMenu.layout.id, folderId).catch((e) =>
-              console.error("sidebar: tab_move_to_folder failed", e),
-            );
-            closeChatTabMenu();
-          }}
-          projects={projects}
-          currentProjectId={projectIdForTab(chatTabMenu.members)}
-          onMoveToProject={(projectId) => {
-            void moveChatTabToProject(chatTabMenu.members, projectId);
-            closeChatTabMenu();
-          }}
           onClose={closeChatTabMenu}
           onPin={() => {
             void setChatTabPin(
@@ -2505,12 +2463,6 @@ export function Sidebar({
           }}
           onRename={() => {
             setRenamingMissionId(missionMenu.mission.id);
-            closeMissionMenu();
-          }}
-          projects={projects}
-          currentProjectId={missionMenu.mission.project_id}
-          onMoveToProject={(projectId) => {
-            void moveMissionToProject(missionMenu.mission, projectId);
             closeMissionMenu();
           }}
           onOpenInNewWindow={() => {
@@ -3094,12 +3046,6 @@ function RowContextMenu({
   onArchive,
   renameLabel = "Rename",
   archiveLabel = "Archive",
-  folders,
-  currentFolderId,
-  onMoveToFolder,
-  projects,
-  currentProjectId,
-  onMoveToProject,
 }: {
   pinned: boolean;
   anchorX: number;
@@ -3111,12 +3057,6 @@ function RowContextMenu({
   onArchive: () => void;
   renameLabel?: string;
   archiveLabel?: string;
-  folders?: { id: string; name: string }[];
-  currentFolderId?: string | null;
-  onMoveToFolder?: (folderId: string | null) => void;
-  projects?: { id: string; name: string }[];
-  currentProjectId?: string | null;
-  onMoveToProject?: (projectId: string | null) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x: anchorX, y: anchorY });
@@ -3165,48 +3105,6 @@ function RowContextMenu({
           label="Open in New Window"
           onClick={onOpenInNewWindow}
         />
-      ) : null}
-      {folders &&
-      onMoveToFolder &&
-      folders.some((folder) => folder.id !== currentFolderId) ? (
-        <>
-          <div className="my-1 h-px bg-line" />
-          {folders
-            .filter((folder) => folder.id !== currentFolderId)
-            .map((folder) => (
-              <ContextMenuItem
-                key={folder.id}
-                icon={Folder}
-                label={`Move to ${folder.name}`}
-                onClick={() => onMoveToFolder(folder.id)}
-              />
-            ))}
-        </>
-      ) : null}
-      {projects &&
-      onMoveToProject &&
-      (currentProjectId !== null ||
-        projects.some((project) => project.id !== currentProjectId)) ? (
-        <>
-          <div className="my-1 h-px bg-line" />
-          {currentProjectId !== null ? (
-            <ContextMenuItem
-              icon={FolderCode}
-              label="Remove from project"
-              onClick={() => onMoveToProject(null)}
-            />
-          ) : null}
-          {projects
-            .filter((project) => project.id !== currentProjectId)
-            .map((project) => (
-              <ContextMenuItem
-                key={project.id}
-                icon={FolderCode}
-                label={`Move to ${project.name}`}
-                onClick={() => onMoveToProject(project.id)}
-              />
-            ))}
-        </>
       ) : null}
       <ContextMenuItem
         icon={Archive}
