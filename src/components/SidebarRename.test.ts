@@ -197,7 +197,24 @@ async function press(input: HTMLInputElement, key: string) {
   });
 }
 
-describe("Sidebar chat tab rename", () => {
+async function renderSidebar(root: Root) {
+  await act(async () => {
+    root.render(
+      createElement(
+        MemoryRouter,
+        { initialEntries: ["/chats/A"] },
+        createElement(Sidebar, {
+          collapsed: false,
+          onCollapsedChange: () => {},
+          previewOpen: false,
+          onPreviewOpenChange: () => {},
+        }),
+      ),
+    );
+  });
+}
+
+describe("Sidebar", () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -228,20 +245,7 @@ describe("Sidebar chat tab rename", () => {
   });
 
   it("renames and clears a background durable tab without activating or moving it", async () => {
-    await act(async () => {
-      root.render(
-        createElement(
-          MemoryRouter,
-          { initialEntries: ["/chats/A"] },
-          createElement(Sidebar, {
-            collapsed: false,
-            onCollapsedChange: () => {},
-            previewOpen: false,
-            onPreviewOpenChange: () => {},
-          }),
-        ),
-      );
-    });
+    await renderSidebar(root);
     const originalPlacement = getPaneLayouts().map((layout) => ({
       id: layout.id,
       folderId: layout.folderId,
@@ -299,5 +303,42 @@ describe("Sidebar chat tab rename", () => {
       })),
     ).toEqual(originalPlacement);
     expect(mocks.sessionPin).not.toHaveBeenCalled();
+  });
+
+  it("scrolls project, mission, and chat sections in one container", async () => {
+    await renderSidebar(root);
+
+    const sections = ["PROJECT", "MISSION", "CHAT"].map((label) => {
+      const toggle = Array.from(
+        container.querySelectorAll<HTMLButtonElement>("button"),
+      ).find((button) => button.textContent?.trim() === label);
+      const section = toggle?.closest("section");
+      if (!section) throw new Error(`missing section: ${label}`);
+      return section;
+    });
+    const scroller = sections[0].parentElement;
+
+    expect(scroller).toBe(sections[1].parentElement);
+    expect(scroller).toBe(sections[2].parentElement);
+    expect(scroller?.classList).toContain("overflow-y-auto");
+    expect(scroller?.classList).not.toContain("[scrollbar-width:none]");
+    expect(scroller?.classList).not.toContain(
+      "[&::-webkit-scrollbar]:hidden",
+    );
+
+    for (const section of sections) {
+      const content = section.children[1];
+      expect(content.classList).not.toContain("overflow-y-auto");
+      expect(
+        Array.from(content.classList).some((name) =>
+          name.startsWith("max-h-["),
+        ),
+      ).toBe(false);
+    }
+    expect(sections[2].classList).toContain("flex-1");
+    expect(sections[2].children[1].classList).toContain("flex-1");
+    expect(scroller?.contains(buttonWithTitle(container, "@alpha + @beta"))).toBe(
+      true,
+    );
   });
 });
