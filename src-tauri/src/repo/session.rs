@@ -9,7 +9,7 @@
 // PTY hot path where statement shape and timing are load-bearing. Do not
 // consolidate them.
 
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_rusqlite::{from_row, to_params_named};
 
@@ -135,14 +135,16 @@ pub fn delete_all_for_mission(conn: &Connection, mission_id: &str) -> rusqlite::
     )
 }
 
+/// Pointer updates only, inside the caller's transaction — the command
+/// layer pairs this with the sidebar-tree reparent so a failure rolls
+/// both back together (`commands::session::set_project_and_reconcile`).
 pub fn set_project_for_direct_sessions(
-    conn: &mut Connection,
+    conn: &Connection,
     ids: &[String],
     project_id: Option<&str>,
 ) -> rusqlite::Result<()> {
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     for id in ids {
-        let updated = tx.execute(
+        let updated = conn.execute(
             "UPDATE sessions
                 SET project_id = ?2
               WHERE id = ?1
@@ -155,7 +157,7 @@ pub fn set_project_for_direct_sessions(
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
     }
-    tx.commit()
+    Ok(())
 }
 
 /// Persist the runtime-side identity after the PTY forks.
@@ -582,7 +584,9 @@ mod tests {
             insert(&conn, &row).unwrap();
         }
 
-        set_project_for_direct_sessions(&mut conn, &ids, Some(&project_b.id)).unwrap();
+        let tx = conn.transaction().unwrap();
+        set_project_for_direct_sessions(&tx, &ids, Some(&project_b.id)).unwrap();
+        tx.commit().unwrap();
         for id in &ids {
             assert_eq!(
                 get_row(&conn, id).unwrap().unwrap().project_id,
@@ -590,8 +594,12 @@ mod tests {
             );
         }
 
+        // A missing member errors and the caller's transaction rolls
+        // every pointer back.
         let missing_member = [ids[0].clone(), "missing".to_string()];
-        assert!(set_project_for_direct_sessions(&mut conn, &missing_member, None).is_err());
+        let tx = conn.transaction().unwrap();
+        assert!(set_project_for_direct_sessions(&tx, &missing_member, None).is_err());
+        drop(tx);
         for id in &ids {
             assert_eq!(
                 get_row(&conn, id).unwrap().unwrap().project_id,
@@ -599,7 +607,9 @@ mod tests {
             );
         }
 
-        set_project_for_direct_sessions(&mut conn, &ids, None).unwrap();
+        let tx = conn.transaction().unwrap();
+        set_project_for_direct_sessions(&tx, &ids, None).unwrap();
+        tx.commit().unwrap();
         for id in &ids {
             assert!(get_row(&conn, id).unwrap().unwrap().project_id.is_none());
         }

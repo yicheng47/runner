@@ -58,6 +58,7 @@ import {
   Flag,
   Folder,
   FolderCode,
+  FolderMinus,
   FolderPlus,
   MessageSquarePlus,
   MoreHorizontal,
@@ -75,6 +76,7 @@ import {
 import {
   api,
   type DirectSessionEntry,
+  type NodeRow,
   type ProjectRow,
 } from "../lib/api";
 import {
@@ -84,7 +86,6 @@ import {
   unmarkArchivingSession,
 } from "../lib/archivingState";
 import {
-  groupPinTargets,
   pinnedSessionIds,
   shouldInheritPinOnAdd,
 } from "../lib/groupPinning";
@@ -111,10 +112,10 @@ import {
   newChatTargetPane,
   removeArchivedSessionFromLayout,
   hydratePaneLayoutsFromDb,
-  moveSessionTabToFolder,
-  reorderTab,
+  moveNode,
+  moveSessionTabToParent,
   setGroupNameForSession,
-  useFolders,
+  useNavNodes,
   usePaneLayouts,
   visibleSessionIds,
   type PaneLayout,
@@ -134,10 +135,7 @@ import {
   STORAGE_APP_BRAND_TINT,
 } from "../lib/settings";
 import { reportSubjectsNow } from "../lib/windowFocus";
-import {
-  projectIdForTab,
-  setActiveProjectScope,
-} from "../lib/projectScope";
+import { setActiveProjectScope } from "../lib/projectScope";
 import type {
   AppendedEvent,
   MissionSummary,
@@ -155,34 +153,54 @@ const SIDEBAR_MAX = 480;
 const SIDEBAR_DEFAULT = 240;
 const STORAGE_WIDTH = "runner.sidebar.width";
 const STORAGE_PROJECTS_OPEN = "runner.sidebar.projects.open";
-const STORAGE_MISSION_OPEN = "runner.sidebar.mission.open";
 const STORAGE_SESSION_OPEN = "runner.sidebar.session.open";
 const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
 const SIDEBAR_NAVIGATION_HISTORY_LIMIT = 64;
 
-type TabDropTarget = {
-  folderId: string | null;
+// One dnd vocabulary for every draggable sidebar row (feature 44):
+// tab and mission nodes drag; positions are per-scope (root recent
+// list, a folder's children, a project's children); container targets
+// (collapsed folder headers, project headers) append at the scope end.
+type RowDropTarget = {
+  parentId: string | null;
   index: number;
   markerKey: string;
 };
 
-type ChatTabDndData =
+type NavDndData =
   | {
-      kind: "tab";
-      tabId: string;
-      folderId: string | null;
+      kind: "row";
+      nodeId: string;
+      parentId: string | null;
     }
-  | ({ kind: "position" } & TabDropTarget)
+  | ({ kind: "position" } & RowDropTarget)
   | {
-      kind: "collapsed-folder";
-      folderId: string;
+      kind: "container";
+      containerId: string;
     };
 
-const tabDndId = (tabId: string) => `chat-tab:${tabId}`;
-const tabDropDndId = (folderId: string | null, markerKey: string) =>
-  `chat-tab-drop:${folderId ?? "ungrouped"}:${markerKey}`;
-const collapsedFolderDndId = (folderId: string) =>
-  `chat-folder-drop:${folderId}`;
+const rowDndId = (nodeId: string) => `nav-row:${nodeId}`;
+const rowDropDndId = (parentId: string | null, markerKey: string) =>
+  `nav-row-drop:${parentId ?? "root"}:${markerKey}`;
+const containerDndId = (containerId: string) =>
+  `nav-container-drop:${containerId}`;
+
+/** A sidebar row resolved from a tree node: tab nodes join their pane
+ *  layout + member sessions, mission nodes their running summary,
+ *  folder nodes render their children as a nested scope. Nodes whose
+ *  content is missing (archived member rows mid-refresh, non-running
+ *  missions) resolve to nothing and stay hidden. */
+type NavRowModel =
+  | {
+      kind: "tab";
+      node: NodeRow;
+      layout: PaneLayout;
+      members: DirectSessionEntry[];
+      pinned: boolean;
+      attention: ChatAttentionState;
+    }
+  | { kind: "mission"; node: NodeRow; mission: MissionSummary }
+  | { kind: "folder"; node: NodeRow; name: string };
 
 type SidebarNavigationDirection = "previous" | "next";
 
@@ -299,9 +317,6 @@ export function Sidebar({
   const [projectsOpen, setProjectsOpen] = useState<boolean>(() =>
     getStoredFlag(STORAGE_PROJECTS_OPEN, true),
   );
-  const [missionsOpen, setMissionsOpen] = useState<boolean>(() =>
-    getStoredFlag(STORAGE_MISSION_OPEN, true),
-  );
   const [sessionsOpen, setSessionsOpen] = useState<boolean>(() =>
     getStoredFlag(STORAGE_SESSION_OPEN, true),
   );
@@ -333,6 +348,11 @@ export function Sidebar({
   const [chatTabMenu, setChatTabMenu] = useState<{
     layout: PaneLayout;
     members: DirectSessionEntry[];
+    pinned: boolean;
+    /** The containing project when the row sits inside one — enables
+     *  the explicit "Remove from project" menu action (drags out of a
+     *  project are deliberately suppressed). */
+    projectId: string | null;
     x: number;
     y: number;
   } | null>(null);
@@ -349,6 +369,7 @@ export function Sidebar({
     id: string;
     name: string;
     count: number;
+    missionCount: number;
     currentWasDeleted: boolean;
   } | null>(null);
   const [deletingFolder, setDeletingFolder] = useState(false);
@@ -378,14 +399,12 @@ export function Sidebar({
     x: number;
     y: number;
   } | null>(null);
-  const [collapsedFolderDropId, setCollapsedFolderDropId] = useState<
-    string | null
-  >(null);
-  const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
-  const [tabDropTarget, setTabDropTarget] = useState<TabDropTarget | null>(
+  const [containerDropId, setContainerDropId] = useState<string | null>(null);
+  const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
+  const [rowDropTarget, setRowDropTarget] = useState<RowDropTarget | null>(
     null,
   );
-  const tabDropTargetRef = useRef<TabDropTarget | null>(null);
+  const rowDropTargetRef = useRef<RowDropTarget | null>(null);
 
   // Identify the currently-open runtime so we can highlight the matching
   // sidebar row. `useMatch` returns null when the URL doesn't match.
@@ -398,96 +417,130 @@ export function Sidebar({
   // session id rather than handle.
   const currentChatSessionId = chatMatch?.params.sessionId ?? null;
 
-  // Durable tab/folder state. Every layout renders as one sidebar row;
-  // member panes remain visible only on the chat surface.
+  // Durable nav state: the node tree drives every section; tab rows
+  // join their pane layouts, mission rows their running summaries.
   const paneLayouts = usePaneLayouts();
-  const folders = useFolders();
+  const navNodes = useNavNodes();
 
-  const tabItems = useMemo(() => {
-    const byId = new Map(
+  // Sidebar rows per scope, in render order (the tree query already
+  // sorts pinned-first within each parent, then by position). Root
+  // scope excludes project nodes — those render as the PROJECT section.
+  const rowsByParent = useMemo(() => {
+    const sessionById = new Map(
       directSessions.map((session) => [session.session_id, session]),
     );
-    return paneLayouts
-      .map((layout) => {
-        const members = visibleSessionIds(layout.root)
-          .map((id) => byId.get(id))
-          .filter(
-            (session): session is DirectSessionEntry => session !== undefined,
-          );
-        return {
-          layout,
-          members,
-          projectId: projectIdForTab(members),
-          attention: tabAttentionState(
+    const layoutById = new Map(
+      paneLayouts.filter((layout) => layout.id).map((l) => [l.id, l]),
+    );
+    const missionById = new Map(missions.map((m) => [m.id, m]));
+    const map = new Map<string | null, NavRowModel[]>();
+    for (const node of navNodes) {
+      let row: NavRowModel | null = null;
+      if (node.type === "tab") {
+        const layout = layoutById.get(node.id);
+        const members = layout
+          ? visibleSessionIds(layout.root)
+              .map((id) => sessionById.get(id))
+              .filter(
+                (session): session is DirectSessionEntry =>
+                  session !== undefined,
+              )
+          : [];
+        if (layout && members.length > 0) {
+          row = {
+            kind: "tab",
+            node,
+            layout,
             members,
-            directSessionActivity,
-            layout.lastCompletedAt,
-            layout.lastViewedAt,
-          ),
-        };
-      })
-      .filter((item) => item.members.length > 0)
-      .sort(
-        (a, b) =>
-          Number(b.members.every((member) => member.pinned)) -
-          Number(a.members.every((member) => member.pinned)),
-      );
-  }, [directSessionActivity, directSessions, paneLayouts]);
-  const projectTabItems = useMemo(
-    () => tabItems.filter((item) => item.projectId !== null),
-    [tabItems],
+            pinned: node.pinned_position !== null,
+            attention: tabAttentionState(
+              members,
+              directSessionActivity,
+              layout.lastCompletedAt,
+              layout.lastViewedAt,
+            ),
+          };
+        }
+      } else if (node.type === "mission") {
+        const mission = node.ref_id ? missionById.get(node.ref_id) : undefined;
+        if (mission) row = { kind: "mission", node, mission };
+      } else if (node.type === "folder") {
+        row = { kind: "folder", node, name: node.name ?? "" };
+      }
+      if (!row) continue;
+      const list = map.get(node.parent_id);
+      if (list) list.push(row);
+      else map.set(node.parent_id, [row]);
+    }
+    return map;
+  }, [directSessionActivity, directSessions, missions, navNodes, paneLayouts]);
+
+  const scopeRows = useCallback(
+    (parentId: string | null): NavRowModel[] => rowsByParent.get(parentId) ?? [],
+    [rowsByParent],
   );
-  const chatSectionTabItems = useMemo(
-    () => tabItems.filter((item) => item.projectId === null),
-    [tabItems],
-  );
-  const projectMissions = useMemo(
-    () => missions.filter((mission) => mission.project_id !== null),
-    [missions],
-  );
-  const ungroupedMissions = useMemo(
-    () => missions.filter((mission) => mission.project_id === null),
-    [missions],
-  );
-  const chatAttention = useMemo(
+
+  const projectNodes = useMemo(
     () =>
-      rollupAttentionState(
-        chatSectionTabItems.map((item) => item.attention),
+      navNodes.filter(
+        (node) => node.parent_id === null && node.type === "project",
       ),
-    [chatSectionTabItems],
+    [navNodes],
   );
-  const missionAttention = useMemo(
-    () =>
-      rollupAttentionState(
-        ungroupedMissions.map((mission) =>
-          missionAttentionState(
-            mission.any_session_live,
-            mission.activity,
-          ),
+  const recentRows = scopeRows(null);
+
+  const rowAttention = useCallback(
+    (row: NavRowModel): ChatAttentionState => {
+      if (row.kind === "tab") return row.attention;
+      if (row.kind === "mission") {
+        return missionAttentionState(
+          row.mission.any_session_live,
+          row.mission.activity,
+        );
+      }
+      return rollupAttentionState(
+        scopeRows(row.node.id).map((child) =>
+          child.kind === "tab"
+            ? child.attention
+            : child.kind === "mission"
+              ? missionAttentionState(
+                  child.mission.any_session_live,
+                  child.mission.activity,
+                )
+              : null,
         ),
-      ),
-    [ungroupedMissions],
+      );
+    },
+    [scopeRows],
+  );
+
+  function rowIsLive(row: NavRowModel): boolean {
+    if (row.kind === "tab") return chatTabIsLive(row.members);
+    if (row.kind === "mission") return row.mission.any_session_live;
+    return scopeRows(row.node.id).some((child) => rowIsLive(child));
+  }
+
+  const recentAttention = useMemo(
+    () => rollupAttentionState(recentRows.map(rowAttention)),
+    [recentRows, rowAttention],
   );
   const projectAttention = useMemo(
     () =>
-      rollupAttentionState([
-        ...projectTabItems.map((item) => item.attention),
-        ...projectMissions.map((mission) =>
-          missionAttentionState(
-            mission.any_session_live,
-            mission.activity,
-          ),
+      rollupAttentionState(
+        projectNodes.flatMap((node) =>
+          scopeRows(node.id).map(rowAttention),
         ),
-      ]),
-    [projectMissions, projectTabItems],
+      ),
+    [projectNodes, rowAttention, scopeRows],
   );
-  const draggedTabItem = chatSectionTabItems.find(
-    (item) => item.layout.id === draggedTabId,
-  );
-  const orderedChatRows = useMemo(
-    () => tabItems.map((item) => item.members[0]),
-    [tabItems],
-  );
+  const draggedRow = useMemo(() => {
+    if (!draggedNodeId) return null;
+    for (const rows of rowsByParent.values()) {
+      const row = rows.find((candidate) => candidate.node.id === draggedNodeId);
+      if (row) return row;
+    }
+    return null;
+  }, [draggedNodeId, rowsByParent]);
   const activeProject = useMemo(
     () => projects.find((project) => project.id === activeProjectId) ?? null,
     [activeProjectId, projects],
@@ -502,16 +555,30 @@ export function Sidebar({
     [newMissionProjectId, projects],
   );
 
-  const sidebarNavigationEntries = useMemo<SidebarNavigationEntry[]>(
-    () => [
-      ...missions.map((mission) => ({ to: `/missions/${mission.id}` })),
-      ...orderedChatRows.map((session) => ({
-        to: `/chats/${session.session_id}`,
-        state: { sessionStatus: session.status },
-      })),
-    ],
-    [orderedChatRows, missions],
-  );
+  // Page-back/forward candidates in display order: project children
+  // first (as the PROJECT section renders above), then the recent list
+  // with folder children inline.
+  const sidebarNavigationEntries = useMemo<SidebarNavigationEntry[]>(() => {
+    const entries: SidebarNavigationEntry[] = [];
+    const pushRow = (row: NavRowModel) => {
+      if (row.kind === "mission") {
+        entries.push({ to: `/missions/${row.mission.id}` });
+      } else if (row.kind === "tab") {
+        const target = row.members[0];
+        entries.push({
+          to: `/chats/${target.session_id}`,
+          state: { sessionStatus: target.status },
+        });
+      } else {
+        for (const child of scopeRows(row.node.id)) pushRow(child);
+      }
+    };
+    for (const node of projectNodes) {
+      for (const row of scopeRows(node.id)) pushRow(row);
+    }
+    for (const row of recentRows) pushRow(row);
+    return entries;
+  }, [projectNodes, recentRows, scopeRows]);
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -857,12 +924,21 @@ export function Sidebar({
     (
       layout: PaneLayout,
       members: DirectSessionEntry[],
+      pinned: boolean,
+      projectId: string | null,
       anchor: { x: number; y: number },
     ) => {
       setMissionMenu(null);
       setFolderMenu(null);
       setProjectMenu(null);
-      setChatTabMenu({ layout, members, x: anchor.x, y: anchor.y });
+      setChatTabMenu({
+        layout,
+        members,
+        pinned,
+        projectId,
+        x: anchor.x,
+        y: anchor.y,
+      });
     },
     [],
   );
@@ -993,26 +1069,55 @@ export function Sidebar({
   const deleteProject = useCallback(
     async (project: ProjectRow) => {
       setDeletingProject(true);
+      // Deleting a project archives everything inside it — if the open
+      // chat/mission lives there, bounce off before the surface breaks.
+      const projectNode = navNodes.find(
+        (node) => node.type === "project" && node.ref_id === project.id,
+      );
+      const currentWasDeleted =
+        projectNode !== undefined &&
+        scopeRows(projectNode.id).some(
+          (row) =>
+            (row.kind === "tab" &&
+              row.members.some(
+                (member) => member.session_id === currentChatSessionId,
+              )) ||
+            (row.kind === "mission" && row.mission.id === currentMissionId),
+        );
+      // Leave an affected route BEFORE the destructive call — children
+      // archive one by one, so even a failed delete can have archived
+      // the open chat/mission already.
+      if (currentWasDeleted) navigate("/runners");
       try {
         await api.project.delete(project.id);
         setProjectDeleteConfirm(null);
         if (activeProjectId === project.id) setActiveProjectId(null);
+      } catch (e) {
+        console.error("sidebar: project_delete failed", e);
+      } finally {
+        // Refresh regardless of outcome — a partial failure may have
+        // durably archived some children.
         await Promise.all([
           refreshProjects(),
           refreshMissions(),
           refreshDirectSessions(),
-        ]);
-      } catch (e) {
-        console.error("sidebar: project_delete failed", e);
-      } finally {
+          hydratePaneLayoutsFromDb(),
+        ]).catch((e: unknown) =>
+          console.error("sidebar: post-delete refresh failed", e),
+        );
         setDeletingProject(false);
       }
     },
     [
       activeProjectId,
+      currentChatSessionId,
+      currentMissionId,
+      navNodes,
+      navigate,
       refreshDirectSessions,
       refreshMissions,
       refreshProjects,
+      scopeRows,
     ],
   );
 
@@ -1079,25 +1184,50 @@ export function Sidebar({
     [currentChatSessionId, navigate, refreshDirectSessions],
   );
 
-  const setChatTabPin = useCallback(
-    async (members: DirectSessionEntry[], nextPinned: boolean) => {
-      const memberIds = members.map((member) => member.session_id);
-      const firstId = memberIds[0];
-      if (!firstId) return;
-      const targets = groupPinTargets(
-        firstId,
-        memberIds,
-        pinnedSessionIds(directSessions),
-        nextPinned,
-      );
+  // The explicit exits from a project — drags out of a project scope
+  // are suppressed, so these menu actions are the sanctioned path.
+  // The backend reconciles the tab node to root / reparents the
+  // mission node and emits the layout invalidation.
+  const removeChatTabFromProject = useCallback(
+    async (members: DirectSessionEntry[]) => {
       try {
-        await Promise.all(targets.map((id) => api.session.pin(id, nextPinned)));
+        await api.session.setProject(
+          members.map((member) => member.session_id),
+          null,
+        );
         await refreshDirectSessions();
       } catch (e) {
-        console.error("sidebar: chat tab session_pin failed", e);
+        console.error("sidebar: remove chat from project failed", e);
       }
     },
-    [directSessions, refreshDirectSessions],
+    [refreshDirectSessions],
+  );
+
+  const removeMissionFromProject = useCallback(
+    async (mission: MissionSummary) => {
+      try {
+        await api.mission.setProject(mission.id, null);
+        await refreshMissions();
+      } catch (e) {
+        console.error("sidebar: remove mission from project failed", e);
+      }
+    },
+    [refreshMissions],
+  );
+
+  const setChatTabPin = useCallback(
+    async (tabId: string, nextPinned: boolean) => {
+      try {
+        // Pin state lives on the tab node; the backend writes the
+        // members' legacy pinned_at flags through for non-sidebar
+        // surfaces (tray sort).
+        await api.node.setPinned(tabId, nextPinned);
+        await refreshDirectSessions();
+      } catch (e) {
+        console.error("sidebar: node_set_pinned failed", e);
+      }
+    },
+    [refreshDirectSessions],
   );
 
   const submitChatTabRename = useCallback(
@@ -1144,10 +1274,10 @@ export function Sidebar({
       setRenamingFolderId(null);
       if (!trimmed || trimmed === currentName.trim()) return;
       try {
-        await api.folder.rename(id, trimmed);
+        await api.node.rename(id, trimmed);
         await hydratePaneLayoutsFromDb();
       } catch (e) {
-        console.error("sidebar: folder_rename failed", e);
+        console.error("sidebar: folder rename failed", e);
       }
     },
     [],
@@ -1164,36 +1294,57 @@ export function Sidebar({
 
   const requestFolderDelete = useCallback(
     (id: string, name: string) => {
-      const memberTabs = tabItems.filter((item) => item.layout.folderId === id);
-      const count = paneLayouts.filter((layout) => layout.folderId === id).length;
-      const currentWasDeleted = memberTabs.some((item) =>
-        item.members.some((member) => member.session_id === currentChatSessionId),
+      const count = navNodes.filter(
+        (node) => node.parent_id === id && node.type === "tab",
+      ).length;
+      const missionCount = navNodes.filter(
+        (node) => node.parent_id === id && node.type === "mission",
+      ).length;
+      const currentWasDeleted = scopeRows(id).some(
+        (row) =>
+          (row.kind === "tab" &&
+            row.members.some(
+              (member) => member.session_id === currentChatSessionId,
+            )) ||
+          (row.kind === "mission" && row.mission.id === currentMissionId),
       );
       setFolderDeleteConfirm({
         id,
         name,
         count,
+        missionCount,
         currentWasDeleted,
       });
     },
-    [currentChatSessionId, paneLayouts, tabItems],
+    [currentChatSessionId, currentMissionId, navNodes, scopeRows],
   );
 
   const deleteFolder = useCallback(
     async (confirm: NonNullable<typeof folderDeleteConfirm>) => {
       setDeletingFolder(true);
+      // Leave an affected route BEFORE the destructive call: children
+      // archive one by one, so even a failed delete can have archived
+      // the open chat/mission already.
+      if (confirm.currentWasDeleted) navigate("/runners");
       try {
-        await api.folder.delete(confirm.id);
-        await Promise.all([refreshDirectSessions(), hydratePaneLayoutsFromDb()]);
+        await api.node.folderDelete(confirm.id);
         setFolderDeleteConfirm(null);
-        if (confirm.currentWasDeleted) navigate("/runners");
       } catch (e) {
-        console.error("sidebar: folder_delete failed", e);
+        console.error("sidebar: folder delete failed", e);
       } finally {
+        // Refresh regardless of outcome — a partial failure may have
+        // durably archived some children.
+        await Promise.all([
+          refreshDirectSessions(),
+          refreshMissions(),
+          hydratePaneLayoutsFromDb(),
+        ]).catch((e: unknown) =>
+          console.error("sidebar: post-delete refresh failed", e),
+        );
         setDeletingFolder(false);
       }
     },
-    [navigate, refreshDirectSessions],
+    [navigate, refreshDirectSessions, refreshMissions],
   );
 
   const archiveChatTab = useCallback(
@@ -1217,13 +1368,13 @@ export function Sidebar({
       members: DirectSessionEntry[],
       entry: DirectSessionEntry,
     ) => {
-      void api.tab
+      void api.node
         .markViewed(
           tabId,
           members.map((member) => member.session_id),
         )
-        .catch((error) =>
-          console.error("sidebar: tab_mark_viewed failed", error),
+        .catch((error: unknown) =>
+          console.error("sidebar: node_mark_viewed failed", error),
         );
       const entryLayout = activatePaneLayoutForSession(entry.session_id);
       const entryLeaf = leafForSession(entryLayout.root, entry.session_id);
@@ -1291,89 +1442,147 @@ export function Sidebar({
     }
   }, [refreshProjects]);
 
-  const clearTabDrag = useCallback(() => {
-    setDraggedTabId(null);
-    setCollapsedFolderDropId(null);
-    setTabDropTarget(null);
-    tabDropTargetRef.current = null;
+  const clearRowDrag = useCallback(() => {
+    setDraggedNodeId(null);
+    setContainerDropId(null);
+    setRowDropTarget(null);
+    rowDropTargetRef.current = null;
   }, []);
 
-  const commitTabDrop = useCallback(
-    async (tabId: string, folderId: string | null, requestedIndex: number) => {
-      const dragged = chatSectionTabItems.find(
-        (item) => item.layout.id === tabId,
-      );
-      if (!dragged) {
-        clearTabDrag();
-        return;
+  // Draggable-row lookup + the pin-tier list of a destination scope.
+  // Only visible rows participate in drop index math; hidden siblings
+  // (non-running mission nodes, tabs whose rows are mid-refresh) are
+  // appended behind the visible ordering when the move commits.
+  const draggedRowFor = useCallback(
+    (nodeId: string): NavRowModel | null => {
+      for (const rows of rowsByParent.values()) {
+        const row = rows.find((candidate) => candidate.node.id === nodeId);
+        if (row && row.kind !== "folder") return row;
       }
-      const pinned = dragged.members.every((member) => member.pinned);
-      const targetItems = chatSectionTabItems.filter(
-        (item) =>
-          item.layout.folderId === folderId && item.layout.id !== tabId,
-      );
-      const orderedIds = orderedChatTabIdsAfterDrop(
-        targetItems.map((item) => ({
-          id: item.layout.id,
-          pinned: item.members.every((member) => member.pinned),
-        })),
-        tabId,
-        pinned,
-        requestedIndex,
-      );
-      clearTabDrag();
-      try {
-        await reorderTab(tabId, folderId, orderedIds);
-      } catch (error) {
-        console.error("sidebar: reorder tab failed", error);
-      }
+      return null;
     },
-    [chatSectionTabItems, clearTabDrag],
+    [rowsByParent],
   );
 
-  const resolveTabDropTarget = useCallback(
-    (event: DragOverEvent | DragEndEvent): TabDropTarget | null => {
-      const activeData = event.active.data.current as
-        | ChatTabDndData
-        | undefined;
-      const overData = event.over?.data.current as
-        | ChatTabDndData
-        | undefined;
-      if (activeData?.kind !== "tab" || !overData) return null;
+  const scopeOrderedRows = useCallback(
+    (parentId: string | null) =>
+      scopeRows(parentId).map((row) => ({
+        id: row.node.id,
+        pinned: row.node.pinned_position !== null,
+      })),
+    [scopeRows],
+  );
 
-      const dragged = chatSectionTabItems.find(
-        (item) => item.layout.id === activeData.tabId,
+  // Drag affordance rules: leaves (tabs, missions) drop anywhere —
+  // root, folders, projects — with ONE exception: a node currently
+  // inside a project only drops into project scopes. Leaving a
+  // project unbinds cwd/scope, so it stays an explicit menu action
+  // rather than something an errant drag can do silently. (The
+  // backend keeps the general shape rules; this transition rule is
+  // deliberately UI-only.)
+  const canDropInScope = useCallback(
+    (nodeId: string, parentId: string | null): boolean => {
+      const dragged = navNodes.find((node) => node.id === nodeId);
+      if (!dragged) return false;
+      const draggedParent = dragged.parent_id
+        ? navNodes.find((node) => node.id === dragged.parent_id)
+        : undefined;
+      const leavingProject = draggedParent?.type === "project";
+      if (parentId === null) return !leavingProject;
+      const parent = navNodes.find((node) => node.id === parentId);
+      if (!parent) return false;
+      if (leavingProject && parent.type !== "project") return false;
+      if (parent.type === "project" || parent.type === "folder") {
+        return dragged.type === "tab" || dragged.type === "mission";
+      }
+      return false;
+    },
+    [navNodes],
+  );
+
+  const commitRowDrop = useCallback(
+    async (
+      nodeId: string,
+      parentId: string | null,
+      requestedIndex: number,
+    ) => {
+      const dragged = navNodes.find((node) => node.id === nodeId);
+      if (!dragged) {
+        clearRowDrag();
+        return;
+      }
+      const orderedVisible = orderedChatTabIdsAfterDrop(
+        scopeOrderedRows(parentId),
+        nodeId,
+        dragged.pinned_position !== null,
+        requestedIndex,
       );
+      // The backend validates the COMPLETE child set of the scope:
+      // project nodes keep their lead positions at root, and hidden
+      // siblings follow the visible ordering.
+      const visibleSet = new Set(orderedVisible);
+      const siblings = navNodes.filter(
+        (node) => node.parent_id === parentId && node.id !== nodeId,
+      );
+      const projectsFirst =
+        parentId === null
+          ? siblings
+              .filter((node) => node.type === "project")
+              .map((node) => node.id)
+          : [];
+      const hidden = siblings
+        .filter(
+          (node) => !(parentId === null && node.type === "project"),
+        )
+        .map((node) => node.id)
+        .filter((id) => !visibleSet.has(id));
+      clearRowDrag();
+      try {
+        await moveNode(nodeId, parentId, [
+          ...projectsFirst,
+          ...orderedVisible,
+          ...hidden,
+        ]);
+      } catch (error) {
+        console.error("sidebar: move node failed", error);
+      }
+    },
+    [clearRowDrag, navNodes, scopeOrderedRows],
+  );
+
+  const resolveRowDropTarget = useCallback(
+    (event: DragOverEvent | DragEndEvent): RowDropTarget | null => {
+      const activeData = event.active.data.current as NavDndData | undefined;
+      const overData = event.over?.data.current as NavDndData | undefined;
+      if (activeData?.kind !== "row" || !overData) return null;
+
+      const dragged = draggedRowFor(activeData.nodeId);
       if (!dragged) return null;
+      const draggedPinned = dragged.node.pinned_position !== null;
 
       if (overData.kind === "position") {
-        const targetItems = chatSectionTabItems.filter(
-          (item) => item.layout.folderId === overData.folderId,
-        );
-        const allowed = isChatTabDropIndexAllowed(
-          targetItems.map((item) => ({
-            id: item.layout.id,
-            pinned: item.members.every((member) => member.pinned),
-          })),
-          dragged.layout.id,
-          dragged.members.every((member) => member.pinned),
-          overData.index,
-        );
+        const allowed =
+          canDropInScope(dragged.node.id, overData.parentId) &&
+          isChatTabDropIndexAllowed(
+            scopeOrderedRows(overData.parentId),
+            dragged.node.id,
+            draggedPinned,
+            overData.index,
+          );
         return allowed
           ? {
-              folderId: overData.folderId,
+              parentId: overData.parentId,
               index: overData.index,
               markerKey: overData.markerKey,
             }
           : null;
       }
 
-      if (overData.kind !== "tab") return null;
-      const targetItems = chatSectionTabItems.filter(
-        (item) => item.layout.folderId === overData.folderId,
-      );
-      const overIndex = targetItems.findIndex(
-        (item) => item.layout.id === overData.tabId,
+      if (overData.kind !== "row") return null;
+      if (!canDropInScope(dragged.node.id, overData.parentId)) return null;
+      const targetRows = scopeRows(overData.parentId);
+      const overIndex = targetRows.findIndex(
+        (row) => row.node.id === overData.nodeId,
       );
       if (overIndex < 0 || !event.over) return null;
 
@@ -1385,17 +1594,14 @@ export function Sidebar({
           event.over.rect.top + event.over.rect.height / 2
         : false;
       const originalIndex = overIndex + (after ? 1 : 0);
-      const index = targetItems
+      const index = targetRows
         .slice(0, originalIndex)
-        .filter((item) => item.layout.id !== dragged.layout.id).length;
+        .filter((row) => row.node.id !== dragged.node.id).length;
       if (
         !isChatTabDropIndexAllowed(
-          targetItems.map((item) => ({
-            id: item.layout.id,
-            pinned: item.members.every((member) => member.pinned),
-          })),
-          dragged.layout.id,
-          dragged.members.every((member) => member.pinned),
+          scopeOrderedRows(overData.parentId),
+          dragged.node.id,
+          draggedPinned,
           index,
         )
       ) {
@@ -1403,136 +1609,115 @@ export function Sidebar({
       }
 
       return {
-        folderId: overData.folderId,
+        parentId: overData.parentId,
         index,
         markerKey:
-          originalIndex < targetItems.length
-            ? `before-${targetItems[originalIndex].layout.id}`
-            : `after-${overData.folderId ?? "ungrouped"}`,
+          originalIndex < targetRows.length
+            ? `before-${targetRows[originalIndex].node.id}`
+            : `after-${overData.parentId ?? "root"}`,
       };
     },
-    [chatSectionTabItems],
+    [canDropInScope, draggedRowFor, scopeOrderedRows, scopeRows],
   );
 
-  const resolveCollapsedFolderDropTarget = useCallback(
-    (tabId: string, folderId: string): TabDropTarget | null => {
-      const dragged = chatSectionTabItems.find(
-        (item) => item.layout.id === tabId,
-      );
+  const resolveContainerDropTarget = useCallback(
+    (nodeId: string, containerId: string): RowDropTarget | null => {
+      if (!canDropInScope(nodeId, containerId)) return null;
+      const dragged = draggedRowFor(nodeId);
       if (!dragged) return null;
-      const targetItems = chatSectionTabItems.filter(
-        (item) => item.layout.folderId === folderId,
-      );
       const orderedIds = orderedChatTabIdsAfterDrop(
-        targetItems.map((item) => ({
-          id: item.layout.id,
-          pinned: item.members.every((member) => member.pinned),
-        })),
-        tabId,
-        dragged.members.every((member) => member.pinned),
+        scopeOrderedRows(containerId),
+        nodeId,
+        dragged.node.pinned_position !== null,
         Number.MAX_SAFE_INTEGER,
       );
-      const index = orderedIds.indexOf(tabId);
-      const remaining = targetItems.filter(
-        (item) => item.layout.id !== tabId,
+      const index = orderedIds.indexOf(nodeId);
+      const remaining = scopeRows(containerId).filter(
+        (row) => row.node.id !== nodeId,
       );
       if (index < 0) return null;
       return {
-        folderId,
+        parentId: containerId,
         index,
         markerKey:
           index < remaining.length
-            ? `before-${remaining[index].layout.id}`
-            : `after-${folderId}`,
+            ? `before-${remaining[index].node.id}`
+            : `after-${containerId}`,
       };
     },
-    [chatSectionTabItems],
+    [canDropInScope, draggedRowFor, scopeOrderedRows, scopeRows],
   );
 
-  const handleTabDragStart = useCallback((event: DragStartEvent) => {
-    const data = event.active.data.current as ChatTabDndData | undefined;
-    if (data?.kind !== "tab") return;
-    setDraggedTabId(data.tabId);
-    setCollapsedFolderDropId(null);
-    setTabDropTarget(null);
-    tabDropTargetRef.current = null;
+  const handleRowDragStart = useCallback((event: DragStartEvent) => {
+    const data = event.active.data.current as NavDndData | undefined;
+    if (data?.kind !== "row") return;
+    setDraggedNodeId(data.nodeId);
+    setContainerDropId(null);
+    setRowDropTarget(null);
+    rowDropTargetRef.current = null;
   }, []);
 
-  const handleTabDragOver = useCallback(
+  const handleRowDragOver = useCallback(
     (event: DragOverEvent) => {
-      const activeData = event.active.data.current as
-        | ChatTabDndData
-        | undefined;
-      const overData = event.over?.data.current as
-        | ChatTabDndData
-        | undefined;
-      if (
-        activeData?.kind === "tab" &&
-        overData?.kind === "collapsed-folder"
-      ) {
-        const target = resolveCollapsedFolderDropTarget(
-          activeData.tabId,
-          overData.folderId,
+      const activeData = event.active.data.current as NavDndData | undefined;
+      const overData = event.over?.data.current as NavDndData | undefined;
+      if (activeData?.kind === "row" && overData?.kind === "container") {
+        const target = resolveContainerDropTarget(
+          activeData.nodeId,
+          overData.containerId,
         );
-        setCollapsedFolderDropId(overData.folderId);
-        setTabDropTarget(target);
-        tabDropTargetRef.current = target;
+        setContainerDropId(target ? overData.containerId : null);
+        setRowDropTarget(target);
+        rowDropTargetRef.current = target;
         return;
       }
 
-      setCollapsedFolderDropId((folderId) => {
+      setContainerDropId((containerId) => {
         if (
-          folderId &&
-          (overData?.kind === "position" || overData?.kind === "tab") &&
-          overData.folderId === folderId
+          containerId &&
+          (overData?.kind === "position" || overData?.kind === "row") &&
+          overData.parentId === containerId
         ) {
-          return folderId;
+          return containerId;
         }
         return null;
       });
-      const target = resolveTabDropTarget(event);
-      setTabDropTarget(target);
-      tabDropTargetRef.current = target;
+      const target = resolveRowDropTarget(event);
+      setRowDropTarget(target);
+      rowDropTargetRef.current = target;
     },
-    [resolveCollapsedFolderDropTarget, resolveTabDropTarget],
+    [resolveContainerDropTarget, resolveRowDropTarget],
   );
 
-  const handleTabDragEnd = useCallback(
+  const handleRowDragEnd = useCallback(
     (event: DragEndEvent) => {
-      const activeData = event.active.data.current as
-        | ChatTabDndData
-        | undefined;
-      const overData = event.over?.data.current as
-        | ChatTabDndData
-        | undefined;
-      if (activeData?.kind !== "tab") {
-        clearTabDrag();
+      const activeData = event.active.data.current as NavDndData | undefined;
+      const overData = event.over?.data.current as NavDndData | undefined;
+      if (activeData?.kind !== "row") {
+        clearRowDrag();
         return;
       }
-      if (overData?.kind === "collapsed-folder") {
-        void commitTabDrop(
-          activeData.tabId,
-          overData.folderId,
-          Number.MAX_SAFE_INTEGER,
-        );
+      if (overData?.kind === "container") {
+        if (canDropInScope(activeData.nodeId, overData.containerId)) {
+          void commitRowDrop(
+            activeData.nodeId,
+            overData.containerId,
+            Number.MAX_SAFE_INTEGER,
+          );
+        } else {
+          clearRowDrag();
+        }
         return;
       }
-      const target = resolveTabDropTarget(event) ?? tabDropTargetRef.current;
+      const target = resolveRowDropTarget(event) ?? rowDropTargetRef.current;
       if (target) {
-        void commitTabDrop(activeData.tabId, target.folderId, target.index);
+        void commitRowDrop(activeData.nodeId, target.parentId, target.index);
       } else {
-        clearTabDrag();
+        clearRowDrag();
       }
     },
-    [clearTabDrag, commitTabDrop, resolveTabDropTarget],
+    [canDropInScope, clearRowDrag, commitRowDrop, resolveRowDropTarget],
   );
-
-  const toggleMissions = useCallback(() => {
-    setMissionsOpen((prev) => {
-      setStoredFlag(STORAGE_MISSION_OPEN, !prev);
-      return !prev;
-    });
-  }, []);
 
   const toggleProjects = useCallback(() => {
     setProjectsOpen((prev) => {
@@ -1548,109 +1733,224 @@ export function Sidebar({
     });
   }, []);
 
-  const renderTabItem = (
-    item: (typeof tabItems)[number],
-    draggable = true,
-  ) => {
-    const active = item.members.some(
+  // Row renderers over the node tree. Every leaf row (tab, mission)
+  // drags through the same reparent/reposition op; folder rows render
+  // their children as a nested scope.
+  const renderLeafRow = (
+    row: NavRowModel,
+    projectId: string | null,
+  ): ReactNode => {
+    if (row.kind === "folder") return null;
+    const nodeId = row.node.id;
+    if (row.kind === "mission") {
+      return (
+        <MissionRow
+          mission={row.mission}
+          selected={row.mission.id === currentMissionId}
+          onClick={() => {
+            setActiveProjectId(projectId);
+            openMission(row.mission.id);
+          }}
+          onContextMenu={(anchor) => openMissionMenu(row.mission, anchor)}
+          renaming={renamingMissionId === row.mission.id}
+          onRenameSubmit={(next) =>
+            void submitMissionRename(row.mission.id, next)
+          }
+          onRenameCancel={() => setRenamingMissionId(null)}
+        />
+      );
+    }
+    const active = row.members.some(
       (member) => member.session_id === currentChatSessionId,
     );
-    const row = (
+    return (
       <ChatTabGroup
-        layout={item.layout}
-        members={item.members}
+        layout={row.layout}
+        members={row.members}
         active={active}
-        attention={item.attention}
+        pinned={row.pinned}
+        attention={row.attention}
         onActivate={(entry) => {
-          setActiveProjectId(item.projectId);
-          activateTabChat(item.layout.id, item.members, entry);
+          setActiveProjectId(projectId);
+          activateTabChat(nodeId, row.members, entry);
         }}
         onContextMenu={(anchor) =>
-          openChatTabMenu(item.layout, item.members, anchor)
+          openChatTabMenu(row.layout, row.members, row.pinned, projectId, anchor)
         }
-        dragging={draggedTabId === item.layout.id}
-        renaming={renamingChatTabId === item.layout.id}
+        dragging={draggedNodeId === nodeId}
+        renaming={renamingChatTabId === nodeId}
         onRenameSubmit={(nextName) =>
-          submitChatTabRename(item.members[0].session_id, nextName)
+          submitChatTabRename(row.members[0].session_id, nextName)
         }
         onRenameCancel={() => setRenamingChatTabId(null)}
       />
     );
-    if (!draggable) return <Fragment key={item.layout.id}>{row}</Fragment>;
-    return (
-      <SortableChatTab
-        key={item.layout.id}
-        tabId={item.layout.id}
-        folderId={item.layout.folderId}
-        disabled={renamingChatTabId === item.layout.id}
-      >
-        {row}
-      </SortableChatTab>
-    );
   };
 
-  const renderTabDropDivider = (
-    folderId: string | null,
-    items: typeof tabItems,
+  const renderRowDropDivider = (
+    parentId: string | null,
+    rows: NavRowModel[],
     originalIndex: number,
     key: string,
   ) => {
-    const dragged = chatSectionTabItems.find(
-      (item) => item.layout.id === draggedTabId,
-    );
-    const index = items
+    const dragged = draggedNodeId ? draggedRowFor(draggedNodeId) : null;
+    const index = rows
       .slice(0, originalIndex)
-      .filter((item) => item.layout.id !== draggedTabId).length;
+      .filter((row) => row.node.id !== draggedNodeId).length;
     const enabled = Boolean(
       dragged &&
+        canDropInScope(dragged.node.id, parentId) &&
         isChatTabDropIndexAllowed(
-          items.map((item) => ({
-            id: item.layout.id,
-            pinned: item.members.every((member) => member.pinned),
+          rows.map((row) => ({
+            id: row.node.id,
+            pinned: row.node.pinned_position !== null,
           })),
-          dragged.layout.id,
-          dragged.members.every((member) => member.pinned),
+          dragged.node.id,
+          dragged.node.pinned_position !== null,
           index,
         ),
     );
     return (
-      <TabDropDivider
+      <RowDropDivider
         key={key}
-        id={tabDropDndId(folderId, key)}
+        id={rowDropDndId(parentId, key)}
         enabled={enabled}
-        folderId={folderId}
+        parentId={parentId}
         index={index}
         markerKey={key}
         active={
-          tabDropTarget?.folderId === folderId &&
-          tabDropTarget.index === index &&
-          tabDropTarget.markerKey === key
+          rowDropTarget?.parentId === parentId &&
+          rowDropTarget.index === index &&
+          rowDropTarget.markerKey === key
         }
       />
     );
   };
 
-  const renderTabItems = (
-    items: typeof tabItems,
-    folderId: string | null,
-    draggable = true,
+  const renderFolderRow = (row: NavRowModel & { kind: "folder" }) => {
+    const folder = row.node;
+    const items = scopeRows(folder.id);
+    const folderAttention = rowAttention(row);
+    const folderLive = rowIsLive(row);
+    const folderCollapsed = collapsedFolderIds.has(folder.id);
+    const visuallyCollapsed =
+      folderCollapsed && containerDropId !== folder.id;
+    return (
+      <div className="flex flex-col gap-0.5">
+        {renamingFolderId === folder.id ? (
+          <FolderRenameRow
+            initial={row.name}
+            collapsed={folderCollapsed}
+            live={folderLive}
+            attention={folderAttention}
+            onSubmit={(nextName) =>
+              void submitFolderRename(folder.id, row.name, nextName)
+            }
+            onCancel={() => setRenamingFolderId(null)}
+          />
+        ) : (
+          <ContainerDropRow
+            containerId={folder.id}
+            enabled={
+              folderCollapsed &&
+              draggedNodeId !== null &&
+              canDropInScope(draggedNodeId, folder.id)
+            }
+            active={containerDropId === folder.id}
+            onContextMenu={(anchor) =>
+              openFolderMenu({ id: folder.id, name: row.name }, anchor)
+            }
+          >
+            <button
+              type="button"
+              onClick={() => toggleFolder(folder.id)}
+              className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
+            >
+              {visuallyCollapsed ? (
+                <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
+              ) : (
+                <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
+              )}
+              <SidebarTabIcon icon={Folder} active={folderLive} />
+              <span className="min-w-0 flex-1 truncate font-medium">
+                {row.name}
+              </span>
+              <ChatAttentionIndicator
+                state={visuallyCollapsed ? folderAttention : null}
+              />
+            </button>
+            <button
+              type="button"
+              onClick={(event) =>
+                openFolderMenu(
+                  { id: folder.id, name: row.name },
+                  { x: event.clientX, y: event.clientY },
+                )
+              }
+              className="cursor-pointer rounded p-0.5 text-fg-3 opacity-0 hover:bg-raised hover:text-fg group-hover:opacity-100 focus:opacity-100"
+              aria-label="Folder actions"
+              title="Folder actions"
+            >
+              <MoreHorizontal aria-hidden className="h-3 w-3" />
+            </button>
+          </ContainerDropRow>
+        )}
+        {visuallyCollapsed ? null : (
+          <div className="ml-3 flex flex-col gap-0.5 border-l border-line pl-2">
+            {renderScopeRows(items, folder.id, null, "Empty folder")}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderNavRow = (
+    row: NavRowModel,
+    parentId: string | null,
+    projectId: string | null,
+  ): ReactNode => {
+    if (row.kind === "folder") {
+      return <Fragment key={row.node.id}>{renderFolderRow(row)}</Fragment>;
+    }
+    return (
+      <SortableNavRow
+        key={row.node.id}
+        nodeId={row.node.id}
+        parentId={parentId}
+        disabled={
+          renamingChatTabId === row.node.id ||
+          (row.kind === "mission" && renamingMissionId === row.mission.id)
+        }
+      >
+        {renderLeafRow(row, projectId)}
+      </SortableNavRow>
+    );
+  };
+
+  const renderScopeRows = (
+    rows: NavRowModel[],
+    parentId: string | null,
+    projectId: string | null,
+    emptyLabel: string | null = null,
   ) => {
-    if (!draggable) return items.map((item) => renderTabItem(item, false));
-    if (items.length === 0) {
-      const markerKey = `after-${folderId ?? "ungrouped"}`;
+    if (rows.length === 0) {
+      const markerKey = `after-${parentId ?? "root"}`;
       return (
         <SortableContext items={[]} strategy={verticalListSortingStrategy}>
-          <EmptyTabDropArea
-            id={tabDropDndId(folderId, markerKey)}
-            enabled={draggedTabId !== null}
-            folderId={folderId}
+          <EmptyRowDropArea
+            id={rowDropDndId(parentId, markerKey)}
+            enabled={
+              draggedNodeId !== null &&
+              canDropInScope(draggedNodeId, parentId)
+            }
+            parentId={parentId}
             markerKey={markerKey}
             active={
-              tabDropTarget?.folderId === folderId &&
-              tabDropTarget.index === 0 &&
-              tabDropTarget.markerKey === markerKey
+              rowDropTarget?.parentId === parentId &&
+              rowDropTarget.index === 0 &&
+              rowDropTarget.markerKey === markerKey
             }
-            label={folderId === null ? null : "Empty folder"}
+            label={emptyLabel}
           />
         </SortableContext>
       );
@@ -1658,25 +1958,27 @@ export function Sidebar({
 
     return (
       <SortableContext
-        items={items.map((item) => tabDndId(item.layout.id))}
+        items={rows
+          .filter((row) => row.kind !== "folder")
+          .map((row) => rowDndId(row.node.id))}
         strategy={verticalListSortingStrategy}
       >
-        {items.map((item, originalIndex) => (
-          <Fragment key={item.layout.id}>
-            {renderTabDropDivider(
-              folderId,
-              items,
+        {rows.map((row, originalIndex) => (
+          <Fragment key={row.node.id}>
+            {renderRowDropDivider(
+              parentId,
+              rows,
               originalIndex,
-              `before-${item.layout.id}`,
+              `before-${row.node.id}`,
             )}
-            {renderTabItem(item)}
+            {renderNavRow(row, parentId, projectId)}
           </Fragment>
         ))}
-        {renderTabDropDivider(
-          folderId,
-          items,
-          items.length,
-          `after-${folderId ?? "ungrouped"}`,
+        {renderRowDropDivider(
+          parentId,
+          rows,
+          rows.length,
+          `after-${parentId ?? "root"}`,
         )}
       </SortableContext>
     );
@@ -1779,9 +2081,17 @@ export function Sidebar({
             <div className="h-5 shrink-0" />
 
             <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-3">
+              <DndContext
+                sensors={tabDragSensors}
+                collisionDetection={pointerWithin}
+                onDragStart={handleRowDragStart}
+                onDragOver={handleRowDragOver}
+                onDragEnd={handleRowDragEnd}
+                onDragCancel={clearRowDrag}
+              >
               <section className="flex shrink-0 flex-col">
                 <CollapsibleSectionHeader
-                  label="PROJECT"
+                  label="PROJECTS"
                   open={projectsOpen}
                   attention={projectsOpen ? null : projectAttention}
                   onToggle={toggleProjects}
@@ -1790,40 +2100,27 @@ export function Sidebar({
                 />
                 {projectsOpen ? (
                   <div className="flex flex-col gap-0.5 px-3 pt-1">
-                    {projects.length === 0 ? (
+                    {projectNodes.length === 0 ? (
                       <p className="px-2.5 py-1 text-xs text-fg-3">
                         No projects yet.
                       </p>
                     ) : (
-                      projects.map((project) => {
-                        const nestedMissions = projectMissions.filter(
-                          (mission) => mission.project_id === project.id,
+                      projectNodes.map((node) => {
+                        const project = projects.find(
+                          (candidate) => candidate.id === node.ref_id,
                         );
-                        const nestedTabs = projectTabItems.filter(
-                          (item) => item.projectId === project.id,
+                        if (!project) return null;
+                        const nestedRows = scopeRows(node.id);
+                        const nestedAttention = rollupAttentionState(
+                          nestedRows.map(rowAttention),
                         );
-                        const nestedAttention = rollupAttentionState([
-                          ...nestedTabs.map((item) => item.attention),
-                          ...nestedMissions.map((mission) =>
-                            missionAttentionState(
-                              mission.any_session_live,
-                              mission.activity,
-                            ),
-                          ),
-                        ]);
-                        const live =
-                          nestedMissions.some(
-                            (mission) => mission.any_session_live,
-                          ) ||
-                          nestedTabs.some((item) =>
-                            chatTabIsLive(item.members),
-                          );
+                        const live = nestedRows.some(rowIsLive);
                         const projectCollapsed = collapsedProjectIds.has(
                           project.id,
                         );
                         return (
                           <div
-                            key={project.id}
+                            key={node.id}
                             className="flex flex-col gap-0.5"
                           >
                             {renamingProjectId === project.id ? (
@@ -1843,19 +2140,17 @@ export function Sidebar({
                                 onCancel={() => setRenamingProjectId(null)}
                               />
                             ) : (
-                              <div
-                                onContextMenu={(event) => {
-                                  event.preventDefault();
-                                  openProjectMenu(project, {
-                                    x: event.clientX,
-                                    y: event.clientY,
-                                  });
-                                }}
-                                className={`group flex items-center gap-1.5 rounded border px-2.5 py-1.5 text-xs transition-colors ${
-                                  activeProjectId === project.id
-                                    ? "border-sidebar-selected-border bg-sidebar-selected text-fg shadow-sm"
-                                    : "border-transparent text-fg-2 hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg"
-                                }`}
+                              <ContainerDropRow
+                                containerId={node.id}
+                                enabled={
+                                  draggedNodeId !== null &&
+                                  canDropInScope(draggedNodeId, node.id)
+                                }
+                                active={containerDropId === node.id}
+                                selected={activeProjectId === project.id}
+                                onContextMenu={(anchor) =>
+                                  openProjectMenu(project, anchor)
+                                }
                               >
                                 <button
                                   type="button"
@@ -1892,38 +2187,22 @@ export function Sidebar({
                                 >
                                   <MoreHorizontal aria-hidden className="h-3 w-3" />
                                 </button>
-                              </div>
+                              </ContainerDropRow>
                             )}
                             {projectCollapsed ? null : (
                               <div className="ml-3 flex flex-col gap-0.5 border-l border-line pl-2">
-                                {nestedMissions.map((mission) => (
-                                  <MissionRow
-                                    key={mission.id}
-                                    mission={mission}
-                                    selected={mission.id === currentMissionId}
-                                    onClick={() => {
-                                      setActiveProjectId(project.id);
-                                      openMission(mission.id);
-                                    }}
-                                    onContextMenu={(anchor) =>
-                                      openMissionMenu(mission, anchor)
-                                    }
-                                    renaming={renamingMissionId === mission.id}
-                                    onRenameSubmit={(next) =>
-                                      void submitMissionRename(mission.id, next)
-                                    }
-                                    onRenameCancel={() =>
-                                      setRenamingMissionId(null)
-                                    }
-                                  />
-                                ))}
-                                {renderTabItems(nestedTabs, null, false)}
-                                {nestedMissions.length === 0 &&
-                                nestedTabs.length === 0 ? (
+                                {nestedRows.length === 0 &&
+                                draggedNodeId === null ? (
                                   <p className="px-2.5 py-1 text-xs text-fg-3">
                                     No chats or missions yet.
                                   </p>
-                                ) : null}
+                                ) : (
+                                  renderScopeRows(
+                                    nestedRows,
+                                    node.id,
+                                    project.id,
+                                  )
+                                )}
                               </div>
                             )}
                           </div>
@@ -1934,64 +2213,30 @@ export function Sidebar({
                 ) : null}
               </section>
 
-              <section className="mt-5 flex shrink-0 flex-col">
-                <CollapsibleSectionHeader
-                  label="MISSION"
-                  open={missionsOpen}
-                  attention={missionsOpen ? null : missionAttention}
-                  attentionWorkingLabel="Mission working"
-                  onToggle={toggleMissions}
-                  onPlus={() => {
-                    setNewMissionProjectId(null);
-                    setCreatingMission(true);
-                  }}
-                  plusTitle="Start mission"
-                />
-                {missionsOpen ? (
-                  <div className="flex flex-col gap-0.5 px-3 pt-1">
-                    {ungroupedMissions.length === 0 ? (
-                      <p className="px-2.5 py-1 text-xs text-fg-3">
-                        No live missions.
-                      </p>
-                    ) : (
-                      ungroupedMissions.map((m) => (
-                        <MissionRow
-                          key={m.id}
-                          mission={m}
-                          selected={m.id === currentMissionId}
-                          onClick={() => {
-                            setActiveProjectId(null);
-                            openMission(m.id);
-                          }}
-                          onContextMenu={(anchor) => openMissionMenu(m, anchor)}
-                          renaming={renamingMissionId === m.id}
-                          onRenameSubmit={(next) =>
-                            void submitMissionRename(m.id, next)
-                          }
-                          onRenameCancel={() => setRenamingMissionId(null)}
-                        />
-                      ))
-                    )}
-                  </div>
-                ) : null}
-              </section>
-
               <section className="mt-5 flex flex-1 flex-col">
                 <CollapsibleSectionHeader
-                  label="CHAT"
+                  label="CHATS & MISSIONS"
                   open={sessionsOpen}
-                  attention={sessionsOpen ? null : chatAttention}
+                  attention={sessionsOpen ? null : recentAttention}
                   onToggle={toggleSessions}
                   onPlus={() => {
                     setChatCreateMenu(null);
                     setChatAddMenuOpen((open) => !open);
                   }}
-                  plusTitle="Add chat or folder"
+                  plusTitle="Add chat, folder, or mission"
                   plusExpanded={chatAddMenuOpen}
                   plusPopup="menu"
                   onPlusMenuClose={() => setChatAddMenuOpen(false)}
                   plusMenu={
                     <div className="flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]">
+                      <button
+                        type="button"
+                        onClick={beginFolderCreate}
+                        className="flex cursor-pointer items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-fg hover:bg-line"
+                      >
+                        <FolderPlus aria-hidden className="h-3.5 w-3.5" />
+                        New folder
+                      </button>
                       <button
                         type="button"
                         onClick={() => {
@@ -2005,11 +2250,15 @@ export function Sidebar({
                       </button>
                       <button
                         type="button"
-                        onClick={beginFolderCreate}
+                        onClick={() => {
+                          setChatAddMenuOpen(false);
+                          setNewMissionProjectId(null);
+                          setCreatingMission(true);
+                        }}
                         className="flex cursor-pointer items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-fg hover:bg-line"
                       >
-                        <FolderPlus aria-hidden className="h-3.5 w-3.5" />
-                        New folder
+                        <Flag aria-hidden className="h-3.5 w-3.5" />
+                        New mission
                       </button>
                     </div>
                   }
@@ -2026,155 +2275,53 @@ export function Sidebar({
                     }}
                     className="flex flex-1 flex-col gap-0.5 px-3 pt-1"
                   >
-                    <DndContext
-                      sensors={tabDragSensors}
-                      collisionDetection={pointerWithin}
-                      onDragStart={handleTabDragStart}
-                      onDragOver={handleTabDragOver}
-                      onDragEnd={handleTabDragEnd}
-                      onDragCancel={clearTabDrag}
-                    >
                     {creatingFolder ? (
                       <NewFolderRow
                         onSubmit={submitFolderCreate}
                         onCancel={() => setCreatingFolder(false)}
                       />
                     ) : null}
-                    {folders.length === 0 &&
-                    chatSectionTabItems.length === 0 &&
-                    !creatingFolder ? (
+                    {recentRows.length === 0 && !creatingFolder ? (
                       <p className="px-2.5 py-1 text-xs text-fg-3">
                         No chats yet.
                       </p>
                     ) : (
-                      <>
-                        {folders.map((folder) => {
-                          const items = chatSectionTabItems.filter(
-                            (item) => item.layout.folderId === folder.id,
-                          );
-                          const folderAttention = rollupAttentionState(
-                            items.map((item) => item.attention),
-                          );
-                          const folderLive = items.some((item) =>
-                            chatTabIsLive(item.members),
-                          );
-                          const folderCollapsed = collapsedFolderIds.has(
-                            folder.id,
-                          );
-                          const visuallyCollapsed =
-                            folderCollapsed &&
-                            collapsedFolderDropId !== folder.id;
-                          return (
-                            <div
-                              key={folder.id}
-                              className="flex flex-col gap-0.5"
-                            >
-                              {renamingFolderId === folder.id ? (
-                                <FolderRenameRow
-                                  initial={folder.name}
-                                  collapsed={folderCollapsed}
-                                  live={folderLive}
-                                  attention={folderAttention}
-                                  onSubmit={(nextName) =>
-                                    void submitFolderRename(
-                                      folder.id,
-                                      folder.name,
-                                      nextName,
-                                    )
-                                  }
-                                  onCancel={() => setRenamingFolderId(null)}
-                                />
-                              ) : (
-                                <CollapsedFolderDropRow
-                                  folderId={folder.id}
-                                  enabled={
-                                    folderCollapsed && draggedTabId !== null
-                                  }
-                                  active={
-                                    collapsedFolderDropId === folder.id
-                                  }
-                                  onContextMenu={(anchor) =>
-                                    openFolderMenu(folder, anchor)
-                                  }
-                                >
-                                  <button
-                                    type="button"
-                                    onClick={() => toggleFolder(folder.id)}
-                                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
-                                  >
-                                    {visuallyCollapsed ? (
-                                      <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
-                                    ) : (
-                                      <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
-                                    )}
-                                    <SidebarTabIcon
-                                      icon={Folder}
-                                      active={folderLive}
-                                    />
-                                    <span className="min-w-0 flex-1 truncate font-medium">
-                                      {folder.name}
-                                    </span>
-                                    <ChatAttentionIndicator
-                                      state={
-                                        visuallyCollapsed
-                                          ? folderAttention
-                                          : null
-                                      }
-                                    />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={(event) =>
-                                      openFolderMenu(folder, {
-                                        x: event.clientX,
-                                        y: event.clientY,
-                                      })
-                                    }
-                                    className="cursor-pointer rounded p-0.5 text-fg-3 opacity-0 hover:bg-raised hover:text-fg group-hover:opacity-100 focus:opacity-100"
-                                    aria-label="Folder actions"
-                                    title="Folder actions"
-                                  >
-                                    <MoreHorizontal aria-hidden className="h-3 w-3" />
-                                  </button>
-                                </CollapsedFolderDropRow>
-                              )}
-                              {visuallyCollapsed ? null : (
-                                <div className="ml-3 flex flex-col gap-0.5 border-l border-line pl-2">
-                                  {renderTabItems(items, folder.id)}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                        {renderTabItems(
-                          chatSectionTabItems.filter(
-                            (item) => item.layout.folderId === null,
-                          ),
-                          null,
-                        )}
-                      </>
+                      renderScopeRows(recentRows, null, null)
                     )}
-                    <DragOverlay dropAnimation={null}>
-                      {draggedTabItem ? (
-                        <div className="shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
-                          <ChatTabGroup
-                            layout={draggedTabItem.layout}
-                            members={draggedTabItem.members}
-                            active={draggedTabItem.members.some(
-                              (member) =>
-                                member.session_id === currentChatSessionId,
-                            )}
-                            attention={draggedTabItem.attention}
-                            onActivate={() => undefined}
-                            onContextMenu={() => undefined}
-                          />
-                        </div>
-                      ) : null}
-                    </DragOverlay>
-                    </DndContext>
                   </div>
                 ) : null}
               </section>
+              <DragOverlay dropAnimation={null}>
+                {draggedRow && draggedRow.kind === "tab" ? (
+                  <div className="shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
+                    <ChatTabGroup
+                      layout={draggedRow.layout}
+                      members={draggedRow.members}
+                      active={draggedRow.members.some(
+                        (member) =>
+                          member.session_id === currentChatSessionId,
+                      )}
+                      pinned={draggedRow.pinned}
+                      attention={draggedRow.attention}
+                      onActivate={() => undefined}
+                      onContextMenu={() => undefined}
+                    />
+                  </div>
+                ) : draggedRow && draggedRow.kind === "mission" ? (
+                  <div className="shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
+                    <MissionRow
+                      mission={draggedRow.mission}
+                      selected={draggedRow.mission.id === currentMissionId}
+                      onClick={() => undefined}
+                      onContextMenu={() => undefined}
+                      renaming={false}
+                      onRenameSubmit={() => undefined}
+                      onRenameCancel={() => undefined}
+                    />
+                  </div>
+                ) : null}
+              </DragOverlay>
+              </DndContext>
             </div>
 
             {/* Update prompt card — floats directly above the Settings
@@ -2284,8 +2431,8 @@ export function Sidebar({
             return;
           }
           if (targetFolderId) {
-            void moveSessionTabToFolder(spawned.id, targetFolderId)
-              .catch((error) =>
+            void moveSessionTabToParent(spawned.id, targetFolderId)
+              .catch((error: unknown) =>
                 console.error(
                   "sidebar: create chat tab in folder failed",
                   error,
@@ -2338,23 +2485,28 @@ export function Sidebar({
 
       {chatTabMenu ? (
         <RowContextMenu
-          pinned={chatTabMenu.members.every((member) => member.pinned)}
+          pinned={chatTabMenu.pinned}
           anchorX={chatTabMenu.x}
           anchorY={chatTabMenu.y}
           renameLabel="Rename tab"
           archiveLabel={chatTabArchiveLabel(chatTabMenu.layout)}
           onClose={closeChatTabMenu}
           onPin={() => {
-            void setChatTabPin(
-              chatTabMenu.members,
-              !chatTabMenu.members.every((member) => member.pinned),
-            );
+            void setChatTabPin(chatTabMenu.layout.id, !chatTabMenu.pinned);
             closeChatTabMenu();
           }}
           onRename={() => {
             setRenamingChatTabId(chatTabMenu.layout.id);
             closeChatTabMenu();
           }}
+          onRemoveFromProject={
+            chatTabMenu.projectId !== null
+              ? () => {
+                  void removeChatTabFromProject(chatTabMenu.members);
+                  closeChatTabMenu();
+                }
+              : undefined
+          }
           onArchive={() => {
             void archiveChatTab(chatTabMenu.members);
             closeChatTabMenu();
@@ -2431,9 +2583,9 @@ export function Sidebar({
       <ConfirmDialog
         open={projectDeleteConfirm !== null}
         title={`Delete project "${projectDeleteConfirm?.name ?? ""}"?`}
-        body="Chats and missions in this project will move back to the ungrouped sections. The on-disk directory and all of its files will remain untouched."
+        body="Deleting this project archives every chat and mission inside it (running ones are stopped first). Archived items appear in Settings → Archived. The on-disk directory and all of its files remain untouched."
         confirmLabel="Delete project"
-        busyLabel="Deleting…"
+        busyLabel="Archiving…"
         busy={deletingProject}
         onConfirm={() => {
           if (projectDeleteConfirm) void deleteProject(projectDeleteConfirm);
@@ -2444,7 +2596,11 @@ export function Sidebar({
       <ConfirmDialog
         open={folderDeleteConfirm !== null}
         title={`Delete folder "${folderDeleteConfirm?.name ?? ""}"?`}
-        body={`This folder contains ${folderDeleteConfirm?.count ?? 0} tab${folderDeleteConfirm?.count === 1 ? "" : "s"}. Deleting it archives every chat in those tabs and removes the folder. The chats will appear in Settings → Archived.`}
+        body={`This folder contains ${folderDeleteConfirm?.count ?? 0} tab${folderDeleteConfirm?.count === 1 ? "" : "s"}${
+          folderDeleteConfirm?.missionCount
+            ? ` and ${folderDeleteConfirm.missionCount} mission${folderDeleteConfirm.missionCount === 1 ? "" : "s"}`
+            : ""
+        }. Deleting it archives everything inside (running ones are stopped first) and removes the folder. Archived items appear in Settings → Archived.`}
         confirmLabel="Delete folder"
         busyLabel="Archiving…"
         busy={deletingFolder}
@@ -2477,6 +2633,14 @@ export function Sidebar({
               );
             closeMissionMenu();
           }}
+          onRemoveFromProject={
+            missionMenu.mission.project_id !== null
+              ? () => {
+                  void removeMissionFromProject(missionMenu.mission);
+                  closeMissionMenu();
+                }
+              : undefined
+          }
           onArchive={() => {
             void archiveMission(missionMenu.mission);
             closeMissionMenu();
@@ -2605,14 +2769,14 @@ function CollapsibleSectionHeader({
 
 // ---- sidebar list rows ------------------------------------------------
 
-function SortableChatTab({
-  tabId,
-  folderId,
+function SortableNavRow({
+  nodeId,
+  parentId,
   disabled,
   children,
 }: {
-  tabId: string;
-  folderId: string | null;
+  nodeId: string;
+  parentId: string | null;
   disabled: boolean;
   children: ReactNode;
 }) {
@@ -2620,9 +2784,9 @@ function SortableChatTab({
     listeners,
     setNodeRef,
   } = useSortable({
-    id: tabDndId(tabId),
+    id: rowDndId(nodeId),
     disabled,
-    data: { kind: "tab", tabId, folderId } satisfies ChatTabDndData,
+    data: { kind: "row", nodeId, parentId } satisfies NavDndData,
   });
 
   return (
@@ -2632,26 +2796,30 @@ function SortableChatTab({
   );
 }
 
-function CollapsedFolderDropRow({
-  folderId,
+/** Container header that doubles as a drop target: a collapsed folder
+ *  or a project row. Dropping appends at the container's end. */
+function ContainerDropRow({
+  containerId,
   enabled,
   active,
+  selected,
   onContextMenu,
   children,
 }: {
-  folderId: string;
+  containerId: string;
   enabled: boolean;
   active: boolean;
+  selected?: boolean;
   onContextMenu: (anchor: { x: number; y: number }) => void;
   children: ReactNode;
 }) {
   const { setNodeRef } = useDroppable({
-    id: collapsedFolderDndId(folderId),
+    id: containerDndId(containerId),
     disabled: !enabled,
     data: {
-      kind: "collapsed-folder",
-      folderId,
-    } satisfies ChatTabDndData,
+      kind: "container",
+      containerId,
+    } satisfies NavDndData,
   });
 
   return (
@@ -2664,7 +2832,9 @@ function CollapsedFolderDropRow({
       className={`group flex items-center gap-1.5 rounded border px-2.5 py-1.5 text-xs transition-colors ${
         active
           ? "border-accent bg-accent/10 text-fg"
-          : "border-transparent text-fg-2 hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg"
+          : selected
+            ? "border-sidebar-selected-border bg-sidebar-selected text-fg shadow-sm"
+            : "border-transparent text-fg-2 hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg"
       }`}
     >
       {children}
@@ -2672,17 +2842,17 @@ function CollapsedFolderDropRow({
   );
 }
 
-function EmptyTabDropArea({
+function EmptyRowDropArea({
   id,
   enabled,
-  folderId,
+  parentId,
   markerKey,
   active,
   label,
 }: {
   id: string;
   enabled: boolean;
-  folderId: string | null;
+  parentId: string | null;
   markerKey: string;
   active: boolean;
   label: string | null;
@@ -2692,10 +2862,10 @@ function EmptyTabDropArea({
     disabled: !enabled,
     data: {
       kind: "position",
-      folderId,
+      parentId,
       index: 0,
       markerKey,
-    } satisfies ChatTabDndData,
+    } satisfies NavDndData,
   });
 
   return (
@@ -2713,17 +2883,17 @@ function EmptyTabDropArea({
   );
 }
 
-function TabDropDivider({
+function RowDropDivider({
   id,
   enabled,
-  folderId,
+  parentId,
   index,
   markerKey,
   active,
 }: {
   id: string;
   enabled: boolean;
-  folderId: string | null;
+  parentId: string | null;
   index: number;
   markerKey: string;
   active: boolean;
@@ -2733,10 +2903,10 @@ function TabDropDivider({
     disabled: !enabled,
     data: {
       kind: "position",
-      folderId,
+      parentId,
       index,
       markerKey,
-    } satisfies ChatTabDndData,
+    } satisfies NavDndData,
   });
 
   return (
@@ -3047,6 +3217,7 @@ function RowContextMenu({
   onPin,
   onRename,
   onOpenInNewWindow,
+  onRemoveFromProject,
   onArchive,
   renameLabel = "Rename",
   archiveLabel = "Archive",
@@ -3058,6 +3229,9 @@ function RowContextMenu({
   onPin: () => void;
   onRename: () => void;
   onOpenInNewWindow?: () => void;
+  /** Present only for rows inside a project — the explicit exit,
+   *  since drags out of a project scope are suppressed. */
+  onRemoveFromProject?: () => void;
   onArchive: () => void;
   renameLabel?: string;
   archiveLabel?: string;
@@ -3108,6 +3282,13 @@ function RowContextMenu({
           icon={AppWindow}
           label="Open in New Window"
           onClick={onOpenInNewWindow}
+        />
+      ) : null}
+      {onRemoveFromProject ? (
+        <ContextMenuItem
+          icon={FolderMinus}
+          label="Remove from project"
+          onClick={onRemoveFromProject}
         />
       ) : null}
       <ContextMenuItem
@@ -3288,14 +3469,14 @@ function ChatCreateContextMenu({
       className="z-50 flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
     >
       <ContextMenuItem
-        icon={MessageSquarePlus}
-        label="New chat"
-        onClick={onNewChat}
-      />
-      <ContextMenuItem
         icon={FolderPlus}
         label="New folder"
         onClick={onNewFolder}
+      />
+      <ContextMenuItem
+        icon={MessageSquarePlus}
+        label="New chat"
+        onClick={onNewChat}
       />
     </div>
   );

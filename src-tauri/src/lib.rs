@@ -254,7 +254,7 @@ pub fn run() {
             // dot would advertise a result the app can no longer
             // show. Stamp them viewed.
             match pool.get() {
-                Ok(conn) => match repo::tab::clear_unread_on_startup(&conn, chrono::Utc::now()) {
+                Ok(conn) => match repo::node::clear_unread_on_startup(&conn, chrono::Utc::now()) {
                     Ok(cleared) if cleared > 0 => {
                         log::info!(
                             "startup cleanup: cleared {cleared} stale unread tab completion(s)"
@@ -298,11 +298,16 @@ pub fn run() {
             commands::crew::crew_create,
             commands::crew::crew_update,
             commands::crew::crew_delete,
-            commands::folder::folder_list,
-            commands::folder::folder_create,
-            commands::folder::folder_rename,
-            commands::folder::folder_reorder,
-            commands::folder::folder_delete,
+            commands::node::node_list,
+            commands::node::node_folder_create,
+            commands::node::node_rename,
+            commands::node::node_tab_upsert,
+            commands::node::node_delete,
+            commands::node::node_move,
+            commands::node::node_set_pinned,
+            commands::node::node_folder_delete,
+            commands::node::node_mark_viewed,
+            commands::node::node_import_once,
             commands::project::project_list,
             commands::project::project_create,
             commands::project::project_rename,
@@ -325,13 +330,6 @@ pub fn run() {
             commands::slot::slot_delete,
             commands::slot::slot_set_lead,
             commands::slot::slot_reorder,
-            commands::tab::tab_list,
-            commands::tab::tab_upsert,
-            commands::tab::tab_delete,
-            commands::tab::tab_move_to_folder,
-            commands::tab::tab_reorder,
-            commands::tab::tab_import_once,
-            commands::tab::tab_mark_viewed,
             commands::mission::mission_start,
             commands::mission::mission_attach,
             commands::mission::mission_stop,
@@ -428,9 +426,9 @@ pub fn run() {
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         state.windows.mark_focused(&label);
                         let visible = state.windows.focused_direct_sessions(&label);
-                        if let Err(error) =
-                            commands::tab::mark_direct_sessions_viewed(app_handle, &state, &visible)
-                        {
+                        if let Err(error) = commands::node::mark_direct_sessions_viewed(
+                            app_handle, &state, &visible,
+                        ) {
                             log::warn!("mark focused window tabs viewed failed: {error}");
                         }
                     }

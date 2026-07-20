@@ -238,6 +238,8 @@ pub fn start(
             archived_at: None,
         },
     )?;
+    // Sidebar node, under the project's node when bound (feature 44).
+    repo::node::ensure_mission_node(&tx, &id, input.project_id.as_deref())?;
 
     let mission_dir = event_log::mission_dir(app_data_dir, &crew.id, &id);
     std::fs::create_dir_all(&mission_dir)?;
@@ -321,6 +323,10 @@ pub fn stop(conn: &mut Connection, app_data_dir: &Path, id: &str) -> Result<Miss
             mission.status
         )));
     }
+
+    // Archiving removes the mission from the sidebar tree; unarchive
+    // re-creates the node (feature 44).
+    repo::node::delete_mission_node(&tx, id)?;
 
     // Fetch crew_id now that we know the row exists and we own the
     // transition; used for the mission-dir path below.
@@ -844,7 +850,10 @@ pub async fn mission_start(
     let initial_size = initial_cols
         .zip(initial_rows)
         .filter(|(cols, rows)| *cols > 0 && *rows > 0);
-    mission_start_impl_with_size(&state, &app, input, initial_size).await
+    let output = mission_start_impl_with_size(&state, &app, input, initial_size).await?;
+    // The new mission node joined the sidebar tree (feature 44).
+    let _ = app.emit("chat/layout-changed", serde_json::json!({}));
+    Ok(output)
 }
 
 /// Re-attach a mission's router + bus after app restart. The mission row
@@ -1080,12 +1089,25 @@ pub(crate) async fn mission_pin_impl(
     if n != 1 {
         return Err(Error::msg(format!("mission not found: {id}")));
     }
+    // The sidebar renders pin state from the node (feature 44); the
+    // row's pinned_at stays for non-sidebar consumers.
+    if let Some(node) = repo::node::find_by_ref(&conn, repo::node::NodeType::Mission, &id)? {
+        repo::node::set_pinned(&conn, &node.id, pinned)?;
+    }
     get(&conn, &id)
 }
 
 #[tauri::command]
-pub async fn mission_pin(state: State<'_, AppState>, id: String, pinned: bool) -> Result<Mission> {
-    mission_pin_impl(&state, id, pinned).await
+pub async fn mission_pin(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    id: String,
+    pinned: bool,
+) -> Result<Mission> {
+    let mission = mission_pin_impl(&state, id, pinned).await?;
+    // Pin state renders from the node tree (feature 44).
+    let _ = app.emit("chat/layout-changed", serde_json::json!({}));
+    Ok(mission)
 }
 
 /// Rename a mission. Title is trimmed; empty values are rejected so
@@ -1128,8 +1150,18 @@ pub async fn mission_set_project(
     if repo::mission::set_project(&mut conn, &id, project_id.as_deref())? == 0 {
         return Err(Error::msg(format!("mission not found: {id}")));
     }
+    // Keep the tree in step with the pointer: reparent the mission's
+    // node under the new project's node (or root), appended at the end.
+    if let Some(node) = repo::node::find_by_ref(&conn, repo::node::NodeType::Mission, &id)? {
+        let parent = match project_id.as_deref() {
+            Some(project_id) => Some(repo::node::ensure_project_node(&conn, project_id)?.id),
+            None => None,
+        };
+        repo::node::reparent_append(&conn, &node.id, parent.as_deref())?;
+    }
     let mission = get(&conn, &id)?;
     let _ = app.emit("mission/changed", serde_json::json!({ "mission_id": id }));
+    let _ = app.emit("chat/layout-changed", serde_json::json!({}));
     Ok(mission)
 }
 
@@ -1229,6 +1261,9 @@ pub(crate) async fn mission_reset_impl(
         if n != 1 {
             return Err(Error::msg(format!("mission not found: {id}")));
         }
+        // A reset returns the mission to the sidebar; re-create its
+        // node if the archive removed it (feature 44).
+        repo::node::ensure_mission_node(&conn, &id, mission_snap.project_id.as_deref())?;
     }
 
     // 6. Re-emit the opening events so router can replay the launch
@@ -1509,8 +1544,15 @@ pub(crate) async fn mission_archive_impl(state: &AppState, id: String) -> Result
 }
 
 #[tauri::command]
-pub async fn mission_archive(state: State<'_, AppState>, id: String) -> Result<Mission> {
-    mission_archive_impl(&state, id).await
+pub async fn mission_archive(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<Mission> {
+    let mission = mission_archive_impl(&state, id).await?;
+    // The mission's node left the sidebar tree (feature 44).
+    let _ = app.emit("chat/layout-changed", serde_json::json!({}));
+    Ok(mission)
 }
 
 /// Clear a mission's archive marker so it reappears in active lists.
@@ -1522,7 +1564,11 @@ pub async fn mission_archive(state: State<'_, AppState>, id: String) -> Result<M
 pub(crate) async fn mission_unarchive_impl(state: &AppState, id: String) -> Result<Mission> {
     let conn = state.db.get()?;
     repo::mission::unarchive(&conn, &id)?;
-    get(&conn, &id)
+    let mission = get(&conn, &id)?;
+    // Restore the sidebar node, appended at its parent's end (original
+    // position not remembered, matching chat restore).
+    repo::node::ensure_mission_node(&conn, &id, mission.project_id.as_deref())?;
+    Ok(mission)
 }
 
 /// Emits `mission/changed` after the flip — the sidebar's MISSION list
@@ -1536,6 +1582,7 @@ pub async fn mission_unarchive(
 ) -> Result<Mission> {
     let mission = mission_unarchive_impl(&state, id).await?;
     let _ = app.emit("mission/changed", ());
+    let _ = app.emit("chat/layout-changed", serde_json::json!({}));
     Ok(mission)
 }
 

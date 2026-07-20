@@ -414,7 +414,7 @@ pub async fn session_archive(
             "session not found or still running (kill before archiving)".to_string(),
         ));
     }
-    repo::tab::remove_session(&tx, &session_id)?;
+    repo::node::remove_session(&tx, &session_id)?;
     tx.commit()?;
     // Drop the in-memory output buffer for this row. Forget intentionally
     // keeps the buffer alive across PTY exits so the chat can be reopened
@@ -547,11 +547,40 @@ pub async fn session_rename(
 /// Pin or unpin a direct-chat session in the SESSION sidebar tray.
 /// Pinned sessions sort above running sessions in
 /// `session_list_recent_direct` regardless of last activity. Setting
-/// `pinned = false` clears `pinned_at`.
+/// Pin a direct chat from the chat surface. The sidebar renders pin
+/// state from the covering tab node (feature 44), so the flip lands
+/// there too: the node's `pinned_position` plus the legacy `pinned_at`
+/// fanned to every member session, one transaction. Returns the tab
+/// node's id when one covers the session.
+pub(crate) fn pin_session_and_tab(
+    conn: &mut rusqlite::Connection,
+    session_id: &str,
+    pinned: bool,
+) -> Result<Option<String>> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let pinned_at = pinned.then(chrono::Utc::now);
+    let updated = repo::session::set_pinned_at(&tx, session_id, pinned_at)?;
+    if updated == 0 {
+        return Err(Error::msg(format!("session not found: {session_id}")));
+    }
+    repo::node::ensure_active_sessions(&tx)?;
+    let tab = repo::node::find_for_session(&tx, session_id)?;
+    if let Some(tab) = tab.as_ref() {
+        for member in repo::node::session_ids(tab) {
+            if member != session_id {
+                repo::session::set_pinned_at(&tx, &member, pinned_at)?;
+            }
+        }
+        repo::node::set_pinned(&tx, &tab.id, pinned)?;
+    }
+    tx.commit()?;
+    Ok(tab.map(|tab| tab.id))
+}
+
+/// `pinned = false` clears the pin.
 ///
-/// Emits a `session/updated` Tauri event after the row flips so the
-/// sidebar's CHAT list can refresh — same rationale as
-/// `session_rename` above.
+/// Emits `session/updated` (row content) and `chat/layout-changed`
+/// (the tab node's pin drives sidebar ordering) after the flip.
 #[tauri::command]
 pub async fn session_pin(
     state: State<'_, AppState>,
@@ -559,20 +588,13 @@ pub async fn session_pin(
     session_id: String,
     pinned: bool,
 ) -> Result<()> {
-    let conn = state.db.get()?;
-    let pinned_at = if pinned {
-        Some(chrono::Utc::now())
-    } else {
-        None
-    };
-    let updated = repo::session::set_pinned_at(&conn, &session_id, pinned_at)?;
-    if updated == 0 {
-        return Err(Error::msg(format!("session not found: {session_id}")));
-    }
+    let mut conn = state.db.get()?;
+    pin_session_and_tab(&mut conn, &session_id, pinned)?;
     let _ = app.emit(
         "session/updated",
         serde_json::json!({ "session_id": session_id }),
     );
+    let _ = app.emit("chat/layout-changed", serde_json::json!({}));
     Ok(())
 }
 
@@ -735,6 +757,39 @@ pub async fn session_start_runtime(
     Ok(spawned)
 }
 
+/// Pointer update + sidebar-tree reconcile, one transaction. The
+/// callers pass a tab's full member set, but the placement is derived
+/// from ALL members after the write regardless, so a partial-ID call
+/// can never park a mixed tab under a project it only half belongs to.
+pub(crate) fn set_project_and_reconcile(
+    conn: &mut rusqlite::Connection,
+    session_ids: &[String],
+    project_id: Option<&str>,
+) -> Result<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    repo::session::set_project_for_direct_sessions(&tx, session_ids, project_id).map_err(
+        |error| match error {
+            rusqlite::Error::QueryReturnedNoRows => {
+                Error::msg("one or more direct sessions were not found or are archived")
+            }
+            error => error.into(),
+        },
+    )?;
+    let mut reconciled: Vec<String> = Vec::new();
+    for session_id in session_ids {
+        let Some(tab) = repo::node::find_for_session(&tx, session_id)? else {
+            continue;
+        };
+        if reconciled.contains(&tab.id) {
+            continue;
+        }
+        repo::node::reconcile_tab_placement(&tx, &tab.id)?;
+        reconciled.push(tab.id);
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn session_set_project(
     state: State<'_, AppState>,
@@ -743,19 +798,14 @@ pub async fn session_set_project(
     project_id: Option<String>,
 ) -> Result<()> {
     let mut conn = state.db.get()?;
-    repo::session::set_project_for_direct_sessions(&mut conn, &session_ids, project_id.as_deref())
-        .map_err(|error| match error {
-            rusqlite::Error::QueryReturnedNoRows => {
-                Error::msg("one or more direct sessions were not found or are archived")
-            }
-            error => error.into(),
-        })?;
+    set_project_and_reconcile(&mut conn, &session_ids, project_id.as_deref())?;
     if let Some(session_id) = session_ids.first() {
         let _ = app.emit(
             "session/updated",
             serde_json::json!({ "session_id": session_id }),
         );
     }
+    let _ = app.emit("chat/layout-changed", serde_json::json!({}));
     Ok(())
 }
 
@@ -765,6 +815,151 @@ mod tests {
     use crate::db;
     use chrono::Utc;
     use rusqlite::params;
+
+    fn insert_pair_session(conn: &rusqlite::Connection, id: &str) {
+        conn.execute(
+            "INSERT INTO sessions (id, status, archived_at) VALUES (?1, 'stopped', NULL)",
+            params![id],
+        )
+        .unwrap();
+    }
+
+    fn pair_tab(conn: &rusqlite::Connection) -> crate::repo::node::NodeRow {
+        crate::repo::node::create_tab(
+            conn,
+            None,
+            "pair",
+            0,
+            r#"{"preset":"cols-2","slots":["a","b"],"sizes":{}}"#,
+        )
+        .unwrap()
+    }
+
+    fn session_project(conn: &rusqlite::Connection, id: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT project_id FROM sessions WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn session_pinned_at(conn: &rusqlite::Connection, id: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT pinned_at FROM sessions WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn set_project_and_reconcile_keeps_split_tabs_honest_on_partial_ids() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        let project = crate::repo::project::create(&conn, "A", "/tmp/a").unwrap();
+        insert_pair_session(&conn, "a");
+        insert_pair_session(&conn, "b");
+        let tab = pair_tab(&conn);
+
+        // Partial ID set: only `a` moves; membership is mixed, so the
+        // tab must NOT park under the project node.
+        set_project_and_reconcile(&mut conn, &["a".to_string()], Some(&project.id)).unwrap();
+        assert_eq!(
+            session_project(&conn, "a").as_deref(),
+            Some(project.id.as_str())
+        );
+        assert_eq!(session_project(&conn, "b"), None);
+        assert_eq!(
+            crate::repo::node::get(&conn, &tab.id)
+                .unwrap()
+                .unwrap()
+                .parent_id,
+            None
+        );
+
+        // Full member set: the tab follows under the project node.
+        set_project_and_reconcile(
+            &mut conn,
+            &["a".to_string(), "b".to_string()],
+            Some(&project.id),
+        )
+        .unwrap();
+        let project_node = crate::repo::node::find_by_ref(
+            &conn,
+            crate::repo::node::NodeType::Project,
+            &project.id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            crate::repo::node::get(&conn, &tab.id)
+                .unwrap()
+                .unwrap()
+                .parent_id
+                .as_deref(),
+            Some(project_node.id.as_str())
+        );
+
+        // Clearing one member makes membership mixed again — the tab
+        // leaves the project node.
+        set_project_and_reconcile(&mut conn, &["b".to_string()], None).unwrap();
+        assert_eq!(session_project(&conn, "b"), None);
+        assert_eq!(
+            crate::repo::node::get(&conn, &tab.id)
+                .unwrap()
+                .unwrap()
+                .parent_id,
+            None
+        );
+
+        // Unknown ids roll the whole transaction back — pointers AND
+        // tree stay untouched.
+        assert!(set_project_and_reconcile(
+            &mut conn,
+            &["a".to_string(), "missing".to_string()],
+            None,
+        )
+        .is_err());
+        assert_eq!(
+            session_project(&conn, "a").as_deref(),
+            Some(project.id.as_str())
+        );
+    }
+
+    #[test]
+    fn pin_from_chat_surface_lands_on_the_tab_node_and_every_member() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        insert_pair_session(&conn, "a");
+        insert_pair_session(&conn, "b");
+        let tab = pair_tab(&conn);
+
+        let pinned_tab = pin_session_and_tab(&mut conn, "a", true).unwrap();
+        assert_eq!(pinned_tab.as_deref(), Some(tab.id.as_str()));
+        let node = crate::repo::node::get(&conn, &tab.id).unwrap().unwrap();
+        assert!(node.pinned_position.is_some());
+        for id in ["a", "b"] {
+            assert!(
+                session_pinned_at(&conn, id).is_some(),
+                "{id} should carry the legacy pin for non-sidebar surfaces"
+            );
+        }
+
+        // Unpinning through the OTHER member clears the node and the
+        // whole membership symmetrically.
+        pin_session_and_tab(&mut conn, "b", false).unwrap();
+        let node = crate::repo::node::get(&conn, &tab.id).unwrap().unwrap();
+        assert!(node.pinned_position.is_none());
+        for id in ["a", "b"] {
+            assert!(
+                session_pinned_at(&conn, id).is_none(),
+                "{id} legacy pin should clear"
+            );
+        }
+
+        assert!(pin_session_and_tab(&mut conn, "missing", true).is_err());
+    }
 
     #[test]
     fn paste_image_format_maps_png_and_jpeg_to_pasteboard_classes() {
