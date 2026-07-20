@@ -18,6 +18,7 @@ export function ChatTabGroup({
   onContextMenu,
   dragging,
   attention,
+  pinned = false,
   renaming,
   onRenameSubmit,
   onRenameCancel,
@@ -29,6 +30,9 @@ export function ChatTabGroup({
   onContextMenu: (anchor: { x: number; y: number }) => void;
   dragging?: boolean;
   attention: ChatAttentionState;
+  /** Pin state comes from the tab's node (`pinned_position` non-null),
+   *  not from the members' legacy session flags. */
+  pinned?: boolean;
   renaming?: boolean;
   onRenameSubmit?: (name: string) => void;
   onRenameCancel?: () => void;
@@ -39,7 +43,6 @@ export function ChatTabGroup({
 
   const derivedName = derivedChatTabTitle(members);
   const name = layout.name ?? derivedName;
-  const pinned = members.length > 0 && members.every((member) => member.pinned);
   const live = chatTabIsLive(members);
   const paneCount = leaves(layout.root).length;
   const SplitIcon = paneCount >= 3 ? Columns3 : Columns2;

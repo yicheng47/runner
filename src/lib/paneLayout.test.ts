@@ -572,7 +572,7 @@ describe("cold-start hydration", () => {
     vi.resetModules();
   });
 
-  it("imports the local v2 payload once and hydrates the DB rows", async () => {
+  it("imports the local v2 payload once and hydrates the node tree", async () => {
     // The env's localStorage is a partial shim; back it with a Map so both
     // the seed write and the freshly-imported module see the same store.
     const store = new Map<string, string>();
@@ -595,105 +595,111 @@ describe("cold-start hydration", () => {
     vi.doMock("@tauri-apps/api/event", () => ({
       listen: () => Promise.resolve(() => {}),
     }));
+
+    interface MockNode {
+      id: string;
+      parent_id: string | null;
+      position: number;
+      type: "folder" | "project" | "tab" | "mission";
+      name: string | null;
+      ref_id: string | null;
+      layout: string | null;
+      pinned_position: number | null;
+      last_completed_at: string | null;
+      last_viewed_at: string | null;
+      created_at: string;
+    }
+    let nodeRows: MockNode[] = [];
+    const sortedRows = () =>
+      [...nodeRows].sort((a, b) =>
+        (a.parent_id ?? "") < (b.parent_id ?? "")
+          ? -1
+          : (a.parent_id ?? "") > (b.parent_id ?? "")
+            ? 1
+            : a.position - b.position,
+      );
     const tabUpsert = vi.fn(async () => undefined);
-    const tabDelete = vi.fn(async () => undefined);
-    let tabRows: Array<{
-      id: string;
-      folder_id: string | null;
-      name: string;
-      position: number;
-      layout: string;
-      created_at: string;
-    }> = [];
-    let folderRows: Array<{
-      id: string;
-      name: string;
-      position: number;
-      created_at: string;
-    }> = [];
-    let nextFolderList: Promise<typeof folderRows> | null = null;
-    const folderList = vi.fn(() => {
-      if (nextFolderList) {
-        const response = nextFolderList;
-        nextFolderList = null;
+    const nodeDelete = vi.fn(async () => undefined);
+    let nextNodeList: Promise<MockNode[]> | null = null;
+    const nodeList = vi.fn(() => {
+      if (nextNodeList) {
+        const response = nextNodeList;
+        nextNodeList = null;
         return response;
       }
-      return Promise.resolve([...folderRows]);
+      return Promise.resolve(sortedRows());
     });
+    let folderCount = 0;
     const folderCreate = vi.fn(async (name: string) => {
-      const row = {
-        id: "01KTESTFOLDER00000000000000",
+      const row: MockNode = {
+        id: `01KTESTFOLDER0000000000000${folderCount}`,
+        parent_id: null,
+        position: nodeRows.length,
+        type: "folder",
         name,
-        position: 0,
+        ref_id: null,
+        layout: null,
+        pinned_position: null,
+        last_completed_at: null,
+        last_viewed_at: null,
         created_at: "2026-07-12T00:00:00Z",
       };
-      folderRows = [row];
+      folderCount += 1;
+      nodeRows = [...nodeRows, row];
       return row;
     });
-    const tabMoveToFolder = vi.fn(
-      async (id: string, folderId: string | null) => {
-        const row = tabRows.find((candidate) => candidate.id === id);
-        if (!row) throw new Error(`missing tab: ${id}`);
-        const moved = { ...row, folder_id: folderId };
-        tabRows = tabRows.map((candidate) =>
-          candidate.id === id ? moved : candidate,
-        );
-        return moved;
-      },
-    );
-    let nextTabReorderError: Error | null = null;
-    let nextTabReorderPromise: Promise<void> | null = null;
-    const tabReorder = vi.fn(
-      async (id: string, folderId: string | null, orderedIds: string[]) => {
-        if (nextTabReorderPromise) {
-          const promise = nextTabReorderPromise;
-          nextTabReorderPromise = null;
-          await promise;
-        }
-        if (nextTabReorderError) {
-          const error = nextTabReorderError;
-          nextTabReorderError = null;
+    let nextMoveError: Error | null = null;
+    const nodeMove = vi.fn(
+      async (id: string, parentId: string | null, orderedIds: string[]) => {
+        if (nextMoveError) {
+          const error = nextMoveError;
+          nextMoveError = null;
           throw error;
         }
         const positions = new Map(
-          orderedIds.map((tabId, position) => [tabId, position]),
+          orderedIds.map((nodeId, position) => [nodeId, position]),
         );
-        tabRows = tabRows.map((row) => {
+        nodeRows = nodeRows.map((row) => {
           if (row.id === id) {
             return {
               ...row,
-              folder_id: folderId,
+              parent_id: parentId,
               position: positions.get(row.id)!,
             };
           }
           const position = positions.get(row.id);
           return position === undefined ? row : { ...row, position };
         });
-        tabRows.sort((a, b) => a.position - b.position);
-        return tabRows;
+        return sortedRows();
       },
     );
     vi.doMock("./api", () => ({
       api: {
-        tab: {
-          importOnce: async (tabs: { name: string; position: number; layout: string }[]) => {
-            tabRows = tabs.map((tab, index) => ({
+        node: {
+          importOnce: async (
+            tabs: { name: string; position: number; layout: string }[],
+          ) => {
+            nodeRows = tabs.map((tab, index) => ({
               id: `01KTESTTAB0000000000000000${index}`,
-              folder_id: null,
-              name: tab.name,
+              parent_id: null,
               position: tab.position,
+              type: "tab" as const,
+              name: tab.name,
+              ref_id: null,
               layout: tab.layout,
+              pinned_position: null,
+              last_completed_at: null,
+              last_viewed_at: null,
               created_at: "2026-07-12T00:00:00Z",
             }));
-            return tabRows;
+            return sortedRows();
           },
-          list: async () => tabRows,
-          upsert: tabUpsert,
-          delete: tabDelete,
-          moveToFolder: tabMoveToFolder,
-          reorder: tabReorder,
+          list: nodeList,
+          tabUpsert,
+          delete: nodeDelete,
+          folderCreate,
+          move: nodeMove,
         },
-        folder: { list: folderList, create: folderCreate },
       },
     }));
 
@@ -729,120 +735,89 @@ describe("cold-start hydration", () => {
     expect(mod.getPaneLayout("A").name).toBeNull();
     tabUpsert.mockClear();
 
-    let releaseStale: (rows: typeof folderRows) => void = () => {};
-    nextFolderList = new Promise((resolve) => {
+    // A stale in-flight hydration must not clobber the folder returned
+    // by createChatFolder.
+    let releaseStale: (rows: MockNode[]) => void = () => {};
+    nextNodeList = new Promise((resolve) => {
       releaseStale = resolve;
     });
     const staleHydration = mod.hydratePaneLayoutsFromDb();
-    await vi.waitFor(() => expect(folderList).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(nodeList).toHaveBeenCalled());
 
     await mod.createChatFolder("Project");
     releaseStale([]);
     await staleHydration;
     expect(folderCreate).toHaveBeenCalledWith("Project");
-    expect(mod.getFolders().map((folder) => folder.name)).toEqual(["Project"]);
-    expect(folderList).toHaveBeenCalledTimes(3);
+    const folderNames = () =>
+      mod
+        .getNavNodes()
+        .filter((node) => node.type === "folder")
+        .map((node) => node.name);
+    expect(folderNames()).toEqual(["Project"]);
 
     const consoleError = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
-    nextFolderList = Promise.reject(new Error("temporary read failure"));
+    nextNodeList = Promise.reject(new Error("temporary read failure"));
     await expect(mod.createChatFolder("Resilient")).resolves.toMatchObject({
       name: "Resilient",
     });
-    expect(mod.getFolders().map((folder) => folder.name)).toEqual([
-      "Resilient",
-    ]);
+    expect(folderNames()).toEqual(["Project", "Resilient"]);
     expect(folderCreate).toHaveBeenCalledTimes(2);
     consoleError.mockRestore();
 
-    const targetFolderId = mod.getFolders()[0].id;
+    const targetFolderId = mod
+      .getNavNodes()
+      .find((node) => node.type === "folder")!.id;
     const targetTabId = mod.getPaneLayout("A").id;
-    let releaseSuperseded: (rows: typeof folderRows) => void = () => {};
-    nextFolderList = new Promise((resolve) => {
-      releaseSuperseded = resolve;
-    });
-    const folderListCalls = folderList.mock.calls.length;
-    const supersededHydration = mod.hydratePaneLayoutsFromDb();
-    await vi.waitFor(() =>
-      expect(folderList).toHaveBeenCalledTimes(folderListCalls + 1),
-    );
-    await mod.moveSessionTabToFolder("A", targetFolderId);
-    releaseSuperseded(folderRows);
-    await supersededHydration;
-    expect(mod.getPaneLayout("A").folderId).toBe(targetFolderId);
-    expect(tabMoveToFolder).toHaveBeenCalledWith(targetTabId, targetFolderId);
+    await mod.moveSessionTabToParent("A", targetFolderId);
+    expect(mod.getPaneLayout("A").parentId).toBe(targetFolderId);
+    expect(nodeMove).toHaveBeenCalledWith(targetTabId, targetFolderId, [
+      targetTabId,
+    ]);
 
     const secondTabId = "01KTESTTAB000000000000000099";
-    tabRows.push({
+    nodeRows.push({
       id: secondTabId,
-      folder_id: targetFolderId,
-      name: "C",
+      parent_id: targetFolderId,
       position: 1,
+      type: "tab",
+      name: "C",
+      ref_id: null,
       layout: mod.serializeLayout(mod.applyPresetPure("single", "C", ["C"])),
+      pinned_position: null,
+      last_completed_at: null,
+      last_viewed_at: null,
       created_at: "2026-07-12T00:00:01Z",
     });
     await mod.hydratePaneLayoutsFromDb();
-    await mod.reorderTab(targetTabId, targetFolderId, [
+    await mod.moveNode(targetTabId, targetFolderId, [
       secondTabId,
       targetTabId,
     ]);
     expect(
       mod
         .getPaneLayouts()
-        .filter((layout) => layout.folderId === targetFolderId)
+        .filter((layout) => layout.parentId === targetFolderId)
         .map((layout) => layout.id),
     ).toEqual([secondTabId, targetTabId]);
-    expect(tabReorder).toHaveBeenCalledWith(targetTabId, targetFolderId, [
+    expect(nodeMove).toHaveBeenCalledWith(targetTabId, targetFolderId, [
       secondTabId,
       targetTabId,
     ]);
 
-    nextTabReorderError = new Error("write rejected");
-    nextFolderList = Promise.reject(new Error("rollback hydration failed"));
+    // A rejected move surfaces the error and leaves the local order
+    // untouched (the tree only changes on the authoritative response).
+    nextMoveError = new Error("write rejected");
     await expect(
-      mod.reorderTab(targetTabId, targetFolderId, [
-        targetTabId,
-        secondTabId,
-      ]),
+      mod.moveNode(targetTabId, targetFolderId, [targetTabId, secondTabId]),
     ).rejects.toThrow("write rejected");
     expect(
       mod
         .getPaneLayouts()
-        .filter((layout) => layout.folderId === targetFolderId)
+        .filter((layout) => layout.parentId === targetFolderId)
         .map((layout) => layout.id),
     ).toEqual([secondTabId, targetTabId]);
-
-    let rejectPendingReorder: (error: Error) => void = () => {};
-    nextTabReorderPromise = new Promise((_, reject) => {
-      rejectPendingReorder = reject;
-    });
-    const pendingReorder = mod.reorderTab(targetTabId, targetFolderId, [
-      targetTabId,
-      secondTabId,
-    ]);
-    await vi.waitFor(() =>
-      expect(
-        mod
-          .getPaneLayouts()
-          .filter((layout) => layout.folderId === targetFolderId)
-          .map((layout) => layout.id),
-      ).toEqual([targetTabId, secondTabId]),
-    );
-    tabRows = tabRows.map((row) =>
-      row.id === targetTabId ? { ...row, folder_id: null, position: 0 } : row,
-    );
-    await mod.hydratePaneLayoutsFromDb();
-    nextFolderList = Promise.reject(new Error("reconcile hydration failed"));
-    rejectPendingReorder(new Error("concurrent reorder rejected"));
-    await expect(pendingReorder).rejects.toThrow("concurrent reorder rejected");
-    expect(mod.getPaneLayout(targetTabId).folderId).toBeNull();
-    expect(
-      mod
-        .getPaneLayouts()
-        .filter((layout) => layout.folderId === targetFolderId)
-        .map((layout) => layout.id),
-    ).toEqual([secondTabId]);
 
     mod.removeArchivedSessionFromLayout("C");
     mod.removeArchivedSessionFromLayout("A");
@@ -850,6 +825,6 @@ describe("cold-start hydration", () => {
     expect(mod.getPaneLayouts()[0].id).toBe("");
     expect(mod.visibleSessionIds(mod.getPaneLayouts()[0].root)).toEqual([]);
     expect(tabUpsert).not.toHaveBeenCalled();
-    expect(tabDelete).not.toHaveBeenCalled();
+    expect(nodeDelete).not.toHaveBeenCalled();
   });
 });

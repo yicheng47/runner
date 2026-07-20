@@ -6,28 +6,78 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  tabRows: [
+  nodeRows: [
+    {
+      id: "folder-1",
+      parent_id: null,
+      position: 0,
+      type: "folder",
+      name: "Review",
+      ref_id: null,
+      layout: null,
+      pinned_position: null,
+      last_completed_at: null,
+      last_viewed_at: null,
+      created_at: "2026-07-14T00:00:00Z",
+    },
     {
       id: "tab-a",
-      folder_id: null,
+      parent_id: null,
+      position: 1,
+      type: "tab",
       name: "",
-      position: 0,
+      ref_id: null,
       layout:
         '{"preset":"cols-2","slots":["A","B"],"sizes":{"cols-2:outer":[50,50]}}',
+      pinned_position: null,
+      last_completed_at: null,
+      last_viewed_at: null,
       created_at: "2026-07-14T00:00:00Z",
     },
     {
       id: "tab-b",
-      folder_id: "folder-1",
+      parent_id: "folder-1",
+      position: 0,
+      type: "tab",
       name: "",
-      position: 1,
+      ref_id: null,
       layout:
         '{"preset":"cols-2","slots":["C","D"],"sizes":{"cols-2:outer":[50,50]}}',
+      pinned_position: null,
+      last_completed_at: null,
+      last_viewed_at: null,
       created_at: "2026-07-14T00:00:01Z",
+    },
+    {
+      id: "proj-node-1",
+      parent_id: null,
+      position: 2,
+      type: "project",
+      name: null,
+      ref_id: "proj-1",
+      layout: null,
+      pinned_position: null,
+      last_completed_at: null,
+      last_viewed_at: null,
+      created_at: "2026-07-14T00:00:00Z",
+    },
+    {
+      id: "tab-c",
+      parent_id: "proj-node-1",
+      position: 0,
+      type: "tab",
+      name: "",
+      ref_id: null,
+      layout: '{"preset":"single","slots":["E"],"sizes":{}}',
+      pinned_position: null,
+      last_completed_at: null,
+      last_viewed_at: null,
+      created_at: "2026-07-14T00:00:02Z",
     },
   ],
   tabUpsert: vi.fn(),
   sessionPin: vi.fn(),
+  sessionSetProject: vi.fn(async () => undefined),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -57,7 +107,15 @@ vi.mock("@dnd-kit/sortable", () => ({
 vi.mock("../lib/api", () => ({
   api: {
     project: {
-      list: vi.fn(async () => []),
+      list: vi.fn(async () => [
+        {
+          id: "proj-1",
+          name: "Proj",
+          cwd: "/tmp/proj",
+          position: 0,
+          created_at: "2026-07-14T00:00:00Z",
+        },
+      ]),
     },
     mission: {
       listSummary: vi.fn(async () => []),
@@ -100,30 +158,33 @@ vi.mock("../lib/api", () => ({
           pinned: true,
           status: "running",
         },
+        {
+          session_id: "E",
+          project_id: "proj-1",
+          handle: "echo",
+          display_name: "Echo",
+          title: null,
+          pinned: false,
+          status: "running",
+        },
       ]),
       activitySnapshot: vi.fn(async () => ({})),
       pin: mocks.sessionPin,
+      setProject: mocks.sessionSetProject,
     },
-    tab: {
-      importOnce: vi.fn(async () => mocks.tabRows),
-      list: vi.fn(async () => mocks.tabRows),
-      upsert: vi.fn(async (input) => {
+    node: {
+      importOnce: vi.fn(async () => mocks.nodeRows),
+      list: vi.fn(async () => mocks.nodeRows),
+      tabUpsert: vi.fn(async (input) => {
         mocks.tabUpsert(input);
-        mocks.tabRows = mocks.tabRows.map((row) =>
+        mocks.nodeRows = mocks.nodeRows.map((row) =>
           row.id === input.id ? { ...row, name: input.name } : row,
         );
       }),
       delete: vi.fn(async () => undefined),
-    },
-    folder: {
-      list: vi.fn(async () => [
-        {
-          id: "folder-1",
-          name: "Review",
-          position: 0,
-          created_at: "2026-07-14T00:00:00Z",
-        },
-      ]),
+      markViewed: vi.fn(async () => undefined),
+      setPinned: vi.fn(async () => undefined),
+      move: vi.fn(async () => mocks.nodeRows),
     },
   },
 }));
@@ -228,10 +289,12 @@ describe("Sidebar", () => {
       setItem: (key: string, value: string) => storage.set(key, value),
     });
     localStorage.clear();
-    mocks.tabRows[0].name = "";
-    mocks.tabRows[1].name = "";
+    for (const row of mocks.nodeRows) {
+      if (row.type === "tab") row.name = "";
+    }
     mocks.tabUpsert.mockClear();
     mocks.sessionPin.mockClear();
+    mocks.sessionSetProject.mockClear();
     await hydratePaneLayoutsFromDb();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -248,7 +311,7 @@ describe("Sidebar", () => {
     await renderSidebar(root);
     const originalPlacement = getPaneLayouts().map((layout) => ({
       id: layout.id,
-      folderId: layout.folderId,
+      parentId: layout.parentId,
     }));
 
     await startRename(container, "@coder + @reviewer");
@@ -270,7 +333,7 @@ describe("Sidebar", () => {
     expect(
       getPaneLayouts().map((layout) => ({
         id: layout.id,
-        folderId: layout.folderId,
+        parentId: layout.parentId,
       })),
     ).toEqual(originalPlacement);
     expect(mocks.sessionPin).not.toHaveBeenCalled();
@@ -299,16 +362,38 @@ describe("Sidebar", () => {
     expect(
       getPaneLayouts().map((layout) => ({
         id: layout.id,
-        folderId: layout.folderId,
+        parentId: layout.parentId,
       })),
     ).toEqual(originalPlacement);
     expect(mocks.sessionPin).not.toHaveBeenCalled();
   });
 
-  it("scrolls project, mission, and chat sections in one container", async () => {
+  it("offers Remove from project only on project rows and unbinds every member", async () => {
     await renderSidebar(root);
 
-    const sections = ["PROJECT", "MISSION", "CHAT"].map((label) => {
+    // The project chat's row menu carries the explicit exit action —
+    // drags out of a project are suppressed, so this is the only way
+    // out and must send EVERY tab member to session_set_project.
+    const projectRow = buttonWithTitle(container, "@echo").parentElement!;
+    await click(buttonWithTitle(projectRow, "More actions"));
+    await click(menuItem(container, "Remove from project"));
+    expect(mocks.sessionSetProject).toHaveBeenCalledWith(["E"], null);
+
+    // A root row's menu must NOT offer it.
+    const rootRow = buttonWithTitle(container, "@alpha + @beta")
+      .parentElement!;
+    await click(buttonWithTitle(rootRow, "More actions"));
+    const labels = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).map((button) => button.textContent?.trim());
+    expect(labels).toContain("Rename tab");
+    expect(labels).not.toContain("Remove from project");
+  });
+
+  it("scrolls project and chats-and-missions sections in one container", async () => {
+    await renderSidebar(root);
+
+    const sections = ["PROJECTS", "CHATS & MISSIONS"].map((label) => {
       const toggle = Array.from(
         container.querySelectorAll<HTMLButtonElement>("button"),
       ).find((button) => button.textContent?.trim() === label);
@@ -319,7 +404,6 @@ describe("Sidebar", () => {
     const scroller = sections[0].parentElement;
 
     expect(scroller).toBe(sections[1].parentElement);
-    expect(scroller).toBe(sections[2].parentElement);
     expect(scroller?.classList).toContain("overflow-y-auto");
     expect(scroller?.classList).not.toContain("[scrollbar-width:none]");
     expect(scroller?.classList).not.toContain(
@@ -335,10 +419,10 @@ describe("Sidebar", () => {
         ),
       ).toBe(false);
     }
-    expect(sections[2].classList).toContain("flex-1");
-    expect(sections[2].children[1].classList).toContain("flex-1");
-    expect(scroller?.contains(buttonWithTitle(container, "@alpha + @beta"))).toBe(
-      true,
-    );
+    expect(sections[1].classList).toContain("flex-1");
+    expect(sections[1].children[1].classList).toContain("flex-1");
+    expect(
+      scroller?.contains(buttonWithTitle(container, "@alpha + @beta")),
+    ).toBe(true);
   });
 });

@@ -8,15 +8,16 @@
 // per session, ever, and the layout only decides which of them are visible.
 //
 // State is a module-level snapshot shared by RunnerChat and Sidebar via
-// `useSyncExternalStore`. SQLite is authoritative for tab identity, folder
-// membership, names, order, and layouts; every window writes through and
-// rehydrates on `chat/layout-changed` invalidations.
+// `useSyncExternalStore`. SQLite is authoritative through the sidebar
+// node tree (feature 44): one `node_list` query carries tab identity,
+// containment (`parent_id`), order, names, and layouts; every window
+// writes through and rehydrates on `chat/layout-changed` invalidations.
 
 import { useSyncExternalStore } from "react";
 
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, type FolderRow, type TabRow } from "./api";
+import { api, type NodeRow } from "./api";
 
 export type PresetKind =
   | "single"
@@ -50,10 +51,11 @@ export interface PaneSplit {
 export type PaneNode = PaneLeaf | PaneSplit;
 
 export interface PaneLayout {
-  /** Stable SQLite-backed tab identity. Empty only for the off-Tauri test
-   *  placeholder before the first hydration. */
+  /** Stable SQLite-backed tab-node identity. Empty only for the off-Tauri
+   *  test placeholder before the first hydration. */
   id: string;
-  folderId: string | null;
+  /** Containing node — a folder or project node id, null at root. */
+  parentId: string | null;
   preset: PresetKind;
   root: PaneNode;
   focusedPaneId: string;
@@ -212,7 +214,7 @@ export function applyPresetPure(
     : null;
   return {
     id: "",
-    folderId: null,
+    parentId: null,
     preset: kind,
     root,
     focusedPaneId: (firstEmpty ?? focusedLeaf ?? all[0]).id,
@@ -303,7 +305,7 @@ export function closePanePure(layout: PaneLayout, paneId: string): PaneLayout {
   const preset = derivePreset(root);
   return {
     id: layout.id,
-    folderId: layout.folderId,
+    parentId: layout.parentId,
     preset,
     root,
     focusedPaneId,
@@ -423,7 +425,7 @@ function fromPersistedLayout(
       : 0;
   return {
     id: "",
-    folderId: null,
+    parentId: null,
     preset: p.preset,
     root,
     focusedPaneId: all[focusedSlot].id,
@@ -462,7 +464,7 @@ try {
 function singleLayout(sessionId: string | null = null): PaneLayout {
   return {
     id: "",
-    folderId: null,
+    parentId: null,
     preset: "single",
     root: leaf("p1", sessionId),
     focusedPaneId: "p1",
@@ -547,7 +549,7 @@ function normalizeLayoutSet(
 
 let layouts: PaneLayout[] = [singleLayout()];
 let activeIndex = 0;
-let folders: FolderRow[] = [];
+let navNodes: NodeRow[] = [];
 const listeners = new Set<() => void>();
 let writeQueue: Promise<unknown> = Promise.resolve();
 let hydrationSequence = 0;
@@ -580,12 +582,11 @@ function applyLayoutSet(
   for (const l of listeners) l();
 }
 
-function layoutInput(layout: PaneLayout, position: number) {
+function layoutInput(layout: PaneLayout) {
   return {
     id: layout.id,
-    folder_id: layout.folderId,
+    parent_id: layout.parentId,
     name: normalizedGroupName(layout.name) ?? "",
-    position,
     layout: serializeLayout(layout),
   };
 }
@@ -602,24 +603,24 @@ function writeLayoutChanges(previous: PaneLayout[]): void {
   const nextIds = new Set(layouts.map((layout) => layout.id).filter(Boolean));
   for (const prior of previous) {
     if (prior.id && !nextIds.has(prior.id)) {
-      enqueueWrite(() => api.tab.delete(prior.id), "tab_delete");
+      enqueueWrite(() => api.node.delete(prior.id), "node_delete");
     }
   }
-  layouts.forEach((layout, position) => {
-    if (!layout.id) return;
+  // Only content changes (layout / name) write through here — the tree
+  // owns placement and order, and those move via `moveNode` alone.
+  for (const layout of layouts) {
+    if (!layout.id) continue;
     const before = previous.find((candidate) => candidate.id === layout.id);
     if (
       before &&
-      before.folderId === layout.folderId &&
       before.name === layout.name &&
-      serializeLayout(before) === serializeLayout(layout) &&
-      previous.indexOf(before) === position
+      serializeLayout(before) === serializeLayout(layout)
     ) {
-      return;
+      continue;
     }
-    const input = layoutInput(layout, position);
-    enqueueWrite(() => api.tab.upsert(input), "tab_upsert");
-  });
+    const input = layoutInput(layout);
+    enqueueWrite(() => api.node.tabUpsert(input), "node_tab_upsert");
+  }
 }
 
 function setLayoutSet(
@@ -685,14 +686,14 @@ export function hydrateLayoutSet(raw: string): boolean {
   return true;
 }
 
-function layoutFromTabRow(row: TabRow): PaneLayout | null {
-  const parsed = deserializeLayout(row.layout);
+function layoutFromNode(row: NodeRow): PaneLayout | null {
+  const parsed = row.layout ? deserializeLayout(row.layout) : null;
   if (!parsed) return null;
   return {
     ...parsed,
     id: row.id,
-    folderId: row.folder_id,
-    name: row.name.trim() || null,
+    parentId: row.parent_id,
+    name: (row.name ?? "").trim() || null,
     lastCompletedAt: row.last_completed_at,
     lastViewedAt: row.last_viewed_at,
   };
@@ -708,24 +709,13 @@ function importTabsFromLocalStorage(): { name: string; position: number; layout:
   }));
 }
 
-export async function hydratePaneLayoutsFromDb(): Promise<void> {
-  if (windowLabel === null) return;
-  const sequence = ++hydrationSequence;
-  const imported = importTabsFromLocalStorage();
-  const [tabRows, folderRows] = await Promise.all([
-    imported.length > 0 ? api.tab.importOnce(imported) : api.tab.list(),
-    api.folder.list(),
-  ]);
-  if (sequence !== hydrationSequence) return;
-  if (imported.length > 0) {
-    try {
-      localStorage.removeItem(STORAGE_LAYOUT);
-    } catch {
-      // Import succeeded; stale browser storage is harmless if unavailable.
-    }
-  }
-  const next = tabRows
-    .map(layoutFromTabRow)
+// Adopt an authoritative node-tree snapshot: keep the tree for the
+// sidebar, derive the tab set, and re-anchor this window's active tab.
+function applyNodeRows(rows: NodeRow[]): void {
+  navNodes = rows;
+  const next = rows
+    .filter((row) => row.type === "tab")
+    .map(layoutFromNode)
     .filter((layout): layout is PaneLayout => layout !== null)
     .map((layout) => {
       const prior = layouts.find((candidate) => candidate.id === layout.id);
@@ -742,11 +732,29 @@ export async function hydratePaneLayoutsFromDb(): Promise<void> {
     : -1;
   const currentId = currentLayout().id;
   const currentIndex = next.findIndex((layout) => layout.id === currentId);
-  folders = folderRows;
   applyLayoutSet(
     next.length > 0 ? next : [singleLayout()],
     anchorIndex >= 0 ? anchorIndex : currentIndex >= 0 ? currentIndex : 0,
   );
+}
+
+export async function hydratePaneLayoutsFromDb(): Promise<void> {
+  if (windowLabel === null) return;
+  const sequence = ++hydrationSequence;
+  const imported = importTabsFromLocalStorage();
+  const rows =
+    imported.length > 0
+      ? await api.node.importOnce(imported)
+      : await api.node.list();
+  if (sequence !== hydrationSequence) return;
+  if (imported.length > 0) {
+    try {
+      localStorage.removeItem(STORAGE_LAYOUT);
+    } catch {
+      // Import succeeded; stale browser storage is harmless if unavailable.
+    }
+  }
+  applyNodeRows(rows);
 }
 
 if (windowLabel !== null) {
@@ -802,22 +810,24 @@ export function usePaneLayouts(): PaneLayout[] {
   );
 }
 
-export function getFolders(): FolderRow[] {
-  return folders;
+/** The sidebar navigation tree, in render order (parent-grouped, pinned
+ *  rows first within their scope, then position). The reference swaps
+ *  whole on each authoritative snapshot, so it is a sound
+ *  `useSyncExternalStore` snapshot. */
+export function getNavNodes(): NodeRow[] {
+  return navNodes;
 }
 
-export function useFolders(): FolderRow[] {
-  return useSyncExternalStore(subscribePaneLayout, getFolders, getFolders);
+export function useNavNodes(): NodeRow[] {
+  return useSyncExternalStore(subscribePaneLayout, getNavNodes, getNavNodes);
 }
 
-export async function createChatFolder(name: string): Promise<FolderRow> {
-  const row = await api.folder.create(name);
-  // A refresh started before folder_create committed must not overwrite the
-  // authoritative row returned by this command with its older folder list.
+export async function createChatFolder(name: string): Promise<NodeRow> {
+  const row = await api.node.folderCreate(name);
+  // A refresh started before node_folder_create committed must not
+  // overwrite the authoritative row returned by this command.
   hydrationSequence += 1;
-  folders = [...folders.filter((folder) => folder.id !== row.id), row].sort(
-    (a, b) => a.position - b.position,
-  );
+  navNodes = [...navNodes.filter((node) => node.id !== row.id), row];
   for (const listener of listeners) listener();
   try {
     await hydratePaneLayoutsFromDb();
@@ -827,97 +837,53 @@ export async function createChatFolder(name: string): Promise<FolderRow> {
   return row;
 }
 
-export async function moveTabToFolder(
-  tabId: string,
-  folderId: string | null,
-): Promise<void> {
-  const index = layouts.findIndex((layout) => layout.id === tabId);
-  if (index < 0) return;
-  const next = [...layouts];
-  next[index] = { ...next[index], folderId };
-  applyLayoutSet(next, activeIndex);
-  await api.tab.moveToFolder(tabId, folderId);
-}
-
-export async function reorderTab(
-  tabId: string,
-  folderId: string | null,
+/**
+ * The unified reparent/reposition op behind every sidebar drag.
+ * `orderedIds` must be the complete new ordering of the destination
+ * scope's children (moved node included) — the backend validates set
+ * equality and returns the authoritative tree, which is adopted here.
+ */
+export async function moveNode(
+  nodeId: string,
+  parentId: string | null,
   orderedIds: string[],
 ): Promise<void> {
-  const dragged = layouts.find((layout) => layout.id === tabId);
-  if (!dragged) return;
-  const previousLayouts = layouts;
-  const activeId = currentLayout().id;
-  const targetIds = new Set(orderedIds);
-  if (!targetIds.has(tabId)) throw new Error("reorder must include dragged tab");
-  const ordered = orderedIds.map((id) => {
-    const layout = layouts.find((candidate) => candidate.id === id);
-    if (!layout) throw new Error(`tab not found: ${id}`);
-    return id === tabId ? { ...layout, folderId } : layout;
-  });
-  const firstTargetIndex = layouts.findIndex((layout) =>
-    targetIds.has(layout.id),
-  );
-  const insertionIndex = layouts
-    .slice(0, Math.max(0, firstTargetIndex))
-    .filter((layout) => !targetIds.has(layout.id)).length;
-  const next = layouts.filter((layout) => !targetIds.has(layout.id));
-  next.splice(insertionIndex, 0, ...ordered);
-  applyLayoutSet(
-    next,
-    Math.max(
-      0,
-      next.findIndex((layout) => layout.id === activeId),
-    ),
-  );
-  const optimisticLayouts = layouts;
-  try {
-    await api.tab.reorder(tabId, folderId, orderedIds);
-  } catch (error) {
-    if (layouts === optimisticLayouts) {
-      applyLayoutSet(
-        previousLayouts,
-        Math.max(
-          0,
-          previousLayouts.findIndex((layout) => layout.id === activeId),
-        ),
-      );
-    }
-    await hydratePaneLayoutsFromDb().catch(() => undefined);
-    throw error;
-  }
-  try {
-    await hydratePaneLayoutsFromDb();
-  } catch (error) {
-    console.error("paneLayout: post-reorder hydration failed", error);
-  }
+  // An in-flight list started before this move must not overwrite the
+  // authoritative rows the move returns.
+  hydrationSequence += 1;
+  const rows = await api.node.move(nodeId, parentId, orderedIds);
+  applyNodeRows(rows);
 }
 
-export async function moveSessionTabToFolder(
-  sessionId: string,
-  folderId: string,
+/** Append a node at the end of a new scope — the move-to-folder /
+ *  move-to-project menu paths; drags carry an explicit order. */
+export async function moveNodeToParentEnd(
+  nodeId: string,
+  parentId: string | null,
 ): Promise<void> {
-  const rows = await api.tab.list();
+  const siblings = navNodes
+    .filter((node) => node.parent_id === parentId && node.id !== nodeId)
+    .map((node) => node.id);
+  await moveNode(nodeId, parentId, [...siblings, nodeId]);
+}
+
+export async function moveSessionTabToParent(
+  sessionId: string,
+  parentId: string | null,
+): Promise<void> {
+  // Fetch fresh: a chat spawned moments ago may not be in this window's
+  // snapshot yet (the backend seeds its tab node on list).
+  const rows = await api.node.list();
   const row = rows.find((candidate) => {
-    const layout = layoutFromTabRow(candidate);
+    if (candidate.type !== "tab") return false;
+    const layout = layoutFromNode(candidate);
     return layout ? leafForSession(layout.root, sessionId) !== null : false;
   });
   if (!row) throw new Error(`tab not found for session: ${sessionId}`);
-  const moved = layoutFromTabRow(
-    await api.tab.moveToFolder(row.id, folderId),
-  );
-  if (moved) {
-    const index = layouts.findIndex((candidate) => candidate.id === moved.id);
-    const next = [...layouts];
-    if (index >= 0) next[index] = moved;
-    else next.push(moved);
-    applyLayoutSet(next, activeIndex);
-  }
-  try {
-    await hydratePaneLayoutsFromDb();
-  } catch (error) {
-    console.error("paneLayout: post-move hydration failed", error);
-  }
+  const siblings = rows
+    .filter((node) => node.parent_id === parentId && node.id !== row.id)
+    .map((node) => node.id);
+  await moveNode(row.id, parentId, [...siblings, row.id]);
 }
 
 /**
@@ -983,7 +949,7 @@ export function applyPreset(
     nextLayouts[existingIndex] = {
       ...next,
       id: layouts[existingIndex].id,
-      folderId: layouts[existingIndex].folderId,
+      parentId: layouts[existingIndex].parentId,
     };
     setLayoutSet(nextLayouts, existingIndex);
     return currentLayout();
@@ -993,7 +959,7 @@ export function applyPreset(
     active.preset === "single" &&
     visibleSessionIds(active.root).length <= 1
   ) {
-    setCurrent({ ...next, id: active.id, folderId: active.folderId });
+    setCurrent({ ...next, id: active.id, parentId: active.parentId });
     return currentLayout();
   }
   setLayoutSet([...layouts, next], layouts.length);
@@ -1115,7 +1081,7 @@ export function recordSplitSizes(
   walk(currentLayout().root);
   const layout = currentLayout();
   if (layout.id) {
-    const input = layoutInput(layout, activeIndex);
-    enqueueWrite(() => api.tab.upsert(input), "tab resize persist");
+    const input = layoutInput(layout);
+    enqueueWrite(() => api.node.tabUpsert(input), "tab resize persist");
   }
 }

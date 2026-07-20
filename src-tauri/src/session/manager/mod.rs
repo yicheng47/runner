@@ -325,7 +325,7 @@ impl<R: tauri::Runtime> SessionEvents for TauriSessionEvents<R> {
         use tauri::Emitter;
         if ev.state == SessionActivityState::Idle {
             if let Err(error) =
-                crate::commands::tab::record_session_completion(&self.0, &ev.session_id)
+                crate::commands::node::record_session_completion(&self.0, &ev.session_id)
             {
                 log::warn!(
                     "record direct-chat completion for {} failed: {error}",

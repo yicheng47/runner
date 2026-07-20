@@ -79,13 +79,6 @@ export interface DirectSessionEntry {
 
 export type PasteImageMimeType = "image/png" | "image/jpeg";
 
-export interface FolderRow {
-  id: string;
-  name: string;
-  position: number;
-  created_at: string;
-}
-
 export interface ProjectRow {
   id: string;
   name: string;
@@ -94,26 +87,38 @@ export interface ProjectRow {
   created_at: string;
 }
 
-export interface TabRow {
+/** One row of the sidebar navigation tree (feature 44). Containers are
+ *  `folder` (nav-native, owns its name) and `project` (references
+ *  `projects.id` via `ref_id`); leaves are `tab` (pane layout JSON +
+ *  attention watermarks) and `mission` (references `missions.id`).
+ *  `parent_id` + `position` is the single containment/ordering
+ *  mechanism; `pinned_position` non-null = pinned. */
+export type NodeType = "folder" | "project" | "tab" | "mission";
+
+export interface NodeRow {
   id: string;
-  folder_id: string | null;
-  name: string;
+  parent_id: string | null;
   position: number;
-  layout: string;
-  created_at: string;
+  type: NodeType;
+  name: string | null;
+  ref_id: string | null;
+  layout: string | null;
+  pinned_position: number | null;
   last_completed_at: string | null;
   last_viewed_at: string | null;
+  created_at: string;
 }
 
-export interface TabUpsertInput {
+export interface NodeTabUpsertInput {
   id: string;
-  folder_id: string | null;
+  /** Scope for a NEW tab node; existing nodes keep their stored
+   *  placement (reparent/reorder go through `node.move`). */
+  parent_id: string | null;
   name: string;
-  position: number;
   layout: string;
 }
 
-export interface TabImportInput {
+export interface NodeTabImportInput {
   name: string;
   position: number;
   layout: string;
@@ -138,28 +143,34 @@ export const api = {
       invoke<ProjectRow[]>("project_reorder", { orderedIds }),
     delete: (id: string) => invoke<void>("project_delete", { id }),
   },
-  folder: {
-    list: () => invoke<FolderRow[]>("folder_list"),
-    create: (name: string) => invoke<FolderRow>("folder_create", { name }),
+  node: {
+    /** The whole sidebar tree, one query: parent-grouped, pinned rows
+     *  first within their scope, then `position, created_at`. Runs the
+     *  invariant repair (project/mission/tab node seeding) first. */
+    list: () => invoke<NodeRow[]>("node_list"),
+    folderCreate: (name: string) =>
+      invoke<NodeRow>("node_folder_create", { name }),
+    /** Rename a folder or tab node (projects/missions rename through
+     *  their domain commands). */
     rename: (id: string, name: string) =>
-      invoke<FolderRow>("folder_rename", { id, name }),
-    reorder: (orderedIds: string[]) =>
-      invoke<FolderRow[]>("folder_reorder", { orderedIds }),
-    delete: (id: string) => invoke<void>("folder_delete", { id }),
-  },
-  tab: {
-    list: () => invoke<TabRow[]>("tab_list"),
-    upsert: (input: TabUpsertInput) =>
-      invoke<TabRow>("tab_upsert", { input }),
-    delete: (id: string) => invoke<void>("tab_delete", { id }),
-    moveToFolder: (id: string, folderId: string | null) =>
-      invoke<TabRow>("tab_move_to_folder", { id, folderId }),
-    reorder: (id: string, folderId: string | null, orderedIds: string[]) =>
-      invoke<TabRow[]>("tab_reorder", { id, folderId, orderedIds }),
-    importOnce: (tabs: TabImportInput[]) =>
-      invoke<TabRow[]>("tab_import_once", { tabs }),
+      invoke<NodeRow>("node_rename", { id, name }),
+    tabUpsert: (input: NodeTabUpsertInput) =>
+      invoke<NodeRow>("node_tab_upsert", { input }),
+    delete: (id: string) => invoke<void>("node_delete", { id }),
+    /** The unified reparent/reposition op behind every sidebar drag.
+     *  `orderedIds` is the complete new ordering of the destination
+     *  scope's children, moved node included. Crossing a project
+     *  boundary writes `project_id` pointers through. */
+    move: (id: string, parentId: string | null, orderedIds: string[]) =>
+      invoke<NodeRow[]>("node_move", { id, parentId, orderedIds }),
+    setPinned: (id: string, pinned: boolean) =>
+      invoke<NodeRow>("node_set_pinned", { id, pinned }),
+    folderDelete: (id: string) =>
+      invoke<void>("node_folder_delete", { id }),
+    importOnce: (tabs: NodeTabImportInput[]) =>
+      invoke<NodeRow[]>("node_import_once", { tabs }),
     markViewed: (id: string, memberIds: string[]) =>
-      invoke<TabRow>("tab_mark_viewed", { id, memberIds }),
+      invoke<NodeRow>("node_mark_viewed", { id, memberIds }),
   },
   crew: {
     list: () => invoke<CrewListItem[]>("crew_list"),
