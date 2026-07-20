@@ -1778,9 +1778,7 @@ export function Sidebar({
 
             <div className="h-5 shrink-0" />
 
-            {/* Projects and Mission are capped independent trays; Chat fills
-                the remaining height. */}
-            <div className="flex min-h-0 flex-1 flex-col pb-3">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-3">
               <section className="flex shrink-0 flex-col">
                 <CollapsibleSectionHeader
                   label="PROJECT"
@@ -1791,7 +1789,7 @@ export function Sidebar({
                   plusTitle="Add project"
                 />
                 {projectsOpen ? (
-                  <div className="flex max-h-[34vh] flex-col gap-0.5 overflow-y-auto px-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  <div className="flex flex-col gap-0.5 px-3 pt-1">
                     {projects.length === 0 ? (
                       <p className="px-2.5 py-1 text-xs text-fg-3">
                         No projects yet.
@@ -1950,7 +1948,7 @@ export function Sidebar({
                   plusTitle="Start mission"
                 />
                 {missionsOpen ? (
-                  <div className="flex max-h-[38vh] flex-col gap-0.5 overflow-y-auto px-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  <div className="flex flex-col gap-0.5 px-3 pt-1">
                     {ungroupedMissions.length === 0 ? (
                       <p className="px-2.5 py-1 text-xs text-fg-3">
                         No live missions.
@@ -1978,7 +1976,7 @@ export function Sidebar({
                 ) : null}
               </section>
 
-              <section className="mt-5 flex min-h-0 flex-1 flex-col">
+              <section className="mt-5 flex flex-1 flex-col">
                 <CollapsibleSectionHeader
                   label="CHAT"
                   open={sessionsOpen}
@@ -2026,7 +2024,7 @@ export function Sidebar({
                         y: event.clientY,
                       });
                     }}
-                    className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                    className="flex flex-1 flex-col gap-0.5 px-3 pt-1"
                   >
                     <DndContext
                       sensors={tabDragSensors}
