@@ -51,7 +51,7 @@ CREATE TABLE nodes (
 
 ### Code impact
 
-- Repo layer: `repo/node.rs` replaces `repo/folder.rs` + `repo/tab.rs`; `ensure_active_sessions` seeds tab nodes; mission nodes are created on `mission_start` and removed on archive.
+- Repo layer: `repo/node.rs` replaces `repo/folder.rs` + `repo/tab.rs`; `ensure_active_sessions` seeds tab nodes. Archive/restore needs no special handling — archiving already removes a chat from the structure (`remove_session`), and the same invariant-repair loop re-creates a node for a restored chat: parented under its project's node when `project_id` is set, appended at the parent's end (original position not remembered, matching today). Mission nodes follow symmetrically: created on `mission_start`, deleted on archive, re-created on unarchive.
 - Sidebar renders from one tree: sections become derived views (PINNED = pinned overlay; PROJECT = project nodes; recent list = remaining roots), completing the MISSION/CHAT section merge.
 - dnd collapses to one reparent/reposition operation for every drag: tab-into-folder, tab/mission-into-project, mission-into-PINNED, reorder anywhere.
 
@@ -69,7 +69,6 @@ CREATE TABLE nodes (
 
 ### To be decided
 
-- Whether archived-mission nodes are deleted or kept hidden for restore.
 - Whether the recent/unfiled list is one interleaved run or grouped by kind.
 - Exact dnd affordances for mission rows in v1 of this rework.
 
