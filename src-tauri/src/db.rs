@@ -94,6 +94,9 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // project parent from its layout's member sessions, seeds
 // `pinned_position` from the pin flags, and re-seeds `position` per
 // parent scope over the pre-migration visual sort.
+// 0015: retires folder nodes. Their children are promoted to root and
+// spliced into the folder's root position; the 0014 legacy tables are
+// dropped in the same transaction.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -130,6 +133,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/0013_slot_runtime_override.sql"),
     ),
     (14, include_str!("../migrations/0014_nodes.sql")),
+    (15, include_str!("../migrations/0015_retire_folders.sql")),
 ];
 
 // Default-data seed: ships the Build squad starter crew on first launch.
@@ -370,12 +374,57 @@ fn run_migrations_up_to(conn: &mut Connection, max_version: i64) -> Result<()> {
             if *version == 14 {
                 backfill_0014_nodes(&tx)?;
             }
+            if *version == 15 {
+                backfill_0015_retire_folders(&tx)?;
+            }
             tx.execute(
                 "INSERT INTO _migrations (version, applied_at) VALUES (?1, ?2)",
                 params![version, chrono::Utc::now().to_rfc3339()],
             )?;
             tx.commit()?;
         }
+    }
+    Ok(())
+}
+
+/// Replace each root folder with its children while preserving the
+/// root order and each folder scope's order. Folder nodes were root-only
+/// by invariant, so a single display-order walk produces the flattened
+/// root sequence without fabricating project bindings.
+fn backfill_0015_retire_folders(tx: &rusqlite::Transaction) -> rusqlite::Result<()> {
+    let roots: Vec<(String, String)> = tx
+        .prepare(
+            "SELECT id, type FROM nodes WHERE parent_id IS NULL
+             ORDER BY position, created_at",
+        )?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut flattened = Vec::new();
+    for (id, node_type) in roots {
+        if node_type != "folder" {
+            flattened.push(id);
+            continue;
+        }
+        let children: Vec<String> = tx
+            .prepare(
+                "SELECT id FROM nodes WHERE parent_id = ?1
+                 ORDER BY pinned_position IS NULL, pinned_position,
+                          position, created_at",
+            )?
+            .query_map([&id], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        tx.execute(
+            "UPDATE nodes SET parent_id = NULL WHERE parent_id = ?1",
+            [&id],
+        )?;
+        tx.execute("DELETE FROM nodes WHERE id = ?1 AND type = 'folder'", [&id])?;
+        flattened.extend(children);
+    }
+    for (position, id) in flattened.iter().enumerate() {
+        tx.execute(
+            "UPDATE nodes SET position = ?2 WHERE id = ?1",
+            params![id, position as i64],
+        )?;
     }
     Ok(())
 }
@@ -1227,7 +1276,7 @@ Talking to the human:
         )
         .unwrap();
 
-        run_migrations(&mut conn).unwrap();
+        run_migrations_up_to(&mut conn, 14).unwrap();
 
         let node = |id: &str| -> (Option<String>, i64, String, Option<i64>) {
             conn.query_row(
@@ -1365,6 +1414,74 @@ Talking to the human:
             .query_row("SELECT COUNT(*) FROM tabs_legacy", [], |r| r.get(0))
             .unwrap();
         assert_eq!(legacy_tabs, 6);
+    }
+
+    #[test]
+    fn migration_0015_promotes_folder_children_in_place_and_drops_legacy_tables() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations_up_to(&mut conn, 14).unwrap();
+
+        conn.execute_batch(
+            "INSERT INTO nodes
+                 (id, parent_id, position, type, name, created_at, pinned_position)
+             VALUES
+                 ('root-a', NULL, 0, 'tab', 'A', '2026-07-01T00:00:00Z', NULL),
+                 ('folder-a', NULL, 1, 'folder', 'Folder A', '2026-07-01T00:00:01Z', NULL),
+                 ('root-b', NULL, 2, 'mission', NULL, '2026-07-01T00:00:02Z', NULL),
+                 ('folder-empty', NULL, 3, 'folder', 'Empty', '2026-07-01T00:00:03Z', NULL),
+                 ('folder-b', NULL, 4, 'folder', 'Folder B', '2026-07-01T00:00:04Z', NULL),
+                 ('root-c', NULL, 5, 'project', NULL, '2026-07-01T00:00:05Z', NULL),
+                 ('child-a-later', 'folder-a', 7, 'tab', 'Later', '2026-07-01T00:00:07Z', NULL),
+                 ('child-a-first', 'folder-a', 2, 'tab', 'First', '2026-07-01T00:00:06Z', 7),
+                 ('child-b', 'folder-b', 9, 'mission', NULL, '2026-07-01T00:00:08Z', NULL);",
+        )
+        .unwrap();
+
+        run_migrations(&mut conn).unwrap();
+
+        let roots: Vec<(String, Option<String>, i64, Option<i64>)> = conn
+            .prepare(
+                "SELECT id, parent_id, position, pinned_position FROM nodes
+                 ORDER BY position, created_at",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            roots,
+            [
+                ("root-a".to_owned(), None, 0, None),
+                ("child-a-first".to_owned(), None, 1, Some(7)),
+                ("child-a-later".to_owned(), None, 2, None),
+                ("root-b".to_owned(), None, 3, None),
+                ("child-b".to_owned(), None, 4, None),
+                ("root-c".to_owned(), None, 5, None),
+            ]
+        );
+        let folder_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM nodes WHERE type = 'folder'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(folder_count, 0);
+        for table in ["folders_legacy", "tabs_legacy"] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "{table} should be dropped");
+        }
     }
 
     #[test]

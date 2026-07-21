@@ -1,6 +1,5 @@
-// Sidebar node-tree commands (feature 44) — the unified surface that
-// replaced `commands::folder` + `commands::tab`. One tree query feeds
-// every sidebar section; one reparent/reposition op backs every drag.
+// Sidebar node-tree commands (feature 44). One tree query feeds every
+// sidebar section; one reparent/reposition op backs every drag.
 
 use chrono::Utc;
 use serde::Deserialize;
@@ -18,14 +17,6 @@ const LAYOUT_CHANGED_EVENT: &str = "chat/layout-changed";
 
 fn emit_layout_changed(app: &tauri::AppHandle) {
     let _ = app.emit(LAYOUT_CHANGED_EVENT, serde_json::json!({}));
-}
-
-fn clean_folder_name(name: String) -> Result<String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(Error::msg("folder name cannot be empty"));
-    }
-    Ok(name.to_owned())
 }
 
 fn validate_layout(layout: &str) -> Result<()> {
@@ -58,21 +49,8 @@ pub fn node_list(state: State<'_, AppState>) -> Result<Vec<NodeRow>> {
     Ok(repo::node::list_with_repair(&mut conn)?)
 }
 
-#[tauri::command]
-pub fn node_folder_create(
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
-    name: String,
-) -> Result<NodeRow> {
-    let conn = state.db.get()?;
-    let row = repo::node::create_folder(&conn, &clean_folder_name(name)?)?;
-    emit_layout_changed(&app);
-    Ok(row)
-}
-
-/// Rename a folder or tab node. Project and mission rows keep their
-/// names on the domain tables — rename those through `project_rename`
-/// / `mission_rename`.
+/// Rename a tab node. Project and mission rows keep their names on the
+/// domain tables — rename those through `project_rename` / `mission_rename`.
 #[tauri::command]
 pub fn node_rename(
     state: State<'_, AppState>,
@@ -84,7 +62,6 @@ pub fn node_rename(
     let node =
         repo::node::get(&conn, &id)?.ok_or_else(|| Error::msg(format!("node not found: {id}")))?;
     let name = match node.node_type {
-        NodeType::Folder => clean_folder_name(name)?,
         NodeType::Tab => name.trim().to_owned(),
         NodeType::Project | NodeType::Mission => {
             return Err(Error::msg(
@@ -146,8 +123,8 @@ pub fn node_tab_upsert(
     Ok(row)
 }
 
-/// Delete a tab node (closing a chat tab). Folders go through
-/// `node_folder_delete`; mission nodes leave via mission archive.
+/// Delete a tab node (closing a chat tab). Mission nodes leave via
+/// mission archive.
 #[tauri::command]
 pub fn node_delete(state: State<'_, AppState>, app: tauri::AppHandle, id: String) -> Result<()> {
     let conn = state.db.get()?;
@@ -197,7 +174,7 @@ pub fn node_move(
         NodeType::Mission => {
             let _ = app.emit("mission/changed", serde_json::json!({}));
         }
-        NodeType::Folder | NodeType::Project => {}
+        NodeType::Project => {}
     }
     Ok(rows)
 }
@@ -230,7 +207,7 @@ pub fn node_set_pinned(
                 repo::mission::set_pinned_at(&tx, mission_id, pinned_at)?;
             }
         }
-        NodeType::Folder | NodeType::Project => {
+        NodeType::Project => {
             return Err(Error::msg("only tab and mission rows can be pinned"));
         }
     }
@@ -250,8 +227,7 @@ pub fn node_set_pinned(
     Ok(row)
 }
 
-/// A container's direct children, split for the archive-everything
-/// delete path shared by folders and projects.
+/// A project's direct children, split for its archive-everything delete.
 pub(crate) struct ContainerChildren {
     pub session_ids: Vec<String>,
     pub missions: Vec<(String, crate::model::MissionStatus)>,
@@ -399,63 +375,6 @@ pub(crate) fn kill_running_children(state: &AppState, session_ids: &[String]) ->
                 .kill(session_id)
                 .map_err(|e| Error::msg(format!("stop session {session_id}: {e}")))?;
         }
-    }
-    Ok(())
-}
-
-/// Delete a folder, archiving every node below it — member missions
-/// first, then member tabs' chats and the folder node in one
-/// transaction. Returns the archived chat session ids for buffer
-/// purge + event fanout.
-pub(crate) async fn folder_delete_impl(state: &AppState, id: &str) -> Result<Vec<String>> {
-    let children = {
-        let conn = state.db.get()?;
-        let node = repo::node::get(&conn, id)?
-            .ok_or_else(|| Error::msg(format!("folder not found: {id}")))?;
-        if node.node_type != NodeType::Folder {
-            return Err(Error::msg(format!("node {id} is not a folder")));
-        }
-        container_children(&conn, id)?
-    };
-
-    archive_child_missions(state, &children.missions).await?;
-    kill_running_children(state, &children.session_ids)?;
-
-    let archived_ids = {
-        let mut conn = state.db.get()?;
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let archived_ids = repo::node::delete_container_tabs_and_archive(&tx, id)?;
-        if repo::node::delete_folder_after_tabs(&tx, id)? == 0 {
-            return Err(Error::msg(format!("folder not found: {id}")));
-        }
-        tx.commit()?;
-        archived_ids
-    };
-    for session_id in &archived_ids {
-        state.sessions.purge_session_buffers(session_id);
-    }
-    Ok(archived_ids)
-}
-
-#[tauri::command]
-pub async fn node_folder_delete(
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
-    id: String,
-) -> Result<()> {
-    let result = folder_delete_impl(&state, &id).await;
-    // Mission archives commit one by one BEFORE the folder transaction,
-    // so even a failed delete may have durably archived children —
-    // invalidate every consuming surface regardless of outcome.
-    let _ = app.emit("mission/changed", serde_json::json!({}));
-    let _ = app.emit("session/updated", serde_json::json!({}));
-    emit_layout_changed(&app);
-    let archived_ids = result?;
-    for session_id in &archived_ids {
-        let _ = app.emit(
-            "session/archived",
-            serde_json::json!({ "session_id": session_id }),
-        );
     }
     Ok(())
 }
@@ -691,15 +610,6 @@ mod tests {
             .block_on(future)
     }
 
-    fn seed_stopped_session(state: &AppState, id: &str) {
-        let conn = state.db.get().unwrap();
-        conn.execute(
-            "INSERT INTO sessions (id, status, archived_at) VALUES (?1, 'stopped', NULL)",
-            [id],
-        )
-        .unwrap();
-    }
-
     fn seed_mission_with_status(
         state: &AppState,
         id: &str,
@@ -723,101 +633,6 @@ mod tests {
 
     fn seed_mission(state: &AppState, id: &str, project_id: Option<&str>) {
         seed_mission_with_status(state, id, project_id, "aborted");
-    }
-
-    #[test]
-    fn folder_delete_archives_missions_and_chats_below() {
-        let app = test_app();
-        let state = app.state::<AppState>();
-        seed_stopped_session(&state, "s1");
-        seed_mission(&state, "m1", None);
-        let folder = {
-            let conn = state.db.get().unwrap();
-            let folder = repo::node::create_folder(&conn, "F").unwrap();
-            repo::node::create_tab(
-                &conn,
-                Some(&folder.id),
-                "",
-                0,
-                r#"{"preset":"single","slots":["s1"],"sizes":{}}"#,
-            )
-            .unwrap();
-            let mission_node = repo::node::ensure_mission_node(&conn, "m1", None).unwrap();
-            repo::node::reparent_append(&conn, &mission_node.id, Some(&folder.id)).unwrap();
-            folder
-        };
-
-        let archived = block_on(folder_delete_impl(&state, &folder.id)).unwrap();
-        assert_eq!(archived, vec!["s1".to_string()]);
-
-        let conn = state.db.get().unwrap();
-        let mission_archived: Option<String> = conn
-            .query_row(
-                "SELECT archived_at FROM missions WHERE id = 'm1'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(mission_archived.is_some(), "member mission archives too");
-        let session_archived: Option<String> = conn
-            .query_row(
-                "SELECT archived_at FROM sessions WHERE id = 's1'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(session_archived.is_some());
-        assert!(repo::node::get(&conn, &folder.id).unwrap().is_none());
-        let remaining: i64 = conn
-            .query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(remaining, 0, "folder, tab, and mission nodes all gone");
-    }
-
-    /// Failure injection: the final transaction fails (a tab member
-    /// session is missing), AFTER a member mission already archived.
-    /// The mission archive must stay durable, the folder and tab must
-    /// survive the rollback — the command layer's unconditional
-    /// invalidation exists precisely for this partial state.
-    #[test]
-    fn folder_delete_partial_failure_keeps_folder_and_durable_mission_archive() {
-        let app = test_app();
-        let state = app.state::<AppState>();
-        seed_mission(&state, "m1", None);
-        let (folder, tab) = {
-            let conn = state.db.get().unwrap();
-            let folder = repo::node::create_folder(&conn, "F").unwrap();
-            // Layout references a session that does not exist — the
-            // archive UPDATE in the final tx hits 0 rows and errors.
-            let tab = repo::node::create_tab(
-                &conn,
-                Some(&folder.id),
-                "",
-                0,
-                r#"{"preset":"single","slots":["ghost"],"sizes":{}}"#,
-            )
-            .unwrap();
-            let mission_node = repo::node::ensure_mission_node(&conn, "m1", None).unwrap();
-            repo::node::reparent_append(&conn, &mission_node.id, Some(&folder.id)).unwrap();
-            (folder, tab)
-        };
-
-        assert!(block_on(folder_delete_impl(&state, &folder.id)).is_err());
-
-        let conn = state.db.get().unwrap();
-        let mission_archived: Option<String> = conn
-            .query_row(
-                "SELECT archived_at FROM missions WHERE id = 'm1'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(
-            mission_archived.is_some(),
-            "the mission archive committed before the failure and stays durable"
-        );
-        assert!(repo::node::get(&conn, &folder.id).unwrap().is_some());
-        assert!(repo::node::get(&conn, &tab.id).unwrap().is_some());
     }
 
     /// The post-stamp/pre-cleanup boundary is gone: one step stamps

@@ -213,19 +213,18 @@ A session owns:
 
 A session is the only object in the system that actually *executes* code — everything else is metadata, a coordination channel, or a projection over the event log.
 
-### 3.6 Surface hierarchy — *Project → Window → Folder → Tab → Pane*
+### 3.6 Surface hierarchy — *Project → Window → Tab → Pane*
 
 How sessions are displayed spans durable organization and ephemeral view state. The concepts must never be blurred in code, docs, or UI copy:
 
-- **Project** — a global, cwd-bound container that groups both missions and direct-chat tabs in the sidebar. Starting work from a project copies its cwd into the new mission/session row and records nullable `project_id`; runtime cwd precedence stays unchanged after that point. Project identity and ordering are durable, while collapse and the active project that scopes new-chat creation are per-window view state. Deleting a project only unbinds its work through `ON DELETE SET NULL`; it never archives chats/missions or touches the directory on disk.
+- **Project** — the only durable container in the sidebar: a global, cwd-bound group for missions and direct-chat tabs. Starting work from a project copies its cwd into the new mission/session row and records nullable `project_id`; runtime cwd precedence stays unchanged after that point. Project identity and ordering are durable, while collapse and the active project that scopes new-chat creation are per-window view state. Deleting a project archives its chats and missions but never touches the directory on disk.
 - **Window** — a real OS window (⌘N, `File → New Window`, impl 0018). The backend's per-window subject registry (`src-tauri/src/windows.rs`) tracks every visible direct-chat subject, focus recency for duplicate-session ownership, and explicit current focus for viewed-attention semantics; it knows no tab layout beyond the reported session subjects.
-- **Folder** — a user-created, collapsible sidebar group containing tabs. Folder identity, name, and order are persisted in SQLite; collapse is per-window view state. Ungrouped tabs have no folder and render below every folder.
-- **Tab** — one stable, ULID-keyed group of panes rendered as exactly one sidebar row. SQLite persists its folder membership, name, order, JSON layout, and nullable completion/viewed watermarks; the layout picker mutates the same row without resetting attention state. Every active direct-chat session belongs to exactly one tab, including single-pane chats. Per-window active-tab selection remains ephemeral.
+- **Tab** — one stable, ULID-keyed group of panes rendered as exactly one sidebar row. SQLite persists its optional project parent, name, order, JSON layout, and nullable completion/viewed watermarks; the layout picker mutates the same row without resetting attention state. Every active direct-chat session belongs to exactly one tab, including single-pane chats. Per-window active-tab selection remains ephemeral.
 - **Pane** — one slot inside a tab, holding exactly one chat session (move-not-copy). Panes are filled from a pane's own New chat button or a sidebar pick into a focused empty pane; `⌘[` / `⌘]` cycle pane focus, `⌘W` closes the focused pane without stopping its session.
 
-Sessions exist independently of the display tree: closing a pane or window never kills a PTY. Archiving a tab removes the tab row and archives its member sessions. Deleting a folder performs that archive for every member tab in one transaction; the `tabs.folder_id` foreign key is `ON DELETE RESTRICT`, so tabs never fall silently to the ungrouped level.
+Sessions exist independently of the display tree: closing a pane or window never kills a PTY. Archiving a tab removes the tab row and archives its member sessions.
 
-Projects and chat folders deliberately coexist. A project is the cwd-bound owner-facing grouping for missions and chats; a feature-38 folder remains chat-tab-only organization with its existing archive-on-delete lifecycle. Assigning a tab to a project does not rewrite `tabs.folder_id`, so removing the project assignment reveals the tab in its prior chat folder (or the ungrouped CHAT list).
+Projects contain tab and mission leaves; root contains projects and unfiled leaves. Moving a leaf across a project boundary writes its `project_id` binding through so sidebar placement and runtime cwd ownership stay aligned.
 
 Disambiguation: the mission workspace's per-slot terminal switcher (feature 33's "terminal tabs") predates this hierarchy and is a different, mission-scoped UI element — not a Tab in the sense above. If the mission surface ever adopts the tab/pane model, that is feature 19's deferred scope.
 

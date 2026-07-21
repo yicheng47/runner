@@ -1,11 +1,10 @@
 // `nodes` table — the sidebar navigation tree (feature 44).
 //
 // Every sidebar row is a node; `parent_id` + `position` is the single
-// containment/ordering mechanism. Container types `folder` (nav-native,
-// owns its name) and `project` (references `projects.id`); leaf types
-// `tab` (carries the pane layout JSON + attention watermarks) and
-// `mission` (references `missions.id`). Sessions are never nodes —
-// they're content behind a tab's layout slots.
+// containment/ordering mechanism. `project` is the only container type;
+// leaf types are `tab` (carries the pane layout JSON + attention
+// watermarks) and `mission` (references `missions.id`). Sessions are
+// never nodes — they're content behind a tab's layout slots.
 //
 // `pinned_position` non-NULL = pinned; the value orders the PINNED
 // overlay. Unpinning just clears it, returning the row to its tree
@@ -26,7 +25,6 @@ use super::{de_err, select_list};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeType {
-    Folder,
     Project,
     Tab,
     Mission,
@@ -132,7 +130,6 @@ pub fn upsert(conn: &Connection, row: &NodeRow) -> rusqlite::Result<()> {
 
 fn node_type_str(node_type: NodeType) -> &'static str {
     match node_type {
-        NodeType::Folder => "folder",
         NodeType::Project => "project",
         NodeType::Tab => "tab",
         NodeType::Mission => "mission",
@@ -156,24 +153,6 @@ pub fn next_position(conn: &Connection, parent_id: Option<&str>) -> rusqlite::Re
         [parent_id],
         |row| row.get(0),
     )
-}
-
-pub fn create_folder(conn: &Connection, name: &str) -> rusqlite::Result<NodeRow> {
-    let row = NodeRow {
-        id: ulid::Ulid::new().to_string(),
-        parent_id: None,
-        position: next_position(conn, None)?,
-        node_type: NodeType::Folder,
-        name: Some(name.to_owned()),
-        ref_id: None,
-        layout: None,
-        pinned_position: None,
-        last_completed_at: None,
-        last_viewed_at: None,
-        created_at: Utc::now().to_rfc3339(),
-    };
-    upsert(conn, &row)?;
-    Ok(row)
 }
 
 pub fn create_tab(
@@ -333,14 +312,11 @@ pub fn set_pinned(conn: &Connection, id: &str, pinned: bool) -> rusqlite::Result
 /// The unified reparent/reposition op behind every sidebar drag.
 ///
 /// Nesting is enforced here at the app layer (the schema allows a
-/// general tree): containers (`folder`, `project`) live at root only;
-/// leaves (`tab`, `mission`) live at root or under one container.
-/// Folder deletion archives everything below the folder — member
-/// tabs' chats and member missions alike (`commands::node::
-/// folder_delete_impl`). The sidebar additionally refuses to DRAG a
-/// node out of a project scope (leaving a project is an explicit menu
-/// action); that is a UI affordance, not a shape rule, so it lives in
-/// the frontend's `canDropInScope`, not here.
+/// general tree): projects live at root only; leaves (`tab`, `mission`)
+/// live at root or under one project. The sidebar additionally refuses
+/// to DRAG a node out of a project scope (leaving a project is an
+/// explicit menu action); that is a UI affordance, not a shape rule,
+/// so it lives in the frontend's `canDropInScope`, not here.
 ///
 /// Crossing a project boundary writes the domain pointer through:
 /// a tab updates its member sessions' `sessions.project_id`, a mission
@@ -359,11 +335,10 @@ pub fn move_and_reorder(
     };
     let parent_type = parent.as_ref().map(|p| p.node_type);
     let allowed = match node.node_type {
-        NodeType::Folder | NodeType::Project => parent_type.is_none(),
-        NodeType::Tab | NodeType::Mission => matches!(
-            parent_type,
-            None | Some(NodeType::Folder) | Some(NodeType::Project)
-        ),
+        NodeType::Project => parent_type.is_none(),
+        NodeType::Tab | NodeType::Mission => {
+            matches!(parent_type, None | Some(NodeType::Project))
+        }
     };
     if !allowed {
         return Err(rusqlite::Error::InvalidParameterName(format!(
@@ -425,10 +400,8 @@ pub fn reparent_append(
 
 /// Re-derive a tab node's placement from its members' `sessions.
 /// project_id` pointers, after a pointer write that may cover only
-/// some members: a unanimous non-NULL project wins (project placement
-/// trumps a folder, matching the pre-node sidebar's derived grouping);
-/// mixed or absent membership leaves a folder placement alone but
-/// moves the tab out of a project node to the root end.
+/// some members: a unanimous non-NULL project wins; mixed or absent
+/// membership moves the tab out of a project node to the root end.
 pub fn reconcile_tab_placement(conn: &Connection, tab_id: &str) -> rusqlite::Result<()> {
     let Some(tab) = get(conn, tab_id)? else {
         return Ok(());
@@ -516,7 +489,7 @@ fn write_project_through(
                 rusqlite::params![mission_id, project_id],
             )?;
         }
-        NodeType::Folder | NodeType::Project => {}
+        NodeType::Project => {}
     }
     Ok(())
 }
@@ -781,10 +754,8 @@ fn remove_session_except(
     Ok(())
 }
 
-/// Delete a container's member tabs after archiving their sessions —
-/// the container node itself deletes afterwards (self-FK is RESTRICT).
-/// Used by folder AND project deletion, which both archive everything
-/// below the container.
+/// Delete a project's member tabs after archiving their sessions. The
+/// project node itself deletes afterwards (self-FK is RESTRICT).
 pub fn delete_container_tabs_and_archive(
     tx: &Transaction<'_>,
     container_id: &str,
@@ -820,10 +791,6 @@ pub fn delete_container_tabs_and_archive(
         [container_id],
     )?;
     Ok(session_ids.into_iter().collect())
-}
-
-pub fn delete_folder_after_tabs(tx: &Transaction<'_>, id: &str) -> rusqlite::Result<usize> {
-    tx.execute("DELETE FROM nodes WHERE id = ?1 AND type = 'folder'", [id])
 }
 
 #[cfg(test)]
@@ -995,10 +962,11 @@ mod tests {
         stale.layout = Some(r#"{"preset":"cols-2","slots":["s1",null],"sizes":{}}"#.into());
         super::upsert_move_not_copy(&conn, &stale).unwrap();
 
-        let folder = super::create_folder(&conn, "Project").unwrap();
+        let project = crate::repo::project::create(&conn, "Project", "/tmp/project").unwrap();
+        let project_node = super::ensure_project_node(&conn, &project.id).unwrap();
         let peer = super::create_tab(
             &conn,
-            Some(&folder.id),
+            Some(&project_node.id),
             "peer",
             0,
             r#"{"preset":"single","slots":["s2"],"sizes":{}}"#,
@@ -1009,7 +977,7 @@ mod tests {
         super::move_and_reorder(
             &tx,
             &stale.id,
-            Some(&folder.id),
+            Some(&project_node.id),
             &[peer.id, stale.id.clone()],
         )
         .unwrap();
@@ -1018,7 +986,7 @@ mod tests {
         let after = super::get(&conn, &stale.id).unwrap().unwrap();
         assert_eq!(after.name.as_deref(), Some("renamed"));
         assert_eq!(after.layout, stale.layout);
-        assert_eq!(after.parent_id, Some(folder.id));
+        assert_eq!(after.parent_id, Some(project_node.id));
         assert_eq!(after.position, 1);
         assert_eq!(after.last_completed_at, before.last_completed_at);
         assert_eq!(after.last_viewed_at, before.last_viewed_at);
@@ -1155,27 +1123,28 @@ mod tests {
     }
 
     #[test]
-    fn folder_delete_archives_members_before_restricted_delete() {
+    fn project_tab_delete_archives_members_before_restricted_delete() {
         let pool = db::open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
         insert_session(&conn, "s1", None);
-        let folder = super::create_folder(&conn, "Project").unwrap();
+        let project = crate::repo::project::create(&conn, "Project", "/tmp/project").unwrap();
+        let project_node = super::ensure_project_node(&conn, &project.id).unwrap();
         super::create_tab(
             &conn,
-            Some(&folder.id),
+            Some(&project_node.id),
             "",
             0,
             r#"{"preset":"single","slots":["s1"],"sizes":{}}"#,
         )
         .unwrap();
         assert!(conn
-            .execute("DELETE FROM nodes WHERE id = ?1", [&folder.id])
+            .execute("DELETE FROM nodes WHERE id = ?1", [&project_node.id])
             .is_err());
 
         let tx = conn.transaction().unwrap();
-        let ids = super::delete_container_tabs_and_archive(&tx, &folder.id).unwrap();
+        let ids = super::delete_container_tabs_and_archive(&tx, &project_node.id).unwrap();
         assert_eq!(ids, ["s1"]);
-        super::delete_folder_after_tabs(&tx, &folder.id).unwrap();
+        super::delete(&tx, &project_node.id).unwrap();
         tx.commit().unwrap();
 
         let archived: Option<String> = conn
@@ -1186,7 +1155,7 @@ mod tests {
             )
             .unwrap();
         assert!(archived.is_some());
-        assert!(super::get(&conn, &folder.id).unwrap().is_none());
+        assert!(super::get(&conn, &project_node.id).unwrap().is_none());
         assert!(super::list(&conn).unwrap().is_empty());
     }
 
@@ -1227,7 +1196,8 @@ mod tests {
     fn move_and_reorder_changes_scope_and_persists_exact_order() {
         let pool = db::open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
-        let folder = super::create_folder(&conn, "Project").unwrap();
+        let project = crate::repo::project::create(&conn, "Project", "/tmp/project").unwrap();
+        let project_node = super::ensure_project_node(&conn, &project.id).unwrap();
         let a = super::create_tab(
             &conn,
             None,
@@ -1246,7 +1216,7 @@ mod tests {
         .unwrap();
         let c = super::create_tab(
             &conn,
-            Some(&folder.id),
+            Some(&project_node.id),
             "C",
             0,
             r#"{"preset":"single","slots":["c"],"sizes":{}}"#,
@@ -1256,14 +1226,19 @@ mod tests {
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .unwrap();
-        super::move_and_reorder(&tx, &b.id, Some(&folder.id), &[b.id.clone(), c.id.clone()])
-            .unwrap();
+        super::move_and_reorder(
+            &tx,
+            &b.id,
+            Some(&project_node.id),
+            &[b.id.clone(), c.id.clone()],
+        )
+        .unwrap();
         tx.commit().unwrap();
 
         let rows = super::list(&conn).unwrap();
         let grouped: Vec<_> = rows
             .iter()
-            .filter(|row| row.parent_id.as_deref() == Some(folder.id.as_str()))
+            .filter(|row| row.parent_id.as_deref() == Some(project_node.id.as_str()))
             .map(|row| row.id.as_str())
             .collect();
         assert_eq!(grouped, [b.id.as_str(), c.id.as_str()]);
@@ -1278,10 +1253,13 @@ mod tests {
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .unwrap();
-        assert!(
-            super::move_and_reorder(&tx, &a.id, Some(&folder.id), std::slice::from_ref(&a.id),)
-                .is_err()
-        );
+        assert!(super::move_and_reorder(
+            &tx,
+            &a.id,
+            Some(&project_node.id),
+            std::slice::from_ref(&a.id),
+        )
+        .is_err());
         drop(tx);
         assert!(super::get(&conn, &a.id)
             .unwrap()
@@ -1390,33 +1368,29 @@ mod tests {
     fn nesting_stays_within_todays_shapes() {
         let pool = db::open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
-        let outer = super::create_folder(&conn, "Outer").unwrap();
-        let inner = super::create_folder(&conn, "Inner").unwrap();
-        let project = crate::repo::project::create(&conn, "A", "/tmp/a").unwrap();
-        let project_node = super::ensure_project_node(&conn, &project.id).unwrap();
+        let outer_project = crate::repo::project::create(&conn, "A", "/tmp/a").unwrap();
+        let outer_node = super::ensure_project_node(&conn, &outer_project.id).unwrap();
+        let inner_project = crate::repo::project::create(&conn, "B", "/tmp/b").unwrap();
+        let inner_node = super::ensure_project_node(&conn, &inner_project.id).unwrap();
         insert_mission(&conn, "m1", None, false);
         let mission_node = super::ensure_mission_node(&conn, "m1", None).unwrap();
 
-        // Folders can't nest under folders; projects can't nest at all.
-        for (id, parent) in [
-            (inner.id.as_str(), outer.id.as_str()),
-            (project_node.id.as_str(), outer.id.as_str()),
-        ] {
-            let tx = conn.transaction().unwrap();
-            assert!(
-                super::move_and_reorder(&tx, id, Some(parent), &[id.to_owned()]).is_err(),
-                "nesting {id} under {parent} must be refused"
-            );
-            drop(tx);
-        }
+        let tx = conn.transaction().unwrap();
+        assert!(super::move_and_reorder(
+            &tx,
+            &inner_node.id,
+            Some(&outer_node.id),
+            std::slice::from_ref(&inner_node.id),
+        )
+        .is_err());
+        drop(tx);
 
-        // Leaves go under either container: mission -> folder and
-        // mission -> project are both allowed.
+        // Projects contain leaves.
         let tx = conn.transaction().unwrap();
         super::move_and_reorder(
             &tx,
             &mission_node.id,
-            Some(&outer.id),
+            Some(&outer_node.id),
             std::slice::from_ref(&mission_node.id),
         )
         .unwrap();
@@ -1427,27 +1401,17 @@ mod tests {
                 .unwrap()
                 .parent_id
                 .as_deref(),
-            Some(outer.id.as_str())
+            Some(outer_node.id.as_str())
         );
+
+        // Root contains both projects and leaves.
+        let root_ids = [
+            outer_node.id.clone(),
+            inner_node.id.clone(),
+            mission_node.id.clone(),
+        ];
         let tx = conn.transaction().unwrap();
-        super::move_and_reorder(
-            &tx,
-            &mission_node.id,
-            Some(&project_node.id),
-            std::slice::from_ref(&mission_node.id),
-        )
-        .unwrap();
-        tx.commit().unwrap();
-        // ...and moving from the project back to a folder clears the
-        // written-through project pointer.
-        let tx = conn.transaction().unwrap();
-        super::move_and_reorder(
-            &tx,
-            &mission_node.id,
-            Some(&outer.id),
-            std::slice::from_ref(&mission_node.id),
-        )
-        .unwrap();
+        super::move_and_reorder(&tx, &mission_node.id, None, &root_ids).unwrap();
         tx.commit().unwrap();
         let mission_project: Option<String> = conn
             .query_row("SELECT project_id FROM missions WHERE id = 'm1'", [], |r| {
@@ -1482,9 +1446,7 @@ mod tests {
         super::reconcile_tab_placement(&conn, &tab.id).unwrap();
         assert_eq!(super::get(&conn, &tab.id).unwrap().unwrap().parent_id, None);
 
-        // Unanimous membership wins even over a folder placement.
-        let folder = super::create_folder(&conn, "F").unwrap();
-        super::reparent_append(&conn, &tab.id, Some(&folder.id)).unwrap();
+        // Unanimous membership moves the tab into the project.
         conn.execute(
             "UPDATE sessions SET project_id = ?1 WHERE id = 'b'",
             [&project.id],
@@ -1508,18 +1470,6 @@ mod tests {
             .unwrap();
         super::reconcile_tab_placement(&conn, &tab.id).unwrap();
         assert_eq!(super::get(&conn, &tab.id).unwrap().unwrap().parent_id, None);
-
-        // A foldered tab with mixed membership keeps its folder.
-        super::reparent_append(&conn, &tab.id, Some(&folder.id)).unwrap();
-        super::reconcile_tab_placement(&conn, &tab.id).unwrap();
-        assert_eq!(
-            super::get(&conn, &tab.id)
-                .unwrap()
-                .unwrap()
-                .parent_id
-                .as_deref(),
-            Some(folder.id.as_str())
-        );
     }
 
     /// The finalization boundary of archive-all container deletes: a
@@ -1554,16 +1504,6 @@ mod tests {
                 .as_deref(),
             Some(project_node.id.as_str())
         );
-
-        // Folder variant hits the same guard through
-        // delete_folder_after_tabs.
-        let folder = super::create_folder(&conn, "F").unwrap();
-        super::reparent_append(&conn, &mission_node.id, Some(&folder.id)).unwrap();
-        let tx = conn.transaction().unwrap();
-        super::delete_container_tabs_and_archive(&tx, &folder.id).unwrap();
-        assert!(super::delete_folder_after_tabs(&tx, &folder.id).is_err());
-        drop(tx);
-        assert!(super::get(&conn, &folder.id).unwrap().is_some());
     }
 
     #[test]

@@ -8,22 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   nodeRows: [
     {
-      id: "folder-1",
-      parent_id: null,
-      position: 0,
-      type: "folder",
-      name: "Review",
-      ref_id: null,
-      layout: null,
-      pinned_position: null,
-      last_completed_at: null,
-      last_viewed_at: null,
-      created_at: "2026-07-14T00:00:00Z",
-    },
-    {
       id: "tab-a",
       parent_id: null,
-      position: 1,
+      position: 0,
       type: "tab",
       name: "",
       ref_id: null,
@@ -36,7 +23,7 @@ const mocks = vi.hoisted(() => ({
     },
     {
       id: "tab-b",
-      parent_id: "folder-1",
+      parent_id: "proj-node-1",
       position: 0,
       type: "tab",
       name: "",
@@ -51,7 +38,7 @@ const mocks = vi.hoisted(() => ({
     {
       id: "proj-node-1",
       parent_id: null,
-      position: 2,
+      position: 1,
       type: "project",
       name: null,
       ref_id: "proj-1",

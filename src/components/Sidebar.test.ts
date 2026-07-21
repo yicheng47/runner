@@ -1,11 +1,11 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Folder } from "lucide-react";
+import { FolderCode } from "lucide-react";
 import { describe, expect, it } from "vitest";
 
 import type { MissionSummary } from "../lib/types";
 import { projectIdForTab } from "../lib/projectScope";
-import { MissionRow, NewFolderRow } from "./Sidebar";
+import { MissionRow } from "./Sidebar";
 import { SidebarTabIcon } from "./SidebarTabRow";
 
 const mission = {
@@ -76,13 +76,13 @@ describe("SidebarTabIcon", () => {
   it("colors a live-status icon without filling it", () => {
     const live = renderToStaticMarkup(
       createElement(SidebarTabIcon, {
-        icon: Folder,
+        icon: FolderCode,
         active: true,
       }),
     );
     const stopped = renderToStaticMarkup(
       createElement(SidebarTabIcon, {
-        icon: Folder,
+        icon: FolderCode,
         active: false,
       }),
     );
@@ -91,19 +91,6 @@ describe("SidebarTabIcon", () => {
     expect(live).toContain("text-accent");
     expect(stopped).toContain('fill="none"');
     expect(stopped).toContain("text-fg-2");
-  });
-
-  it("uses a muted outline while creating an empty folder", () => {
-    const html = renderToStaticMarkup(
-      createElement(NewFolderRow, {
-        onSubmit: async () => {},
-        onCancel: () => {},
-      }),
-    );
-
-    expect(html).toContain("lucide-folder");
-    expect(html).toContain('fill="none"');
-    expect(html).toContain("text-fg-2");
   });
 });
 
