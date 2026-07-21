@@ -56,10 +56,8 @@ import {
   ChevronDown,
   ChevronRight,
   Flag,
-  Folder,
   FolderCode,
   FolderMinus,
-  FolderPlus,
   MessageSquarePlus,
   MoreHorizontal,
   Pin,
@@ -105,7 +103,6 @@ import {
 import {
   activatePaneLayoutForSession,
   assignSessionToPane,
-  createChatFolder,
   focusPane,
   getPaneLayout,
   leafForSession,
@@ -113,7 +110,6 @@ import {
   removeArchivedSessionFromLayout,
   hydratePaneLayoutsFromDb,
   moveNode,
-  moveSessionTabToParent,
   setGroupNameForSession,
   useNavNodes,
   usePaneLayouts,
@@ -159,8 +155,7 @@ const SIDEBAR_NAVIGATION_HISTORY_LIMIT = 64;
 
 // One dnd vocabulary for every draggable sidebar row (feature 44):
 // tab and mission nodes drag; positions are per-scope (root recent
-// list, a folder's children, a project's children); container targets
-// (collapsed folder headers, project headers) append at the scope end.
+// list or a project's children); project targets append at the scope end.
 type RowDropTarget = {
   parentId: string | null;
   index: number;
@@ -186,10 +181,9 @@ const containerDndId = (containerId: string) =>
   `nav-container-drop:${containerId}`;
 
 /** A sidebar row resolved from a tree node: tab nodes join their pane
- *  layout + member sessions, mission nodes their running summary,
- *  folder nodes render their children as a nested scope. Nodes whose
- *  content is missing (archived member rows mid-refresh, non-running
- *  missions) resolve to nothing and stay hidden. */
+ *  layout + member sessions, mission nodes their running summary. Nodes
+ *  whose content is missing (archived member rows mid-refresh,
+ *  non-running missions) resolve to nothing and stay hidden. */
 type NavRowModel =
   | {
       kind: "tab";
@@ -199,8 +193,7 @@ type NavRowModel =
       pinned: boolean;
       attention: ChatAttentionState;
     }
-  | { kind: "mission"; node: NodeRow; mission: MissionSummary }
-  | { kind: "folder"; node: NodeRow; name: string };
+  | { kind: "mission"; node: NodeRow; mission: MissionSummary };
 
 type SidebarNavigationDirection = "previous" | "next";
 
@@ -356,23 +349,6 @@ export function Sidebar({
     x: number;
     y: number;
   } | null>(null);
-  const [folderMenu, setFolderMenu] = useState<{
-    id: string;
-    name: string;
-    x: number;
-    y: number;
-  } | null>(null);
-  const [collapsedFolderIds, setCollapsedFolderIds] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const [folderDeleteConfirm, setFolderDeleteConfirm] = useState<{
-    id: string;
-    name: string;
-    count: number;
-    missionCount: number;
-    currentWasDeleted: boolean;
-  } | null>(null);
-  const [deletingFolder, setDeletingFolder] = useState(false);
   // Command palette toggle. Opened from the search nav row OR the
   // global ⌘K / Ctrl+K shortcut. Mirrors Pencil node `Fkoe8`.
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -384,17 +360,13 @@ export function Sidebar({
     x: number;
     y: number;
   } | null>(null);
-  // CHAT creation state. The `+` and empty-space context menus can start a
-  // chat or insert a focused inline folder-name row.
+  // CHAT creation state. The `+` and empty-space context menus start a chat.
   const [creatingChat, setCreatingChat] = useState(false);
   const [newChatProjectId, setNewChatProjectId] = useState<string | null>(null);
-  const [newChatFolderId, setNewChatFolderId] = useState<string | null>(null);
   const [chatAddMenuOpen, setChatAddMenuOpen] = useState(false);
-  const [creatingFolder, setCreatingFolder] = useState(false);
   const [renamingChatTabId, setRenamingChatTabId] = useState<string | null>(
     null,
   );
-  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [chatCreateMenu, setChatCreateMenu] = useState<{
     x: number;
     y: number;
@@ -464,8 +436,6 @@ export function Sidebar({
       } else if (node.type === "mission") {
         const mission = node.ref_id ? missionById.get(node.ref_id) : undefined;
         if (mission) row = { kind: "mission", node, mission };
-      } else if (node.type === "folder") {
-        row = { kind: "folder", node, name: node.name ?? "" };
       }
       if (!row) continue;
       const list = map.get(node.parent_id);
@@ -492,32 +462,17 @@ export function Sidebar({
   const rowAttention = useCallback(
     (row: NavRowModel): ChatAttentionState => {
       if (row.kind === "tab") return row.attention;
-      if (row.kind === "mission") {
-        return missionAttentionState(
-          row.mission.any_session_live,
-          row.mission.activity,
-        );
-      }
-      return rollupAttentionState(
-        scopeRows(row.node.id).map((child) =>
-          child.kind === "tab"
-            ? child.attention
-            : child.kind === "mission"
-              ? missionAttentionState(
-                  child.mission.any_session_live,
-                  child.mission.activity,
-                )
-              : null,
-        ),
+      return missionAttentionState(
+        row.mission.any_session_live,
+        row.mission.activity,
       );
     },
-    [scopeRows],
+    [],
   );
 
   function rowIsLive(row: NavRowModel): boolean {
     if (row.kind === "tab") return chatTabIsLive(row.members);
-    if (row.kind === "mission") return row.mission.any_session_live;
-    return scopeRows(row.node.id).some((child) => rowIsLive(child));
+    return row.mission.any_session_live;
   }
 
   const recentAttention = useMemo(
@@ -556,8 +511,7 @@ export function Sidebar({
   );
 
   // Page-back/forward candidates in display order: project children
-  // first (as the PROJECT section renders above), then the recent list
-  // with folder children inline.
+  // first (as the PROJECT section renders above), then the recent list.
   const sidebarNavigationEntries = useMemo<SidebarNavigationEntry[]>(() => {
     const entries: SidebarNavigationEntry[] = [];
     const pushRow = (row: NavRowModel) => {
@@ -569,8 +523,6 @@ export function Sidebar({
           to: `/chats/${target.session_id}`,
           state: { sessionStatus: target.status },
         });
-      } else {
-        for (const child of scopeRows(row.node.id)) pushRow(child);
       }
     };
     for (const node of projectNodes) {
@@ -929,7 +881,6 @@ export function Sidebar({
       anchor: { x: number; y: number },
     ) => {
       setMissionMenu(null);
-      setFolderMenu(null);
       setProjectMenu(null);
       setChatTabMenu({
         layout,
@@ -947,27 +898,8 @@ export function Sidebar({
   const openMissionMenu = useCallback(
     (mission: MissionSummary, anchor: { x: number; y: number }) => {
       setChatTabMenu(null);
-      setFolderMenu(null);
       setProjectMenu(null);
       setMissionMenu({ mission, x: anchor.x, y: anchor.y });
-    },
-    [],
-  );
-  const closeFolderMenu = useCallback(() => setFolderMenu(null), []);
-  const openFolderMenu = useCallback(
-    (
-      folder: { id: string; name: string },
-      anchor: { x: number; y: number },
-    ) => {
-      setChatTabMenu(null);
-      setMissionMenu(null);
-      setProjectMenu(null);
-      setFolderMenu({
-        id: folder.id,
-        name: folder.name,
-        x: anchor.x,
-        y: anchor.y,
-      });
     },
     [],
   );
@@ -976,7 +908,6 @@ export function Sidebar({
     (project: ProjectRow, anchor: { x: number; y: number }) => {
       setChatTabMenu(null);
       setMissionMenu(null);
-      setFolderMenu(null);
       setProjectMenu({ project, x: anchor.x, y: anchor.y });
     },
     [],
@@ -1238,113 +1169,15 @@ export function Sidebar({
     [],
   );
 
-  const beginFolderCreate = useCallback(() => {
-    setChatAddMenuOpen(false);
-    setChatCreateMenu(null);
-    setSessionsOpen(true);
-    setStoredFlag(STORAGE_SESSION_OPEN, true);
-    setCreatingFolder(true);
-  }, []);
-
-  const submitFolderCreate = useCallback(async (name: string) => {
-    try {
-      await createChatFolder(name);
-      setCreatingFolder(false);
-    } catch (e) {
-      console.error("sidebar: folder_create failed", e);
-      throw e;
-    }
-  }, []);
-
   const openChatCreateMenu = useCallback(
     (anchor: { x: number; y: number }) => {
       setChatAddMenuOpen(false);
       setChatTabMenu(null);
-      setFolderMenu(null);
       setMissionMenu(null);
       setProjectMenu(null);
       setChatCreateMenu(anchor);
     },
     [],
-  );
-
-  const submitFolderRename = useCallback(
-    async (id: string, currentName: string, nextName: string) => {
-      const trimmed = nextName.trim();
-      setRenamingFolderId(null);
-      if (!trimmed || trimmed === currentName.trim()) return;
-      try {
-        await api.node.rename(id, trimmed);
-        await hydratePaneLayoutsFromDb();
-      } catch (e) {
-        console.error("sidebar: folder rename failed", e);
-      }
-    },
-    [],
-  );
-
-  const toggleFolder = useCallback((id: string) => {
-    setCollapsedFolderIds((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const requestFolderDelete = useCallback(
-    (id: string, name: string) => {
-      const count = navNodes.filter(
-        (node) => node.parent_id === id && node.type === "tab",
-      ).length;
-      const missionCount = navNodes.filter(
-        (node) => node.parent_id === id && node.type === "mission",
-      ).length;
-      const currentWasDeleted = scopeRows(id).some(
-        (row) =>
-          (row.kind === "tab" &&
-            row.members.some(
-              (member) => member.session_id === currentChatSessionId,
-            )) ||
-          (row.kind === "mission" && row.mission.id === currentMissionId),
-      );
-      setFolderDeleteConfirm({
-        id,
-        name,
-        count,
-        missionCount,
-        currentWasDeleted,
-      });
-    },
-    [currentChatSessionId, currentMissionId, navNodes, scopeRows],
-  );
-
-  const deleteFolder = useCallback(
-    async (confirm: NonNullable<typeof folderDeleteConfirm>) => {
-      setDeletingFolder(true);
-      // Leave an affected route BEFORE the destructive call: children
-      // archive one by one, so even a failed delete can have archived
-      // the open chat/mission already.
-      if (confirm.currentWasDeleted) navigate("/runners");
-      try {
-        await api.node.folderDelete(confirm.id);
-        setFolderDeleteConfirm(null);
-      } catch (e) {
-        console.error("sidebar: folder delete failed", e);
-      } finally {
-        // Refresh regardless of outcome — a partial failure may have
-        // durably archived some children.
-        await Promise.all([
-          refreshDirectSessions(),
-          refreshMissions(),
-          hydratePaneLayoutsFromDb(),
-        ]).catch((e: unknown) =>
-          console.error("sidebar: post-delete refresh failed", e),
-        );
-        setDeletingFolder(false);
-      }
-    },
-    [navigate, refreshDirectSessions, refreshMissions],
   );
 
   const archiveChatTab = useCallback(
@@ -1394,25 +1227,12 @@ export function Sidebar({
   const handleNewDirectChat = useCallback(() => {
     setChatAddMenuOpen(false);
     setChatCreateMenu(null);
-    setCreatingFolder(false);
-    setNewChatFolderId(null);
-    setNewChatProjectId(null);
-    setCreatingChat(true);
-  }, []);
-
-  const handleNewFolderChat = useCallback((folderId: string) => {
-    setChatAddMenuOpen(false);
-    setChatCreateMenu(null);
-    setCreatingFolder(false);
-    setNewChatFolderId(folderId);
     setNewChatProjectId(null);
     setCreatingChat(true);
   }, []);
 
   const handleNewProjectChat = useCallback((projectId: string) => {
     setChatCreateMenu(null);
-    setCreatingFolder(false);
-    setNewChatFolderId(null);
     setNewChatProjectId(projectId);
     setActiveProjectId(projectId);
     setCreatingChat(true);
@@ -1457,7 +1277,7 @@ export function Sidebar({
     (nodeId: string): NavRowModel | null => {
       for (const rows of rowsByParent.values()) {
         const row = rows.find((candidate) => candidate.node.id === nodeId);
-        if (row && row.kind !== "folder") return row;
+        if (row) return row;
       }
       return null;
     },
@@ -1473,13 +1293,11 @@ export function Sidebar({
     [scopeRows],
   );
 
-  // Drag affordance rules: leaves (tabs, missions) drop anywhere —
-  // root, folders, projects — with ONE exception: a node currently
-  // inside a project only drops into project scopes. Leaving a
-  // project unbinds cwd/scope, so it stays an explicit menu action
-  // rather than something an errant drag can do silently. (The
-  // backend keeps the general shape rules; this transition rule is
-  // deliberately UI-only.)
+  // Drag affordance rules: leaves (tabs, missions) drop at root or in
+  // projects, with one exception: a node currently inside a project
+  // only drops into project scopes. Leaving a project unbinds
+  // cwd/scope, so it stays an explicit menu action rather than
+  // something an errant drag can do silently.
   const canDropInScope = useCallback(
     (nodeId: string, parentId: string | null): boolean => {
       const dragged = navNodes.find((node) => node.id === nodeId);
@@ -1492,7 +1310,7 @@ export function Sidebar({
       const parent = navNodes.find((node) => node.id === parentId);
       if (!parent) return false;
       if (leavingProject && parent.type !== "project") return false;
-      if (parent.type === "project" || parent.type === "folder") {
+      if (parent.type === "project") {
         return dragged.type === "tab" || dragged.type === "mission";
       }
       return false;
@@ -1733,14 +1551,12 @@ export function Sidebar({
     });
   }, []);
 
-  // Row renderers over the node tree. Every leaf row (tab, mission)
-  // drags through the same reparent/reposition op; folder rows render
-  // their children as a nested scope.
+  // Every leaf row (tab, mission) drags through the same
+  // reparent/reposition op.
   const renderLeafRow = (
     row: NavRowModel,
     projectId: string | null,
   ): ReactNode => {
-    if (row.kind === "folder") return null;
     const nodeId = row.node.id;
     if (row.kind === "mission") {
       return (
@@ -1827,91 +1643,11 @@ export function Sidebar({
     );
   };
 
-  const renderFolderRow = (row: NavRowModel & { kind: "folder" }) => {
-    const folder = row.node;
-    const items = scopeRows(folder.id);
-    const folderAttention = rowAttention(row);
-    const folderLive = rowIsLive(row);
-    const folderCollapsed = collapsedFolderIds.has(folder.id);
-    const visuallyCollapsed =
-      folderCollapsed && containerDropId !== folder.id;
-    return (
-      <div className="flex flex-col gap-0.5">
-        {renamingFolderId === folder.id ? (
-          <FolderRenameRow
-            initial={row.name}
-            collapsed={folderCollapsed}
-            live={folderLive}
-            attention={folderAttention}
-            onSubmit={(nextName) =>
-              void submitFolderRename(folder.id, row.name, nextName)
-            }
-            onCancel={() => setRenamingFolderId(null)}
-          />
-        ) : (
-          <ContainerDropRow
-            containerId={folder.id}
-            enabled={
-              folderCollapsed &&
-              draggedNodeId !== null &&
-              canDropInScope(draggedNodeId, folder.id)
-            }
-            active={containerDropId === folder.id}
-            onContextMenu={(anchor) =>
-              openFolderMenu({ id: folder.id, name: row.name }, anchor)
-            }
-          >
-            <button
-              type="button"
-              onClick={() => toggleFolder(folder.id)}
-              className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
-            >
-              {visuallyCollapsed ? (
-                <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
-              ) : (
-                <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
-              )}
-              <SidebarTabIcon icon={Folder} active={folderLive} />
-              <span className="min-w-0 flex-1 truncate font-medium">
-                {row.name}
-              </span>
-              <ChatAttentionIndicator
-                state={visuallyCollapsed ? folderAttention : null}
-              />
-            </button>
-            <button
-              type="button"
-              onClick={(event) =>
-                openFolderMenu(
-                  { id: folder.id, name: row.name },
-                  { x: event.clientX, y: event.clientY },
-                )
-              }
-              className="cursor-pointer rounded p-0.5 text-fg-3 opacity-0 hover:bg-raised hover:text-fg group-hover:opacity-100 focus:opacity-100"
-              aria-label="Folder actions"
-              title="Folder actions"
-            >
-              <MoreHorizontal aria-hidden className="h-3 w-3" />
-            </button>
-          </ContainerDropRow>
-        )}
-        {visuallyCollapsed ? null : (
-          <div className="ml-3 flex flex-col gap-0.5 border-l border-line pl-2">
-            {renderScopeRows(items, folder.id, null, "Empty folder")}
-          </div>
-        )}
-      </div>
-    );
-  };
-
   const renderNavRow = (
     row: NavRowModel,
     parentId: string | null,
     projectId: string | null,
   ): ReactNode => {
-    if (row.kind === "folder") {
-      return <Fragment key={row.node.id}>{renderFolderRow(row)}</Fragment>;
-    }
     return (
       <SortableNavRow
         key={row.node.id}
@@ -1958,9 +1694,7 @@ export function Sidebar({
 
     return (
       <SortableContext
-        items={rows
-          .filter((row) => row.kind !== "folder")
-          .map((row) => rowDndId(row.node.id))}
+        items={rows.map((row) => rowDndId(row.node.id))}
         strategy={verticalListSortingStrategy}
       >
         {rows.map((row, originalIndex) => (
@@ -2124,12 +1858,11 @@ export function Sidebar({
                             className="flex flex-col gap-0.5"
                           >
                             {renamingProjectId === project.id ? (
-                              <FolderRenameRow
+                              <ProjectRenameRow
                                 initial={project.name}
                                 collapsed={projectCollapsed}
                                 live={live}
                                 attention={nestedAttention}
-                                inputLabel="Project name"
                                 onSubmit={(nextName) =>
                                   void submitProjectRename(
                                     project.id,
@@ -2223,20 +1956,12 @@ export function Sidebar({
                     setChatCreateMenu(null);
                     setChatAddMenuOpen((open) => !open);
                   }}
-                  plusTitle="Add chat, folder, or mission"
+                  plusTitle="Add chat or mission"
                   plusExpanded={chatAddMenuOpen}
                   plusPopup="menu"
                   onPlusMenuClose={() => setChatAddMenuOpen(false)}
                   plusMenu={
                     <div className="flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]">
-                      <button
-                        type="button"
-                        onClick={beginFolderCreate}
-                        className="flex cursor-pointer items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-fg hover:bg-line"
-                      >
-                        <FolderPlus aria-hidden className="h-3.5 w-3.5" />
-                        New folder
-                      </button>
                       <button
                         type="button"
                         onClick={() => {
@@ -2275,13 +2000,7 @@ export function Sidebar({
                     }}
                     className="flex flex-1 flex-col gap-0.5 px-3 pt-1"
                   >
-                    {creatingFolder ? (
-                      <NewFolderRow
-                        onSubmit={submitFolderCreate}
-                        onCancel={() => setCreatingFolder(false)}
-                      />
-                    ) : null}
-                    {recentRows.length === 0 && !creatingFolder ? (
+                    {recentRows.length === 0 ? (
                       <p className="px-2.5 py-1 text-xs text-fg-3">
                         No chats yet.
                       </p>
@@ -2412,14 +2131,11 @@ export function Sidebar({
         project={newChatProject}
         onClose={() => {
           setCreatingChat(false);
-          setNewChatFolderId(null);
           setNewChatProjectId(null);
         }}
         onStarted={(spawned) => {
           setCreatingChat(false);
-          const targetFolderId = newChatFolderId;
           const targetProjectId = newChatProjectId;
-          setNewChatFolderId(null);
           setNewChatProjectId(null);
           if (targetProjectId) {
             setActiveProjectId(targetProjectId);
@@ -2428,21 +2144,6 @@ export function Sidebar({
                 state: { sessionStatus: "running" },
               });
             });
-            return;
-          }
-          if (targetFolderId) {
-            void moveSessionTabToParent(spawned.id, targetFolderId)
-              .catch((error: unknown) =>
-                console.error(
-                  "sidebar: create chat tab in folder failed",
-                  error,
-                ),
-              )
-              .finally(() => {
-                navigate(`/chats/${spawned.id}`, {
-                  state: { sessionStatus: "running" },
-                });
-              });
             return;
           }
           const chatLayout = activatePaneLayoutForSession(currentChatSessionId);
@@ -2514,29 +2215,6 @@ export function Sidebar({
         />
       ) : null}
 
-      {folderMenu ? (
-        <FolderContextMenu
-          anchorX={folderMenu.x}
-          anchorY={folderMenu.y}
-          onClose={closeFolderMenu}
-          onNewChat={() => {
-            if (collapsedFolderIds.has(folderMenu.id)) {
-              toggleFolder(folderMenu.id);
-            }
-            handleNewFolderChat(folderMenu.id);
-            closeFolderMenu();
-          }}
-          onRename={() => {
-            setRenamingFolderId(folderMenu.id);
-            closeFolderMenu();
-          }}
-          onDelete={() => {
-            requestFolderDelete(folderMenu.id, folderMenu.name);
-            closeFolderMenu();
-          }}
-        />
-      ) : null}
-
       {chatCreateMenu ? (
         <ChatCreateContextMenu
           anchorX={chatCreateMenu.x}
@@ -2546,7 +2224,6 @@ export function Sidebar({
             setChatCreateMenu(null);
             handleNewDirectChat();
           }}
-          onNewFolder={beginFolderCreate}
         />
       ) : null}
 
@@ -2591,24 +2268,6 @@ export function Sidebar({
           if (projectDeleteConfirm) void deleteProject(projectDeleteConfirm);
         }}
         onCancel={() => setProjectDeleteConfirm(null)}
-      />
-
-      <ConfirmDialog
-        open={folderDeleteConfirm !== null}
-        title={`Delete folder "${folderDeleteConfirm?.name ?? ""}"?`}
-        body={`This folder contains ${folderDeleteConfirm?.count ?? 0} tab${folderDeleteConfirm?.count === 1 ? "" : "s"}${
-          folderDeleteConfirm?.missionCount
-            ? ` and ${folderDeleteConfirm.missionCount} mission${folderDeleteConfirm.missionCount === 1 ? "" : "s"}`
-            : ""
-        }. Deleting it archives everything inside (running ones are stopped first) and removes the folder. Archived items appear in Settings → Archived.`}
-        confirmLabel="Delete folder"
-        busyLabel="Archiving…"
-        busy={deletingFolder}
-        onConfirm={() => {
-          if (!folderDeleteConfirm) return;
-          void deleteFolder(folderDeleteConfirm);
-        }}
-        onCancel={() => setFolderDeleteConfirm(null)}
       />
 
       {missionMenu ? (
@@ -2796,8 +2455,8 @@ function SortableNavRow({
   );
 }
 
-/** Container header that doubles as a drop target: a collapsed folder
- *  or a project row. Dropping appends at the container's end. */
+/** Project header that doubles as a drop target. Dropping appends at
+ *  the project's end. */
 function ContainerDropRow({
   containerId,
   enabled,
@@ -2921,72 +2580,11 @@ function RowDropDivider({
   );
 }
 
-export function NewFolderRow({
-  onSubmit,
-  onCancel,
-}: {
-  onSubmit: (name: string) => Promise<void>;
-  onCancel: () => void;
-}) {
-  const [draft, setDraft] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const submittingRef = useRef(false);
-
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  const submit = useCallback(async () => {
-    const name = draft.trim();
-    if (!name) {
-      onCancel();
-      return;
-    }
-    if (submittingRef.current) return;
-    submittingRef.current = true;
-    try {
-      await onSubmit(name);
-    } catch {
-      submittingRef.current = false;
-      inputRef.current?.focus();
-    }
-  }, [draft, onCancel, onSubmit]);
-
-  return (
-    <div
-      onContextMenu={(event) => event.stopPropagation()}
-      className="flex items-center gap-1.5 rounded border border-sidebar-selected-border bg-sidebar-selected px-2.5 py-1.5 text-xs shadow-sm"
-    >
-      <ChevronDown aria-hidden className="h-3 w-3 shrink-0 text-fg-2" />
-      <SidebarTabIcon icon={Folder} active={false} />
-      <input
-        ref={inputRef}
-        value={draft}
-        placeholder="Folder name"
-        aria-label="Folder name"
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            void submit();
-          } else if (event.key === "Escape") {
-            event.preventDefault();
-            onCancel();
-          }
-        }}
-        onBlur={() => void submit()}
-        className="min-w-0 flex-1 bg-transparent text-xs text-fg outline-none placeholder:text-fg-3"
-      />
-    </div>
-  );
-}
-
-function FolderRenameRow({
+function ProjectRenameRow({
   initial,
   collapsed,
   live,
   attention,
-  inputLabel = "Folder name",
   onSubmit,
   onCancel,
 }: {
@@ -2994,7 +2592,6 @@ function FolderRenameRow({
   collapsed: boolean;
   live: boolean;
   attention: ChatAttentionState;
-  inputLabel?: string;
   onSubmit: (name: string) => void;
   onCancel: () => void;
 }) {
@@ -3017,13 +2614,13 @@ function FolderRenameRow({
         <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
       )}
       <SidebarTabIcon
-        icon={Folder}
+        icon={FolderCode}
         active={live}
       />
       <input
         ref={inputRef}
         value={draft}
-        aria-label={inputLabel}
+        aria-label="Project name"
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Enter") {
@@ -3367,75 +2964,16 @@ function ProjectContextMenu({
   );
 }
 
-function FolderContextMenu({
-  anchorX,
-  anchorY,
-  onClose,
-  onNewChat,
-  onRename,
-  onDelete,
-}: {
-  anchorX: number;
-  anchorY: number;
-  onClose: () => void;
-  onNewChat: () => void;
-  onRename: () => void;
-  onDelete: () => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ x: anchorX, y: anchorY });
-  useEffect(() => {
-    if (!ref.current) return;
-    const rect = ref.current.getBoundingClientRect();
-    setPos({
-      x: Math.max(4, Math.min(anchorX, window.innerWidth - rect.width - 4)),
-      y: Math.max(4, Math.min(anchorY, window.innerHeight - rect.height - 4)),
-    });
-  }, [anchorX, anchorY]);
-  useEffect(() => {
-    const onMouseDown = (event: MouseEvent) => {
-      if (!ref.current?.contains(event.target as Node)) onClose();
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [onClose]);
-  return (
-    <div
-      ref={ref}
-      role="menu"
-      style={{ position: "fixed", left: pos.x, top: pos.y, width: 180 }}
-      className="z-50 flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
-    >
-      <ContextMenuItem
-        icon={MessageSquarePlus}
-        label="New chat in folder"
-        onClick={onNewChat}
-      />
-      <ContextMenuItem icon={SquarePen} label="Rename folder" onClick={onRename} />
-      <ContextMenuItem icon={Trash2} label="Delete" onClick={onDelete} danger />
-    </div>
-  );
-}
-
 function ChatCreateContextMenu({
   anchorX,
   anchorY,
   onClose,
   onNewChat,
-  onNewFolder,
 }: {
   anchorX: number;
   anchorY: number;
   onClose: () => void;
   onNewChat: () => void;
-  onNewFolder: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x: anchorX, y: anchorY });
@@ -3468,11 +3006,6 @@ function ChatCreateContextMenu({
       style={{ position: "fixed", left: pos.x, top: pos.y, width: 160 }}
       className="z-50 flex flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
     >
-      <ContextMenuItem
-        icon={FolderPlus}
-        label="New folder"
-        onClick={onNewFolder}
-      />
       <ContextMenuItem
         icon={MessageSquarePlus}
         label="New chat"

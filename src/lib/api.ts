@@ -87,13 +87,13 @@ export interface ProjectRow {
   created_at: string;
 }
 
-/** One row of the sidebar navigation tree (feature 44). Containers are
- *  `folder` (nav-native, owns its name) and `project` (references
- *  `projects.id` via `ref_id`); leaves are `tab` (pane layout JSON +
- *  attention watermarks) and `mission` (references `missions.id`).
- *  `parent_id` + `position` is the single containment/ordering
- *  mechanism; `pinned_position` non-null = pinned. */
-export type NodeType = "folder" | "project" | "tab" | "mission";
+/** One row of the sidebar navigation tree (feature 44). `project` is
+ *  the only container type and references `projects.id` via `ref_id`;
+ *  leaves are `tab` (pane layout JSON + attention watermarks) and
+ *  `mission` (references `missions.id`). `parent_id` + `position` is
+ *  the single containment/ordering mechanism; `pinned_position`
+ *  non-null = pinned. */
+export type NodeType = "project" | "tab" | "mission";
 
 export interface NodeRow {
   id: string;
@@ -148,10 +148,7 @@ export const api = {
      *  first within their scope, then `position, created_at`. Runs the
      *  invariant repair (project/mission/tab node seeding) first. */
     list: () => invoke<NodeRow[]>("node_list"),
-    folderCreate: (name: string) =>
-      invoke<NodeRow>("node_folder_create", { name }),
-    /** Rename a folder or tab node (projects/missions rename through
-     *  their domain commands). */
+    /** Rename a tab node (projects/missions rename through their domain commands). */
     rename: (id: string, name: string) =>
       invoke<NodeRow>("node_rename", { id, name }),
     tabUpsert: (input: NodeTabUpsertInput) =>
@@ -165,8 +162,6 @@ export const api = {
       invoke<NodeRow[]>("node_move", { id, parentId, orderedIds }),
     setPinned: (id: string, pinned: boolean) =>
       invoke<NodeRow>("node_set_pinned", { id, pinned }),
-    folderDelete: (id: string) =>
-      invoke<void>("node_folder_delete", { id }),
     importOnce: (tabs: NodeTabImportInput[]) =>
       invoke<NodeRow[]>("node_import_once", { tabs }),
     markViewed: (id: string, memberIds: string[]) =>

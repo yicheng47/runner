@@ -107,10 +107,9 @@ pub fn project_reorder(
     Ok(rows)
 }
 
-/// Delete a project, archiving every node below it — the same
-/// contract as folder deletion: member missions archive first (each a
-/// complete self-consistent operation), then member tabs' chats
-/// archive with the project node and row in one transaction. The
+/// Delete a project, archiving every node below it: member missions
+/// archive first (each a complete self-consistent operation), then
+/// member tabs' chats archive with the project node and row in one transaction. The
 /// project row's ON DELETE SET NULL then unbinds the archived rows'
 /// pointers, so restored items come back unfiled. Returns the
 /// archived chat session ids for buffer purge + event fanout.

@@ -600,7 +600,7 @@ describe("cold-start hydration", () => {
       id: string;
       parent_id: string | null;
       position: number;
-      type: "folder" | "project" | "tab" | "mission";
+      type: "project" | "tab" | "mission";
       name: string | null;
       ref_id: string | null;
       layout: string | null;
@@ -628,25 +628,6 @@ describe("cold-start hydration", () => {
         return response;
       }
       return Promise.resolve(sortedRows());
-    });
-    let folderCount = 0;
-    const folderCreate = vi.fn(async (name: string) => {
-      const row: MockNode = {
-        id: `01KTESTFOLDER0000000000000${folderCount}`,
-        parent_id: null,
-        position: nodeRows.length,
-        type: "folder",
-        name,
-        ref_id: null,
-        layout: null,
-        pinned_position: null,
-        last_completed_at: null,
-        last_viewed_at: null,
-        created_at: "2026-07-12T00:00:00Z",
-      };
-      folderCount += 1;
-      nodeRows = [...nodeRows, row];
-      return row;
     });
     let nextMoveError: Error | null = null;
     const nodeMove = vi.fn(
@@ -697,7 +678,6 @@ describe("cold-start hydration", () => {
           list: nodeList,
           tabUpsert,
           delete: nodeDelete,
-          folderCreate,
           move: nodeMove,
         },
       },
@@ -735,8 +715,24 @@ describe("cold-start hydration", () => {
     expect(mod.getPaneLayout("A").name).toBeNull();
     tabUpsert.mockClear();
 
-    // A stale in-flight hydration must not clobber the folder returned
-    // by createChatFolder.
+    const projectId = "01KTESTPROJECT00000000000000";
+    nodeRows.push({
+      id: projectId,
+      parent_id: null,
+      position: 0,
+      type: "project",
+      name: null,
+      ref_id: projectId,
+      layout: null,
+      pinned_position: null,
+      last_completed_at: null,
+      last_viewed_at: null,
+      created_at: "2026-07-12T00:00:00Z",
+    });
+    await mod.hydratePaneLayoutsFromDb();
+
+    // A stale in-flight hydration must not clobber the authoritative
+    // project move returned by the mutation.
     let releaseStale: (rows: MockNode[]) => void = () => {};
     nextNodeList = new Promise((resolve) => {
       releaseStale = resolve;
@@ -744,42 +740,19 @@ describe("cold-start hydration", () => {
     const staleHydration = mod.hydratePaneLayoutsFromDb();
     await vi.waitFor(() => expect(nodeList).toHaveBeenCalled());
 
-    await mod.createChatFolder("Project");
+    const targetTabId = mod.getPaneLayout("A").id;
+    await mod.moveNode(targetTabId, projectId, [targetTabId]);
     releaseStale([]);
     await staleHydration;
-    expect(folderCreate).toHaveBeenCalledWith("Project");
-    const folderNames = () =>
-      mod
-        .getNavNodes()
-        .filter((node) => node.type === "folder")
-        .map((node) => node.name);
-    expect(folderNames()).toEqual(["Project"]);
-
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
-    nextNodeList = Promise.reject(new Error("temporary read failure"));
-    await expect(mod.createChatFolder("Resilient")).resolves.toMatchObject({
-      name: "Resilient",
-    });
-    expect(folderNames()).toEqual(["Project", "Resilient"]);
-    expect(folderCreate).toHaveBeenCalledTimes(2);
-    consoleError.mockRestore();
-
-    const targetFolderId = mod
-      .getNavNodes()
-      .find((node) => node.type === "folder")!.id;
-    const targetTabId = mod.getPaneLayout("A").id;
-    await mod.moveSessionTabToParent("A", targetFolderId);
-    expect(mod.getPaneLayout("A").parentId).toBe(targetFolderId);
-    expect(nodeMove).toHaveBeenCalledWith(targetTabId, targetFolderId, [
+    expect(mod.getPaneLayout("A").parentId).toBe(projectId);
+    expect(nodeMove).toHaveBeenCalledWith(targetTabId, projectId, [
       targetTabId,
     ]);
 
     const secondTabId = "01KTESTTAB000000000000000099";
     nodeRows.push({
       id: secondTabId,
-      parent_id: targetFolderId,
+      parent_id: projectId,
       position: 1,
       type: "tab",
       name: "C",
@@ -791,17 +764,17 @@ describe("cold-start hydration", () => {
       created_at: "2026-07-12T00:00:01Z",
     });
     await mod.hydratePaneLayoutsFromDb();
-    await mod.moveNode(targetTabId, targetFolderId, [
+    await mod.moveNode(targetTabId, projectId, [
       secondTabId,
       targetTabId,
     ]);
     expect(
       mod
         .getPaneLayouts()
-        .filter((layout) => layout.parentId === targetFolderId)
+        .filter((layout) => layout.parentId === projectId)
         .map((layout) => layout.id),
     ).toEqual([secondTabId, targetTabId]);
-    expect(nodeMove).toHaveBeenCalledWith(targetTabId, targetFolderId, [
+    expect(nodeMove).toHaveBeenCalledWith(targetTabId, projectId, [
       secondTabId,
       targetTabId,
     ]);
@@ -810,12 +783,12 @@ describe("cold-start hydration", () => {
     // untouched (the tree only changes on the authoritative response).
     nextMoveError = new Error("write rejected");
     await expect(
-      mod.moveNode(targetTabId, targetFolderId, [targetTabId, secondTabId]),
+      mod.moveNode(targetTabId, projectId, [targetTabId, secondTabId]),
     ).rejects.toThrow("write rejected");
     expect(
       mod
         .getPaneLayouts()
-        .filter((layout) => layout.parentId === targetFolderId)
+        .filter((layout) => layout.parentId === projectId)
         .map((layout) => layout.id),
     ).toEqual([secondTabId, targetTabId]);
 

@@ -86,9 +86,9 @@ Starting a mission spawns one live PTY per slot into a tabbed workspace where th
 </td>
 <td width="50%" valign="middle">
 
-### Chats — tabs, split panes, folders
+### Chats — tabs, split panes, projects
 
-Every chat is a real 1:1 PTY with a runner, no mission required. Tabs hold up to three side-by-side panes — run a Claude Code and a Codex on the same problem in one view. The sidebar groups tabs into collapsible folders; every tab shows a spinner while a pane is still working and a dot when one finished while you were elsewhere, so a wall of parallel agents stays scannable.
+Every chat is a real 1:1 PTY with a runner, no mission required. Tabs hold up to three side-by-side panes — run a Claude Code and a Codex on the same problem in one view. The sidebar groups chats and missions into cwd-bound projects; every tab shows a spinner while a pane is still working and a dot when one finished while you were elsewhere, so a wall of parallel agents stays scannable.
 
 </td>
 </tr>

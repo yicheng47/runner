@@ -54,7 +54,7 @@ export interface PaneLayout {
   /** Stable SQLite-backed tab-node identity. Empty only for the off-Tauri
    *  test placeholder before the first hydration. */
   id: string;
-  /** Containing node — a folder or project node id, null at root. */
+  /** Containing project node id, or null at root. */
   parentId: string | null;
   preset: PresetKind;
   root: PaneNode;
@@ -822,21 +822,6 @@ export function useNavNodes(): NodeRow[] {
   return useSyncExternalStore(subscribePaneLayout, getNavNodes, getNavNodes);
 }
 
-export async function createChatFolder(name: string): Promise<NodeRow> {
-  const row = await api.node.folderCreate(name);
-  // A refresh started before node_folder_create committed must not
-  // overwrite the authoritative row returned by this command.
-  hydrationSequence += 1;
-  navNodes = [...navNodes.filter((node) => node.id !== row.id), row];
-  for (const listener of listeners) listener();
-  try {
-    await hydratePaneLayoutsFromDb();
-  } catch (error) {
-    console.error("paneLayout: post-create hydration failed", error);
-  }
-  return row;
-}
-
 /**
  * The unified reparent/reposition op behind every sidebar drag.
  * `orderedIds` must be the complete new ordering of the destination
@@ -855,8 +840,8 @@ export async function moveNode(
   applyNodeRows(rows);
 }
 
-/** Append a node at the end of a new scope — the move-to-folder /
- *  move-to-project menu paths; drags carry an explicit order. */
+/** Append a node at the end of a new scope — the move-to-project menu
+ *  path uses this; drags carry an explicit order. */
 export async function moveNodeToParentEnd(
   nodeId: string,
   parentId: string | null,
@@ -865,25 +850,6 @@ export async function moveNodeToParentEnd(
     .filter((node) => node.parent_id === parentId && node.id !== nodeId)
     .map((node) => node.id);
   await moveNode(nodeId, parentId, [...siblings, nodeId]);
-}
-
-export async function moveSessionTabToParent(
-  sessionId: string,
-  parentId: string | null,
-): Promise<void> {
-  // Fetch fresh: a chat spawned moments ago may not be in this window's
-  // snapshot yet (the backend seeds its tab node on list).
-  const rows = await api.node.list();
-  const row = rows.find((candidate) => {
-    if (candidate.type !== "tab") return false;
-    const layout = layoutFromNode(candidate);
-    return layout ? leafForSession(layout.root, sessionId) !== null : false;
-  });
-  if (!row) throw new Error(`tab not found for session: ${sessionId}`);
-  const siblings = rows
-    .filter((node) => node.parent_id === parentId && node.id !== row.id)
-    .map((node) => node.id);
-  await moveNode(row.id, parentId, [...siblings, row.id]);
 }
 
 /**
