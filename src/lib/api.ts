@@ -144,9 +144,8 @@ export const api = {
     delete: (id: string) => invoke<void>("project_delete", { id }),
   },
   node: {
-    /** The whole sidebar tree, one query: parent-grouped, pinned rows
-     *  first within their scope, then `position, created_at`. Runs the
-     *  invariant repair (project/mission/tab node seeding) first. */
+    /** The whole sidebar tree, one query: the global PINNED order followed
+     *  by unpinned parent scopes. Runs invariant repair first. */
     list: () => invoke<NodeRow[]>("node_list"),
     /** Rename a tab node (projects/missions rename through their domain commands). */
     rename: (id: string, name: string) =>
@@ -155,11 +154,12 @@ export const api = {
       invoke<NodeRow>("node_tab_upsert", { input }),
     delete: (id: string) => invoke<void>("node_delete", { id }),
     /** The unified reparent/reposition op behind every sidebar drag.
-     *  `orderedIds` is the complete new ordering of the destination
-     *  scope's children, moved node included. Crossing a project
-     *  boundary writes `project_id` pointers through. */
+     *  `orderedIds` is the complete unpinned destination scope, with an
+     *  unpinned moved node included. */
     move: (id: string, parentId: string | null, orderedIds: string[]) =>
       invoke<NodeRow[]>("node_move", { id, parentId, orderedIds }),
+    reorderPinned: (orderedIds: string[]) =>
+      invoke<NodeRow[]>("node_reorder_pinned", { orderedIds }),
     setPinned: (id: string, pinned: boolean) =>
       invoke<NodeRow>("node_set_pinned", { id, pinned }),
     importOnce: (tabs: NodeTabImportInput[]) =>

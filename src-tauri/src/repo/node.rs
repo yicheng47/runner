@@ -7,11 +7,11 @@
 // never nodes — they're content behind a tab's layout slots.
 //
 // `pinned_position` non-NULL = pinned; the value orders the PINNED
-// overlay. Unpinning just clears it, returning the row to its tree
-// position. The tree owns placement/order only: `sessions.project_id` /
-// `missions.project_id` stay authoritative for domain membership, so
-// reparenting across a project boundary writes the pointer through
-// (see `move_and_reorder`).
+// overlay. A pinned node keeps its parent while its tree position is
+// dormant; unpinning appends it to that parent's visible scope. The tree
+// owns placement/order only: `sessions.project_id` / `missions.project_id`
+// stay authoritative for domain membership, so reparenting across a
+// project boundary writes the pointer through (see `move_and_reorder`).
 
 use std::collections::HashSet;
 
@@ -67,14 +67,13 @@ const COLUMNS: &[&str] = &[
     "created_at",
 ];
 
-/// One tree query. Within each parent scope pinned rows sort first by
-/// `pinned_position`, then everything by `position, created_at` — the
-/// same order the sidebar renders, so backend and frontend agree.
+/// One tree query. Pinned rows form one global ordered overlay; unpinned
+/// rows retain their parent-scoped `position, created_at` order.
 pub fn list(conn: &Connection) -> rusqlite::Result<Vec<NodeRow>> {
     let sql = format!(
         "SELECT {} FROM nodes
-         ORDER BY parent_id IS NOT NULL, parent_id,
-                  pinned_position IS NULL, pinned_position,
+         ORDER BY pinned_position IS NULL, pinned_position,
+                  parent_id IS NOT NULL, parent_id,
                   position, created_at",
         select_list(COLUMNS)
     );
@@ -290,8 +289,9 @@ pub fn rename(conn: &Connection, id: &str, name: &str) -> rusqlite::Result<usize
     )
 }
 
-/// Pin appends at the PINNED end (an already-pinned row keeps its
-/// slot); unpin clears — the row returns to its tree position for free.
+/// Pin appends at the PINNED end (an already-pinned row keeps its slot).
+/// Unpin appends the row to the end of its original parent's visible scope;
+/// its old position may have gone stale while the row was pinned away.
 pub fn set_pinned(conn: &Connection, id: &str, pinned: bool) -> rusqlite::Result<usize> {
     if pinned {
         conn.execute(
@@ -303,10 +303,46 @@ pub fn set_pinned(conn: &Connection, id: &str, pinned: bool) -> rusqlite::Result
         )
     } else {
         conn.execute(
-            "UPDATE nodes SET pinned_position = NULL WHERE id = ?1",
+            "UPDATE nodes
+             SET position = (
+                     SELECT COALESCE(MAX(position) + 1, 0)
+                     FROM nodes
+                     WHERE parent_id IS (SELECT parent_id FROM nodes WHERE id = ?1)
+                       AND pinned_position IS NULL
+                       AND id != ?1
+                 ),
+                 pinned_position = NULL
+             WHERE id = ?1 AND pinned_position IS NOT NULL",
             [id],
         )
     }
+}
+
+/// Rewrite the global PINNED overlay order. The caller must submit every
+/// currently-pinned node exactly once so a stale frontend cannot silently
+/// discard or duplicate rows.
+pub fn reorder_pinned(conn: &Connection, ordered_ids: &[String]) -> rusqlite::Result<()> {
+    let actual: Vec<String> = conn
+        .prepare("SELECT id FROM nodes WHERE pinned_position IS NOT NULL")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let expected: HashSet<&str> = actual.iter().map(String::as_str).collect();
+    let provided: HashSet<&str> = ordered_ids.iter().map(String::as_str).collect();
+    if ordered_ids.len() != actual.len()
+        || provided.len() != ordered_ids.len()
+        || provided != expected
+    {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "ordered node ids do not match pinned nodes".to_owned(),
+        ));
+    }
+    for (position, node_id) in ordered_ids.iter().enumerate() {
+        conn.execute(
+            "UPDATE nodes SET pinned_position = ?2 WHERE id = ?1",
+            rusqlite::params![node_id, position as i64],
+        )?;
+    }
+    Ok(())
 }
 
 /// The unified reparent/reposition op behind every sidebar drag.
@@ -361,7 +397,10 @@ pub fn move_and_reorder(
         rusqlite::params![id, parent_id],
     )?;
     let actual: Vec<String> = tx
-        .prepare("SELECT id FROM nodes WHERE parent_id IS ?1")?
+        .prepare(
+            "SELECT id FROM nodes
+             WHERE parent_id IS ?1 AND pinned_position IS NULL",
+        )?
         .query_map([parent_id], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     let expected: HashSet<&str> = actual.iter().map(String::as_str).collect();
@@ -974,20 +1013,14 @@ mod tests {
         .unwrap();
         let mut conn = conn;
         let tx = conn.transaction().unwrap();
-        super::move_and_reorder(
-            &tx,
-            &stale.id,
-            Some(&project_node.id),
-            &[peer.id, stale.id.clone()],
-        )
-        .unwrap();
+        super::move_and_reorder(&tx, &stale.id, Some(&project_node.id), &[peer.id]).unwrap();
         tx.commit().unwrap();
 
         let after = super::get(&conn, &stale.id).unwrap().unwrap();
         assert_eq!(after.name.as_deref(), Some("renamed"));
         assert_eq!(after.layout, stale.layout);
         assert_eq!(after.parent_id, Some(project_node.id));
-        assert_eq!(after.position, 1);
+        assert_eq!(after.position, before.position);
         assert_eq!(after.last_completed_at, before.last_completed_at);
         assert_eq!(after.last_viewed_at, before.last_viewed_at);
         assert_eq!(after.pinned_position, before.pinned_position);
@@ -1507,7 +1540,7 @@ mod tests {
     }
 
     #[test]
-    fn pin_appends_and_unpin_returns_to_tree_position() {
+    fn pinned_reorder_requires_the_complete_pinned_set() {
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         let a = super::create_tab(
@@ -1526,42 +1559,191 @@ mod tests {
             r#"{"preset":"single","slots":["b"],"sizes":{}}"#,
         )
         .unwrap();
+        let c = super::create_tab(
+            &conn,
+            None,
+            "C",
+            2,
+            r#"{"preset":"single","slots":["c"],"sizes":{}}"#,
+        )
+        .unwrap();
 
-        super::set_pinned(&conn, &b.id, true).unwrap();
         super::set_pinned(&conn, &a.id, true).unwrap();
-        let pinned: Vec<(String, Option<i64>)> = super::list(&conn)
+        super::set_pinned(&conn, &c.id, true).unwrap();
+
+        assert!(super::reorder_pinned(&conn, std::slice::from_ref(&c.id)).is_err());
+        assert!(super::reorder_pinned(&conn, &[c.id.clone(), c.id.clone()]).is_err());
+        assert!(super::reorder_pinned(&conn, &[c.id.clone(), b.id.clone()]).is_err());
+
+        super::reorder_pinned(&conn, &[c.id.clone(), a.id.clone()]).unwrap();
+        let pinned: Vec<_> = super::list(&conn)
             .unwrap()
             .into_iter()
-            .map(|row| (row.id, row.pinned_position))
+            .filter_map(|row| row.pinned_position.map(|position| (row.id, position)))
             .collect();
-        assert_eq!(
-            pinned,
-            [(b.id.clone(), Some(0)), (a.id.clone(), Some(1))],
-            "pinned rows sort first by pin order"
-        );
+        assert_eq!(pinned, [(c.id, 0), (a.id, 1)]);
+    }
 
-        // Re-pinning keeps the slot.
-        super::set_pinned(&conn, &b.id, true).unwrap();
-        assert_eq!(
-            super::get(&conn, &b.id).unwrap().unwrap().pinned_position,
-            Some(0)
-        );
+    #[test]
+    fn unpin_appends_to_the_end_of_the_original_parent() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        let a = super::create_tab(
+            &conn,
+            None,
+            "A",
+            0,
+            r#"{"preset":"single","slots":["a"],"sizes":{}}"#,
+        )
+        .unwrap();
+        let b = super::create_tab(
+            &conn,
+            None,
+            "B",
+            1,
+            r#"{"preset":"single","slots":["b"],"sizes":{}}"#,
+        )
+        .unwrap();
+        let c = super::create_tab(
+            &conn,
+            None,
+            "C",
+            2,
+            r#"{"preset":"single","slots":["c"],"sizes":{}}"#,
+        )
+        .unwrap();
 
-        super::set_pinned(&conn, &b.id, false).unwrap();
-        let order: Vec<String> = super::list(&conn)
+        super::set_pinned(&conn, &a.id, true).unwrap();
+        let tx = conn.transaction().unwrap();
+        super::move_and_reorder(&tx, &b.id, None, &[c.id.clone(), b.id.clone()]).unwrap();
+        tx.commit().unwrap();
+        super::set_pinned(&conn, &a.id, false).unwrap();
+
+        let root_tabs: Vec<_> = super::list(&conn)
             .unwrap()
             .into_iter()
+            .filter(|row| row.parent_id.is_none() && row.node_type == NodeType::Tab)
+            .map(|row| (row.id, row.position))
+            .collect();
+        assert_eq!(root_tabs, [(c.id, 0), (b.id, 1), (a.id.clone(), 2)]);
+
+        assert_eq!(super::set_pinned(&conn, &a.id, false).unwrap(), 0);
+        assert_eq!(super::get(&conn, &a.id).unwrap().unwrap().position, 2);
+    }
+
+    #[test]
+    fn pinned_project_tab_returns_after_newly_reordered_siblings() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        let project = crate::repo::project::create(&conn, "Project", "/tmp/project").unwrap();
+        let parent = super::ensure_project_node(&conn, &project.id).unwrap();
+        let pinned = super::create_tab(
+            &conn,
+            Some(&parent.id),
+            "Pinned",
+            0,
+            r#"{"preset":"single","slots":["pinned"],"sizes":{}}"#,
+        )
+        .unwrap();
+        let sibling = super::create_tab(
+            &conn,
+            Some(&parent.id),
+            "Sibling",
+            1,
+            r#"{"preset":"single","slots":["sibling"],"sizes":{}}"#,
+        )
+        .unwrap();
+
+        super::set_pinned(&conn, &pinned.id, true).unwrap();
+        let added = super::create_tab(
+            &conn,
+            Some(&parent.id),
+            "Added",
+            super::next_position(&conn, Some(&parent.id)).unwrap(),
+            r#"{"preset":"single","slots":["added"],"sizes":{}}"#,
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        super::move_and_reorder(
+            &tx,
+            &sibling.id,
+            Some(&parent.id),
+            &[added.id.clone(), sibling.id.clone()],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        super::set_pinned(&conn, &pinned.id, false).unwrap();
+        let children: Vec<_> = super::list(&conn)
+            .unwrap()
+            .into_iter()
+            .filter(|row| row.parent_id.as_deref() == Some(parent.id.as_str()))
             .map(|row| row.id)
             .collect();
+        assert_eq!(children, [added.id, sibling.id, pinned.id]);
+    }
+
+    #[test]
+    fn root_project_reorder_excludes_a_pinned_root_tab() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        let project_a = crate::repo::project::create(&conn, "A", "/tmp/a").unwrap();
+        let project_b = crate::repo::project::create(&conn, "B", "/tmp/b").unwrap();
+        let node_a = super::ensure_project_node(&conn, &project_a.id).unwrap();
+        let node_b = super::ensure_project_node(&conn, &project_b.id).unwrap();
+        let tab = super::create_tab(
+            &conn,
+            None,
+            "Pinned",
+            2,
+            r#"{"preset":"single","slots":["pinned"],"sizes":{}}"#,
+        )
+        .unwrap();
+        super::set_pinned(&conn, &tab.id, true).unwrap();
+        let before = super::get(&conn, &tab.id).unwrap().unwrap();
+
+        let tx = conn.transaction().unwrap();
+        super::move_and_reorder(
+            &tx,
+            &node_b.id,
+            None,
+            &[node_b.id.clone(), node_a.id.clone()],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        let after = super::get(&conn, &tab.id).unwrap().unwrap();
+        assert_eq!(after.parent_id, before.parent_id);
+        assert_eq!(after.position, before.position);
+        assert_eq!(after.pinned_position, before.pinned_position);
+        let projects: Vec<_> = super::list(&conn)
+            .unwrap()
+            .into_iter()
+            .filter(|row| row.node_type == NodeType::Project)
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(projects, [node_b.id, node_a.id]);
+    }
+
+    #[test]
+    fn repinning_keeps_the_existing_pinned_slot() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let tab = super::create_tab(
+            &conn,
+            None,
+            "Pinned",
+            0,
+            r#"{"preset":"single","slots":["pinned"],"sizes":{}}"#,
+        )
+        .unwrap();
+        super::set_pinned(&conn, &tab.id, true).unwrap();
+
+        // Re-pinning keeps the slot.
+        super::set_pinned(&conn, &tab.id, true).unwrap();
         assert_eq!(
-            order,
-            [a.id.clone(), b.id.clone()],
-            "unpinned row returns behind the remaining pinned row"
-        );
-        assert_eq!(
-            super::get(&conn, &b.id).unwrap().unwrap().position,
-            1,
-            "tree position untouched by pin round-trip"
+            super::get(&conn, &tab.id).unwrap().unwrap().pinned_position,
+            Some(0)
         );
     }
 }

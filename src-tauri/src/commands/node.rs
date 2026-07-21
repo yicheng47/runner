@@ -139,9 +139,9 @@ pub fn node_delete(state: State<'_, AppState>, app: tauri::AppHandle, id: String
 }
 
 /// The unified reparent/reposition op behind every sidebar drag.
-/// `ordered_ids` is the complete new ordering of the destination
-/// scope's children (moved node included). Crossing a project boundary
-/// writes `sessions.project_id` / `missions.project_id` through.
+/// `ordered_ids` is the complete new ordering of the destination scope's
+/// unpinned children (the moved node included when it is unpinned). Crossing
+/// a project boundary writes domain `project_id` pointers through.
 #[tauri::command]
 pub fn node_move(
     state: State<'_, AppState>,
@@ -176,6 +176,24 @@ pub fn node_move(
         }
         NodeType::Project => {}
     }
+    Ok(rows)
+}
+
+/// Rewrite the complete global PINNED order. Parent-scoped positions remain
+/// dormant and untouched until each row is unpinned.
+#[tauri::command]
+pub fn node_reorder_pinned(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    ordered_ids: Vec<String>,
+) -> Result<Vec<NodeRow>> {
+    let mut conn = state.db.get()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    repo::node::reorder_pinned(&tx, &ordered_ids)
+        .map_err(|error| Error::msg(format!("reorder pinned nodes: {error}")))?;
+    let rows = repo::node::list(&tx)?;
+    tx.commit()?;
+    emit_layout_changed(&app);
     Ok(rows)
 }
 
