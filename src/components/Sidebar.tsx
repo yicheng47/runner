@@ -93,6 +93,7 @@ import {
   isChatTabDropIndexAllowed,
   orderedChatTabIdsAfterDrop,
 } from "../lib/chatTabs";
+import { orderedRootNodeIdsAfterProjectDrop } from "../lib/sidebarDnd";
 import {
   missionAttentionState,
   rollupAttentionState,
@@ -153,14 +154,19 @@ const STORAGE_SESSION_OPEN = "runner.sidebar.session.open";
 const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
 const SIDEBAR_NAVIGATION_HISTORY_LIMIT = 64;
 
-// One dnd vocabulary for every draggable sidebar row (feature 44):
-// tab and mission nodes drag; positions are per-scope (root recent
-// list or a project's children); project targets append at the scope end.
+// One dnd vocabulary for every draggable sidebar row: leaf positions are
+// per-scope, project positions reorder root projects, and project containers
+// accept tab/mission drops at the child scope's end.
 type RowDropTarget = {
+  dropKind: "leaf" | "project";
   parentId: string | null;
   index: number;
   markerKey: string;
 };
+
+type SortableDisabled = NonNullable<
+  Parameters<typeof useSortable>[0]["disabled"]
+>;
 
 type NavDndData =
   | {
@@ -458,6 +464,10 @@ export function Sidebar({
     [navNodes],
   );
   const recentRows = scopeRows(null);
+  const draggedNode = useMemo(
+    () => navNodes.find((node) => node.id === draggedNodeId) ?? null,
+    [draggedNodeId, navNodes],
+  );
 
   const rowAttention = useCallback(
     (row: NavRowModel): ChatAttentionState => {
@@ -499,6 +509,13 @@ export function Sidebar({
   const activeProject = useMemo(
     () => projects.find((project) => project.id === activeProjectId) ?? null,
     [activeProjectId, projects],
+  );
+  const draggedProject = useMemo(
+    () =>
+      draggedNode?.type === "project"
+        ? (projects.find((project) => project.id === draggedNode.ref_id) ?? null)
+        : null,
+    [draggedNode, projects],
   );
   const newChatProject = useMemo(
     () => projects.find((project) => project.id === newChatProjectId) ?? null,
@@ -1329,6 +1346,24 @@ export function Sidebar({
         clearRowDrag();
         return;
       }
+      if (dragged.type === "project") {
+        if (parentId !== null) {
+          clearRowDrag();
+          return;
+        }
+        const orderedIds = orderedRootNodeIdsAfterProjectDrop(
+          navNodes,
+          nodeId,
+          requestedIndex,
+        );
+        clearRowDrag();
+        try {
+          await moveNode(nodeId, null, orderedIds);
+        } catch (error) {
+          console.error("sidebar: move project failed", error);
+        }
+        return;
+      }
       const orderedVisible = orderedChatTabIdsAfterDrop(
         scopeOrderedRows(parentId),
         nodeId,
@@ -1374,11 +1409,72 @@ export function Sidebar({
       const overData = event.over?.data.current as NavDndData | undefined;
       if (activeData?.kind !== "row" || !overData) return null;
 
+      const activeNode = navNodes.find(
+        (node) => node.id === activeData.nodeId,
+      );
+      if (!activeNode) return null;
+      if (activeNode.type === "project") {
+        const projectTargetAt = (originalIndex: number): RowDropTarget => {
+          const index = projectNodes
+            .slice(0, originalIndex)
+            .filter((node) => node.id !== activeNode.id).length;
+          return {
+            dropKind: "project",
+            parentId: null,
+            index,
+            markerKey:
+              originalIndex < projectNodes.length
+                ? `project-before-${projectNodes[originalIndex].id}`
+                : "project-after-root",
+          };
+        };
+        const targetAfterProject = (
+          projectId: string | null,
+        ): RowDropTarget | null => {
+          if (!projectId) return null;
+          const projectIndex = projectNodes.findIndex(
+            (node) => node.id === projectId,
+          );
+          return projectIndex < 0 ? null : projectTargetAt(projectIndex + 1);
+        };
+
+        if (overData.kind === "position") {
+          if (overData.dropKind === "project") {
+            return {
+              dropKind: "project",
+              parentId: null,
+              index: overData.index,
+              markerKey: overData.markerKey,
+            };
+          }
+          return targetAfterProject(overData.parentId);
+        }
+        if (overData.kind !== "row") return null;
+        const overIndex = projectNodes.findIndex(
+          (node) => node.id === overData.nodeId,
+        );
+        if (overIndex < 0) {
+          return targetAfterProject(overData.parentId);
+        }
+        if (!event.over) return null;
+
+        const activeRect =
+          event.active.rect.current.translated ??
+          event.active.rect.current.initial;
+        const after = activeRect
+          ? activeRect.top + activeRect.height / 2 >=
+            event.over.rect.top + event.over.rect.height / 2
+          : false;
+        const originalIndex = overIndex + (after ? 1 : 0);
+        return projectTargetAt(originalIndex);
+      }
+
       const dragged = draggedRowFor(activeData.nodeId);
       if (!dragged) return null;
       const draggedPinned = dragged.node.pinned_position !== null;
 
       if (overData.kind === "position") {
+        if (overData.dropKind !== "leaf") return null;
         const allowed =
           canDropInScope(dragged.node.id, overData.parentId) &&
           isChatTabDropIndexAllowed(
@@ -1389,6 +1485,7 @@ export function Sidebar({
           );
         return allowed
           ? {
+              dropKind: "leaf",
               parentId: overData.parentId,
               index: overData.index,
               markerKey: overData.markerKey,
@@ -1427,6 +1524,7 @@ export function Sidebar({
       }
 
       return {
+        dropKind: "leaf",
         parentId: overData.parentId,
         index,
         markerKey:
@@ -1435,7 +1533,14 @@ export function Sidebar({
             : `after-${overData.parentId ?? "root"}`,
       };
     },
-    [canDropInScope, draggedRowFor, scopeOrderedRows, scopeRows],
+    [
+      canDropInScope,
+      draggedRowFor,
+      navNodes,
+      projectNodes,
+      scopeOrderedRows,
+      scopeRows,
+    ],
   );
 
   const resolveContainerDropTarget = useCallback(
@@ -1455,6 +1560,7 @@ export function Sidebar({
       );
       if (index < 0) return null;
       return {
+        dropKind: "leaf",
         parentId: containerId,
         index,
         markerKey:
@@ -1631,11 +1737,38 @@ export function Sidebar({
         key={key}
         id={rowDropDndId(parentId, key)}
         enabled={enabled}
+        dropKind="leaf"
         parentId={parentId}
         index={index}
         markerKey={key}
         active={
-          rowDropTarget?.parentId === parentId &&
+          rowDropTarget?.dropKind === "leaf" &&
+          rowDropTarget.parentId === parentId &&
+          rowDropTarget.index === index &&
+          rowDropTarget.markerKey === key
+        }
+      />
+    );
+  };
+
+  const renderProjectDropDivider = (
+    originalIndex: number,
+    key: string,
+  ) => {
+    const index = projectNodes
+      .slice(0, originalIndex)
+      .filter((node) => node.id !== draggedNodeId).length;
+    return (
+      <RowDropDivider
+        key={key}
+        id={rowDropDndId(null, key)}
+        enabled={draggedNode?.type === "project"}
+        dropKind="project"
+        parentId={null}
+        index={index}
+        markerKey={key}
+        active={
+          rowDropTarget?.dropKind === "project" &&
           rowDropTarget.index === index &&
           rowDropTarget.markerKey === key
         }
@@ -1679,10 +1812,12 @@ export function Sidebar({
               draggedNodeId !== null &&
               canDropInScope(draggedNodeId, parentId)
             }
+            dropKind="leaf"
             parentId={parentId}
             markerKey={markerKey}
             active={
-              rowDropTarget?.parentId === parentId &&
+              rowDropTarget?.dropKind === "leaf" &&
+              rowDropTarget.parentId === parentId &&
               rowDropTarget.index === 0 &&
               rowDropTarget.markerKey === markerKey
             }
@@ -1839,108 +1974,142 @@ export function Sidebar({
                         No projects yet.
                       </p>
                     ) : (
-                      projectNodes.map((node) => {
-                        const project = projects.find(
-                          (candidate) => candidate.id === node.ref_id,
-                        );
-                        if (!project) return null;
-                        const nestedRows = scopeRows(node.id);
-                        const nestedAttention = rollupAttentionState(
-                          nestedRows.map(rowAttention),
-                        );
-                        const live = nestedRows.some(rowIsLive);
-                        const projectCollapsed = collapsedProjectIds.has(
-                          project.id,
-                        );
-                        return (
-                          <div
-                            key={node.id}
-                            className="flex flex-col gap-0.5"
-                          >
-                            {renamingProjectId === project.id ? (
-                              <ProjectRenameRow
-                                initial={project.name}
-                                collapsed={projectCollapsed}
-                                live={live}
-                                attention={nestedAttention}
-                                onSubmit={(nextName) =>
-                                  void submitProjectRename(
-                                    project.id,
-                                    project.name,
-                                    nextName,
-                                  )
-                                }
-                                onCancel={() => setRenamingProjectId(null)}
-                              />
-                            ) : (
-                              <ContainerDropRow
-                                containerId={node.id}
-                                enabled={
-                                  draggedNodeId !== null &&
-                                  canDropInScope(draggedNodeId, node.id)
-                                }
-                                active={containerDropId === node.id}
-                                selected={activeProjectId === project.id}
-                                onContextMenu={(anchor) =>
-                                  openProjectMenu(project, anchor)
-                                }
-                              >
-                                <button
-                                  type="button"
-                                  onClick={() => void toggleProject(project)}
-                                  className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
-                                  title={project.cwd}
+                      <SortableContext
+                        items={projectNodes.map((node) => rowDndId(node.id))}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        {projectNodes.map((node, originalIndex) => {
+                          const project = projects.find(
+                            (candidate) => candidate.id === node.ref_id,
+                          );
+                          if (!project) return null;
+                          const nestedRows = scopeRows(node.id);
+                          const nestedAttention = rollupAttentionState(
+                            nestedRows.map(rowAttention),
+                          );
+                          const live = nestedRows.some(rowIsLive);
+                          const projectCollapsed = collapsedProjectIds.has(
+                            project.id,
+                          );
+                          return (
+                            <Fragment key={node.id}>
+                              {renderProjectDropDivider(
+                                originalIndex,
+                                `project-before-${node.id}`,
+                              )}
+                              <div className="flex flex-col gap-0.5">
+                                <SortableNavRow
+                                  nodeId={node.id}
+                                  parentId={null}
+                                  disabled={{
+                                    draggable:
+                                      renamingProjectId === project.id,
+                                    droppable:
+                                      draggedNode?.type !== "project",
+                                  }}
                                 >
-                                  {projectCollapsed ? (
-                                    <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
+                                  {renamingProjectId === project.id ? (
+                                    <ProjectRenameRow
+                                      initial={project.name}
+                                      collapsed={projectCollapsed}
+                                      live={live}
+                                      attention={nestedAttention}
+                                      onSubmit={(nextName) =>
+                                        void submitProjectRename(
+                                          project.id,
+                                          project.name,
+                                          nextName,
+                                        )
+                                      }
+                                      onCancel={() =>
+                                        setRenamingProjectId(null)
+                                      }
+                                    />
                                   ) : (
-                                    <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
+                                    <ContainerDropRow
+                                      containerId={node.id}
+                                      enabled={
+                                        draggedNodeId !== null &&
+                                        canDropInScope(draggedNodeId, node.id)
+                                      }
+                                      active={containerDropId === node.id}
+                                      selected={
+                                        activeProjectId === project.id
+                                      }
+                                      onContextMenu={(anchor) =>
+                                        openProjectMenu(project, anchor)
+                                      }
+                                    >
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void toggleProject(project)
+                                        }
+                                        className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
+                                        title={project.cwd}
+                                      >
+                                        {projectCollapsed ? (
+                                          <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
+                                        ) : (
+                                          <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
+                                        )}
+                                        <SidebarTabIcon
+                                          icon={FolderCode}
+                                          active={live}
+                                        />
+                                        <span className="min-w-0 flex-1 truncate font-medium">
+                                          {project.name}
+                                        </span>
+                                        <ChatAttentionIndicator
+                                          state={
+                                            projectCollapsed
+                                              ? nestedAttention
+                                              : null
+                                          }
+                                        />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={(event) =>
+                                          openProjectMenu(project, {
+                                            x: event.clientX,
+                                            y: event.clientY,
+                                          })
+                                        }
+                                        className="cursor-pointer rounded p-0.5 text-fg-3 opacity-0 hover:bg-raised hover:text-fg group-hover:opacity-100 focus:opacity-100"
+                                        aria-label="Project actions"
+                                        title="Project actions"
+                                      >
+                                        <MoreHorizontal aria-hidden className="h-3 w-3" />
+                                      </button>
+                                    </ContainerDropRow>
                                   )}
-                                  <SidebarTabIcon icon={FolderCode} active={live} />
-                                  <span className="min-w-0 flex-1 truncate font-medium">
-                                    {project.name}
-                                  </span>
-                                  <ChatAttentionIndicator
-                                    state={
-                                      projectCollapsed ? nestedAttention : null
-                                    }
-                                  />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(event) =>
-                                    openProjectMenu(project, {
-                                      x: event.clientX,
-                                      y: event.clientY,
-                                    })
-                                  }
-                                  className="cursor-pointer rounded p-0.5 text-fg-3 opacity-0 hover:bg-raised hover:text-fg group-hover:opacity-100 focus:opacity-100"
-                                  aria-label="Project actions"
-                                  title="Project actions"
-                                >
-                                  <MoreHorizontal aria-hidden className="h-3 w-3" />
-                                </button>
-                              </ContainerDropRow>
-                            )}
-                            {projectCollapsed ? null : (
-                              <div className="ml-3 flex flex-col gap-0.5 border-l border-line pl-2">
-                                {nestedRows.length === 0 &&
-                                draggedNodeId === null ? (
-                                  <p className="px-2.5 py-1 text-xs text-fg-3">
-                                    No chats or missions yet.
-                                  </p>
-                                ) : (
-                                  renderScopeRows(
-                                    nestedRows,
-                                    node.id,
-                                    project.id,
-                                  )
+                                </SortableNavRow>
+                                {projectCollapsed ? null : (
+                                  <div className="ml-3 flex flex-col gap-0.5 border-l border-line pl-2">
+                                    {nestedRows.length === 0 &&
+                                    draggedNodeId === null ? (
+                                      <p className="px-2.5 py-1 text-xs text-fg-3">
+                                        No chats or missions yet.
+                                      </p>
+                                    ) : (
+                                      renderScopeRows(
+                                        nestedRows,
+                                        node.id,
+                                        project.id,
+                                      )
+                                    )}
+                                  </div>
                                 )}
                               </div>
-                            )}
-                          </div>
-                        );
-                      })
+                            </Fragment>
+                          );
+                        })}
+                        {renderProjectDropDivider(
+                          projectNodes.length,
+                          "project-after-root",
+                        )}
+                      </SortableContext>
                     )}
                   </div>
                 ) : null}
@@ -2037,6 +2206,20 @@ export function Sidebar({
                       onRenameSubmit={() => undefined}
                       onRenameCancel={() => undefined}
                     />
+                  </div>
+                ) : draggedProject ? (
+                  <div className="shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
+                    <div className="flex items-center gap-1.5 rounded border border-sidebar-selected-border bg-sidebar-selected px-2.5 py-1.5 text-xs text-fg shadow-sm">
+                      {collapsedProjectIds.has(draggedProject.id) ? (
+                        <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
+                      ) : (
+                        <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
+                      )}
+                      <SidebarTabIcon icon={FolderCode} active={false} />
+                      <span className="min-w-0 flex-1 truncate font-medium">
+                        {draggedProject.name}
+                      </span>
+                    </div>
                   </div>
                 ) : null}
               </DragOverlay>
@@ -2436,7 +2619,7 @@ function SortableNavRow({
 }: {
   nodeId: string;
   parentId: string | null;
-  disabled: boolean;
+  disabled: SortableDisabled;
   children: ReactNode;
 }) {
   const {
@@ -2504,6 +2687,7 @@ function ContainerDropRow({
 function EmptyRowDropArea({
   id,
   enabled,
+  dropKind,
   parentId,
   markerKey,
   active,
@@ -2511,6 +2695,7 @@ function EmptyRowDropArea({
 }: {
   id: string;
   enabled: boolean;
+  dropKind: RowDropTarget["dropKind"];
   parentId: string | null;
   markerKey: string;
   active: boolean;
@@ -2521,6 +2706,7 @@ function EmptyRowDropArea({
     disabled: !enabled,
     data: {
       kind: "position",
+      dropKind,
       parentId,
       index: 0,
       markerKey,
@@ -2545,6 +2731,7 @@ function EmptyRowDropArea({
 function RowDropDivider({
   id,
   enabled,
+  dropKind,
   parentId,
   index,
   markerKey,
@@ -2552,6 +2739,7 @@ function RowDropDivider({
 }: {
   id: string;
   enabled: boolean;
+  dropKind: RowDropTarget["dropKind"];
   parentId: string | null;
   index: number;
   markerKey: string;
@@ -2562,6 +2750,7 @@ function RowDropDivider({
     disabled: !enabled,
     data: {
       kind: "position",
+      dropKind,
       parentId,
       index,
       markerKey,
