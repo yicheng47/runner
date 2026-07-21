@@ -90,10 +90,13 @@ import {
 import {
   chatTabArchiveLabel,
   chatTabIsLive,
-  isChatTabDropIndexAllowed,
-  orderedChatTabIdsAfterDrop,
 } from "../lib/chatTabs";
-import { orderedRootNodeIdsAfterProjectDrop } from "../lib/sidebarDnd";
+import {
+  completeUnpinnedScopeOrder,
+  orderedPinnedNodeIdsAfterDrop,
+  orderedRootNodeIdsAfterProjectDrop,
+  orderedVisibleNodeIdsAfterDrop,
+} from "../lib/sidebarDnd";
 import {
   missionAttentionState,
   rollupAttentionState,
@@ -111,6 +114,7 @@ import {
   removeArchivedSessionFromLayout,
   hydratePaneLayoutsFromDb,
   moveNode,
+  reorderPinnedNodes,
   setGroupNameForSession,
   useNavNodes,
   usePaneLayouts,
@@ -154,11 +158,11 @@ const STORAGE_SESSION_OPEN = "runner.sidebar.session.open";
 const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
 const SIDEBAR_NAVIGATION_HISTORY_LIMIT = 64;
 
-// One dnd vocabulary for every draggable sidebar row: leaf positions are
-// per-scope, project positions reorder root projects, and project containers
-// accept tab/mission drops at the child scope's end.
+// One dnd vocabulary for every draggable sidebar row: pinned positions are
+// global, leaf positions are per-scope, project positions reorder root
+// projects, and project containers accept unpinned leaves at the child end.
 type RowDropTarget = {
-  dropKind: "leaf" | "project";
+  dropKind: "pinned" | "leaf" | "project";
   parentId: string | null;
   index: number;
   markerKey: string;
@@ -400,10 +404,7 @@ export function Sidebar({
   const paneLayouts = usePaneLayouts();
   const navNodes = useNavNodes();
 
-  // Sidebar rows per scope, in render order (the tree query already
-  // sorts pinned-first within each parent, then by position). Root
-  // scope excludes project nodes — those render as the PROJECT section.
-  const rowsByParent = useMemo(() => {
+  const rowsByNodeId = useMemo(() => {
     const sessionById = new Map(
       directSessions.map((session) => [session.session_id, session]),
     );
@@ -411,7 +412,7 @@ export function Sidebar({
       paneLayouts.filter((layout) => layout.id).map((l) => [l.id, l]),
     );
     const missionById = new Map(missions.map((m) => [m.id, m]));
-    const map = new Map<string | null, NavRowModel[]>();
+    const map = new Map<string, NavRowModel>();
     for (const node of navNodes) {
       let row: NavRowModel | null = null;
       if (node.type === "tab") {
@@ -444,12 +445,37 @@ export function Sidebar({
         if (mission) row = { kind: "mission", node, mission };
       }
       if (!row) continue;
+      map.set(node.id, row);
+    }
+    return map;
+  }, [directSessionActivity, directSessions, missions, navNodes, paneLayouts]);
+
+  // PINNED is a global overlay. Origin scopes contain only unpinned rows,
+  // preserving their parent-local position order from the tree query.
+  const pinnedRows = useMemo(
+    () =>
+      navNodes
+        .filter((node) => node.pinned_position !== null)
+        .sort(
+          (a, b) =>
+            (a.pinned_position ?? 0) - (b.pinned_position ?? 0),
+        )
+        .map((node) => rowsByNodeId.get(node.id))
+        .filter((row): row is NavRowModel => row !== undefined),
+    [navNodes, rowsByNodeId],
+  );
+  const rowsByParent = useMemo(() => {
+    const map = new Map<string | null, NavRowModel[]>();
+    for (const node of navNodes) {
+      if (node.pinned_position !== null) continue;
+      const row = rowsByNodeId.get(node.id);
+      if (!row) continue;
       const list = map.get(node.parent_id);
       if (list) list.push(row);
       else map.set(node.parent_id, [row]);
     }
     return map;
-  }, [directSessionActivity, directSessions, missions, navNodes, paneLayouts]);
+  }, [navNodes, rowsByNodeId]);
 
   const scopeRows = useCallback(
     (parentId: string | null): NavRowModel[] => rowsByParent.get(parentId) ?? [],
@@ -498,14 +524,10 @@ export function Sidebar({
       ),
     [projectNodes, rowAttention, scopeRows],
   );
-  const draggedRow = useMemo(() => {
-    if (!draggedNodeId) return null;
-    for (const rows of rowsByParent.values()) {
-      const row = rows.find((candidate) => candidate.node.id === draggedNodeId);
-      if (row) return row;
-    }
-    return null;
-  }, [draggedNodeId, rowsByParent]);
+  const draggedRow = useMemo(
+    () => (draggedNodeId ? (rowsByNodeId.get(draggedNodeId) ?? null) : null),
+    [draggedNodeId, rowsByNodeId],
+  );
   const activeProject = useMemo(
     () => projects.find((project) => project.id === activeProjectId) ?? null,
     [activeProjectId, projects],
@@ -527,8 +549,7 @@ export function Sidebar({
     [newMissionProjectId, projects],
   );
 
-  // Page-back/forward candidates in display order: project children
-  // first (as the PROJECT section renders above), then the recent list.
+  // Page-back/forward candidates follow the rendered section order.
   const sidebarNavigationEntries = useMemo<SidebarNavigationEntry[]>(() => {
     const entries: SidebarNavigationEntry[] = [];
     const pushRow = (row: NavRowModel) => {
@@ -542,12 +563,13 @@ export function Sidebar({
         });
       }
     };
+    for (const row of pinnedRows) pushRow(row);
     for (const node of projectNodes) {
       for (const row of scopeRows(node.id)) pushRow(row);
     }
     for (const row of recentRows) pushRow(row);
     return entries;
-  }, [projectNodes, recentRows, scopeRows]);
+  }, [pinnedRows, projectNodes, recentRows, scopeRows]);
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -1286,27 +1308,16 @@ export function Sidebar({
     rowDropTargetRef.current = null;
   }, []);
 
-  // Draggable-row lookup + the pin-tier list of a destination scope.
-  // Only visible rows participate in drop index math; hidden siblings
-  // (non-running mission nodes, tabs whose rows are mid-refresh) are
-  // appended behind the visible ordering when the move commits.
+  // Only visible rows participate in drop index math; hidden siblings are
+  // appended behind visible rows when a parent-scope move commits.
   const draggedRowFor = useCallback(
-    (nodeId: string): NavRowModel | null => {
-      for (const rows of rowsByParent.values()) {
-        const row = rows.find((candidate) => candidate.node.id === nodeId);
-        if (row) return row;
-      }
-      return null;
-    },
-    [rowsByParent],
+    (nodeId: string): NavRowModel | null => rowsByNodeId.get(nodeId) ?? null,
+    [rowsByNodeId],
   );
 
-  const scopeOrderedRows = useCallback(
+  const scopeOrderedIds = useCallback(
     (parentId: string | null) =>
-      scopeRows(parentId).map((row) => ({
-        id: row.node.id,
-        pinned: row.node.pinned_position !== null,
-      })),
+      scopeRows(parentId).map((row) => row.node.id),
     [scopeRows],
   );
 
@@ -1318,7 +1329,7 @@ export function Sidebar({
   const canDropInScope = useCallback(
     (nodeId: string, parentId: string | null): boolean => {
       const dragged = navNodes.find((node) => node.id === nodeId);
-      if (!dragged) return false;
+      if (!dragged || dragged.pinned_position !== null) return false;
       const draggedParent = dragged.parent_id
         ? navNodes.find((node) => node.id === dragged.parent_id)
         : undefined;
@@ -1364,43 +1375,40 @@ export function Sidebar({
         }
         return;
       }
-      const orderedVisible = orderedChatTabIdsAfterDrop(
-        scopeOrderedRows(parentId),
+      if (dragged.pinned_position !== null) {
+        const orderedIds = orderedPinnedNodeIdsAfterDrop(
+          navNodes,
+          pinnedRows.map((row) => row.node.id),
+          nodeId,
+          requestedIndex,
+        );
+        clearRowDrag();
+        try {
+          await reorderPinnedNodes(orderedIds);
+        } catch (error) {
+          console.error("sidebar: reorder pinned nodes failed", error);
+        }
+        return;
+      }
+      const orderedVisible = orderedVisibleNodeIdsAfterDrop(
+        scopeOrderedIds(parentId),
         nodeId,
-        dragged.pinned_position !== null,
         requestedIndex,
       );
-      // The backend validates the COMPLETE child set of the scope:
-      // project nodes keep their lead positions at root, and hidden
-      // siblings follow the visible ordering.
-      const visibleSet = new Set(orderedVisible);
-      const siblings = navNodes.filter(
-        (node) => node.parent_id === parentId && node.id !== nodeId,
+      const orderedIds = completeUnpinnedScopeOrder(
+        navNodes,
+        parentId,
+        nodeId,
+        orderedVisible,
       );
-      const projectsFirst =
-        parentId === null
-          ? siblings
-              .filter((node) => node.type === "project")
-              .map((node) => node.id)
-          : [];
-      const hidden = siblings
-        .filter(
-          (node) => !(parentId === null && node.type === "project"),
-        )
-        .map((node) => node.id)
-        .filter((id) => !visibleSet.has(id));
       clearRowDrag();
       try {
-        await moveNode(nodeId, parentId, [
-          ...projectsFirst,
-          ...orderedVisible,
-          ...hidden,
-        ]);
+        await moveNode(nodeId, parentId, orderedIds);
       } catch (error) {
         console.error("sidebar: move node failed", error);
       }
     },
-    [clearRowDrag, navNodes, scopeOrderedRows],
+    [clearRowDrag, navNodes, pinnedRows, scopeOrderedIds],
   );
 
   const resolveRowDropTarget = useCallback(
@@ -1439,6 +1447,7 @@ export function Sidebar({
         };
 
         if (overData.kind === "position") {
+          if (overData.dropKind === "pinned") return null;
           if (overData.dropKind === "project") {
             return {
               dropKind: "project",
@@ -1450,6 +1459,8 @@ export function Sidebar({
           return targetAfterProject(overData.parentId);
         }
         if (overData.kind !== "row") return null;
+        const overNode = navNodes.find((node) => node.id === overData.nodeId);
+        if (!overNode || overNode.pinned_position !== null) return null;
         const overIndex = projectNodes.findIndex(
           (node) => node.id === overData.nodeId,
         );
@@ -1469,20 +1480,52 @@ export function Sidebar({
         return projectTargetAt(originalIndex);
       }
 
+      if (activeNode.pinned_position !== null) {
+        const pinnedTargetAt = (originalIndex: number): RowDropTarget => {
+          const index = pinnedRows
+            .slice(0, originalIndex)
+            .filter((row) => row.node.id !== activeNode.id).length;
+          return {
+            dropKind: "pinned",
+            parentId: null,
+            index,
+            markerKey:
+              originalIndex < pinnedRows.length
+                ? `pinned-before-${pinnedRows[originalIndex].node.id}`
+                : "pinned-after",
+          };
+        };
+        if (overData.kind === "position") {
+          return overData.dropKind === "pinned"
+            ? {
+                dropKind: "pinned",
+                parentId: null,
+                index: overData.index,
+                markerKey: overData.markerKey,
+              }
+            : null;
+        }
+        if (overData.kind !== "row" || !event.over) return null;
+        const overIndex = pinnedRows.findIndex(
+          (row) => row.node.id === overData.nodeId,
+        );
+        if (overIndex < 0) return null;
+        const activeRect =
+          event.active.rect.current.translated ??
+          event.active.rect.current.initial;
+        const after = activeRect
+          ? activeRect.top + activeRect.height / 2 >=
+            event.over.rect.top + event.over.rect.height / 2
+          : false;
+        return pinnedTargetAt(overIndex + (after ? 1 : 0));
+      }
+
       const dragged = draggedRowFor(activeData.nodeId);
       if (!dragged) return null;
-      const draggedPinned = dragged.node.pinned_position !== null;
 
       if (overData.kind === "position") {
         if (overData.dropKind !== "leaf") return null;
-        const allowed =
-          canDropInScope(dragged.node.id, overData.parentId) &&
-          isChatTabDropIndexAllowed(
-            scopeOrderedRows(overData.parentId),
-            dragged.node.id,
-            draggedPinned,
-            overData.index,
-          );
+        const allowed = canDropInScope(dragged.node.id, overData.parentId);
         return allowed
           ? {
               dropKind: "leaf",
@@ -1494,6 +1537,8 @@ export function Sidebar({
       }
 
       if (overData.kind !== "row") return null;
+      const overNode = navNodes.find((node) => node.id === overData.nodeId);
+      if (!overNode || overNode.pinned_position !== null) return null;
       if (!canDropInScope(dragged.node.id, overData.parentId)) return null;
       const targetRows = scopeRows(overData.parentId);
       const overIndex = targetRows.findIndex(
@@ -1512,16 +1557,6 @@ export function Sidebar({
       const index = targetRows
         .slice(0, originalIndex)
         .filter((row) => row.node.id !== dragged.node.id).length;
-      if (
-        !isChatTabDropIndexAllowed(
-          scopeOrderedRows(overData.parentId),
-          dragged.node.id,
-          draggedPinned,
-          index,
-        )
-      ) {
-        return null;
-      }
 
       return {
         dropKind: "leaf",
@@ -1537,8 +1572,8 @@ export function Sidebar({
       canDropInScope,
       draggedRowFor,
       navNodes,
+      pinnedRows,
       projectNodes,
-      scopeOrderedRows,
       scopeRows,
     ],
   );
@@ -1548,10 +1583,9 @@ export function Sidebar({
       if (!canDropInScope(nodeId, containerId)) return null;
       const dragged = draggedRowFor(nodeId);
       if (!dragged) return null;
-      const orderedIds = orderedChatTabIdsAfterDrop(
-        scopeOrderedRows(containerId),
+      const orderedIds = orderedVisibleNodeIdsAfterDrop(
+        scopeOrderedIds(containerId),
         nodeId,
-        dragged.node.pinned_position !== null,
         Number.MAX_SAFE_INTEGER,
       );
       const index = orderedIds.indexOf(nodeId);
@@ -1569,7 +1603,7 @@ export function Sidebar({
             : `after-${containerId}`,
       };
     },
-    [canDropInScope, draggedRowFor, scopeOrderedRows, scopeRows],
+    [canDropInScope, draggedRowFor, scopeOrderedIds, scopeRows],
   );
 
   const handleRowDragStart = useCallback((event: DragStartEvent) => {
@@ -1720,17 +1754,7 @@ export function Sidebar({
       .slice(0, originalIndex)
       .filter((row) => row.node.id !== draggedNodeId).length;
     const enabled = Boolean(
-      dragged &&
-        canDropInScope(dragged.node.id, parentId) &&
-        isChatTabDropIndexAllowed(
-          rows.map((row) => ({
-            id: row.node.id,
-            pinned: row.node.pinned_position !== null,
-          })),
-          dragged.node.id,
-          dragged.node.pinned_position !== null,
-          index,
-        ),
+      dragged && canDropInScope(dragged.node.id, parentId),
     );
     return (
       <RowDropDivider
@@ -1744,6 +1768,33 @@ export function Sidebar({
         active={
           rowDropTarget?.dropKind === "leaf" &&
           rowDropTarget.parentId === parentId &&
+          rowDropTarget.index === index &&
+          rowDropTarget.markerKey === key
+        }
+      />
+    );
+  };
+
+  const renderPinnedDropDivider = (
+    originalIndex: number,
+    key: string,
+  ) => {
+    const index = pinnedRows
+      .slice(0, originalIndex)
+      .filter((row) => row.node.id !== draggedNodeId).length;
+    return (
+      <RowDropDivider
+        key={key}
+        id={rowDropDndId(null, key)}
+        enabled={
+          draggedNode !== null && draggedNode.pinned_position !== null
+        }
+        dropKind="pinned"
+        parentId={null}
+        index={index}
+        markerKey={key}
+        active={
+          rowDropTarget?.dropKind === "pinned" &&
           rowDropTarget.index === index &&
           rowDropTarget.markerKey === key
         }
@@ -1853,6 +1904,30 @@ export function Sidebar({
     );
   };
 
+  const renderPinnedRows = () => (
+    <SortableContext
+      items={pinnedRows.map((row) => rowDndId(row.node.id))}
+      strategy={verticalListSortingStrategy}
+    >
+      {pinnedRows.map((row, originalIndex) => {
+        const parent = row.node.parent_id
+          ? navNodes.find((node) => node.id === row.node.parent_id)
+          : null;
+        const projectId = parent?.type === "project" ? parent.ref_id : null;
+        return (
+          <Fragment key={row.node.id}>
+            {renderPinnedDropDivider(
+              originalIndex,
+              `pinned-before-${row.node.id}`,
+            )}
+            {renderNavRow(row, null, projectId)}
+          </Fragment>
+        );
+      })}
+      {renderPinnedDropDivider(pinnedRows.length, "pinned-after")}
+    </SortableContext>
+  );
+
   const sidebarVisible = !collapsed || previewOpen;
   const sidebarPreview = collapsed && previewOpen;
   // Keep the panel mounted through the collapse width-animation so it
@@ -1958,7 +2033,20 @@ export function Sidebar({
                 onDragEnd={handleRowDragEnd}
                 onDragCancel={clearRowDrag}
               >
-              <section className="flex shrink-0 flex-col">
+              {pinnedRows.length > 0 ? (
+                <section className="flex shrink-0 flex-col">
+                  <SectionHeader>PINNED</SectionHeader>
+                  <div className="flex flex-col gap-0.5 px-3 pt-1">
+                    {renderPinnedRows()}
+                  </div>
+                </section>
+              ) : null}
+
+              <section
+                className={`flex shrink-0 flex-col ${
+                  pinnedRows.length > 0 ? "mt-5" : ""
+                }`}
+              >
                 <CollapsibleSectionHeader
                   label="PROJECTS"
                   open={projectsOpen}

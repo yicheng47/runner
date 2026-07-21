@@ -4,45 +4,43 @@
 
 ## Motivation
 
-Pinned things are scattered. A pinned chat tab sorts to the top of the CHAT section and a pinned mission sorts to the top of the MISSION section, so "the stuff I keep coming back to" lives in two places separated by whatever else the sidebar holds. The user-visible intent of pinning — "keep this at hand" — wants one location.
+Pinned chat tabs and pinned missions need one predictable home. PINNED is a derived view over the node tree that collects the things a user wants to keep at hand without changing their project or root membership.
 
-This is a presentation-layer change only. The discussion that produced this spec explicitly rejected unifying the data models (making missions rows in the `tabs` table): a mission's surface is tab-like (it reuses the pane machinery and the `SidebarTabRow` shell), but its semantics are not — slot-bound composition, reset/respawn lifecycle, feed, and live-activity attention would all need `kind` special-cases in every tab code path (dnd move-not-copy, `ensure_active_sessions`, folder archive, unread watermarks). Missions and tabs stay separate models; the sidebar just re-partitions the rows it already renders.
-
-Builds on #315 (unified nav scroll surface).
+This spec reflects the node-tree model shipped in #318 and supersedes the pre-remodel version of this document. `nodes.pinned_position` is non-NULL for pinned nodes and orders the global PINNED section; pinning remains an overlay on the node's existing `parent_id`.
 
 ## Scope
 
-> **Sequencing update:** spec 44 (#318) lands first. PINNED then renders as the `pinned_position` derived view over the node tree, and pin/unpin writes `pinned_position` on the node — which also retires the `groupPinning.ts` fan-out (pin becomes tab-level naturally). Still no new backend work in this spec; the column ships with #318.
+- Render a PINNED section at the top of the sidebar nav containing every pinned tab and mission, whether its original parent is a project or root, ordered by `pinned_position`.
+- Hide PINNED entirely when no nodes are pinned.
+- Remove pinned rows from their origin project or root scopes. Origin scopes render only unpinned rows in `position` order; the interim pinned-first ordering inside each container is retired.
+- Preserve each row's type-specific rendering, click target, context menu, pin action, and attention state.
+- Support drag-to-reorder inside PINNED through `node_reorder_pinned(ordered_ids)`. The payload must contain every currently pinned node exactly once, and the backend rewrites `pinned_position` to match it.
+- While a pinned row is dragged, other pinned rows act as reorder positions rather than project containers or parent-scope targets.
+- Keep pin and unpin on the context menu. Dragging into or out of PINNED does not pin, unpin, or reparent a node.
+- Keep `parent_id` unchanged while a node is pinned and treat `position` as dormant. Unpinning appends the node to the end of its original parent scope by rewriting `position` to the visible scope's maximum plus one.
+- Make every parent-scope reorder and complete-set validation operate on unpinned members only. This includes the full-root payload used by project reorder, so a pinned root leaf neither invalidates nor participates in a root project reorder.
 
-### In scope (frontend only)
+## Out of scope
 
-- **PINNED section** at the top of the nav column (above PROJECT), holding every pinned chat tab and every pinned mission in one list. The pinnable population spans all of it: unfiled CHAT tabs, tabs nested under a project, and missions (project-bound or not).
-- Pinned rows render **only** in PINNED — they leave their origin sections, including a project's nested list. The pinned-first sort inside CHAT (`Sidebar.tsx` tab ordering) and the pinned-first mission sort are retired; origin sections show only unpinned rows.
-- Rows keep their type-specific rendering, click targets, and context menus (`MissionRow`, `ChatTabGroup`/`SessionRow` adapters unchanged). Pin/unpin via context menu is the only way rows move between sections.
-- Section hidden entirely when nothing anywhere is pinned — no pinned tab, no pinned project-nested tab, no pinned mission.
-- Default ordering: missions and chat tabs interleaved, using each row's existing sort key (missions by `pinned_at` recency, tabs by the existing recent-direct sort). Deterministic, no new state.
+- Pinning or unpinning by dragging into or out of PINNED.
+- Changing `parent_id` or the meaning of parent-scoped `position` while pinning.
+- Merging mission and tab domain models.
 
-### Out of scope
+## Implementation
 
-- **Drag and drop, entirely** — both drag-into-PINNED-to-pin and drag-to-reorder. Doing them now would mean interim special-cases (a `MissionRow` draggable for one interaction; a `pin_position` column bolted onto the current section layout) that the section merge below would rewrite. Drag arrives with that rework, not before.
-- **Merging the MISSION and CHAT sections generally.** The likely end-state is PINNED / PROJECT (holding both chats and missions — missions already carry `project_id`) / one recent list for unfiled items, dissolving the type-based sections. That's a follow-up spec once PINNED has proven out the interleaved rendering; mission dragging (into PINNED, into projects) and pinned reordering belong to it — as does manual ordering *inside* a project group, which doesn't exist today either (tab `position` is folder-scoped; project groups filter the global list). All three consume the same "persisted order for heterogeneous rows" mechanism and should be designed once, together.
-- **Mission-as-tab data unification.** Rejected — see Motivation.
-
-### To be decided
-
-- Whether PINNED shows a small section header like the others or renders headerless above PROJECT.
-- Interleave order tie-breaking (pin time vs. recency) once real usage shows which reads better.
-- Whether pinning the active split group (which fans out to all members) should visually collapse to one PINNED row per tab (expected: yes — reuse the existing `ChatTabGroup` row).
-
-## Implementation phases
-
-Single phase: partition pinned rows out of MISSION/CHAT into a new top section in `Sidebar.tsx`; retire pinned-first sorts in the origin sections; hide-when-empty.
+1. Partition resolved pinned rows into a global PINNED view and omit them from project/root views.
+2. Add the repository operation, Tauri command, and frontend API for `node_reorder_pinned` with complete pinned-set validation.
+3. Reuse the sidebar reorder-position drag pattern for PINNED and submit the complete pinned order.
+4. Exclude pinned nodes from backend parent-scope validation and every frontend parent-scope `ordered_ids` construction.
+5. On unpin, recompute the node's parent-scoped `position` at the visible end rather than restoring its dormant value.
 
 ## Verification
 
-- [ ] Pin a chat tab and a mission → both appear in PINNED, disappear from CHAT/MISSION; unpin returns them.
-- [ ] Group pin fan-out still yields one PINNED row for a split tab.
-- [ ] PINNED hidden when nothing is pinned.
-- [ ] Attention indicators (working/unread) and status dots render unchanged on pinned rows.
-- [ ] Existing chat drag-reorder inside folders is unaffected by the new section.
-- [ ] `pnpm exec tsc --noEmit` and `pnpm run lint` clean.
+- [ ] Pin a root chat tab, a project-nested chat tab, and a mission; all appear once in PINNED in `pinned_position` order and disappear from their origin scopes.
+- [ ] Drag pinned rows to reorder them; reload and confirm the order persists.
+- [ ] Pinned rows cannot be dropped into project/root scopes, and unpinned rows cannot be dropped into PINNED.
+- [ ] Pin a project-nested tab, add and reorder siblings, then unpin it; the tab reappears at the end of that project.
+- [ ] Pin a root tab, reorder projects, and confirm the project reorder succeeds without moving or unpinning the tab.
+- [ ] Unpin the final pinned row and confirm the PINNED section disappears.
+- [ ] Row click targets, context menus, working/unread attention, and status indicators behave unchanged in PINNED.
+- [ ] `cargo fmt`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`, `pnpm test`, `pnpm exec tsc --noEmit`, and `pnpm run lint` pass.

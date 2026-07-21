@@ -303,6 +303,7 @@ pub fn run() {
             commands::node::node_tab_upsert,
             commands::node::node_delete,
             commands::node::node_move,
+            commands::node::node_reorder_pinned,
             commands::node::node_set_pinned,
             commands::node::node_mark_viewed,
             commands::node::node_import_once,

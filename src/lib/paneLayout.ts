@@ -810,10 +810,8 @@ export function usePaneLayouts(): PaneLayout[] {
   );
 }
 
-/** The sidebar navigation tree, in render order (parent-grouped, pinned
- *  rows first within their scope, then position). The reference swaps
- *  whole on each authoritative snapshot, so it is a sound
- *  `useSyncExternalStore` snapshot. */
+/** The sidebar navigation tree in authoritative backend order. The reference
+ *  swaps whole on each snapshot, so it is a sound store snapshot. */
 export function getNavNodes(): NodeRow[] {
   return navNodes;
 }
@@ -824,9 +822,8 @@ export function useNavNodes(): NodeRow[] {
 
 /**
  * The unified reparent/reposition op behind every sidebar drag.
- * `orderedIds` must be the complete new ordering of the destination
- * scope's children (moved node included) — the backend validates set
- * equality and returns the authoritative tree, which is adopted here.
+ * `orderedIds` must be the complete unpinned destination scope (including
+ * an unpinned moved node). The authoritative returned tree is adopted here.
  */
 export async function moveNode(
   nodeId: string,
@@ -840,16 +837,35 @@ export async function moveNode(
   applyNodeRows(rows);
 }
 
+/** Rewrite the complete global PINNED order and adopt the authoritative tree. */
+export async function reorderPinnedNodes(orderedIds: string[]): Promise<void> {
+  hydrationSequence += 1;
+  const rows = await api.node.reorderPinned(orderedIds);
+  applyNodeRows(rows);
+}
+
 /** Append a node at the end of a new scope — the move-to-project menu
  *  path uses this; drags carry an explicit order. */
 export async function moveNodeToParentEnd(
   nodeId: string,
   parentId: string | null,
 ): Promise<void> {
+  const moved = navNodes.find((node) => node.id === nodeId);
   const siblings = navNodes
-    .filter((node) => node.parent_id === parentId && node.id !== nodeId)
+    .filter(
+      (node) =>
+        node.parent_id === parentId &&
+        node.id !== nodeId &&
+        node.pinned_position === null,
+    )
     .map((node) => node.id);
-  await moveNode(nodeId, parentId, [...siblings, nodeId]);
+  await moveNode(
+    nodeId,
+    parentId,
+    (moved?.pinned_position ?? null) === null
+      ? [...siblings, nodeId]
+      : siblings,
+  );
 }
 
 /**
