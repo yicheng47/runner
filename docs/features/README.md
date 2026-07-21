@@ -31,6 +31,7 @@ links to its tracking issue.
 - [37 — Agent runtime executable settings](./37-agent-runtime-executable-settings.md) — detect and display Claude Code/Codex executables from the user's login-shell environment, fix slow shell initialization failures, and provide explicit per-runtime path overrides.
 - [43 — Sidebar pinned section](./43-sidebar-pinned-section.md) — unified PINNED section at the top of the nav for pinned chat tabs and missions; presentation-layer only (no mission/tab model merge, no drag — that lands with spec 44).
 - [44 — Sidebar node tree](./44-sidebar-node-tree.md) — replace `folders`/`tabs` + `project_id` pointer grouping + pin flags with one `nodes` table (`parent_id` + `position` as the single containment/ordering mechanism); merges the MISSION/CHAT sections and unlocks reorder-anywhere, missions-in-containers, and unified drag.
+- [45 — Auto-resume on launch](./45-auto-resume-on-launch.md) — stamp quit-killed running chats and mission-slot sessions with `resume_on_launch`, then auto-resume them (staggered, resume-only, settings-gated) on next open; crash path never stamps.
 
 ## Archive
 
