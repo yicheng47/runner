@@ -34,6 +34,8 @@ links to its tracking issue.
 - [45 — Auto-resume on launch](./45-auto-resume-on-launch.md) — stamp quit-killed running chats and mission-slot sessions with `resume_on_launch`, then auto-resume them (staggered, resume-only, settings-gated) on next open; crash path never stamps.
 - [46 — Sidebar project reorder](./46-sidebar-project-reorder.md) — drag project rows to reorder them within the PROJECTS section; frontend-only wiring over the existing `node_move` root-scope support, with project drags presenting other project rows as positions instead of containers.
 - [47 — Deferred mission nudge delivery](./47-deferred-mission-nudge-delivery.md) — park router stdin nudges while the recipient pane has pending local input and flush when it clears, so notifications stop submitting the user's half-typed drafts; pending-input tracking in the session manager plus a coalescing per-session outbox in the router.
+- [48 — Mission inbox reconciliation tick](./48-mission-inbox-reconciliation-tick.md) — per-mission system clock that re-nudges idle sessions whose `unread_count` is non-zero (existing watermark projection); empty ticks are free, agents never poll, and lost wakes self-heal — with #328 this makes wake delivery at-least-once.
+- [49 — Periodic update checks](./49-periodic-update-checks.md) — interval (~6h) + focus-triggered stale re-checks feeding the existing update state machine, so long-running apps learn about releases; never auto-relaunch (live PTYs), and the auto-install toggle governs download only, not checking.
 
 ## Archive
 
