@@ -33,6 +33,7 @@ links to its tracking issue.
 - [44 — Sidebar node tree](./44-sidebar-node-tree.md) — replace `folders`/`tabs` + `project_id` pointer grouping + pin flags with one `nodes` table (`parent_id` + `position` as the single containment/ordering mechanism); merges the MISSION/CHAT sections and unlocks reorder-anywhere, missions-in-containers, and unified drag.
 - [45 — Auto-resume on launch](./45-auto-resume-on-launch.md) — stamp quit-killed running chats and mission-slot sessions with `resume_on_launch`, then auto-resume them (staggered, resume-only, settings-gated) on next open; crash path never stamps.
 - [46 — Sidebar project reorder](./46-sidebar-project-reorder.md) — drag project rows to reorder them within the PROJECTS section; frontend-only wiring over the existing `node_move` root-scope support, with project drags presenting other project rows as positions instead of containers.
+- [47 — Deferred mission nudge delivery](./47-deferred-mission-nudge-delivery.md) — park router stdin nudges while the recipient pane has pending local input and flush when it clears, so notifications stop submitting the user's half-typed drafts; pending-input tracking in the session manager plus a coalescing per-session outbox in the router.
 
 ## Archive
 
