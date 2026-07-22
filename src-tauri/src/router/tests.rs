@@ -6,13 +6,17 @@
 // Bus integration is covered separately (mission lifecycle + mission_e2e).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use runner_core::event_log::EventLog;
 use runner_core::model::{Event, EventDraft, EventKind, SignalType};
 
-use super::{Router, RouterRegistry, StdinInjector};
+use super::{
+    DeliveryReservation, Router, RouterRegistry, SessionDeliveryEvent, SessionDeliveryListener,
+    StdinInjector,
+};
 use crate::error::Result;
 use crate::model::{Runner, Slot, SlotWithRunner};
 
@@ -36,6 +40,16 @@ struct RecordingInjector {
     /// Optional `dead_session` set — `inject` errors when called with one
     /// of these ids, simulating a crashed PTY for `mission_warning` tests.
     dead: Mutex<Vec<String>>,
+    input: Mutex<HashMap<String, RecordingInputState>>,
+    listeners: Mutex<HashMap<String, Vec<Weak<dyn SessionDeliveryListener>>>>,
+}
+
+#[derive(Default)]
+struct RecordingInputState {
+    pending: bool,
+    last_input_at: Option<Instant>,
+    in_flight: bool,
+    generation: u64,
 }
 
 impl RecordingInjector {
@@ -86,8 +100,81 @@ impl RecordingInjector {
             .collect()
     }
 
+    fn submitted_bodies_for(&self, session_id: &str) -> Vec<String> {
+        self.pushes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(s, kind, bytes)| {
+                s == session_id && *kind == InjectKind::Raw && bytes.as_slice() != b"\r"
+            })
+            .map(|(_, _, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .collect()
+    }
+
     fn mark_dead(&self, session_id: &str) {
         self.dead.lock().unwrap().push(session_id.to_string());
+    }
+
+    fn set_pending(&self, session_id: &str) {
+        let mut input = self.input.lock().unwrap();
+        let input = input.entry(session_id.to_string()).or_default();
+        input.pending = true;
+        input.last_input_at = Some(Instant::now());
+    }
+
+    fn set_recent_typing(&self, session_id: &str) {
+        let mut input = self.input.lock().unwrap();
+        let input = input.entry(session_id.to_string()).or_default();
+        input.pending = false;
+        input.last_input_at = Some(Instant::now() - Duration::from_millis(1950));
+    }
+
+    fn clear_pending(&self, session_id: &str) {
+        if let Some(input) = self.input.lock().unwrap().get_mut(session_id) {
+            input.pending = false;
+            input.last_input_at = None;
+        }
+        self.notify(session_id, SessionDeliveryEvent::InputCleared);
+    }
+
+    fn respawn(&self, session_id: &str) {
+        self.dead.lock().unwrap().retain(|dead| dead != session_id);
+        {
+            let mut input = self.input.lock().unwrap();
+            let input = input.entry(session_id.to_string()).or_default();
+            input.generation = input.generation.wrapping_add(1);
+            input.in_flight = false;
+            input.pending = false;
+            input.last_input_at = None;
+        }
+        self.notify(session_id, SessionDeliveryEvent::Respawned);
+    }
+
+    fn exit(&self, session_id: &str) {
+        self.mark_dead(session_id);
+        if let Some(input) = self.input.lock().unwrap().get_mut(session_id) {
+            input.generation = input.generation.wrapping_add(1);
+            input.in_flight = false;
+            input.pending = false;
+            input.last_input_at = None;
+        }
+        self.notify(session_id, SessionDeliveryEvent::Exited);
+    }
+
+    fn notify(&self, session_id: &str, event: SessionDeliveryEvent) {
+        let listeners = self
+            .listeners
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .into_iter()
+            .flatten()
+            .filter_map(Weak::upgrade)
+            .collect::<Vec<_>>();
+        for listener in listeners {
+            listener.session_delivery_event(session_id, event);
+        }
     }
 }
 
@@ -117,6 +204,122 @@ impl StdinInjector for RecordingInjector {
             body.to_vec(),
         ));
         Ok(())
+    }
+
+    fn input_quiescent(&self, session_id: &str) -> bool {
+        if self
+            .dead
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|dead| dead == session_id)
+        {
+            return false;
+        }
+        self.input
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .is_some_and(|input| {
+                !input.in_flight
+                    && !input.pending
+                    && input
+                        .last_input_at
+                        .is_none_or(|last| last.elapsed() >= Duration::from_secs(2))
+            })
+    }
+
+    fn reserve_delivery(&self, session_id: &str) -> Result<DeliveryReservation> {
+        if self
+            .dead
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|dead| dead == session_id)
+        {
+            return Err(crate::error::Error::msg(format!(
+                "test: session {session_id} is dead"
+            )));
+        }
+        let mut input = self.input.lock().unwrap();
+        let input = input.entry(session_id.to_string()).or_default();
+        if input.in_flight {
+            return Ok(DeliveryReservation::InFlight);
+        }
+        if input.pending {
+            return Ok(DeliveryReservation::PendingInput);
+        }
+        if let Some(last) = input.last_input_at {
+            let elapsed = last.elapsed();
+            if elapsed < Duration::from_secs(2) {
+                return Ok(DeliveryReservation::RecentlyTyping(
+                    Duration::from_secs(2) - elapsed,
+                ));
+            }
+        }
+        input.in_flight = true;
+        Ok(DeliveryReservation::Ready(input.generation))
+    }
+
+    fn inject_reserved(&self, session_id: &str, token: u64, bytes: &[u8]) -> Result<bool> {
+        if self
+            .dead
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|dead| dead == session_id)
+        {
+            return Ok(false);
+        }
+        let input = self.input.lock().unwrap();
+        let Some(input) = input.get(session_id) else {
+            return Ok(false);
+        };
+        if !input.in_flight || input.generation != token {
+            return Ok(false);
+        }
+        self.pushes
+            .lock()
+            .unwrap()
+            .push((session_id.to_string(), InjectKind::Raw, bytes.to_vec()));
+        Ok(true)
+    }
+
+    fn finish_delivery(&self, session_id: &str, token: u64) {
+        let finished = self
+            .input
+            .lock()
+            .unwrap()
+            .get_mut(session_id)
+            .is_some_and(|input| {
+                if input.in_flight && input.generation == token {
+                    input.in_flight = false;
+                    true
+                } else {
+                    false
+                }
+            });
+        if finished {
+            self.notify(session_id, SessionDeliveryEvent::DeliveryFinished);
+        }
+    }
+
+    fn register_delivery_listener(
+        &self,
+        session_id: &str,
+        listener: Weak<dyn SessionDeliveryListener>,
+    ) {
+        self.input
+            .lock()
+            .unwrap()
+            .entry(session_id.to_string())
+            .or_default();
+        self.listeners
+            .lock()
+            .unwrap()
+            .entry(session_id.to_string())
+            .or_default()
+            .push(listener);
     }
 }
 
@@ -210,6 +413,14 @@ fn read_signals(log: &EventLog) -> Vec<Event> {
         .collect()
 }
 
+fn wait_until(timeout: Duration, predicate: impl Fn() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while !predicate() {
+        assert!(Instant::now() < deadline, "condition did not become true");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[test]
 fn directed_message_nudges_target_only() {
     // Pull-based inbox routing strands the worker without a stdin
@@ -231,6 +442,172 @@ fn directed_message_nudges_target_only() {
     assert!(impl_pushes[0].contains("runner msg read"));
     // Sender is not nudged.
     assert!(injector.pushes_for("S-LEAD").is_empty());
+}
+
+#[test]
+fn pending_input_parks_delivery_until_clear() {
+    let (router, injector, log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_pending("S-IMPL");
+
+    let direct = log.append(message("lead", Some("impl"), "go")).unwrap();
+    router.handle_event(&direct);
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+    assert!(!matches!(
+        router.state.lock().unwrap().status.get("impl"),
+        Some(super::RunnerStatus::Busy)
+    ));
+
+    injector.clear_pending("S-IMPL");
+    assert!(
+        injector.pushes_for("S-IMPL").is_empty(),
+        "flush must leave a post-submit gap before writing the deferred body"
+    );
+    injector.set_pending("S-IMPL");
+    std::thread::sleep(Duration::from_millis(120));
+    assert!(
+        injector.pushes_for("S-IMPL").is_empty(),
+        "typing a new draft during the post-submit gap must keep the delivery parked"
+    );
+    injector.clear_pending("S-IMPL");
+    wait_until(Duration::from_millis(250), || {
+        injector.submitted_bodies_for("S-IMPL").len() == 1
+            && matches!(
+                router.state.lock().unwrap().status.get("impl"),
+                Some(super::RunnerStatus::Busy)
+            )
+    });
+    assert!(injector.submitted_bodies_for("S-IMPL")[0].contains("[inbox]"));
+    assert!(matches!(
+        router.state.lock().unwrap().status.get("impl"),
+        Some(super::RunnerStatus::Busy)
+    ));
+}
+
+#[test]
+fn recent_typing_retries_after_quiet_window() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_recent_typing("S-IMPL");
+    router.inject_and_submit("impl", b"after quiet").unwrap();
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+
+    wait_until(Duration::from_millis(300), || {
+        injector.submitted_bodies_for("S-IMPL") == ["after quiet"]
+    });
+}
+
+#[test]
+fn deferred_nudges_coalesce_while_relays_preserve_order() {
+    let (router, injector, log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_pending("S-IMPL");
+
+    for event in [
+        log.append(message("lead", Some("impl"), "first")).unwrap(),
+        log.append(signal(
+            "human",
+            "human_said",
+            serde_json::json!({ "target": "impl", "text": "relay one" }),
+        ))
+        .unwrap(),
+        log.append(message("lead", Some("impl"), "second")).unwrap(),
+        log.append(signal(
+            "human",
+            "human_said",
+            serde_json::json!({ "target": "impl", "text": "relay two" }),
+        ))
+        .unwrap(),
+    ] {
+        router.handle_event(&event);
+    }
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+
+    injector.clear_pending("S-IMPL");
+    wait_until(Duration::from_secs(1), || {
+        injector.submitted_bodies_for("S-IMPL").len() == 3
+    });
+    let bodies = injector.submitted_bodies_for("S-IMPL");
+    assert!(bodies[0].contains("2 new messages"));
+    assert_eq!(bodies[1], "relay one");
+    assert_eq!(bodies[2], "relay two");
+}
+
+#[test]
+fn deferred_delivery_flushes_on_respawn() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_pending("S-IMPL");
+    router
+        .inject_and_submit("impl", b"relay after respawn")
+        .unwrap();
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+
+    injector.respawn("S-IMPL");
+    wait_until(Duration::from_millis(250), || {
+        injector.submitted_bodies_for("S-IMPL") == ["relay after respawn"]
+    });
+}
+
+#[test]
+fn session_exit_drops_deferred_delivery() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_pending("S-IMPL");
+    router
+        .inject_and_submit("impl", b"must be dropped")
+        .unwrap();
+
+    injector.exit("S-IMPL");
+    injector.respawn("S-IMPL");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+}
+
+#[test]
+fn blocked_empty_body_does_not_flush_a_stray_enter() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_pending("S-IMPL");
+    router.inject_and_submit("impl", b"").unwrap();
+    injector.clear_pending("S-IMPL");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+
+    router.inject_and_submit("impl", b"").unwrap();
+    wait_until(Duration::from_millis(250), || {
+        injector.raw_pushes_for("S-IMPL") == ["\r"]
+    });
 }
 
 #[test]
@@ -705,6 +1082,8 @@ fn pending_ask_map_reconstructs_from_log_on_reopen() {
         })
         .expect("router #1 must have appended human_question")
         .id;
+    log.append(message("lead", Some("impl"), "historical mail"))
+        .unwrap();
 
     // Reopen: build router #2, fold projection state from history. This
     // is the path mission_resume / mount-on-app-restart will follow.
@@ -1138,6 +1517,7 @@ fn directed_wake_synthesizes_busy_and_idle_clears_it() {
     // exact regression issue #32 calls out.
     let direct_followup = log.append(message("lead", Some("impl"), "next")).unwrap();
     router.handle_event(&direct_followup);
+    wait_until(Duration::from_secs(1), || busy_for_impl(&log) == 2);
     assert_eq!(
         busy_for_impl(&log),
         2,

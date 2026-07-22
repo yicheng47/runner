@@ -793,6 +793,59 @@ fn inject_stdin_on_unknown_session_errors_cleanly() {
     assert!(format!("{err}").contains("session not found"));
 }
 
+#[test]
+fn local_input_byte_classes_drive_pending_state() {
+    use super::output::{classify_local_input, update_local_input_state, LocalInputClass};
+
+    assert_eq!(
+        classify_local_input(b"x"),
+        Some(LocalInputClass::SetPending)
+    );
+    assert_eq!(
+        classify_local_input("界".as_bytes()),
+        Some(LocalInputClass::SetPending)
+    );
+    assert_eq!(
+        classify_local_input(b"\x1b[A"),
+        Some(LocalInputClass::ActivityOnly)
+    );
+    assert_eq!(
+        classify_local_input(b"\x1b[200~pasted text\x1b[201~"),
+        Some(LocalInputClass::SetPending)
+    );
+    assert_eq!(
+        classify_local_input(b"\x16"),
+        Some(LocalInputClass::SetPending)
+    );
+    assert_eq!(
+        classify_local_input(b"\r"),
+        Some(LocalInputClass::ClearPending)
+    );
+    assert_eq!(
+        classify_local_input(b"\x03"),
+        Some(LocalInputClass::ClearPending)
+    );
+
+    let now = Instant::now();
+    let mut state = SessionState::default();
+    update_local_input_state(&mut state, classify_local_input(b"draft"), now);
+    assert!(state.local_input_pending);
+    assert_eq!(state.last_local_input_at, Some(now));
+
+    update_local_input_state(&mut state, classify_local_input(b"\r"), now);
+    assert!(!state.local_input_pending);
+    assert!(state.last_local_input_at.is_none());
+
+    update_local_input_state(&mut state, classify_local_input(b"\x1b[D"), now);
+    assert!(!state.local_input_pending);
+    assert_eq!(state.last_local_input_at, Some(now));
+
+    state.local_input_pending = true;
+    update_local_input_state(&mut state, classify_local_input(b"\x03"), now);
+    assert!(!state.local_input_pending);
+    assert!(state.last_local_input_at.is_none());
+}
+
 // `await_pty_output` was deleted in the Step 9 cutover. Tests
 // that previously observed echoed bytes from /bin/cat through
 // a portable-pty master now assert on FakeRuntime's captured
@@ -1736,8 +1789,62 @@ fn direct_chat_typing_stays_idle_until_submit() {
     wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Idle);
     cap.status.lock().unwrap().clear();
 
-    mgr.inject_direct_stdin(&spawned.id, b"x", cap.as_ref())
-        .unwrap();
+    let token = match mgr.reserve_delivery(&spawned.id).unwrap() {
+        router::DeliveryReservation::Ready(token) => token,
+        other => panic!("expected delivery reservation, got {other:?}"),
+    };
+    let first_mgr = Arc::clone(&mgr);
+    let first_cap = Arc::clone(&cap);
+    let first_session_id = spawned.id.clone();
+    let first = std::thread::spawn(move || {
+        first_mgr
+            .inject_direct_stdin(&first_session_id, b"h", first_cap.as_ref())
+            .unwrap();
+    });
+    let wait_for_tickets = |expected| {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let gate = mgr
+                .session_state(&spawned.id)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .delivery_gate
+                .clone();
+            if gate.state.lock().unwrap().next_ticket == expected {
+                break;
+            }
+            assert!(Instant::now() < deadline, "input ticket was not issued");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    wait_for_tickets(1);
+
+    let second_mgr = Arc::clone(&mgr);
+    let second_cap = Arc::clone(&cap);
+    let second_session_id = spawned.id.clone();
+    let second = std::thread::spawn(move || {
+        second_mgr
+            .inject_direct_stdin(&second_session_id, b"e", second_cap.as_ref())
+            .unwrap();
+    });
+    wait_for_tickets(2);
+    assert!(
+        !first.is_finished() && !second.is_finished(),
+        "local input must wait behind the reserved body/Enter chord"
+    );
+    assert!(mgr.inject_reserved(&spawned.id, token, b"[inbox]").unwrap());
+    assert!(mgr.inject_reserved(&spawned.id, token, b"\r").unwrap());
+    mgr.finish_delivery(&spawned.id, token);
+    first.join().unwrap();
+    second.join().unwrap();
+    let writes = fake.bytes_writes();
+    assert!(writes.ends_with(&[
+        (spawned.id.clone(), b"[inbox]".to_vec()),
+        (spawned.id.clone(), b"h".to_vec()),
+        (spawned.id.clone(), b"e".to_vec()),
+    ]));
+    assert!(!mgr.input_quiescent(&spawned.id));
     assert!(
         !mgr.take_completion_armed(std::slice::from_ref(&spawned.id)),
         "typing without submit must not arm completion",
@@ -1776,7 +1883,15 @@ fn direct_chat_typing_stays_idle_until_submit() {
         "paste-then-Enter delivery must arm completion",
     );
 
+    let stale_token = match mgr.reserve_delivery(&spawned.id).unwrap() {
+        router::DeliveryReservation::Ready(token) => token,
+        other => panic!("expected delivery reservation, got {other:?}"),
+    };
     mgr.kill(&spawned.id).unwrap();
+    assert!(!mgr
+        .inject_reserved(&spawned.id, stale_token, b"must not reach respawn")
+        .unwrap());
+    mgr.finish_delivery(&spawned.id, stale_token);
 }
 
 #[test]
