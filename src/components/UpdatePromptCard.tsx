@@ -8,7 +8,7 @@
 //
 // Dismissal is per launch (sessionStorage), so the pill reappears on
 // the next launch until the update is installed. The checkbox writes
-// the same persisted setting as About's toggle — one storage key,
+// the same persisted setting as the Updates pane's toggle — one storage key,
 // two surfaces.
 
 import { useCallback, useState } from "react";
@@ -69,7 +69,7 @@ export function UpdatePromptCard() {
           (`bottom-0`), so it covers the pill and grows upward over
           the list above. No gap to hover across, and the pill is
           never visible alongside the card. */}
-      <div className="invisible absolute bottom-0 left-0 right-0 z-40 translate-y-1 opacity-0 transition-all duration-150 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100 group-hover:visible group-hover:translate-y-0 group-hover:opacity-100">
+      <div className="invisible absolute bottom-0 left-0 right-0 z-40 translate-y-1 opacity-0 transition-[opacity,transform,visibility] duration-200 ease-out group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100 group-focus-within:delay-0 group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-hover:delay-150">
         <div className="overflow-hidden rounded-lg border border-line-strong bg-[radial-gradient(140%_120%_at_50%_0%,var(--color-sidebar-selected)_0%,var(--color-panel)_100%)] shadow-[0_8px_24px_rgba(0,0,0,0.35)]">
           {/* Header band — title centered per spec; the × dismiss
               (now specced) stays pinned to the band's right, with px-6
