@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import {
   BrowserRouter,
   Routes,
@@ -8,10 +8,11 @@ import {
   useNavigate,
 } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AppShell } from "./components/AppShell";
 import { ToastProvider } from "./contexts/ToastContext";
-import { UpdateProvider } from "./contexts/UpdateContext";
+import { UpdateProvider, useUpdate } from "./contexts/UpdateContext";
 import { nudgeAppZoom } from "./lib/appZoom";
 import { eventMatchesShortcut } from "./lib/keymap";
 import { readAppZoom } from "./lib/settings";
@@ -74,6 +75,7 @@ export default function App() {
         <BrowserRouter>
           <InitialRouteBootstrap />
           <SettingsShortcut />
+          <UpdateMenuListener />
           <Routes>
             <Route element={<AppShell />}>
               <Route path="/" element={<Navigate to="/runners" replace />} />
@@ -113,6 +115,7 @@ export default function App() {
 // RunnerTerminal's re-dispatched custom event for keys WKWebView
 // delivers straight to xterm.
 const OPEN_SETTINGS_EVENT = "runner:open-settings";
+const CHECK_FOR_UPDATES_EVENT = "runner/check-for-updates";
 
 function SettingsShortcut() {
   const navigate = useNavigate();
@@ -136,6 +139,55 @@ function SettingsShortcut() {
       window.removeEventListener(OPEN_SETTINGS_EVENT, openSettings);
     };
   }, [navigate, location.pathname]);
+  return null;
+}
+
+function UpdateMenuListener() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const locationRef = useRef(location);
+  const { checkForUpdate } = useUpdate();
+
+  useEffect(() => {
+    locationRef.current = location;
+  }, [location]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    let target: { target: { kind: "WebviewWindow"; label: string } } | undefined;
+    try {
+      target = {
+        target: { kind: "WebviewWindow", label: getCurrentWebview().label },
+      };
+    } catch {
+      target = undefined;
+    }
+    void listen(CHECK_FOR_UPDATES_EVENT, () => {
+      const current = locationRef.current;
+      const from = current.pathname.startsWith("/settings")
+        ? ((current.state as { from?: string } | null)?.from ?? "/")
+        : current.pathname;
+      void checkForUpdate();
+      if (current.pathname !== "/settings/updates") {
+        navigate("/settings/updates", { state: { from } });
+      }
+    }, target)
+      .then((stop) => {
+        if (cancelled) {
+          stop();
+          return;
+        }
+        unlisten = stop;
+      })
+      .catch(() => {
+        // Browser preview has no Tauri event runtime.
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [checkForUpdate, navigate]);
   return null;
 }
 

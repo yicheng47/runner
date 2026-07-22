@@ -1,87 +1,21 @@
-// About pane — version, updates, and links (impl 0025 decision 3:
-// Updates merged in, the Updates tab is gone). Leads with a hero card:
-// real app icon, name + version chip, status line, and the stateful
-// update button. Button ladder per spec `IKGNz` in
-// `design/runner-setting.pen`: IDLE → CHECKING → AVAILABLE →
-// DOWNLOADING → READY; READY is the one solid-accent moment in
-// settings. Auto-checks on mount — without a dedicated tab, a
-// manual-only check means nobody ever sees AVAILABLE.
+// About pane — app identity, version, credits, and links.
 
 import { useEffect, useState } from "react";
-import {
-  BookText,
-  Download,
-  ExternalLink,
-  Loader2,
-  RefreshCw,
-  RotateCcw,
-  Scale,
-} from "lucide-react";
+import { BookText, ExternalLink, Scale } from "lucide-react";
 
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getVersion } from "@tauri-apps/api/app";
 
 import appIcon from "../../assets/app-icon.png";
-import { STORAGE_AUTO_INSTALL_UPDATES } from "../../lib/settings";
-import { useStoredBool } from "../../lib/useStoredBool";
-import { useUpdate } from "../../contexts/UpdateContext";
-import { Toggle } from "../ui/Toggle";
-import { PaneHeader, SettingsCard, SettingsRow } from "./shared";
+import { PaneHeader, SettingsCard } from "./shared";
 
 export function AboutPane() {
   const [version, setVersion] = useState<string>("");
-  const [autoInstall, setAutoInstall] = useStoredBool(
-    STORAGE_AUTO_INSTALL_UPDATES,
-    true,
-  );
-  const {
-    status,
-    update,
-    progress,
-    error,
-    checkForUpdate,
-    downloadAndInstall,
-    restart,
-  } = useUpdate();
   useEffect(() => {
     void getVersion()
       .then((v) => setVersion(v))
       .catch(() => setVersion(""));
   }, []);
-  // Auto-check on mount, but only from a resting state — kicking a
-  // check while an update is already available/downloading/ready
-  // would reset shared updater state the user may be acting on.
-  useEffect(() => {
-    if (status === "idle" || status === "error") void checkForUpdate();
-    // Run once per mount; `status` at mount time is what matters.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  // Status-driven copy — the hero's status line always narrates the
-  // update ladder's current rung.
-  const statusLine = (() => {
-    switch (status) {
-      case "checking":
-        return "Checking for updates…";
-      case "available":
-        return update?.version
-          ? `v${update.version} is available.`
-          : "An update is available.";
-      case "downloading":
-        return `Downloading update… ${progress}%`;
-      case "ready":
-        return "Update ready — restart to apply.";
-      case "error":
-        return error ? `Couldn't check: ${error}` : "Couldn't check for updates.";
-      default:
-        return "You're up to date.";
-    }
-  })();
-  const statusTone =
-    status === "available" || status === "ready"
-      ? "text-accent"
-      : status === "error"
-        ? "text-danger"
-        : "text-fg-2";
   const openLink = (url: string) => {
     void openUrl(url).catch(() => {
       // Fallback: window.open works in dev (browser preview) when
@@ -91,7 +25,7 @@ export function AboutPane() {
   };
   return (
     <>
-      <PaneHeader title="About" subtitle="Version, updates, and links." />
+      <PaneHeader title="About" subtitle="Version, credits, and links." />
 
       {/* Hero card — the in-app identity matches what users see in the
           Dock / file-explorer: the icon mirrors the bundled `.icns`,
@@ -112,36 +46,12 @@ export function AboutPane() {
                 v{version || "0.0.0"}
               </span>
             </div>
-            <span className={`truncate text-[12px] ${statusTone}`}>
-              {statusLine}
+            <span className="truncate text-[12px] text-fg-2">
+              Local cockpit for coding agents.
             </span>
           </div>
-          <UpdateAction
-            status={status}
-            version={update?.version}
-            onCheck={() => void checkForUpdate()}
-            onDownload={() => void downloadAndInstall()}
-            onRestart={() => void restart()}
-          />
         </div>
-        {status === "downloading" ? (
-          <div className="h-[3px] w-full bg-raised">
-            <div
-              className="h-full bg-accent transition-[width] duration-200"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
-        ) : null}
       </div>
-
-      <SettingsCard>
-        <SettingsRow
-          label="Install updates automatically"
-          sub="Download and apply updates in the background. Restart needed to finish."
-        >
-          <Toggle on={autoInstall} onChange={setAutoInstall} />
-        </SettingsRow>
-      </SettingsCard>
 
       <SettingsCard>
         <LinkRow
@@ -167,77 +77,6 @@ export function AboutPane() {
         © 2026 wyc studios
       </div>
     </>
-  );
-}
-
-// The five-state update button (spec `IKGNz`). Neutral for states,
-// accent for meaning: AVAILABLE is quiet accent (tinted fill, accent
-// text/border), READY is solid accent, everything else stays neutral.
-// No cancel during download — the plugin exposes no abort handle, so
-// we don't pretend to offer one.
-function UpdateAction({
-  status,
-  version,
-  onCheck,
-  onDownload,
-  onRestart,
-}: {
-  status: ReturnType<typeof useUpdate>["status"];
-  version: string | undefined;
-  onCheck: () => void;
-  onDownload: () => void;
-  onRestart: () => void;
-}) {
-  if (status === "checking") {
-    return (
-      <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-line bg-raised px-3 py-1.5 text-[12px] font-medium text-fg-3">
-        <Loader2 aria-hidden className="h-3 w-3 animate-spin" />
-        Checking…
-      </div>
-    );
-  }
-  if (status === "available") {
-    return (
-      <button
-        type="button"
-        onClick={onDownload}
-        className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-accent/40 bg-accent/10 px-3 py-1.5 text-[12px] font-semibold text-accent transition-colors hover:bg-accent/15"
-      >
-        <Download aria-hidden className="h-3 w-3" />
-        {version ? `Download v${version}` : "Download update"}
-      </button>
-    );
-  }
-  if (status === "downloading") {
-    return (
-      <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-line bg-raised px-3 py-1.5 text-[12px] font-medium text-fg-3">
-        <Loader2 aria-hidden className="h-3 w-3 animate-spin" />
-        Downloading…
-      </div>
-    );
-  }
-  if (status === "ready") {
-    return (
-      <button
-        type="button"
-        onClick={onRestart}
-        className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-ink transition-colors hover:bg-accent/90"
-      >
-        <RotateCcw aria-hidden className="h-3 w-3" />
-        Restart to update
-      </button>
-    );
-  }
-  // idle / error → manual re-check
-  return (
-    <button
-      type="button"
-      onClick={onCheck}
-      className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-line bg-raised px-3 py-1.5 text-[12px] font-medium text-fg-2 transition-colors hover:border-line-strong hover:text-fg"
-    >
-      <RefreshCw aria-hidden className="h-3 w-3" />
-      Check for updates
-    </button>
   );
 }
 
