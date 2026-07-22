@@ -1,9 +1,9 @@
 // Auto-update hook — wraps `@tauri-apps/plugin-updater` into a simple
 // state machine: idle → checking → available → downloading → ready.
 // Mirrors Quill's `useUpdateChecker` so the surfaces (sidebar prompt
-// card + About pane) can share one context and the same UI states.
+// card + Updates pane) can share one context and the same UI states.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -15,6 +15,10 @@ export type UpdateStatus =
   | "downloading"
   | "ready"
   | "error";
+
+export interface UpdateCheckOptions {
+  silent?: boolean;
+}
 
 const UPDATE_STATUSES: readonly UpdateStatus[] = [
   "idle",
@@ -51,7 +55,7 @@ export interface UpdateState {
   update: Update | null;
   progress: number;
   error: string | null;
-  checkForUpdate: () => Promise<void>;
+  checkForUpdate: (options?: UpdateCheckOptions) => Promise<void>;
   downloadAndInstall: () => Promise<void>;
   restart: () => Promise<void>;
 }
@@ -69,48 +73,61 @@ export function useUpdateChecker(): UpdateState {
   const [error, setError] = useState<string | null>(null);
   // Guard against concurrent checks — auto-check + manual click can race.
   const checking = useRef(false);
+  // A manual request that overlaps a silent background check upgrades
+  // that in-flight check so a failure is visible to the user.
+  const surfaceCheckError = useRef(false);
   // Mirror of `status` readable from the stable `checkForUpdate`
-  // closure (its useCallback deps stay empty so consumers can treat it
-  // as stable).
+  // closure. Update it synchronously with React state so another
+  // trigger cannot slip into the render gap after a check finishes.
   const statusRef = useRef<UpdateStatus>(status);
-  useEffect(() => {
-    statusRef.current = status;
-  }, [status]);
+  const setCurrentStatus = useCallback((next: UpdateStatus) => {
+    statusRef.current = next;
+    setStatus(next);
+  }, []);
 
-  const checkForUpdate = useCallback(async () => {
-    if (checking.current) return;
+  const checkForUpdate = useCallback(async (options?: UpdateCheckOptions) => {
+    const silent = options?.silent ?? false;
+    if (checking.current) {
+      if (!silent) surfaceCheckError.current = true;
+      return;
+    }
     // Only re-check from resting states. Multiple surfaces auto-check
-    // (UpdateContext's launch timer, About on mount) and they can
+    // (UpdateContext's launch/interval/focus triggers, Updates on mount)
+    // and they can
     // overlap — a late check must not clobber an already-found update
     // or an in-flight/finished download back to "checking".
-    if (
-      statusRef.current !== "idle" &&
-      statusRef.current !== "error"
-    ) {
+    if (statusRef.current !== "idle" && statusRef.current !== "error") {
       return;
     }
     checking.current = true;
-    setStatus("checking");
+    surfaceCheckError.current = !silent;
+    setCurrentStatus("checking");
     setError(null);
     try {
       const result = await check();
       if (result) {
         setUpdate(result);
-        setStatus("available");
+        setCurrentStatus("available");
       } else {
-        setStatus("idle");
+        setCurrentStatus("idle");
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setStatus("error");
+      if (surfaceCheckError.current) {
+        setError(e instanceof Error ? e.message : String(e));
+        setCurrentStatus("error");
+      } else {
+        setError(null);
+        setCurrentStatus("idle");
+      }
     } finally {
       checking.current = false;
+      surfaceCheckError.current = false;
     }
-  }, []);
+  }, [setCurrentStatus]);
 
   const downloadAndInstall = useCallback(async () => {
     if (!update) return;
-    setStatus("downloading");
+    setCurrentStatus("downloading");
     setProgress(0);
     try {
       let totalLen = 0;
@@ -127,12 +144,12 @@ export function useUpdateChecker(): UpdateState {
           setProgress(100);
         }
       });
-      setStatus("ready");
+      setCurrentStatus("ready");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-      setStatus("error");
+      setCurrentStatus("error");
     }
-  }, [update]);
+  }, [setCurrentStatus, update]);
 
   const restart = useCallback(async () => {
     await relaunch();

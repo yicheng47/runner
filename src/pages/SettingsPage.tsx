@@ -23,6 +23,7 @@ import {
   Keyboard,
   MessageSquare,
   Plug,
+  RefreshCw,
   Search,
   Settings as SettingsIcon,
   Sun,
@@ -38,6 +39,7 @@ import { GeneralPane } from "../components/settings/GeneralPane";
 import { McpPane } from "../components/settings/McpPane";
 import { ShortcutsPane } from "../components/settings/ShortcutsPane";
 import { TerminalPane } from "../components/settings/TerminalPane";
+import { UpdatesPane } from "../components/settings/UpdatesPane";
 import { useResizableWidth } from "../hooks/useResizableWidth";
 
 // Same domain and storage key as the app sidebar (Sidebar.tsx — keep
@@ -55,6 +57,7 @@ type PaneKey =
   | "terminal"
   | "shortcuts"
   | "mcp"
+  | "updates"
   | "diagnostics"
   | "about"
   | "archived";
@@ -77,6 +80,7 @@ const PANES: Record<
     render: () => <ShortcutsPane />,
   },
   mcp: { label: "MCP", icon: Plug, render: () => <McpPane /> },
+  updates: { label: "Updates", icon: RefreshCw, render: () => <UpdatesPane /> },
   diagnostics: {
     label: "Diagnostics",
     icon: FileText,
@@ -96,7 +100,7 @@ const NAV_GROUPS: { label: string; panes: PaneKey[] }[] = [
     panes: ["general", "chat", "appearance", "terminal", "shortcuts"],
   },
   { label: "Integrations", panes: ["mcp"] },
-  { label: "System", panes: ["diagnostics", "about"] },
+  { label: "System", panes: ["updates", "diagnostics", "about"] },
   { label: "Archived", panes: ["archived"] },
 ];
 

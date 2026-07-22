@@ -19,7 +19,7 @@ use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use tauri::menu::{AboutMetadataBuilder, PredefinedMenuItem};
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-use tauri::{AppHandle, Emitter, Manager, Wry};
+use tauri::{AppHandle, Emitter, EventTarget, Manager, Wry};
 use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
 
 /// Bundle identifier as declared in `tauri.conf.json`. Used by:
@@ -268,17 +268,43 @@ pub fn run() {
 
             app.manage(state);
 
-            // Build the app menu and wire the `runner_logs_reveal`
-            // menu item to the same handler the Settings →
-            // Diagnostics button calls. Done in `setup` (not at the
-            // builder level) so we get a real `AppHandle` for the
-            // menu's child item builders.
+            // Build the app menu in `setup` so its actions can use the
+            // live AppHandle.
             let menu = build_menu(app.handle())?;
             app.set_menu(menu)?;
             app.on_menu_event(|app, ev| {
                 if ev.id() == "runner_logs_reveal" {
                     if let Err(e) = commands::app::reveal_logs_dir(app) {
                         log::error!("reveal logs failed: {e}");
+                    }
+                } else if ev.id() == "runner_check_for_updates" {
+                    let target = app
+                        .webview_windows()
+                        .into_iter()
+                        .find_map(|(_, window)| {
+                            window.is_focused().ok().filter(|focused| *focused)?;
+                            Some(window)
+                        })
+                        .or_else(|| app.get_webview_window("main"));
+                    if let Some(window) = target {
+                        if let Err(e) = window.show() {
+                            log::error!("show update-check window failed: {e}");
+                        }
+                        if let Err(e) = window.unminimize() {
+                            log::error!("unminimize update-check window failed: {e}");
+                        }
+                        if let Err(e) = window.set_focus() {
+                            log::error!("focus update-check window failed: {e}");
+                        }
+                        if let Err(e) = app.emit_to(
+                            EventTarget::webview_window(window.label()),
+                            "runner/check-for-updates",
+                            (),
+                        ) {
+                            log::error!("check for updates event failed: {e}");
+                        }
+                    } else {
+                        log::warn!("check for updates requested with no webview window");
                     }
                 } else if ev.id() == "window_new" {
                     let state = app.state::<AppState>();
@@ -591,9 +617,13 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             .version(Some(pkg.version.to_string()))
             .build();
         let about = PredefinedMenuItem::about(app, Some("About Runner"), Some(about_meta))?;
+        let check_for_updates =
+            MenuItemBuilder::with_id("runner_check_for_updates", "Check for Updates…")
+                .build(app)?;
 
         let app_menu = SubmenuBuilder::new(app, "Runner")
             .item(&about)
+            .item(&check_for_updates)
             .separator()
             .services()
             .separator()

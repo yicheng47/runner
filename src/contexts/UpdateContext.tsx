@@ -1,53 +1,109 @@
 // Auto-update context — single source of update state shared by the
-// sidebar prompt card (`UpdatePromptCard`) and the Settings → About
+// sidebar prompt card (`UpdatePromptCard`) and the Settings → Updates
 // pane. Mirrors Quill's pattern so card → settings is just two views
 // over the same status, no duplicated polling.
 
 import {
+  useCallback,
   createContext,
   useContext,
   useEffect,
   useRef,
+  useState,
   type ReactNode,
 } from "react";
 
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
+import { readStoredBool, STORAGE_AUTO_INSTALL_UPDATES } from "../lib/settings";
 import {
-  readStoredBool,
-  STORAGE_AUTO_INSTALL_UPDATES,
-} from "../lib/settings";
-import { useUpdateChecker, type UpdateState } from "../hooks/useUpdateChecker";
+  useUpdateChecker,
+  type UpdateCheckOptions,
+  type UpdateState,
+} from "../hooks/useUpdateChecker";
+
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const LAUNCH_CHECK_DELAY_MS = 3000;
 
 const UpdateContext = createContext<UpdateState | null>(null);
 
 export function UpdateProvider({ children }: { children: ReactNode }) {
   const state = useUpdateChecker();
-  // The auto-install toggle owns two separate behaviors: (1) whether
-  // we even kick off a check on app start, and (2) whether we go
-  // straight to download once an update is detected. Persistent
-  // store is plain localStorage for now (same key the About pane
-  // toggle and the prompt card checkbox write to).
-  const checkedRef = useRef(false);
+  const [runsBackgroundChecks] = useState(() => {
+    try {
+      return getCurrentWindow().label === "main";
+    } catch {
+      return true;
+    }
+  });
+  const runCheck = state.checkForUpdate;
+  const lastCheckAt = useRef<number | null>(null);
+  const checkForUpdate = useCallback(
+    (options?: UpdateCheckOptions) => {
+      lastCheckAt.current = Date.now();
+      return runCheck(options);
+    },
+    [runCheck],
+  );
 
-  // Run a single check ~3s after mount. The delay keeps the launch
-  // path quiet — first paint, navigation, sidebar load all happen
-  // before we hit the network.
+  // Check after first paint on every launch, unless an explicit check
+  // already ran during the delay.
   useEffect(() => {
-    if (checkedRef.current) return;
-    checkedRef.current = true;
-    if (!readStoredBool(STORAGE_AUTO_INSTALL_UPDATES, true)) return;
+    if (!runsBackgroundChecks) return;
     const timer = setTimeout(() => {
-      void state.checkForUpdate();
-    }, 3000);
+      if (lastCheckAt.current === null) {
+        void checkForUpdate({ silent: true });
+      }
+    }, LAUNCH_CHECK_DELAY_MS);
     return () => clearTimeout(timer);
-    // checkForUpdate is stable (useCallback with []), so it's safe
-    // to omit from deps; running this exactly once per mount is the
-    // intent.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [checkForUpdate, runsBackgroundChecks]);
+
+  useEffect(() => {
+    if (!runsBackgroundChecks) return;
+    const timer = setInterval(() => {
+      void checkForUpdate({ silent: true });
+    }, UPDATE_CHECK_INTERVAL_MS);
+    const checkWhenStale = () => {
+      const checkedAt = lastCheckAt.current;
+      if (
+        checkedAt !== null &&
+        Date.now() - checkedAt >= UPDATE_CHECK_INTERVAL_MS
+      ) {
+        void checkForUpdate({ silent: true });
+      }
+    };
+    window.addEventListener("focus", checkWhenStale);
+    let unlistenFocus: (() => void) | null = null;
+    let cancelled = false;
+    try {
+      void getCurrentWindow()
+        .onFocusChanged(({ payload: focused }) => {
+          if (focused) checkWhenStale();
+        })
+        .then((stop) => {
+          if (cancelled) {
+            stop();
+            return;
+          }
+          unlistenFocus = stop;
+        })
+        .catch(() => {
+          // DOM focus remains available in browser preview.
+        });
+    } catch {
+      // DOM focus remains available in browser preview.
+    }
+    return () => {
+      cancelled = true;
+      unlistenFocus?.();
+      clearInterval(timer);
+      window.removeEventListener("focus", checkWhenStale);
+    };
+  }, [checkForUpdate, runsBackgroundChecks]);
 
   // When the user has auto-install on, advance from "available" →
   // "downloading" automatically. Otherwise the user has to click
-  // Download in Settings → About.
+  // Download in Settings → Updates.
   useEffect(() => {
     if (state.status !== "available") return;
     if (!readStoredBool(STORAGE_AUTO_INSTALL_UPDATES, true)) return;
@@ -56,7 +112,9 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   }, [state.status]);
 
   return (
-    <UpdateContext.Provider value={state}>{children}</UpdateContext.Provider>
+    <UpdateContext.Provider value={{ ...state, checkForUpdate }}>
+      {children}
+    </UpdateContext.Provider>
   );
 }
 
