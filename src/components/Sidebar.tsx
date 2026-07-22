@@ -2022,7 +2022,7 @@ export function Sidebar({
               </nav>
             </div>
 
-            <div className="h-5 shrink-0" />
+            <div className="mx-4 mb-4 mt-2.5 h-px shrink-0 bg-sidebar-selected-border" />
 
             <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-3">
               <DndContext

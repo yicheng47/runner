@@ -22,9 +22,10 @@ mod handlers;
 pub mod prompt;
 pub mod runtime;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use runner_core::event_log::EventLog;
 use runner_core::model::{Event, EventKind, SignalType};
@@ -52,6 +53,22 @@ pub trait StdinInjector: Send + Sync + 'static {
     /// xterm.js owns the terminal model and the host has nothing
     /// to capture against. Callers MUST NOT sleep before calling.
     fn inject_paste_with_verify(&self, session_id: &str, body: &[u8]) -> Result<()>;
+
+    /// Snapshot used by diagnostics/tests. Delivery uses the atomic
+    /// reservation below so a keystroke cannot race a separate query.
+    fn input_quiescent(&self, session_id: &str) -> bool;
+
+    fn reserve_delivery(&self, session_id: &str) -> Result<DeliveryReservation>;
+
+    fn inject_reserved(&self, session_id: &str, token: u64, bytes: &[u8]) -> Result<bool>;
+
+    fn finish_delivery(&self, session_id: &str, token: u64);
+
+    fn register_delivery_listener(
+        &self,
+        session_id: &str,
+        listener: Weak<dyn SessionDeliveryListener>,
+    );
 }
 
 impl StdinInjector for SessionManager {
@@ -62,6 +79,51 @@ impl StdinInjector for SessionManager {
     fn inject_paste_with_verify(&self, session_id: &str, body: &[u8]) -> Result<()> {
         SessionManager::inject_paste(self, session_id, body)
     }
+
+    fn input_quiescent(&self, session_id: &str) -> bool {
+        SessionManager::input_quiescent(self, session_id)
+    }
+
+    fn reserve_delivery(&self, session_id: &str) -> Result<DeliveryReservation> {
+        SessionManager::reserve_delivery(self, session_id)
+    }
+
+    fn inject_reserved(&self, session_id: &str, token: u64, bytes: &[u8]) -> Result<bool> {
+        SessionManager::inject_reserved(self, session_id, token, bytes)
+    }
+
+    fn finish_delivery(&self, session_id: &str, token: u64) {
+        SessionManager::finish_delivery(self, session_id, token)
+    }
+
+    fn register_delivery_listener(
+        &self,
+        session_id: &str,
+        listener: Weak<dyn SessionDeliveryListener>,
+    ) {
+        SessionManager::register_delivery_listener(self, session_id, listener)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryReservation {
+    Ready(u64),
+    PendingInput,
+    RecentlyTyping(Duration),
+    InFlight,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionDeliveryEvent {
+    InputCleared,
+    InputQueueDrained,
+    DeliveryFinished,
+    Respawned,
+    Exited,
+}
+
+pub trait SessionDeliveryListener: Send + Sync + 'static {
+    fn session_delivery_event(&self, session_id: &str, event: SessionDeliveryEvent);
 }
 
 // `RunnerStatus` now lives in `session::runtime` because the forwarder
@@ -108,6 +170,54 @@ pub(crate) struct RosterRow {
     lead: bool,
 }
 
+const SUBMIT_DELAY: Duration = Duration::from_millis(80);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeliveryKind {
+    InboxNudge,
+    Relay,
+}
+
+#[derive(Clone)]
+struct QueuedDelivery {
+    kind: DeliveryKind,
+    body: Vec<u8>,
+    count: usize,
+}
+
+#[derive(Default)]
+struct SessionOutbox {
+    handle: String,
+    deliveries: VecDeque<QueuedDelivery>,
+    submit_in_flight: bool,
+    retry_scheduled: bool,
+    retry_generation: u64,
+}
+
+impl SessionOutbox {
+    fn enqueue(&mut self, delivery: QueuedDelivery) {
+        if delivery.body.is_empty() {
+            return;
+        }
+        if delivery.kind == DeliveryKind::InboxNudge {
+            if let Some(existing) = self
+                .deliveries
+                .iter_mut()
+                .find(|queued| queued.kind == DeliveryKind::InboxNudge)
+            {
+                existing.count += delivery.count;
+                existing.body = format!(
+                    "[inbox] {} new messages — run `runner msg read` to view.",
+                    existing.count
+                )
+                .into_bytes();
+                return;
+            }
+        }
+        self.deliveries.push_back(delivery);
+    }
+}
+
 /// Mutable per-mission state. Rebuilt on reopen by replaying the log into
 /// `reconstruct_from_log` — no separate persistence layer.
 #[derive(Default)]
@@ -131,6 +241,7 @@ struct RouterState {
     /// opening `mission_goal` event must reach the live dispatcher to
     /// bootstrap the lead.
     replay_high_water: Option<String>,
+    outbox_by_session: HashMap<String, SessionOutbox>,
 }
 
 /// One mission's router. Mounted by `mission_start` after sessions spawn,
@@ -143,6 +254,7 @@ pub struct Router {
     injector: Arc<dyn StdinInjector>,
     launch: LaunchInputs,
     state: Mutex<RouterState>,
+    weak_self: Weak<Router>,
 }
 
 impl Router {
@@ -179,7 +291,7 @@ impl Router {
             })
             .collect();
 
-        Ok(Arc::new(Self {
+        Ok(Arc::new_cyclic(|weak_self| Self {
             mission_id,
             crew_id,
             log,
@@ -192,6 +304,7 @@ impl Router {
                 crew_addendum,
             },
             state: Mutex::new(RouterState::default()),
+            weak_self: weak_self.clone(),
         }))
     }
 
@@ -203,11 +316,18 @@ impl Router {
     /// PTYs (when reattach lands) or skip injection (the workspace
     /// surfaces `mission_warning` from `inject_to_handle` either way).
     pub fn register_sessions(&self, sessions: &[(String, String)]) {
-        let mut state = self.state.lock().unwrap();
-        for (handle, session_id) in sessions {
-            state
-                .session_by_handle
-                .insert(handle.clone(), session_id.clone());
+        {
+            let mut state = self.state.lock().unwrap();
+            for (handle, session_id) in sessions {
+                state
+                    .session_by_handle
+                    .insert(handle.clone(), session_id.clone());
+            }
+        }
+        let listener: Weak<dyn SessionDeliveryListener> = self.weak_self.clone();
+        for (_, session_id) in sessions {
+            self.injector
+                .register_delivery_listener(session_id, listener.clone());
         }
     }
 
@@ -414,36 +534,289 @@ impl Router {
         self.set_status(handle.to_string(), RunnerStatus::Busy);
     }
 
-    /// Inject `body` to the handle's stdin, then send a separate
-    /// carriage-return (`\r`) on a brief delay. claude-code's TUI
-    /// editor treats `\r` as Enter, but bytes arriving in the same
-    /// chunk as the body get appended to the input buffer rather
-    /// than triggering submit — so the chord has to land as a
-    /// distinct read on the slave end. ~80ms is empirically enough
-    /// for the editor to process the body and re-bind its keypress
-    /// reader. Body itself is written verbatim; embedded `\n`
-    /// characters render as line breaks inside the input box.
     pub(crate) fn inject_and_submit(&self, handle: &str, body: &[u8]) -> Result<()> {
-        let session_id = {
-            let state = self.state.lock().unwrap();
-            state.session_by_handle.get(handle).cloned()
+        self.inject_delivery(handle, body, DeliveryKind::Relay)
+    }
+
+    pub(crate) fn inject_inbox_nudge(&self, handle: &str, body: &[u8]) -> Result<()> {
+        self.inject_delivery(handle, body, DeliveryKind::InboxNudge)
+    }
+
+    /// Reserve a clean input box through the delayed Enter, or park the
+    /// payload until the session manager reports that local input cleared.
+    fn inject_delivery(&self, handle: &str, body: &[u8], kind: DeliveryKind) -> Result<()> {
+        let delivery = QueuedDelivery {
+            kind,
+            body: body.to_vec(),
+            count: 1,
         };
-        let Some(session_id) = session_id else {
-            return Err(crate::error::Error::msg(format!(
-                "router: no live session for handle @{handle}"
-            )));
+        // A delayed bare Enter has no payload left to deliver after the
+        // user's draft clears, so parking it would create a stray submit.
+        let deferable = !delivery.body.is_empty();
+        let mut retry = None;
+        let (session_id, ready) = {
+            let mut state = self.state.lock().unwrap();
+            let Some(session_id) = state.session_by_handle.get(handle).cloned() else {
+                return Err(crate::error::Error::msg(format!(
+                    "router: no live session for handle @{handle}"
+                )));
+            };
+            if let Some(outbox) = state.outbox_by_session.get_mut(&session_id) {
+                if outbox.submit_in_flight || !outbox.deliveries.is_empty() {
+                    outbox.enqueue(delivery);
+                    return Ok(());
+                }
+            }
+            match self.injector.reserve_delivery(&session_id)? {
+                DeliveryReservation::Ready(token) => {
+                    let outbox = state
+                        .outbox_by_session
+                        .entry(session_id.clone())
+                        .or_default();
+                    outbox.handle = handle.to_string();
+                    outbox.submit_in_flight = true;
+                    (session_id, Some((delivery, token)))
+                }
+                DeliveryReservation::RecentlyTyping(delay) => {
+                    if deferable {
+                        let outbox = state
+                            .outbox_by_session
+                            .entry(session_id.clone())
+                            .or_default();
+                        outbox.handle = handle.to_string();
+                        outbox.enqueue(delivery);
+                        retry = Some((session_id.clone(), delay));
+                    }
+                    (session_id, None)
+                }
+                DeliveryReservation::PendingInput | DeliveryReservation::InFlight => {
+                    if deferable {
+                        let outbox = state
+                            .outbox_by_session
+                            .entry(session_id.clone())
+                            .or_default();
+                        outbox.handle = handle.to_string();
+                        outbox.enqueue(delivery);
+                    }
+                    (session_id, None)
+                }
+            }
         };
-        self.synthesize_wake_busy(handle);
-        if !body.is_empty() {
-            self.injector.inject(&session_id, body)?;
+        if let Some((session_id, delay)) = retry {
+            self.schedule_outbox_retry(session_id, delay);
+        }
+        match ready {
+            Some((delivery, token)) => {
+                self.start_reserved_delivery(&session_id, handle, delivery, token)
+            }
+            None => Ok(()),
+        }
+    }
+
+    fn start_reserved_delivery(
+        &self,
+        session_id: &str,
+        handle: &str,
+        delivery: QueuedDelivery,
+        token: u64,
+    ) -> Result<()> {
+        if !delivery.body.is_empty() {
+            match self
+                .injector
+                .inject_reserved(session_id, token, &delivery.body)
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.cancel_started_delivery(session_id);
+                    self.injector.finish_delivery(session_id, token);
+                    return Err(crate::error::Error::msg(format!(
+                        "router: session {session_id} changed before delivery"
+                    )));
+                }
+                Err(error) => {
+                    self.injector.finish_delivery(session_id, token);
+                    return Err(error);
+                }
+            }
         }
         let injector = Arc::clone(&self.injector);
-        let sid = session_id.clone();
+        let sid = session_id.to_string();
         std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(80));
-            let _ = injector.inject(&sid, b"\r");
+            std::thread::sleep(SUBMIT_DELAY);
+            let _ = injector.inject_reserved(&sid, token, b"\r");
+            injector.finish_delivery(&sid, token);
         });
+        self.synthesize_wake_busy(handle);
         Ok(())
+    }
+
+    fn cancel_started_delivery(&self, session_id: &str) {
+        let mut state = self.state.lock().unwrap();
+        let Some(outbox) = state.outbox_by_session.get_mut(session_id) else {
+            return;
+        };
+        outbox.submit_in_flight = false;
+        if outbox.deliveries.is_empty() {
+            state.outbox_by_session.remove(session_id);
+        }
+    }
+
+    fn flush_outbox(&self, session_id: &str) {
+        let handle = {
+            let state = self.state.lock().unwrap();
+            let Some(outbox) = state.outbox_by_session.get(session_id) else {
+                return;
+            };
+            if outbox.submit_in_flight || outbox.deliveries.is_empty() {
+                return;
+            }
+            outbox.handle.clone()
+        };
+
+        let reservation = match self.injector.reserve_delivery(session_id) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                let dropped = self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .outbox_by_session
+                    .remove(session_id)
+                    .map_or(0, |outbox| outbox.deliveries.len());
+                self.warn(format!(
+                    "router: dropped {dropped} deferred deliveries for {session_id}: {error}"
+                ));
+                return;
+            }
+        };
+        match reservation {
+            DeliveryReservation::Ready(token) => {
+                let delivery = {
+                    let mut state = self.state.lock().unwrap();
+                    let Some(outbox) = state.outbox_by_session.get_mut(session_id) else {
+                        self.injector.finish_delivery(session_id, token);
+                        return;
+                    };
+                    let Some(delivery) = outbox.deliveries.pop_front() else {
+                        self.injector.finish_delivery(session_id, token);
+                        return;
+                    };
+                    outbox.submit_in_flight = true;
+                    delivery
+                };
+                if let Err(error) =
+                    self.start_reserved_delivery(session_id, &handle, delivery, token)
+                {
+                    log::warn!("deferred router delivery to {session_id} failed: {error}");
+                }
+            }
+            DeliveryReservation::RecentlyTyping(delay) => {
+                self.schedule_outbox_retry(session_id.to_string(), delay);
+            }
+            DeliveryReservation::PendingInput | DeliveryReservation::InFlight => {}
+        }
+    }
+
+    fn schedule_outbox_retry(&self, session_id: String, delay: Duration) {
+        let generation = {
+            let mut state = self.state.lock().unwrap();
+            let Some(outbox) = state.outbox_by_session.get_mut(&session_id) else {
+                return;
+            };
+            if outbox.retry_scheduled {
+                return;
+            }
+            outbox.retry_scheduled = true;
+            outbox.retry_generation = outbox.retry_generation.wrapping_add(1);
+            outbox.retry_generation
+        };
+        let router = self.weak_self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            if let Some(router) = router.upgrade() {
+                {
+                    let mut state = router.state.lock().unwrap();
+                    let Some(outbox) = state.outbox_by_session.get_mut(&session_id) else {
+                        return;
+                    };
+                    if outbox.retry_generation != generation {
+                        return;
+                    }
+                    outbox.retry_scheduled = false;
+                }
+                router.flush_outbox(&session_id);
+            }
+        });
+    }
+
+    fn schedule_outbox_flush(&self, session_id: String, delay: Duration) {
+        let generation = {
+            let mut state = self.state.lock().unwrap();
+            let Some(outbox) = state.outbox_by_session.get_mut(&session_id) else {
+                return;
+            };
+            if outbox.deliveries.is_empty() {
+                return;
+            }
+            outbox.retry_generation = outbox.retry_generation.wrapping_add(1);
+            outbox.retry_scheduled = false;
+            outbox.submit_in_flight = false;
+            outbox.retry_generation
+        };
+        let router = self.weak_self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            if let Some(router) = router.upgrade() {
+                let current = router
+                    .state
+                    .lock()
+                    .unwrap()
+                    .outbox_by_session
+                    .get(&session_id)
+                    .map(|outbox| outbox.retry_generation);
+                if current != Some(generation) {
+                    return;
+                }
+                router.flush_outbox(&session_id);
+            }
+        });
+    }
+
+    fn schedule_delivery_cooldown(&self, session_id: String) {
+        let generation = {
+            let mut state = self.state.lock().unwrap();
+            let Some(outbox) = state.outbox_by_session.get_mut(&session_id) else {
+                return;
+            };
+            outbox.retry_generation = outbox.retry_generation.wrapping_add(1);
+            outbox.retry_generation
+        };
+        let router = self.weak_self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(SUBMIT_DELAY);
+            let Some(router) = router.upgrade() else {
+                return;
+            };
+            {
+                let mut state = router.state.lock().unwrap();
+                let Some(outbox) = state.outbox_by_session.get_mut(&session_id) else {
+                    return;
+                };
+                if outbox.retry_generation != generation {
+                    return;
+                }
+                outbox.submit_in_flight = false;
+            }
+            router.flush_outbox(&session_id);
+            let mut state = router.state.lock().unwrap();
+            if state
+                .outbox_by_session
+                .get(&session_id)
+                .is_some_and(|outbox| !outbox.submit_in_flight && outbox.deliveries.is_empty())
+            {
+                state.outbox_by_session.remove(&session_id);
+            }
+        });
     }
 
     /// Lead launch-prompt injection: routes through the verified
@@ -689,6 +1062,48 @@ impl Router {
                     self.mission_id
                 );
                 None
+            }
+        }
+    }
+}
+
+impl SessionDeliveryListener for Router {
+    fn session_delivery_event(&self, session_id: &str, event: SessionDeliveryEvent) {
+        match event {
+            SessionDeliveryEvent::InputCleared => {
+                self.schedule_outbox_flush(session_id.to_string(), SUBMIT_DELAY);
+            }
+            SessionDeliveryEvent::InputQueueDrained => self.flush_outbox(session_id),
+            SessionDeliveryEvent::DeliveryFinished => {
+                self.schedule_delivery_cooldown(session_id.to_string());
+            }
+            SessionDeliveryEvent::Respawned => {
+                if let Some(outbox) = self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .outbox_by_session
+                    .get_mut(session_id)
+                {
+                    outbox.submit_in_flight = false;
+                    outbox.retry_scheduled = false;
+                    outbox.retry_generation = outbox.retry_generation.wrapping_add(1);
+                }
+                self.flush_outbox(session_id);
+            }
+            SessionDeliveryEvent::Exited => {
+                let dropped = self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .outbox_by_session
+                    .remove(session_id)
+                    .map_or(0, |outbox| outbox.deliveries.len());
+                if dropped > 0 {
+                    self.warn(format!(
+                        "router: dropped {dropped} deferred deliveries because session {session_id} exited"
+                    ));
+                }
             }
         }
     }

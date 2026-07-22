@@ -60,12 +60,21 @@ impl SessionManager {
         }
 
         // Stop succeeded. Now tear down the handle and reconcile.
+        let gate = state.lock().unwrap().delivery_gate.clone();
         let (stop, forwarder) = {
+            let mut delivery = gate.state.lock().unwrap();
             let mut state = state.lock().unwrap();
             match state.handle.take() {
                 Some(mut h) => {
+                    delivery.generation = delivery.generation.wrapping_add(1);
+                    delivery.in_flight = false;
+                    delivery.next_ticket = 0;
+                    delivery.next_served = 0;
+                    gate.ready.notify_all();
                     state.activity = None;
                     state.suppress_local_input_busy = false;
+                    state.local_input_pending = false;
+                    state.last_local_input_at = None;
                     state.mission_status_sink = None;
                     state.completion_armed = false;
                     (h.stop.clone(), h.forwarder.take())
@@ -73,6 +82,7 @@ impl SessionManager {
                 None => return Ok(()), // raced with another caller; no-op
             }
         };
+        self.notify_delivery_event(session_id, router::SessionDeliveryEvent::Exited);
 
         // Flip the explicit cancellation flag so the consumer
         // breaks out within ~500ms regardless of how the reader EOF
@@ -208,17 +218,29 @@ impl SessionManager {
         // Use `purge_session_buffers` for explicit cleanup paths
         // (archive, runner delete).
         if let Some(state) = self.session_state(session_id) {
+            let gate = state.lock().unwrap().delivery_gate.clone();
+            let mut delivery = gate.state.lock().unwrap();
             let mut state = state.lock().unwrap();
             if state
                 .handle
                 .as_ref()
                 .is_some_and(|h| Self::runtime_session_matches(&h.runtime_session, runtime_session))
             {
+                delivery.generation = delivery.generation.wrapping_add(1);
+                delivery.in_flight = false;
+                delivery.next_ticket = 0;
+                delivery.next_served = 0;
+                gate.ready.notify_all();
                 state.handle = None;
                 state.activity = None;
                 state.suppress_local_input_busy = false;
+                state.local_input_pending = false;
+                state.last_local_input_at = None;
                 state.mission_status_sink = None;
                 state.completion_armed = false;
+                drop(state);
+                drop(delivery);
+                self.notify_delivery_event(session_id, router::SessionDeliveryEvent::Exited);
             }
         }
         self.prune_empty_session_state(session_id);
