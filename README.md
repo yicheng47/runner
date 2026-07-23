@@ -151,9 +151,9 @@ The **default Runner shape** — a three-runner engineering party where one deco
 For weirder, more fun crew shapes, peek at [`examples/`](./examples/):
 
 - [`dev-crew/`](./examples/dev-crew/) — the default architect / impl / reviewer trio above
+- [`peer-coding/`](./examples/peer-coding/) — the tightest loop that still has a second pair of eyes: a coder ships one task on a feature branch, a reviewer audits the working-tree diff over the Runner CLI until clean
 - [`docs-crew/`](./examples/docs-crew/) — architect partitions a complex repo, 2+ writers draft per-module docs in parallel, editor harmonizes
 - [`tic-tac-toe/`](./examples/tic-tac-toe/) — 2 agents + 1 referee actually playing a game against each other
-- [`werewolf/`](./examples/werewolf/) — 6-player social deduction with a god moderator
 - [`tomb-raid/`](./examples/tomb-raid/) — a 4-person heist crew run by a DM
 
 Each is a copy-pasteable handle + system-prompt set you can spawn into a new Crew and hit Start.
