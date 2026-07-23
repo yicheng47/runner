@@ -742,6 +742,11 @@ impl SessionManager {
                 .is_none_or(|last| last.elapsed() >= RECENT_LOCAL_INPUT_WINDOW)
     }
 
+    pub fn session_live(&self, session_id: &str) -> bool {
+        self.session_state(session_id)
+            .is_some_and(|session| session.lock().unwrap().handle.is_some())
+    }
+
     pub fn reserve_delivery(&self, session_id: &str) -> Result<router::DeliveryReservation> {
         let session = self
             .session_state(session_id)

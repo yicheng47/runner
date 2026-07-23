@@ -22,10 +22,11 @@ mod handlers;
 pub mod prompt;
 pub mod runtime;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
-use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use runner_core::event_log::EventLog;
 use runner_core::model::{Event, EventKind, SignalType};
@@ -58,6 +59,8 @@ pub trait StdinInjector: Send + Sync + 'static {
     /// reservation below so a keystroke cannot race a separate query.
     fn input_quiescent(&self, session_id: &str) -> bool;
 
+    fn session_live(&self, session_id: &str) -> bool;
+
     fn reserve_delivery(&self, session_id: &str) -> Result<DeliveryReservation>;
 
     fn inject_reserved(&self, session_id: &str, token: u64, bytes: &[u8]) -> Result<bool>;
@@ -82,6 +85,10 @@ impl StdinInjector for SessionManager {
 
     fn input_quiescent(&self, session_id: &str) -> bool {
         SessionManager::input_quiescent(self, session_id)
+    }
+
+    fn session_live(&self, session_id: &str) -> bool {
+        SessionManager::session_live(self, session_id)
     }
 
     fn reserve_delivery(&self, session_id: &str) -> Result<DeliveryReservation> {
@@ -171,6 +178,10 @@ pub(crate) struct RosterRow {
 }
 
 const SUBMIT_DELAY: Duration = Duration::from_millis(80);
+const INPUT_CLEAR_FLUSH_GRACE: Duration = Duration::from_millis(500);
+const RECONCILIATION_TICK_INTERVAL: Duration = Duration::from_secs(30);
+const RECONCILIATION_RENUDGE_BACKOFF: Duration = Duration::from_secs(2 * 60);
+const RECONCILIATION_NUDGE: &str = "[inbox] unread messages — run `runner msg read` to view.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DeliveryKind {
@@ -242,6 +253,27 @@ struct RouterState {
     /// bootstrap the lead.
     replay_high_water: Option<String>,
     outbox_by_session: HashMap<String, SessionOutbox>,
+    live_sessions: HashSet<String>,
+    unread_by_handle: HashMap<String, usize>,
+    last_reconciliation_nudge: HashMap<String, Instant>,
+}
+
+struct ReconciliationClock {
+    shutdown: Arc<(Mutex<bool>, Condvar)>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl ReconciliationClock {
+    fn stop(mut self) {
+        let (shutdown, wake) = self.shutdown.as_ref();
+        *shutdown.lock().unwrap() = true;
+        wake.notify_all();
+        if let Some(handle) = self.handle.take() {
+            if handle.thread().id() != std::thread::current().id() {
+                let _ = handle.join();
+            }
+        }
+    }
 }
 
 /// One mission's router. Mounted by `mission_start` after sessions spawn,
@@ -254,6 +286,7 @@ pub struct Router {
     injector: Arc<dyn StdinInjector>,
     launch: LaunchInputs,
     state: Mutex<RouterState>,
+    reconciliation_clock: Mutex<Option<ReconciliationClock>>,
     weak_self: Weak<Router>,
 }
 
@@ -304,6 +337,7 @@ impl Router {
                 crew_addendum,
             },
             state: Mutex::new(RouterState::default()),
+            reconciliation_clock: Mutex::new(None),
             weak_self: weak_self.clone(),
         }))
     }
@@ -322,6 +356,9 @@ impl Router {
                 state
                     .session_by_handle
                     .insert(handle.clone(), session_id.clone());
+                if self.injector.session_live(session_id) {
+                    state.live_sessions.insert(session_id.clone());
+                }
             }
         }
         let listener: Weak<dyn SessionDeliveryListener> = self.weak_self.clone();
@@ -536,15 +573,27 @@ impl Router {
 
     pub(crate) fn inject_and_submit(&self, handle: &str, body: &[u8]) -> Result<()> {
         self.inject_delivery(handle, body, DeliveryKind::Relay)
+            .map(|_| ())
     }
 
     pub(crate) fn inject_inbox_nudge(&self, handle: &str, body: &[u8]) -> Result<()> {
         self.inject_delivery(handle, body, DeliveryKind::InboxNudge)
+            .map(|_| ())
     }
 
     /// Reserve a clean input box through the delayed Enter, or park the
     /// payload until the session manager reports that local input cleared.
-    fn inject_delivery(&self, handle: &str, body: &[u8], kind: DeliveryKind) -> Result<()> {
+    fn inject_delivery(&self, handle: &str, body: &[u8], kind: DeliveryKind) -> Result<bool> {
+        self.inject_delivery_at(handle, body, kind, None)
+    }
+
+    fn inject_delivery_at(
+        &self,
+        handle: &str,
+        body: &[u8],
+        kind: DeliveryKind,
+        reconciliation: Option<(Instant, Duration)>,
+    ) -> Result<bool> {
         let delivery = QueuedDelivery {
             kind,
             body: body.to_vec(),
@@ -561,14 +610,37 @@ impl Router {
                     "router: no live session for handle @{handle}"
                 )));
             };
+            if let Some((now, backoff)) = reconciliation {
+                let delivery_pending = state
+                    .outbox_by_session
+                    .get(&session_id)
+                    .is_some_and(|outbox| outbox.submit_in_flight || !outbox.deliveries.is_empty());
+                let backoff_active = state
+                    .last_reconciliation_nudge
+                    .get(handle)
+                    .is_some_and(|last| now.saturating_duration_since(*last) < backoff);
+                if !state.live_sessions.contains(&session_id)
+                    || state.unread_by_handle.get(handle).copied().unwrap_or(0) == 0
+                    || !matches!(state.status.get(handle), Some(RunnerStatus::Idle))
+                    || delivery_pending
+                    || backoff_active
+                {
+                    return Ok(false);
+                }
+            }
             if let Some(outbox) = state.outbox_by_session.get_mut(&session_id) {
                 if outbox.submit_in_flight || !outbox.deliveries.is_empty() {
                     outbox.enqueue(delivery);
-                    return Ok(());
+                    return Ok(true);
                 }
             }
             match self.injector.reserve_delivery(&session_id)? {
                 DeliveryReservation::Ready(token) => {
+                    if let Some((now, _)) = reconciliation {
+                        state
+                            .last_reconciliation_nudge
+                            .insert(handle.to_string(), now);
+                    }
                     let outbox = state
                         .outbox_by_session
                         .entry(session_id.clone())
@@ -578,6 +650,9 @@ impl Router {
                     (session_id, Some((delivery, token)))
                 }
                 DeliveryReservation::RecentlyTyping(delay) => {
+                    if reconciliation.is_some() {
+                        return Ok(false);
+                    }
                     if deferable {
                         let outbox = state
                             .outbox_by_session
@@ -590,6 +665,9 @@ impl Router {
                     (session_id, None)
                 }
                 DeliveryReservation::PendingInput | DeliveryReservation::InFlight => {
+                    if reconciliation.is_some() {
+                        return Ok(false);
+                    }
                     if deferable {
                         let outbox = state
                             .outbox_by_session
@@ -605,12 +683,107 @@ impl Router {
         if let Some((session_id, delay)) = retry {
             self.schedule_outbox_retry(session_id, delay);
         }
-        match ready {
-            Some((delivery, token)) => {
-                self.start_reserved_delivery(&session_id, handle, delivery, token)
+        if let Some((delivery, token)) = ready {
+            if let Err(error) = self.start_reserved_delivery(&session_id, handle, delivery, token) {
+                if reconciliation.is_some() {
+                    self.state
+                        .lock()
+                        .unwrap()
+                        .last_reconciliation_nudge
+                        .remove(handle);
+                }
+                return Err(error);
             }
-            None => Ok(()),
         }
+        Ok(true)
+    }
+
+    fn reconcile_inbox_at(&self, now: Instant, backoff: Duration) -> usize {
+        let handles: Vec<String> = self
+            .state
+            .lock()
+            .unwrap()
+            .session_by_handle
+            .keys()
+            .cloned()
+            .collect();
+        handles
+            .into_iter()
+            .filter(|handle| {
+                match self.inject_delivery_at(
+                    handle,
+                    RECONCILIATION_NUDGE.as_bytes(),
+                    DeliveryKind::InboxNudge,
+                    Some((now, backoff)),
+                ) {
+                    Ok(nudged) => nudged,
+                    Err(error) => {
+                        log::warn!(
+                            "inbox reconciliation nudge to @{handle} on mission {} failed: {error}",
+                            self.mission_id
+                        );
+                        false
+                    }
+                }
+            })
+            .count()
+    }
+
+    fn start_reconciliation_tick_with_timings(
+        self: &Arc<Self>,
+        interval: Duration,
+        backoff: Duration,
+    ) {
+        let mut clock = self.reconciliation_clock.lock().unwrap();
+        if clock.is_some() {
+            return;
+        }
+        let shutdown = Arc::new((Mutex::new(false), Condvar::new()));
+        let shutdown_for_thread = Arc::clone(&shutdown);
+        let router = Arc::downgrade(self);
+        let mission_id = self.mission_id.clone();
+        let handle = std::thread::Builder::new()
+            .name(format!("inbox-reconcile-{mission_id}"))
+            .spawn(move || {
+                let (stopped, wake) = shutdown_for_thread.as_ref();
+                loop {
+                    let guard = stopped.lock().unwrap();
+                    let (guard, _) = wake
+                        .wait_timeout_while(guard, interval, |stopped| !*stopped)
+                        .unwrap();
+                    if *guard {
+                        return;
+                    }
+                    drop(guard);
+                    let Some(router) = router.upgrade() else {
+                        return;
+                    };
+                    router.reconcile_inbox_at(Instant::now(), backoff);
+                }
+            })
+            .expect("spawn inbox reconciliation clock");
+        *clock = Some(ReconciliationClock {
+            shutdown,
+            handle: Some(handle),
+        });
+    }
+
+    fn stop_reconciliation_tick(&self) {
+        if let Some(clock) = self.reconciliation_clock.lock().unwrap().take() {
+            clock.stop();
+        }
+    }
+
+    fn set_unread(&self, handle: &str, unread_count: usize) {
+        self.state
+            .lock()
+            .unwrap()
+            .unread_by_handle
+            .insert(handle.to_string(), unread_count);
+    }
+
+    fn update_inbox(&self, update: &InboxUpdate) {
+        self.set_unread(&update.runner_handle, update.unread_count);
     }
 
     fn start_reserved_delivery(
@@ -1071,34 +1244,31 @@ impl SessionDeliveryListener for Router {
     fn session_delivery_event(&self, session_id: &str, event: SessionDeliveryEvent) {
         match event {
             SessionDeliveryEvent::InputCleared => {
-                self.schedule_outbox_flush(session_id.to_string(), SUBMIT_DELAY);
+                self.schedule_outbox_flush(session_id.to_string(), INPUT_CLEAR_FLUSH_GRACE);
             }
             SessionDeliveryEvent::InputQueueDrained => self.flush_outbox(session_id),
             SessionDeliveryEvent::DeliveryFinished => {
                 self.schedule_delivery_cooldown(session_id.to_string());
             }
             SessionDeliveryEvent::Respawned => {
-                if let Some(outbox) = self
-                    .state
-                    .lock()
-                    .unwrap()
-                    .outbox_by_session
-                    .get_mut(session_id)
-                {
+                let mut state = self.state.lock().unwrap();
+                state.live_sessions.insert(session_id.to_string());
+                if let Some(outbox) = state.outbox_by_session.get_mut(session_id) {
                     outbox.submit_in_flight = false;
                     outbox.retry_scheduled = false;
                     outbox.retry_generation = outbox.retry_generation.wrapping_add(1);
                 }
+                drop(state);
                 self.flush_outbox(session_id);
             }
             SessionDeliveryEvent::Exited => {
-                let dropped = self
-                    .state
-                    .lock()
-                    .unwrap()
+                let mut state = self.state.lock().unwrap();
+                state.live_sessions.remove(session_id);
+                let dropped = state
                     .outbox_by_session
                     .remove(session_id)
                     .map_or(0, |outbox| outbox.deliveries.len());
+                drop(state);
                 if dropped > 0 {
                     self.warn(format!(
                         "router: dropped {dropped} deferred deliveries because session {session_id} exited"
@@ -1152,16 +1322,20 @@ impl RosterRow {
 }
 
 /// `BusEmitter` adapter so the existing `BusRegistry::mount` machinery can
-/// drive the router. Only `appended` carries the work; the inbox/watermark
-/// methods are no-ops because those are projections owned by the bus.
+/// drive the router. Appended events feed the dispatcher; inbox and watermark
+/// projections keep the reconciliation clock's unread snapshot current.
 pub struct RouterSubscriber(pub Arc<Router>);
 
 impl BusEmitter for RouterSubscriber {
     fn appended(&self, ev: &AppendedEvent) {
         self.0.handle_event(&ev.event);
     }
-    fn inbox_updated(&self, _ev: &InboxUpdate) {}
-    fn watermark_advanced(&self, _ev: &WatermarkUpdate) {}
+    fn inbox_updated(&self, ev: &InboxUpdate) {
+        self.0.update_inbox(ev);
+    }
+    fn watermark_advanced(&self, ev: &WatermarkUpdate) {
+        self.0.set_unread(&ev.runner_handle, ev.unread_count);
+    }
 }
 
 /// Fan a single bus emission to multiple subscribers. The bus accepts only
@@ -1209,12 +1383,39 @@ impl RouterRegistry {
     }
 
     pub fn register(&self, mission_id: String, router: Arc<Router>) {
+        self.register_with_timings(
+            mission_id,
+            router,
+            RECONCILIATION_TICK_INTERVAL,
+            RECONCILIATION_RENUDGE_BACKOFF,
+        );
+    }
+
+    fn register_with_timings(
+        &self,
+        mission_id: String,
+        router: Arc<Router>,
+        interval: Duration,
+        backoff: Duration,
+    ) {
         log::info!("router mounted: mission={mission_id}");
-        self.routers.lock().unwrap().insert(mission_id, router);
+        let previous = self
+            .routers
+            .lock()
+            .unwrap()
+            .insert(mission_id, Arc::clone(&router));
+        if let Some(previous) = previous {
+            if !Arc::ptr_eq(&previous, &router) {
+                previous.stop_reconciliation_tick();
+            }
+        }
+        router.start_reconciliation_tick_with_timings(interval, backoff);
     }
 
     pub fn unregister(&self, mission_id: &str) {
-        if self.routers.lock().unwrap().remove(mission_id).is_some() {
+        let router = self.routers.lock().unwrap().remove(mission_id);
+        if let Some(router) = router {
+            router.stop_reconciliation_tick();
             log::info!("router unmounted: mission={mission_id}");
         }
     }
@@ -1222,6 +1423,12 @@ impl RouterRegistry {
     #[allow(dead_code)] // Exposed for the future workspace UI bridge.
     pub fn get(&self, mission_id: &str) -> Option<Arc<Router>> {
         self.routers.lock().unwrap().get(mission_id).cloned()
+    }
+}
+
+impl Drop for Router {
+    fn drop(&mut self) {
+        self.stop_reconciliation_tick();
     }
 }
 
