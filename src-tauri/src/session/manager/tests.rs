@@ -12,7 +12,7 @@ use crate::session::runtime::{
     OutputStream, RuntimeError, RuntimeResult, RuntimeSession, SessionRuntime, SessionStatus,
     SpawnSpec,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -63,6 +63,7 @@ struct FakeRuntime {
     spawns: std::sync::Mutex<Vec<FakeSpawn>>,
     inputs: std::sync::Mutex<Vec<FakeInput>>,
     stops: std::sync::Mutex<Vec<String>>,
+    stop_failures: std::sync::Mutex<HashSet<String>>,
     resizes: std::sync::Mutex<Vec<(String, u16, u16)>>,
     /// What `status()` returns for any pane lookup. Most tests
     /// want exit_code=0 (clean stop); the kill-semantics test
@@ -143,6 +144,17 @@ impl FakeRuntime {
         self.spawns.lock().unwrap().len()
     }
 
+    fn fail_stop_for(&self, session_id: &str) {
+        self.stop_failures
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string());
+    }
+
+    fn allow_stop_for(&self, session_id: &str) {
+        self.stop_failures.lock().unwrap().remove(session_id);
+    }
+
     fn last_spawn_spec(&self) -> Option<SpawnSpec> {
         self.spawns.lock().unwrap().last().map(|s| s.spec.clone())
     }
@@ -190,6 +202,17 @@ impl SessionRuntime for FakeRuntime {
 
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
         self.stops.lock().unwrap().push(session.session_id.clone());
+        if self
+            .stop_failures
+            .lock()
+            .unwrap()
+            .contains(&session.session_id)
+        {
+            return Err(RuntimeError::Msg(format!(
+                "injected stop failure for {}",
+                session.session_id
+            )));
+        }
         // Drop the matching tx so the forwarder sees Disconnected.
         let target_session_id = session.session_id.clone();
         let mut spawns = self.spawns.lock().unwrap();
@@ -1456,6 +1479,73 @@ fn kill_blocks_until_session_row_is_terminal() {
     // forwarder also calls stop on its way out as
     // belt-and-suspenders cleanup once the channel closes).
     assert!(!fake.stops.lock().unwrap().is_empty());
+}
+
+#[test]
+fn kill_all_for_mission_attempts_every_session_and_aggregates_failures() {
+    let pool = pool_with_schema();
+    let mission_id = ulid::Ulid::new().to_string();
+    let runner_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_runner(&pool, &mission_id, &runner_id);
+    let mission = Mission {
+        id: mission_id.clone(),
+        crew_id: "c".into(),
+        ..mission()
+    };
+    let mut runner = runner("/bin/cat", &[]);
+    runner.id = runner_id;
+    let mut slot = slot_for(&runner);
+    slot.id = slot_id;
+    slot.crew_id = "c".into();
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let first = mgr
+        .spawn(
+            &mission,
+            &runner,
+            &slot,
+            std::path::Path::new("/tmp"),
+            PathBuf::from("/dev/null"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    let second = mgr
+        .spawn(
+            &mission,
+            &runner,
+            &slot,
+            std::path::Path::new("/tmp"),
+            PathBuf::from("/dev/null"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    fake.fail_stop_for(&first.id);
+
+    let error = mgr.kill_all_for_mission(&mission_id).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains(&first.id), "unexpected error: {message}");
+    assert!(
+        fake.stops.lock().unwrap().contains(&second.id),
+        "sweep stopped before attempting the second session"
+    );
+    assert!(
+        mgr.session_state(&second.id)
+            .is_none_or(|state| state.lock().unwrap().handle.is_none()),
+        "successful sessions must still be torn down"
+    );
+    assert!(
+        mgr.session_state(&first.id)
+            .is_some_and(|state| state.lock().unwrap().handle.is_some()),
+        "failed session must remain retryable"
+    );
+
+    fake.allow_stop_for(&first.id);
+    mgr.kill(&first.id).unwrap();
 }
 
 #[test]

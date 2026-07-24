@@ -193,19 +193,29 @@ impl SessionManager {
             } else {
                 crate::model::SessionStatus::Crashed
             };
-            if let Ok(conn) = pool.get() {
-                if resume_failed {
-                    let _ = crate::repo::session::set_crashed_clearing_key(
-                        &conn,
-                        &session_id,
-                        Utc::now(),
-                    );
-                } else {
-                    let _ = crate::repo::session::set_exit_status(
-                        &conn,
-                        &session_id,
-                        final_status,
-                        Utc::now(),
+            match pool.get() {
+                Ok(conn) => {
+                    let result = if resume_failed {
+                        crate::repo::session::set_crashed_clearing_key(
+                            &conn,
+                            &session_id,
+                            Utc::now(),
+                        )
+                    } else {
+                        crate::repo::session::set_exit_status(
+                            &conn,
+                            &session_id,
+                            final_status,
+                            Utc::now(),
+                        )
+                    };
+                    if let Err(error) = result {
+                        log::warn!("session exit reconciliation failed for {session_id}: {error}");
+                    }
+                }
+                Err(error) => {
+                    log::warn!(
+                        "session exit reconciliation pool checkout failed for {session_id}: {error}"
                     );
                 }
             }

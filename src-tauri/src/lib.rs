@@ -145,9 +145,9 @@ pub fn run() {
             let db_path = app_data_dir.join("runner.db");
             let pool = Arc::new(db::open_pool(&db_path)?);
             // Session startup cleanup happens after the runtime is
-            // constructed. Under the in-process PTY runtime, child
-            // processes die with the prior app process, so stale
-            // `running` rows are demoted below.
+            // constructed. Stale `running` rows are demoted below,
+            // then any recorded process that survived a prior stop is
+            // identity-checked and killed.
             // Drop the bundled agent/MCP CLIs into $APPDATA/runner/bin/.
             // Child PTYs find `runner` on PATH (arch §5.3 Layer 2), while
             // Claude/Codex configs point at `runner-mcp`. Best-effort: a
@@ -236,15 +236,18 @@ pub fn run() {
                 &app_handle,
             ));
 
-            // Agents die with this Tauri process under the pty
-            // runtime — any `running` row in the DB at this point
-            // is from a prior process. Demote them to `stopped`
-            // so the sidebar surfaces them with a Resume
-            // affordance (impl 0011 §"Tauri startup").
+            // Any `running` row in the DB at this point is from a
+            // prior process. Demote it to `stopped` so the sidebar
+            // surfaces a Resume affordance, then sweep recorded pids
+            // that still exist only when their command identity
+            // matches the session row.
             #[cfg(unix)]
             {
                 if let Err(e) = session::pty_runtime::cleanup_stale_running_rows_on_startup(&pool) {
                     log::warn!("pty runtime startup cleanup failed: {e}");
+                }
+                if let Err(e) = session::pty_runtime::cleanup_orphan_processes_on_startup(&pool) {
+                    log::warn!("pty runtime startup orphan sweep failed: {e}");
                 }
             }
 

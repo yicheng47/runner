@@ -49,8 +49,8 @@ impl SessionManager {
             }
         };
 
-        // Stop verifies that the child was signaled. Returns Err if
-        // the runtime refuses to reap it.
+        // Stop verifies that the child is dead and reaped. Returns Err
+        // while either half of that contract is unmet.
         if let Err(e) = self.runtime.stop(&rt_session) {
             // Roll back: child is alive, the handle stays
             // in the map, the killed marker is cleared. The
@@ -172,8 +172,17 @@ impl SessionManager {
                 })
                 .collect()
         };
+        let mut failures = Vec::new();
         for id in ids {
-            self.kill(&id)?;
+            if let Err(error) = self.kill(&id) {
+                failures.push(format!("{id}: {error}"));
+            }
+        }
+        if !failures.is_empty() {
+            return Err(Error::msg(format!(
+                "failed to kill mission sessions: {}",
+                failures.join("; ")
+            )));
         }
         Ok(())
     }
@@ -194,8 +203,17 @@ impl SessionManager {
                 })
                 .collect()
         };
+        let mut failures = Vec::new();
         for id in ids {
-            self.kill(&id)?;
+            if let Err(error) = self.kill(&id) {
+                failures.push(format!("{id}: {error}"));
+            }
+        }
+        if !failures.is_empty() {
+            return Err(Error::msg(format!(
+                "failed to kill runner sessions: {}",
+                failures.join("; ")
+            )));
         }
         Ok(())
     }
