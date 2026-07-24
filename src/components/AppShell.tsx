@@ -30,11 +30,13 @@ import {
   writeStoredBool,
 } from "../lib/settings";
 import { eventMatchesShortcut } from "../lib/keymap";
+import { useCurrentWindowFullscreen } from "../hooks/useCurrentWindowFullscreen";
 
 const SIDEBAR_TOGGLE_EVENT = "runner:toggle-sidebar";
 
 export function AppShell({ children }: { children?: ReactNode }) {
   const location = useLocation();
+  const fullscreen = useCurrentWindowFullscreen();
   const settingsActive =
     matchPath("/settings/:pane?", location.pathname) != null;
   // Sidebar collapsed/expanded lives at the shell so Cmd+S can toggle
@@ -45,7 +47,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
   );
   const [sidebarPreviewOpen, setSidebarPreviewOpen] = useState(false);
   // Single source of truth for persistence — both the Sidebar's
-  // chevron click (setCollapsed via prop) and the Cmd+S keydown
+  // panel button (setCollapsed via prop) and the Cmd+S keydown
   // funnel through `collapsed`, so one effect keeps localStorage in
   // sync. The harmless one-write at mount with the already-stored
   // value is fine.
@@ -101,6 +103,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
         ) : null}
         <Sidebar
           collapsed={collapsed}
+          fullscreen={fullscreen}
           onCollapsedChange={setCollapsed}
           previewOpen={sidebarPreviewOpen}
           onPreviewOpenChange={setSidebarPreviewOpen}
@@ -111,7 +114,10 @@ export function AppShell({ children }: { children?: ReactNode }) {
             className="pointer-events-auto absolute left-0 right-0 top-0 z-10 h-7"
           />
           {children ?? <Outlet />}
-          <PersistentSurfaces />
+          <PersistentSurfaces
+            sidebarCollapsed={collapsed}
+            fullscreen={fullscreen}
+          />
         </main>
       </div>
       {settingsActive ? (

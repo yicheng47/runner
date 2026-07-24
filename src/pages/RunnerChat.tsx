@@ -15,11 +15,11 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import {
   Archive,
-  MoreHorizontal,
+  Ellipsis,
+  PanelRight,
   Pin,
   PinOff,
   SquarePen,
-  SquareSplitHorizontal,
   Terminal,
 } from "lucide-react";
 
@@ -52,7 +52,6 @@ import {
   useArchivingVersion,
 } from "../lib/archivingState";
 import { ChatPaneGroup } from "../components/ChatPaneGroup";
-import { PanelToggleGlyph } from "../components/PanelToggleGlyph";
 import { createTerminalRegistry } from "../lib/terminalRegistry";
 import { LayoutPicker } from "../components/LayoutPicker";
 import { StartChatModal } from "../components/StartChatModal";
@@ -178,9 +177,13 @@ async function inheritGroupPin(
 export default function RunnerChat({
   sessionId: sessionIdParam,
   visible,
+  sidebarCollapsed,
+  fullscreen,
 }: {
   sessionId: string;
   visible: boolean;
+  sidebarCollapsed: boolean;
+  fullscreen: boolean;
 }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -1372,6 +1375,11 @@ export default function RunnerChat({
         ? `${chatMeta.agent_runtime}-${chatMeta.handle}`
         : chatMeta.agent_runtime
       : null,
+    chatMeta?.runner_id &&
+    runner &&
+    chatMeta.agent_runtime !== runner.runtime
+      ? `runtime override · default ${runner.runtime}`
+      : null,
     chatMeta?.started_at
       ? `started ${formatRelative(chatMeta.started_at)}`
       : null,
@@ -1484,188 +1492,124 @@ export default function RunnerChat({
   return (
     <div className="flex h-full flex-1 flex-row bg-bg">
       <div className="flex min-w-0 flex-1 flex-col">
-      {/* `data-tauri-drag-region` makes the entire header strip drag
-          the window, matching macOS toolbar behavior. Interactive
-          children (Stop / Resume / kebab / panel toggle) keep their
-          click handlers — Tauri only enters drag mode on mousedowns
-          that land on the bare header, not on buttons. */}
-      <header
-        data-tauri-drag-region
-        className="flex items-center justify-between gap-4 border-b border-line bg-panel px-6 pb-3.5 pt-9"
-      >
-        <div className="flex min-w-0 items-center gap-3.5">
-          {/* Avatar — 36×36, matches MissionWorkspace's mission glyph
-              dimensions so the chat + mission headers line up at the
-              same baseline. */}
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-bg">
-            {splitActive ? (
-              <SquareSplitHorizontal
-                aria-hidden
-                className="h-[18px] w-[18px] text-accent"
+        <header
+          data-tauri-drag-region
+          className={`relative z-20 flex h-11 shrink-0 items-center gap-2 border-b border-line bg-panel pr-4 transition-[padding] duration-150 ${
+            sidebarCollapsed && !fullscreen ? "pl-[90px]" : "pl-4"
+          }`}
+        >
+          <Terminal
+            data-tauri-drag-region
+            aria-hidden
+            className="h-[13px] w-[13px] shrink-0 text-fg-2"
+          />
+          <div
+            data-tauri-drag-region
+            className="flex min-w-0 items-center gap-2"
+          >
+            <h1
+              data-tauri-drag-region
+              className="min-w-0 truncate text-[13px] font-medium text-fg"
+            >
+              {splitActive ? groupTitle : titleLabel}
+            </h1>
+            {sessionId && chatMeta && !isArchived && !isSecondary ? (
+              <ChatKebab
+                pinned={chatMeta.pinned}
+                metadata={splitActive ? groupMetaParts : metaParts}
+                open={kebabOpen}
+                onToggle={() => setKebabOpen((v) => !v)}
+                onClose={() => setKebabOpen(false)}
+                showPin={!splitActive}
+                onPin={() => {
+                  setKebabOpen(false);
+                  void togglePin();
+                }}
+                renameLabel={splitActive ? "Rename group" : "Rename"}
+                onRename={() => {
+                  setKebabOpen(false);
+                  if (splitActive) renameGroupPrompt();
+                  else void renameChatPrompt();
+                }}
+                archiveLabel={splitActive ? "Archive all" : "Archive"}
+                onArchive={() => {
+                  setKebabOpen(false);
+                  if (splitActive) void archiveAllPanes();
+                  else if (sessionId) void archiveSession(sessionId);
+                }}
               />
-            ) : (
-              <Terminal aria-hidden className="h-[18px] w-[18px] text-accent" />
-            )}
-          </div>
-          {/* Title block — typography + gaps mirror
-              MissionWorkspace's header so the bottom border lands at
-              the same y on both pages. Title was previously
-              font-mono text-[15px] which made chat's title row
-              ~2px taller, pushing its meta row down and offsetting
-              the divider visually. */}
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <div className="flex items-center gap-2">
-              {/* While split the topbar describes the GROUP — its
-                  controls (Stop all / Resume all / Archive all) are
-                  group-scoped, so the identity must be too. Name is
-                  user-given (kebab → Rename group) or derived from the
-                  member chats. */}
-              <h1 className="truncate text-[14px] font-semibold leading-tight text-fg">
-                {splitActive ? groupTitle : titleLabel}
-              </h1>
-              <span className="rounded bg-line-strong px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-fg-2">
-                {splitActive ? "Group" : "Chat"}
-              </span>
-              {/* Effective-runtime badge (feature 41): only when this
-                  chat runs an engine other than its runner's default. */}
-              {!splitActive &&
-              chatMeta?.runner_id &&
-              runner &&
-              chatMeta.agent_runtime !== runner.runtime ? (
-                <span
-                  title={`Runtime override — runner default is ${runner.runtime}`}
-                  className="rounded bg-accent/10 px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-accent"
+            ) : null}
+            {isArchived || isSecondary ? (
+              <BackButton onClick={() => navigate(backTarget)}>
+                {backLabel}
+              </BackButton>
+            ) : !sessionId ? (
+              <BackButton onClick={() => navigate(backTarget)}>
+                {backLabel}
+              </BackButton>
+            ) : !isArchived &&
+            !isSecondary &&
+            splitActive &&
+            visiblePaneSessions.length > 0 ? (
+              anyPaneRunning ? (
+                <StopButton
+                  variant="header"
+                  onClick={stopAllPanes}
+                  title="Stop all chats"
                 >
-                  {chatMeta.agent_runtime}
-                </span>
-              ) : null}
-              {isArchived ? (
-                <span className="inline-flex shrink-0 items-center rounded border border-line bg-raised px-2 py-0.5 text-[10px] font-medium text-fg-2">
-                  Archived · read-only
-                </span>
-              ) : null}
-            </div>
-            {(splitActive ? groupMetaParts : metaParts).length > 0 ? (
-              <div className="flex min-w-0 items-center gap-2 text-[11px] leading-tight text-fg-3">
-                {(splitActive ? groupMetaParts : metaParts).map((part, i) => (
-                  <span
-                    key={i}
-                    className={`truncate ${
-                      i > 0 ? "before:mr-2 before:text-line-strong before:content-['·']" : ""
-                    } ${i === 0 || (i > 0 && part.startsWith("/")) ? "font-mono" : ""}`}
-                  >
-                    {part}
-                  </span>
-                ))}
-              </div>
+                  Stop all
+                </StopButton>
+              ) : anyPaneResuming ? (
+                <ResumingButton variant="header" />
+              ) : (
+                <ResumeButton
+                  variant="header"
+                  onClick={resumeAllPanes}
+                  title="Resume all chats"
+                >
+                  Resume all
+                </ResumeButton>
+              )
+            ) : !isArchived && !isSecondary && resuming ? (
+              <ResumingButton variant="header" />
+            ) : !isArchived &&
+              !isSecondary &&
+              status === "running" &&
+              sessionId ? (
+              <StopButton
+                variant="header"
+                onClick={() => void stopSession(sessionId)}
+                title="Stop chat"
+              />
+            ) : !isArchived && !isSecondary && sessionId ? (
+              <ResumeButton
+                variant="header"
+                onClick={() => void resumeSession(sessionId)}
+                title="Resume chat"
+              />
             ) : null}
           </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {/* Layout button — left of Stop per the Pencil mock (`z1hPN`).
-              Hidden for archived rows (read-only single pane). */}
-          {sessionId && metaLoaded && !isArchived ? (
-            // Highlight reflects the current VIEW: a non-member chat reads
-            // as single-pane even while a group exists in the background.
-            <LayoutPicker
-              active={splitActive ? layout.preset : "single"}
-              onPick={pickPreset}
-            />
-          ) : null}
-          {isArchived ? (
-            // Archived rows are terminal: no Resume / Stop / Archive.
-            // Only surface the navigation escape hatch.
-            <BackButton onClick={() => navigate(backTarget)}>{backLabel}</BackButton>
-          ) : isSecondary ? (
-            // Secondary window (impl 0018): the primary owns the PTY, so no
-            // Stop/Resume here — those call session_kill / session_resume.
-            // Focus the primary (via the overlay) to act on this chat.
-            <BackButton onClick={() => navigate(backTarget)}>{backLabel}</BackButton>
-          ) : splitActive && visiblePaneSessions.length > 0 ? (
-            // Aggregate controls while split — per-pane Stop/Resume live
-            // in the pane headers; the topbar acts on every visible pane.
-            anyPaneRunning ? (
-              <StopButton onClick={stopAllPanes}>Stop all</StopButton>
-            ) : anyPaneResuming ? (
-              <ResumingButton />
-            ) : (
-              <ResumeButton onClick={resumeAllPanes}>Resume all</ResumeButton>
-            )
-          ) : resuming ? (
-            <ResumingButton />
-          ) : status === "running" && sessionId ? (
-            <StopButton onClick={() => void stopSession(sessionId)} />
-          ) : sessionId ? (
-            // Stopped/crashed → Resume, matching
-            // Pencil node `HLXK6` in `vS5ce`. Same action the inline
-            // SessionEndedOverlay card fires; mirroring it in the
-            // topbar lets the user recover without scrolling to the
-            // bottom of the feed. If `agent_session_key` is missing,
-            // the backend resume path starts a fresh agent process
-            // for the same row; the overlay subtitle explains that
-            // history is unavailable.
-            <ResumeButton onClick={() => void resumeSession(sessionId)} />
-          ) : (
-            // Last-resort fallback: no session yet.
-            <BackButton onClick={() => navigate(backTarget)}>{backLabel}</BackButton>
-          )}
-          {/* Topbar overflow menu — Pin / Rename / Archive, matching
-              the design's `session_ctx_menu` (`P5CLA` / `L31Zb`) and
-              the mission topbar's `MissionKebab`. Hidden for archived
-              rows: Pin/Rename make no sense for a terminal row, and
-              Archive is a no-op. */}
-          {sessionId && chatMeta && !isArchived && !isSecondary ? (
-            <ChatKebab
-              pinned={chatMeta.pinned}
-              open={kebabOpen}
-              onToggle={() => setKebabOpen((v) => !v)}
-              onClose={() => setKebabOpen(false)}
-              // Group mode: Pin is a per-chat sidebar concept, so it hides;
-              // Rename names the group; Archive archives every pane.
-              showPin={!splitActive}
-              onPin={() => {
-                setKebabOpen(false);
-                void togglePin();
-              }}
-              renameLabel={splitActive ? "Rename group" : "Rename"}
-              onRename={() => {
-                setKebabOpen(false);
-                if (splitActive) renameGroupPrompt();
-                else void renameChatPrompt();
-              }}
-              archiveLabel={splitActive ? "Archive all" : "Archive"}
-              onArchive={() => {
-                setKebabOpen(false);
-                if (splitActive) void archiveAllPanes();
-                else if (sessionId) void archiveSession(sessionId);
-              }}
-            />
-          ) : null}
-          {/* Panel-toggle button — only rendered in the topbar when
-              the side panel is collapsed (matches Pencil node `QfoJJ`).
-              When the panel is open, the toggle lives inside the
-              panel's own header at the top-right (see
-              RunnerSidePanel). */}
-          {!panelOpen ? (
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            {sessionId && metaLoaded && !isArchived ? (
+              <LayoutPicker
+                active={splitActive ? layout.preset : "single"}
+                onPick={pickPreset}
+              />
+            ) : null}
             <button
               type="button"
-              onClick={() => setPanelOpen(true)}
-              title="Open side panel"
-              aria-label="Open side panel"
-              className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-2 hover:bg-raised hover:text-fg"
+              onClick={() => setPanelOpen((open) => !open)}
+              title={panelOpen ? "Collapse side panel" : "Open side panel"}
+              aria-label={panelOpen ? "Collapse side panel" : "Open side panel"}
+              aria-pressed={panelOpen}
+              className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded transition-colors hover:bg-raised hover:text-fg ${
+                panelOpen ? "text-fg" : "text-fg-2"
+              }`}
             >
-              {/* Hollow = "panel exists but is collapsed"; flips to the
-                  filled trailing column when the panel is open. Mirror of
-                  the left sidebar toggle (#246), oriented to the right. */}
-              <PanelToggleGlyph
-                side="right"
-                filled={false}
-                className="h-[12.5px] w-[16px]"
-              />
+              <PanelRight aria-hidden className="h-[15px] w-[15px]" />
             </button>
-          ) : null}
-        </div>
-      </header>
+          </div>
+        </header>
 
       {err ? (
         <div className="mx-8 mt-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
@@ -1763,7 +1707,6 @@ export default function RunnerChat({
         runner={runner}
         chatMeta={chatMeta}
         open={panelOpen}
-        onClose={() => setPanelOpen(false)}
       />
       {/* Empty-pane fill flow (impl 0020): auto-opened when a preset has
           more slots than open chats, or from an empty pane's New chat
@@ -1914,12 +1857,10 @@ function RunnerSidePanel({
   runner,
   chatMeta,
   open,
-  onClose,
 }: {
   runner: Runner | null;
   chatMeta: DirectSessionEntry | null;
   open: boolean;
-  onClose: () => void;
 }) {
   const asideRef = useRef<HTMLElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
@@ -1953,29 +1894,10 @@ function RunnerSidePanel({
       }`}
     >
       <div ref={innerRef} style={{ width }} className="flex h-full flex-col">
-        {/* Side-panel header — same draggable-window rules as the
-            workspace topbar. The lone Collapse button keeps its
-            handler; everywhere else the strip drags the window. */}
         <header
           data-tauri-drag-region
-          className="flex shrink-0 items-center justify-end border-b border-line px-5 pb-3.5 pt-9"
-        >
-          <div className="flex h-9 items-center">
-            <button
-              type="button"
-              onClick={onClose}
-              title="Collapse panel"
-              aria-label="Collapse panel"
-              className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-2 hover:bg-raised hover:text-fg"
-            >
-              <PanelToggleGlyph
-                side="right"
-                filled
-                className="h-[12.5px] w-[16px]"
-              />
-            </button>
-          </div>
-        </header>
+          className="relative z-20 h-11 shrink-0 border-b border-line"
+        />
         <div className="flex min-h-0 flex-1 flex-col gap-[18px] overflow-y-auto p-5">
           {runner ? (
             <>
@@ -2112,6 +2034,7 @@ function RunnerSidePanel({
 /// here.
 function ChatKebab({
   pinned,
+  metadata,
   open,
   onToggle,
   onClose,
@@ -2123,6 +2046,7 @@ function ChatKebab({
   archiveLabel = "Archive",
 }: {
   pinned: boolean;
+  metadata: string[];
   open: boolean;
   onToggle: () => void;
   onClose: () => void;
@@ -2164,15 +2088,30 @@ function ChatKebab({
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={onToggle}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-fg-2 transition-colors hover:border-line hover:bg-raised hover:text-fg"
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-3 transition-colors hover:bg-raised hover:text-fg-2"
       >
-        <MoreHorizontal aria-hidden className="h-4 w-4" />
+        <Ellipsis aria-hidden className="h-[14px] w-[14px]" />
       </button>
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 top-full z-50 mt-1.5 flex w-40 flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
+          className="absolute left-0 top-full z-50 mt-1.5 flex w-64 flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
         >
+          {metadata.length > 0 ? (
+            <>
+              <div className="flex flex-col gap-1 px-2.5 py-2 text-[11px] text-fg-3">
+                {metadata.map((part, index) => (
+                  <span
+                    key={`${part}-${index}`}
+                    className={part.startsWith("/") ? "break-all font-mono" : ""}
+                  >
+                    {part}
+                  </span>
+                ))}
+              </div>
+              <div className="mx-1 mb-1 h-px bg-line" />
+            </>
+          ) : null}
           {showPin ? (
             <KebabItem
               icon={pinned ? PinOff : Pin}

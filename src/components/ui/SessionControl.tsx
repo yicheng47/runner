@@ -17,10 +17,13 @@ import { Loader2, Play, Square } from "lucide-react";
 
 const PILL_BASE =
   "inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-semibold transition-colors";
+const HEADER_BUTTON =
+  "inline-flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded transition-colors";
 
 export interface SessionControlProps {
   onClick?: () => void;
   title?: string;
+  variant?: "pill" | "header";
   /** Optional override label. Defaults to "Resume" / "Stop" / etc. */
   children?: ReactNode;
 }
@@ -33,8 +36,24 @@ export interface SessionControlProps {
 export function ResumeButton({
   onClick,
   title,
+  variant = "pill",
   children,
 }: SessionControlProps) {
+  if (variant === "header") {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        title={title ?? "Resume"}
+        aria-label={title ?? "Resume"}
+        className={`${HEADER_BUTTON} text-accent/80 hover:bg-accent/10 hover:text-accent`}
+      >
+        <Play aria-hidden className="h-[13px] w-[13px]" />
+        <span className="sr-only">{children ?? "Resume"}</span>
+      </button>
+    );
+  }
+
   return (
     <button
       type="button"
@@ -54,8 +73,24 @@ export function ResumeButton({
 // failure or a success.
 export function ResumingButton({
   title,
+  variant = "pill",
   children,
 }: Omit<SessionControlProps, "onClick">) {
+  if (variant === "header") {
+    return (
+      <button
+        type="button"
+        disabled
+        title={title ?? "Resuming…"}
+        aria-label={title ?? "Resuming…"}
+        className={`${HEADER_BUTTON} cursor-not-allowed text-info`}
+      >
+        <Loader2 aria-hidden className="h-[13px] w-[13px] animate-spin" />
+        <span className="sr-only">{children ?? "Resuming…"}</span>
+      </button>
+    );
+  }
+
   return (
     <button
       type="button"
@@ -75,9 +110,25 @@ export function ResumingButton({
 export function StopButton({
   onClick,
   title,
+  variant = "pill",
   children,
   iconTone = "danger",
 }: SessionControlProps & { iconTone?: "danger" | "fg" }) {
+  if (variant === "header") {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        title={title ?? "Stop"}
+        aria-label={title ?? "Stop"}
+        className={`${HEADER_BUTTON} text-danger/80 hover:bg-danger/10 hover:text-danger`}
+      >
+        <Square aria-hidden className="h-[13px] w-[13px]" />
+        <span className="sr-only">{children ?? "Stop"}</span>
+      </button>
+    );
+  }
+
   return (
     <button
       type="button"

@@ -32,7 +32,13 @@ import { matchPath, useLocation } from "react-router-dom";
 import MissionWorkspace from "../pages/MissionWorkspace";
 import RunnerChat from "../pages/RunnerChat";
 
-export function PersistentSurfaces() {
+export function PersistentSurfaces({
+  sidebarCollapsed,
+  fullscreen,
+}: {
+  sidebarCollapsed: boolean;
+  fullscreen: boolean;
+}) {
   const location = useLocation();
   const chatId =
     matchPath("/chats/:sessionId", location.pathname)?.params.sessionId ??
@@ -58,7 +64,12 @@ export function PersistentSurfaces() {
     <>
       {mountedChatId !== null ? (
         <div className={chatId !== null ? "contents" : "hidden"}>
-          <RunnerChat sessionId={mountedChatId} visible={chatId !== null} />
+          <RunnerChat
+            sessionId={mountedChatId}
+            visible={chatId !== null}
+            sidebarCollapsed={sidebarCollapsed}
+            fullscreen={fullscreen}
+          />
         </div>
       ) : null}
       {mountedMissionId !== null ? (
@@ -66,6 +77,8 @@ export function PersistentSurfaces() {
           <MissionWorkspace
             missionId={mountedMissionId}
             visible={missionId !== null}
+            sidebarCollapsed={sidebarCollapsed}
+            fullscreen={fullscreen}
           />
         </div>
       ) : null}
