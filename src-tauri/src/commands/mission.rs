@@ -764,11 +764,10 @@ async fn mission_start_impl_with_size(
     // sleeping in the gate would spawn into a stopped mission. See
     // `SessionManager::cancel_pending_mission_spawns`.
     //
-    // On per-slot spawn failure we mark just that row crashed and
-    // emit `session/exit` so the workspace's row refresh fires and
-    // the pane flips from "starting" to "session ended" without
-    // a manual refresh. Rest of the mission proceeds — user gets a
-    // Resume button on the broken slot.
+    // On per-slot spawn failure we mark that row crashed, emit
+    // `session/exit`, and reap or cancel the rest of the mission so
+    // the workspace lands in the same all-or-nothing paused state as
+    // a slot that exits after successfully spawning.
     let manager = Arc::clone(&state.sessions);
     let pool_for_task = state.db.clone();
     let mission_id_for_task = out.mission.id.clone();
@@ -824,6 +823,11 @@ async fn mission_start_impl_with_size(
                         exit_code: None,
                         success: false,
                     });
+                    manager.reap_live_mission_siblings(
+                        &mission_id_for_task,
+                        &session_id,
+                        &pool_for_task,
+                    );
                 }
             }
         }
@@ -1513,6 +1517,11 @@ pub(crate) async fn mission_reset_impl(
                         exit_code: None,
                         success: false,
                     });
+                    manager.reap_live_mission_siblings(
+                        &mission_id_for_task,
+                        &session_id,
+                        &pool_for_task,
+                    );
                 }
             }
         }
