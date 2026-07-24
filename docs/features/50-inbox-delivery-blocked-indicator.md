@@ -11,7 +11,8 @@ Ctrl+U makes the ambiguity visible. Runner sees the keystroke but cannot know wh
 ## Scope
 
 - Show a pane-local, non-modal indicator when a live mission session has unread inbox mail and pending local input prevents its wake nudge from being delivered safely.
-- Use direct copy such as `Inbox waiting — submit or cancel your draft to notify @handle`, including the unread count when it is greater than one.
+- Use mechanism-based copy such as `Inbox waiting (2) — typing detected, delivery paused`, including the unread count when it is greater than one. The copy must not assert that a draft exists (backspace-cleared input is undetectable, so the box may already be empty) and must not claim any action notifies the worker: clearing input releases the parked nudge, and Runner delivers it. No @handle in the copy — the indicator is pane-local, so the affected runner is already unambiguous.
+- Include a `Clear input (⌃C)` button on the indicator that emits a single Ctrl+C through the ordinary local-input write path — byte-identical to the user pressing the key. `ClearPending` fires organically and the existing 500ms flush grace plus fire-time re-check still apply, so typing during the grace re-parks delivery. Show the button only while the runner is idle: Ctrl+C during a busy turn would interrupt the agent. A lone Ctrl+C is safe on an already-empty box (worst case in claude-code it primes the exit hint; the pill's disappearance after delivery removes the second-press risk).
 - Keep the indicator outside the terminal byte stream so it cannot alter, submit, or clear the user's draft.
 - Clear the indicator when unread count reaches zero, input clears and delivery proceeds, the session exits, or the mission unmounts.
 - Drive the UI from ephemeral in-process state transitions; do not persist blocked-delivery state or append coordination-log events for it.
@@ -21,7 +22,7 @@ Ctrl+U makes the ambiguity visible. Runner sees the keystroke but cannot know wh
 
 - Reconstructing the agent TUI's draft buffer from xterm keystrokes or screen output.
 - Treating Ctrl+U as proof that all input is clear.
-- A force-deliver action that can splice a nudge into remaining draft text.
+- A force-deliver action that bypasses delivery safety checks or splices a nudge into remaining draft text. The `Clear input` button is not this: it performs the same keystroke the indicator teaches, through the same write path, with every reservation/grace check left in place.
 - Direct chats, which have no mission inbox.
 
 ## Implementation phases
@@ -39,4 +40,5 @@ Ctrl+U makes the ambiguity visible. Runner sees the keystroke but cannot know wh
 - [ ] A watermark advance to zero unread removes the indicator without injecting anything.
 - [ ] Empty inboxes, direct chats, busy sessions without blocked local input, and unrelated panes never show the indicator.
 - [ ] Session exit and mission stop remove blocked state with no stale indicator after remount.
+- [ ] The Clear input button sends exactly one Ctrl+C through the local-input path: a leftover draft is cancelled, an empty box is unchanged, ClearPending is observed, and delivery proceeds after the grace; the button is absent while the runner is busy.
 - [ ] Repeated reconciliation ticks do not duplicate UI events or churn rendering while the blocked state is unchanged.
