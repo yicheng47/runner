@@ -352,10 +352,10 @@ export interface AppendedEvent {
   event: Event;
 }
 
-// `human_said` payload sent from the workspace's MissionInput.
+// `human_said` payload accepted from external MCP clients.
 //   - text: the human's message
-//   - target: handle of the recipient runner; omit for broadcast (router
-//     defaults to the lead per arch §5.5)
+//   - target: handle of the recipient runner; omit to target the lead
+//     (see arch §8.1)
 export interface HumanSaidPayload {
   text: string;
   target?: string;
@@ -363,7 +363,7 @@ export interface HumanSaidPayload {
 
 // `human_response` payload — the workspace's AskHumanCard emits this when
 // the user picks one of the choices. `question_id` is the appended
-// `human_question` event's id (see arch §5.5.0).
+// `human_question` event's id (see arch §8.2).
 export interface HumanResponsePayload {
   question_id: string;
   choice: string;

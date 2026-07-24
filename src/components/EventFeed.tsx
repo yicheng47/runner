@@ -26,10 +26,9 @@ import type {
   HumanSaidPayload,
 } from "../lib/types";
 
-// Events authored by the human via MissionInput / AskHumanCard. When one
-// of these appends we always commit to the bottom — pressing send on a
-// chat surface should always land you at your own message, regardless of
-// where you'd scrolled.
+// Events authored by the human via MCP / AskHumanCard. When one appends
+// we always commit to the bottom so the operator sees the newly relayed
+// instruction or selected response regardless of where they'd scrolled.
 function isHumanAuthored(ev: Event): boolean {
   return (
     ev.kind === "signal" &&
@@ -244,7 +243,7 @@ function EventRow({
   }
 
   // User-authored signals render as message rows (header + plain text
-  // body via MessageBody), so a `human_said` from MissionInput and a
+  // body via MessageBody), so an MCP or historical `human_said` and a
   // `human_response` from AskHumanCard look like normal chat turns
   // instead of a JSON-y signal box. Target derivation differs by type:
   // human_said carries `payload.target`; human_response is paired back

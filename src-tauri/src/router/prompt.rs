@@ -50,12 +50,11 @@ pub struct LaunchPromptInput<'a> {
 
 /// First-user-turn body for a non-lead mission worker. Combines the
 /// platform-injected coordination preamble (Layer 1 — verbs the
-/// worker needs to participate in the bus + reply to the human),
-/// the optional crew-level addendum spliced under a `== Team
-/// conventions ==` section (Layer 2), and the worker's per-runner
-/// system_prompt as a `== Your brief ==` section (Layer 3 —
-/// persona). Returns the full composed body, never empty (preamble
-/// is always present).
+/// worker needs to participate in the bus), the optional crew-level
+/// addendum spliced under a `== Team conventions ==` section (Layer
+/// 2), and the worker's per-runner system_prompt as a `== Your brief
+/// ==` section (Layer 3 — persona). Returns the full composed body,
+/// never empty (preamble is always present).
 ///
 /// Delivered as the trailing positional `[PROMPT]` argv at spawn time
 /// when the runtime accepts it (see `router::runtime::first_turn_argv`).
@@ -100,22 +99,16 @@ pub fn compose_direct_first_turn(system_prompt: Option<&str>) -> Option<String> 
 }
 
 /// Platform-injected preamble for non-lead worker spawns. Covers the
-/// bus conventions a worker needs to interact with the crew + the
-/// human, leaving the user-authored `system_prompt` free to focus on
-/// persona / role.
-pub(crate) const WORKER_COORDINATION_PREAMBLE: &str = r#"You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew + the human operator via a shared event bus. Use these verbs to participate; do not invent your own conventions.
+/// bus conventions a worker needs to interact with the crew, leaving
+/// the user-authored `system_prompt` free to focus on persona / role.
+pub(crate) const WORKER_COORDINATION_PREAMBLE: &str = r#"You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.
 
 == Coordination ==
 - `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.
-- `runner msg post --to <handle> "<text>"` — direct message to a specific handle. Valid handles: any slot in this crew, plus the reserved virtual handle `human` (the workspace operator).
+- `runner msg post --to <handle> "<text>"` — direct message to a specific handle. Valid handles: any slot in this crew.
 - `runner msg post "<text>"` — broadcast to the crew (no `--to`).
 - `runner signal ask_lead --payload '{"question":"…","context":"…"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.
-- Busy/idle is inferred from your terminal activity — no need to call `runner status`.
-
-== Replying to the human ==
-The human is watching the workspace feed, NOT your TUI — plain TUI output (typing into your editor, printing to stdout) stays in your local scrollback only. When the human asks you a question or gives you a directive (raw input lands in your TUI, often prefixed with `[human_said]`), reply via:
-    runner msg post --to human "<your reply>"
-That route is what lands your reply in the workspace feed. For passing remarks ("got it", "noted") or when your TUI output already conveys the answer, no `runner msg post` call is needed — silence is fine."#;
+- Busy/idle is inferred from your terminal activity — no need to call `runner status`."#;
 
 pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
     let mut out = String::new();
@@ -145,7 +138,9 @@ pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
 
     out.push_str("== Mission ==\n");
     if input.mission_goal.trim().is_empty() {
-        out.push_str("Goal: (no goal set; await human_said).\n\n");
+        out.push_str(
+            "Goal: (no goal set; await the operator's instructions in your terminal).\n\n",
+        );
     } else {
         out.push_str(&format!("Goal: {}\n\n", input.mission_goal.trim()));
     }
@@ -173,12 +168,10 @@ pub fn compose_launch_prompt(input: &LaunchPromptInput<'_>) -> String {
     out.push_str(
         "- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n",
     );
-    out.push_str(
-        "- Reply to the HUMAN with `runner msg post --to human \"…\"` when they ask a question or give a directive — that route lands the reply in the workspace feed (typing answers into the TUI keeps them in your local scrollback only). For passing remarks, silence is fine. `human` is a reserved virtual handle for this two-way path.\n",
-    );
+    out.push_str("- The operator watches the terminals and types directly into a runner's pane.\n");
     out.push_str("- Read your inbox with `runner msg read` — it's pull-based.\n");
     out.push_str(
-        "- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`. Plain replies should use `runner msg post --to human` instead.\n",
+        "- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n",
     );
     out.push_str(
         "- Busy/idle is inferred from your terminal activity — no need to call `runner status`.\n",
@@ -245,24 +238,31 @@ mod tests {
             allowed_signals: &[],
             crew_addendum: None,
         });
-        assert!(prompt.contains("(no goal set"));
+        assert!(prompt
+            .contains("Goal: (no goal set; await the operator's instructions in your terminal)."));
     }
 
     #[test]
-    fn worker_preamble_frames_human_reply_as_guideline_not_mandate() {
-        // Guardrail against regressing the #128 fix: the human-reply
-        // section must explicitly say silence is fine for passing
-        // remarks, so agents stop posting "got it"/"noted" on every
-        // human_said.
-        let body = compose_worker_first_turn(None, None);
-        assert!(
-            body.contains("silence is fine"),
-            "preamble should tell workers silence is acceptable for passing remarks; got: {body}",
-        );
-        assert!(
-            body.contains("no `runner msg post` call is needed"),
-            "preamble should explicitly note no msg post is needed for passing remarks; got: {body}",
-        );
+    fn composed_prompts_omit_reply_to_human_protocol() {
+        let worker = compose_worker_first_turn(None, None);
+        let lead = compose_launch_prompt(&LaunchPromptInput {
+            lead: lead("lead", None),
+            crew_name: "A",
+            mission_goal: "g",
+            roster: &[],
+            allowed_signals: &[],
+            crew_addendum: None,
+        });
+
+        for prompt in [&worker, &lead] {
+            assert!(!prompt.contains("--to human"), "got: {prompt}");
+            assert!(!prompt.contains("`human`"), "got: {prompt}");
+            assert!(!prompt.contains("[human_said]"), "got: {prompt}");
+        }
+        assert!(!worker.contains("human"), "got: {worker}");
+        assert!(lead.contains(
+            "The operator watches the terminals and types directly into a runner's pane."
+        ));
     }
 
     #[test]

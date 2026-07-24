@@ -170,6 +170,25 @@ fn i2_4_msg_post_to_unknown_handle_is_rejected() {
 }
 
 #[test]
+fn msg_post_to_human_is_rejected_with_terminal_guidance() {
+    let f = Fixture::new("C", "M");
+    f.write_roster(&[("lead", true), ("impl", false)]);
+
+    let out = f
+        .cmd("lead", &["msg", "post", "hi", "--to", "human"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("operator reads your terminal")
+            && stderr.contains("answer in your TUI output"),
+        "stderr should teach the agent to answer in its terminal; got: {stderr}",
+    );
+    assert_eq!(f.line_count(), 0);
+}
+
+#[test]
 fn i2_5_msg_read_prints_inbox_in_order_and_emits_inbox_read() {
     let f = Fixture::new("C", "M");
     f.write_roster(&[("lead", true), ("impl", false)]);
