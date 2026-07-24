@@ -10096,6 +10096,368 @@
           "fontWeight": "normal"
         }
       ]
+    },
+    {
+      "type": "frame",
+      "id": "fp5s9",
+      "x": -2288.5,
+      "y": 3516.5,
+      "name": "Header — codex style",
+      "fill": "#101116",
+      "cornerRadius": 12,
+      "stroke": "#272930",
+      "strokeWidth": 1,
+      "strokeAlignment": "inner",
+      "layout": "vertical",
+      "gap": 16,
+      "padding": 24,
+      "children": [
+        {
+          "type": "text",
+          "id": "gySrV",
+          "name": "cap1",
+          "fill": "#5A5C66",
+          "content": "CHAT — DIRECT SESSION",
+          "fontFamily": "JetBrains Mono",
+          "fontSize": 10,
+          "fontWeight": "600",
+          "letterSpacing": 1
+        },
+        {
+          "type": "frame",
+          "id": "bEh50",
+          "name": "chatHeader",
+          "width": 1440,
+          "height": 44,
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "frame",
+              "id": "CTJX6",
+              "name": "sbZone",
+              "width": 240,
+              "height": "fill_container",
+              "fill": "#272930",
+              "stroke": "#272930",
+              "strokeWidth": {
+                "right": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 8,
+              "padding": [
+                0,
+                16
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "ellipse",
+                  "id": "o9bxK",
+                  "name": "tl1",
+                  "fill": "#FF5F57",
+                  "width": 12,
+                  "height": 12
+                },
+                {
+                  "type": "ellipse",
+                  "id": "LOugd",
+                  "name": "tl2",
+                  "fill": "#FEBC2E",
+                  "width": 12,
+                  "height": 12
+                },
+                {
+                  "type": "ellipse",
+                  "id": "yJnJL",
+                  "name": "tl3",
+                  "fill": "#28C840",
+                  "width": 12,
+                  "height": 12
+                },
+                {
+                  "type": "frame",
+                  "id": "d9iUNO",
+                  "name": "tlGap",
+                  "width": 6,
+                  "height": 1
+                },
+                {
+                  "type": "icon",
+                  "id": "D1PAuk",
+                  "name": "collapseIcon",
+                  "width": 15,
+                  "height": 15,
+                  "icon": "panel-left",
+                  "library": "lucide",
+                  "fill": "#9A9BA5"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "WMmAo",
+              "name": "contentZone",
+              "width": "fill_container",
+              "height": "fill_container",
+              "fill": "#15161B",
+              "stroke": "#272930",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 8,
+              "padding": [
+                0,
+                16
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "bxDFw",
+                  "name": "chatIcon",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "terminal",
+                  "library": "lucide",
+                  "fill": "#9A9BA5"
+                },
+                {
+                  "type": "text",
+                  "id": "P5uWl",
+                  "name": "chatTitle",
+                  "fill": "#DCDCE0",
+                  "content": "quill — fix reader pagination drift",
+                  "fontFamily": "Inter",
+                  "fontSize": 13,
+                  "fontWeight": "500"
+                },
+                {
+                  "type": "icon",
+                  "id": "jRNfH",
+                  "name": "chatKebab",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "#5A5C66"
+                },
+                {
+                  "type": "icon",
+                  "id": "U8Xr3H",
+                  "name": "chatStopIcon",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "square",
+                  "library": "lucide",
+                  "fill": "#FF5F57CC"
+                },
+                {
+                  "type": "frame",
+                  "id": "SIYLl",
+                  "name": "chatSpacer",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "icon",
+                  "id": "pRYaw",
+                  "name": "splitIcon",
+                  "width": 15,
+                  "height": 15,
+                  "icon": "square-split-horizontal",
+                  "library": "lucide",
+                  "fill": "#9A9BA5"
+                },
+                {
+                  "type": "icon",
+                  "id": "yWIpT",
+                  "name": "chatPanelRight",
+                  "width": 15,
+                  "height": 15,
+                  "icon": "panel-right",
+                  "library": "lucide",
+                  "fill": "#9A9BA5"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "AFFKJ",
+          "name": "cap2",
+          "fill": "#5A5C66",
+          "content": "MISSION — RUNNING",
+          "fontFamily": "JetBrains Mono",
+          "fontSize": 10,
+          "fontWeight": "600",
+          "letterSpacing": 1
+        },
+        {
+          "type": "frame",
+          "id": "VeBF7",
+          "name": "missionHeader",
+          "width": 1440,
+          "height": 44,
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "frame",
+              "id": "dRNbO",
+              "name": "sbZoneB",
+              "width": 240,
+              "height": "fill_container",
+              "fill": "#272930",
+              "stroke": "#272930",
+              "strokeWidth": {
+                "right": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 8,
+              "padding": [
+                0,
+                16
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "ellipse",
+                  "id": "bOw6F",
+                  "name": "tlB1",
+                  "fill": "#FF5F57",
+                  "width": 12,
+                  "height": 12
+                },
+                {
+                  "type": "ellipse",
+                  "id": "Qz87r",
+                  "name": "tlB2",
+                  "fill": "#FEBC2E",
+                  "width": 12,
+                  "height": 12
+                },
+                {
+                  "type": "ellipse",
+                  "id": "TmEZx",
+                  "name": "tlB3",
+                  "fill": "#28C840",
+                  "width": 12,
+                  "height": 12
+                },
+                {
+                  "type": "frame",
+                  "id": "BRSUI",
+                  "name": "tlGapB",
+                  "width": 6,
+                  "height": 1
+                },
+                {
+                  "type": "icon",
+                  "id": "XMwDc",
+                  "name": "collapseIconB",
+                  "width": 15,
+                  "height": 15,
+                  "icon": "panel-left",
+                  "library": "lucide",
+                  "fill": "#9A9BA5"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "h7qsT",
+              "name": "contentZoneB",
+              "width": "fill_container",
+              "height": "fill_container",
+              "fill": "#15161B",
+              "stroke": "#272930",
+              "strokeWidth": {
+                "bottom": 1
+              },
+              "strokeAlignment": "inner",
+              "gap": 8,
+              "padding": [
+                0,
+                16
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "baZfZ",
+                  "name": "missionIcon",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "flag",
+                  "library": "lucide",
+                  "fill": "#9A9BA5"
+                },
+                {
+                  "type": "text",
+                  "id": "H0hVR4",
+                  "name": "missionTitle",
+                  "fill": "#DCDCE0",
+                  "content": "Reliable session kill (#340)",
+                  "fontFamily": "Inter",
+                  "fontSize": 13,
+                  "fontWeight": "500"
+                },
+                {
+                  "type": "icon",
+                  "id": "feo16",
+                  "name": "missionKebab",
+                  "width": 14,
+                  "height": 14,
+                  "icon": "ellipsis",
+                  "library": "lucide",
+                  "fill": "#5A5C66"
+                },
+                {
+                  "type": "icon",
+                  "id": "b7Fgeu",
+                  "name": "missionStopIcon",
+                  "width": 13,
+                  "height": 13,
+                  "icon": "square",
+                  "library": "lucide",
+                  "fill": "#FF5F57CC"
+                },
+                {
+                  "type": "frame",
+                  "id": "aBh8U",
+                  "name": "missionSpacer",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "icon",
+                  "id": "QQ0TA",
+                  "name": "stopIcon",
+                  "width": 15,
+                  "height": 15,
+                  "icon": "panel-right",
+                  "library": "lucide",
+                  "fill": "#9A9BA5"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "R3Gab",
+          "name": "hdrNote",
+          "fill": "#9A9BA5",
+          "textGrowth": "fixed-width",
+          "width": 1200,
+          "content": "44px single-line header replacing the 64px avatar topbar. Chat and mission share one anatomy and differ only by the leading icon (terminal vs flag). Window chrome (traffic lights + sidebar collapse) lives in the sidebar strip. Content zone: icon + truncated title + inline … overflow (rename · pin · reset · archive — absorbs the old kebab and subtitle metadata) + inline stop icon in muted red (#FF5F57 at ~80%, full red on hover; Resume takes the same slot when a slot is stopped). Right cluster is pure surface toggles: split view (chat only), then panel-right ALWAYS rightmost on both surfaces (mission: runners rail; chat: To be decided until a chat-side panel ships). Fullscreen fix: traffic-light gutter reserved only while windowed — on Tauri fullscreen enter/exit the gutter collapses and the collapse button slides flush; settled state only, never tracking the lights mid-animation.",
+          "lineHeight": 1.5,
+          "fontFamily": "Inter",
+          "fontSize": 12,
+          "fontWeight": "normal"
+        }
+      ]
     }
   ],
   "fileToken": "a8d0e631-a307-4f94-a938-6f0ff78c69a7"
