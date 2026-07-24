@@ -635,6 +635,223 @@ fn concurrent_missions_on_same_crew_keep_session_state_isolated() {
 }
 
 #[test]
+fn mission_slot_exit_reaps_live_siblings_and_keeps_mission_running() {
+    let pool = pool_with_schema();
+    let mission_id = ulid::Ulid::new().to_string();
+    let runner_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_runner(&pool, &mission_id, &runner_id);
+    let mission = Mission {
+        id: mission_id.clone(),
+        crew_id: "c".into(),
+        ..mission()
+    };
+    let mut runner = runner("/bin/cat", &[]);
+    runner.id = runner_id;
+    let mut slot = slot_for(&runner);
+    slot.id = slot_id;
+    slot.crew_id = "c".into();
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let first = mgr
+        .spawn(
+            &mission,
+            &runner,
+            &slot,
+            std::path::Path::new("/tmp"),
+            PathBuf::from("/dev/null"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    let sibling = mgr
+        .spawn(
+            &mission,
+            &runner,
+            &slot,
+            std::path::Path::new("/tmp"),
+            PathBuf::from("/dev/null"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+
+    fake.close_spawn(0);
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let conn = pool.get().unwrap();
+        let live_sessions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions
+                  WHERE mission_id = ?1 AND status = 'running'",
+                params![mission_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if live_sessions == 0 {
+            break;
+        }
+        if Instant::now() > deadline {
+            panic!("mission siblings were not reaped");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    assert!(
+        fake.stops.lock().unwrap().contains(&sibling.id),
+        "the surviving sibling must be stopped",
+    );
+    for session_id in [&first.id, &sibling.id] {
+        assert!(
+            mgr.session_state(session_id).is_none_or(|state| state
+                .lock()
+                .unwrap()
+                .handle
+                .is_none()),
+            "session {session_id} must not retain a live handle",
+        );
+    }
+    let mission_status: String = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT status FROM missions WHERE id = ?1",
+            params![mission_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(mission_status, "running");
+}
+
+#[test]
+fn mission_slot_exit_cancels_pending_sibling_spawns() {
+    let pool = pool_with_schema();
+    let mission_id = ulid::Ulid::new().to_string();
+    let runner_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_runner(&pool, &mission_id, &runner_id);
+    let mission = Mission {
+        id: mission_id.clone(),
+        crew_id: "c".into(),
+        ..mission()
+    };
+    let mut runner = runner("/bin/cat", &[]);
+    runner.id = runner_id;
+    let mut slot = slot_for(&runner);
+    slot.id = slot_id;
+    slot.crew_id = "c".into();
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    mgr.spawn(
+        &mission,
+        &runner,
+        &slot,
+        std::path::Path::new("/tmp"),
+        PathBuf::from("/dev/null"),
+        Arc::clone(&pool),
+        capture(),
+        None,
+    )
+    .unwrap();
+    let cancel = mgr.register_pending_mission_cancel(&mission_id);
+
+    fake.close_spawn(0);
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !cancel.load(std::sync::atomic::Ordering::Acquire) {
+        if Instant::now() > deadline {
+            panic!("pending sibling spawns were not cancelled");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    mgr.drop_pending_mission_cancel(&mission_id, &cancel);
+}
+
+#[test]
+fn intentional_mission_kill_does_not_reap_siblings_from_exit_epilogue() {
+    let pool = pool_with_schema();
+    let mission_id = ulid::Ulid::new().to_string();
+    let runner_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_runner(&pool, &mission_id, &runner_id);
+    let mission = Mission {
+        id: mission_id.clone(),
+        crew_id: "c".into(),
+        ..mission()
+    };
+    let mut runner = runner("/bin/cat", &[]);
+    runner.id = runner_id;
+    let mut slot = slot_for(&runner);
+    slot.id = slot_id;
+    slot.crew_id = "c".into();
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let first = mgr
+        .spawn(
+            &mission,
+            &runner,
+            &slot,
+            std::path::Path::new("/tmp"),
+            PathBuf::from("/dev/null"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    let sibling = mgr
+        .spawn(
+            &mission,
+            &runner,
+            &slot,
+            std::path::Path::new("/tmp"),
+            PathBuf::from("/dev/null"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+
+    // mission_stop kills sessions one at a time through this path. The
+    // first intentional exit must not recursively start another sweep.
+    mgr.kill(&first.id).unwrap();
+
+    assert!(
+        mgr.session_state(&sibling.id)
+            .is_some_and(|state| state.lock().unwrap().handle.is_some()),
+        "the sibling must stay live until mission_stop reaches it",
+    );
+    assert!(
+        !fake.stops.lock().unwrap().contains(&sibling.id),
+        "the first intentional exit must not stop its sibling",
+    );
+    let sibling_status: String = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT status FROM sessions WHERE id = ?1",
+            params![sibling.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(sibling_status, "running");
+    let first_status: String = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT status FROM sessions WHERE id = ?1",
+            params![first.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(first_status, "stopped");
+
+    mgr.kill_all_for_mission(&mission_id).unwrap();
+}
+
+#[test]
 fn spawn_marks_session_stopped_after_runtime_channel_closes() {
     // Spawn a mission session through FakeRuntime, then close
     // the runtime's output channel to simulate a clean pane exit.
@@ -728,6 +945,26 @@ fn spawn_marks_session_stopped_after_runtime_channel_closes() {
     let exits = cap.exit.lock().unwrap();
     assert_eq!(exits.len(), 1, "expected 1 exit event, got {}", exits.len());
     assert!(exits[0].success);
+    drop(exits);
+
+    let mission_status: String = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT status FROM missions WHERE id = ?1",
+            params![mission.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(mission_status, "running");
+    assert!(
+        fake.stops
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|session_id| session_id == &spawned.id),
+        "a single-slot exit must not start a mission sweep",
+    );
 }
 
 #[test]
