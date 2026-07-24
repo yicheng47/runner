@@ -22,6 +22,13 @@ pub fn post(text: &str, to: Option<&str>) -> i32 {
     };
 
     if let Some(handle) = to {
+        if handle == "human" {
+            eprintln!(
+                "runner msg post: --to human is no longer supported. \
+                 The operator reads your terminal directly; answer in your TUI output."
+            );
+            return 1;
+        }
         if !roster::is_known(&env.event_log, handle) {
             eprintln!(
                 "runner msg post: --to @{handle} is not in this mission's roster. \

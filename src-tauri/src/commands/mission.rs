@@ -432,10 +432,11 @@ pub(crate) async fn mission_post_human_signal_impl(
     state: &AppState,
     input: PostHumanSignalInput,
 ) -> Result<runner_core::model::Event> {
-    // Whitelist: only the two signal types the workspace UI is supposed
-    // to emit. The router treats `from = "human"` as authoritative for
-    // these, so a buggy frontend that posted `mission_goal` or `ask_lead`
-    // could trigger handler side-effects from the wrong identity.
+    // Whitelist: only human_said from MCP and human_response from the
+    // workspace UI. The router treats `from = "human"` as authoritative
+    // for these, so a buggy client that posted `mission_goal` or
+    // `ask_lead` could trigger handler side-effects from the wrong
+    // identity.
     let allowed = matches!(input.signal_type.as_str(), "human_said" | "human_response");
     if !allowed {
         return Err(Error::msg(format!(

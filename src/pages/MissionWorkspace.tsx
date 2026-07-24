@@ -2,7 +2,7 @@
 // works in once a mission is running. Three columns:
 //   - left sidebar (the AppShell's persistent Sidebar)
 //   - center: tab strip ("Feed" + one per runner pty) over either the
-//     EventFeed + MissionInput dock, or one of the runner terminals
+//     EventFeed, or one of the runner terminals
 //   - right rail: RunnersRail with status dots + LEAD badge + open pty
 //
 // The rail's "open pty" link selects the runner's terminal tab.
@@ -47,7 +47,6 @@ import {
   useWindowFocus,
 } from "../lib/windowFocus";
 import { EventFeed } from "../components/EventFeed";
-import { MissionInput } from "../components/MissionInput";
 import { MissionMetaPanel } from "../components/MissionMetaPanel";
 import { MissionResetConfirm } from "../components/MissionResetConfirm";
 import { RunnersRail } from "../components/RunnersRail";
@@ -900,7 +899,6 @@ export default function MissionWorkspace({
     [id],
   );
 
-  const handles = sessions.map((s) => s.handle);
   const startedAt = mission ? formatRelativeTime(mission.started_at) : "";
   const [kebabOpen, setKebabOpen] = useState(false);
   // Right rail (Runners panel) collapse state. Mirrors the RunnerChat
@@ -1202,18 +1200,6 @@ export default function MissionWorkspace({
                 // feedActive, but the feed must see itself inactive so
                 // the tab-return re-anchor fires on surface return too.
                 active={visible && feedActive}
-                onError={setError}
-              />
-              {/* Secondary windows can't send input: human_said is
-                  injected into the lead's PTY stdin by the router, which
-                  the primary owns (impl 0018). Disable while secondary. */}
-              <MissionInput
-                missionId={mission.id}
-                leadHandle={leadHandle}
-                handles={handles}
-                disabled={
-                  mission.status !== "running" || !allSessionsLive || isSecondary
-                }
                 onError={setError}
               />
               {/* Pause overlay fires whenever *any* slot is stopped.

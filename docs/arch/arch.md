@@ -88,7 +88,7 @@ Runner is a local desktop app. A user configures a **crew** of CLI coding agents
 
 **Closing the loop.** Child invokes `runner` CLI → CLI appends a line to `events.ndjson` → `notify` wakes the EventBus → EventBus fans the line out to (a) the Signal router for handler dispatch and (b) the webview as a Tauri event. If the handler needs a wake-up, it calls back into SessionManager's writer to push bytes into a session's stdin — that's the upward arrow on the convergence point. The bus is the spine: all coordination flows through one append-only file, which is why it's debuggable with `tail -f | jq`.
 
-**The webview** is downstream of everything. It renders each session's PTY output (subscribes to `session:{id}:out`) and the event feed + HITL cards + signal log (subscribes to `mission:{id}:event`).
+**The webview** is downstream of everything. It renders each session's PTY output (subscribes to `session:{id}:out`) and the read-mostly event feed + HITL cards + signal log (subscribes to `mission:{id}:event`). The operator talks to a runner by typing directly into that runner's pane; the feed's only write control is a pending `ask_human` card's response buttons.
 
 **What's not in the picture.** The SQLite DB. That's deliberate — SQLite holds configuration and session-lifecycle metadata only (runners, crews, slots, mission rows, session rows with PID + runtime metadata). It is not on the runtime hot path. All live coordination state lives in the NDJSON file or in the router's in-memory map.
 
@@ -261,11 +261,11 @@ A signal carries an optional `payload` (JSON) for the router and UI. Human-reada
 
 ### 4.2 Message — *"here's what I think"*
 
-Prose, addressed either to the mission (broadcast) or to a specific crewmate (direct). Runner-to-runner *and* runner-to-human (via the reserved virtual handle `human` — see §8.5).
+Prose, addressed either to the mission (broadcast) or to a specific crewmate (direct).
 
 Two shapes:
 - **Broadcast** — `runner msg post "<text>"`. Goes to everyone's inbox.
-- **Direct** — `runner msg post --to <slot_handle> "<text>"`. Goes to that slot's inbox only. `--to human` reaches the workspace operator (rendered in the event feed).
+- **Direct** — `runner msg post --to <slot_handle> "<text>"`. Goes to that slot's inbox only.
 
 Messages are **flat by design** — one stream per mission, no message-thread scoping, and no separate fact primitive. Each runner consumes messages through their **inbox** (§4.3). Durable conclusions belong in project files, code, commits, or normal message prose instead of a second coordination object model.
 
@@ -410,6 +410,8 @@ System prompt content is delivered to the runtime via its native flag for the le
 
 The xterm pane is a real terminal, not a log viewer. Special keys (arrows, Enter, Ctrl-C) pass through untouched. The agent on the other end can't tell whether the bytes came from the router, the human, or its normal terminal input — which is the point.
 
+The mission feed is read-mostly. It renders coordination events and historical human-authored events, but it has no free-form composer; the operator selects a runner pane and types there. The remaining feed-side input is the choice control on a pending `human_question` card, which appends a correlated `human_response` for the router to inject back to the asker. External orchestrators can still post `human_said` through MCP when they need to relay an operator instruction programmatically.
+
 ### 5.5 Sessions outlive the UI, not the app process
 
 Sessions live in the Rust backend and belong to the mission, not to any webview or tab. Closing the mission control window does *not* kill the sessions — the agents keep running, events keep flowing into the NDJSON file, and the router keeps handling live signals. Re-opening the window re-attaches: the frontend fetches each session's scrollback ring to rebuild xterm state, then subscribes to live output from wherever it was.
@@ -454,7 +456,7 @@ Every spawned session receives a composed system prompt — different shape for 
 
 The mission spawn path composes each runner's effective prompt from three layers, applied in this order:
 
-1. **Layer 1 — platform preamble** (code-owned, not editable). For non-lead workers: a fixed block describing the `runner` CLI verbs (`msg read`, `msg post`, `signal ask_lead`), how to reply to the human (`runner msg post --to human "…"`), and the pull-based inbox convention. For the lead: the launch prompt composed at `mission_goal` time (§6.3), including the goal, the roster, and the allowed-signals list.
+1. **Layer 1 — platform preamble** (code-owned, not editable). For non-lead workers: a fixed block describing the `runner` CLI verbs (`msg read`, `msg post`, `signal ask_lead`) and the pull-based inbox convention. For the lead: the launch prompt composed at `mission_goal` time (§6.3), including the goal, the roster, and the allowed-signals list.
 2. **Layer 2 — crew team conventions** (data-owned, optional — `crews.system_prompt_addendum`). Spliced under a `== Team conventions ==` section between Layer 1 and Layer 3. Empty / NULL = no splice. Lets a crew share house rules without editing every runner template.
 3. **Layer 3 — runner persona** (data-owned — `runners.system_prompt`). The role brief: who the runner is and what they do. Spliced under `== Your brief ==`.
 
@@ -472,7 +474,7 @@ Example for a worker slot `reviewer` filled by a `reviewer` runner template:
 
 ```
 You are a worker in a crew coordinated by the bundled `runner` CLI…
-[Layer 1 preamble: verbs, inbox convention, replying to human]
+[Layer 1 preamble: verbs and inbox convention]
 
 == Team conventions ==        ← Layer 2, if crew.system_prompt_addendum set
 …
@@ -551,7 +553,7 @@ Stdin pushes are deliberately silent: the router writes bytes into the target PT
 | Signal type | Fixed handler |
 |---|---|
 | `mission_goal` | Compose the launch prompt and inject it to the lead's stdin. |
-| `human_said` | Inject `payload.text` to `payload.target` if present, otherwise to the lead. |
+| `human_said` | Inject MCP-provided `payload.text` to `payload.target` if present, otherwise to the lead. |
 | `ask_lead` | Inject the worker's `{ question, context }` to the lead. |
 | `ask_human` | Append a `human_question` event for the UI. |
 | `human_response` | Look up the matching `question_id` and inject the answer to the runner that emitted the original `ask_human`. |
@@ -603,9 +605,11 @@ By convention (§3.3), workers do not escalate to the human directly:
 
 This is not a new protocol — it is `ask_lead` + `ask_human` + directed messages composed. The only schema additions are the `ask_lead` signal type and the optional `on_behalf_of` field on `human_question`.
 
-### 8.4 The reserved `human` handle
+### 8.4 Read-mostly mission feed
 
-`human` is a reserved virtual recipient. Runners reply to the human via `runner msg post --to human "<text>"` — the event appears in the workspace feed and is what humans read. This is how workers reply in-feed without needing a `human_said`-style inverse signal.
+The mission feed answers what is happening across the crew; the selected terminal pane is where the operator talks to a runner. Runners cannot address a virtual `human` message recipient: `runner msg post --to human` fails with guidance to answer in TUI output.
+
+The feed keeps its render paths for historical `human_said`, `human_response`, and message events addressed to `human`, so pre-feature-51 logs replay unchanged. The router likewise keeps the `human_said` handler for MCP-originated operator instructions and the message-nudge skip for historical messages targeting `human`. The live feed's only input is a pending `human_question` card response, which preserves the `ask_human` → `human_question` → `human_response` → injection-to-asker path.
 
 ### 8.5 Who does delivery
 
@@ -637,7 +641,7 @@ One binary, two real verbs (`signal`, `msg`) plus the deprecated `status` alias 
 
 - **`signal <type> [--payload <json>]`** — append a `kind: signal` event to the mission log. The router picks it up via §7.2's notify tailer and runs its fixed handler (§8.1). `--payload` is free-form JSON; the router interprets it per signal type.
 - **`msg post <text>`** — broadcast: append a `kind: message` event with `to: null`. Lands in every slot's inbox.
-- **`msg post --to <handle> <text>`** — directed: append a `kind: message` event with `to: <handle>`. Lands in that slot's inbox only. `--to human` reaches the workspace operator (the reserved virtual recipient, §8.4).
+- **`msg post --to <handle> <text>`** — directed: append a `kind: message` event with `to: <handle>`. Lands in that slot's inbox only. The handle must be a slot in the mission roster.
 - **`msg read [--since <ts>] [--from <handle>]`** — the inbox-read projection (§4.3). Returns broadcasts plus directs addressed to me, sorted by ULID. `--since` filters by ULID cutoff for poll-without-rewind; `--from` filters by sender.
 - **`status busy|idle [--note <text>]`** — **deprecated.** Busy/idle is now inferred by the session forwarder from PTY-byte silence (§5.10). The verb is kept as a back-compat alias (the event is stamped `source: "agent"` so debug tooling can tell agent-reported events apart from forwarder-inferred ones) and prints a stderr deprecation notice. Bundled templates no longer call it; slated for removal in a future release.
 - **`help`** — long-form usage from `cli/src/help.rs`. Mirrors this section.
