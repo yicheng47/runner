@@ -381,18 +381,34 @@ pub(crate) async fn archive_child_missions(
 }
 
 pub(crate) fn kill_running_children(state: &AppState, session_ids: &[String]) -> Result<()> {
+    let mut failures = Vec::new();
     for session_id in session_ids {
-        let running = {
-            let conn = state.db.get()?;
-            repo::session::get_row(&conn, session_id)?
-                .is_some_and(|row| row.status == crate::model::SessionStatus::Running)
+        let running = match state.db.get() {
+            Ok(conn) => match repo::session::get_row(&conn, session_id) {
+                Ok(row) => {
+                    row.is_some_and(|row| row.status == crate::model::SessionStatus::Running)
+                }
+                Err(error) => {
+                    failures.push(format!("{session_id}: {error}"));
+                    continue;
+                }
+            },
+            Err(error) => {
+                failures.push(format!("{session_id}: {error}"));
+                continue;
+            }
         };
         if running {
-            state
-                .sessions
-                .kill(session_id)
-                .map_err(|e| Error::msg(format!("stop session {session_id}: {e}")))?;
+            if let Err(error) = state.sessions.kill(session_id) {
+                failures.push(format!("{session_id}: {error}"));
+            }
         }
+    }
+    if !failures.is_empty() {
+        return Err(Error::msg(format!(
+            "failed to stop child sessions: {}",
+            failures.join("; ")
+        )));
     }
     Ok(())
 }
