@@ -24,8 +24,12 @@ import {
   useCurrentWindowFullscreen,
 } from "./useCurrentWindowFullscreen";
 
-function Probe() {
-  const fullscreen = useCurrentWindowFullscreen();
+function Probe({
+  onSettled,
+}: {
+  onSettled?: (fullscreen: boolean) => void;
+}) {
+  const fullscreen = useCurrentWindowFullscreen(onSettled);
   return <div data-fullscreen={fullscreen} />;
 }
 
@@ -79,6 +83,22 @@ describe("useCurrentWindowFullscreen", () => {
     expect(container.firstElementChild?.getAttribute("data-fullscreen")).toBe(
       "true",
     );
+  });
+
+  it("reports settled resizes even when fullscreen state is unchanged", async () => {
+    const onSettled = vi.fn();
+    await act(async () => {
+      root.render(<Probe onSettled={onSettled} />);
+    });
+    expect(onSettled).toHaveBeenLastCalledWith(false);
+
+    await act(async () => {
+      mocks.resize?.();
+      await vi.advanceTimersByTimeAsync(FULLSCREEN_SETTLE_MS);
+    });
+
+    expect(onSettled).toHaveBeenCalledTimes(2);
+    expect(onSettled).toHaveBeenLastCalledWith(false);
   });
 
   it("unsubscribes from the current window on unmount", async () => {

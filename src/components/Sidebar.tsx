@@ -60,7 +60,6 @@ import {
   FolderMinus,
   MessageSquarePlus,
   MoreHorizontal,
-  PanelLeft,
   Pin,
   PinOff,
   Plus,
@@ -128,6 +127,7 @@ import {
   SidebarTabIcon,
   SidebarTabRow,
 } from "./SidebarTabRow";
+import { PanelToggleGlyph } from "./PanelToggleGlyph";
 import { PopoverMenu } from "./ui/PopoverMenu";
 import { useResizableWidth } from "../hooks/useResizableWidth";
 import {
@@ -1970,7 +1970,7 @@ export function Sidebar({
           width: sidebarVisible ? width : 0,
           opacity: sidebarVisible ? 1 : 0,
         }}
-        className={`flex shrink-0 select-none flex-col overflow-hidden transition-[width,opacity] duration-150 ${
+        className={`flex shrink-0 select-none flex-col overflow-hidden transition-[width,opacity] duration-200 ease-in-out ${
           peekOverlay
             ? // Collapsed peek: a raised, docked overlay with a rounded right
               // edge. Kept absolute (via `peeking`) through the fade-out so it
@@ -1987,8 +1987,10 @@ export function Sidebar({
           <div className="flex min-h-0 flex-1 flex-col pb-4">
             <div
               data-tauri-drag-region
-              className={`flex h-11 shrink-0 items-center pr-3 transition-[padding] duration-150 ${
-                fullscreen ? "pl-2" : "pl-[82px]"
+              className={`flex h-11 shrink-0 items-center pr-3 ${
+                fullscreen
+                  ? "pl-2"
+                  : "pl-[var(--titlebar-sidebar-toggle-gutter)]"
               }`}
             >
               <button
@@ -2009,7 +2011,11 @@ export function Sidebar({
                 }
                 className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-fg-2 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
               >
-                <PanelLeft aria-hidden className="h-[15px] w-[15px]" />
+                <PanelToggleGlyph
+                  side="left"
+                  filled={!collapsed}
+                  className="h-[12px] w-[15.4px]"
+                />
               </button>
             </div>
 

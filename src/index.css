@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+:root {
+  --titlebar-sidebar-toggle-gutter: 88px;
+}
+
 /* Carbon & Plasma — dark surfaces, neon-green accent. Mirrors the
    design system frame `hqxnM` in design/runner-mvp-design.pen. Class
    utilities: `bg-bg`, `bg-panel`, `bg-raised`, `border-line`,

@@ -18,17 +18,20 @@
 // hides (display:none, subtree retained) under a Settings layer
 // instead, and returning is the same active-flip the list pages use.
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { matchPath, Outlet, useLocation } from "react-router-dom";
 
 import { PersistentSurfaces } from "./PersistentSurfaces";
+import { PanelToggleGlyph } from "./PanelToggleGlyph";
 import { Sidebar } from "./Sidebar";
 import SettingsPage from "../pages/SettingsPage";
 import {
   STORAGE_SIDEBAR_COLLAPSED,
+  readAppZoom,
   readStoredBool,
   writeStoredBool,
 } from "../lib/settings";
+import { syncTitlebarZoom } from "../lib/appZoom";
 import { eventMatchesShortcut } from "../lib/keymap";
 import { useCurrentWindowFullscreen } from "../hooks/useCurrentWindowFullscreen";
 
@@ -36,9 +39,15 @@ const SIDEBAR_TOGGLE_EVENT = "runner:toggle-sidebar";
 
 export function AppShell({ children }: { children?: ReactNode }) {
   const location = useLocation();
-  const fullscreen = useCurrentWindowFullscreen();
+  const syncWindowTitlebar = useCallback((nextFullscreen: boolean) => {
+    if (!nextFullscreen) void syncTitlebarZoom(readAppZoom());
+  }, []);
+  const fullscreen = useCurrentWindowFullscreen(syncWindowTitlebar);
   const settingsActive =
     matchPath("/settings/:pane?", location.pathname) != null;
+  const workspaceActive =
+    matchPath("/chats/:sessionId", location.pathname) != null ||
+    matchPath("/missions/:id", location.pathname) != null;
   // Sidebar collapsed/expanded lives at the shell so Cmd+S can toggle
   // it from anywhere in the app, not just when the sidebar is the
   // focused subtree.
@@ -113,10 +122,35 @@ export function AppShell({ children }: { children?: ReactNode }) {
             data-tauri-drag-region
             className="pointer-events-auto absolute left-0 right-0 top-0 z-10 h-7"
           />
+          {collapsed && !workspaceActive ? (
+            <div
+              data-tauri-drag-region
+              className={`absolute left-0 top-0 z-20 flex h-11 items-center ${
+                fullscreen
+                  ? "pl-2"
+                  : "pl-[var(--titlebar-sidebar-toggle-gutter)]"
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => setCollapsed(false)}
+                title="Open sidebar (⌘S)"
+                aria-label="Open sidebar"
+                className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-fg-2 transition-colors hover:bg-raised hover:text-fg"
+              >
+                <PanelToggleGlyph
+                  side="left"
+                  filled={false}
+                  className="h-[12px] w-[15.4px]"
+                />
+              </button>
+            </div>
+          ) : null}
           {children ?? <Outlet />}
           <PersistentSurfaces
             sidebarCollapsed={collapsed}
             fullscreen={fullscreen}
+            onOpenSidebar={() => setCollapsed(false)}
           />
         </main>
       </div>

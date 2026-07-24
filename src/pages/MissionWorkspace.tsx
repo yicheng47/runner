@@ -19,7 +19,6 @@ import {
   Ellipsis,
   Flag,
   Info,
-  PanelRight,
   Pin,
   PinOff,
   RotateCcw,
@@ -52,6 +51,7 @@ import { EventFeed } from "../components/EventFeed";
 import { MissionMetaPanel } from "../components/MissionMetaPanel";
 import { MissionResetConfirm } from "../components/MissionResetConfirm";
 import { RunnersRail } from "../components/RunnersRail";
+import { PanelToggleGlyph } from "../components/PanelToggleGlyph";
 import {
   RunnerTerminal,
   type RunnerTerminalHandle,
@@ -131,11 +131,13 @@ export default function MissionWorkspace({
   visible,
   sidebarCollapsed,
   fullscreen,
+  onOpenSidebar,
 }: {
   missionId: string;
   visible: boolean;
   sidebarCollapsed: boolean;
   fullscreen: boolean;
+  onOpenSidebar: () => void;
 }) {
   const navigate = useNavigate();
   const [mission, setMission] = useState<Mission | null>(null);
@@ -909,13 +911,6 @@ export default function MissionWorkspace({
     [id],
   );
 
-  const startedAt = mission ? formatRelativeTime(mission.started_at) : "";
-  const headerMetadata = [
-    crew?.name ?? null,
-    `${sessions.length} runner${sessions.length === 1 ? "" : "s"}`,
-    startedAt ? `started ${startedAt}` : null,
-    mission?.cwd ?? null,
-  ].filter((part): part is string => !!part);
   const [kebabOpen, setKebabOpen] = useState(false);
   // Right rail (Runners panel) collapse state. Mirrors the RunnerChat
   // side-panel collapse — same localStorage shape for consistency.
@@ -987,86 +982,116 @@ export default function MissionWorkspace({
       <div className="flex min-w-0 flex-1 flex-col">
         <header
           data-tauri-drag-region
-          className={`relative z-20 flex h-11 shrink-0 items-center gap-2 border-b border-line bg-panel pr-4 transition-[padding] duration-150 ${
-            sidebarCollapsed && !fullscreen ? "pl-[90px]" : "pl-4"
+          className={`relative z-20 flex h-11 shrink-0 items-center border-b border-line bg-panel pr-4 ${
+            sidebarCollapsed && !fullscreen
+              ? "pl-[var(--titlebar-sidebar-toggle-gutter)]"
+              : "pl-4"
           }`}
         >
-          <Flag
-            data-tauri-drag-region
-            aria-hidden
-            className="h-[13px] w-[13px] shrink-0 text-fg-2"
-          />
           <div
             data-tauri-drag-region
-            className="flex min-w-0 items-center gap-2"
+            className="flex min-w-0 flex-1 items-center gap-2"
           >
-            <h1
+            {sidebarCollapsed ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onOpenSidebar}
+                  title="Open sidebar"
+                  aria-label="Open sidebar"
+                  className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-fg-2 transition-colors hover:bg-raised hover:text-fg"
+                >
+                  <PanelToggleGlyph
+                    side="left"
+                    filled={false}
+                    className="h-[12px] w-[15.4px]"
+                  />
+                </button>
+                <div
+                  data-tauri-drag-region
+                  aria-hidden
+                  className="mx-1 h-5 w-px shrink-0 bg-line"
+                />
+              </>
+            ) : null}
+            <Flag
               data-tauri-drag-region
-              className="min-w-0 truncate text-[13px] font-medium text-fg"
+              aria-hidden
+              className="h-[15px] w-[15px] shrink-0 text-accent"
+            />
+            <div
+              data-tauri-drag-region
+              className="flex min-w-0 items-center gap-2"
             >
-              {mission?.title ?? "…"}
-            </h1>
-            {mission?.status === "running" && !resumingAll && !isSecondary ? (
-              <MissionKebab
-                pinned={!!mission.pinned_at}
-                metadata={headerMetadata}
-                open={kebabOpen}
-                onToggle={() => setKebabOpen((v) => !v)}
-                onClose={() => setKebabOpen(false)}
-                onPin={() => {
-                  setKebabOpen(false);
-                  void pinMission();
-                }}
-                onRename={() => {
-                  setKebabOpen(false);
-                  void renameMissionPrompt();
-                }}
-                onReset={() => {
-                  setKebabOpen(false);
-                  setResetConfirmOpen(true);
-                }}
-                onArchive={() => {
-                  setKebabOpen(false);
-                  void archiveMission();
-                }}
-              />
+              <h1
+                data-tauri-drag-region
+                className="min-w-0 truncate text-[13px] font-medium text-fg"
+              >
+                {mission?.title ?? "…"}
+              </h1>
+              {mission?.status === "running" && !resumingAll && !isSecondary ? (
+                <MissionKebab
+                  pinned={!!mission.pinned_at}
+                  open={kebabOpen}
+                  onToggle={() => setKebabOpen((v) => !v)}
+                  onClose={() => setKebabOpen(false)}
+                  onPin={() => {
+                    setKebabOpen(false);
+                    void pinMission();
+                  }}
+                  onRename={() => {
+                    setKebabOpen(false);
+                    void renameMissionPrompt();
+                  }}
+                  onReset={() => {
+                    setKebabOpen(false);
+                    setResetConfirmOpen(true);
+                  }}
+                  onArchive={() => {
+                    setKebabOpen(false);
+                    void archiveMission();
+                  }}
+                />
+              ) : null}
+              {mission?.status === "running" &&
+              !resumingAll &&
+              !isSecondary &&
+              anySessionStopped ? (
+                <ResumeButton
+                  variant="header"
+                  onClick={() => void resumeMission()}
+                  title="Respawn every stopped slot in this mission"
+                />
+              ) : null}
+              {mission?.status === "running" &&
+              !resumingAll &&
+              !isSecondary &&
+              allSessionsLive ? (
+                <StopButton
+                  variant="header"
+                  onClick={() => void stopMission()}
+                  title="Kill all PTYs; mission stays running so you can Resume"
+                />
+              ) : null}
+            </div>
+            {!railOpen ? (
+              <div className="ml-auto flex shrink-0 items-center">
+                <button
+                  type="button"
+                  onClick={() => setRailOpen(true)}
+                  title="Open runners panel"
+                  aria-label="Open runners panel"
+                  aria-pressed={false}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-2 transition-colors hover:bg-raised hover:text-fg"
+                >
+                  <PanelToggleGlyph
+                    side="right"
+                    filled={false}
+                    className="h-[12.5px] w-[16px]"
+                  />
+                </button>
+              </div>
             ) : null}
-            {mission?.status === "running" &&
-            !resumingAll &&
-            !isSecondary &&
-            anySessionStopped ? (
-              <ResumeButton
-                variant="header"
-                onClick={() => void resumeMission()}
-                title="Respawn every stopped slot in this mission"
-              />
-            ) : null}
-            {mission?.status === "running" &&
-            !resumingAll &&
-            !isSecondary &&
-            allSessionsLive ? (
-              <StopButton
-                variant="header"
-                onClick={() => void stopMission()}
-                title="Kill all PTYs; mission stays running so you can Resume"
-              />
-            ) : null}
-          </div>
-          <div className="ml-auto flex shrink-0 items-center">
-            <button
-              type="button"
-              onClick={() => setRailOpen((open) => !open)}
-              title={railOpen ? "Collapse runners panel" : "Open runners panel"}
-              aria-label={
-                railOpen ? "Collapse runners panel" : "Open runners panel"
-              }
-              aria-pressed={railOpen}
-              className={`inline-flex h-7 w-7 items-center justify-center rounded transition-colors hover:bg-raised hover:text-fg ${
-                railOpen ? "text-fg" : "text-fg-2"
-              }`}
-            >
-              <PanelRight aria-hidden className="h-[15px] w-[15px]" />
-            </button>
           </div>
         </header>
 
@@ -1269,6 +1294,22 @@ export default function MissionWorkspace({
                 onClick={() => setRailView("meta")}
               />
             </div>
+            {railOpen ? (
+              <button
+                type="button"
+                onClick={() => setRailOpen(false)}
+                title="Collapse runners panel"
+                aria-label="Collapse runners panel"
+                aria-pressed
+                className="ml-auto inline-flex h-7 w-7 items-center justify-center rounded text-fg transition-colors hover:bg-raised"
+              >
+                <PanelToggleGlyph
+                  side="right"
+                  filled
+                  className="h-[12.5px] w-[16px]"
+                />
+              </button>
+            ) : null}
           </header>
           <div className="flex min-h-0 flex-1 flex-col pt-5">
             {railView === "runners" ? (
@@ -1624,7 +1665,6 @@ function PtyTabButton({
 /// `mission_archive` path the parent component owns.
 function MissionKebab({
   pinned,
-  metadata,
   open,
   onToggle,
   onClose,
@@ -1634,7 +1674,6 @@ function MissionKebab({
   onArchive,
 }: {
   pinned: boolean;
-  metadata: string[];
   open: boolean;
   onToggle: () => void;
   onClose: () => void;
@@ -1676,23 +1715,8 @@ function MissionKebab({
       {open ? (
         <div
           role="menu"
-          className="absolute left-0 top-full z-50 mt-1.5 flex w-64 flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
+          className="absolute left-0 top-full z-50 mt-1.5 flex w-40 flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
         >
-          {metadata.length > 0 ? (
-            <>
-              <div className="flex flex-col gap-1 px-2.5 py-2 text-[11px] text-fg-3">
-                {metadata.map((part, index) => (
-                  <span
-                    key={`${part}-${index}`}
-                    className={part.startsWith("/") ? "break-all font-mono" : ""}
-                  >
-                    {part}
-                  </span>
-                ))}
-              </div>
-              <div className="mx-1 mb-1 h-px bg-line" />
-            </>
-          ) : null}
           <KebabItem
             icon={pinned ? PinOff : Pin}
             label={pinned ? "Unpin" : "Pin"}
@@ -1763,22 +1787,6 @@ function RailViewButton({
       <Icon aria-hidden className="h-3.5 w-3.5" />
     </button>
   );
-}
-
-function formatRelativeTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    const diffMs = Date.now() - d.getTime();
-    const minutes = Math.floor(diffMs / 60000);
-    if (minutes < 1) return "just now";
-    if (minutes < 60) return `${minutes}m ago`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
-    const days = Math.floor(hours / 24);
-    return `${days}d ago`;
-  } catch {
-    return iso;
-  }
 }
 
 /// "Mission paused" card — shown in both the mission-feed surface

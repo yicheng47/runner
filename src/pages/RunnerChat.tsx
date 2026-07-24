@@ -16,10 +16,10 @@ import { listen } from "@tauri-apps/api/event";
 import {
   Archive,
   Ellipsis,
-  PanelRight,
   Pin,
   PinOff,
   SquarePen,
+  SquareSplitHorizontal,
   Terminal,
 } from "lucide-react";
 
@@ -52,6 +52,7 @@ import {
   useArchivingVersion,
 } from "../lib/archivingState";
 import { ChatPaneGroup } from "../components/ChatPaneGroup";
+import { PanelToggleGlyph } from "../components/PanelToggleGlyph";
 import { createTerminalRegistry } from "../lib/terminalRegistry";
 import { LayoutPicker } from "../components/LayoutPicker";
 import { StartChatModal } from "../components/StartChatModal";
@@ -179,11 +180,13 @@ export default function RunnerChat({
   visible,
   sidebarCollapsed,
   fullscreen,
+  onOpenSidebar,
 }: {
   sessionId: string;
   visible: boolean;
   sidebarCollapsed: boolean;
   fullscreen: boolean;
+  onOpenSidebar: () => void;
 }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -1369,24 +1372,6 @@ export default function RunnerChat({
   // terminal palette's background so the canvas + frame stay
   // seamless across theme switches.
   const terminalBg = useTerminalBg();
-  const metaParts = [
-    chatMeta
-      ? chatMeta.handle
-        ? `${chatMeta.agent_runtime}-${chatMeta.handle}`
-        : chatMeta.agent_runtime
-      : null,
-    chatMeta?.runner_id &&
-    runner &&
-    chatMeta.agent_runtime !== runner.runtime
-      ? `runtime override · default ${runner.runtime}`
-      : null,
-    chatMeta?.started_at
-      ? `started ${formatRelative(chatMeta.started_at)}`
-      : null,
-    chatMeta?.cwd ?? runner?.working_dir ?? null,
-    exitCode != null ? `exit ${exitCode}` : null,
-  ].filter((s): s is string => !!s);
-
   // ---- pane-group view model (impl 0020) --------------------------------
 
   const paneRow = (sid: string) =>
@@ -1415,24 +1400,12 @@ export default function RunnerChat({
   // group-scoped — Stop all / Resume all / Archive all — so the title,
   // chip, and meta describe the group, not one member). Name:
   // user-given via kebab Rename, else derived from member chat names.
-  const paneCount = splitActive ? leaves(layout.root).length : 0;
   const groupTitle = splitActive
     ? (layout.name ??
       (visiblePaneSessions.length > 0
         ? visiblePaneSessions.map((s) => paneNameFor(s.id)).join(" + ")
         : "Empty group"))
     : null;
-  // Meta: pane count, plus the working dir when every member shares one.
-  const groupCwds = visiblePaneSessions.map((s) => paneRow(s.id)?.cwd ?? null);
-  const sharedGroupCwd =
-    groupCwds.length > 0 && groupCwds.every((c) => c != null && c === groupCwds[0])
-      ? groupCwds[0]
-      : null;
-  const groupMetaParts = [
-    `${paneCount} ${paneCount === 1 ? "pane" : "panes"}`,
-    sharedGroupCwd,
-  ].filter((s): s is string => !!s);
-
   // Per-pane transitional flag: a session mid-resume, or the URL session
   // mid-start. Blanks the canvas so the pill reads on a pristine surface.
   const transitionalFor = (sid: string) =>
@@ -1494,120 +1467,160 @@ export default function RunnerChat({
       <div className="flex min-w-0 flex-1 flex-col">
         <header
           data-tauri-drag-region
-          className={`relative z-20 flex h-11 shrink-0 items-center gap-2 border-b border-line bg-panel pr-4 transition-[padding] duration-150 ${
-            sidebarCollapsed && !fullscreen ? "pl-[90px]" : "pl-4"
+          className={`relative z-20 flex h-11 shrink-0 items-center border-b border-line bg-panel pr-4 ${
+            sidebarCollapsed && !fullscreen
+              ? "pl-[var(--titlebar-sidebar-toggle-gutter)]"
+              : "pl-4"
           }`}
         >
-          <Terminal
-            data-tauri-drag-region
-            aria-hidden
-            className="h-[13px] w-[13px] shrink-0 text-fg-2"
-          />
           <div
             data-tauri-drag-region
-            className="flex min-w-0 items-center gap-2"
+            className="flex min-w-0 flex-1 items-center gap-2"
           >
-            <h1
-              data-tauri-drag-region
-              className="min-w-0 truncate text-[13px] font-medium text-fg"
-            >
-              {splitActive ? groupTitle : titleLabel}
-            </h1>
-            {sessionId && chatMeta && !isArchived && !isSecondary ? (
-              <ChatKebab
-                pinned={chatMeta.pinned}
-                metadata={splitActive ? groupMetaParts : metaParts}
-                open={kebabOpen}
-                onToggle={() => setKebabOpen((v) => !v)}
-                onClose={() => setKebabOpen(false)}
-                showPin={!splitActive}
-                onPin={() => {
-                  setKebabOpen(false);
-                  void togglePin();
-                }}
-                renameLabel={splitActive ? "Rename group" : "Rename"}
-                onRename={() => {
-                  setKebabOpen(false);
-                  if (splitActive) renameGroupPrompt();
-                  else void renameChatPrompt();
-                }}
-                archiveLabel={splitActive ? "Archive all" : "Archive"}
-                onArchive={() => {
-                  setKebabOpen(false);
-                  if (splitActive) void archiveAllPanes();
-                  else if (sessionId) void archiveSession(sessionId);
-                }}
-              />
+            {sidebarCollapsed ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onOpenSidebar}
+                  title="Open sidebar"
+                  aria-label="Open sidebar"
+                  className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-fg-2 transition-colors hover:bg-raised hover:text-fg"
+                >
+                  <PanelToggleGlyph
+                    side="left"
+                    filled={false}
+                    className="h-[12px] w-[15.4px]"
+                  />
+                </button>
+                <div
+                  data-tauri-drag-region
+                  aria-hidden
+                  className="mx-1 h-5 w-px shrink-0 bg-line"
+                />
+              </>
             ) : null}
-            {isArchived || isSecondary ? (
-              <BackButton onClick={() => navigate(backTarget)}>
-                {backLabel}
-              </BackButton>
-            ) : !sessionId ? (
-              <BackButton onClick={() => navigate(backTarget)}>
-                {backLabel}
-              </BackButton>
-            ) : !isArchived &&
-            !isSecondary &&
-            splitActive &&
-            visiblePaneSessions.length > 0 ? (
-              anyPaneRunning ? (
+            {splitActive ? (
+              <SquareSplitHorizontal
+                data-tauri-drag-region
+                aria-hidden
+                className="h-[15px] w-[15px] shrink-0 text-accent"
+              />
+            ) : (
+              <Terminal
+                data-tauri-drag-region
+                aria-hidden
+                className="h-[15px] w-[15px] shrink-0 text-accent"
+              />
+            )}
+            <div
+              data-tauri-drag-region
+              className="flex min-w-0 items-center gap-2"
+            >
+              <h1
+                data-tauri-drag-region
+                className="min-w-0 truncate text-[13px] font-medium text-fg"
+              >
+                {splitActive ? groupTitle : titleLabel}
+              </h1>
+              {sessionId && chatMeta && !isArchived && !isSecondary ? (
+                <ChatKebab
+                  pinned={chatMeta.pinned}
+                  open={kebabOpen}
+                  onToggle={() => setKebabOpen((v) => !v)}
+                  onClose={() => setKebabOpen(false)}
+                  showPin={!splitActive}
+                  onPin={() => {
+                    setKebabOpen(false);
+                    void togglePin();
+                  }}
+                  renameLabel={splitActive ? "Rename group" : "Rename"}
+                  onRename={() => {
+                    setKebabOpen(false);
+                    if (splitActive) renameGroupPrompt();
+                    else void renameChatPrompt();
+                  }}
+                  archiveLabel={splitActive ? "Archive all" : "Archive"}
+                  onArchive={() => {
+                    setKebabOpen(false);
+                    if (splitActive) void archiveAllPanes();
+                    else if (sessionId) void archiveSession(sessionId);
+                  }}
+                />
+              ) : null}
+              {isArchived || isSecondary ? (
+                <BackButton onClick={() => navigate(backTarget)}>
+                  {backLabel}
+                </BackButton>
+              ) : !sessionId ? (
+                <BackButton onClick={() => navigate(backTarget)}>
+                  {backLabel}
+                </BackButton>
+              ) : !isArchived &&
+                !isSecondary &&
+                splitActive &&
+                visiblePaneSessions.length > 0 ? (
+                anyPaneRunning ? (
+                  <StopButton
+                    variant="header"
+                    onClick={stopAllPanes}
+                    title="Stop all chats"
+                  >
+                    Stop all
+                  </StopButton>
+                ) : anyPaneResuming ? (
+                  <ResumingButton variant="header" />
+                ) : (
+                  <ResumeButton
+                    variant="header"
+                    onClick={resumeAllPanes}
+                    title="Resume all chats"
+                  >
+                    Resume all
+                  </ResumeButton>
+                )
+              ) : !isArchived && !isSecondary && resuming ? (
+                <ResumingButton variant="header" />
+              ) : !isArchived &&
+                !isSecondary &&
+                status === "running" &&
+                sessionId ? (
                 <StopButton
                   variant="header"
-                  onClick={stopAllPanes}
-                  title="Stop all chats"
-                >
-                  Stop all
-                </StopButton>
-              ) : anyPaneResuming ? (
-                <ResumingButton variant="header" />
-              ) : (
+                  onClick={() => void stopSession(sessionId)}
+                  title="Stop chat"
+                />
+              ) : !isArchived && !isSecondary && sessionId ? (
                 <ResumeButton
                   variant="header"
-                  onClick={resumeAllPanes}
-                  title="Resume all chats"
+                  onClick={() => void resumeSession(sessionId)}
+                  title="Resume chat"
+                />
+              ) : null}
+            </div>
+            <div className="ml-auto flex shrink-0 items-center gap-2">
+              {sessionId && metaLoaded && !isArchived ? (
+                <LayoutPicker
+                  active={splitActive ? layout.preset : "single"}
+                  onPick={pickPreset}
+                />
+              ) : null}
+              {!panelOpen ? (
+                <button
+                  type="button"
+                  onClick={() => setPanelOpen(true)}
+                  title="Open side panel"
+                  aria-label="Open side panel"
+                  aria-pressed={false}
+                  className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg-2 transition-colors hover:bg-raised hover:text-fg"
                 >
-                  Resume all
-                </ResumeButton>
-              )
-            ) : !isArchived && !isSecondary && resuming ? (
-              <ResumingButton variant="header" />
-            ) : !isArchived &&
-              !isSecondary &&
-              status === "running" &&
-              sessionId ? (
-              <StopButton
-                variant="header"
-                onClick={() => void stopSession(sessionId)}
-                title="Stop chat"
-              />
-            ) : !isArchived && !isSecondary && sessionId ? (
-              <ResumeButton
-                variant="header"
-                onClick={() => void resumeSession(sessionId)}
-                title="Resume chat"
-              />
-            ) : null}
-          </div>
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            {sessionId && metaLoaded && !isArchived ? (
-              <LayoutPicker
-                active={splitActive ? layout.preset : "single"}
-                onPick={pickPreset}
-              />
-            ) : null}
-            <button
-              type="button"
-              onClick={() => setPanelOpen((open) => !open)}
-              title={panelOpen ? "Collapse side panel" : "Open side panel"}
-              aria-label={panelOpen ? "Collapse side panel" : "Open side panel"}
-              aria-pressed={panelOpen}
-              className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded transition-colors hover:bg-raised hover:text-fg ${
-                panelOpen ? "text-fg" : "text-fg-2"
-              }`}
-            >
-              <PanelRight aria-hidden className="h-[15px] w-[15px]" />
-            </button>
+                  <PanelToggleGlyph
+                    side="right"
+                    filled={false}
+                    className="h-[12.5px] w-[16px]"
+                  />
+                </button>
+              ) : null}
+            </div>
           </div>
         </header>
 
@@ -1707,6 +1720,7 @@ export default function RunnerChat({
         runner={runner}
         chatMeta={chatMeta}
         open={panelOpen}
+        onCollapse={() => setPanelOpen(false)}
       />
       {/* Empty-pane fill flow (impl 0020): auto-opened when a preset has
           more slots than open chats, or from an empty pane's New chat
@@ -1857,10 +1871,12 @@ function RunnerSidePanel({
   runner,
   chatMeta,
   open,
+  onCollapse,
 }: {
   runner: Runner | null;
   chatMeta: DirectSessionEntry | null;
   open: boolean;
+  onCollapse: () => void;
 }) {
   const asideRef = useRef<HTMLElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
@@ -1896,8 +1912,25 @@ function RunnerSidePanel({
       <div ref={innerRef} style={{ width }} className="flex h-full flex-col">
         <header
           data-tauri-drag-region
-          className="relative z-20 h-11 shrink-0 border-b border-line"
-        />
+          className="relative z-20 flex h-11 shrink-0 items-center justify-end border-b border-line px-4"
+        >
+          {open ? (
+            <button
+              type="button"
+              onClick={onCollapse}
+              title="Collapse side panel"
+              aria-label="Collapse side panel"
+              aria-pressed
+              className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-fg transition-colors hover:bg-raised"
+            >
+              <PanelToggleGlyph
+                side="right"
+                filled
+                className="h-[12.5px] w-[16px]"
+              />
+            </button>
+          ) : null}
+        </header>
         <div className="flex min-h-0 flex-1 flex-col gap-[18px] overflow-y-auto p-5">
           {runner ? (
             <>
@@ -2034,7 +2067,6 @@ function RunnerSidePanel({
 /// here.
 function ChatKebab({
   pinned,
-  metadata,
   open,
   onToggle,
   onClose,
@@ -2046,7 +2078,6 @@ function ChatKebab({
   archiveLabel = "Archive",
 }: {
   pinned: boolean;
-  metadata: string[];
   open: boolean;
   onToggle: () => void;
   onClose: () => void;
@@ -2095,23 +2126,8 @@ function ChatKebab({
       {open ? (
         <div
           role="menu"
-          className="absolute left-0 top-full z-50 mt-1.5 flex w-64 flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
+          className="absolute left-0 top-full z-50 mt-1.5 flex w-40 flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
         >
-          {metadata.length > 0 ? (
-            <>
-              <div className="flex flex-col gap-1 px-2.5 py-2 text-[11px] text-fg-3">
-                {metadata.map((part, index) => (
-                  <span
-                    key={`${part}-${index}`}
-                    className={part.startsWith("/") ? "break-all font-mono" : ""}
-                  >
-                    {part}
-                  </span>
-                ))}
-              </div>
-              <div className="mx-1 mb-1 h-px bg-line" />
-            </>
-          ) : null}
           {showPin ? (
             <KebabItem
               icon={pinned ? PinOff : Pin}
@@ -2159,21 +2175,4 @@ function KebabItem({
       <span>{label}</span>
     </button>
   );
-}
-
-// Compact relative time for the chat header meta line. Mirrors the
-// "started 18m ago" text in the Pencil design. Falls back to a short
-// absolute date for anything older than a week.
-function formatRelative(ts: string): string {
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return "—";
-  const diffSec = Math.max(0, (Date.now() - d.getTime()) / 1000);
-  if (diffSec < 60) return "just now";
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDay = Math.floor(diffHr / 24);
-  if (diffDay < 7) return `${diffDay}d ago`;
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }

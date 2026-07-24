@@ -204,7 +204,7 @@ export default function SettingsPage() {
                           state: { from: fromRef.current },
                         })
                       }
-                      className={`flex cursor-pointer items-center gap-2.5 rounded border px-2.5 py-1.5 text-left text-sm transition-colors ${
+                      className={`flex cursor-pointer items-center gap-2.5 rounded border px-2.5 py-1 text-left text-sm transition-colors ${
                         active
                           ? "border-sidebar-selected-border bg-sidebar-selected font-semibold text-fg shadow-sm"
                           : "border-transparent text-fg-2 hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg"

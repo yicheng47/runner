@@ -401,6 +401,7 @@ pub fn run() {
             commands::window::window_focus_other,
             commands::window::window_report_subjects,
             commands::window::window_list_subjects,
+            commands::window::window_set_titlebar_zoom,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -4,7 +4,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export const FULLSCREEN_SETTLE_MS = 200;
 
-export function useCurrentWindowFullscreen(): boolean {
+export function useCurrentWindowFullscreen(
+  onSettled?: (fullscreen: boolean) => void,
+): boolean {
   const [fullscreen, setFullscreen] = useState(false);
 
   useEffect(() => {
@@ -30,7 +32,10 @@ export function useCurrentWindowFullscreen(): boolean {
         void currentWindow
           .isFullscreen()
           .then((next) => {
-            if (active) setFullscreen(next);
+            if (active) {
+              setFullscreen(next);
+              onSettled?.(next);
+            }
           })
           .catch(() => {});
       } catch {
@@ -59,7 +64,7 @@ export function useCurrentWindowFullscreen(): boolean {
       if (settleTimer) clearTimeout(settleTimer);
       unlisten?.();
     };
-  }, []);
+  }, [onSettled]);
 
   return fullscreen;
 }

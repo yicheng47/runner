@@ -35,9 +35,11 @@ import RunnerChat from "../pages/RunnerChat";
 export function PersistentSurfaces({
   sidebarCollapsed,
   fullscreen,
+  onOpenSidebar,
 }: {
   sidebarCollapsed: boolean;
   fullscreen: boolean;
+  onOpenSidebar: () => void;
 }) {
   const location = useLocation();
   const chatId =
@@ -69,6 +71,7 @@ export function PersistentSurfaces({
             visible={chatId !== null}
             sidebarCollapsed={sidebarCollapsed}
             fullscreen={fullscreen}
+            onOpenSidebar={onOpenSidebar}
           />
         </div>
       ) : null}
@@ -79,6 +82,7 @@ export function PersistentSurfaces({
             visible={missionId !== null}
             sidebarCollapsed={sidebarCollapsed}
             fullscreen={fullscreen}
+            onOpenSidebar={onOpenSidebar}
           />
         </div>
       ) : null}
