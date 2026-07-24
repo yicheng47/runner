@@ -37,6 +37,7 @@ links to its tracking issue.
 - [48 — Mission inbox reconciliation tick](./48-mission-inbox-reconciliation-tick.md) — per-mission system clock that re-nudges idle sessions whose `unread_count` is non-zero (existing watermark projection); empty ticks are free, agents never poll, and lost wakes self-heal — with #328 this makes wake delivery at-least-once.
 - [49 — Periodic update checks](./49-periodic-update-checks.md) — interval (~6h) + focus-triggered stale re-checks feeding the existing update state machine, so long-running apps learn about releases; never auto-relaunch (live PTYs), and the auto-install toggle governs download only, not checking.
 - [50 — Inbox delivery blocked indicator](./50-inbox-delivery-blocked-indicator.md) — pane-local notice when unread mission mail is waiting but pending terminal input prevents its wake nudge from being delivered safely; keeps Ctrl+U conservative without leaving the human unaware.
+- [51 — Read-mostly mission feed](./51-read-mostly-mission-feed.md) — remove the MissionInput composer and the entire reply-to-human protocol (`--to human`, worker preamble section, lead bullets); pane input is how the human talks to a runner, the feed answers what's happening; ask_human cards stay as the only feed-side control, and MCP keeps `human_said` as the programmatic channel.
 
 ## Archive
 
