@@ -495,6 +495,7 @@ async fn mission_start_impl_with_size(
     use crate::event_bus::{BusEmitter, TauriBusEvents};
     use crate::router::{
         open_log_for_mission, CompositeBusEmitter, Router, RouterSubscriber, StdinInjector,
+        TauriRouterUiNotifier,
     };
     use crate::session::manager::{SessionEvents, TauriSessionEvents};
     use std::sync::Arc;
@@ -636,6 +637,7 @@ async fn mission_start_impl_with_size(
         crew_addendum.clone(),
         Arc::clone(&log_arc),
         injector,
+        Arc::new(TauriRouterUiNotifier(app.clone())),
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -906,6 +908,7 @@ pub(crate) async fn ensure_mission_router_mounted(
     use crate::event_bus::{BusEmitter, TauriBusEvents};
     use crate::router::{
         open_log_for_mission, CompositeBusEmitter, Router, RouterSubscriber, StdinInjector,
+        TauriRouterUiNotifier,
     };
     use std::sync::Arc;
 
@@ -980,6 +983,7 @@ pub(crate) async fn ensure_mission_router_mounted(
         crew_addendum,
         Arc::clone(&log_arc),
         injector,
+        Arc::new(TauriRouterUiNotifier(app.clone())),
     )?;
     router.register_sessions(&session_pairs);
 
@@ -1180,6 +1184,7 @@ pub(crate) async fn mission_reset_impl(
     use crate::event_bus::{BusEmitter, TauriBusEvents};
     use crate::router::{
         open_log_for_mission, CompositeBusEmitter, Router, RouterSubscriber, StdinInjector,
+        TauriRouterUiNotifier,
     };
     use crate::session::manager::{SessionEvents, TauriSessionEvents};
     use std::sync::Arc;
@@ -1375,6 +1380,7 @@ pub(crate) async fn mission_reset_impl(
         crew_addendum.clone(),
         Arc::clone(&log_arc),
         injector,
+        Arc::new(TauriRouterUiNotifier(app.clone())),
     )?;
 
     let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app.clone()));

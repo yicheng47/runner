@@ -40,6 +40,7 @@ import type {
   WarningEvent,
 } from "../lib/types";
 import { DuplicateSubjectOverlay } from "../components/DuplicateSubjectOverlay";
+import { InboxBlockedPill } from "../components/InboxBlockedPill";
 import {
   isSecondaryFor,
   useCurrentWindowLabel,
@@ -93,6 +94,7 @@ import {
   useArchivingMission,
 } from "../lib/archivingState";
 import { eventMatchesShortcut } from "../lib/keymap";
+import { useMissionDeliveryBlocked } from "../lib/deliveryBlocked";
 
 const RAIL_STORAGE_WIDTH = "runner.mission.rail.width";
 const RAIL_MIN = 200;
@@ -135,6 +137,10 @@ export default function MissionWorkspace({
   const [mission, setMission] = useState<Mission | null>(null);
   const [crew, setCrew] = useState<Crew | null>(null);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
+  const deliveryBlockedBySession = useMissionDeliveryBlocked(
+    id,
+    sessions.map((session) => session.id),
+  );
   const [events, setEvents] = useState<Event[]>([]);
   const [error, setError] = useState<string | null>(null);
   // Resume-fallback banner; non-blocking advisory (see types.ts WarningEvent).
@@ -1241,6 +1247,10 @@ export default function MissionWorkspace({
                     <Pane key={s.id} active={activeTab === s.id}>
                       <SlotPtyPane
                         session={s}
+                        deliveryBlockedUnreadCount={
+                          deliveryBlockedBySession[s.id]?.unread_count ?? null
+                        }
+                        runnerIdle={runnerStatusMap[s.handle] === "idle"}
                         // `visible` gate: a hidden keep-alive workspace
                         // deactivates even its front tab's terminal so it
                         // releases WebGL and skips geometry pushes.
@@ -1401,6 +1411,8 @@ export default function MissionWorkspace({
 /// so a user reading the prior turn before resuming sees no flash.
 function SlotPtyPane({
   session,
+  deliveryBlockedUnreadCount,
+  runnerIdle,
   active,
   forcedResuming,
   anySessionLive,
@@ -1410,6 +1422,8 @@ function SlotPtyPane({
   registerTerminal,
 }: {
   session: SessionRow;
+  deliveryBlockedUnreadCount: number | null;
+  runnerIdle: boolean;
   active: boolean;
   /** True when the parent's "Resume mission" button is iterating
    *  through every slot. Drives the resuming overlay in this pane. */
@@ -1435,6 +1449,20 @@ function SlotPtyPane({
 }) {
   const resuming = !!forcedResuming;
   const dead = session.status !== "running";
+  const paneRef = useRef<HTMLDivElement | null>(null);
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const pane = paneRef.current;
+    if (!pane || typeof ResizeObserver === "undefined") return;
+    const update = (width: number) => setNarrow(width < 600);
+    update(pane.getBoundingClientRect().width);
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) update(entry.contentRect.width);
+    });
+    observer.observe(pane);
+    return () => observer.disconnect();
+  }, []);
   // Per-slot "warming up" overlay: when the pane first mounts for a
   // genuinely fresh slot, the agent CLI (claude-code / codex) takes
   // a beat to paint its banner. Show the cyan pill over the
@@ -1550,7 +1578,7 @@ function SlotPtyPane({
   // canvas in lockstep across theme switches.
   const terminalBg = useTerminalBg();
   return (
-    <div className="relative flex flex-1 min-h-0 flex-col">
+    <div ref={paneRef} className="relative flex flex-1 min-h-0 flex-col">
       <div
         style={{ backgroundColor: terminalBg }}
         className={`flex flex-1 min-h-0 p-3 transition-opacity ${paneOpacity}`}
@@ -1564,6 +1592,15 @@ function SlotPtyPane({
           disabled={dead || resuming || starting}
         />
       </div>
+      {!dead && deliveryBlockedUnreadCount !== null ? (
+        <InboxBlockedPill
+          sessionId={session.id}
+          unreadCount={deliveryBlockedUnreadCount}
+          idle={runnerIdle}
+          narrow={narrow}
+          onError={onError}
+        />
+      ) : null}
       {resuming ? (
         <ResumingOverlay />
       ) : starting ? (
