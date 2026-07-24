@@ -68,7 +68,9 @@ describe("InboxBlockedPill", () => {
         .querySelector("button")
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
+    expect(mocks.injectStdin).toHaveBeenCalledTimes(1);
     expect(mocks.injectStdin).toHaveBeenCalledWith("S-IMPL", "\r");
+    expect(mocks.injectStdin).not.toHaveBeenCalledWith("S-IMPL", "\x03");
   });
 
   it("omits the count for one unread message", async () => {
