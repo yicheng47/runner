@@ -149,6 +149,14 @@ export interface SessionActivityEvent {
   source: string;
 }
 
+export interface DeliveryBlockedEvent {
+  mission_id: string;
+  session_id: string;
+  handle: string;
+  unread_count: number;
+  blocked: boolean;
+}
+
 export type MissionStatus = "running" | "completed" | "aborted";
 
 export interface Mission {
