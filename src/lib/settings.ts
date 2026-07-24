@@ -86,7 +86,9 @@ export const BRAND_MARK_PINNED_COLOR = "#00FF9C";
 // in the settings panes) so the readers can snap/clamp to the same domain
 // the UI presents — boot and storage-event consumers can't drift onto
 // off-step or out-of-range values that the panes would never offer.
-export const ZOOM_STEPS: readonly number[] = [0.8, 0.9, 1.0, 1.1, 1.25, 1.5];
+export const ZOOM_STEPS: readonly number[] = [
+  0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5,
+];
 export const TERMINAL_FONT_SIZE_MIN = 10;
 export const TERMINAL_FONT_SIZE_MAX = 20;
 

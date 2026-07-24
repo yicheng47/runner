@@ -13,7 +13,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AppShell } from "./components/AppShell";
 import { ToastProvider } from "./contexts/ToastContext";
 import { UpdateProvider, useUpdate } from "./contexts/UpdateContext";
-import { nudgeAppZoom } from "./lib/appZoom";
+import { nudgeAppZoom, syncTitlebarZoom } from "./lib/appZoom";
 import { eventMatchesShortcut } from "./lib/keymap";
 import { readAppZoom } from "./lib/settings";
 import Crews from "./pages/Crews";
@@ -22,29 +22,28 @@ import Runners from "./pages/Runners";
 import RunnerDetail from "./pages/RunnerDetail";
 
 export default function App() {
-  // Tell the backend the first frame has painted so it can show + focus the
-  // main window. Don't wrap this in requestAnimationFrame — macOS pauses rAF
-  // for hidden windows, so the rAF callback would never fire and the window
-  // would stay hidden forever. useEffect runs after React commits, which is
-  // enough to guarantee a non-blank webview before show.
-  useEffect(() => {
-    invoke("app_ready").catch(console.error);
-  }, []);
-
-  // Restore the user's persisted app zoom on boot. Skipped when the stored
-  // value is the default (1.0) so we don't roundtrip through Tauri for a
-  // no-op. Wrapped in try/catch because dev browser preview has no Tauri
-  // webview API.
+  // Restore app zoom and align the native titlebar before revealing this
+  // window. Don't wrap this in requestAnimationFrame — macOS pauses rAF for
+  // hidden windows, so the callback would never fire. Every window runs this
+  // effect, and both commands resolve the invoking window.
   useEffect(() => {
     const zoom = readAppZoom();
-    if (zoom === 1.0) return;
-    try {
-      void getCurrentWebview().setZoom(zoom).catch(() => {
-        // best-effort — webview swap or platform refusal shouldn't block boot.
-      });
-    } catch {
-      // No Tauri runtime (dev browser preview).
+    let webviewZoom = Promise.resolve();
+    if (zoom !== 1.0) {
+      try {
+        webviewZoom = getCurrentWebview()
+          .setZoom(zoom)
+          .catch(() => {
+            // Best-effort — webview swap or platform refusal shouldn't block boot.
+          });
+      } catch {
+        // No Tauri runtime (dev browser preview).
+      }
     }
+
+    void Promise.all([syncTitlebarZoom(zoom), webviewZoom]).finally(() => {
+      invoke("app_ready").catch(console.error);
+    });
   }, []);
 
   // Zoom shortcuts (keymap: zoom-in / zoom-out / zoom-reset). Capture

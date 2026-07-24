@@ -54,8 +54,7 @@ pub fn open_window(
     {
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true)
-            .traffic_light_position(tauri::LogicalPosition::new(16.0, 22.0));
+            .hidden_title(true);
     }
 
     let window = builder.build().map_err(|e| Error::msg(e.to_string()))?;
@@ -139,4 +138,83 @@ pub fn window_report_subjects(
 #[tauri::command]
 pub fn window_list_subjects(state: State<AppState>) -> Result<Vec<WindowEntry>> {
     Ok(state.windows.snapshot())
+}
+
+#[cfg(any(target_os = "macos", test))]
+const TITLEBAR_HEIGHT: f64 = 44.0;
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHT_X: f64 = 16.0;
+
+#[tauri::command]
+pub fn window_set_titlebar_zoom(window: tauri::WebviewWindow, zoom: f64) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        if window
+            .is_fullscreen()
+            .map_err(|e| Error::msg(e.to_string()))?
+        {
+            return Ok(());
+        }
+
+        let titlebar_height = TITLEBAR_HEIGHT * zoom;
+        window
+            .with_webview(move |webview| {
+                use objc2_app_kit::{NSWindow, NSWindowButton};
+
+                let ns_window: &NSWindow = unsafe { &*webview.ns_window().cast() };
+                let Some(close) = ns_window.standardWindowButton(NSWindowButton::CloseButton)
+                else {
+                    return;
+                };
+                let Some(minimize) =
+                    ns_window.standardWindowButton(NSWindowButton::MiniaturizeButton)
+                else {
+                    return;
+                };
+                let Some(maximize) = ns_window.standardWindowButton(NSWindowButton::ZoomButton)
+                else {
+                    return;
+                };
+                let Some(button_group) = (unsafe { close.superview() }) else {
+                    return;
+                };
+                let Some(titlebar_container) = (unsafe { button_group.superview() }) else {
+                    return;
+                };
+
+                let close_rect = close.frame();
+                let button_height = close_rect.size.height;
+                let spacing = minimize.frame().origin.x - close_rect.origin.x;
+
+                let mut titlebar_rect = titlebar_container.frame();
+                titlebar_rect.size.height = titlebar_height;
+                titlebar_rect.origin.y = ns_window.frame().size.height - titlebar_height;
+                titlebar_container.setFrame(titlebar_rect);
+
+                for (index, button) in [close, minimize, maximize].into_iter().enumerate() {
+                    let mut rect = button.frame();
+                    rect.origin.x = TRAFFIC_LIGHT_X + index as f64 * spacing;
+                    rect.origin.y = (titlebar_height - button_height) / 2.0;
+                    button.setFrameOrigin(rect.origin);
+                }
+            })
+            .map_err(|e| Error::msg(e.to_string()))?;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, zoom);
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TITLEBAR_HEIGHT;
+
+    #[test]
+    fn titlebar_height_tracks_app_zoom() {
+        assert!((TITLEBAR_HEIGHT * 0.8 - 35.2).abs() < f64::EPSILON);
+        assert!((TITLEBAR_HEIGHT * 1.0 - 44.0).abs() < f64::EPSILON);
+        assert!((TITLEBAR_HEIGHT * 1.5 - 66.0).abs() < f64::EPSILON);
+    }
 }

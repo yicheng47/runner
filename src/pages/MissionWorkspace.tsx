@@ -16,9 +16,9 @@ import { useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import {
   Archive,
+  Ellipsis,
   Flag,
   Info,
-  MoreHorizontal,
   Pin,
   PinOff,
   RotateCcw,
@@ -129,9 +129,15 @@ function workspaceDimsFromContainer(
 export default function MissionWorkspace({
   missionId: id,
   visible,
+  sidebarCollapsed,
+  fullscreen,
+  onOpenSidebar,
 }: {
   missionId: string;
   visible: boolean;
+  sidebarCollapsed: boolean;
+  fullscreen: boolean;
+  onOpenSidebar: () => void;
 }) {
   const navigate = useNavigate();
   const [mission, setMission] = useState<Mission | null>(null);
@@ -905,7 +911,6 @@ export default function MissionWorkspace({
     [id],
   );
 
-  const startedAt = mission ? formatRelativeTime(mission.started_at) : "";
   const [kebabOpen, setKebabOpen] = useState(false);
   // Right rail (Runners panel) collapse state. Mirrors the RunnerChat
   // side-panel collapse — same localStorage shape for consistency.
@@ -975,165 +980,120 @@ export default function MissionWorkspace({
     // across the divider — same layout shape as RunnerChat.
     <div className="flex h-full flex-1 flex-row bg-bg">
       <div className="flex min-w-0 flex-1 flex-col">
-      {/* `data-tauri-drag-region` makes the entire header strip drag
-          the window, matching macOS toolbar behavior. Buttons inside
-          (Resume / Stop / kebab / panel toggle) keep their click
-          handlers — Tauri only enters drag mode on mousedowns that
-          land on the bare header, not on interactive children. */}
-      <header
-        data-tauri-drag-region
-        className="flex items-center justify-between gap-4 border-b border-line bg-panel px-6 pb-3.5 pt-9"
-      >
-        <div className="flex min-w-0 items-center gap-3.5">
-          {/* Mission glyph — matches Pencil node `nEpyL`: a 36×36
-              rounded square with a lucide `flag` icon at 18px in the
-              accent green. */}
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-bg text-accent">
-            <Flag aria-hidden className="h-[18px] w-[18px]" />
-          </div>
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <div className="flex items-center gap-2">
-              <h1 className="truncate text-[14px] font-semibold leading-tight text-fg">
+        <header
+          data-tauri-drag-region
+          className={`relative z-20 flex h-11 shrink-0 items-center border-b border-line bg-panel pr-4 ${
+            sidebarCollapsed && !fullscreen
+              ? "pl-[var(--titlebar-sidebar-toggle-gutter)]"
+              : "pl-4"
+          }`}
+        >
+          <div
+            data-tauri-drag-region
+            className="flex min-w-0 flex-1 items-center gap-2"
+          >
+            {sidebarCollapsed ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onOpenSidebar}
+                  title="Open sidebar"
+                  aria-label="Open sidebar"
+                  className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-fg-2 transition-colors hover:bg-raised hover:text-fg"
+                >
+                  <PanelToggleGlyph
+                    side="left"
+                    filled={false}
+                    className="h-[12px] w-[15.4px]"
+                  />
+                </button>
+                <div
+                  data-tauri-drag-region
+                  aria-hidden
+                  className="mx-1 h-5 w-px shrink-0 bg-line"
+                />
+              </>
+            ) : null}
+            <Flag
+              data-tauri-drag-region
+              aria-hidden
+              className="h-[15px] w-[15px] shrink-0 text-accent"
+            />
+            <div
+              data-tauri-drag-region
+              className="flex min-w-0 items-center gap-2"
+            >
+              <h1
+                data-tauri-drag-region
+                className="min-w-0 truncate text-[13px] font-medium text-fg"
+              >
                 {mission?.title ?? "…"}
               </h1>
-              {/* Type badge mirrors RunnerChat's "Chat" pill so the
-                  workspace surfaces consistently signal what kind of
-                  thing this is, not just its status. */}
-              <span className="rounded bg-line-strong px-2 py-px text-[9px] font-bold uppercase tracking-[0.5px] text-fg-2">
-                Mission
-              </span>
-              {/* Status pill moved to the left so it sits next to
-                  the title instead of competing visually with the
-                  Resume / Stop / kebab cluster on the right — the
-                  action buttons already imply the current state,
-                  and a pill at the same edge read redundant. */}
-              {mission ? (() => {
-                type Display =
-                  | "running"
-                  | "stopped"
-                  | "archived"
-                  | "aborted"
-                  | "resuming";
-                // archived_at short-circuits at the top. The
-                // remaining branches only see non-archived rows, so
-                // any status='completed' here would mean a row that
-                // missed the migration backfill — fall through to
-                // 'aborted' since it's terminal-but-not-archived and
-                // the worker pill copy reads correctly for triage.
-                const display: Display = isArchived
-                  ? "archived"
-                  : resumingAll
-                    ? "resuming"
-                    : mission.status === "running"
-                      ? anySessionLive
-                        ? "running"
-                        : "stopped"
-                      : "aborted";
-                const pillClass =
-                  display === "running"
-                    ? "bg-accent/15 text-accent"
-                    : display === "aborted"
-                      ? "bg-danger/15 text-danger"
-                      : display === "resuming"
-                        ? "bg-info/15 text-info"
-                        : "bg-raised text-fg-2";
-                const dotClass =
-                  display === "running"
-                    ? "bg-accent"
-                    : display === "aborted"
-                      ? "bg-danger"
-                      : display === "resuming"
-                        ? "bg-info"
-                        : "bg-fg-3";
-                return (
-                  <span
-                    className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${pillClass}`}
-                  >
-                    <span
-                      className={`inline-flex h-1.5 w-1.5 rounded-full ${dotClass}`}
-                    />
-                    {display === "resuming" ? "resuming…" : display}
-                  </span>
-                );
-              })() : null}
-              {/* Unambiguous read-only affordance for archived
-                  missions — the status pill alone reads too easily
-                  as just another state. Muted chip beside the title
-                  so the workspace clearly communicates that nothing
-                  here will accept input. */}
-              {isArchived ? (
-                <span className="inline-flex shrink-0 items-center rounded border border-line bg-raised px-2 py-0.5 text-[10px] font-medium text-fg-2">
-                  Archived · read-only
-                </span>
+              {mission?.status === "running" && !resumingAll && !isSecondary ? (
+                <MissionKebab
+                  pinned={!!mission.pinned_at}
+                  open={kebabOpen}
+                  onToggle={() => setKebabOpen((v) => !v)}
+                  onClose={() => setKebabOpen(false)}
+                  onPin={() => {
+                    setKebabOpen(false);
+                    void pinMission();
+                  }}
+                  onRename={() => {
+                    setKebabOpen(false);
+                    void renameMissionPrompt();
+                  }}
+                  onReset={() => {
+                    setKebabOpen(false);
+                    setResetConfirmOpen(true);
+                  }}
+                  onArchive={() => {
+                    setKebabOpen(false);
+                    void archiveMission();
+                  }}
+                />
               ) : null}
-            </div>
-            <span className="truncate text-[11px] leading-tight text-fg-3">
-              {sessions.length} runner{sessions.length === 1 ? "" : "s"}
-              {startedAt ? ` · started ${startedAt}` : ""}
-            </span>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {/* Secondary windows (impl 0018) are read-only: Resume/Reset
-              respawn PTYs, Stop kills them, Archive ends the mission — all
-              of which act on PTYs the primary window owns. Hide the whole
-              action cluster while secondary; focus the primary to act. */}
-          {mission?.status === "running" && !resumingAll && !isSecondary ? (
-            <>
-              {anySessionStopped ? (
+              {mission?.status === "running" &&
+              !resumingAll &&
+              !isSecondary &&
+              anySessionStopped ? (
                 <ResumeButton
+                  variant="header"
                   onClick={() => void resumeMission()}
                   title="Respawn every stopped slot in this mission"
                 />
               ) : null}
-              {allSessionsLive ? (
+              {mission?.status === "running" &&
+              !resumingAll &&
+              !isSecondary &&
+              allSessionsLive ? (
                 <StopButton
+                  variant="header"
                   onClick={() => void stopMission()}
                   title="Kill all PTYs; mission stays running so you can Resume"
-                  iconTone="fg"
                 />
               ) : null}
-              <MissionKebab
-                pinned={!!mission.pinned_at}
-                open={kebabOpen}
-                onToggle={() => setKebabOpen((v) => !v)}
-                onClose={() => setKebabOpen(false)}
-                onPin={() => {
-                  setKebabOpen(false);
-                  void pinMission();
-                }}
-                onRename={() => {
-                  setKebabOpen(false);
-                  void renameMissionPrompt();
-                }}
-                onReset={() => {
-                  setKebabOpen(false);
-                  setResetConfirmOpen(true);
-                }}
-                onArchive={() => {
-                  setKebabOpen(false);
-                  void archiveMission();
-                }}
-              />
-            </>
-          ) : null}
-          {!railOpen ? (
-            <button
-              type="button"
-              onClick={() => setRailOpen(true)}
-              title="Open runners panel"
-              aria-label="Open runners panel"
-              className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-2 transition-colors hover:bg-raised hover:text-fg"
-            >
-              <PanelToggleGlyph
-                side="right"
-                filled={false}
-                className="h-[12.5px] w-[16px]"
-              />
-            </button>
-          ) : null}
-        </div>
-      </header>
+            </div>
+            {!railOpen ? (
+              <div className="ml-auto flex shrink-0 items-center">
+                <button
+                  type="button"
+                  onClick={() => setRailOpen(true)}
+                  title="Open runners panel"
+                  aria-label="Open runners panel"
+                  aria-pressed={false}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-2 transition-colors hover:bg-raised hover:text-fg"
+                >
+                  <PanelToggleGlyph
+                    side="right"
+                    filled={false}
+                    className="h-[12.5px] w-[16px]"
+                  />
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </header>
 
       {error ? (
         <div className="mx-8 mt-3 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
@@ -1316,19 +1276,11 @@ export default function MissionWorkspace({
           style={{ width: railWidth }}
           className="flex h-full flex-col"
         >
-          {/* Rail header — same px-5 / pt-9 / pb-3.5 / border-b
-              rhythm as the workspace topbar so the divider lines up
-              across the column boundary. The icon strip on the left
-              flips between Runners (roster) and Mission (meta); the
-              collapse button stays on the right.
-              `data-tauri-drag-region` keeps the rail header in the
-              same draggable band as the workspace topbar — anywhere
-              not on a button drags the window. */}
           <header
             data-tauri-drag-region
-            className="flex shrink-0 items-center justify-between gap-2 border-b border-line px-5 pb-3.5 pt-9"
+            className="relative z-20 flex h-11 shrink-0 items-center border-b border-line px-4"
           >
-            <div className="flex h-9 items-center gap-0.5">
+            <div className="flex items-center gap-0.5">
               <RailViewButton
                 icon={UsersIcon}
                 label="Runners"
@@ -1342,13 +1294,14 @@ export default function MissionWorkspace({
                 onClick={() => setRailView("meta")}
               />
             </div>
-            <div className="flex h-9 items-center">
+            {railOpen ? (
               <button
                 type="button"
                 onClick={() => setRailOpen(false)}
-                title="Collapse panel"
-                aria-label="Collapse panel"
-                className="flex h-7 w-7 cursor-pointer items-center justify-center rounded border border-transparent text-fg-2 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
+                title="Collapse runners panel"
+                aria-label="Collapse runners panel"
+                aria-pressed
+                className="ml-auto inline-flex h-7 w-7 items-center justify-center rounded text-fg transition-colors hover:bg-raised"
               >
                 <PanelToggleGlyph
                   side="right"
@@ -1356,7 +1309,7 @@ export default function MissionWorkspace({
                   className="h-[12.5px] w-[16px]"
                 />
               </button>
-            </div>
+            ) : null}
           </header>
           <div className="flex min-h-0 flex-1 flex-col pt-5">
             {railView === "runners" ? (
@@ -1755,14 +1708,14 @@ function MissionKebab({
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={onToggle}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-fg-2 transition-colors hover:border-line hover:bg-raised hover:text-fg"
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-3 transition-colors hover:bg-raised hover:text-fg-2"
       >
-        <MoreHorizontal aria-hidden className="h-4 w-4" />
+        <Ellipsis aria-hidden className="h-[14px] w-[14px]" />
       </button>
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 top-full z-50 mt-1.5 flex w-40 flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
+          className="absolute left-0 top-full z-50 mt-1.5 flex w-40 flex-col gap-px rounded-lg border border-line bg-raised p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
         >
           <KebabItem
             icon={pinned ? PinOff : Pin}
@@ -1834,22 +1787,6 @@ function RailViewButton({
       <Icon aria-hidden className="h-3.5 w-3.5" />
     </button>
   );
-}
-
-function formatRelativeTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    const diffMs = Date.now() - d.getTime();
-    const minutes = Math.floor(diffMs / 60000);
-    if (minutes < 1) return "just now";
-    if (minutes < 60) return `${minutes}m ago`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
-    const days = Math.floor(hours / 24);
-    return `${days}d ago`;
-  } catch {
-    return iso;
-  }
 }
 
 /// "Mission paused" card — shown in both the mission-feed surface

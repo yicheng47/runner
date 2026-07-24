@@ -3,6 +3,7 @@
 // so the Tauri import stays out of the leaf-level settings helpers.
 
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { invoke } from "@tauri-apps/api/core";
 
 import {
   notifySameWindowStorage,
@@ -12,8 +13,29 @@ import {
   ZOOM_STEPS,
 } from "./settings";
 
+const SIDEBAR_TOGGLE_GLYPH_X = 94.3;
+const SIDEBAR_TOGGLE_GLYPH_INSET = 6.3;
+
+export function syncTitlebarZoom(zoom: number): Promise<void> {
+  const gutter =
+    Math.round(
+      (SIDEBAR_TOGGLE_GLYPH_X / zoom - SIDEBAR_TOGGLE_GLYPH_INSET) *
+        10_000,
+    ) / 10_000;
+  document.documentElement.style.setProperty(
+    "--titlebar-sidebar-toggle-gutter",
+    `${gutter}px`,
+  );
+  try {
+    return invoke<void>("window_set_titlebar_zoom", { zoom }).catch(() => {});
+  } catch {
+    return Promise.resolve();
+  }
+}
+
 export function applyAppZoom(next: number): void {
   writeAppZoom(next);
+  void syncTitlebarZoom(next);
   try {
     void getCurrentWebview()
       .setZoom(next)

@@ -253,6 +253,7 @@ async function renderSidebar(root: Root) {
         { initialEntries: ["/chats/A"] },
         createElement(Sidebar, {
           collapsed: false,
+          fullscreen: false,
           onCollapsedChange: () => {},
           previewOpen: false,
           onPreviewOpenChange: () => {},

@@ -262,6 +262,7 @@ interface SidebarProps {
   // it's preserved across collapse/expand cycles so users get their last
   // full width back when they re-open.
   collapsed: boolean;
+  fullscreen: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
   previewOpen: boolean;
   onPreviewOpenChange: (open: boolean) => void;
@@ -269,6 +270,7 @@ interface SidebarProps {
 
 export function Sidebar({
   collapsed,
+  fullscreen,
   onCollapsedChange,
   previewOpen,
   onPreviewOpenChange,
@@ -1968,7 +1970,7 @@ export function Sidebar({
           width: sidebarVisible ? width : 0,
           opacity: sidebarVisible ? 1 : 0,
         }}
-        className={`flex shrink-0 select-none flex-col overflow-hidden transition-[width,opacity] duration-150 ${
+        className={`flex shrink-0 select-none flex-col overflow-hidden transition-[width,opacity] duration-200 ease-in-out ${
           peekOverlay
             ? // Collapsed peek: a raised, docked overlay with a rounded right
               // edge. Kept absolute (via `peeking`) through the fade-out so it
@@ -1983,11 +1985,41 @@ export function Sidebar({
       >
         {showPanel ? (
           <div className="flex min-h-0 flex-1 flex-col pb-4">
-            <div data-tauri-drag-region className="h-8 shrink-0" />
+            <div
+              data-tauri-drag-region
+              className={`flex h-11 shrink-0 items-center pr-3 ${
+                fullscreen
+                  ? "pl-2"
+                  : "pl-[var(--titlebar-sidebar-toggle-gutter)]"
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  if (sidebarPreview) {
+                    onCollapsedChange(false);
+                    onPreviewOpenChange(false);
+                    return;
+                  }
+                  onCollapsedChange(true);
+                }}
+                title={
+                  sidebarPreview ? "Keep sidebar open" : "Collapse sidebar (⌘S)"
+                }
+                aria-label={
+                  sidebarPreview ? "Keep sidebar open" : "Collapse sidebar"
+                }
+                className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-fg-2 transition-colors hover:bg-sidebar-selected/60 hover:text-fg focus:bg-sidebar-selected/60 focus:text-fg focus:outline-none"
+              >
+                <PanelToggleGlyph
+                  side="left"
+                  filled={!collapsed}
+                  className="h-[12px] w-[15.4px]"
+                />
+              </button>
+            </div>
 
-            {/* Brand row — open state only. The drag region extends
-                below the traffic-light strip so the header band reads
-                as one continuous title bar. The trailing magnifier
+            {/* Brand row — open state only. The trailing magnifier
                 opens the command palette (Codex-style: title left,
                 search icon right) — replaced the old WORKSPACE search
                 nav row to give the lists below one more row of space.
@@ -2323,10 +2355,8 @@ export function Sidebar({
                 column. Mirrors Pencil node `IJsUO` (sidebar settings).
                 Navigates to the full-page settings route (impl 0025),
                 threading the current location through state so "Back
-                to app" can return here. The trailing button collapses
-                the sidebar (or, in a hover-preview, pins it open) via
-                the #246 panel glyph. */}
-            <div className="flex shrink-0 items-center gap-2 border-t border-sidebar-selected-border px-3 pt-2">
+                to app" can return here. */}
+            <div className="flex shrink-0 items-center border-t border-sidebar-selected-border px-3 pt-2">
               <button
                 type="button"
                 onClick={() =>
@@ -2338,30 +2368,6 @@ export function Sidebar({
               >
                 <SettingsIcon aria-hidden className="h-3.5 w-3.5" />
                 <span className="text-[13px]">Settings</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (sidebarPreview) {
-                    onCollapsedChange(false);
-                    onPreviewOpenChange(false);
-                    return;
-                  }
-                  onCollapsedChange(true);
-                }}
-                title={
-                  sidebarPreview ? "Keep sidebar open" : "Collapse sidebar (⌘S)"
-                }
-                aria-label={
-                  sidebarPreview ? "Keep sidebar open" : "Collapse sidebar"
-                }
-                className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded border border-transparent text-fg-2 transition-colors hover:border-sidebar-selected-border hover:bg-sidebar-selected/40 hover:text-fg focus:border-sidebar-selected-border focus:bg-sidebar-selected/40 focus:text-fg focus:outline-none"
-              >
-                <PanelToggleGlyph
-                  side="left"
-                  filled={!collapsed}
-                  className="h-[12px] w-[15.4px]"
-                />
               </button>
             </div>
           </div>

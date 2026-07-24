@@ -3847,6 +3847,7 @@ dependencies = [
  "libc",
  "log",
  "notify",
+ "objc2-app-kit",
  "portable-pty",
  "r2d2",
  "r2d2_sqlite",

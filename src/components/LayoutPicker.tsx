@@ -63,11 +63,11 @@ export function LayoutPicker({
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className={`inline-flex h-7 w-7 items-center justify-center rounded-md border text-fg-2 transition-colors hover:border-line hover:bg-raised hover:text-fg ${
-          open ? "border-line bg-raised text-fg" : "border-transparent"
+        className={`inline-flex h-7 w-7 items-center justify-center rounded text-fg-2 transition-colors hover:bg-raised hover:text-fg ${
+          open ? "bg-raised text-fg" : ""
         }`}
       >
-        <SquareSplitHorizontal aria-hidden className="h-4 w-4" />
+        <SquareSplitHorizontal aria-hidden className="h-[15px] w-[15px]" />
       </button>
       {open ? (
         <div
