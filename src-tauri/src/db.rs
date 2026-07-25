@@ -97,6 +97,8 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // 0015: retires folder nodes. Their children are promoted to root and
 // spliced into the folder's root position; the 0014 legacy tables are
 // dropped in the same transaction.
+// 0016: persists the last applied PTY size per session so an unsized
+// resume can fork at the prior width before any frontend pane is measurable.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -134,6 +136,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (14, include_str!("../migrations/0014_nodes.sql")),
     (15, include_str!("../migrations/0015_retire_folders.sql")),
+    (16, include_str!("../migrations/0016_session_last_size.sql")),
 ];
 
 // Default-data seed: ships the Build squad starter crew on first launch.
@@ -1506,7 +1509,7 @@ Talking to the human:
     }
 
     #[test]
-    fn sessions_has_runtime_columns_after_migration() {
+    fn sessions_has_runtime_and_size_columns_after_migration() {
         // Defensive: keep the legacy runtime columns present for
         // existing databases. New PTY-runtime writes use only
         // `runtime` + `runtime_session`; socket/window/pane are
@@ -1530,6 +1533,8 @@ Talking to the human:
             "runtime_window",
             "runtime_pane",
             "runtime_cursor",
+            "last_cols",
+            "last_rows",
         ] {
             assert!(
                 columns.iter().any(|c| c == required),

@@ -183,6 +183,8 @@ impl SessionManager {
         first_turn: Option<String>,
         initial_size: Option<(u16, u16)>,
     ) -> Result<PendingMissionSpawn> {
+        let initial_size = Some(initial_size.unwrap_or(DEFAULT_PTY_SIZE));
+
         // Slot-level runtime override (feature 41): the effective
         // runtime is `slot.runtime_override ?? runner.runtime`. On a
         // differing override the spawn uses registry command/default
@@ -280,6 +282,8 @@ impl SessionManager {
             row.cwd = resolved_cwd.clone();
             row.started_at = Some(started_at_dt);
             row.agent_session_key = plan.assigned_key.clone();
+            row.last_cols = initial_size.map(|(cols, _)| cols);
+            row.last_rows = initial_size.map(|(_, rows)| rows);
             if pinned {
                 // Record the effective runtime so respawn/resume
                 // keeps this session's engine even if the slot's
@@ -720,7 +724,7 @@ impl SessionManager {
         let mut direct_env: BTreeMap<String, String> = BTreeMap::new();
         direct_env.insert("RUNNER_HANDLE".into(), runner.handle.clone());
 
-        let initial_size = cols.zip(rows);
+        let initial_size = Some(cols.zip(rows).unwrap_or(DEFAULT_PTY_SIZE));
 
         let session_id = ulid::Ulid::new().to_string();
         let (first_turn, codex_prompt_marker) =
@@ -756,6 +760,8 @@ impl SessionManager {
             row.cwd = resolved_cwd.clone();
             row.started_at = Some(started_at_dt);
             row.agent_session_key = plan.assigned_key.clone();
+            row.last_cols = initial_size.map(|(cols, _)| cols);
+            row.last_rows = initial_size.map(|(_, rows)| rows);
             if persisted_runner_id.is_none() || pinned {
                 row.agent_runtime = Some(runner.runtime.clone());
                 row.agent_command = Some(runner.command.clone());
@@ -968,6 +974,10 @@ impl SessionManager {
             }
             row
         };
+        let initial_size = cols
+            .zip(rows)
+            .or(snap.last_cols.zip(snap.last_rows))
+            .unwrap_or(DEFAULT_PTY_SIZE);
 
         // Stamp the resume watermark (and, for full-frame-repaint
         // runtimes, purge the prior output buffer) up front. Two
@@ -984,18 +994,29 @@ impl SessionManager {
         //    at the top closes the window where the snapshot could
         //    clear the resuming overlay before the new PTY exists.
         // 2. The seq counter is never touched (see
-        //    `purge_output_buffer`'s contract) so the new PTY's first
-        //    chunk continues at `last + 1` and the frontend's
-        //    `seq <= lastWrittenSeq` filter doesn't drop it.
+        //    `purge_output_buffer`'s contract), so the synthetic seam
+        //    and new PTY chunks continue above `last` and the frontend's
+        //    `seq <= lastWrittenSeq` filter doesn't drop them.
         //
         // Whether the ring itself survives is per-runtime: claude-code
         // keeps it (a terminal emulator would; scrolling up after
         // resume shows the prior conversation), codex/shells purge —
         // see `runtime_purges_on_resume`.
         self.set_resume_watermark(session_id);
-        if output::runtime_purges_on_resume(session_id, &pool) {
+        let purges_on_resume = output::runtime_purges_on_resume(session_id, &pool);
+        if purges_on_resume {
             self.purge_output_buffer(session_id);
         }
+        self.append_synthetic_output(
+            session_id,
+            snap.mission_id.as_deref(),
+            if purges_on_resume {
+                output::PURGE_RESUME_RESET
+            } else {
+                output::KEEP_RESUME_SEAM
+            },
+            events.as_ref(),
+        );
 
         // Mission resume: pull the slot + mission so we can stamp the
         // in-mission env (RUNNER_HANDLE = slot_handle, RUNNER_CREW_ID,
@@ -1143,7 +1164,6 @@ impl SessionManager {
             env_extra.insert("RUNNER_HANDLE".into(), runner.handle.clone());
         }
 
-        let initial_size = cols.zip(rows);
         let mut spec = self.base_spawn_spec(
             session_id.to_string(),
             &runner,
@@ -1151,7 +1171,7 @@ impl SessionManager {
             mission_ctx.is_some(),
             shim_dir,
             bundled_bin_dir,
-            initial_size,
+            Some(initial_size),
             env_extra,
         );
         let mission_bus_dir = mission_ctx.as_ref().map(|ctx| {
@@ -1177,6 +1197,8 @@ impl SessionManager {
                 session_id,
                 started_at_dt,
                 plan.assigned_key.as_deref(),
+                initial_size.0,
+                initial_size.1,
             )?;
         }
 
@@ -1253,7 +1275,7 @@ impl SessionManager {
                 stop: output.stop_flag(),
             },
             resume_emit_ctx.clone(),
-            initial_size,
+            Some(initial_size),
         );
         if snap.mission_id.is_none() {
             self.publish_direct_activity(

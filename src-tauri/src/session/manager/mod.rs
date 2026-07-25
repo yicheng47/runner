@@ -49,6 +49,7 @@ mod tests;
 
 const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
 const RECENT_LOCAL_INPUT_WINDOW: Duration = Duration::from_secs(2);
+const DEFAULT_PTY_SIZE: (u16, u16) = (80, 24);
 
 /// Minimum spacing between consecutive `claude-code` PTY launches.
 /// Long enough for one claude's OAuth refresh round-trip (network
@@ -106,6 +107,7 @@ fn scan_mode_transition(bytes: &[u8], patterns: &[(&[u8], bool)]) -> Option<bool
 /// scan.
 fn scan_alt_screen_transition(bytes: &[u8]) -> Option<bool> {
     const PATTERNS: &[(&[u8], bool)] = &[
+        (b"\x1bc", false),
         (b"\x1b[?1049h", true),
         (b"\x1b[?1049l", false),
         (b"\x1b[?47h", true),
@@ -115,8 +117,50 @@ fn scan_alt_screen_transition(bytes: &[u8]) -> Option<bool> {
 }
 
 fn scan_bracketed_paste_transition(bytes: &[u8]) -> Option<bool> {
-    const PATTERNS: &[(&[u8], bool)] = &[(b"\x1b[?2004h", true), (b"\x1b[?2004l", false)];
+    const PATTERNS: &[(&[u8], bool)] = &[
+        (b"\x1bc", false),
+        (b"\x1b[?2004h", true),
+        (b"\x1b[?2004l", false),
+    ];
     scan_mode_transition(bytes, PATTERNS)
+}
+
+fn scan_mouse_mode_transition(bytes: &[u8], mode: u16) -> Option<bool> {
+    match mode {
+        1000 => scan_mode_transition(
+            bytes,
+            &[
+                (b"\x1bc", false),
+                (b"\x1b[?1000h", true),
+                (b"\x1b[?1000l", false),
+            ],
+        ),
+        1002 => scan_mode_transition(
+            bytes,
+            &[
+                (b"\x1bc", false),
+                (b"\x1b[?1002h", true),
+                (b"\x1b[?1002l", false),
+            ],
+        ),
+        1003 => scan_mode_transition(
+            bytes,
+            &[
+                (b"\x1bc", false),
+                (b"\x1b[?1003h", true),
+                (b"\x1b[?1003l", false),
+            ],
+        ),
+        1006 => scan_mode_transition(
+            bytes,
+            &[
+                (b"\x1bc", false),
+                (b"\x1b[?1006h", true),
+                (b"\x1b[?1006l", false),
+            ],
+        ),
+        _ => None,
+    }
 }
 
 /// Inputs the forwarder consumer needs to translate a
@@ -504,6 +548,10 @@ struct SessionState {
     resume_watermark_seq: u64,
     alt_screen_on: bool,
     bracketed_paste_on: bool,
+    mouse_1000_on: bool,
+    mouse_1002_on: bool,
+    mouse_1003_on: bool,
+    mouse_1006_on: bool,
     /// Cols of the last PTY winsize applied (seeded at spawn, updated by
     /// `resize`). Gates the resize ring purge: rows-only changes — the
     /// frontend's SIGWINCH nudge dance on every tab return — can't garble
@@ -528,6 +576,10 @@ impl SessionState {
             && self.resume_watermark_seq == 0
             && !self.alt_screen_on
             && !self.bracketed_paste_on
+            && !self.mouse_1000_on
+            && !self.mouse_1002_on
+            && !self.mouse_1003_on
+            && !self.mouse_1006_on
             && self.last_pty_cols.is_none()
             && !self.resuming
             && !self.killed
@@ -831,10 +883,14 @@ impl SessionManager {
             state.handle = Some(handle);
             state.mission_status_sink = mission_status_sink;
             state.killed = false;
-            // Seed the resize purge gate with the cols the PTY actually opened
-            // at (the runtime defaults unsized spawns to 80×24), so the first
-            // same-width resize after spawn/resume doesn't purge the ring.
-            state.last_pty_cols = Some(initial_size.map_or(80, |(cols, _)| cols));
+            // Seed the resize purge gate with the cols the PTY actually
+            // opened at, so the first same-width resize after spawn/resume
+            // doesn't purge the ring.
+            state.last_pty_cols = Some(
+                initial_size
+                    .expect("spawn size must be resolved before handle install")
+                    .0,
+            );
         }
         self.notify_delivery_event(session_id, router::SessionDeliveryEvent::Respawned);
     }

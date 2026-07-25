@@ -47,6 +47,8 @@ pub struct SessionRowDb {
     pub runtime_cursor: Option<i64>,
     pub agent_runtime: Option<String>,
     pub agent_command: Option<String>,
+    pub last_cols: Option<u16>,
+    pub last_rows: Option<u16>,
 }
 
 impl SessionRowDb {
@@ -76,6 +78,8 @@ impl SessionRowDb {
             runtime_cursor: None,
             agent_runtime: None,
             agent_command: None,
+            last_cols: None,
+            last_rows: None,
         }
     }
 }
@@ -103,6 +107,8 @@ pub const COLUMNS: &[&str] = &[
     "runtime_cursor",
     "agent_runtime",
     "agent_command",
+    "last_cols",
+    "last_rows",
 ];
 
 pub fn insert(conn: &Connection, row: &SessionRowDb) -> rusqlite::Result<()> {
@@ -178,6 +184,21 @@ pub fn update_runtime_metadata(
     )
 }
 
+pub fn update_last_size(
+    conn: &Connection,
+    id: &str,
+    cols: u16,
+    rows: u16,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE sessions
+            SET last_cols = ?2,
+                last_rows = ?3
+          WHERE id = ?1",
+        rusqlite::params![id, cols, rows],
+    )
+}
+
 /// Resume an existing row in place: same id, same conversation thread.
 /// A key the resume plan assigned wins; otherwise the stored key is kept.
 pub fn resume_in_place(
@@ -185,6 +206,8 @@ pub fn resume_in_place(
     id: &str,
     started_at: Timestamp,
     assigned_key: Option<&str>,
+    cols: u16,
+    rows: u16,
 ) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE sessions
@@ -192,9 +215,11 @@ pub fn resume_in_place(
                 pid = NULL,
                 started_at = ?2,
                 stopped_at = NULL,
-                agent_session_key = COALESCE(?3, agent_session_key)
+                agent_session_key = COALESCE(?3, agent_session_key),
+                last_cols = ?4,
+                last_rows = ?5
           WHERE id = ?1",
-        rusqlite::params![id, started_at.to_rfc3339(), assigned_key],
+        rusqlite::params![id, started_at.to_rfc3339(), assigned_key, cols, rows],
     )
 }
 
@@ -551,6 +576,8 @@ mod tests {
             runtime_cursor: Some(7),
             agent_runtime: Some("codex".into()),
             agent_command: Some("codex".into()),
+            last_cols: Some(132),
+            last_rows: Some(41),
         }
     }
 

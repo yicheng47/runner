@@ -8,17 +8,18 @@
 // to the PTY — the agent repaints at ~half width and the ring purge makes
 // that narrow frame the only snapshot content. Rather than hardening the
 // remount path further, the surfaces stay mounted: this host renders the
-// last-visited chat surface and mission workspace as display:none layers
-// while list pages are shown — the same mechanism ChatPaneGroup already
-// uses for hidden panes inside the surface. Returning to a chat or
-// mission is then an `active` flip on a live terminal (the tab-return
-// path) instead of a cold remount.
+// last-visited chat surface and mission workspace as absolutely stacked
+// layers while list pages are shown. Hidden layers stay laid out under
+// `visibility:hidden`, so their mounted terminals keep measuring geometry
+// changes without rendering or receiving pointer input. Returning to a
+// chat or mission is then an `active` flip on a live terminal instead of a
+// cold remount.
 //
 // The `visible` prop gates what a hidden surface must not do: report
 // window subjects (impl 0018 ownership), hold global shortcut listeners
 // (both surfaces listen for RUNNER_TERMINAL_CYCLE_EVENT — an ungated
 // hidden listener would double-handle it), and keep terminals `active`
-// (hidden panes release their WebGL context and skip geometry pushes).
+// (hidden panes release their WebGL context).
 //
 // Retention is bounded: at most one chat surface and one mission
 // workspace, keyed to the last-visited id. Settings is a full-window
@@ -65,7 +66,14 @@ export function PersistentSurfaces({
   return (
     <>
       {mountedChatId !== null ? (
-        <div className={chatId !== null ? "contents" : "hidden"}>
+        <div
+          aria-hidden={chatId === null}
+          className={
+            chatId !== null
+              ? "contents"
+              : "pointer-events-none invisible absolute inset-0"
+          }
+        >
           <RunnerChat
             sessionId={mountedChatId}
             visible={chatId !== null}
@@ -76,7 +84,14 @@ export function PersistentSurfaces({
         </div>
       ) : null}
       {mountedMissionId !== null ? (
-        <div className={missionId !== null ? "contents" : "hidden"}>
+        <div
+          aria-hidden={missionId === null}
+          className={
+            missionId !== null
+              ? "contents"
+              : "pointer-events-none invisible absolute inset-0"
+          }
+        >
           <MissionWorkspace
             missionId={mountedMissionId}
             visible={missionId !== null}

@@ -1,0 +1,2 @@
+ALTER TABLE sessions ADD COLUMN last_cols INTEGER;
+ALTER TABLE sessions ADD COLUMN last_rows INTEGER;

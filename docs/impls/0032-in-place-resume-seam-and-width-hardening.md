@@ -80,6 +80,7 @@ Explicitly NOT part of this problem: the duplicated-block scrollback artifact. T
 
 - RIS (`\x1bc`) vs composed reset bytes for the purge chunk — decided by the coder against actual xterm.js 6.1.0-beta behavior (does RIS clear scrollback?). Behavioral requirement is fixed either way.
 - Whether the keep-seam should also fire on `resize`-triggered ring purges for claude-code. Out of scope here; today's behavior stands.
+- Whether a future keep-seam should conditionally exit alt-screen when tracked state says it is active. Impl 0032 follows decision 3's fixed seam bytes and does not emit `\x1b[?1049l`; adding it unconditionally is unsafe because xterm.js restores the saved cursor even when already on the main buffer, so any follow-up must be state-aware.
 
 ## References
 

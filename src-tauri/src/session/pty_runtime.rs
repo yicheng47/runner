@@ -118,7 +118,9 @@ impl SessionRuntime for PtyRuntime {
             inherited_path.as_deref(),
         );
 
-        let (cols, rows) = spec.initial_size.unwrap_or((80, 24));
+        let (cols, rows) = spec
+            .initial_size
+            .expect("SessionManager must resolve the initial PTY size");
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
