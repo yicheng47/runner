@@ -111,9 +111,9 @@ interface RunnerTerminalProps {
   onExit?: (ev: ExitEvent) => void;
   /** Surface terminal-side errors (stdin push failures, resize errors). */
   onError?: (msg: string) => void;
-  /** True while this terminal's pane is visible/measurable. A visible
-   *  terminal may still be disabled, e.g. a stopped mission slot that
-   *  should replay dimmed scrollback without accepting input. */
+  /** True while this terminal's pane is visible. A visible terminal may
+   *  still be disabled, e.g. a stopped mission slot that should replay
+   *  dimmed scrollback without accepting input. */
   active?: boolean;
   /** Whether activation may steal keyboard focus. Defaults to true (the
    *  single-visible-terminal surfaces want focus to follow activation).
@@ -133,9 +133,9 @@ interface RunnerTerminalProps {
 /**
  * Imperative handle exposed to the parent so resume/spawn callers can
  * size the backend PTY to the actual xterm geometry before the child
- * is forked. Without this, `pty_runtime` defaults to 80×24 and the
- * agent CLI's first paint wraps at the default cols until the next
- * user-driven SIGWINCH (#resume-pty-size-mismatch).
+ * is forked. When this is unavailable, SessionManager falls back to
+ * the persisted last-applied size and only uses 80×24 for a session
+ * that has never been sized (#resume-pty-size-mismatch).
  */
 export interface RunnerTerminalHandle {
   /**
@@ -763,13 +763,14 @@ export const RunnerTerminal = forwardRef<
         });
       }, 150);
     };
-    // Refit + push backend geometry when the pane is active and
-    // measurable. Hidden panes don't refit/push — the activation
-    // effect picks up the new metrics when they come to the front.
+    // Refit + push backend geometry whenever the pane is measurable.
+    // PersistentSurfaces keeps inactive surfaces laid out under
+    // visibility:hidden, so they stay sized while rendering, focus,
+    // WebGL, and wake handling remain gated by `active`.
     function refitAndPush({
       allowPendingLargeDrop = false,
     }: { allowPendingLargeDrop?: boolean } = {}) {
-      if (!activeRef.current || !containerRef.current) return;
+      if (!containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
       try {
@@ -816,9 +817,9 @@ export const RunnerTerminal = forwardRef<
     // container's width without firing window-resize, so the xterm
     // grid and backend PTY geometry stay stale until the user nudges
     // the OS window (#108). Observing the container catches those
-    // CSS-driven size changes; refitAndPush's activeRef + measurable-
-    // rect guards keep hidden panes from pushing stale geometry to
-    // the backend.
+    // CSS-driven size changes. The measurable-rect guard still excludes
+    // internal display:none panes while invisible persistent surfaces
+    // keep their PTY geometry current.
     const ro = new ResizeObserver(() => {
       const activationRefresh = activationRefreshRef.current;
       if (activationRefresh?.()) {
@@ -1281,20 +1282,16 @@ export const RunnerTerminal = forwardRef<
           // wrapper) — no rect to fit against. If a prior activation
           // already fit this terminal, t.cols/t.rows still hold those
           // dims, and they're far more useful at resume time than
-          // returning null (which forces the resume RPC to pass null
-          // → backend defaults to 80×24 → agent paints its `--resume`
-          // conversation history at 80 cols, and for main-screen TUIs
-          // those hard-wrapped lines stick in scrollback). 80×24 is
-          // the constructor default / "never fit" sentinel; treat it
-          // the same as null so callers can still fall back.
+          // returning null. A null resume size lets the backend use its
+          // persisted last-applied dimensions before falling back to
+          // 80×24. The constructor's 80×24 is the "never fit" sentinel,
+          // so treat it as null rather than overriding a persisted size.
           if (t.cols === 80 && t.rows === 24) return null;
           return { cols: t.cols, rows: t.rows };
         }
         try {
-          // Force a fit before reading dims: stopped tabs gate their
-          // resize listeners on activeRef, so cols/rows can be stale
-          // (often still 80×24 from the initial Terminal construction)
-          // by the time the user clicks Resume.
+          // Force a fit before reading dims so a stopped pane reflects
+          // its latest measurable container when the user clicks Resume.
           const beforeCols = t.cols;
           const beforeRows = t.rows;
           fit.fit();
