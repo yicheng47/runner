@@ -13,7 +13,7 @@ Runtime-only direct chats have no configurable command, and the create/edit runn
 
 ### In scope
 
-- **Agent runtimes settings pane.** Add an Agent runtimes pane under Settings → Integrations. Show one row/card for each first-class runtime returned by the backend registry, initially Claude Code and Codex.
+- **Agents settings pane.** Add an Agents pane to the Integrations group in Settings, next to MCP. Show one row for each first-class runtime returned by the backend registry, initially Claude Code and Codex.
 - **Detected executable.** Resolve each runtime's catalog command against Runner's composed user `$PATH` and show the resulting absolute executable path, or a clear Not found / Detection failed state.
 - **Executable override.** Let the user enter or pick an absolute executable path per runtime. An empty override means automatic discovery. Validate that a non-empty path exists, is a regular file, and is executable before saving.
 - **Resolution precedence.** Use the explicit runtime override first, then the automatically detected executable, then the catalog command only when it can be resolved through the effective child `$PATH`. Do not silently report a configured runtime as available when none of those paths resolves.
@@ -24,10 +24,11 @@ Runtime-only direct chats have no configurable command, and the create/edit runn
 - **Slow shell initialization.** Replace the current all-or-nothing two-second startup probe with a non-blocking or otherwise startup-safe discovery flow that accommodates realistic zsh/Oh My Zsh initialization. Preserve the last known good result on timeout and expose the timeout as a diagnosable state instead of silently dropping to launchd's stripped environment.
 - **Diagnostics.** Log the selected shell, discovery duration, success/failure reason, and resolved runtime executable paths without logging unrelated environment values. Surface enough status in Settings for a user to distinguish Not installed from Shell probe timed out.
 - **Backend persistence.** Store overrides in backend-owned app settings so all windows and all Rust spawn paths share the same value; do not make localStorage the source of truth for executable selection.
-- **Design first.** Add the settings pane and its detected/override/error/refresh states to `design/runner-mvp-design.pen` before implementation.
+- **Design first.** The pane and its states are designed in `design/runner-setting.pen`: frame `Settings — Agents` (node `Zes2l`) for the pane layout, and `Spec — Agent runtime row states` (node `cXdkp`) for the six row states (detected, override, not-found, checking, probe-timed-out, invalid-override).
 
 ### Out of scope
 
+- User-defined custom runtimes (the registry-as-data extension in #279). Deliberately cut for now: built-ins only, so the pane stays simple. The backend registry shape should not preclude adding custom rows later.
 - Installing, upgrading, or authenticating Claude Code or Codex.
 - Accepting aliases or shell functions as runtime executables; Runner spawns a real process and requires an executable file.
 - General-purpose editing of the child process `$PATH`.
@@ -39,7 +40,7 @@ Runtime-only direct chats have no configurable command, and the create/edit runn
 
 ### Phase 1 — UX design and settings contract
 
-- Design Settings → Integrations → Agent runtimes in `design/runner-mvp-design.pen`, including detected, overridden, not-found, probing, timeout, validation-error, and refresh states.
+- ~~Design the Agents pane~~ — done in `design/runner-setting.pen` (`Settings — Agents` + `Spec — Agent runtime row states`), covering detected, overridden, not-found, checking, probe-timed-out, invalid-override, and refresh states.
 - Define a backend runtime-settings shape keyed by stable runtime name with an optional executable override.
 - Define the effective-command precedence and legacy `runner.command` compatibility rules in tests before changing spawn behavior.
 
@@ -74,21 +75,23 @@ Runtime-only direct chats have no configurable command, and the create/edit runn
 
 ## Verification
 
-- [ ] Settings → Integrations → Agent runtimes shows Claude Code and Codex from the backend registry.
+Unchecked items below require manual app verification.
+
+- [ ] Settings → Agents (Integrations group) shows Claude Code and Codex from the backend registry.
 - [ ] A standard executable on the captured login-shell `$PATH` is displayed as an absolute detected path.
 - [ ] A slow zsh/Oh My Zsh startup does not silently discard a previously valid `$PATH` after two seconds.
-- [ ] Bash, zsh, and other explicitly supported shells use documented, tested startup semantics.
+- [x] Bash, zsh, and other explicitly supported shells use documented, tested startup semantics.
 - [ ] Missing, invalid, or unsupported login shells produce a visible detection failure rather than a misleading Not installed state.
 - [ ] A user can refresh discovery after installing Codex without restarting Runner.
-- [ ] A valid absolute override is persisted and used by runtime-only direct chats.
-- [ ] The override is used by runner and mission spawns whose stored command is the runtime's catalog default.
-- [ ] A runner with a custom non-default command continues using that command.
-- [ ] Clearing an override returns the runtime to automatic discovery.
+- [x] A valid absolute override is persisted and used by runtime-only direct chats.
+- [x] The override is used by runner and mission spawns whose stored command is the runtime's catalog default.
+- [x] A runner with a custom non-default command continues using that command.
+- [x] Clearing an override returns the runtime to automatic discovery.
 - [ ] Nonexistent, non-file, and non-executable overrides are rejected with inline errors.
-- [ ] Aliases and shell functions are not accepted as executable paths.
-- [ ] A missing runtime fails before PTY spawn with actionable copy pointing to Agent runtimes settings.
+- [x] Aliases and shell functions are not accepted as executable paths.
+- [x] A missing runtime fails before PTY spawn with actionable copy pointing to Agents settings.
 - [ ] Discovery logs include shell, duration, outcome, and resolved executable without dumping the user's full environment.
 - [ ] Settings and effective command behavior remain consistent across multiple app windows.
-- [ ] `pnpm exec tsc --noEmit` passes.
-- [ ] `pnpm run lint` passes.
-- [ ] Relevant Rust tests pass, followed by `cargo test --workspace` when implementation is complete.
+- [x] `pnpm exec tsc --noEmit` passes.
+- [x] `pnpm run lint` passes.
+- [x] Relevant Rust tests pass, followed by `cargo test --workspace` when implementation is complete.

@@ -4,11 +4,13 @@
 // The pool is opened once at app start with WAL mode + foreign keys; later
 // chunks pull connections from it via Tauri state.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
@@ -31,6 +33,7 @@ fn build_pool(manager: SqliteConnectionManager, max_size: u32, seed: bool) -> Re
     let pool = Pool::builder().max_size(max_size).build(manager)?;
     let mut conn = pool.get()?;
     run_migrations(&mut conn)?;
+    ensure_app_state_table(&conn)?;
     if seed {
         seed_defaults(&mut conn)?;
     }
@@ -159,6 +162,92 @@ const MIGRATIONS: &[(i64, &str)] = &[
 // starting state.
 
 const SEED_MARKER_KEY: &str = "default_crew_seeded";
+const LOGIN_SHELL_ENV_LKG_KEY: &str = "login_shell_env_lkg";
+const RUNTIME_OVERRIDES_KEY: &str = "runtime_overrides";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoginShellEnvLkg {
+    pub env: crate::shell_path::LoginShellEnv,
+    pub shell: String,
+    pub captured_at: String,
+}
+
+fn ensure_app_state_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS _app_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+         )",
+    )?;
+    Ok(())
+}
+
+fn app_state_get(conn: &Connection, key: &str) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT value FROM _app_state WHERE key = ?1",
+        params![key],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn app_state_set(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO _app_state (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+pub fn login_shell_env_lkg(pool: &DbPool) -> Result<Option<LoginShellEnvLkg>> {
+    let conn = pool.get()?;
+    app_state_get(&conn, LOGIN_SHELL_ENV_LKG_KEY)?
+        .map(|value| serde_json::from_str(&value).map_err(Into::into))
+        .transpose()
+}
+
+pub fn set_login_shell_env_lkg(pool: &DbPool, snapshot: &LoginShellEnvLkg) -> Result<()> {
+    let conn = pool.get()?;
+    app_state_set(
+        &conn,
+        LOGIN_SHELL_ENV_LKG_KEY,
+        &serde_json::to_string(snapshot)?,
+    )
+}
+
+pub fn runtime_overrides(pool: &DbPool) -> Result<BTreeMap<String, String>> {
+    let conn = pool.get()?;
+    Ok(app_state_get(&conn, RUNTIME_OVERRIDES_KEY)?
+        .map(|value| serde_json::from_str(&value))
+        .transpose()?
+        .unwrap_or_default())
+}
+
+pub fn set_runtime_override(pool: &DbPool, runtime: &str, path: Option<&str>) -> Result<()> {
+    let mut conn = pool.get()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let mut overrides: BTreeMap<String, String> = app_state_get(&tx, RUNTIME_OVERRIDES_KEY)?
+        .map(|value| serde_json::from_str(&value))
+        .transpose()?
+        .unwrap_or_default();
+    match path {
+        Some(path) => {
+            overrides.insert(runtime.to_string(), path.to_string());
+        }
+        None => {
+            overrides.remove(runtime);
+        }
+    }
+    app_state_set(
+        &tx,
+        RUNTIME_OVERRIDES_KEY,
+        &serde_json::to_string(&overrides)?,
+    )?;
+    tx.commit()?;
+    Ok(())
+}
 
 // Pinned IDs for the seeded rows. These are referenced by
 // `0002_persona_only_seeds.sql`'s WHERE clauses, so they must match
@@ -702,6 +791,41 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn login_shell_lkg_round_trips_through_app_state() {
+        let pool = open_in_memory().unwrap();
+        let snapshot = LoginShellEnvLkg {
+            env: crate::shell_path::LoginShellEnv {
+                path: Some("/custom/bin:/usr/bin".into()),
+                vars: BTreeMap::from([("HTTPS_PROXY".into(), "http://proxy".into())]),
+            },
+            shell: "/bin/zsh".into(),
+            captured_at: "2026-07-25T00:00:00Z".into(),
+        };
+        assert_eq!(login_shell_env_lkg(&pool).unwrap(), None);
+        set_login_shell_env_lkg(&pool, &snapshot).unwrap();
+        assert_eq!(login_shell_env_lkg(&pool).unwrap(), Some(snapshot));
+    }
+
+    #[test]
+    fn runtime_overrides_set_clear_as_one_json_value() {
+        let pool = open_in_memory().unwrap();
+        set_runtime_override(&pool, "codex", Some("/opt/codex")).unwrap();
+        set_runtime_override(&pool, "claude-code", Some("/opt/claude")).unwrap();
+        assert_eq!(
+            runtime_overrides(&pool).unwrap(),
+            BTreeMap::from([
+                ("claude-code".into(), "/opt/claude".into()),
+                ("codex".into(), "/opt/codex".into()),
+            ])
+        );
+        set_runtime_override(&pool, "codex", None).unwrap();
+        assert_eq!(
+            runtime_overrides(&pool).unwrap(),
+            BTreeMap::from([("claude-code".into(), "/opt/claude".into())])
+        );
     }
 
     #[test]

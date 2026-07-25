@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
-use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -593,9 +593,9 @@ pub struct SessionManager {
     /// other sessions.
     sessions: Mutex<HashMap<String, Arc<Mutex<SessionState>>>>,
     delivery_listeners: Mutex<HashMap<String, Vec<Weak<dyn router::SessionDeliveryListener>>>>,
-    /// User's login-shell env snapshot, captured once at app start by
-    /// `shell_path::resolve_login_shell_env`. Empty when the resolve
-    /// failed/timed out, when running on Windows, or in tests.
+    /// User's current login-shell env snapshot. Discovery swaps this
+    /// handle after a successful background probe; spawns clone one
+    /// coherent value under a short read lock.
     ///
     /// `path` is composed into every child PTY's PATH (so GUI-launched
     /// apps can find tools like claude / codex / mise that aren't on
@@ -603,7 +603,8 @@ pub struct SessionManager {
     /// proxy quartet in both cases) is layered into every spawn's env
     /// under `runner.env` so the child can reach the network the same
     /// way Terminal.app's children would (issues #109 / #152).
-    shell_env: crate::shell_path::LoginShellEnv,
+    shell_env: Arc<RwLock<crate::shell_path::LoginShellEnv>>,
+    discovery_state: crate::runtime_status::SharedDiscoveryState,
     /// Timestamp of the most recent claude-code spawn through the
     /// launch gate. `None` until the first claude-code spawn lands.
     /// Each new claude-code spawn reads this, sleeps the remainder
@@ -712,13 +713,15 @@ fn compute_gate_wait(last: Option<Instant>, now: Instant, grace: Duration) -> Du
 
 impl SessionManager {
     pub fn new(
-        shell_env: crate::shell_path::LoginShellEnv,
+        shell_env: crate::runtime_status::SharedShellEnv,
+        discovery_state: crate::runtime_status::SharedDiscoveryState,
         runtime: Arc<dyn SessionRuntime>,
     ) -> Arc<Self> {
         Arc::new(Self {
             sessions: Mutex::new(HashMap::new()),
             delivery_listeners: Mutex::new(HashMap::new()),
             shell_env,
+            discovery_state,
             claude_launch_gate: Mutex::new(None),
             pending_mission_cancels: Mutex::new(HashMap::new()),
             runtime,

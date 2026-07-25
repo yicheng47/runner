@@ -257,10 +257,23 @@ fn fake_runtime() -> Arc<FakeRuntime> {
     Arc::new(FakeRuntime::new())
 }
 
+fn mgr_with_runtime(
+    shell_env: crate::shell_path::LoginShellEnv,
+    runtime: Arc<dyn SessionRuntime>,
+) -> Arc<SessionManager> {
+    SessionManager::new(
+        Arc::new(std::sync::RwLock::new(shell_env)),
+        Arc::new(std::sync::RwLock::new(
+            crate::shell_path::DiscoveryState::pending(),
+        )),
+        runtime,
+    )
+}
+
 /// Build a manager backed by the supplied FakeRuntime. Returns
 /// the Arc so tests can introspect the captured calls.
 fn mgr_with_fake(shell: Option<String>, fake: Arc<FakeRuntime>) -> Arc<SessionManager> {
-    SessionManager::new(
+    mgr_with_runtime(
         crate::shell_path::LoginShellEnv {
             path: shell,
             vars: Default::default(),
@@ -402,6 +415,16 @@ fn join_forwarder_for_test(mgr: &SessionManager, session_id: &str) {
 
 fn has_arg_pair(args: &[String], flag: &str, value: &str) -> bool {
     args.windows(2).any(|w| w[0] == flag && w[1] == value)
+}
+
+fn assert_effective_command(command: &str, catalog_name: &str) {
+    assert_eq!(
+        std::path::Path::new(command)
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some(catalog_name),
+        "expected {catalog_name} or an absolute path ending in {catalog_name}, got {command}",
+    );
 }
 
 fn pool_with_schema() -> Arc<DbPool> {
@@ -1048,7 +1071,7 @@ fn inject_stdin_roundtrip_routes_through_runtime() {
 
 #[test]
 fn inject_stdin_on_unknown_session_errors_cleanly() {
-    let mgr = SessionManager::new(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+    let mgr = mgr_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
     let err = mgr.inject_stdin("nope", b"x").unwrap_err();
     assert!(format!("{err}").contains("session not found"));
 }
@@ -1625,7 +1648,7 @@ fn spawn_failure_after_spawn_command_reaps_the_child() {
         .execute("DROP TABLE sessions", [])
         .unwrap();
 
-    let mgr = SessionManager::new(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+    let mgr = mgr_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
     let slot = slot_for(&runner);
     let err = mgr
         .spawn(
@@ -2506,7 +2529,7 @@ fn login_shell_proxy_env_reaches_spawn_with_runner_env_taking_precedence() {
     vars.insert("HTTPS_PROXY".into(), "http://login-shell:7890".into());
     vars.insert("https_proxy".into(), "http://login-shell:7890".into());
     vars.insert("NO_PROXY".into(), "localhost,127.0.0.1,*.byted.org".into());
-    let mgr = SessionManager::new(
+    let mgr = mgr_with_runtime(
         crate::shell_path::LoginShellEnv { path: None, vars },
         Arc::clone(&fake) as Arc<dyn SessionRuntime>,
     );
@@ -3215,7 +3238,7 @@ fn resume_refuses_running_and_archived_rows() {
         )
         .unwrap();
     }
-    let mgr = SessionManager::new(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+    let mgr = mgr_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
     for (sid, needle) in [
         ("running-sid", "already running"),
         ("archived-sid", "archived"),
@@ -3568,7 +3591,7 @@ fn scan_mouse_modes_detects_enable_disable_and_full_reset() {
 fn output_snapshot_prepends_alt_screen_enter_when_session_in_alt_screen() {
     let pool = pool_with_schema();
     let fake = fake_runtime();
-    let mgr = SessionManager::new(
+    let mgr = mgr_with_runtime(
         crate::shell_path::LoginShellEnv::default(),
         Arc::clone(&fake) as Arc<dyn SessionRuntime>,
     );
@@ -3635,7 +3658,7 @@ fn output_snapshot_prepends_alt_screen_enter_when_session_in_alt_screen() {
 fn output_snapshot_prepends_bracketed_paste_enable_when_session_has_it_enabled() {
     let pool = pool_with_schema();
     let fake = fake_runtime();
-    let mgr = SessionManager::new(
+    let mgr = mgr_with_runtime(
         crate::shell_path::LoginShellEnv::default(),
         Arc::clone(&fake) as Arc<dyn SessionRuntime>,
     );
@@ -3695,7 +3718,7 @@ fn output_snapshot_prepends_bracketed_paste_enable_when_session_has_it_enabled()
 fn output_snapshot_combines_alt_screen_and_bracketed_paste_prefixes() {
     let pool = pool_with_schema();
     let fake = fake_runtime();
-    let mgr = SessionManager::new(
+    let mgr = mgr_with_runtime(
         crate::shell_path::LoginShellEnv::default(),
         Arc::clone(&fake) as Arc<dyn SessionRuntime>,
     );
@@ -4082,10 +4105,7 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
         .unwrap();
 
     let spec = fake.last_spawn_spec().expect("spawn was called");
-    assert_eq!(
-        spec.command, "claude",
-        "override must use the registry command"
-    );
+    assert_effective_command(&spec.command, "claude");
     assert!(
         !spec.args.contains(&"--custom-flag".to_string()),
         "runner args are engine flags and must not carry across runtimes: {:?}",
@@ -4125,7 +4145,7 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
         )
         .unwrap();
     assert_eq!(agent_runtime.as_deref(), Some("claude-code"));
-    assert_eq!(agent_command.as_deref(), Some("claude"));
+    assert_effective_command(agent_command.as_deref().unwrap(), "claude");
 
     mgr.kill(&spawned.id).unwrap();
 }
@@ -4270,10 +4290,7 @@ fn resume_keeps_pinned_runtime_after_runner_template_edit() {
     .unwrap();
 
     let spec = fake.last_spawn_spec().expect("resume should have spawned");
-    assert_eq!(
-        spec.command, "codex",
-        "resume must stay on the pinned engine (registry command), not the edited template's",
-    );
+    assert_effective_command(&spec.command, "codex");
     assert!(
         !spec.args.contains(&"--custom-flag".to_string()) && spec.command != "claude-custom",
         "neither the template's new engine nor its old flags may leak in: {:?}",
@@ -4318,7 +4335,7 @@ fn direct_spawn_with_override_uses_registry_engine_and_records_runtime() {
         .unwrap();
 
     let spec = fake.last_spawn_spec().expect("spawn was called");
-    assert_eq!(spec.command, "claude");
+    assert_effective_command(&spec.command, "claude");
     assert!(!spec.args.contains(&"--custom-flag".to_string()));
 
     let (row_runner_id, agent_runtime, agent_command): (
@@ -4340,7 +4357,7 @@ fn direct_spawn_with_override_uses_registry_engine_and_records_runtime() {
         "overridden chats stay runner-backed",
     );
     assert_eq!(agent_runtime.as_deref(), Some("claude-code"));
-    assert_eq!(agent_command.as_deref(), Some("claude"));
+    assert_effective_command(agent_command.as_deref().unwrap(), "claude");
 
     mgr.kill(&spawned.id).unwrap();
 }
@@ -4389,10 +4406,7 @@ fn resume_respawns_recorded_override_runtime() {
     .unwrap();
 
     let spec = fake.last_spawn_spec().expect("resume should have spawned");
-    assert_eq!(
-        spec.command, "claude",
-        "resume must respawn the recorded effective runtime",
-    );
+    assert_effective_command(&spec.command, "claude");
     assert!(
         !spec.args.contains(&"--custom-flag".to_string()),
         "runner engine flags must not leak into an overridden resume: {:?}",
@@ -4407,4 +4421,178 @@ fn resume_respawns_recorded_override_runtime() {
     );
 
     mgr.kill("ovr-sid").unwrap();
+}
+
+#[test]
+fn catalog_default_runner_uses_detected_command_while_custom_command_stays_untouched() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let pool = pool_with_schema();
+    let bin = tempfile::tempdir().unwrap();
+    let detected = bin.path().join("codex");
+    std::fs::write(&detected, "#!/bin/sh\n").unwrap();
+    let mut permissions = std::fs::metadata(&detected).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&detected, permissions).unwrap();
+
+    let now = Utc::now().to_rfc3339();
+    let default_id = ulid::Ulid::new().to_string();
+    let custom_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        for (id, handle, command) in [
+            (&default_id, "default-runtime", "codex"),
+            (&custom_id, "custom-runtime", "codex-wrapper"),
+        ] {
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, runtime, command, created_at, updated_at)
+                 VALUES (?1, ?2, ?2, 'codex', ?3, ?4, ?4)",
+                params![id, handle, command, now],
+            )
+            .unwrap();
+        }
+    }
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(Some(bin.path().display().to_string()), Arc::clone(&fake));
+    let mut default_runner = runner("codex", &[]);
+    default_runner.id = default_id;
+    default_runner.handle = "default-runtime".into();
+    default_runner.runtime = "codex".into();
+    let default_session = mgr
+        .spawn_direct(
+            &default_runner,
+            None,
+            None,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().command,
+        detected.display().to_string()
+    );
+
+    let mut custom_runner = runner("codex-wrapper", &[]);
+    custom_runner.id = custom_id;
+    custom_runner.handle = "custom-runtime".into();
+    custom_runner.runtime = "codex".into();
+    let custom_session = mgr
+        .spawn_direct(
+            &custom_runner,
+            None,
+            None,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(fake.last_spawn_spec().unwrap().command, "codex-wrapper");
+
+    mgr.shell_env.write().unwrap().path = Some("/swapped/bin".into());
+    let swapped_session = mgr
+        .spawn_direct(
+            &custom_runner,
+            None,
+            None,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().shell_path.as_deref(),
+        Some("/swapped/bin"),
+        "the next spawn must read the swapped login-shell environment",
+    );
+
+    mgr.kill(&default_session.id).unwrap();
+    mgr.kill(&custom_session.id).unwrap();
+    mgr.kill(&swapped_session.id).unwrap();
+}
+
+#[test]
+fn runtime_only_resume_keeps_live_recorded_path_and_reresolves_dead_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let pool = pool_with_schema();
+    let recorded_dir = tempfile::tempdir().unwrap();
+    let detected_dir = tempfile::tempdir().unwrap();
+    let make_executable = |path: &Path| {
+        std::fs::write(path, "#!/bin/sh\n").unwrap();
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).unwrap();
+    };
+    let recorded = recorded_dir.path().join("codex-recorded");
+    let detected = detected_dir.path().join("codex");
+    make_executable(&recorded);
+    make_executable(&detected);
+
+    let now = Utc::now().to_rfc3339();
+    {
+        let conn = pool.get().unwrap();
+        for (id, command) in [
+            ("runtime-live-path", recorded.display().to_string()),
+            ("runtime-dead-path", "/definitely/missing/codex".to_string()),
+        ] {
+            conn.execute(
+                "INSERT INTO sessions
+                    (id, status, started_at, agent_runtime, agent_command)
+                 VALUES (?1, 'stopped', ?2, 'codex', ?3)",
+                params![id, now, command],
+            )
+            .unwrap();
+        }
+    }
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(
+        Some(detected_dir.path().display().to_string()),
+        Arc::clone(&fake),
+    );
+    mgr.resume(
+        "runtime-live-path",
+        None,
+        None,
+        std::path::Path::new("/tmp"),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().command,
+        recorded.display().to_string()
+    );
+
+    mgr.resume(
+        "runtime-dead-path",
+        None,
+        None,
+        std::path::Path::new("/tmp"),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().command,
+        detected.display().to_string()
+    );
+
+    mgr.kill("runtime-live-path").unwrap();
+    mgr.kill("runtime-dead-path").unwrap();
 }
