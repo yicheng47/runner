@@ -372,13 +372,17 @@ A pseudo-terminal gives the child a real terminal on stdin/stdout/ stderr (full 
 
 `portable-pty` is the in-process PTY library. The session runtime is encapsulated behind a `SessionRuntime` trait so the storage layer (SessionManager) doesn't know whether the runtime is in-process PTY, a tmux multiplexer, or anything else; today only `PtyRuntime` is shipped.
 
+Login-shell discovery is startup-safe and shared. Setup seeds `SessionManager` from the last successful `LoginShellEnv` snapshot in `_app_state.login_shell_env_lkg`, paints the app, then runs the configured shell probe on a background thread with a five-second deadline. A successful probe atomically swaps the environment used by future spawns, persists the new snapshot, and emits `runtime/changed`; timeout, spawn failure, empty capture, or a missing shell leaves the prior snapshot active and records the typed outcome for Settings → Agents. Refresh is explicit after launch and follows the same path.
+
+Built-in runtime commands are resolved in Rust against the same direct-chat PATH the child receives. Precedence is a valid backend-persisted runtime override, then the first regular executable with an executable bit found by walking the composed PATH, then the bare catalog command only while discovery is still in flight. Once discovery completes, a missing executable fails before PTY creation with a pointer to Settings → Agents. Resolution substitutes only a runner command that still equals the runtime catalog default; legacy custom commands remain byte-for-byte unchanged. Runtime-only sessions record the effective command, reuse a still-valid recorded absolute path on resume, and re-resolve when that file disappears.
+
 ```
 portable_pty::openpty(rows, cols)
   ├─ master handle  → kept by SessionManager
   └─ slave handle   → given to child via spawn_command()
 
 Child inherits (mission session):
-  PATH              = $APPDATA/runner/bin:<login-shell PATH>
+  PATH              = <mission shim>:$APPDATA/runner/bin:<login-shell PATH>:<curated CLI dirs>:<process PATH>
   RUNNER_CREW_ID    = <ulid>
   RUNNER_MISSION_ID = <ulid>
   RUNNER_HANDLE     = <slot_handle>
@@ -754,7 +758,7 @@ sessions (
   -- continue the prior conversation after a stop or app restart.
   agent_session_key TEXT,
   agent_runtime TEXT,                 -- runtime-only direct chat identity
-  agent_command TEXT,
+  agent_command TEXT,                 -- effective executable for runtime-only/pinned sessions
   archived_at TEXT,
   title TEXT,                         -- direct-chat title; null for mission sessions
   pinned_at TEXT

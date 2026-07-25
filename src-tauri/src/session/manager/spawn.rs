@@ -1,6 +1,48 @@
 use super::*;
 
 impl SessionManager {
+    fn resolve_runner_executable(&self, runner: &Runner, pool: &DbPool) -> Result<Runner> {
+        let Some(definition) = router::runtime::runtime_definition(&runner.runtime) else {
+            return Ok(runner.clone());
+        };
+        if runner.command != definition.command {
+            return Ok(runner.clone());
+        }
+        let effective = crate::runtime_status::effective_runtime_command(
+            definition.name,
+            pool,
+            &self.shell_env,
+            &self.discovery_state,
+        )?;
+        let mut resolved = runner.clone();
+        resolved.command = effective.command;
+        Ok(resolved)
+    }
+
+    fn resolve_runtime_only_resume_runner(
+        &self,
+        runtime: &str,
+        recorded_command: Option<&str>,
+        pool: &DbPool,
+    ) -> Result<Runner> {
+        let definition = router::runtime::runtime_definition(runtime)
+            .ok_or_else(|| Error::msg(format!("unknown runtime: {runtime}")))?;
+        let recorded = recorded_command
+            .map(str::trim)
+            .filter(|command| !command.is_empty());
+        if let Some(command) = recorded {
+            let path = Path::new(command);
+            if path.is_absolute() && crate::runtime_status::executable_path_is_valid(path) {
+                return runtime_direct_runner(runtime, Some(command));
+            }
+            if !path.is_absolute() && command != definition.command {
+                return runtime_direct_runner(runtime, Some(command));
+            }
+        }
+        let runner = runtime_direct_runner(runtime, None)?;
+        self.resolve_runner_executable(&runner, pool)
+    }
+
     /// Gate a fresh `claude-code` spawn before calling
     /// `runtime.spawn()`. No-op for any other runtime — those
     /// bypass the gate.
@@ -59,11 +101,16 @@ impl SessionManager {
         initial_size: Option<(u16, u16)>,
         extra_env: BTreeMap<String, String>,
     ) -> SpawnSpec {
+        let shell_env = self
+            .shell_env
+            .read()
+            .expect("runtime shell environment lock poisoned")
+            .clone();
         // Bottom layer: login-shell vars (proxy quartet, both cases)
         // captured at app start. A runner row can override any of these
         // by setting the same name in its own env map — the runner row
         // is the most specific configuration surface.
-        let mut env: BTreeMap<String, String> = self.shell_env.vars.clone();
+        let mut env: BTreeMap<String, String> = shell_env.vars;
         for (k, v) in &runner.env {
             env.insert(k.clone(), v.clone());
         }
@@ -86,7 +133,7 @@ impl SessionManager {
             mission,
             shim_dir,
             bundled_bin_dir,
-            shell_path: self.shell_env.path.clone(),
+            shell_path: shell_env.path,
             initial_size,
         }
     }
@@ -192,7 +239,8 @@ impl SessionManager {
         // matching override spawns byte-identically but still pins.
         let resolution = resolve_runtime_override(runner, slot.runtime_override.as_deref())?;
         let pinned = resolution.pinned;
-        let runner = resolution.effective.as_ref().unwrap_or(runner);
+        let runner =
+            self.resolve_runner_executable(resolution.effective.as_ref().unwrap_or(runner), &pool)?;
 
         // Agent-native session resume: this is a *fresh* session row, so
         // there's no prior key to inherit. The runtime adapter still
@@ -248,7 +296,7 @@ impl SessionManager {
             Self::codex_capture_prompt_marker(&runner.runtime, &session_id, first_turn);
         let mut spec = self.base_spawn_spec(
             session_id.clone(),
-            runner,
+            &runner,
             resolved_cwd.clone(),
             true,
             shim_dir,
@@ -260,7 +308,7 @@ impl SessionManager {
             runner_core::event_log::path::mission_dir(app_data_dir, &mission.crew_id, &mission.id);
         let first_turn_delivered_via_argv = Self::apply_runtime_args(
             &mut spec,
-            runner,
+            &runner,
             &plan,
             first_turn.as_deref(),
             Some(&mission_bus_dir),
@@ -706,7 +754,8 @@ impl SessionManager {
         // rule as mission spawns.
         let resolution = resolve_runtime_override(runner, runtime_override)?;
         let pinned = resolution.pinned;
-        let runner = resolution.effective.as_ref().unwrap_or(runner);
+        let runner =
+            self.resolve_runner_executable(resolution.effective.as_ref().unwrap_or(runner), &pool)?;
 
         // Agent-native session resume: `spawn_direct` always opens a *new*
         // chat. The runtime adapter self-assigns a fresh
@@ -734,7 +783,7 @@ impl SessionManager {
 
         let mut spec = self.base_spawn_spec(
             session_id.clone(),
-            runner,
+            &runner,
             resolved_cwd.clone(),
             false,
             None, // shim_dir — off-bus
@@ -743,7 +792,7 @@ impl SessionManager {
             direct_env,
         );
         let first_turn_delivered_via_argv =
-            Self::apply_runtime_args(&mut spec, runner, &plan, first_turn.as_deref(), None);
+            Self::apply_runtime_args(&mut spec, &runner, &plan, first_turn.as_deref(), None);
 
         // Insert the row first so a fast-failing spawn doesn't leave
         // a half-row. Runtime-only chats (no persisted runner template)
@@ -882,7 +931,7 @@ impl SessionManager {
         }
 
         if emit_activity {
-            emit_runner_activity(&pool, runner, events.as_ref());
+            emit_runner_activity(&pool, &runner, events.as_ref());
         }
         if matches!(runner.runtime.as_str(), "claude-code" | "codex")
             && !plan.resuming
@@ -1067,17 +1116,19 @@ impl SessionManager {
         let runner = if let Some(runner_id) = snap.runner_id.as_deref() {
             let conn = pool.get()?;
             let runner = crate::commands::runner::get(&conn, runner_id)?;
-            match resolve_runtime_override(&runner, snap.agent_runtime.as_deref())?.effective {
-                Some(effective) => effective,
-                None => runner,
-            }
+            let runner =
+                match resolve_runtime_override(&runner, snap.agent_runtime.as_deref())?.effective {
+                    Some(effective) => effective,
+                    None => runner,
+                };
+            self.resolve_runner_executable(&runner, &pool)?
         } else {
             let runtime = snap.agent_runtime.as_deref().ok_or_else(|| {
                 Error::msg(format!(
                     "runtime-only session {session_id} missing agent_runtime"
                 ))
             })?;
-            runtime_direct_runner(runtime, snap.agent_command.as_deref())?
+            self.resolve_runtime_only_resume_runner(runtime, snap.agent_command.as_deref(), &pool)?
         };
 
         // Resume plan: hand the prior agent_session_key back to the

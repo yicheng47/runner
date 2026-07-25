@@ -18,6 +18,7 @@ import { matchPath, useLocation, useNavigate } from "react-router-dom";
 import {
   Archive,
   ArrowLeft,
+  Bot,
   FileText,
   Info,
   Keyboard,
@@ -31,6 +32,7 @@ import {
 } from "lucide-react";
 
 import { AboutPane } from "../components/settings/AboutPane";
+import { AgentsPane } from "../components/settings/AgentsPane";
 import { AppearancePane } from "../components/settings/AppearancePane";
 import { ArchivedPane } from "../components/settings/ArchivedPane";
 import { ChatPane } from "../components/settings/ChatPane";
@@ -56,6 +58,7 @@ type PaneKey =
   | "appearance"
   | "terminal"
   | "shortcuts"
+  | "agents"
   | "mcp"
   | "updates"
   | "diagnostics"
@@ -79,6 +82,7 @@ const PANES: Record<
     icon: Keyboard,
     render: () => <ShortcutsPane />,
   },
+  agents: { label: "Agents", icon: Bot, render: () => <AgentsPane /> },
   mcp: { label: "MCP", icon: Plug, render: () => <McpPane /> },
   updates: { label: "Updates", icon: RefreshCw, render: () => <UpdatesPane /> },
   diagnostics: {
@@ -99,7 +103,7 @@ const NAV_GROUPS: { label: string; panes: PaneKey[] }[] = [
     label: "App",
     panes: ["general", "chat", "appearance", "terminal", "shortcuts"],
   },
-  { label: "Integrations", panes: ["mcp"] },
+  { label: "Integrations", panes: ["agents", "mcp"] },
   { label: "System", panes: ["updates", "diagnostics", "about"] },
   { label: "Archived", panes: ["archived"] },
 ];

@@ -4,8 +4,14 @@ use std::sync::Arc;
 use tauri::AppHandle;
 
 use crate::{
-    db::DbPool, event_bus::BusRegistry, mcp::McpHandle, router::RouterRegistry,
-    session::SessionManager, windows::WindowRegistry, AppState,
+    db::DbPool,
+    event_bus::BusRegistry,
+    mcp::McpHandle,
+    router::RouterRegistry,
+    runtime_status::{SharedDiscoveryState, SharedShellEnv},
+    session::SessionManager,
+    windows::WindowRegistry,
+    AppState,
 };
 
 #[derive(Clone)]
@@ -13,6 +19,8 @@ pub(crate) struct McpState {
     pub db: Arc<DbPool>,
     pub app_data_dir: PathBuf,
     pub sessions: Arc<SessionManager>,
+    pub runtime_shell_env: SharedShellEnv,
+    pub runtime_discovery: SharedDiscoveryState,
     pub buses: Arc<BusRegistry>,
     pub routers: Arc<RouterRegistry>,
     pub mcp: Arc<McpHandle>,
@@ -26,6 +34,8 @@ impl McpState {
             db: Arc::clone(&self.db),
             app_data_dir: self.app_data_dir.clone(),
             sessions: Arc::clone(&self.sessions),
+            runtime_shell_env: Arc::clone(&self.runtime_shell_env),
+            runtime_discovery: Arc::clone(&self.runtime_discovery),
             buses: Arc::clone(&self.buses),
             routers: Arc::clone(&self.routers),
             mcp: Arc::clone(&self.mcp),

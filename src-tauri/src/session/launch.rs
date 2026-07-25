@@ -33,9 +33,16 @@ const FALLBACK_CLI_DIRS: &[&str] = &[
     "~/.local/bin",
     "~/.cargo/bin",
     "~/.npm-global/bin",
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
+    "~/.local/share/mise/shims",
+    "~/.asdf/shims",
+    "~/.volta/bin",
+    "~/.bun/bin",
+    "~/.deno/bin",
+    "~/Library/pnpm",
+    "~/.local/share/fnm/aliases/default/bin",
 ];
+
+const FALLBACK_SYSTEM_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
 
 /// Inputs `render_launch_script` needs that aren't already on
 /// `SpawnSpec`. Kept separate from `SpawnSpec` because the runtime
@@ -100,9 +107,8 @@ pub fn compose_path(
             push(entry.to_string());
         }
     }
-    for fallback in FALLBACK_CLI_DIRS {
-        let expanded = expand_home(fallback, home);
-        push(expanded);
+    for fallback in fallback_cli_dirs(home) {
+        push(fallback);
     }
     if let Some(pp) = process_path {
         for entry in pp.split(':') {
@@ -111,6 +117,51 @@ pub fn compose_path(
     }
 
     parts.join(":")
+}
+
+fn fallback_cli_dirs(home: Option<&Path>) -> Vec<String> {
+    let mut dirs = FALLBACK_CLI_DIRS
+        .iter()
+        .map(|path| expand_home(path, home))
+        .collect::<Vec<_>>();
+    dirs.extend(nvm_node_bin_dirs(home));
+    dirs.extend(
+        FALLBACK_SYSTEM_DIRS
+            .iter()
+            .map(|path| expand_home(path, home)),
+    );
+    dirs
+}
+
+fn nvm_node_bin_dirs(home: Option<&Path>) -> Vec<String> {
+    let Some(versions_dir) = home.map(|home| home.join(".nvm/versions/node")) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(versions_dir) else {
+        return Vec::new();
+    };
+    let mut versions = entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let bin = entry.path().join("bin");
+            bin.is_dir().then(|| {
+                (
+                    node_version_key(&entry.file_name().to_string_lossy()),
+                    bin.display().to_string(),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    versions.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+    versions.into_iter().map(|(_, path)| path).collect()
+}
+
+fn node_version_key(version: &str) -> Vec<u64> {
+    version
+        .trim_start_matches('v')
+        .split('.')
+        .map(|part| part.parse().unwrap_or(0))
+        .collect()
 }
 
 /// Expand a leading `~/` against the caller's HOME. Non-tilde paths
@@ -307,9 +358,10 @@ mod tests {
             Some(Path::new("/Users/test")),
             Some("/usr/bin:/bin"),
         );
-        assert!(!path.contains("shims"), "path = {path}");
-        // Doesn't contain "/runner/bin" (the bundled-bin path
-        // shape) — it wasn't passed in.
+        // Doesn't contain the per-mission shim or "/runner/bin"
+        // bundled-bin path shapes — neither was passed in. Version
+        // manager fallback paths may legitimately contain "shims".
+        assert!(!path.contains("/data/shims/build/bin"), "path = {path}");
         assert!(!path.contains("runner/bin"), "path = {path}");
         assert!(path.contains("/opt/homebrew/bin"), "path = {path}");
     }
@@ -354,11 +406,56 @@ mod tests {
             "/h/.local/bin",
             "/h/.cargo/bin",
             "/h/.npm-global/bin",
+            "/h/.local/share/mise/shims",
+            "/h/.asdf/shims",
+            "/h/.volta/bin",
+            "/h/.bun/bin",
+            "/h/.deno/bin",
+            "/h/Library/pnpm",
+            "/h/.local/share/fnm/aliases/default/bin",
             "/opt/homebrew/bin",
             "/usr/local/bin",
         ] {
             assert!(path.contains(d), "fallback {d} missing from {path}");
         }
+    }
+
+    #[test]
+    fn compose_path_keeps_shell_entries_before_seed_and_orders_nvm_newest_first() {
+        let home = tempfile::tempdir().unwrap();
+        for version in ["v9.9.9", "v20.12.1", "v18.20.0"] {
+            std::fs::create_dir_all(
+                home.path()
+                    .join(".nvm/versions/node")
+                    .join(version)
+                    .join("bin"),
+            )
+            .unwrap();
+        }
+        let path = compose_path(
+            None,
+            None,
+            Some("/shell/bin:/opt/homebrew/bin"),
+            Some(home.path()),
+            Some("/usr/bin"),
+        );
+        let parts = path.split(':').collect::<Vec<_>>();
+        assert_eq!(parts[0], "/shell/bin");
+        assert_eq!(
+            parts
+                .iter()
+                .filter(|entry| **entry == "/opt/homebrew/bin")
+                .count(),
+            1
+        );
+        let nvm = parts
+            .iter()
+            .filter(|entry| entry.contains(".nvm/versions/node"))
+            .copied()
+            .collect::<Vec<_>>();
+        assert!(nvm[0].contains("v20.12.1"), "{nvm:?}");
+        assert!(nvm[1].contains("v18.20.0"), "{nvm:?}");
+        assert!(nvm[2].contains("v9.9.9"), "{nvm:?}");
     }
 
     #[test]
@@ -427,6 +524,19 @@ mod tests {
         let body = render_launch_script(&script).unwrap();
         assert!(!body.contains("\ncd "), "no cd line expected: {body}");
         assert!(body.contains("exec 'claude'\n"));
+    }
+
+    #[test]
+    fn render_launch_script_quotes_command_path_with_spaces() {
+        let script = LaunchScript {
+            command: "/Applications/Agent Tools/codex".into(),
+            args: vec!["resume".into()],
+            cwd: None,
+            env: BTreeMap::new(),
+            path: "/usr/bin".into(),
+        };
+        let body = render_launch_script(&script).unwrap();
+        assert!(body.contains("exec '/Applications/Agent Tools/codex' 'resume'\n"));
     }
 
     #[test]

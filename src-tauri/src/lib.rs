@@ -8,13 +8,14 @@ mod model;
 mod panic_hook;
 mod repo;
 mod router;
+mod runtime_status;
 mod session;
 mod shell_path;
 mod window_state;
 mod windows;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 #[cfg(target_os = "macos")]
 use tauri::menu::{AboutMetadataBuilder, PredefinedMenuItem};
@@ -42,6 +43,8 @@ pub struct AppState {
     /// start, shared across all Tauri commands and the per-session
     /// forwarder threads it spawns.
     pub sessions: Arc<session::SessionManager>,
+    pub runtime_shell_env: runtime_status::SharedShellEnv,
+    pub runtime_discovery: runtime_status::SharedDiscoveryState,
     /// Live per-mission event-bus watchers. Mounted by `mission_start` once
     /// the opening events are durable; unmounted by `mission_stop` and on
     /// any rollback path.
@@ -159,16 +162,27 @@ pub fn run() {
                 log::error!("failed to install bundled MCP CLI: {e}");
             }
 
-            // Snapshot the user's login-shell env once at startup so
-            // child PTYs see the same PATH + proxy vars that
-            // Terminal.app's children would. Covers both the
-            // GUI-launch shim-discovery problem (Homebrew /
-            // mise / asdf / fnm / npm-global on a launchd-stripped
-            // PATH) and the claude/codex-login-behind-VPN problem
-            // (HTTPS_PROXY / NO_PROXY etc. set in rc files).
-            // Best-effort: a failure or timeout just leaves the
-            // snapshot empty and we fall back to launchd's env.
-            let login_shell_env = shell_path::resolve_login_shell_env();
+            let login_shell_lkg = match db::login_shell_env_lkg(&pool) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    log::warn!("runtime discovery LKG read failed: {error}");
+                    None
+                }
+            };
+            let runtime_shell_env = Arc::new(RwLock::new(
+                login_shell_lkg
+                    .as_ref()
+                    .map(|snapshot| snapshot.env.clone())
+                    .unwrap_or_default(),
+            ));
+            let runtime_discovery = Arc::new(RwLock::new(shell_path::DiscoveryState::startup(
+                login_shell_lkg
+                    .as_ref()
+                    .map(|snapshot| snapshot.shell.clone()),
+                login_shell_lkg
+                    .as_ref()
+                    .map(|snapshot| snapshot.captured_at.clone()),
+            )));
 
             // Construct the in-process PTY runtime
             // (docs/impls/archive/0011). v1 is unix-only — Windows fails at
@@ -188,7 +202,11 @@ pub fn run() {
                 }
             };
 
-            let sessions = session::SessionManager::new(login_shell_env, runtime);
+            let sessions = session::SessionManager::new(
+                Arc::clone(&runtime_shell_env),
+                Arc::clone(&runtime_discovery),
+                runtime,
+            );
 
             // Build the AppState up front so the startup mission-bus
             // remount has access to the bus + router registries it
@@ -206,6 +224,8 @@ pub fn run() {
                 db: Arc::clone(&pool),
                 app_data_dir: app_data_dir.clone(),
                 sessions: Arc::clone(&sessions),
+                runtime_shell_env: Arc::clone(&runtime_shell_env),
+                runtime_discovery: Arc::clone(&runtime_discovery),
                 buses: Arc::clone(&buses),
                 routers: Arc::clone(&routers),
                 mcp: Arc::clone(&mcp_handle),
@@ -220,6 +240,8 @@ pub fn run() {
                 db: Arc::clone(&pool),
                 app_data_dir,
                 sessions: Arc::clone(&sessions),
+                runtime_shell_env: Arc::clone(&runtime_shell_env),
+                runtime_discovery: Arc::clone(&runtime_discovery),
                 buses,
                 routers,
                 mcp: mcp_handle,
@@ -270,6 +292,12 @@ pub fn run() {
             }
 
             app.manage(state);
+            runtime_status::start_background_discovery(
+                app.handle().clone(),
+                Arc::clone(&pool),
+                runtime_shell_env,
+                runtime_discovery,
+            );
 
             // Build the app menu in `setup` so its actions can use the
             // live AppHandle.
@@ -351,6 +379,10 @@ pub fn run() {
             commands::runner::runner_delete,
             commands::runner::runner_activity,
             commands::runtime::runtime_list,
+            commands::runtime::runtime_status_list,
+            commands::runtime::runtime_set_override,
+            commands::runtime::runtime_clear_override,
+            commands::runtime::runtime_refresh,
             commands::slot::slot_list,
             commands::slot::runner_crews_list,
             commands::slot::slot_create,

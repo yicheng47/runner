@@ -598,10 +598,20 @@ mod tests {
 
     fn test_app_in(app_data_dir: PathBuf) -> tauri::App<tauri::test::MockRuntime> {
         let app = tauri::test::mock_app();
+        let runtime_shell_env = Arc::new(std::sync::RwLock::new(LoginShellEnv::default()));
+        let runtime_discovery = Arc::new(std::sync::RwLock::new(
+            crate::shell_path::DiscoveryState::pending(),
+        ));
         app.manage(AppState {
             db: Arc::new(db::open_in_memory().unwrap()),
             app_data_dir,
-            sessions: SessionManager::new(LoginShellEnv::default(), Arc::new(InertRuntime)),
+            sessions: SessionManager::new(
+                Arc::clone(&runtime_shell_env),
+                Arc::clone(&runtime_discovery),
+                Arc::new(InertRuntime),
+            ),
+            runtime_shell_env,
+            runtime_discovery,
             buses: BusRegistry::new(),
             routers: RouterRegistry::new(),
             mcp: Arc::new(McpHandle::new()),

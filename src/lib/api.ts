@@ -130,6 +130,52 @@ export interface RuntimeDefinition {
   command: string;
 }
 
+export type RuntimeDiscoveryOutcome =
+  | "ok"
+  | "timeout"
+  | "spawn_error"
+  | "empty_capture"
+  | "no_shell";
+
+export type RuntimeRowState =
+  | "detected"
+  | "override"
+  | "not_found"
+  | "checking"
+  | "probe_timed_out"
+  | "invalid_override";
+
+export interface RuntimeShellStatus {
+  shell: string | null;
+  outcome: RuntimeDiscoveryOutcome | null;
+  duration_ms: number | null;
+  checking: boolean;
+  using_last_known_good: boolean;
+  last_known_good_captured_at: string | null;
+}
+
+export interface RuntimeExecutableStatus {
+  name: string;
+  display_name: string;
+  command: string;
+  detected_path: string | null;
+  override_path: string | null;
+  effective_command: string | null;
+  effective_source: "override" | "detected" | "catalog" | null;
+  state: RuntimeRowState;
+  invalid_reason: string | null;
+}
+
+export interface RuntimeStatusResponse {
+  shell: RuntimeShellStatus;
+  runtimes: RuntimeExecutableStatus[];
+}
+
+export interface RuntimeOverrideError {
+  code: string;
+  message: string;
+}
+
 export const api = {
   project: {
     list: () => invoke<ProjectRow[]>("project_list"),
@@ -207,6 +253,12 @@ export const api = {
   },
   runtime: {
     list: () => invoke<RuntimeDefinition[]>("runtime_list"),
+    status: () => invoke<RuntimeStatusResponse>("runtime_status_list"),
+    setOverride: (runtime: string, path: string) =>
+      invoke<RuntimeStatusResponse>("runtime_set_override", { runtime, path }),
+    clearOverride: (runtime: string) =>
+      invoke<RuntimeStatusResponse>("runtime_clear_override", { runtime }),
+    refresh: () => invoke<RuntimeStatusResponse>("runtime_refresh"),
   },
   mission: {
     list: (crewId?: string) =>
