@@ -15,10 +15,6 @@ links to its tracking issue.
   shape and materialized per agent (claude-code JSON, codex TOML,
   skill dirs) with a cross-platform apply mechanism; informed by the
   skills-manager reference analysis.
-- [19 — Mission split view](./19-mission-split-view.md) — per-mission
-  pane tree with drag-tab-to-edge splitting; render two PTYs (or
-  feed + PTY) side-by-side inside one mission window; complements
-  spec 12 (multi-window can't side-by-side same-mission PTYs).
 - [24 — Cronjobs](./24-cronjobs.md)
   — scheduled recurring missions dispatched to a crew on a cron
   expression; in-process Tokio scheduler, skip-on-overlap, one
@@ -37,6 +33,11 @@ See the directory listing for what's there.
 
 Considered and deliberately not built. Spec kept in-repo as the record.
 
+- [19 — Mission split view](./19-mission-split-view.md)
+  — closed as won't-do ([#255](https://github.com/yicheng47/runner/issues/255)):
+  crew missions coordinate turn-based, so side-by-side slot PTYs mostly
+  show one busy terminal next to an idle one; the feed + per-runner tabs
+  cover monitoring, and split view already exists for direct chats.
 - [21 — Import native agent sessions into a project](./21-import-native-sessions.md)
   — closed as won't-do ([#176](https://github.com/yicheng47/runner/issues/176)):
   the CLIs' own resume pickers (`claude --resume` / `codex resume` from a
