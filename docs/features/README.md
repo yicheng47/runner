@@ -19,11 +19,6 @@ links to its tracking issue.
   pane tree with drag-tab-to-edge splitting; render two PTYs (or
   feed + PTY) side-by-side inside one mission window; complements
   spec 12 (multi-window can't side-by-side same-mission PTYs).
-- [21 — Import native agent sessions into a project](./21-import-native-sessions.md)
-  — project-level import of existing claude-code / codex sessions
-  whose recorded cwd matches the project directory; the follow-up
-  importer that feature 40 deferred, superseding the old
-  detect-and-resume Start Chat picker shape.
 - [24 — Cronjobs](./24-cronjobs.md)
   — scheduled recurring missions dispatched to a crew on a cron
   expression; in-process Tokio scheduler, skip-on-overlap, one
@@ -37,3 +32,13 @@ links to its tracking issue.
 
 Shipped specs live in [`archive/`](./archive/), in spec-number order.
 See the directory listing for what's there.
+
+## Dropped
+
+Considered and deliberately not built. Spec kept in-repo as the record.
+
+- [21 — Import native agent sessions into a project](./21-import-native-sessions.md)
+  — closed as won't-do ([#176](https://github.com/yicheng47/runner/issues/176)):
+  the CLIs' own resume pickers (`claude --resume` / `codex resume` from a
+  pane in the project cwd) cover the core need, so the native-store import
+  machinery wasn't worth its maintenance surface.
