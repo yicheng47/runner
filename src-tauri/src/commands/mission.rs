@@ -32,7 +32,11 @@ use crate::{
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct StartMissionInput {
     pub crew_id: String,
-    /// Optional project membership. Its cwd is used when cwd is omitted.
+    /// Pass this whenever the mission belongs to a project. Use
+    /// `project_list` to discover the project bound to the cwd. Callers must
+    /// not treat `cwd` alone as an association: with no unique canonical
+    /// match it does NOT associate the mission and leaves it un-nested in
+    /// the sidebar.
     #[serde(default)]
     pub project_id: Option<String>,
     pub title: String,
@@ -182,6 +186,9 @@ pub fn start(
     }
     if let Some(g) = input.goal_override.as_deref() {
         validate_mission_goal(g)?;
+    }
+    if input.project_id.is_none() {
+        input.project_id = project::infer_id_from_cwd(conn, input.cwd.as_deref())?;
     }
     input.cwd = project::resolve_cwd(conn, input.project_id.as_deref(), input.cwd)?;
 
@@ -2132,6 +2139,128 @@ mod tests {
         .unwrap();
 
         assert_eq!(out.mission.cwd.as_deref(), Some("/override"));
+    }
+
+    #[test]
+    fn start_infers_project_from_one_exact_canonical_cwd_match() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "Alpha", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+        let bound = tmp.path().join("bound");
+        std::fs::create_dir(&bound).unwrap();
+        let project = repo::project::create(&conn, "Bound", bound.to_str().unwrap()).unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                project_id: None,
+                crew_id,
+                title: "inferred".into(),
+                goal_override: None,
+                cwd: Some(bound.join(".").to_string_lossy().into_owned()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(out.mission.project_id.as_deref(), Some(project.id.as_str()));
+    }
+
+    #[test]
+    fn start_leaves_project_null_when_cwd_does_not_match() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "Alpha", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+        let bound = tmp.path().join("bound");
+        let other = tmp.path().join("other");
+        std::fs::create_dir(&bound).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        repo::project::create(&conn, "Bound", bound.to_str().unwrap()).unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                project_id: None,
+                crew_id,
+                title: "unmatched".into(),
+                goal_override: None,
+                cwd: Some(other.to_string_lossy().into_owned()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(out.mission.project_id, None);
+    }
+
+    #[test]
+    fn start_leaves_project_null_when_multiple_projects_match_cwd() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "Alpha", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+        let bound = tmp.path().join("bound");
+        std::fs::create_dir(&bound).unwrap();
+        let bound = bound.to_str().unwrap();
+        repo::project::create(&conn, "First", bound).unwrap();
+        repo::project::create(&conn, "Second", bound).unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                project_id: None,
+                crew_id,
+                title: "ambiguous".into(),
+                goal_override: None,
+                cwd: Some(bound.into()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(out.mission.project_id, None);
+    }
+
+    #[test]
+    fn start_explicit_project_wins_over_cwd_inference() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "Alpha", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+        let first = tmp.path().join("first");
+        let second = tmp.path().join("second");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let explicit = repo::project::create(&conn, "Explicit", first.to_str().unwrap()).unwrap();
+        repo::project::create(&conn, "Inferred", second.to_str().unwrap()).unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                project_id: Some(explicit.id.clone()),
+                crew_id,
+                title: "explicit".into(),
+                goal_override: None,
+                cwd: Some(second.to_string_lossy().into_owned()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            out.mission.project_id.as_deref(),
+            Some(explicit.id.as_str())
+        );
+        assert_eq!(
+            out.mission.cwd.as_deref(),
+            Some(second.to_string_lossy().as_ref())
+        );
     }
 
     #[test]

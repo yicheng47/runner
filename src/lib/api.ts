@@ -364,6 +364,17 @@ export const api = {
       invoke<void>("session_pin", { sessionId, pinned }),
     setProject: (sessionIds: string[], projectId: string | null) =>
       invoke<void>("session_set_project", { sessionIds, projectId }),
+    takeResumeOnLaunch: () =>
+      invoke<string | null>("session_take_resume_on_launch"),
+    clearResumeOnLaunch: () =>
+      invoke<void>("session_clear_resume_on_launch"),
+    resumeOnLaunch: (sessionId: string) =>
+      invoke<SpawnedSession>("session_resume", {
+        sessionId,
+        cols: null,
+        rows: null,
+        automatic: true,
+      }),
     resume: (
       sessionId: string,
       cols: number | null,
@@ -373,6 +384,7 @@ export const api = {
         sessionId,
         cols,
         rows,
+        automatic: false,
       }),
     injectStdin: (sessionId: string, text: string) =>
       invoke<void>("session_inject_stdin", { sessionId, text }),

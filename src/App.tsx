@@ -13,9 +13,15 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AppShell } from "./components/AppShell";
 import { ToastProvider } from "./contexts/ToastContext";
 import { UpdateProvider, useUpdate } from "./contexts/UpdateContext";
+import { consumeResumeOnLaunch } from "./lib/autoResume";
+import { api } from "./lib/api";
 import { nudgeAppZoom, syncTitlebarZoom } from "./lib/appZoom";
 import { eventMatchesShortcut } from "./lib/keymap";
-import { readAppZoom } from "./lib/settings";
+import {
+  readAppZoom,
+  readStoredBool,
+  STORAGE_RESUME_ON_LAUNCH,
+} from "./lib/settings";
 import Crews from "./pages/Crews";
 import CrewEditor from "./pages/CrewEditor";
 import Runners from "./pages/Runners";
@@ -27,6 +33,7 @@ export default function App() {
   // hidden windows, so the callback would never fire. Every window runs this
   // effect, and both commands resolve the invoking window.
   useEffect(() => {
+    let cancelled = false;
     const zoom = readAppZoom();
     let webviewZoom = Promise.resolve();
     if (zoom !== 1.0) {
@@ -42,8 +49,19 @@ export default function App() {
     }
 
     void Promise.all([syncTitlebarZoom(zoom), webviewZoom]).finally(() => {
-      invoke("app_ready").catch(console.error);
+      void invoke("app_ready")
+        .then(async () => {
+          if (cancelled || getCurrentWebview().label !== "main") return;
+          await consumeResumeOnLaunch(
+            readStoredBool(STORAGE_RESUME_ON_LAUNCH, true),
+            api.session,
+          );
+        })
+        .catch(console.error);
     });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Zoom shortcuts (keymap: zoom-in / zoom-out / zoom-reset). Capture

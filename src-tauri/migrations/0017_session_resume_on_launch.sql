@@ -1,0 +1,1 @@
+ALTER TABLE sessions ADD COLUMN resume_on_launch INTEGER NOT NULL DEFAULT 0;

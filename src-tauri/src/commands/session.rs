@@ -598,12 +598,24 @@ pub async fn session_pin(
     Ok(())
 }
 
+#[tauri::command]
+pub fn session_take_resume_on_launch(state: State<'_, AppState>) -> Result<Option<String>> {
+    let mut conn = state.db.get()?;
+    Ok(repo::session::take_resume_on_launch(&mut conn)?)
+}
+
+#[tauri::command]
+pub fn session_clear_resume_on_launch(state: State<'_, AppState>) -> Result<()> {
+    let conn = state.db.get()?;
+    repo::session::clear_resume_on_launch(&conn)?;
+    Ok(())
+}
+
 /// Respawn an existing direct-chat session row. Reuses the row's id and
 /// `agent_session_key` so the agent CLI continues the prior conversation
 /// (claude-code: `--resume <uuid>`; codex: `codex resume <uuid>` once the
 /// key-capture path lands). See `SessionManager::resume` for the detailed
-/// contract — refused for running rows, mission-scoped rows, and archived
-/// rows.
+/// contract — refused for running and archived rows.
 #[tauri::command]
 pub async fn session_resume(
     state: State<'_, AppState>,
@@ -611,15 +623,18 @@ pub async fn session_resume(
     session_id: String,
     cols: Option<u16>,
     rows: Option<u16>,
+    automatic: Option<bool>,
 ) -> Result<SpawnedSession> {
     // Dims decide the PTY fork size; None forks at the 80×24 default and
     // a TUI's instant banner then renders garbled at pane width. Logged
     // so a garbled-pane report can be traced back to its resume geometry.
-    log::info!("session_resume: session={session_id} cols={cols:?} rows={rows:?}");
+    let automatic = automatic.unwrap_or(false);
+    log::info!(
+        "session_resume: session={session_id} cols={cols:?} rows={rows:?} automatic={automatic}"
+    );
     let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app.clone()));
-    let spawned = state
-        .sessions
-        .resume(
+    let spawned = if automatic {
+        state.sessions.resume_on_launch(
             &session_id,
             cols,
             rows,
@@ -627,7 +642,17 @@ pub async fn session_resume(
             state.db.clone(),
             emitter,
         )
-        .map_err(|e| Error::msg(format!("session_resume: {e}")))?;
+    } else {
+        state.sessions.resume(
+            &session_id,
+            cols,
+            rows,
+            &state.app_data_dir,
+            state.db.clone(),
+            emitter,
+        )
+    }
+    .map_err(|e| Error::msg(format!("session_resume: {e}")))?;
     // Fresh-fallback for a lead slot: the prior claude-code conversation
     // file was missing, so the resume degraded to a `--session-id` fresh
     // spawn. The bus's mission_goal handler is suppressed on resume by
