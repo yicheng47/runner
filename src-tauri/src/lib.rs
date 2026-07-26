@@ -106,6 +106,7 @@ pub fn run() {
         log_builder = log_builder.level_for(target, level);
     }
 
+    let mut quit_prepared = false;
     tauri::Builder::default()
         .plugin(log_builder.build())
         .plugin(tauri_plugin_opener::init())
@@ -439,7 +440,7 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
+        .run(move |app_handle, event| {
             // On graceful quit, stop any `running` direct-chat
             // sessions before the runtime drops. Under the pty
             // runtime, this fires SIGTERM-via-ChildKiller so
@@ -518,14 +519,23 @@ pub fn run() {
                     broadcast_focus_map(app_handle);
                 }
                 tauri::RunEvent::ExitRequested { .. } => {
-                    stop_running_sessions_on_quit(app_handle);
+                    if !quit_prepared {
+                        quit_prepared = true;
+                        stop_running_sessions_on_quit(app_handle);
+                    }
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         state.mcp.stop();
                     }
                 }
-                // Final geometry write. The window may already be gone
-                // here; `save` falls back to the Moved/Resized cache.
                 tauri::RunEvent::Exit => {
+                    // macOS's native Quit menu item can terminate the event
+                    // loop without emitting ExitRequested.
+                    if !quit_prepared {
+                        quit_prepared = true;
+                        stop_running_sessions_on_quit(app_handle);
+                    }
+                    // Final geometry write. The window may already be gone
+                    // here; `save` falls back to the Moved/Resized cache.
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         window_state::save(app_handle, &state.app_data_dir);
                     }
