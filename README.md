@@ -29,7 +29,7 @@
 
 ---
 
-> Status: alpha, actively shipping. macOS today; Linux on the way.
+> Status: alpha, actively shipping.
 
 ---
 
@@ -45,7 +45,7 @@ Runner also runs as an **MCP server**: any MCP client — including the agents t
 
 ## Download
 
-Latest macOS build (Apple Silicon + Intel `.dmg`) on the [releases page](https://github.com/yicheng47/runner/releases/latest). Linux builds coming with the v1 cut.
+Latest macOS build (Apple Silicon + Intel `.dmg`) on the [releases page](https://github.com/yicheng47/runner/releases/latest).
 
 <!-- TODO(demo): add a "## Demo" section here once the new hero video is recorded — a Peer
      Coding Crew mission on a real repo (mission start from a project → feed + per-slot
@@ -82,7 +82,7 @@ Starting a mission spawns one live PTY per slot into a tabbed workspace where th
 </tr>
 <tr>
 <td width="50%">
-  <img src="assets/chat_split.png" alt="Chat tab with three split panes and organized sidebar" width="100%" />
+  <img src="assets/chat_split.png" alt="Chat tab with a Claude Code and a Codex pane side by side, and the project-grouped sidebar" width="100%" />
 </td>
 <td width="50%" valign="middle">
 

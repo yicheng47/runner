@@ -10,11 +10,10 @@ links to its tracking issue.
 
 ## Index
 
-- [05 — Cross-platform, agent-agnostic MCP & skills management](./05-runner-skills.md) —
+- [05 — Agent-agnostic MCP & skills management](./05-runner-skills.md) —
   one central catalog of MCP servers and skills, stored in a neutral
   shape and materialized per agent (claude-code JSON, codex TOML,
-  skill dirs) with a cross-platform apply mechanism; informed by the
-  skills-manager reference analysis.
+  skill dirs); informed by the skills-manager reference analysis.
 - [24 — Cronjobs](./24-cronjobs.md)
   — scheduled recurring missions dispatched to a crew on a cron
   expression; in-process Tokio scheduler, skip-on-overlap, one

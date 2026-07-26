@@ -112,7 +112,7 @@ Runner is a local desktop app. A user configures a **crew** of CLI coding agents
 | Auto-update | **`tauri-plugin-updater`** | Signed updates from the GitHub Releases manifest. Settings → About drives the check → download → restart ladder; a sidebar prompt card surfaces ready-to-install (impl 0025). |
 | MCP | **`rmcp` + Unix socket + `runner-mcp` bridge** | Runner.app owns stateful tool execution; external MCP clients spawn `runner-mcp`, which bridges stdio to the app's local Unix socket. |
 
-**Platform targets.** macOS (Apple Silicon + x64) primary; Linux (x64) best-effort. Windows is deferred — `portable-pty` works there but no one is on the validation loop.
+**Platform target.** macOS (Apple Silicon + x64), and only macOS. Linux and Windows are out of scope, so no cross-platform fallback paths are maintained and Unix-only mechanisms are used freely.
 
 ## 3. Domain model
 

@@ -29,6 +29,9 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 
 ## Stack
 
+- Platform: macOS only (Apple Silicon + Intel). Linux and Windows are out
+  of scope — do not add cross-platform branches, fallbacks, or
+  abstractions for them. Unix-only mechanisms are fair game.
 - Frontend: React 19, TypeScript, Tailwind CSS 4, Vite, React Router.
 - Desktop/backend: Tauri 2, Rust, SQLite via `rusqlite`.
 - PTY runtime: `portable-pty`.
