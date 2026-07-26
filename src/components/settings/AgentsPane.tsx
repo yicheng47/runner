@@ -13,12 +13,21 @@ import {
   type RuntimeShellStatus,
   type RuntimeStatusResponse,
 } from "../../lib/api";
-import { PaneHeader } from "./shared";
+import {
+  readDefaultRuntime,
+  writeDefaultRuntime,
+} from "../../lib/settings";
+import { StyledSelect } from "../ui/StyledSelect";
+import { RUNTIME_OPTIONS } from "../ui/runtimes";
+import { PaneHeader, SettingsCard, SettingsRow } from "./shared";
 
 export function AgentsPane() {
   const [status, setStatus] = useState<RuntimeStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [defaultRuntime, setDefaultRuntimeState] = useState(() =>
+    readDefaultRuntime(),
+  );
 
   const load = useCallback(async () => {
     try {
@@ -45,6 +54,20 @@ export function AgentsPane() {
     };
   }, [load]);
 
+  useEffect(() => {
+    if (!status) return;
+    const stored = readDefaultRuntime();
+    if (stored && !status.runtimes.some((runtime) => runtime.name === stored)) {
+      setDefaultRuntimeState("");
+      writeDefaultRuntime("");
+    }
+  }, [status]);
+
+  const setDefaultRuntime = (runtime: string) => {
+    setDefaultRuntimeState(runtime);
+    writeDefaultRuntime(runtime);
+  };
+
   const refresh = async () => {
     if (refreshing || status?.shell.checking) return;
     setRefreshing(true);
@@ -64,6 +87,25 @@ export function AgentsPane() {
         title="Agents"
         subtitle="Discover and override built-in agent executables."
       />
+      <SettingsCard>
+        <SettingsRow
+          label="Default runtime"
+          sub="Pre-selected when starting a direct chat in Direct mode."
+        >
+          <StyledSelect
+            id="agents-default-runtime"
+            value={defaultRuntime}
+            options={[
+              { value: "", label: "First available" },
+              ...(status?.runtimes ?? []).map((runtime) => ({
+                value: runtime.name,
+                label: runtime.display_name,
+              })),
+            ]}
+            onChange={setDefaultRuntime}
+          />
+        </SettingsRow>
+      </SettingsCard>
       <ShellEnvironmentCard
         shell={status?.shell ?? null}
         refreshing={refreshing}
@@ -78,9 +120,9 @@ export function AgentsPane() {
             onStatus={setStatus}
           />
         )) ??
-          [0, 1].map((index) => (
+          RUNTIME_OPTIONS.map((runtime) => (
             <div
-              key={index}
+              key={runtime.value}
               className="h-[108px] animate-pulse bg-raised/20 px-5 py-4"
             />
           ))}

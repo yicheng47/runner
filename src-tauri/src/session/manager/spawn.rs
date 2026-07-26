@@ -547,7 +547,7 @@ impl SessionManager {
         }
 
         emit_runner_activity(&pool, &runner, events.as_ref());
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex")
+        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "qoder")
             && !plan.resuming
             && !first_turn_delivered_via_argv
         {
@@ -933,7 +933,7 @@ impl SessionManager {
         if emit_activity {
             emit_runner_activity(&pool, &runner, events.as_ref());
         }
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex")
+        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "qoder")
             && !plan.resuming
             && !first_turn_delivered_via_argv
         {
@@ -1165,25 +1165,29 @@ impl SessionManager {
         // runtime adapter so claude-code uses `--resume <uuid>` and
         // codex (once capture lands) uses `codex resume <uuid>`.
         //
-        // claude-code only: if the conversation file for this
+        // claude-code / qoder only: if the conversation file for this
         // (cwd, uuid) was never persisted, `--resume <uuid>` would
         // print "No conversation found" and leave the TUI half-broken.
         // Detect the missing file up front and degrade to a fresh
-        // spawn that *keeps* the same uuid via `--session-id`.
+        // spawn with a newly self-assigned uuid via `--session-id`.
         let resolved_cwd_for_check: Option<String> = snap.cwd.clone().or_else(|| {
             snap.runner_id
                 .as_ref()
                 .and_then(|_| runner.working_dir.clone())
         });
         let is_lead_slot = mission_ctx.as_ref().is_some_and(|c| c.lead);
-        let conversation_missing = matches!(
-            (runner.runtime.as_str(), snap.agent_session_key.as_deref()),
-            ("claude-code", Some(key))
-                if !router::runtime::claude_code_conversation_exists(
+        let conversation_missing =
+            match (runner.runtime.as_str(), snap.agent_session_key.as_deref()) {
+                ("claude-code", Some(key)) => !router::runtime::claude_code_conversation_exists(
                     resolved_cwd_for_check.as_deref(),
                     key,
-                )
-        );
+                ),
+                ("qoder", Some(key)) => !router::runtime::qoder_conversation_exists(
+                    resolved_cwd_for_check.as_deref(),
+                    key,
+                ),
+                _ => false,
+            };
         if conversation_missing && !allow_fresh_fallback {
             return Err(Error::msg(format!(
                 "session {session_id} conversation is unavailable; resume it manually to start fresh"
@@ -1192,7 +1196,7 @@ impl SessionManager {
         let fresh_fallback_lead = conversation_missing && is_lead_slot;
         let effective_prior_key = match (runner.runtime.as_str(), snap.agent_session_key.as_deref())
         {
-            ("claude-code", Some(_)) if conversation_missing => None,
+            ("claude-code" | "qoder", Some(_)) if conversation_missing => None,
             (_, k) => k,
         };
         let plan = router::runtime::resume_plan(&runner.runtime, effective_prior_key);
@@ -1418,7 +1422,7 @@ impl SessionManager {
         // returned SpawnedSession. For direct-chat resume there's no
         // slot/lead concept; if that degrades to fresh and argv
         // delivery was unavailable, we log the skipped injection.
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex") && !plan.resuming {
+        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "qoder") && !plan.resuming {
             if mission_ctx.is_some() {
                 log::warn!(
                     "first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",

@@ -14,7 +14,7 @@ import { ChevronDown, X } from "lucide-react";
 
 import { api, type ProjectRow, type RuntimeDefinition } from "../lib/api";
 import {
-  readDefaultChatRuntime,
+  readDefaultRuntime,
   readDefaultWorkingDir,
 } from "../lib/settings";
 import type { Runner, SpawnedSession } from "../lib/types";
@@ -153,7 +153,7 @@ export function StartChatModal({
       .list()
       .then((rows) => {
         if (cancelled) return;
-        const preferred = readDefaultChatRuntime();
+        const preferred = readDefaultRuntime();
         const selected =
           rows.find((runtime) => runtime.name === preferred) ?? rows[0] ?? null;
         setRuntimes(rows);
@@ -560,7 +560,7 @@ function defaultTitleFor(runner: Runner | null): string {
 
 function defaultTitleForRuntime(runtime: RuntimeDefinition | null): string {
   if (!runtime) return "";
-  return `Chat with ${runtime.display_name}`;
+  return runtime.display_name;
 }
 
 // Dynamic placeholder for the working-directory input. Shows what

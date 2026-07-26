@@ -49,8 +49,9 @@ Runner is a local desktop app. A user configures a **crew** of CLI coding agents
 │   │ Runner session (one per slot × mission)                              │   │
 │   │                                                                      │   │
 │   │  ┌──────────┐   PTY   ┌─────────────────────────────────────┐        │   │
-│   │  │  master  │ ◄─────► │ child: claude-code / codex / shell  │        │   │
-│   │  └──────────┘         │   env: RUNNER_CREW_ID,              │        │   │
+│   │  │  master  │ ◄─────► │ child: claude-code / codex / qoder  │        │   │
+│   │  └──────────┘         │        / shell                      │        │   │
+│   │                       │   env: RUNNER_CREW_ID,              │        │   │
 │   │                       │        RUNNER_MISSION_ID,           │        │   │
 │   │                       │        RUNNER_HANDLE,               │        │   │
 │   │                       │        RUNNER_EVENT_LOG, PATH=…     │        │   │
@@ -79,7 +80,7 @@ Runner is a local desktop app. A user configures a **crew** of CLI coding agents
 
 *Runtime (the hot path — the row below MissionManager).*
 
-- **SessionManager** — the per-session PTY runtime. Holds each PTY master, runs the blocking reader thread, keeps the scrollback ring, and serializes writes. Resume is a fresh spawn against the same session row; for claude-code/codex, `agent_session_key` lets the agent CLI continue its own conversation when supported.
+- **SessionManager** — the per-session PTY runtime. Holds each PTY master, runs the blocking reader thread, keeps the scrollback ring, and serializes writes. Resume is a fresh spawn against the same session row; for claude-code/codex/qoder, `agent_session_key` lets the agent CLI continue its own conversation when supported.
 - **EventBus** — tails the per-mission NDJSON file with `notify`, parses each new line, and republishes it as Tauri events the webview and the router can subscribe to. "Projections" are the in-memory rollups it computes on the fly — inbox, pending HITL cards, status map — all derived from the same event stream.
 
 **The Signal router** sits downstream of the EventBus. When a parsed line is a built-in signal type, the router runs a fixed handler. The "inject_stdin / human_question / status" arrow into SessionManager covers the three things a handler can do: write bytes into a specific session's PTY master (`inject_stdin` — launch prompt to lead on `mission_goal`, human choice on `human_response`, worker question on `ask_lead`), append a new event back to the NDJSON log so the UI renders a HITL card (`human_question`), or update the in-memory status map (`runner_status` events from the forwarder feed this).
@@ -153,7 +154,7 @@ A mission is a container. Everything in the runtime column is either the contain
 
 ### 3.2 Runner — *one configured agent*
 
-A reusable template: handle, display name, runtime (`claude-code | codex` today), command + args, working dir, system prompt (persona), env. **Top-level, not nested under a crew.** The same runner template can be used by many crews simultaneously, and can also be the subject of standalone direct-chat sessions.
+A reusable template: handle, display name, runtime (`claude-code | codex | qoder` today), command + args, working dir, system prompt (persona), env. **Top-level, not nested under a crew.** The same runner template can be used by many crews simultaneously, and can also be the subject of standalone direct-chat sessions.
 
 A runner has two identifying fields:
 
@@ -401,7 +402,7 @@ Reader thread (blocking):
   on EOF: wait(child) → emit session:{id}:exit { code } → update sessions row
 ```
 
-System prompt content is delivered to the runtime via its native flag for the lead (`--append-system-prompt` for claude-code, the equivalent for each runtime) and via a positional-argv first-turn body for workers when the runtime accepts one. The runtime adapter in `router::runtime` owns the per-runtime mapping.
+System prompt content is delivered through the runtime adapter in `router::runtime`. Claude-code, codex, and qoder receive the composed first-turn body as a positional argument on fresh spawn; resumed conversations suppress it to avoid injecting a duplicate turn.
 
 ### 5.4 Frontend wiring and human takeover
 
@@ -436,7 +437,7 @@ The PTY master writer is shared between the human (via `send_input` command) and
 
 Bounded raw-byte ring per session in SessionManager. It survives tab switches, route changes, and late workspace attachment while the app process is alive. It does not survive app restart, and there is no on-disk scrollback overflow today. The ring sees raw bytes including alt-screen toggles — acceptable because the frontend replays through xterm.js which can absorb them.
 
-Resume preserves the ring for claude-code (impls 0024 and 0032): it paints inline into the main screen, so kept scrollback + resume banner + tail repaint is what a physical terminal would show, and a later remount replay keeps the pre-resume conversation. Before the new child forks, Runner appends a synthetic seam chunk through the normal output ingest path to reset SGR, disable bracketed paste and mouse reporting, and start the banner on a fresh line. The ring stays bounded and process-local as before — old and new bytes share the same cap. Codex and other purge runtimes still drop prior bytes because their full-frame resume repaint would stack over retained content; Runner seeds the purged ring with an in-band full-reset chunk so mounted xterm grids and later replay both start clean. Either way `resume` stamps a seq watermark before appending the synthetic chunk; the frontend's starting/resuming pills only honor TUI-ready escapes above it, and the synthetic chunks contain no ready-mode enable, so retained or synthetic bytes cannot clear an overlay waiting on the new PTY.
+Resume preserves the ring for claude-code and qoder (impls 0024, 0032, and 0034): they paint inline into the main screen, so kept scrollback + resume banner + tail repaint is what a physical terminal would show, and a later remount replay keeps the pre-resume conversation. Before the new child forks, Runner appends a synthetic seam chunk through the normal output ingest path to reset SGR, disable bracketed paste and mouse reporting, and start the banner on a fresh line. The ring stays bounded and process-local as before — old and new bytes share the same cap. Codex and other purge runtimes still drop prior bytes because their full-frame resume repaint would stack over retained content; Runner seeds the purged ring with an in-band full-reset chunk so mounted xterm grids and later replay both start clean. Claude-code, codex, and qoder all clear stale scrollback on width changes before their SIGWINCH-driven repaint. Either way `resume` stamps a seq watermark before appending the synthetic chunk; the frontend's starting/resuming pills only honor TUI-ready escapes above it, and the synthetic chunks contain no ready-mode enable, so retained or synthetic bytes cannot clear an overlay waiting on the new PTY.
 
 Each session row persists the last applied PTY `cols` and `rows`. Spawn and resume resolve their initial size as explicit frontend dimensions, then the persisted dimensions, then 80×24 only for a session with no prior size. This resolution happens in SessionManager before the runtime forks, so relaunch resumes and other temporarily unmeasurable views cannot emit an initial 80-column segment before the frontend settles.
 
@@ -681,7 +682,7 @@ runners (
   id TEXT PRIMARY KEY,
   handle TEXT NOT NULL UNIQUE,        -- globally unique slug; see §3.2
   display_name TEXT NOT NULL,
-  runtime TEXT NOT NULL,              -- first-class runtime key; claude-code | codex today
+  runtime TEXT NOT NULL,              -- first-class runtime key; claude-code | codex | qoder today
   command TEXT NOT NULL,
   args_json TEXT,
   working_dir TEXT,                   -- direct-chat working dir; missions override via mission.cwd

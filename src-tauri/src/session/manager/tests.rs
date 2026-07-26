@@ -2831,9 +2831,8 @@ fn wait_for_db_stop(pool: &DbPool, session_id: &str) {
     }
 }
 
-#[test]
-fn resume_keeps_scrollback_for_claude_code() {
-    // Impl 0024: resuming a claude-code session must NOT drop the
+fn assert_resume_keeps_scrollback(runtime: &str) {
+    // Impl 0024: resuming an inline-repaint runtime must NOT drop the
     // output ring — a terminal emulator keeps pre-resume scrollback
     // above the resume repaint, and the ring has to agree with the
     // mounted xterm so a later remount replay doesn't lose what the
@@ -2849,16 +2848,16 @@ fn resume_keeps_scrollback_for_claude_code() {
                     (id, handle, display_name, runtime, command,
                      args_json, working_dir, system_prompt, env_json,
                      created_at, updated_at)
-                 VALUES (?1, 'keeper', 'K', 'claude-code', '/bin/sh',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now],
+                 VALUES (?1, 'keeper', 'K', ?2, '/bin/sh',
+                         NULL, NULL, NULL, NULL, ?3, ?3)",
+            params![runner_id, runtime, now],
         )
         .unwrap();
     }
     let mut runner = runner("/bin/sh", &[]);
     runner.id = runner_id;
     runner.handle = "keeper".into();
-    runner.runtime = "claude-code".into();
+    runner.runtime = runtime.into();
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
@@ -2919,7 +2918,7 @@ fn resume_keeps_scrollback_for_claude_code() {
     let after_resume = mgr.output_snapshot(&session_id);
     assert!(
         after_resume.iter().any(|ev| ev.data == kept),
-        "claude-code resume must keep pre-resume chunks in the ring"
+        "{runtime} resume must keep pre-resume chunks in the ring"
     );
     assert_ne!(
         after_resume.first().map(|ev| ev.seq),
@@ -2970,6 +2969,16 @@ fn resume_keeps_scrollback_for_claude_code() {
         0,
         "purge_session_buffers must reset the watermark with the rest of the state"
     );
+}
+
+#[test]
+fn resume_keeps_scrollback_for_claude_code() {
+    assert_resume_keeps_scrollback("claude-code");
+}
+
+#[test]
+fn resume_keeps_scrollback_for_qoder() {
+    assert_resume_keeps_scrollback("qoder");
 }
 
 #[test]
@@ -3922,7 +3931,11 @@ fn runtime_clears_on_resize_resolves_runner_backed_runtimes() {
     let pool = db::open_in_memory().unwrap();
     let now = chrono::Utc::now().to_rfc3339();
     let conn = pool.get().unwrap();
-    for (runner_id, runtime) in [("r-codex", "codex"), ("r-shell", "shell")] {
+    for (runner_id, runtime) in [
+        ("r-codex", "codex"),
+        ("r-qoder", "qoder"),
+        ("r-shell", "shell"),
+    ] {
         conn.execute(
             "INSERT INTO runners
                     (id, handle, display_name, runtime, command,
@@ -3938,6 +3951,12 @@ fn runtime_clears_on_resize_resolves_runner_backed_runtimes() {
     conn.execute(
         "INSERT INTO sessions (id, mission_id, runner_id, cwd, status, started_at)
              VALUES ('s-codex-runner', NULL, 'r-codex', '/tmp', 'running', ?1)",
+        params![now],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO sessions (id, mission_id, runner_id, cwd, status, started_at)
+             VALUES ('s-qoder-runner', NULL, 'r-qoder', '/tmp', 'running', ?1)",
         params![now],
     )
     .unwrap();
@@ -3963,6 +3982,10 @@ fn runtime_clears_on_resize_resolves_runner_backed_runtimes() {
     ));
     assert!(super::output::runtime_clears_on_resize(
         "s-claude-runtime",
+        &pool
+    ));
+    assert!(super::output::runtime_clears_on_resize(
+        "s-qoder-runner",
         &pool
     ));
     assert!(!super::output::runtime_clears_on_resize(
@@ -4069,10 +4092,15 @@ fn runtime_override_helper_distinguishes_absent_matching_and_differing() {
     assert!(matching.effective.is_none());
     assert!(matching.pinned, "explicit matching override must pin");
 
-    // Differing: rebuild + pin.
-    let differing = resolve_runtime_override(&r, Some("claude-code")).unwrap();
-    assert!(differing.effective.is_some());
-    assert!(differing.pinned);
+    // Differing: rebuild + pin for every other catalog runtime.
+    for runtime in ["claude-code", "qoder"] {
+        let differing = resolve_runtime_override(&r, Some(runtime)).unwrap();
+        assert_eq!(
+            differing.effective.as_ref().map(|r| r.runtime.as_str()),
+            Some(runtime),
+        );
+        assert!(differing.pinned);
+    }
 }
 
 #[test]

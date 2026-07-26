@@ -6,7 +6,7 @@
 //
 // Setup: active-pane WebGL renderer for cell-row alignment, base64 PTY frames
 // to preserve raw bytes, backend snapshot replay for late attach, and SIGWINCH
-// dance on attach so claude-code/codex repaint onto a fresh grid.
+// dance on attach so claude-code/codex/qoder repaint onto a fresh grid.
 
 import {
   forwardRef,
@@ -52,6 +52,7 @@ import {
 } from "../lib/terminalResize";
 import { TERMINAL_SCROLLBAR_WIDTH_PX } from "../lib/terminalSizing";
 import { eventMatchesShortcut } from "../lib/keymap";
+import { runtimeClearsOnResize } from "./ui/runtimes";
 
 interface OutputEvent {
   session_id: string;
@@ -102,7 +103,7 @@ function inferPasteImageMime(
 interface RunnerTerminalProps {
   sessionId: string;
   /** Runtime kind of the runner driving this session (e.g.
-   *  `"claude-code"`, `"codex"`, `"shell"`). Used to gate the
+   *  `"claude-code"`, `"codex"`, `"qoder"`, `"shell"`). Used to gate the
    *  scrollback-clear on resize: TUI agents whose `SIGWINCH` repaint
    *  policy fully redraws the screen get a hard-clear before the
    *  resize lands, so the previous frame doesn't stay visible in
@@ -153,20 +154,6 @@ export interface RunnerTerminalHandle {
   /** Grab keyboard focus (no-op while disabled). Split chat calls this
    *  when pane focus moves without a remount, e.g. a pane-header click. */
   focus(): void;
-}
-
-/**
- * Should resizing this runtime hard-clear xterm's scrollback before
- * pushing the new geometry to the backend?
- *
- * For TUI agents (claude-code, codex) the SIGWINCH-driven repaint
- * fully redraws the screen at the new dims; without the pre-clear,
- * the prior frame stays visible above the new one ("stacking"
- * regression on every resize). For plain shells we leave scrollback
- * alone — the user's prior command output is meaningful history.
- */
-function runtimeClearsOnResize(runtime: string): boolean {
-  return runtime === "claude-code" || runtime === "codex";
 }
 
 function decodeBase64Chunk(data: string): Uint8Array {

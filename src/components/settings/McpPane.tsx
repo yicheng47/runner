@@ -8,7 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../ui/Toggle";
 import { PaneHeader } from "./shared";
 
-type McpClientId = "claude_code" | "codex";
+type McpClientId = "claude_code" | "codex" | "qoder";
 type McpCopyKey = McpClientId | "binding_dir";
 
 interface McpClientStatus {
@@ -26,11 +26,13 @@ interface McpIntegrationStatus {
   socket_path: string;
   claude_code: McpClientStatus;
   codex: McpClientStatus;
+  qoder: McpClientStatus;
 }
 
 interface McpConfigSnippet {
   claude_code: string;
   codex: string;
+  qoder: string;
 }
 
 export function McpPane() {
@@ -120,6 +122,13 @@ export function McpPane() {
         busy={busy === "codex"}
         onToggle={(enabled) => void setIntegration("codex", enabled)}
       />
+      <McpClientRow
+        title="Qoder CLI"
+        subtitle="Writes the runner entry under ~/.qoder/settings.json."
+        status={status?.qoder ?? null}
+        busy={busy === "qoder"}
+        onToggle={(enabled) => void setIntegration("qoder", enabled)}
+      />
       <div className="rounded-xl border border-line bg-panel p-4">
         <div className="mb-2 flex items-center justify-between gap-3">
           <span className="text-[13px] font-semibold text-fg">
@@ -135,6 +144,11 @@ export function McpPane() {
               copied={copied === "codex"}
               label="Codex"
               onClick={() => void copyMcpText("codex", snippet?.codex)}
+            />
+            <CopyButton
+              copied={copied === "qoder"}
+              label="Qoder"
+              onClick={() => void copyMcpText("qoder", snippet?.qoder)}
             />
           </div>
         </div>

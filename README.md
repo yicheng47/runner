@@ -8,7 +8,7 @@
 <p align="center">
   Spawn a runner. Create your crew. Ship the feature.
   <br />
-  A local agentic development environment (ADE) — orchestrate crews of CLI coding agents: Claude Code, Codex, and friends.
+  A local agentic development environment (ADE) — orchestrate crews of CLI coding agents: Claude Code, Codex, Qoder, and friends.
 </p>
 
 <p align="center">
@@ -35,7 +35,7 @@
 
 ## About
 
-Runner is a local desktop workspace for operating multiple CLI coding agents at once. Instead of scattering Claude Code and Codex sessions across terminal windows, you run them as an organized fleet — configured runners, composed crews, coordinated missions — from a single app.
+Runner is a local desktop workspace for operating multiple CLI coding agents at once. Instead of scattering Claude Code, Codex, and Qoder sessions across terminal windows, you run them as an organized fleet — configured runners, composed crews, coordinated missions — from a single app.
 
 Runner is an **agentic development environment (ADE)**. Where an IDE organizes buffers and a debugger around the code you write, an ADE organizes terminals, crews, and event feeds around the agents writing it. The operator's job shifts accordingly: assign roles, start missions, monitor progress, review diffs, and make the calls agents escalate to you.
 
@@ -88,7 +88,7 @@ Starting a mission spawns one live PTY per slot into a tabbed workspace where th
 
 ### Chats — tabs, split panes, projects
 
-Every chat is a real 1:1 PTY with a runner, no mission required. Tabs hold up to three side-by-side panes — run a Claude Code and a Codex on the same problem in one view. The sidebar groups chats and missions into cwd-bound projects; every tab shows a spinner while a pane is still working and a dot when one finished while you were elsewhere, so a wall of parallel agents stays scannable.
+Every chat is a real 1:1 PTY with a runner, no mission required. Tabs hold up to three side-by-side panes — run Claude Code, Codex, and Qoder on the same problem in one view. The sidebar groups chats and missions into cwd-bound projects; every tab shows a spinner while a pane is still working and a dot when one finished while you were elsewhere, so a wall of parallel agents stays scannable.
 
 </td>
 </tr>
@@ -100,7 +100,7 @@ Every chat is a real 1:1 PTY with a runner, no mission required. Tabs hold up to
 
 ### A real terminal
 
-xterm.js on a WebGL canvas — claude-code, codex, and any modern TUI render with their actual ANSI palette, mouse tracking, and live redraws. Sessions are resumable across app restarts; the event log is the source of truth.
+xterm.js on a WebGL canvas — claude-code, codex, qoder, and any modern TUI render with their actual ANSI palette, mouse tracking, and live redraws. Sessions are resumable across app restarts; the event log is the source of truth.
 
 </td>
 </tr>
@@ -118,13 +118,13 @@ xterm.js on a WebGL canvas — claude-code, codex, and any modern TUI render wit
 </tr>
 <tr>
 <td width="50%">
-  <img src="assets/mcp_settings.png" alt="Settings → MCP — one-click config for Claude Code and Codex" width="100%" />
+  <img src="assets/mcp_settings.png" alt="Settings → MCP — one-click config for Claude Code, Codex, and Qoder" width="100%" />
 </td>
 <td width="50%" valign="middle">
 
 ### Drive it from your agents (MCP)
 
-Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar, and **Settings → MCP** registers it with Claude Code or Codex in one click. Connected agents assemble crews, start and steer missions (`mission_start`, `mission_feed`, `mission_post_human_signal`), and spin up chats (`session_start_direct`). The compounding trick: your daily driver agent plans a fix, dispatches a coder/reviewer crew, and keeps working — agents dispatching crews of agents, every session still a real PTY you can open and watch.
+Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar, and **Settings → MCP** registers it with Claude Code, Codex, or Qoder in one click. Connected agents assemble crews, start and steer missions (`mission_start`, `mission_feed`, `mission_post_human_signal`), and spin up chats (`session_start_direct`). The compounding trick: your daily driver agent plans a fix, dispatches a coder/reviewer crew, and keeps working — agents dispatching crews of agents, every session still a real PTY you can open and watch.
 
 </td>
 </tr>

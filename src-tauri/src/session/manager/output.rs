@@ -491,7 +491,7 @@ impl SessionManager {
         if let Ok(conn) = pool.get() {
             let _ = crate::repo::session::update_last_size(&conn, session_id, cols, rows);
         }
-        // Full-repaint TUI runtimes (claude-code, codex) redraw the whole
+        // Full-repaint TUI runtimes (claude-code, codex, qoder) redraw the whole
         // frame on SIGWINCH, so bytes buffered before a *width* change
         // describe a stale grid width. Replaying them into the new grid on
         // a later snapshot re-attach wraps their absolute-positioned frames
@@ -536,7 +536,7 @@ impl SessionManager {
         let mut events: Vec<OutputEvent> = state.output_buffer.iter().cloned().collect();
         // For sessions currently inside terminal modes that xterm
         // reset clears, prepend a synthetic chunk restoring them.
-        // Long-running TUI sessions (claude-code, codex) lose the
+        // Long-running TUI sessions (claude-code, codex, qoder) lose the
         // original enter-alt-screen escape from the bounded
         // 4096-chunk buffer over time, so a re-attach that just
         // replays the remaining chunks lands mid-alt-screen content
@@ -782,7 +782,10 @@ pub(super) fn runtime_clears_on_resize(session_id: &str, pool: &DbPool) -> bool 
         )
         .ok()
         .flatten();
-    matches!(runtime.as_deref(), Some("claude-code") | Some("codex"))
+    matches!(
+        runtime.as_deref(),
+        Some("claude-code") | Some("codex") | Some("qoder")
+    )
 }
 
 /// Whether `resume` should drop the session's output ring before
@@ -790,7 +793,7 @@ pub(super) fn runtime_clears_on_resize(session_id: &str, pool: &DbPool) -> bool 
 /// (and its own resume replay restores a deep conversation tail), so
 /// replaying retained scrollback under the new frame stacks garbled
 /// content — the artifact class from impls 0009/0011/0020. Claude-code
-/// paints inline into the main screen: kept scrollback, then the
+/// and qoder paint inline into the main screen: kept scrollback, then the
 /// resume banner, then the tail repaint is exactly what a physical
 /// terminal shows, so its ring is kept. Shells and future runtimes
 /// keep today's purge purely
@@ -811,5 +814,5 @@ pub(super) fn runtime_purges_on_resume(session_id: &str, pool: &DbPool) -> bool 
         )
         .ok()
         .flatten();
-    !matches!(runtime.as_deref(), Some("claude-code"))
+    !matches!(runtime.as_deref(), Some("claude-code") | Some("qoder"))
 }

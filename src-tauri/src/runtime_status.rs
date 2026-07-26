@@ -460,6 +460,29 @@ mod tests {
     }
 
     #[test]
+    fn status_list_includes_qoder_from_the_catalog() {
+        let pool = crate::db::open_in_memory().unwrap();
+        let shell_env = Arc::new(RwLock::new(LoginShellEnv::default()));
+        let status = status_list(&pool, &shell_env, &completed_discovery()).unwrap();
+        assert_eq!(
+            status
+                .runtimes
+                .iter()
+                .map(|runtime| (
+                    runtime.name.as_str(),
+                    runtime.display_name.as_str(),
+                    runtime.command.as_str(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("codex", "Codex", "codex"),
+                ("claude-code", "Claude Code", "claude"),
+                ("qoder", "Qoder", "qodercli"),
+            ],
+        );
+    }
+
+    #[test]
     fn resolver_requires_regular_executable_file() {
         let dir = tempfile::tempdir().unwrap();
         let executable = executable(dir.path(), "codex");

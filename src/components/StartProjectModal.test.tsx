@@ -37,6 +37,7 @@ vi.mock("../lib/api", () => ({
     runtime: {
       list: vi.fn(async () => [
         { name: "codex", display_name: "Codex", command: "codex" },
+        { name: "qoder", display_name: "Qoder", command: "qodercli" },
       ]),
     },
     session: {
@@ -48,7 +49,8 @@ vi.mock("../lib/api", () => ({
 }));
 
 vi.mock("../lib/settings", () => ({
-  readDefaultChatRuntime: () => "codex",
+  readDefaultRuntime: () =>
+    localStorage.getItem("settings.defaultChatRuntime") ?? "",
   readDefaultWorkingDir: () => "/default",
 }));
 
@@ -159,5 +161,27 @@ describe("project-scoped start modals", () => {
 
     expect(field(container, "title").value).toBe("Keep this chat");
     expect(field(container, "cwd").value).toBe("/custom/chat");
+  });
+
+  it("uses the default runtime selected in Agents settings", async () => {
+    localStorage.setItem("runner.startChat.mode", "runtime");
+    localStorage.setItem("settings.defaultChatRuntime", "qoder");
+
+    await act(async () => {
+      root.render(
+        createElement(StartChatModal, {
+          open: true,
+          project,
+          onClose: () => {},
+          onStarted: () => {},
+        }),
+      );
+    });
+
+    const runtimePicker = container.querySelector<HTMLButtonElement>(
+      '[id$="-runtime"]',
+    );
+    expect(runtimePicker?.textContent).toContain("Qoder");
+    expect(field(container, "title").value).toBe("Qoder");
   });
 });

@@ -839,6 +839,10 @@ mod tests {
             err.to_string().contains("unknown runtime 'aider-future'"),
             "got: {err}",
         );
+        assert!(
+            err.to_string().contains("qoder"),
+            "valid-runtime list must include qoder: {err}",
+        );
         assert!(list(&conn, &c).unwrap().is_empty(), "no row on rejection");
     }
 
