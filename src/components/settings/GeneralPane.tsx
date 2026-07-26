@@ -14,10 +14,13 @@ import {
   readAppZoom,
   readDefaultWorkingDir,
   STORAGE_APP_ZOOM,
+  STORAGE_RESUME_ON_LAUNCH,
   writeDefaultWorkingDir,
   ZOOM_STEPS,
 } from "../../lib/settings";
+import { useStoredBool } from "../../lib/useStoredBool";
 import { StyledSelect } from "../ui/StyledSelect";
+import { Toggle } from "../ui/Toggle";
 import { WorkingDirField } from "../ui/WorkingDirField";
 import { PaneHeader, SettingsCard, SettingsRow, Stepper } from "./shared";
 
@@ -74,6 +77,10 @@ export function GeneralPane() {
   // the shared `applyAppZoom` so the stepper and the global Cmd+/- path
   // can't drift.
   const [appZoom, setAppZoomState] = useState<number>(() => readAppZoom());
+  const [resumeOnLaunch, setResumeOnLaunch] = useStoredBool(
+    STORAGE_RESUME_ON_LAUNCH,
+    true,
+  );
   const setAppZoom = (next: number) => {
     setAppZoomState(next);
     applyAppZoom(next);
@@ -124,6 +131,19 @@ export function GeneralPane() {
           <ZoomStepper value={appZoom} onChange={setAppZoom} />
         </SettingsRow>
       </SettingsCard>
+      <section className="flex flex-col gap-2">
+        <h3 className="px-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-fg-3">
+          Startup
+        </h3>
+        <SettingsCard>
+          <SettingsRow
+            label="Resume running agents on launch"
+            sub="Reopen chats and mission agents that were live when Runner quit."
+          >
+            <Toggle on={resumeOnLaunch} onChange={setResumeOnLaunch} />
+          </SettingsRow>
+        </SettingsCard>
+      </section>
     </>
   );
 }

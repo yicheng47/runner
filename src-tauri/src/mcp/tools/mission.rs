@@ -426,7 +426,7 @@ impl RunnerMcpHandler {
     }
 
     #[tool(
-        description = "Start a mission for a crew. A project's cwd is used unless cwd is explicitly provided."
+        description = "Start a mission for a crew. Pass project_id whenever the mission belongs to a project; use project_list to discover the project bound to the cwd. Do not treat cwd alone as an association: with no unique canonical match it does NOT associate the mission with a project and leaves it un-nested in the sidebar. A project's cwd is used unless cwd is explicitly provided."
     )]
     pub async fn mission_start(
         &self,

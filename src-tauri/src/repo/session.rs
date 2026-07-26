@@ -49,6 +49,7 @@ pub struct SessionRowDb {
     pub agent_command: Option<String>,
     pub last_cols: Option<u16>,
     pub last_rows: Option<u16>,
+    pub resume_on_launch: bool,
 }
 
 impl SessionRowDb {
@@ -80,6 +81,7 @@ impl SessionRowDb {
             agent_command: None,
             last_cols: None,
             last_rows: None,
+            resume_on_launch: false,
         }
     }
 }
@@ -109,6 +111,7 @@ pub const COLUMNS: &[&str] = &[
     "agent_command",
     "last_cols",
     "last_rows",
+    "resume_on_launch",
 ];
 
 pub fn insert(conn: &Connection, row: &SessionRowDb) -> rusqlite::Result<()> {
@@ -290,6 +293,99 @@ pub fn cleanup_stale_running(conn: &Connection, now: Timestamp) -> rusqlite::Res
                 stopped_at = COALESCE(stopped_at, ?1)
             WHERE status = 'running'",
         rusqlite::params![now.to_rfc3339()],
+    )
+}
+
+/// Replace any prior launch-resume set with the sessions live at this
+/// graceful quit: direct chats plus slots belonging to running missions.
+/// The caller kills the returned ids only after this transaction commits.
+pub fn mark_running_for_resume_on_launch(conn: &mut Connection) -> rusqlite::Result<Vec<String>> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute(
+        "UPDATE sessions SET resume_on_launch = 0 WHERE resume_on_launch != 0",
+        [],
+    )?;
+    tx.execute(
+        "UPDATE sessions
+            SET resume_on_launch = 1
+          WHERE status = 'running'
+            AND archived_at IS NULL
+            AND (
+                mission_id IS NULL
+                OR (
+                    slot_id IS NOT NULL
+                    AND EXISTS (
+                        SELECT 1
+                          FROM missions
+                         WHERE missions.id = sessions.mission_id
+                           AND missions.status = 'running'
+                    )
+                )
+            )",
+        [],
+    )?;
+    let ids = {
+        let mut stmt = tx.prepare(
+            "SELECT id
+               FROM sessions
+              WHERE resume_on_launch = 1
+              ORDER BY started_at, id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    tx.commit()?;
+    Ok(ids)
+}
+
+/// Atomically consume the next quit-time stamp. Rows that can no longer
+/// resume are cleared and skipped so they cannot become stale launch work.
+pub fn take_resume_on_launch(conn: &mut Connection) -> rusqlite::Result<Option<String>> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let next = loop {
+        let row = tx
+            .query_row(
+                "SELECT id,
+                        status IN ('stopped', 'crashed'),
+                        agent_session_key IS NOT NULL
+                            AND TRIM(agent_session_key) != '',
+                        archived_at IS NULL
+                   FROM sessions
+                  WHERE resume_on_launch = 1
+                  ORDER BY started_at, id
+                  LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, bool>(2)?,
+                        row.get::<_, bool>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((id, stopped, has_key, active)) = row else {
+            break None;
+        };
+        tx.execute(
+            "UPDATE sessions SET resume_on_launch = 0 WHERE id = ?1",
+            [&id],
+        )?;
+        if stopped && has_key && active {
+            break Some(id);
+        }
+    };
+    tx.commit()?;
+    Ok(next)
+}
+
+pub fn clear_resume_on_launch(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE sessions SET resume_on_launch = 0 WHERE resume_on_launch != 0",
+        [],
     )
 }
 
@@ -578,6 +674,7 @@ mod tests {
             agent_command: Some("codex".into()),
             last_cols: Some(132),
             last_rows: Some(41),
+            resume_on_launch: true,
         }
     }
 
@@ -726,6 +823,103 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, "key-a");
+    }
+
+    #[test]
+    fn graceful_quit_marks_only_live_direct_and_running_mission_slots() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        seed_runner(&conn, "r1", "alpha");
+        let now = "2026-07-25T00:00:00Z";
+        conn.execute(
+            "INSERT INTO crews (id, name, created_at, updated_at)
+             VALUES ('c1', 'Crew', ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO missions (id, crew_id, title, status, started_at)
+             VALUES ('mission-running', 'c1', 'Running', 'running', ?1),
+                    ('mission-stopped', 'c1', 'Stopped', 'stopped', ?1)",
+            [now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+                (id, mission_id, runner_id, slot_id, status, started_at,
+                 archived_at, resume_on_launch)
+             VALUES
+                ('direct-running', NULL, 'r1', NULL, 'running', ?1, NULL, 0),
+                ('direct-stopped', NULL, 'r1', NULL, 'stopped', ?1, NULL, 1),
+                ('mission-running-slot', 'mission-running', 'r1', 'slot-a',
+                 'running', ?1, NULL, 0),
+                ('mission-stopped-slot', 'mission-stopped', 'r1', 'slot-b',
+                 'running', ?1, NULL, 0),
+                ('mission-no-slot', 'mission-running', 'r1', NULL,
+                 'running', ?1, NULL, 0),
+                ('mission-archived-slot', 'mission-running', 'r1', 'slot-c',
+                 'running', ?1, ?1, 0)",
+            [now],
+        )
+        .unwrap();
+
+        let ids = mark_running_for_resume_on_launch(&mut conn).unwrap();
+        assert_eq!(ids, ["direct-running", "mission-running-slot"]);
+
+        let marked: Vec<String> = conn
+            .prepare(
+                "SELECT id FROM sessions
+                  WHERE resume_on_launch = 1
+                  ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(marked, ["direct-running", "mission-running-slot"]);
+    }
+
+    #[test]
+    fn launch_consumer_skips_unresumable_rows_and_clears_every_stamp() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        seed_runner(&conn, "r1", "alpha");
+        let now = "2026-07-25T00:00:00Z";
+        conn.execute(
+            "INSERT INTO sessions
+                (id, runner_id, status, started_at, agent_session_key,
+                 archived_at, resume_on_launch)
+             VALUES
+                ('a-missing-key', 'r1', 'stopped', ?1, NULL, NULL, 1),
+                ('b-archived', 'r1', 'stopped', ?1, 'key-b', ?1, 1),
+                ('c-running', 'r1', 'running', ?1, 'key-c', NULL, 1),
+                ('d-resumable', 'r1', 'stopped', ?1, 'key-d', NULL, 1)",
+            [now],
+        )
+        .unwrap();
+
+        assert_eq!(
+            take_resume_on_launch(&mut conn).unwrap().as_deref(),
+            Some("d-resumable")
+        );
+        assert_eq!(take_resume_on_launch(&mut conn).unwrap(), None);
+        let marked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE resume_on_launch = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(marked, 0);
+
+        conn.execute(
+            "UPDATE sessions SET resume_on_launch = 1 WHERE id IN ('a-missing-key', 'd-resumable')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(clear_resume_on_launch(&conn).unwrap(), 2);
+        assert_eq!(take_resume_on_launch(&mut conn).unwrap(), None);
     }
 
     #[test]

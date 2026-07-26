@@ -3262,6 +3262,55 @@ fn resume_refuses_running_and_archived_rows() {
 }
 
 #[test]
+fn launch_resume_never_falls_back_to_a_fresh_spawn() {
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     created_at, updated_at)
+                 VALUES (?1, 'shell-runner', 'Shell', 'shell', '/bin/sh', ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+                    (id, runner_id, status, started_at, agent_session_key)
+                 VALUES ('launch-sid', ?1, 'stopped', ?2, 'not-resumable')",
+            params![runner_id, now],
+        )
+        .unwrap();
+    }
+    let mgr = mgr_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+
+    let error = mgr
+        .resume_on_launch(
+            "launch-sid",
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("cannot resume"));
+    let status: String = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT status FROM sessions WHERE id = 'launch-sid'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "stopped");
+}
+
+#[test]
 fn resume_mission_session_stamps_slot_handle_env() {
     // Mission resume must look up the slot for the session and
     // use slot.slot_handle as RUNNER_HANDLE, not runner.handle.

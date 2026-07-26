@@ -983,6 +983,36 @@ impl SessionManager {
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
     ) -> Result<SpawnedSession> {
+        self.resume_with_fresh_fallback(session_id, cols, rows, app_data_dir, pool, events, true)
+    }
+
+    /// Launch-time resume shares the normal resume path but refuses the
+    /// manual flow's claude-code fresh fallback when the prior conversation
+    /// file is gone.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resume_on_launch(
+        self: &Arc<Self>,
+        session_id: &str,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        app_data_dir: &Path,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+    ) -> Result<SpawnedSession> {
+        self.resume_with_fresh_fallback(session_id, cols, rows, app_data_dir, pool, events, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resume_with_fresh_fallback(
+        self: &Arc<Self>,
+        session_id: &str,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        app_data_dir: &Path,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+        allow_fresh_fallback: bool,
+    ) -> Result<SpawnedSession> {
         // Atomically claim this session id for the resume. If another
         // resume is already in flight (e.g. two fast clicks, two
         // windows), refuse rather than racing two PTY spawns against
@@ -1154,6 +1184,11 @@ impl SessionManager {
                     key,
                 )
         );
+        if conversation_missing && !allow_fresh_fallback {
+            return Err(Error::msg(format!(
+                "session {session_id} conversation is unavailable; resume it manually to start fresh"
+            )));
+        }
         let fresh_fallback_lead = conversation_missing && is_lead_slot;
         let effective_prior_key = match (runner.runtime.as_str(), snap.agent_session_key.as_deref())
         {
@@ -1161,6 +1196,11 @@ impl SessionManager {
             (_, k) => k,
         };
         let plan = router::runtime::resume_plan(&runner.runtime, effective_prior_key);
+        if !allow_fresh_fallback && !plan.resuming {
+            return Err(Error::msg(format!(
+                "session {session_id} cannot resume its prior conversation; resume it manually to start fresh"
+            )));
+        }
 
         // Working directory: same precedence as `spawn_direct` — the
         // row's stored cwd wins; otherwise fall back to the runner's

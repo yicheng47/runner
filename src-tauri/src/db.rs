@@ -102,6 +102,8 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // dropped in the same transaction.
 // 0016: persists the last applied PTY size per session so an unsized
 // resume can fork at the prior width before any frontend pane is measurable.
+// 0017: records sessions that were running at graceful quit so the next
+// launch can resume them without treating crash-demoted rows the same way.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -140,6 +142,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (14, include_str!("../migrations/0014_nodes.sql")),
     (15, include_str!("../migrations/0015_retire_folders.sql")),
     (16, include_str!("../migrations/0016_session_last_size.sql")),
+    (
+        17,
+        include_str!("../migrations/0017_session_resume_on_launch.sql"),
+    ),
 ];
 
 // Default-data seed: ships the Build squad starter crew on first launch.
@@ -1633,7 +1639,7 @@ Talking to the human:
     }
 
     #[test]
-    fn sessions_has_runtime_and_size_columns_after_migration() {
+    fn sessions_has_runtime_size_and_resume_columns_after_migration() {
         // Defensive: keep the legacy runtime columns present for
         // existing databases. New PTY-runtime writes use only
         // `runtime` + `runtime_session`; socket/window/pane are
@@ -1659,6 +1665,7 @@ Talking to the human:
             "runtime_cursor",
             "last_cols",
             "last_rows",
+            "resume_on_launch",
         ] {
             assert!(
                 columns.iter().any(|c| c == required),

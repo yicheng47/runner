@@ -106,6 +106,7 @@ pub fn run() {
         log_builder = log_builder.level_for(target, level);
     }
 
+    let mut quit_prepared = false;
     tauri::Builder::default()
         .plugin(log_builder.build())
         .plugin(tauri_plugin_opener::init())
@@ -416,6 +417,8 @@ pub fn run() {
             commands::session::session_rename,
             commands::session::session_pin,
             commands::session::session_set_project,
+            commands::session::session_take_resume_on_launch,
+            commands::session::session_clear_resume_on_launch,
             commands::session::session_resume,
             commands::session::session_inject_stdin,
             commands::session::session_kill,
@@ -437,7 +440,7 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
+        .run(move |app_handle, event| {
             // On graceful quit, stop any `running` direct-chat
             // sessions before the runtime drops. Under the pty
             // runtime, this fires SIGTERM-via-ChildKiller so
@@ -516,14 +519,23 @@ pub fn run() {
                     broadcast_focus_map(app_handle);
                 }
                 tauri::RunEvent::ExitRequested { .. } => {
-                    stop_running_sessions_on_quit(app_handle);
+                    if !quit_prepared {
+                        quit_prepared = true;
+                        stop_running_sessions_on_quit(app_handle);
+                    }
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         state.mcp.stop();
                     }
                 }
-                // Final geometry write. The window may already be gone
-                // here; `save` falls back to the Moved/Resized cache.
                 tauri::RunEvent::Exit => {
+                    // macOS's native Quit menu item can terminate the event
+                    // loop without emitting ExitRequested.
+                    if !quit_prepared {
+                        quit_prepared = true;
+                        stop_running_sessions_on_quit(app_handle);
+                    }
+                    // Final geometry write. The window may already be gone
+                    // here; `save` falls back to the Moved/Resized cache.
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         window_state::save(app_handle, &state.app_data_dir);
                     }
@@ -571,38 +583,32 @@ fn hide_main_window_on_close(app_handle: &AppHandle) {
     }
 }
 
-/// On-quit hook body. Walks the DB for `running` direct-chat
-/// sessions and asks `SessionManager` to kill each one. Mission-
-/// scoped rows are left alone — their lifecycle is owned by
-/// `mission_stop` flows and v1 keeps router/event-bus migration
-/// out of scope (impl 0011 §"Mission sessions").
+/// On-quit hook body. Durably records the sessions that were live at
+/// graceful quit, then asks `SessionManager` to stop each one. The set
+/// includes direct chats and live slots of running missions; startup
+/// cleanup demotes any rows whose process exits with the app.
 fn stop_running_sessions_on_quit(app_handle: &AppHandle) {
     let state = match app_handle.try_state::<AppState>() {
         Some(s) => s,
         None => return,
     };
-    let ids: Vec<String> = match state.db.get().ok().and_then(|conn| {
-        conn.prepare(
-            "SELECT id FROM sessions
-                WHERE status = 'running' AND mission_id IS NULL",
-        )
-        .ok()
-        .and_then(|mut stmt| {
-            stmt.query_map([], |r| r.get::<_, String>(0))
-                .ok()
-                .map(|rows| rows.filter_map(Result::ok).collect())
-        })
-    }) {
-        Some(v) => v,
-        None => return,
+    let ids = match state.db.get() {
+        Ok(mut conn) => match repo::session::mark_running_for_resume_on_launch(&mut conn) {
+            Ok(ids) => ids,
+            Err(error) => {
+                log::warn!("on-quit resume stamp failed: {error}");
+                return;
+            }
+        },
+        Err(error) => {
+            log::warn!("on-quit resume stamp failed: {error}");
+            return;
+        }
     };
     if ids.is_empty() {
         return;
     }
-    log::info!(
-        "on-quit: stopping {} running direct-chat session(s)",
-        ids.len()
-    );
+    log::info!("on-quit: stamped and stopping {} session(s)", ids.len());
     for id in &ids {
         if let Err(e) = state.sessions.kill(id) {
             log::warn!("on-quit kill {id}: {e}");

@@ -30,11 +30,14 @@ The gap is memory plus initiative: nothing records *which* sessions were live at
 1. **Explicit flag, not timestamp inference.** Inferring "was running at quit" from `stopped_at` proximity to shutdown confuses deliberately-stopped chats with quit-killed ones. The quit hook knows exactly which rows it's killing; it should say so.
 2. **Crash = no auto-resume.** The stamp lives in the graceful-quit path only. After a crash, sessions demote via startup cleanup as today and stay stopped — auto-respawning agents after a crash risks looping into whatever caused it. (If crash-restore is ever wanted, it's a separate, deliberate decision.)
 3. **Resume, never fresh-spawn.** A marked session that lost its `agent_session_key` (or whose resume fails) stays stopped with the existing Resume affordance — auto-starting a *fresh* conversation the user didn't ask for is worse than doing nothing.
+4. **Quit stamping is unconditional.** The backend does not read the frontend setting. Every graceful quit records the live set; the launch consumer decides whether to resume it.
+5. **Toggle-off consumes without resuming.** A launch with auto-resume disabled clears every pending `resume_on_launch` stamp so turning the setting on later cannot resurrect work from an older quit.
 
-### To be decided
+### Resolved product decisions
 
-- Stagger interval (likely 250–500ms between spawns).
-- Whether a launch with many marked sessions (say >6) should resume silently or show a one-line "Resuming N agents…" indicator.
+- Stagger resume spawns by 300ms.
+- Resume silently in v1; do not add a "Resuming N agents…" indicator.
+- Put "Resume running agents on launch" in Settings → General under a new Startup section. It defaults on and persists in `localStorage` through the `src/lib/settings.ts` `STORAGE_*` pattern.
 
 ## Implementation phases
 
@@ -48,5 +51,5 @@ The gap is memory plus initiative: nothing records *which* sessions were live at
 - [ ] A chat stopped manually before quit stays stopped after relaunch.
 - [ ] Kill the app process (simulated crash) → nothing auto-resumes.
 - [ ] A session with a rejected resume key surfaces the existing crash warning and doesn't block other resumes.
-- [ ] Toggle off → relaunch restores nothing; rows keep their normal Resume buttons.
-- [ ] `cargo test --workspace`, `pnpm exec tsc --noEmit`, `pnpm run lint` clean.
+- [ ] Toggle off → relaunch restores nothing; rows keep their normal Resume buttons; turning the toggle back on does not resume the old quit's set.
+- [ ] `cargo fmt --check`, `cargo clippy --workspace`, `cargo test --workspace`, `pnpm exec tsc --noEmit`, `pnpm run lint` clean.

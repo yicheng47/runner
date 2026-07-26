@@ -37,6 +37,29 @@ pub(crate) fn resolve_cwd(
     Ok(cwd.or(Some(project.cwd)))
 }
 
+pub(crate) fn infer_id_from_cwd(
+    conn: &rusqlite::Connection,
+    cwd: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(cwd) = cwd else {
+        return Ok(None);
+    };
+    let Ok(canonical_cwd) = std::fs::canonicalize(cwd) else {
+        return Ok(None);
+    };
+    let mut matched_id = None;
+    for project in repo::project::list(conn)? {
+        if std::fs::canonicalize(&project.cwd).ok().as_ref() != Some(&canonical_cwd) {
+            continue;
+        }
+        if matched_id.is_some() {
+            return Ok(None);
+        }
+        matched_id = Some(project.id);
+    }
+    Ok(matched_id)
+}
+
 #[tauri::command]
 pub fn project_list(state: State<'_, AppState>) -> Result<Vec<ProjectRow>> {
     let conn = state.db.get()?;
