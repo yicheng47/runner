@@ -1548,6 +1548,7 @@ function SlotPtyPane({
           active={active && !resuming && !starting}
           hiddenByDisplayNone={hiddenByDisplayNone}
           disabled={dead || resuming || starting}
+          resizeDisabled={resuming || starting}
         />
       </div>
       {!dead && deliveryBlockedUnreadCount !== null ? (

@@ -4,7 +4,51 @@ import {
   activationResizeRequest,
   isLargeTerminalRowDrop,
   shouldDelayTerminalResize,
+  shouldPushTerminalSize,
+  terminalSizeAfterDisabledChange,
+  terminalSizeAfterRejectedPush,
 } from "./terminalResize";
+
+describe("terminal size push state", () => {
+  it("retries a rejected push without erasing a newer measurement", () => {
+    expect(
+      terminalSizeAfterRejectedPush(
+        { cols: 120, rows: 30 },
+        { cols: 120, rows: 30 },
+      ),
+    ).toEqual({ cols: 0, rows: 0 });
+    expect(
+      terminalSizeAfterRejectedPush(
+        { cols: 132, rows: 41 },
+        { cols: 120, rows: 30 },
+      ),
+    ).toEqual({ cols: 132, rows: 41 });
+  });
+
+  it("pushes current dimensions exactly once after going live", () => {
+    const current = { cols: 132, rows: 41 };
+    const cleared = terminalSizeAfterDisabledChange(
+      current,
+      true,
+      false,
+    );
+
+    expect(cleared).toEqual({ cols: 0, rows: 0 });
+    expect(shouldPushTerminalSize(current, cleared)).toBe(true);
+    expect(shouldPushTerminalSize(current, current)).toBe(false);
+  });
+
+  it("keeps the dedupe state across non-live disabled changes", () => {
+    const current = { cols: 132, rows: 41 };
+
+    expect(terminalSizeAfterDisabledChange(current, false, false)).toEqual(
+      current,
+    );
+    expect(terminalSizeAfterDisabledChange(current, false, true)).toEqual(
+      current,
+    );
+  });
+});
 
 describe("activationResizeRequest", () => {
   it("uses a deduped size push after a live hidden-surface return", () => {

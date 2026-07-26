@@ -16,7 +16,7 @@ The gap is memory plus initiative: nothing records *which* sessions were live at
 - **Auto-resume at launch.** After the webview is ready, resume every marked session that is still resumable (`agent_session_key` present, not archived), clearing the flag as each is consumed. Missions need no extra start step: their status is still `running` and buses re-mount as today — resuming their marked slot sessions brings the workspace back to life.
 - **Staggered spawns.** Resume sequentially with a short gap, not as one burst — N simultaneous PTY spawns + login-shell env snapshots is a stampede for no benefit.
 - **Failure tolerance.** The existing resume-failure heuristic (fast death → `crashed` + warning toast, next launch starts fresh) already covers rejected `--resume` keys; auto-resume inherits it. A failed auto-resume must not block the rest of the queue.
-- **Setting to disable.** One toggle in Settings ("Resume running agents on launch", default on). No per-chat granularity in v1.
+- **Opt-in setting.** One toggle in Settings ("Resume running agents on launch", default off). Spawning agents unprompted at launch must be an explicit choice; there is no per-chat granularity in v1.
 
 ### Out of scope
 
@@ -37,7 +37,7 @@ The gap is memory plus initiative: nothing records *which* sessions were live at
 
 - Stagger resume spawns by 300ms.
 - Resume silently in v1; do not add a "Resuming N agents…" indicator.
-- Put "Resume running agents on launch" in Settings → General under a new Startup section. It defaults on and persists in `localStorage` through the `src/lib/settings.ts` `STORAGE_*` pattern.
+- Put "Resume running agents on launch" in Settings → General under a new Startup section. It defaults off and persists in `localStorage` through the `src/lib/settings.ts` `STORAGE_*` pattern. The default flip also applies to existing users who never stored an explicit choice; there is no migration key.
 
 ## Implementation phases
 
@@ -47,9 +47,9 @@ The gap is memory plus initiative: nothing records *which* sessions were live at
 
 ## Verification
 
-- [ ] Quit with two running chats and a running mission → relaunch → all three come back live without interaction; scrollback intact for claude-code.
+- [ ] Turn the toggle on, quit with two running chats and a running mission → relaunch → all three come back live without interaction; scrollback intact for claude-code.
 - [ ] A chat stopped manually before quit stays stopped after relaunch.
 - [ ] Kill the app process (simulated crash) → nothing auto-resumes.
 - [ ] A session with a rejected resume key surfaces the existing crash warning and doesn't block other resumes.
-- [ ] Toggle off → relaunch restores nothing; rows keep their normal Resume buttons; turning the toggle back on does not resume the old quit's set.
+- [ ] Toggle absent or off → relaunch restores nothing and clears pending stamps; rows keep their normal Resume buttons; turning the toggle back on does not resume the old quit's set.
 - [ ] `cargo fmt --check`, `cargo clippy --workspace`, `cargo test --workspace`, `pnpm exec tsc --noEmit`, `pnpm run lint` clean.

@@ -8,6 +8,7 @@ import type { ITheme } from "@xterm/xterm";
 
 export const STORAGE_AUTO_INSTALL_UPDATES = "settings.autoInstallUpdates";
 export const STORAGE_RESUME_ON_LAUNCH = "settings.resumeOnLaunch";
+export const DEFAULT_RESUME_ON_LAUNCH = false;
 export const STORAGE_SIDEBAR_COLLAPSED = "runner.sidebar.collapsed";
 export const STORAGE_APP_ZOOM = "settings.appZoom";
 export const STORAGE_TERMINAL_FONT_SIZE = "settings.terminalFontSize";
