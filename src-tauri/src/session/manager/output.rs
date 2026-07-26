@@ -486,11 +486,38 @@ impl SessionManager {
     /// the spawn-time grid regardless of how big the visible grid
     /// is.
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16, pool: &DbPool) -> Result<()> {
-        let rt_session = self.live_runtime_session(session_id)?;
-        self.runtime.resize(&rt_session, cols, rows)?;
-        if let Ok(conn) = pool.get() {
-            let _ = crate::repo::session::update_last_size(&conn, session_id, cols, rows);
+        let state = self.session_state(session_id);
+        let rt_session = state.as_ref().and_then(|state| {
+            state
+                .lock()
+                .unwrap()
+                .handle
+                .as_ref()
+                .map(|handle| handle.runtime_session.clone())
+        });
+        match pool.get() {
+            Ok(conn) => match crate::repo::session::update_last_size(&conn, session_id, cols, rows)
+            {
+                Ok(0) if rt_session.is_none() => {
+                    return Err(Error::msg(format!("session not found: {session_id}")));
+                }
+                Ok(_) => {}
+                Err(error) if rt_session.is_none() => return Err(error.into()),
+                Err(_) => {}
+            },
+            Err(error) if rt_session.is_none() => return Err(error.into()),
+            Err(_) => {}
         }
+        let Some(rt_session) = rt_session else {
+            return Ok(());
+        };
+        let Some(state) = state else {
+            return Ok(());
+        };
+        // Pane geometry is the next fork's desired size even if the current
+        // PTY rejects the ioctl. Keep last_pty_cols as the last size actually
+        // applied so a failed live resize cannot trigger a ring purge.
+        self.runtime.resize(&rt_session, cols, rows)?;
         // Full-repaint TUI runtimes (claude-code, codex, qoder) redraw the whole
         // frame on SIGWINCH, so bytes buffered before a *width* change
         // describe a stale grid width. Replaying them into the new grid on
@@ -509,7 +536,6 @@ impl SessionManager {
         // frame). Shells keep their buffer unconditionally — no repaint
         // would arrive, and their history is meaningful.
         let cols_changed = {
-            let state = self.session_state_or_insert(session_id);
             let mut state = state.lock().unwrap();
             let changed = state.last_pty_cols != Some(cols);
             state.last_pty_cols = Some(cols);

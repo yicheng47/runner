@@ -3167,9 +3167,27 @@ fn resume_size_resolution_prefers_explicit_then_persisted_after_manager_restart(
             None,
         )
         .unwrap();
-    first_mgr.resize(&spawned.id, 132, 41, &pool).unwrap();
     first_fake.close_spawn(0);
     wait_for_db_stop(&pool, &spawned.id);
+    first_mgr.resize(&spawned.id, 132, 41, &pool).unwrap();
+    let persisted: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![spawned.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        persisted,
+        (132, 41),
+        "a stopped pane must persist its measured dimensions"
+    );
+    assert!(
+        first_fake.resizes.lock().unwrap().is_empty(),
+        "a stopped pane must not call the runtime resize path"
+    );
     drop(first_mgr);
     drop(first_fake);
 
@@ -3210,6 +3228,20 @@ fn resume_size_resolution_prefers_explicit_then_persisted_after_manager_restart(
         "explicit resume size must win over the persisted size"
     );
     resumed_mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn resize_rejects_unknown_session_without_creating_state() {
+    let pool = pool_with_schema();
+    let mgr = mgr_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+
+    let err = mgr.resize("missing-session", 120, 30, &pool).unwrap_err();
+
+    assert_eq!(format!("{err}"), "session not found: missing-session");
+    assert!(
+        mgr.session_state("missing-session").is_none(),
+        "resize must not create manager state for an unknown row"
+    );
 }
 
 #[test]
@@ -4064,6 +4096,20 @@ fn resize_purges_ring_only_on_cols_change() {
     assert!(
         mgr.output_snapshot(&spawned.id).is_empty(),
         "cols change must purge the replay ring"
+    );
+    let persisted: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![spawned.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        persisted,
+        (100, 30),
+        "a live resize must still persist the applied dimensions"
     );
 
     mgr.kill(&spawned.id).unwrap();

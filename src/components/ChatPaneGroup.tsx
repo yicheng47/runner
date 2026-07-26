@@ -359,6 +359,7 @@ export function ChatPaneGroup({
             hiddenByDisplayNone={!visible}
             autoFocus={visible && paneLeaf.id === layout.focusedPaneId}
             disabled={dead || transitional}
+            resizeDisabled={transitional}
             onExit={onTerminalExit}
             onError={onTerminalError}
           />

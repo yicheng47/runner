@@ -48,6 +48,9 @@ import {
 import {
   activationResizeRequest,
   shouldDelayTerminalResize,
+  shouldPushTerminalSize,
+  terminalSizeAfterDisabledChange,
+  terminalSizeAfterRejectedPush,
   type TerminalGridSize,
 } from "../lib/terminalResize";
 import { TERMINAL_SCROLLBAR_WIDTH_PX } from "../lib/terminalSizing";
@@ -128,13 +131,15 @@ interface RunnerTerminalProps {
    *  passes false for every pane except the focused one, so mounting a
    *  sibling pane can't yank keystrokes away from the focused chat. */
   autoFocus?: boolean;
-  /** Stop forwarding keystrokes / resize events to the backend.
+  /** Stop forwarding keystrokes to the backend.
    *  Set by the parent when the bound session has exited so stray
    *  input on the dimmed pane doesn't surface a "session not found"
-   *  error from the now-empty live map. The xterm buffer stays
-   *  visible (and scrollable) — only the input/resize pipes shut
-   *  off. */
+   *  error from the now-empty live map. */
   disabled?: boolean;
+  /** Suppress geometry pushes while a spawn/resume is transitional.
+   *  Stopped panes keep this false so their measured size is persisted
+   *  for the next resume even though keyboard input stays disabled. */
+  resizeDisabled?: boolean;
 }
 
 /**
@@ -178,6 +183,7 @@ export const RunnerTerminal = forwardRef<
     hiddenByDisplayNone,
     autoFocus,
     disabled,
+    resizeDisabled,
   },
   ref,
 ) {
@@ -201,6 +207,7 @@ export const RunnerTerminal = forwardRef<
   // closures don't capture a stale value across the long-lived
   // terminal effect.
   const disabledRef = useRef<boolean>(disabled ?? false);
+  const resizeDisabledRef = useRef<boolean>(resizeDisabled ?? false);
   // Mirrors `autoFocus` for the activation effect below.
   const autoFocusRef = useRef<boolean>(autoFocus ?? true);
   // Last (cols, rows) pushed to the backend. Shared between `pushSize`
@@ -212,6 +219,7 @@ export const RunnerTerminal = forwardRef<
   // lengthen the redraw window the user perceives.
   const lastPushedColsRef = useRef(0);
   const lastPushedRowsRef = useRef(0);
+  const reassertSizeRef = useRef<(() => void) | null>(null);
   // Snapshot replay is deferred until the pane is both active and
   // measurable. Mission workspaces mount every slot's RunnerTerminal
   // at once with `activeTab="feed"` by default — every slot pane is
@@ -267,7 +275,24 @@ export const RunnerTerminal = forwardRef<
   }, [sessionId]);
 
   useEffect(() => {
-    disabledRef.current = disabled ?? false;
+    resizeDisabledRef.current = resizeDisabled ?? false;
+  }, [resizeDisabled]);
+
+  useEffect(() => {
+    const nextDisabled = disabled ?? false;
+    const wentLive = disabledRef.current && !nextDisabled;
+    const lastPushed = terminalSizeAfterDisabledChange(
+      {
+        cols: lastPushedColsRef.current,
+        rows: lastPushedRowsRef.current,
+      },
+      disabledRef.current,
+      nextDisabled,
+    );
+    disabledRef.current = nextDisabled;
+    lastPushedColsRef.current = lastPushed.cols;
+    lastPushedRowsRef.current = lastPushed.rows;
+    if (wentLive) reassertSizeRef.current?.();
   }, [disabled]);
 
   useEffect(() => {
@@ -317,6 +342,18 @@ export const RunnerTerminal = forwardRef<
     }
   }, []);
 
+  const rejectSizePush = useCallback((cols: number, rows: number) => {
+    const lastPushed = terminalSizeAfterRejectedPush(
+      {
+        cols: lastPushedColsRef.current,
+        rows: lastPushedRowsRef.current,
+      },
+      { cols, rows },
+    );
+    lastPushedColsRef.current = lastPushed.cols;
+    lastPushedRowsRef.current = lastPushed.rows;
+  }, []);
+
   const refreshActiveTerminal = useCallback(
     ({
       focus = false,
@@ -363,8 +400,11 @@ export const RunnerTerminal = forwardRef<
         }
         t.refresh(0, t.rows - 1);
         if (focus && !disabledRef.current) t.focus();
-        if ((!forceResizeDance && !pushBackendSize) || disabledRef.current) {
-          if ((forceResizeDance || pushBackendSize) && disabledRef.current) {
+        if (
+          (!forceResizeDance && !pushBackendSize) ||
+          resizeDisabledRef.current
+        ) {
+          if ((forceResizeDance || pushBackendSize) && resizeDisabledRef.current) {
             console.info(
               `[terminal] push-suppressed session=${sessionIdRef.current} ` +
                 `cols=${t.cols} rows=${t.rows} ` +
@@ -378,6 +418,24 @@ export const RunnerTerminal = forwardRef<
         if (!sid) return true;
         const cols = t.cols;
         const rows = t.rows;
+        if (disabledRef.current) {
+          if (
+            cols === lastPushedColsRef.current &&
+            rows === lastPushedRowsRef.current
+          ) {
+            return true;
+          }
+          console.info(
+            `[terminal] refresh-push-stopped session=${sid} cols=${cols} rows=${rows} ` +
+              `prev=${lastPushedColsRef.current}x${lastPushedRowsRef.current}`,
+          );
+          lastPushedColsRef.current = cols;
+          lastPushedRowsRef.current = rows;
+          void api.session.resize(sid, cols, rows).catch(() => {
+            rejectSizePush(cols, rows);
+          });
+          return true;
+        }
         // Blank grid must dance (#312). A running session behind an
         // empty grid has nothing to lose to a forced repaint and no
         // other way to gain content: the plain push below dedupes
@@ -427,7 +485,7 @@ export const RunnerTerminal = forwardRef<
           lastPushedColsRef.current = cols;
           lastPushedRowsRef.current = rows;
           void api.session.resize(sid, cols, rows).catch(() => {
-            // session may have exited
+            rejectSizePush(cols, rows);
           });
           return true;
         }
@@ -463,7 +521,7 @@ export const RunnerTerminal = forwardRef<
           .resize(sid, cols, nudgedRows)
           .then(() => api.session.resize(sid, cols, rows))
           .catch(() => {
-            // session may have exited between the two ioctls
+            rejectSizePush(cols, rows);
           });
         return true;
       } catch {
@@ -471,7 +529,7 @@ export const RunnerTerminal = forwardRef<
         return false;
       }
     },
-    [ensureWebglRenderer, blankGate],
+    [ensureWebglRenderer, rejectSizePush, blankGate],
   );
 
   useEffect(() => {
@@ -516,6 +574,33 @@ export const RunnerTerminal = forwardRef<
     });
     term.loadAddon(webLinks);
     term.open(containerRef.current);
+    function sendBackendResize(current: TerminalGridSize) {
+      const sid = sessionIdRef.current;
+      if (!sid) return;
+      console.info(
+        `[terminal] push-size session=${sid} cols=${current.cols} rows=${current.rows} ` +
+          `prev=${lastPushedColsRef.current}x${lastPushedRowsRef.current}`,
+      );
+      lastPushedColsRef.current = current.cols;
+      lastPushedRowsRef.current = current.rows;
+      void api.session.resize(sid, current.cols, current.rows).catch(() => {
+        rejectSizePush(current.cols, current.rows);
+      });
+    }
+    function pushBackendResize() {
+      if (resizeDisabledRef.current) return false;
+      const current = { cols: term.cols, rows: term.rows };
+      if (
+        !shouldPushTerminalSize(current, {
+          cols: lastPushedColsRef.current,
+          rows: lastPushedRowsRef.current,
+        })
+      ) {
+        return false;
+      }
+      sendBackendResize(current);
+      return true;
+    }
     const initialRect = containerRef.current.getBoundingClientRect();
     if (initialRect.width > 0 && initialRect.height > 0) {
       fit.fit();
@@ -533,17 +618,11 @@ export const RunnerTerminal = forwardRef<
       //
       // Hidden panes (rect 0) skip this — the activation effect picks
       // up the push when they come to the front, same as before.
-      lastPushedColsRef.current = term.cols;
-      lastPushedRowsRef.current = term.rows;
       // sessionIdRef is initialized with the prop value (line ~124),
       // so this reads the right id on initial mount without forcing
       // sessionId into the mount-effect's deps (which is intentionally
       // `[]` to avoid tearing down the whole xterm on session swap).
-      void api.session
-        .resize(sessionIdRef.current, term.cols, term.rows)
-        .catch(() => {
-          // session may have exited before mount; nothing to do
-        });
+      pushBackendResize();
     }
     // Don't auto-focus on mount: in the workspace, multiple
     // RunnerTerminals mount at once before any tab is selected, and the
@@ -706,19 +785,25 @@ export const RunnerTerminal = forwardRef<
     const pushSize = () => {
       const t = termRef.current;
       const sid = sessionIdRef.current;
-      if (!t || !sid || disabledRef.current) return;
       if (
-        t.cols === lastPushedColsRef.current &&
-        t.rows === lastPushedRowsRef.current
+        !t ||
+        !sid ||
+        resizeDisabledRef.current
       ) {
         return;
       }
-      console.info(
-        `[terminal] push-size session=${sid} cols=${t.cols} rows=${t.rows} ` +
-          `prev=${lastPushedColsRef.current}x${lastPushedRowsRef.current}`,
-      );
-      lastPushedColsRef.current = t.cols;
-      lastPushedRowsRef.current = t.rows;
+      const current = { cols: t.cols, rows: t.rows };
+      if (
+        !shouldPushTerminalSize(
+          current,
+          {
+            cols: lastPushedColsRef.current,
+            rows: lastPushedRowsRef.current,
+          },
+        )
+      ) {
+        return;
+      }
       // Clear the visible region before the SIGWINCH-driven redraw
       // lands for full-screen TUI agents. Without this, claude-code /
       // codex repaint at the new dims and the prior frame's visible
@@ -732,16 +817,27 @@ export const RunnerTerminal = forwardRef<
       // intact. Plain shells skip the wipe entirely and keep their
       // history. See docs/impls/archive/0011-pty-host-terminal-runtime.md
       // §"Per-runtime clear-on-resize".
-      const skipLocalClear = replayJustDrainedRef.current;
+      const skipLocalClear =
+        replayJustDrainedRef.current || disabledRef.current;
       if (runtimeClearsOnResize(runnerRuntimeRef.current) && !skipLocalClear) {
         // ESC[2J — erase visible region
         // ESC[H  — cursor home
         t.write("\x1b[2J\x1b[H");
       }
-      replayJustDrainedRef.current = false;
-      void api.session.resize(sid, t.cols, t.rows).catch(() => {
-        // session may have exited
-      });
+      if (!disabledRef.current) replayJustDrainedRef.current = false;
+      sendBackendResize(current);
+    };
+    reassertSizeRef.current = () => {
+      const node = containerRef.current;
+      if (!node) return;
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      try {
+        fit.fit();
+        pushBackendResize();
+      } catch {
+        // layout not ready; the next measurable refit will push
+      }
     };
     let stableResizeTimer: number | null = null;
     let stableResizeRaf: number | null = null;
@@ -995,11 +1091,12 @@ export const RunnerTerminal = forwardRef<
       textarea?.removeEventListener("paste", onPaste, { capture: true });
       onDataDisposable.dispose();
       webglRef.current = null;
+      reassertSizeRef.current = null;
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [refreshActiveTerminal]);
+  }, [refreshActiveTerminal, rejectSizePush]);
 
   // A mounted hidden terminal still owns its CPU-side xterm buffer, but it
   // must not hold a WebGL context: RunnerChat deliberately keeps every

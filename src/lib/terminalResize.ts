@@ -3,6 +3,33 @@ export interface TerminalGridSize {
   rows: number;
 }
 
+export function shouldPushTerminalSize(
+  current: TerminalGridSize,
+  lastPushed: TerminalGridSize,
+): boolean {
+  return (
+    current.cols !== lastPushed.cols || current.rows !== lastPushed.rows
+  );
+}
+
+export function terminalSizeAfterRejectedPush(
+  lastPushed: TerminalGridSize,
+  rejected: TerminalGridSize,
+): TerminalGridSize {
+  if (!shouldPushTerminalSize(lastPushed, rejected)) {
+    return { cols: 0, rows: 0 };
+  }
+  return lastPushed;
+}
+
+export function terminalSizeAfterDisabledChange(
+  lastPushed: TerminalGridSize,
+  wasDisabled: boolean,
+  disabled: boolean,
+): TerminalGridSize {
+  return wasDisabled && !disabled ? { cols: 0, rows: 0 } : lastPushed;
+}
+
 export function activationResizeRequest({
   canvasWasDisplayNone,
   wasTransitional,
