@@ -22,7 +22,6 @@ import {
   FileText,
   Info,
   Keyboard,
-  MessageSquare,
   Plug,
   RefreshCw,
   Search,
@@ -35,7 +34,6 @@ import { AboutPane } from "../components/settings/AboutPane";
 import { AgentsPane } from "../components/settings/AgentsPane";
 import { AppearancePane } from "../components/settings/AppearancePane";
 import { ArchivedPane } from "../components/settings/ArchivedPane";
-import { ChatPane } from "../components/settings/ChatPane";
 import { DiagnosticsPane } from "../components/settings/DiagnosticsPane";
 import { GeneralPane } from "../components/settings/GeneralPane";
 import { McpPane } from "../components/settings/McpPane";
@@ -54,7 +52,6 @@ const STORAGE_WIDTH = "runner.sidebar.width";
 
 type PaneKey =
   | "general"
-  | "chat"
   | "appearance"
   | "terminal"
   | "shortcuts"
@@ -74,7 +71,6 @@ const PANES: Record<
   }
 > = {
   general: { label: "General", icon: SettingsIcon, render: () => <GeneralPane /> },
-  chat: { label: "Chat", icon: MessageSquare, render: () => <ChatPane /> },
   appearance: { label: "Appearance", icon: Sun, render: () => <AppearancePane /> },
   terminal: { label: "Terminal", icon: Terminal, render: () => <TerminalPane /> },
   shortcuts: {
@@ -101,7 +97,7 @@ const PANES: Record<
 const NAV_GROUPS: { label: string; panes: PaneKey[] }[] = [
   {
     label: "App",
-    panes: ["general", "chat", "appearance", "terminal", "shortcuts"],
+    panes: ["general", "appearance", "terminal", "shortcuts"],
   },
   { label: "Integrations", panes: ["agents", "mcp"] },
   { label: "System", panes: ["updates", "diagnostics", "about"] },

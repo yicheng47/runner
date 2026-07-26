@@ -20,7 +20,9 @@ export const STORAGE_TERMINAL_SCROLLBACK = "settings.terminalScrollback";
 // palettes ship in the list for users who explicitly want them.
 export const STORAGE_TERMINAL_THEME = "settings.terminalTheme";
 export const STORAGE_DEFAULT_WORKING_DIR = "settings.defaultWorkingDir";
-export const STORAGE_DEFAULT_CHAT_RUNTIME = "settings.defaultChatRuntime";
+// Preserve the key used by the former Chat pane so existing selections
+// survive the control's move to Agents.
+export const STORAGE_DEFAULT_RUNTIME = "settings.defaultChatRuntime";
 export const STORAGE_APP_THEME = "settings.appTheme";
 export const STORAGE_APP_LIGHT_VARIANT = "settings.appLightVariant";
 export const STORAGE_APP_DARK_VARIANT = "settings.appDarkVariant";
@@ -547,19 +549,19 @@ export function writeDefaultWorkingDir(value: string): void {
   }
 }
 
-export function readDefaultChatRuntime(): string {
+export function readDefaultRuntime(): string {
   try {
-    return (localStorage.getItem(STORAGE_DEFAULT_CHAT_RUNTIME) ?? "").trim();
+    return (localStorage.getItem(STORAGE_DEFAULT_RUNTIME) ?? "").trim();
   } catch {
     return "";
   }
 }
 
-export function writeDefaultChatRuntime(value: string): void {
+export function writeDefaultRuntime(value: string): void {
   try {
     const trimmed = value.trim();
-    if (trimmed) localStorage.setItem(STORAGE_DEFAULT_CHAT_RUNTIME, trimmed);
-    else localStorage.removeItem(STORAGE_DEFAULT_CHAT_RUNTIME);
+    if (trimmed) localStorage.setItem(STORAGE_DEFAULT_RUNTIME, trimmed);
+    else localStorage.removeItem(STORAGE_DEFAULT_RUNTIME);
   } catch {
     // best-effort
   }

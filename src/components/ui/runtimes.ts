@@ -13,9 +13,8 @@ export interface RuntimeOption {
   description?: string;
 }
 
-// v0 narrows runtimes to just claude-code and codex. shell + aider were
-// dropped to avoid encouraging untested paths; add them back here when
-// they become first-class.
+// The UI exposes only first-class runtimes. Shell + aider remain hidden
+// until their paths are fully supported.
 export const RUNTIME_OPTIONS: RuntimeOption[] = [
   {
     value: "codex",
@@ -29,7 +28,23 @@ export const RUNTIME_OPTIONS: RuntimeOption[] = [
     defaultCommand: "claude",
     description: "Anthropic Claude Code CLI",
   },
+  {
+    value: "qoder",
+    label: "qoder",
+    defaultCommand: "qodercli",
+    description: "Qoder CLI",
+  },
 ];
+
+const RUNTIMES_CLEARING_ON_RESIZE = new Set([
+  "claude-code",
+  "codex",
+  "qoder",
+]);
+
+export function runtimeClearsOnResize(runtime: string): boolean {
+  return RUNTIMES_CLEARING_ON_RESIZE.has(runtime);
+}
 
 // Runtimes that surface the "Permission mode" dropdown on the runner
 // edit form. Source of truth: the backend's
@@ -37,7 +52,11 @@ export const RUNTIME_OPTIONS: RuntimeOption[] = [
 // pairs map to flags — if the runtime appears in
 // `PERMISSION_MODES_BY_RUNTIME` below with at least one non-default
 // mode, the dropdown applies.
-const RUNTIMES_WITH_PERMISSION_MODE = new Set(["claude-code", "codex"]);
+const RUNTIMES_WITH_PERMISSION_MODE = new Set([
+  "claude-code",
+  "codex",
+  "qoder",
+]);
 
 export function runtimeSupportsPermissionMode(runtime: string): boolean {
   return RUNTIMES_WITH_PERMISSION_MODE.has(runtime);
@@ -147,11 +166,11 @@ export interface PermissionModeOption {
   danger?: boolean;
 }
 
-// Per-runtime mode lists. claude-code and codex genuinely differ:
-// claude-code has a separate `acceptEdits` mode (auto-edits but ask
-// for shell/network), codex doesn't. Codex's `on-failure` mode is
-// deprecated per `codex --help`, so we use `on-request` for the
-// middle ground.
+// Per-runtime mode lists. Claude-code has a separate `acceptEdits`
+// mode (auto-edits but ask for shell/network), while codex does not.
+// Codex's `on-failure` mode is deprecated per `codex --help`, so its
+// middle ground uses `on-request`. Qoder exposes only Default and the
+// live-probed `auto` mode for now.
 //
 // Hand-synced with backend `router::runtime::permission_mode_args`.
 // The Rust tests pin the exact (runtime, mode) → flag mapping; this
@@ -205,6 +224,18 @@ export const PERMISSION_MODES_BY_RUNTIME: Record<
       danger: true,
     },
   ],
+  qoder: [
+    {
+      value: "default",
+      label: "Default",
+      description: "Use Qoder's built-in permission mode.",
+    },
+    {
+      value: "auto",
+      label: "Auto",
+      description: "Run with Qoder's verified `--permission-mode auto` mode.",
+    },
+  ],
 };
 
 // Hand-synced with backend `router::runtime::mode_match_pairs`. Each
@@ -229,6 +260,9 @@ const MODE_MATCH_PAIRS_BY_RUNTIME: Record<
       ["--ask-for-approval", "never"],
       ["--sandbox", "workspace-write"],
     ],
+  },
+  qoder: {
+    auto: [["--permission-mode", "auto"]],
   },
 };
 
@@ -284,8 +318,7 @@ function modePairMatches(
 /// `default`.
 ///
 /// Mirror of `router::runtime::infer_permission_mode` (Rust).
-/// Algorithm and edge cases are pinned by tests on the Rust side
-/// since the project has no frontend test runner today.
+/// Algorithm and edge cases are pinned by the Rust and TypeScript tests.
 export function inferPermissionMode(
   runtime: string,
   args: string[],
@@ -303,6 +336,7 @@ export function inferPermissionMode(
 //   - claude-code: `--permission-mode <value>` (value-bearing) plus
 //     the legacy standalone `--dangerously-skip-permissions` flag,
 //     so old rows get cleaned up on the next save.
+//   - qoder: `--permission-mode <value>` (value-bearing).
 // Mirror of `router::runtime::strip_permission_flags`.
 const PERMISSION_STRIP_KEYS_BY_RUNTIME: Record<
   string,
@@ -316,6 +350,7 @@ const PERMISSION_STRIP_KEYS_BY_RUNTIME: Record<
     ["--ask-for-approval", true],
     ["--sandbox", true],
   ],
+  qoder: [["--permission-mode", true]],
 };
 
 /// Strip every permission-mode flag from `args`. Used by the runner

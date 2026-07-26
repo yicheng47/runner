@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  status: vi.fn(),
   setOverride: vi.fn(),
 }));
 
@@ -19,29 +20,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 vi.mock("../../lib/api", () => ({
   api: {
     runtime: {
-      status: vi.fn(async () => ({
-        shell: {
-          shell: "/bin/zsh",
-          outcome: "ok",
-          duration_ms: 25,
-          checking: false,
-          using_last_known_good: false,
-          last_known_good_captured_at: null,
-        },
-        runtimes: [
-          {
-            name: "codex",
-            display_name: "Codex",
-            command: "codex",
-            detected_path: "/usr/local/bin/codex",
-            override_path: "/opt/codex",
-            effective_command: "/opt/codex",
-            effective_source: "override",
-            state: "override",
-            invalid_reason: null,
-          },
-        ],
-      })),
+      status: mocks.status,
       setOverride: mocks.setOverride,
       clearOverride: vi.fn(),
       refresh: vi.fn(),
@@ -49,7 +28,43 @@ vi.mock("../../lib/api", () => ({
   },
 }));
 
+import { RUNTIME_OPTIONS } from "../ui/runtimes";
 import { AgentsPane } from "./AgentsPane";
+
+const runtimeStatus = {
+  shell: {
+    shell: "/bin/zsh",
+    outcome: "ok",
+    duration_ms: 25,
+    checking: false,
+    using_last_known_good: false,
+    last_known_good_captured_at: null,
+  },
+  runtimes: [
+    {
+      name: "codex",
+      display_name: "Codex",
+      command: "codex",
+      detected_path: "/usr/local/bin/codex",
+      override_path: "/opt/codex",
+      effective_command: "/opt/codex",
+      effective_source: "override",
+      state: "override",
+      invalid_reason: null,
+    },
+    {
+      name: "qoder",
+      display_name: "Qoder",
+      command: "qodercli",
+      detected_path: "/usr/local/bin/qodercli",
+      override_path: null,
+      effective_command: "/usr/local/bin/qodercli",
+      effective_source: "detected",
+      state: "detected",
+      invalid_reason: null,
+    },
+  ],
+};
 
 describe("AgentsPane", () => {
   let container: HTMLDivElement;
@@ -57,9 +72,17 @@ describe("AgentsPane", () => {
 
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const storage = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    });
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
+    mocks.status.mockReset();
+    mocks.status.mockResolvedValue(runtimeStatus);
     mocks.setOverride.mockClear();
   });
 
@@ -67,6 +90,38 @@ describe("AgentsPane", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+  });
+
+  it("renders one loading row per catalog runtime", async () => {
+    mocks.status.mockReturnValue(new Promise(() => {}));
+    await act(async () => {
+      root.render(<AgentsPane />);
+    });
+    expect(container.querySelectorAll(".animate-pulse")).toHaveLength(
+      RUNTIME_OPTIONS.length,
+    );
+  });
+
+  it("owns and persists the direct chat default runtime", async () => {
+    localStorage.setItem("settings.defaultChatRuntime", "qoder");
+    await act(async () => {
+      root.render(<AgentsPane />);
+    });
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      "#agents-default-runtime",
+    );
+    expect(trigger?.textContent).toContain("Qoder");
+
+    await act(async () => trigger?.click());
+    const codexOption = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>("button"),
+    ).find((button) => button.textContent?.trim() === "Codex");
+    expect(codexOption).toBeDefined();
+
+    await act(async () => codexOption?.click());
+    expect(localStorage.getItem("settings.defaultChatRuntime")).toBe("codex");
+    expect(trigger?.textContent).toContain("Codex");
   });
 
   it("discards an edited override on Escape without saving it on blur", async () => {
