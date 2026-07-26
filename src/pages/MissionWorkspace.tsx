@@ -1220,6 +1220,7 @@ export default function MissionWorkspace({
                         onError={setError}
                         onResumeMission={() => void resumeMission()}
                         onArchiveMission={() => void archiveMission()}
+                        hiddenByDisplayNone={activeTab !== s.id}
                         registerTerminal={(handle) => {
                           if (handle) terminalsRef.current.set(s.id, handle);
                           else terminalsRef.current.delete(s.id);
@@ -1372,6 +1373,7 @@ function SlotPtyPane({
   onError,
   onResumeMission,
   onArchiveMission,
+  hiddenByDisplayNone,
   registerTerminal,
 }: {
   session: SessionRow;
@@ -1396,6 +1398,7 @@ function SlotPtyPane({
    *  the slot, so the paused-slot card escalates to mission archive
    *  the same way it escalates to mission resume. */
   onArchiveMission: () => void | Promise<void>;
+  hiddenByDisplayNone: boolean;
   /** Hand the parent a handle to this slot's xterm so it can measure
    *  cols/rows before the resume RPC and avoid the 80×24 default. */
   registerTerminal: (handle: RunnerTerminalHandle | null) => void;
@@ -1542,6 +1545,7 @@ function SlotPtyPane({
           runnerRuntime={session.runtime}
           onError={onError}
           active={active && !resuming && !starting}
+          hiddenByDisplayNone={hiddenByDisplayNone}
           disabled={dead || resuming || starting}
         />
       </div>

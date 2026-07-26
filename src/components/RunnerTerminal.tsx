@@ -46,6 +46,7 @@ import {
   createBlankRecheckGate,
 } from "../lib/terminalBlank";
 import {
+  activationResizeRequest,
   shouldDelayTerminalResize,
   type TerminalGridSize,
 } from "../lib/terminalResize";
@@ -115,6 +116,10 @@ interface RunnerTerminalProps {
    *  still be disabled, e.g. a stopped mission slot that should replay
    *  dimmed scrollback without accepting input. */
   active?: boolean;
+  /** True when the containing pane currently uses `display:none`. This
+   *  distinguishes a stale internal tab canvas from a keep-alive surface
+   *  hidden with `visibility:hidden`, whose xterm buffer stays live. */
+  hiddenByDisplayNone: boolean;
   /** Whether activation may steal keyboard focus. Defaults to true (the
    *  single-visible-terminal surfaces want focus to follow activation).
    *  Split chat (impl 0020) shows several active terminals at once and
@@ -176,7 +181,16 @@ export const RunnerTerminal = forwardRef<
   RunnerTerminalHandle,
   RunnerTerminalProps
 >(function RunnerTerminal(
-  { sessionId, runnerRuntime, onExit, onError, active, autoFocus, disabled },
+  {
+    sessionId,
+    runnerRuntime,
+    onExit,
+    onError,
+    active,
+    hiddenByDisplayNone,
+    autoFocus,
+    disabled,
+  },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1228,13 +1242,23 @@ export const RunnerTerminal = forwardRef<
   // codex pane that already holds content makes its repaint push a
   // duplicated, reflow-garbled frame into scrollback (restart → resume
   // panes one by one; Resume all was immune only because siblings were
-  // still disabled when each settled). `disabled=false` means the pane
-  // was genuinely hidden (display:none tab) — that return path keeps the
-  // dance, which exists to wake a stale canvas (#108, impl 0011).
+  // still disabled when each settled). An ordinary inactive pane may be
+  // hidden either by PersistentSurfaces' visibility:hidden layer, where
+  // xterm stays live, or by an internal display:none tab, where the canvas
+  // can go stale. Only the latter keeps the #108 wake dance.
+  //
+  // A terminal that mounts already active also starts with this ref false:
+  // its canvas is fresh, snapshot replay + t.refresh() paint retained
+  // content, and blankDanceDecision remains the targeted wake path when
+  // the new grid is empty.
   const wasTransitionalRef = useRef(false);
+  const canvasWasDisplayNoneRef = useRef(false);
   useEffect(() => {
-    if (!active) wasTransitionalRef.current = disabledRef.current;
-  }, [active]);
+    if (!active) {
+      wasTransitionalRef.current = disabledRef.current;
+      canvasWasDisplayNoneRef.current = hiddenByDisplayNone;
+    }
+  }, [active, hiddenByDisplayNone]);
 
   // Activation effect: when this tab moves to the front, fit to its container,
   // repaint the freshly-created WebGL renderer with the current scrollback,
@@ -1245,15 +1269,20 @@ export const RunnerTerminal = forwardRef<
       activationRefreshRef.current = null;
       return;
     }
-    const dance = !wasTransitionalRef.current;
+    const request = activationResizeRequest({
+      canvasWasDisplayNone: canvasWasDisplayNoneRef.current,
+      wasTransitional: wasTransitionalRef.current,
+    });
     console.info(
-      `[terminal] activate session=${sessionIdRef.current} dance=${dance}`,
+      `[terminal] activate session=${sessionIdRef.current} ` +
+        `dance=${request.forceResizeDance} ` +
+        `displayNone=${canvasWasDisplayNoneRef.current} ` +
+        `transitional=${wasTransitionalRef.current}`,
     );
     const refresh = () =>
       refreshActiveTerminal({
         focus: autoFocusRef.current,
-        forceResizeDance: dance,
-        pushBackendSize: !dance,
+        ...request,
       });
     activationRefreshRef.current = refresh;
     if (refresh()) activationRefreshRef.current = null;

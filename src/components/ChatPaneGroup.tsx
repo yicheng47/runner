@@ -355,6 +355,7 @@ export function ChatPaneGroup({
             // xterm behaves as inactive (no resize pushes, no focus); when
             // the flag clears, the activation effect fits + repaints.
             active={surfaceVisible && visible && !transitional}
+            hiddenByDisplayNone={!visible}
             autoFocus={visible && paneLeaf.id === layout.focusedPaneId}
             disabled={dead || transitional}
             onExit={onTerminalExit}
