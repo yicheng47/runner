@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { applyAppZoom } from "../../lib/appZoom";
 import {
+  DEFAULT_RESUME_ON_LAUNCH,
   readAppZoom,
   readDefaultWorkingDir,
   STORAGE_APP_ZOOM,
@@ -79,7 +80,7 @@ export function GeneralPane() {
   const [appZoom, setAppZoomState] = useState<number>(() => readAppZoom());
   const [resumeOnLaunch, setResumeOnLaunch] = useStoredBool(
     STORAGE_RESUME_ON_LAUNCH,
-    true,
+    DEFAULT_RESUME_ON_LAUNCH,
   );
   const setAppZoom = (next: number) => {
     setAppZoomState(next);

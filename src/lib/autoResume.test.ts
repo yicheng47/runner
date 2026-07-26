@@ -1,9 +1,18 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AUTO_RESUME_STAGGER_MS,
   consumeResumeOnLaunch,
 } from "./autoResume";
+import {
+  DEFAULT_RESUME_ON_LAUNCH,
+  readStoredBool,
+  STORAGE_RESUME_ON_LAUNCH,
+} from "./settings";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("consumeResumeOnLaunch", () => {
   it("resumes sequentially, staggers attempts, and continues after failure", async () => {
@@ -50,6 +59,32 @@ describe("consumeResumeOnLaunch", () => {
       resumeOnLaunch,
     });
 
+    expect(clearResumeOnLaunch).toHaveBeenCalledOnce();
+    expect(takeResumeOnLaunch).not.toHaveBeenCalled();
+    expect(resumeOnLaunch).not.toHaveBeenCalled();
+  });
+
+  it("clears pending stamps without resuming when the setting is absent", async () => {
+    vi.stubGlobal("localStorage", {
+      getItem: vi.fn<(key: string) => string | null>().mockReturnValue(null),
+    });
+    const takeResumeOnLaunch = vi.fn<() => Promise<string | null>>();
+    const resumeOnLaunch = vi.fn<(sessionId: string) => Promise<void>>();
+    const clearResumeOnLaunch = vi
+      .fn<() => Promise<void>>()
+      .mockResolvedValue();
+
+    await consumeResumeOnLaunch(
+      readStoredBool(
+        STORAGE_RESUME_ON_LAUNCH,
+        DEFAULT_RESUME_ON_LAUNCH,
+      ),
+      { takeResumeOnLaunch, clearResumeOnLaunch, resumeOnLaunch },
+    );
+
+    expect(localStorage.getItem).toHaveBeenCalledWith(
+      STORAGE_RESUME_ON_LAUNCH,
+    );
     expect(clearResumeOnLaunch).toHaveBeenCalledOnce();
     expect(takeResumeOnLaunch).not.toHaveBeenCalled();
     expect(resumeOnLaunch).not.toHaveBeenCalled();

@@ -18,6 +18,7 @@ import { api } from "./lib/api";
 import { nudgeAppZoom, syncTitlebarZoom } from "./lib/appZoom";
 import { eventMatchesShortcut } from "./lib/keymap";
 import {
+  DEFAULT_RESUME_ON_LAUNCH,
   readAppZoom,
   readStoredBool,
   STORAGE_RESUME_ON_LAUNCH,
@@ -53,7 +54,10 @@ export default function App() {
         .then(async () => {
           if (cancelled || getCurrentWebview().label !== "main") return;
           await consumeResumeOnLaunch(
-            readStoredBool(STORAGE_RESUME_ON_LAUNCH, true),
+            readStoredBool(
+              STORAGE_RESUME_ON_LAUNCH,
+              DEFAULT_RESUME_ON_LAUNCH,
+            ),
             api.session,
           );
         })
