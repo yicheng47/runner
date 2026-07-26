@@ -1533,11 +1533,12 @@ function SlotPtyPane({
   // palette's bg, same as in RunnerChat — keeps the frame and the
   // canvas in lockstep across theme switches.
   const terminalBg = useTerminalBg();
+  // Keep the frame classes in sync with terminalSizing's constants.
   return (
     <div ref={paneRef} className="relative flex flex-1 min-h-0 flex-col">
       <div
         style={{ backgroundColor: terminalBg }}
-        className={`flex flex-1 min-h-0 p-3 transition-opacity ${paneOpacity}`}
+        className={`flex flex-1 min-h-0 py-3 pl-3 pr-1 transition-opacity ${paneOpacity}`}
       >
         <RunnerTerminal
           ref={registerTerminal}

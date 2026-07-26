@@ -50,6 +50,7 @@ import {
   shouldDelayTerminalResize,
   type TerminalGridSize,
 } from "../lib/terminalResize";
+import { TERMINAL_SCROLLBAR_WIDTH_PX } from "../lib/terminalSizing";
 import { eventMatchesShortcut } from "../lib/keymap";
 
 interface OutputEvent {
@@ -500,6 +501,7 @@ export const RunnerTerminal = forwardRef<
       allowProposedApi: true,
       scrollSensitivity: 3,
       fastScrollSensitivity: 8,
+      scrollbar: { width: TERMINAL_SCROLLBAR_WIDTH_PX },
       // OSC 8 hyperlinks (emitted by claude-code and other modern CLIs) are
       // handled by xterm natively, not by WebLinksAddon. The default activator
       // calls window.open() which is a silent no-op in WKWebView/Tauri, so we

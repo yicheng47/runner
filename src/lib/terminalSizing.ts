@@ -13,7 +13,10 @@ export interface TerminalGridSize {
   rows: number;
 }
 
-export const SLOT_TERMINAL_FRAME_PADDING_PX = 12;
+// Must match `py-3 pl-3 pr-1` on both terminal host surfaces.
+const TERMINAL_FRAME_PADDING_PX = 12;
+const TERMINAL_FRAME_RIGHT_PADDING_PX = 4;
+export const TERMINAL_SCROLLBAR_WIDTH_PX = 8;
 
 const MISSION_HEADER_HEIGHT_PX = 88;
 const MISSION_TAB_STRIP_HEIGHT_PX = 38;
@@ -39,7 +42,8 @@ function fitTemporaryTerminal(widthPx: number, heightPx: number): TerminalGridSi
     rows: 24,
     fontFamily,
     fontSize,
-    scrollback: 0,
+    scrollback: 1,
+    scrollbar: { width: TERMINAL_SCROLLBAR_WIDTH_PX },
   });
   const fit = new FitAddon();
   try {
@@ -56,21 +60,22 @@ function fitTemporaryTerminal(widthPx: number, heightPx: number): TerminalGridSi
 export function terminalGridFromPixels(
   widthPx: number,
   heightPx: number,
-  framePaddingPx = SLOT_TERMINAL_FRAME_PADDING_PX,
 ): TerminalGridSize | null {
-  const width = Math.max(0, widthPx - framePaddingPx * 2);
-  const height = Math.max(0, heightPx - framePaddingPx * 2);
+  const width = Math.max(
+    0,
+    widthPx - TERMINAL_FRAME_PADDING_PX - TERMINAL_FRAME_RIGHT_PADDING_PX,
+  );
+  const height = Math.max(0, heightPx - TERMINAL_FRAME_PADDING_PX * 2);
   if (width <= 0 || height <= 0) return null;
   return fitTemporaryTerminal(width, height);
 }
 
 export function terminalGridFromElement(
   container: HTMLElement,
-  framePaddingPx = SLOT_TERMINAL_FRAME_PADDING_PX,
 ): TerminalGridSize | null {
   const rect = container.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return null;
-  return terminalGridFromPixels(rect.width, rect.height, framePaddingPx);
+  return terminalGridFromPixels(rect.width, rect.height);
 }
 
 /**
