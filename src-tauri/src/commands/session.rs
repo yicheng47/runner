@@ -633,7 +633,7 @@ pub async fn session_resume(
         "session_resume: session={session_id} cols={cols:?} rows={rows:?} automatic={automatic}"
     );
     let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app.clone()));
-    let spawned = if automatic {
+    let resume_result = if automatic {
         state.sessions.resume_on_launch(
             &session_id,
             cols,
@@ -651,8 +651,27 @@ pub async fn session_resume(
             state.db.clone(),
             emitter,
         )
+    };
+    if automatic {
+        // A handled resume error remains one-shot, matching the prior behavior:
+        // finish its claim before propagating the error. Quit or process exit
+        // requeues an interrupted claim instead.
+        match state.db.get() {
+            Ok(conn) => {
+                if let Err(error) = repo::session::finish_resume_on_launch(&conn, &session_id) {
+                    log::warn!(
+                        "session_resume: launch claim update failed for {session_id}: {error}"
+                    );
+                }
+            }
+            Err(error) => {
+                log::warn!(
+                    "session_resume: launch claim connection failed for {session_id}: {error}"
+                );
+            }
+        }
     }
-    .map_err(|e| Error::msg(format!("session_resume: {e}")))?;
+    let spawned = resume_result.map_err(|e| Error::msg(format!("session_resume: {e}")))?;
     // Fresh-fallback for a lead slot: the prior claude-code conversation
     // file was missing, so the resume degraded to a `--session-id` fresh
     // spawn. The bus's mission_goal handler is suppressed on resume by
