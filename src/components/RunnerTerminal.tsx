@@ -349,6 +349,7 @@ export const RunnerTerminal = forwardRef<
       try {
         const beforeCols = t.cols;
         const beforeRows = t.rows;
+        ensureWebglRenderer();
         fit.fit();
         if (t.cols !== beforeCols || t.rows !== beforeRows) {
           console.info(
@@ -358,7 +359,6 @@ export const RunnerTerminal = forwardRef<
               `pushBackend=${pushBackendSize}`,
           );
         }
-        ensureWebglRenderer();
         tryDrainReplayRef.current?.();
         if (replayFlushPendingRef.current) {
           if (focus && !disabledRef.current) t.focus();
