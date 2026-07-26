@@ -3,6 +3,20 @@ export interface TerminalGridSize {
   rows: number;
 }
 
+export function activationResizeRequest({
+  canvasWasDisplayNone,
+  wasTransitional,
+}: {
+  canvasWasDisplayNone: boolean;
+  wasTransitional: boolean;
+}): { forceResizeDance: boolean; pushBackendSize: boolean } {
+  const forceResizeDance = canvasWasDisplayNone && !wasTransitional;
+  return {
+    forceResizeDance,
+    pushBackendSize: !forceResizeDance,
+  };
+}
+
 const LARGE_ROW_DROP_MIN_ROWS = 6;
 const LARGE_ROW_DROP_RATIO = 0.75;
 

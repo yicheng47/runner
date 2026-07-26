@@ -413,4 +413,40 @@ describe("Sidebar", () => {
       scroller?.contains(buttonWithTitle(container, "@alpha + @beta")),
     ).toBe(true);
   });
+
+  it("persists project collapse state across remounts", async () => {
+    await renderSidebar(root);
+    expect(buttonWithTitle(container, "@echo")).toBeTruthy();
+
+    await click(buttonWithTitle(container, "/tmp/proj"));
+    expect(container.querySelector('[title="@echo"]')).toBeNull();
+    expect(localStorage.getItem("runner.sidebar.projects.collapsed")).toBe(
+      '["proj-1"]',
+    );
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await renderSidebar(root);
+    expect(container.querySelector('[title="@echo"]')).toBeNull();
+
+    await click(buttonWithTitle(container, "/tmp/proj"));
+    expect(buttonWithTitle(container, "@echo")).toBeTruthy();
+    expect(localStorage.getItem("runner.sidebar.projects.collapsed")).toBe(
+      "[]",
+    );
+  });
+
+  it("prunes collapsed ids for deleted projects after loading projects", async () => {
+    localStorage.setItem(
+      "runner.sidebar.projects.collapsed",
+      '["proj-1","deleted-project"]',
+    );
+
+    await renderSidebar(root);
+
+    expect(container.querySelector('[title="@echo"]')).toBeNull();
+    expect(localStorage.getItem("runner.sidebar.projects.collapsed")).toBe(
+      '["proj-1"]',
+    );
+  });
 });

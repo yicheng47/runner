@@ -332,6 +332,7 @@ export function ChatPaneGroup({
         : visible && dead
           ? "opacity-45"
           : "";
+    // Keep the frame classes in sync with terminalSizing's constants.
     return (
       <div
         key={chat.id}
@@ -342,7 +343,7 @@ export function ChatPaneGroup({
         onMouseDownCapture={
           paneLeaf ? () => onFocusPane(paneLeaf) : undefined
         }
-        className={`absolute p-4 ${visible ? "block" : "hidden"}`}
+        className={`absolute py-3 pl-3 pr-1 ${visible ? "block" : "hidden"}`}
       >
         {/* Dim only the canvas — the overlays below are siblings, so they
             stay at full opacity over the dimmed terminal. */}
@@ -355,6 +356,7 @@ export function ChatPaneGroup({
             // xterm behaves as inactive (no resize pushes, no focus); when
             // the flag clears, the activation effect fits + repaints.
             active={surfaceVisible && visible && !transitional}
+            hiddenByDisplayNone={!visible}
             autoFocus={visible && paneLeaf.id === layout.focusedPaneId}
             disabled={dead || transitional}
             onExit={onTerminalExit}

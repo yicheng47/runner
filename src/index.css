@@ -169,3 +169,14 @@ body {
 *::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* xterm renders its own scrollbar. Use an 8px gutter and draw a centered
+   6px draggable pill inside it. */
+.xterm
+  .xterm-scrollable-element
+  > .xterm-scrollbar.xterm-vertical
+  > .xterm-slider {
+  left: 1px !important;
+  width: 6px !important;
+  border-radius: 999px;
+}

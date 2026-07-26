@@ -1,9 +1,39 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  activationResizeRequest,
   isLargeTerminalRowDrop,
   shouldDelayTerminalResize,
 } from "./terminalResize";
+
+describe("activationResizeRequest", () => {
+  it("uses a deduped size push after a live hidden-surface return", () => {
+    expect(
+      activationResizeRequest({
+        canvasWasDisplayNone: false,
+        wasTransitional: false,
+      }),
+    ).toEqual({ forceResizeDance: false, pushBackendSize: true });
+  });
+
+  it("keeps the resize dance for a display-none pane return", () => {
+    expect(
+      activationResizeRequest({
+        canvasWasDisplayNone: true,
+        wasTransitional: false,
+      }),
+    ).toEqual({ forceResizeDance: true, pushBackendSize: false });
+  });
+
+  it("suppresses the resize dance after a transitional resume", () => {
+    expect(
+      activationResizeRequest({
+        canvasWasDisplayNone: true,
+        wasTransitional: true,
+      }),
+    ).toEqual({ forceResizeDance: false, pushBackendSize: true });
+  });
+});
 
 describe("isLargeTerminalRowDrop", () => {
   it("matches the captured split-pane collapse sizes", () => {

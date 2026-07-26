@@ -154,6 +154,7 @@ const SIDEBAR_MAX = 480;
 const SIDEBAR_DEFAULT = 240;
 const STORAGE_WIDTH = "runner.sidebar.width";
 const STORAGE_PROJECTS_OPEN = "runner.sidebar.projects.open";
+const STORAGE_COLLAPSED_PROJECTS = "runner.sidebar.projects.collapsed";
 const STORAGE_SESSION_OPEN = "runner.sidebar.session.open";
 const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
 const SIDEBAR_NAVIGATION_HISTORY_LIMIT = 64;
@@ -256,6 +257,27 @@ function setStoredFlag(key: string, value: boolean): void {
   }
 }
 
+function getStoredStringSet(key: string): Set<string> {
+  if (typeof localStorage === "undefined") return new Set();
+  try {
+    const stored: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
+    if (!Array.isArray(stored)) return new Set();
+    return new Set(
+      stored.filter((value): value is string => typeof value === "string"),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function setStoredStringSet(key: string, value: ReadonlySet<string>): void {
+  try {
+    localStorage.setItem(key, JSON.stringify([...value]));
+  } catch {
+    // ignore quota / disabled-storage errors
+  }
+}
+
 interface SidebarProps {
   // Collapsed/expanded state lives in AppShell so the global Cmd+S
   // shortcut can toggle it too. The `width` resize state stays local —
@@ -332,7 +354,7 @@ export function Sidebar({
   >(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(
-    () => new Set(),
+    () => getStoredStringSet(STORAGE_COLLAPSED_PROJECTS),
   );
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(
     null,
@@ -608,6 +630,20 @@ export function Sidebar({
       setActiveProjectId(null);
     }
   }, [activeProjectId, projects, projectsLoaded]);
+
+  useEffect(() => {
+    if (!projectsLoaded) return;
+    setCollapsedProjectIds((current) => {
+      const projectIds = new Set(projects.map((project) => project.id));
+      const next = new Set([...current].filter((id) => projectIds.has(id)));
+      if (next.size === current.size) return current;
+      return next;
+    });
+  }, [projects, projectsLoaded]);
+
+  useEffect(() => {
+    setStoredStringSet(STORAGE_COLLAPSED_PROJECTS, collapsedProjectIds);
+  }, [collapsedProjectIds]);
 
   useEffect(() => {
     setActiveProjectScope(activeProject);
