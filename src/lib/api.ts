@@ -368,11 +368,18 @@ export const api = {
       invoke<string | null>("session_take_resume_on_launch"),
     clearResumeOnLaunch: () =>
       invoke<void>("session_clear_resume_on_launch"),
-    resumeOnLaunch: (sessionId: string) =>
+    /** Auto-resume-on-launch. Dims come from the caller's precedence chain
+     *  (impl 0036) — passing null forks at the row's persisted geometry, or
+     *  80×24 when it has none. */
+    resumeOnLaunch: (
+      sessionId: string,
+      cols: number | null,
+      rows: number | null,
+    ) =>
       invoke<SpawnedSession>("session_resume", {
         sessionId,
-        cols: null,
-        rows: null,
+        cols,
+        rows,
         automatic: true,
       }),
     resume: (

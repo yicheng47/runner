@@ -1428,7 +1428,14 @@ export const RunnerTerminal = forwardRef<
   );
 
   return (
-    <div className="h-full w-full overflow-hidden">
+    // Keep this attribute in sync with terminalSizing's
+    // TERMINAL_HOST_SESSION_ATTR: it lets launch auto-resume find this host
+    // and measure the box the terminal will fit to (impl 0036, rung 1)
+    // without a surface-local terminal registry.
+    <div
+      data-terminal-session={sessionId}
+      className="h-full w-full overflow-hidden"
+    >
       <div ref={containerRef} className="h-full w-full" />
     </div>
   );

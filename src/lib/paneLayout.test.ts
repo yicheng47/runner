@@ -17,6 +17,7 @@ import {
   isFreshlyAssigned,
   leaves,
   newChatTargetPane,
+  paneBoxForSession,
   removeSessionPure,
   resetPaneLayoutsForTest,
   serializeLayout,
@@ -799,5 +800,96 @@ describe("cold-start hydration", () => {
     expect(mod.visibleSessionIds(mod.getPaneLayouts()[0].root)).toEqual([]);
     expect(tabUpsert).not.toHaveBeenCalled();
     expect(nodeDelete).not.toHaveBeenCalled();
+  });
+});
+
+// The split divisor behind the launch-resume estimate (impl 0036, open
+// question 3). A session returning into a 2–3 pane tab must be sized at its
+// own pane's share of the area, not the tab's — the layout is known from
+// persisted state before any pane mounts, so no measurement is needed.
+describe("paneBoxForSession", () => {
+  const AREA = { width: 1000, height: 800 };
+  // Grouped panes pay a 1px section border on each side plus the 34px header.
+  const GROUPED_HEIGHT = AREA.height - 2 - 34;
+
+  it("gives an ungrouped pane the whole area, with no pane chrome", () => {
+    const layout = applyPresetPure("single", "s1", ["s1"]);
+    expect(paneBoxForSession(layout, "s1", AREA)).toEqual(AREA);
+  });
+
+  it("halves a two-column tab across the separator", () => {
+    const layout = applyPresetPure("cols-2", "s1", ["s1", "s2"]);
+    // 1000 minus the 1px separator, split 50/50, minus the section border.
+    const expected = { width: 999 / 2 - 2, height: GROUPED_HEIGHT };
+    expect(paneBoxForSession(layout, "s1", AREA)).toEqual(expected);
+    expect(paneBoxForSession(layout, "s2", AREA)).toEqual(expected);
+  });
+
+  it("sizes each pane of a nested preset independently", () => {
+    // main-2: a 60% full-height pane beside two stacked 40%-wide panes.
+    const layout = applyPresetPure("main-2", "s1", ["s1", "s2", "s3"]);
+    const big = paneBoxForSession(layout, "s1", AREA);
+    const stacked = paneBoxForSession(layout, "s2", AREA);
+
+    expect(big?.width).toBeCloseTo(999 * 0.6 - 2, 6);
+    expect(big?.height).toBeCloseTo(GROUPED_HEIGHT, 6);
+    expect(stacked?.width).toBeCloseTo(999 * 0.4 - 2, 6);
+    // Stacked: the 800px column loses its own separator before splitting.
+    expect(stacked?.height).toBeCloseTo(799 / 2 - 2 - 34, 6);
+  });
+
+  it("returns null for a session this tab does not hold", () => {
+    const layout = applyPresetPure("cols-2", "s1", ["s1", "s2"]);
+    expect(paneBoxForSession(layout, "elsewhere", AREA)).toBeNull();
+  });
+
+  // The percentages are what the user dragged; they are not what renders once
+  // a pane would fall under the panel library's 120px floor. A window
+  // restored narrower than the one the sizes were dragged in is exactly the
+  // resize-between-launches case #363 is about, so the estimate has to clamp
+  // the same way the render does.
+  const lopsided = (): PaneLayout => {
+    const base = applyPresetPure("cols-2", "s1", ["s1", "s2"]);
+    return setSizesPure(base, (base.root as PaneSplit).id, [90, 10]);
+  };
+
+  it("clamps a pane to the 120px floor and bills its sibling", () => {
+    const layout = lopsided();
+    const narrow = { width: 300, height: 800 };
+
+    // 299 across: 10% would be 29.9, so the small pane renders at 120 and the
+    // big one keeps only 179.
+    expect(paneBoxForSession(layout, "s2", narrow)).toEqual({
+      width: 120 - 2,
+      height: GROUPED_HEIGHT,
+    });
+    expect(paneBoxForSession(layout, "s1", narrow)).toEqual({
+      width: 179 - 2,
+      height: GROUPED_HEIGHT,
+    });
+  });
+
+  // Narrower still, and the floor stops being satisfiable at all. Runner sets
+  // no window minWidth, so a 2-pane chat crosses this around a 760px window
+  // and nested 3-pane groups cross it earlier.
+  it("splits evenly once neither pane can reach the floor", () => {
+    // 199 across, so both panes pin to the same minimum and their equal
+    // flexGrow values shrink together — the 90/10 drag stops applying.
+    const box = paneBoxForSession(lopsided(), "s2", {
+      width: 200,
+      height: 800,
+    });
+    expect(box).toEqual({ width: 199 / 2 - 2, height: GROUPED_HEIGHT });
+    expect(paneBoxForSession(lopsided(), "s1", { width: 200, height: 800 }))
+      .toEqual(box);
+  });
+
+  it("leaves the percentages alone when both panes clear the floor", () => {
+    // 1999 across: 10% is 199.9, comfortably above the floor.
+    const box = paneBoxForSession(lopsided(), "s2", {
+      width: 2000,
+      height: 800,
+    });
+    expect(box?.width).toBeCloseTo(1999 * 0.1 - 2, 6);
   });
 });

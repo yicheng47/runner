@@ -120,6 +120,74 @@ export function newChatTargetPane(
   return leaves(layout.root).find((l) => l.sessionId === null)?.id ?? null;
 }
 
+// Chrome ChatPaneGroup puts between a pane's slot and the terminal frame:
+// a 1px Separator between split siblings, and — only once the tab is grouped
+// — a 34px pane header plus the 1px section border that reserves the focus
+// ring. All box-sizing: border-box, so each value is the full slot cost.
+const PANE_SEPARATOR_PX = 1;
+const PANE_HEADER_HEIGHT_PX = 34;
+const PANE_BORDER_PX = 1;
+/** Mirrors `minSize` on ChatPaneGroup's Panels. The panel library refuses to
+ *  render a pane below this on the split's axis and takes the space from its
+ *  sibling instead, so a narrow window makes the persisted percentages a lie
+ *  and the estimate has to clamp the same way. */
+const PANE_MIN_SIZE_PX = 120;
+
+/**
+ * Pixel box a session's pane body occupies inside `area` (the tab's whole
+ * pane area), mirroring ChatPaneGroup's render. Null when the session is not
+ * in this layout.
+ *
+ * This is the split divisor the launch-resume estimate needs (impl 0036, open
+ * question 3): the layout is known from persisted tab state before any pane
+ * mounts, so a session returning into a 2–3 pane tab can be estimated at its
+ * own width rather than the tab's.
+ */
+export function paneBoxForSession(
+  layout: PaneLayout,
+  sessionId: string,
+  area: { width: number; height: number },
+): { width: number; height: number } | null {
+  const grouped = layout.root.kind === "split";
+  const walk = (
+    node: PaneNode,
+    width: number,
+    height: number,
+  ): { width: number; height: number } | null => {
+    if (node.kind === "leaf") {
+      if (node.sessionId !== sessionId) return null;
+      if (!grouped) return { width, height };
+      return {
+        width: width - PANE_BORDER_PX * 2,
+        height: height - PANE_BORDER_PX * 2 - PANE_HEADER_HEIGHT_PX,
+      };
+    }
+    const horizontal = node.orientation === "row";
+    const axis = Math.max(
+      0,
+      (horizontal ? width : height) - PANE_SEPARATOR_PX,
+    );
+    // Below 2× the minimum neither side can be satisfied, and the persisted
+    // percentages stop describing the render entirely: the library pins both
+    // panels to the same minimum, and panels lay out as `flexBasis: 0` with
+    // `flexGrow` set to their layout value, so two equal values split the
+    // axis evenly however lopsided the drag was.
+    const first =
+      axis >= PANE_MIN_SIZE_PX * 2
+        ? Math.min(
+            Math.max((axis * node.sizes[0]) / 100, PANE_MIN_SIZE_PX),
+            axis - PANE_MIN_SIZE_PX,
+          )
+        : axis / 2;
+    const second = axis - first;
+    return (
+      walk(node.a, horizontal ? first : width, horizontal ? height : first) ??
+      walk(node.b, horizontal ? second : width, horizontal ? height : second)
+    );
+  };
+  return walk(layout.root, area.width, area.height);
+}
+
 function leaf(id: string, sessionId: string | null): PaneLeaf {
   return { kind: "leaf", id, sessionId };
 }
