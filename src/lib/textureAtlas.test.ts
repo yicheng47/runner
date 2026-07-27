@@ -1,8 +1,10 @@
 // Two contracts (impl 0037, phase 2).
 //
-// The storage-key list: exactly the settings that change a glyph's
-// rendered dimensions stale the atlas, and nothing else does. #360's whole
-// shape was an invalidator missing from this list.
+// The storage-key list: the settings that can change a glyph's rendered
+// dimensions stale the atlas, and nothing else does. #360's whole shape
+// was an invalidator missing from this list. App zoom is the one entry
+// held on suspicion rather than a reproduced symptom — see
+// `stalesTextureAtlas`.
 //
 // The backing-scale watcher: it re-registers at the new scale on every
 // change so the second display move is caught as reliably as the first, it
@@ -68,7 +70,7 @@ function fakeWindow(initialDpr: number) {
 }
 
 describe("stalesTextureAtlas", () => {
-  it("stales on app zoom — the invalidator #360 was missing", () => {
+  it("stales on app zoom, kept as insurance rather than a known repro", () => {
     expect(stalesTextureAtlas(STORAGE_APP_ZOOM)).toBe(true);
   });
 

@@ -1087,11 +1087,9 @@ export const RunnerTerminal = forwardRef<
         // drop the atlas. The atlas indexes cells by their rendered
         // pixel dimensions; a stale cache after a font change can leave
         // a band of pre-change glyphs at the new size until something
-        // else evicts them. App zoom does the same damage from the other
-        // direction — it rescales every glyph's device-pixel footprint
-        // with no font option changing, and nothing else signals it,
-        // since WebKit keeps page zoom out of `devicePixelRatio`
-        // (webkit#124862) and the backing-scale watcher stays silent.
+        // else evicts them. App zoom rides along on weaker evidence —
+        // see `stalesTextureAtlas` for why it is kept despite not
+        // reproducing the symptom.
         if (stalesTextureAtlas(e.key)) {
           webglRef.current?.clearTextureAtlas();
           refitAndPush();

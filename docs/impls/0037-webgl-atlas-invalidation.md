@@ -22,6 +22,8 @@ And a DPR watcher would not catch it. `windowSettle.ts:13-14`, written during #3
 
 This matters out of proportion to its size: **app zoom is a deterministic, on-demand reproduction of a bug that otherwise requires sleeping the machine.** Confirm it reproduces first, then develop against it.
 
+> **Corrected after testing (2026-07-27).** It does not reproduce. Jason smoke-tested it: app zoom leaves glyphs correctly spaced. The paragraph above is wrong about the mechanism — page zoom moves nothing the atlas config keys on, so `configEquals` returns true and the same atlas is reused rather than going stale. Zoom was never a repro, and this plan had no deterministic one; the rest of the work was verified at the source and by unit tests instead. Decision 4 still ships, downgraded from "most certain part of the fix" to cheap insurance — see the open questions.
+
 ### Why the wake signal is the hard part
 
 `RunEvent::Resumed` → `app/resumed` (`lib.rs:554`) is the only trigger that forces the strong refresh, and it is an app-lifecycle event, not a system sleep/wake one. There is no `NSWorkspace.didWakeNotification` observer. A real system wake typically surfaces only as a window focus change, which routes to the non-forcing `scheduleWakeRefit()`.
@@ -33,7 +35,7 @@ Hanging the atlas clear on focus is the obvious shortcut and the wrong answer: f
 1. **Clear the atlas on the events that actually invalidate it, not on a proxy for them.** Three distinct invalidators, each wired to its own real signal: system wake, backing-scale change, and app zoom. Focus is not one of them — it correlates with wake but fires constantly otherwise, and this codebase has already paid twice (#352, #363) for hanging behavior on a correlated proxy instead of the true signal.
 2. **System wake becomes a first-class signal via `NSWorkspace.didWakeNotification`.** Runner is macOS-only (AGENTS.md), so a native observer costs no portability, and `objc2-app-kit` is already a dependency — this needs an added feature, not a new crate. Emit it on the existing `<domain>/<verb>` event convention (e.g. `app/woke`) so the frontend consumes it like any other backend event. This is the precise signal; everything else is inference.
 3. **Watch backing scale directly.** A `matchMedia("(resolution: Xdppx)")` listener, re-registered on each change, catches lid-open-on-a-different-monitor and display re-initialization — cases where wake and scale change are independent. Note this is *complementary* to decision 2, not redundant: a GPU texture reset with unchanged scale fires no resolution change, and a monitor move fires no wake.
-4. **App zoom joins the existing font-change path.** Add `STORAGE_APP_ZOOM` to the storage-event handler beside font size and family, with the same `clearTextureAtlas()` + `refitAndPush()` treatment. This is the smallest and most certain part of the fix, and the only one with a deterministic repro.
+4. **App zoom joins the existing font-change path.** Add `STORAGE_APP_ZOOM` to the storage-event handler beside font size and family, with the same `clearTextureAtlas()` + `refitAndPush()` treatment. ~~This is the smallest and most certain part of the fix, and the only one with a deterministic repro.~~ **Corrected: it was the *least* certain part.** Zoom does not reproduce the symptom (see above), so this clear is probably inert. Kept regardless — it is one predicate entry on an explicit Cmd +/- press, and "probably inert" is read off the addon source, not measured. Delete it on evidence, not on that reasoning.
 5. **Clearing is the whole remedy; do not add a forced repaint.** `clearTextureAtlas()` drops the cache and glyphs re-rasterize lazily on the next draw, which the existing `t.refresh()` on the wake path already triggers. Do **not** reach for the forced resize dance — it fixes geometry, not rasters, and #352 exists precisely because that dance was over-applied.
 6. **Do not clear on ordinary activation.** Tab switches and pane activation must stay atlas-preserving. If a case emerges where activation genuinely needs it, that is a separate finding with its own evidence, not an extension of this one.
 
@@ -47,7 +49,13 @@ Hanging the atlas clear on focus is the obvious shortcut and the wrong answer: f
 
 Independently, tao's own `Event::Resumed` is emitted only from the iOS (`platform_impl/ios/view.rs:615`) and Android backends — `platform_impl/macos/` contains zero occurrences. So decision 2 does **not** collapse; the native observer is required. The existing `app/resumed` handler is left in place untouched as a #352/#363-owned geometry path.
 
-**Does app zoom actually reproduce the symptom?** Not confirmed — this one needs the running app, which is a smoke test, not an automated one. The `STORAGE_APP_ZOOM` branch ships regardless: the atlas is keyed on device-pixel glyph dimensions (`CharAtlasUtils.ts:34-53`), page zoom changes those, and no other signal reports it (WebKit keeps page zoom out of `devicePixelRatio`, webkit#124862). If the repro turns out negative, the branch is defensive rather than load-bearing — it costs one predicate.
+**Does app zoom actually reproduce the symptom?** **No.** Smoke-tested by Jason on 2026-07-27: changing app zoom leaves glyphs correctly spaced. So this plan never had the deterministic repro it was counting on, and phase 1 delivered one empirical answer instead of two.
+
+The addon source agrees, which is worth recording because it explains *why* the plan's reasoning failed. The atlas config is keyed on `devicePixelRatio` plus the CSS-derived char metrics (`CharAtlasUtils.ts:34-53`, `configEquals` at `:55-76`). Page zoom moves neither: WebKit holds `devicePixelRatio` at the display scale (webkit#124862) and CSS char metrics are unchanged, so `configEquals` returns true and the same atlas is reused rather than going stale. The canvas device-pixel box *does* grow — `DevicePixelObserver` sees it and `_setCanvasDevicePixelDimensions` resizes the canvas — but the glyph shader normalizes against the deliberately-retained older `device.canvas` dimensions (`WebglRenderer.ts:680-690`, `GlyphRenderer.ts:324`), so the whole grid scales uniformly. Bigger, not misaligned.
+
+The plan's error was treating "changes the on-screen size of a glyph" as equivalent to "changes what the atlas keys on." They are different questions, and only the second one stales a cache.
+
+Decision 4 ships anyway, on Jason's call, downgraded to insurance: one predicate entry on an explicit Cmd +/- press, against a mechanism argument that is read off dependency source rather than measured. If WebKit rounds a CSS char metric differently at some zoom step the config genuinely differs, and this is the only thing that would notice. Delete it on evidence, not on the reasoning above.
 
 **Is a full atlas clear the right granularity?** Yes — it is the only granularity the addon exposes. `clearTextureAtlas()` is the sole invalidation entry point on the public surface (`typings/addon-webgl.d.ts`), implemented as `_charAtlas?.clearTexture(); _clearModel(true); _requestRedrawViewport()` (`WebglRenderer.ts:332-336`). Something narrower does exist internally — `acquireTextureAtlas` re-keys on a config that includes `devicePixelRatio` and char metrics (`CharAtlasUtils.ts:55-76`) — but it is reachable only from `handleResize` / `handleDevicePixelRatioChange`, not from the addon's API.
 
@@ -80,7 +88,7 @@ A plain backing-scale change is therefore already handled upstream. Decision 3's
 
 ### Phase 1 — reproduce deterministically
 
-- Confirm app zoom reproduces the overlapped-glyph symptom. If it does, it is the development repro for the rest of the work. → Open; needs the running app. See the open questions.
+- Confirm app zoom reproduces the overlapped-glyph symptom. If it does, it is the development repro for the rest of the work. → **It does not.** There is no deterministic repro; the rest of the work was verified at the source and by unit tests. See the open questions.
 - Verify whether `RunEvent::Resumed` fires on real system wake; record the answer, since it decides Phase 2's size. → It does not fire on macOS at all. See the open questions.
 
 ### Phase 2 — wire the three invalidators
@@ -100,14 +108,14 @@ All three landed. The invalidation rules moved out of the event handler into `sr
 
 Automated:
 
-- [x] An app-zoom storage event clears the atlas and refits — `stalesTextureAtlas` is asserted true for `STORAGE_APP_ZOOM`, and it is the sole gate on the handler's `clearTextureAtlas()` + `refitAndPush()`.
+- [x] An app-zoom storage event clears the atlas and refits — `stalesTextureAtlas` is asserted true for `STORAGE_APP_ZOOM`, and it is the sole gate on the handler's `clearTextureAtlas()` + `refitAndPush()`. Note this verifies the wiring, not a fix: zoom does not reproduce the symptom, so there is nothing here for the clear to repair.
 - [x] A resolution-change event clears the atlas — the watcher is asserted to fire on change and, crucially, to re-register at the new scale so the *second* display move is caught too.
 - [x] Ordinary activation / tab switch does **not** clear the atlas — held by construction rather than by a test: `clearTextureAtlas()` has exactly three call sites (storage handler, wake listener, backing-scale listener) and none is on the activation path. `stalesTextureAtlas` is asserted false for cursor style, scrollback, theme, unrelated keys, and `null`.
 - [x] The wake event reaches the terminal and clears — `wake.rs`'s test posts `NSWorkspaceDidWakeNotification` to the workspace notification center and asserts the observer runs, which pins the registration and the notification name without sleeping the machine. The `app/woke` → `clearTextureAtlas()` hop is a one-liner in the component, outside the unit seam.
 
 Manual (Jason smoke-tests):
 
-- [ ] Change app zoom with visible output on screen → glyphs stay correctly spaced.
+- [x] Change app zoom with visible output on screen → glyphs stay correctly spaced. Done 2026-07-27: they do, and they did before this change too — zoom never broke them.
 - [ ] Sleep the Mac with an active pane, wake, focus Runner → glyphs correct without touching anything.
 - [ ] Move the window between displays of different scale → glyphs correct.
 - [ ] Alt-tab repeatedly → no visible re-rasterization stutter.

@@ -42,8 +42,23 @@ import {
 
 /**
  * Settings whose change restales every cached glyph. Font size and family
- * change the rasterized cell outright; app zoom changes how many device
- * pixels that cell occupies, which the atlas keys on just as hard.
+ * change the rasterized cell outright.
+ *
+ * App zoom is here on weaker evidence, deliberately. It was 0037's
+ * candidate for a deterministic repro of #360 and it did **not**
+ * reproduce: page zoom moves nothing the atlas config keys on — WebKit
+ * holds `devicePixelRatio` at the display scale (webkit#124862) and the
+ * CSS char metrics are unchanged, so `configEquals` returns true and the
+ * same atlas is reused. The canvas device-pixel box does grow, but the
+ * glyph shader normalizes against the retained older canvas dimensions,
+ * so the grid scales uniformly — bigger, not misaligned.
+ *
+ * So this clear is probably inert, and kept anyway: it is one predicate
+ * entry on an explicit Cmd +/- press, and the reasoning above is read off
+ * the addon source rather than measured. If WebKit rounds a CSS char
+ * metric differently at some zoom step, the config genuinely differs and
+ * this is the only thing that would notice. Delete it on evidence, not on
+ * the reasoning here.
  *
  * Cursor style, scrollback, and theme are not here on purpose: none of
  * them changes a glyph's rendered dimensions.
