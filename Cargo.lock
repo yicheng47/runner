@@ -3842,12 +3842,14 @@ name = "runner"
 version = "0.4.5"
 dependencies = [
  "base64 0.22.1",
+ "block2",
  "chrono",
  "fs2",
  "libc",
  "log",
  "notify",
  "objc2-app-kit",
+ "objc2-foundation",
  "portable-pty",
  "r2d2",
  "r2d2_sqlite",

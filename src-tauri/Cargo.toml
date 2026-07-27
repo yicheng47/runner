@@ -64,7 +64,14 @@ libc = "0.2"
 portable-pty = "0.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow", "NSWorkspace"] }
+# System-wake observer (impl 0037). `NSWorkspace`'s notification center is
+# the only precise sleep/wake signal available to the app — tao never emits
+# `Event::Resumed` on macOS. `block2` + `NSOperation` are what the
+# `addObserverForName:object:queue:usingBlock:` binding is gated on; both
+# crates are already in the lock via tao/wry.
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSNotification", "NSOperation", "NSString", "block2"] }
+block2 = "0.6"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
