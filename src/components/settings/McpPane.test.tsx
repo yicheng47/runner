@@ -30,6 +30,7 @@ const status = {
   claude_code: clientStatus,
   codex: clientStatus,
   qoder: clientStatus,
+  trae: clientStatus,
 };
 
 describe("McpPane", () => {
@@ -45,7 +46,7 @@ describe("McpPane", () => {
     mocks.invoke.mockImplementation(async (command: string) => {
       if (command === "mcp_integration_status") return status;
       if (command === "mcp_config_snippet") {
-        return { claude_code: "{}", codex: "", qoder: "{}" };
+        return { claude_code: "{}", codex: "", qoder: "{}", trae: "" };
       }
       return undefined;
     });
@@ -57,21 +58,21 @@ describe("McpPane", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders and toggles Qoder registration", async () => {
+  it("renders and toggles TRAE registration", async () => {
     await act(async () => {
       root.render(<McpPane />);
     });
 
-    expect(container.textContent).toContain("Qoder CLI");
+    expect(container.textContent).toContain("TRAE CLI");
     const toggles = container.querySelectorAll<HTMLButtonElement>(
       '[role="switch"]',
     );
-    expect(toggles).toHaveLength(3);
+    expect(toggles).toHaveLength(4);
 
-    await act(async () => toggles[2].click());
+    await act(async () => toggles[3].click());
 
     expect(mocks.invoke).toHaveBeenCalledWith("mcp_set_integration", {
-      client: "qoder",
+      client: "trae",
       enabled: true,
     });
   });

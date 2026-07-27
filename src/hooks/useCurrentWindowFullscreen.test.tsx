@@ -38,7 +38,7 @@ describe("useCurrentWindowFullscreen", () => {
   let root: Root;
 
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     mocks.fullscreen = false;
     mocks.resize = null;
     mocks.unlisten.mockReset();

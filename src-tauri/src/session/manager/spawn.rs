@@ -186,12 +186,12 @@ impl SessionManager {
         delivered_via_argv
     }
 
-    fn codex_capture_prompt_marker(
+    pub(super) fn codex_capture_prompt_marker(
         runtime: &str,
         session_id: &str,
         first_turn: Option<String>,
     ) -> (Option<String>, Option<String>) {
-        if runtime != "codex" {
+        if !matches!(runtime, "codex" | "trae") {
             return (first_turn, None);
         }
         let Some(first_turn) = first_turn else {
@@ -234,10 +234,15 @@ impl SessionManager {
 
         // Slot-level runtime override (feature 41): the effective
         // runtime is `slot.runtime_override ?? runner.runtime`. On a
-        // differing override the spawn uses registry command/default
-        // args and drops model/effort; persona fields carry over. A
+        // differing override the spawn uses the registry command,
+        // default args, and default effort; persona fields carry over. A slot may
+        // independently pin the selected runtime's model. A
         // matching override spawns byte-identically but still pins.
-        let resolution = resolve_runtime_override(runner, slot.runtime_override.as_deref())?;
+        let resolution = resolve_runtime_override(
+            runner,
+            slot.runtime_override.as_deref(),
+            slot.model_override.as_deref(),
+        )?;
         let pinned = resolution.pinned;
         let runner =
             self.resolve_runner_executable(resolution.effective.as_ref().unwrap_or(runner), &pool)?;
@@ -486,20 +491,26 @@ impl SessionManager {
             );
         }
 
-        let codex_capture = if runner.runtime == "codex" && plan.assigned_key.is_none() {
-            capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
-                mission_id: Some(mission.id.clone()),
-                spawn_cwd: cwd,
-                started_at: spawn_started_at_dt,
-                row_started_at: row_started_at.clone(),
-                spawn_pid,
-                prompt_marker: codex_prompt_marker.clone(),
-                pool: Arc::clone(&pool),
-                events: Arc::clone(&events),
-            })
-        } else {
-            None
-        };
+        let codex_capture =
+            if matches!(runner.runtime.as_str(), "codex" | "trae") && plan.assigned_key.is_none() {
+                crate::session::codex_capture::sessions_root_for(&runner.runtime).and_then(
+                    |sessions_root| {
+                        capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
+                            mission_id: Some(mission.id.clone()),
+                            sessions_root,
+                            spawn_cwd: cwd,
+                            started_at: spawn_started_at_dt,
+                            row_started_at: row_started_at.clone(),
+                            spawn_pid,
+                            prompt_marker: codex_prompt_marker.clone(),
+                            pool: Arc::clone(&pool),
+                            events: Arc::clone(&events),
+                        })
+                    },
+                )
+            } else {
+                None
+            };
 
         let spawn_emit_ctx = open_mission_event_log(&app_data_dir, &mission.crew_id, &mission.id)
             .map(|event_log| ForwarderEmitCtx {
@@ -547,8 +558,10 @@ impl SessionManager {
         }
 
         emit_runner_activity(&pool, &runner, events.as_ref());
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "qoder")
-            && !plan.resuming
+        if matches!(
+            runner.runtime.as_str(),
+            "claude-code" | "codex" | "qoder" | "trae"
+        ) && !plan.resuming
             && !first_turn_delivered_via_argv
         {
             log::warn!(
@@ -752,7 +765,7 @@ impl SessionManager {
 
         // Chat-level runtime override (feature 41) — same resolution
         // rule as mission spawns.
-        let resolution = resolve_runtime_override(runner, runtime_override)?;
+        let resolution = resolve_runtime_override(runner, runtime_override, None)?;
         let pinned = resolution.pinned;
         let runner =
             self.resolve_runner_executable(resolution.effective.as_ref().unwrap_or(runner), &pool)?;
@@ -873,20 +886,26 @@ impl SessionManager {
             );
         }
 
-        let codex_capture = if runner.runtime == "codex" && plan.assigned_key.is_none() {
-            capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
-                mission_id: None,
-                spawn_cwd: cwd,
-                started_at: spawn_started_at_dt,
-                row_started_at: started_at.clone(),
-                spawn_pid,
-                prompt_marker: codex_prompt_marker.clone(),
-                pool: Arc::clone(&pool),
-                events: Arc::clone(&events),
-            })
-        } else {
-            None
-        };
+        let codex_capture =
+            if matches!(runner.runtime.as_str(), "codex" | "trae") && plan.assigned_key.is_none() {
+                crate::session::codex_capture::sessions_root_for(&runner.runtime).and_then(
+                    |sessions_root| {
+                        capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
+                            mission_id: None,
+                            sessions_root,
+                            spawn_cwd: cwd,
+                            started_at: spawn_started_at_dt,
+                            row_started_at: started_at.clone(),
+                            spawn_pid,
+                            prompt_marker: codex_prompt_marker.clone(),
+                            pool: Arc::clone(&pool),
+                            events: Arc::clone(&events),
+                        })
+                    },
+                )
+            } else {
+                None
+            };
 
         self.install_handle(
             &session_id,
@@ -933,8 +952,10 @@ impl SessionManager {
         if emit_activity {
             emit_runner_activity(&pool, &runner, events.as_ref());
         }
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "qoder")
-            && !plan.resuming
+        if matches!(
+            runner.runtime.as_str(),
+            "claude-code" | "codex" | "qoder" | "trae"
+        ) && !plan.resuming
             && !first_turn_delivered_via_argv
         {
             log::warn!(
@@ -1147,7 +1168,9 @@ impl SessionManager {
             let conn = pool.get()?;
             let runner = crate::commands::runner::get(&conn, runner_id)?;
             let runner =
-                match resolve_runtime_override(&runner, snap.agent_runtime.as_deref())?.effective {
+                match resolve_runtime_override(&runner, snap.agent_runtime.as_deref(), None)?
+                    .effective
+                {
                     Some(effective) => effective,
                     None => runner,
                 };
@@ -1333,20 +1356,26 @@ impl SessionManager {
             );
         }
 
-        let codex_capture = if runner.runtime == "codex" && plan.assigned_key.is_none() {
-            capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
-                mission_id: snap.mission_id.clone(),
-                spawn_cwd: cwd,
-                started_at: spawn_started_at_dt,
-                row_started_at: started_at.clone(),
-                spawn_pid,
-                prompt_marker: None,
-                pool: Arc::clone(&pool),
-                events: Arc::clone(&events),
-            })
-        } else {
-            None
-        };
+        let codex_capture =
+            if matches!(runner.runtime.as_str(), "codex" | "trae") && plan.assigned_key.is_none() {
+                crate::session::codex_capture::sessions_root_for(&runner.runtime).and_then(
+                    |sessions_root| {
+                        capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
+                            mission_id: snap.mission_id.clone(),
+                            sessions_root,
+                            spawn_cwd: cwd,
+                            started_at: spawn_started_at_dt,
+                            row_started_at: started_at.clone(),
+                            spawn_pid,
+                            prompt_marker: None,
+                            pool: Arc::clone(&pool),
+                            events: Arc::clone(&events),
+                        })
+                    },
+                )
+            } else {
+                None
+            };
 
         let resume_emit_ctx = mission_ctx.as_ref().and_then(|ctx| {
             open_mission_event_log(app_data_dir, &ctx.crew_id, &ctx.mission_id).map(|event_log| {
@@ -1422,7 +1451,11 @@ impl SessionManager {
         // returned SpawnedSession. For direct-chat resume there's no
         // slot/lead concept; if that degrades to fresh and argv
         // delivery was unavailable, we log the skipped injection.
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex" | "qoder") && !plan.resuming {
+        if matches!(
+            runner.runtime.as_str(),
+            "claude-code" | "codex" | "qoder" | "trae"
+        ) && !plan.resuming
+        {
             if mission_ctx.is_some() {
                 log::warn!(
                     "first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",

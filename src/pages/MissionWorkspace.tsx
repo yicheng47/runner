@@ -451,7 +451,7 @@ export default function MissionWorkspace({
         .filter(
           (s) =>
             s.status === "running" &&
-            s.runtime === "codex" &&
+            (s.runtime === "codex" || s.runtime === "trae") &&
             !s.agent_session_key,
         )
         .map((s) => s.id)
@@ -479,7 +479,7 @@ export default function MissionWorkspace({
           const stillPending = rows.some(
             (s) =>
               s.status === "running" &&
-              s.runtime === "codex" &&
+              (s.runtime === "codex" || s.runtime === "trae") &&
               !s.agent_session_key,
           );
           if (!stillPending || attempts >= MAX_ATTEMPTS) {

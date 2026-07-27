@@ -68,7 +68,15 @@ describe("UpdateProvider trigger policy", () => {
   }
 
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({
+      toFake: [
+        "Date",
+        "setTimeout",
+        "clearTimeout",
+        "setInterval",
+        "clearInterval",
+      ],
+    });
     vi.setSystemTime(new Date("2026-07-22T00:00:00Z"));
     storage = new Map();
     vi.stubGlobal("localStorage", {

@@ -12,6 +12,7 @@ import type { RunnerWithActivity } from "../lib/types";
 import { Button } from "./ui/Button";
 import { Modal } from "./ui/Overlay";
 import { Field } from "./ui/Field";
+import { ModelField } from "./ui/ModelField";
 import { StyledSelect } from "./ui/StyledSelect";
 import { RUNTIME_OPTIONS } from "./ui/runtimes";
 
@@ -41,6 +42,7 @@ export function AddSlotModal({
   const [slotHandleEdited, setSlotHandleEdited] = useState(false);
   // "" = the "Runner default" sentinel — no per-slot override.
   const [runtimeOverride, setRuntimeOverride] = useState("");
+  const [modelOverride, setModelOverride] = useState("");
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +56,7 @@ export function AddSlotModal({
     setSlotHandle("");
     setSlotHandleEdited(false);
     setRuntimeOverride("");
+    setModelOverride("");
     setError(null);
     setSubmitting(false);
     setLoading(true);
@@ -151,6 +154,10 @@ export function AddSlotModal({
         runner_id: selectedRunner.id,
         slot_handle: slotHandle,
         runtime_override: runtimeOverride || null,
+        model_override:
+          runtimeOverride && modelOverride.trim()
+            ? modelOverride.trim()
+            : null,
       });
       await onCreated();
     } catch (e) {
@@ -309,9 +316,27 @@ export function AddSlotModal({
                 description: o.description,
               })),
             ]}
-            onChange={setRuntimeOverride}
+            onChange={(runtime) => {
+              setRuntimeOverride(runtime);
+              setModelOverride("");
+            }}
           />
         </Field>
+
+        {runtimeOverride && selectedRunner ? (
+          <Field
+            id="add-slot-model"
+            label="Model"
+            hint="optional · default uses the selected runtime's own model"
+          >
+            <ModelField
+              id="add-slot-model"
+              runtime={runtimeOverride}
+              model={modelOverride}
+              onModelChange={setModelOverride}
+            />
+          </Field>
+        ) : null}
 
         <section className="flex flex-col gap-2 opacity-70">
           <div className="flex items-center justify-between gap-3">

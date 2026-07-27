@@ -527,7 +527,8 @@ export default function RunnerChat({
   useEffect(() => {
     if (!sessionId || !metaLoaded || isArchived) return;
     if (
-      chatMeta?.agent_runtime !== "codex" ||
+      (chatMeta?.agent_runtime !== "codex" &&
+        chatMeta?.agent_runtime !== "trae") ||
       chatMeta.agent_session_key ||
       chatMeta.status !== "running"
     ) {

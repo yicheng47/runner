@@ -479,9 +479,9 @@ struct SessionHandle {
     /// `runtime.resize` / `runtime.stop` for every operation on the
     /// live session.
     runtime_session: RuntimeSession,
-    /// Codex cannot be given a caller-owned session id at launch.
+    /// Codex-lineage runtimes cannot be given a caller-owned session id at launch.
     /// When this is present, user activity can retry native id
-    /// capture after Codex has actually created its rollout file.
+    /// capture after the runtime has actually created its rollout file.
     codex_capture: Option<CodexCaptureContext>,
     /// Forwarder thread that drains the runtime's `OutputStream`
     /// into `session/output` events. `kill` joins on this so callers
@@ -501,6 +501,7 @@ struct SessionHandle {
 #[derive(Clone)]
 struct CodexCaptureContext {
     mission_id: Option<String>,
+    sessions_root: PathBuf,
     spawn_cwd: String,
     started_at: DateTime<Utc>,
     row_started_at: String,
@@ -1011,6 +1012,7 @@ impl SessionManager {
             crate::session::codex_capture::CaptureRequest {
                 session_id: session_id.to_string(),
                 mission_id: ctx.mission_id.clone(),
+                sessions_root: ctx.sessions_root.clone(),
                 spawn_cwd: ctx.spawn_cwd.clone(),
                 started_at: ctx.started_at,
                 expected_row_started_at: ctx.row_started_at.clone(),
@@ -1122,6 +1124,7 @@ pub(crate) struct RuntimeOverrideResolution {
 pub(crate) fn resolve_runtime_override(
     runner: &Runner,
     runtime_override: Option<&str>,
+    model_override: Option<&str>,
 ) -> Result<RuntimeOverrideResolution> {
     let Some(name) = runtime_override.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(RuntimeOverrideResolution {
@@ -1129,9 +1132,20 @@ pub(crate) fn resolve_runtime_override(
             pinned: false,
         });
     };
-    if name == runner.runtime {
+    let model_override = model_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if name == runner.runtime && model_override.is_none() {
         return Ok(RuntimeOverrideResolution {
             effective: None,
+            pinned: true,
+        });
+    }
+    if name == runner.runtime {
+        let mut effective = runner.clone();
+        effective.model = model_override.map(ToOwned::to_owned);
+        return Ok(RuntimeOverrideResolution {
+            effective: Some(effective),
             pinned: true,
         });
     }
@@ -1145,7 +1159,7 @@ pub(crate) fn resolve_runtime_override(
         &[],
         crate::commands::runner::default_permission_mode(),
     );
-    effective.model = None;
+    effective.model = model_override.map(ToOwned::to_owned);
     effective.effort = None;
     Ok(RuntimeOverrideResolution {
         effective: Some(effective),

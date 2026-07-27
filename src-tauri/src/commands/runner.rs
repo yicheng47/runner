@@ -928,6 +928,55 @@ mod tests {
     }
 
     #[test]
+    fn create_and_update_apply_trae_native_permission_mode() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let r = create(
+            &conn,
+            CreateRunnerInput {
+                handle: "trae-tester".into(),
+                display_name: "TRAE".into(),
+                runtime: "trae".into(),
+                command: "traecli".into(),
+                args: vec!["--debug".into()],
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                permission_mode: PermissionMode::Auto,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            r.args,
+            vec![
+                "--debug".to_string(),
+                "--permission-mode".to_string(),
+                "auto".to_string(),
+            ],
+        );
+
+        let r = update(
+            &conn,
+            &r.id,
+            UpdateRunnerInput {
+                permission_mode: Some(PermissionMode::Bypass),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            r.args,
+            vec![
+                "--debug".to_string(),
+                "--permission-mode".to_string(),
+                "bypass_permissions".to_string(),
+            ],
+        );
+    }
+
+    #[test]
     fn create_omits_bypass_flags_when_toggle_off() {
         let pool = ctx();
         let conn = pool.get().unwrap();

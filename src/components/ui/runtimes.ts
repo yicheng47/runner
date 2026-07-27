@@ -34,12 +34,19 @@ export const RUNTIME_OPTIONS: RuntimeOption[] = [
     defaultCommand: "qodercli",
     description: "Qoder CLI",
   },
+  {
+    value: "trae",
+    label: "trae",
+    defaultCommand: "traecli",
+    description: "TRAE CLI",
+  },
 ];
 
 const RUNTIMES_CLEARING_ON_RESIZE = new Set([
   "claude-code",
   "codex",
   "qoder",
+  "trae",
 ]);
 
 export function runtimeClearsOnResize(runtime: string): boolean {
@@ -56,6 +63,7 @@ const RUNTIMES_WITH_PERMISSION_MODE = new Set([
   "claude-code",
   "codex",
   "qoder",
+  "trae",
 ]);
 
 export function runtimeSupportsPermissionMode(runtime: string): boolean {
@@ -109,6 +117,13 @@ export const EFFORT_OPTIONS_BY_RUNTIME: Record<
     { value: "high", label: "High", description: "Greater reasoning depth for complex problems." },
     { value: "xhigh", label: "Extra high", description: "Extra reasoning depth for complex problems." },
   ],
+  trae: [
+    EFFORT_INHERIT,
+    { value: "low", label: "Low", description: "Fast responses with lighter reasoning." },
+    { value: "medium", label: "Medium", description: "Balances speed and reasoning depth." },
+    { value: "high", label: "High", description: "Greater reasoning depth for complex problems." },
+    { value: "xhigh", label: "Extra high", description: "Extra reasoning depth for complex problems." },
+  ],
 };
 
 export function runtimeSupportsEffort(runtime: string): boolean {
@@ -138,8 +153,9 @@ const MODEL_DEFAULT: ModelOption = {
 // claude-code's `--model` accepts version-stable aliases (`opus` always
 // resolves to the latest Opus), so suggesting them never goes stale.
 // codex has no alias scheme — it takes full names like `gpt-5-codex`
-// that rot every release — so it offers only `default` and lets the
-// user type any full name.
+// that rot every release — and qoder/trae expose runtime-specific
+// catalogs. Those runtimes offer only `default` here and let the user
+// type any full name.
 export const MODEL_SUGGESTIONS_BY_RUNTIME: Record<
   string,
   ReadonlyArray<ModelOption>
@@ -151,6 +167,8 @@ export const MODEL_SUGGESTIONS_BY_RUNTIME: Record<
     { value: "haiku", label: "haiku", description: "Latest Claude Haiku." },
   ],
   codex: [MODEL_DEFAULT],
+  qoder: [MODEL_DEFAULT],
+  trae: [MODEL_DEFAULT],
 };
 
 export function modelSuggestions(runtime: string): ReadonlyArray<ModelOption> {
@@ -215,12 +233,13 @@ export const PERMISSION_MODES_BY_RUNTIME: Record<
       value: "auto",
       label: "Auto",
       description:
-        "Auto-runs in the workspace; the model decides when to ask the user for approval (`--ask-for-approval on-request`).",
+        "Auto-run in the workspace and ask only when the model decides approval is needed (`--ask-for-approval on-request`).",
     },
     {
       value: "bypass",
       label: "Bypass",
-      description: "Never ask. Auto-runs everything in the workspace.",
+      description:
+        "Never ask while keeping Codex's workspace-write sandbox (`--ask-for-approval never`).",
       danger: true,
     },
   ],
@@ -234,6 +253,26 @@ export const PERMISSION_MODES_BY_RUNTIME: Record<
       value: "auto",
       label: "Auto",
       description: "Run with Qoder's verified `--permission-mode auto` mode.",
+    },
+  ],
+  trae: [
+    {
+      value: "default",
+      label: "Default",
+      description: "TRAE CLI's built-in approval cadence.",
+    },
+    {
+      value: "auto",
+      label: "Auto",
+      description:
+        "Use TRAE CLI's native auto-reviewer (`--permission-mode auto`).",
+    },
+    {
+      value: "bypass",
+      label: "Bypass",
+      description:
+        "Bypass TRAE CLI permission prompts (`--permission-mode bypass_permissions`).",
+      danger: true,
     },
   ],
 };
@@ -263,6 +302,10 @@ const MODE_MATCH_PAIRS_BY_RUNTIME: Record<
   },
   qoder: {
     auto: [["--permission-mode", "auto"]],
+  },
+  trae: {
+    auto: [["--permission-mode", "auto"]],
+    bypass: [["--permission-mode", "bypass_permissions"]],
   },
 };
 
@@ -336,7 +379,7 @@ export function inferPermissionMode(
 //   - claude-code: `--permission-mode <value>` (value-bearing) plus
 //     the legacy standalone `--dangerously-skip-permissions` flag,
 //     so old rows get cleaned up on the next save.
-//   - qoder: `--permission-mode <value>` (value-bearing).
+//   - qoder/trae: `--permission-mode <value>` (value-bearing).
 // Mirror of `router::runtime::strip_permission_flags`.
 const PERMISSION_STRIP_KEYS_BY_RUNTIME: Record<
   string,
@@ -351,6 +394,7 @@ const PERMISSION_STRIP_KEYS_BY_RUNTIME: Record<
     ["--sandbox", true],
   ],
   qoder: [["--permission-mode", true]],
+  trae: [["--permission-mode", true]],
 };
 
 /// Strip every permission-mode flag from `args`. Used by the runner

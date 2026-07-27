@@ -425,7 +425,7 @@ describe("hydrateLayoutSet (cross-window sync)", () => {
   });
 
   it("marks hydrated members fresh so the vanished-session sweep spares them", () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(1_000);
     applyPreset("single", "A", ["A"]);
 
@@ -463,7 +463,7 @@ describe("fresh assignments", () => {
   });
 
   it("marks a session fresh immediately after assignment", () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(1_000);
 
     assignSessionToPane("p1", "fresh-session");
@@ -476,7 +476,7 @@ describe("fresh assignments", () => {
   });
 
   it("expires freshness after the assignment TTL", () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(2_000);
 
     assignSessionToPane("p1", "expired-session");
