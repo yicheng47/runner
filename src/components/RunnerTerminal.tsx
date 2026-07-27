@@ -54,6 +54,7 @@ import {
   type TerminalGridSize,
 } from "../lib/terminalResize";
 import { TERMINAL_SCROLLBAR_WIDTH_PX } from "../lib/terminalSizing";
+import { observeBackingScale, stalesTextureAtlas } from "../lib/textureAtlas";
 import { eventMatchesShortcut } from "../lib/keymap";
 import { runtimeClearsOnResize } from "./ui/runtimes";
 
@@ -1012,6 +1013,32 @@ export const RunnerTerminal = forwardRef<
       }
       unlistenAppResumed = fn;
     });
+    // Real system wake, from the NSWorkspace observer in wake.rs (#360).
+    // Sleep can re-initialize the display or reset the GPU underneath a
+    // live atlas, leaving every cached glyph rasterized for conditions
+    // that no longer hold; `t.refresh()` on the focus path only marks
+    // lines dirty, so the stale rasters get redrawn faithfully. Dropping
+    // the cache is the entire remedy — the addon re-rasterizes lazily on
+    // the redraw it requests itself, and geometry is #352/#363's problem,
+    // not this one. Deliberately not hung on focus or visibilitychange:
+    // those correlate with wake but fire on every alt-tab.
+    let unlistenAppWoke: (() => void) | null = null;
+    let appWokeCancelled = false;
+    void listen("app/woke", () => {
+      webglRef.current?.clearTextureAtlas();
+    }).then((fn) => {
+      if (appWokeCancelled) {
+        fn();
+        return;
+      }
+      unlistenAppWoke = fn;
+    });
+    // Lid opened on a different monitor, or a display that came back at
+    // another scale. Independent of wake in both directions: a monitor
+    // move fires no wake, and a GPU reset fires no resolution change.
+    const disposeBackingScale = observeBackingScale(() => {
+      webglRef.current?.clearTextureAtlas();
+    });
     let unlistenFocus: (() => void) | null = null;
     let focusCancelled = false;
     try {
@@ -1045,25 +1072,27 @@ export const RunnerTerminal = forwardRef<
       try {
         if (e.key === STORAGE_TERMINAL_FONT_SIZE) {
           t.options.fontSize = readTerminalFontSize();
-          // Cell metrics changed — refit, push the new PTY geometry,
-          // and drop the atlas. The atlas indexes cells by their
-          // rendered pixel dimensions; a stale cache after a font
-          // change can leave a band of pre-change glyphs at the new
-          // size until something else evicts them.
-          webglRef.current?.clearTextureAtlas();
-          refitAndPush();
         } else if (e.key === STORAGE_TERMINAL_FONT_FAMILY) {
           t.options.fontFamily = resolveTerminalFontStack(
             readTerminalFontFamily(),
           );
-          webglRef.current?.clearTextureAtlas();
-          refitAndPush();
         } else if (e.key === STORAGE_TERMINAL_CURSOR_STYLE) {
           t.options.cursorStyle = readTerminalCursorStyle();
         } else if (e.key === STORAGE_TERMINAL_SCROLLBACK) {
           t.options.scrollback = readTerminalScrollback();
         } else if (e.key === STORAGE_TERMINAL_THEME) {
           t.options.theme = resolveTerminalTheme(readTerminalTheme());
+        }
+        // Cell metrics changed — refit, push the new PTY geometry, and
+        // drop the atlas. The atlas indexes cells by their rendered
+        // pixel dimensions; a stale cache after a font change can leave
+        // a band of pre-change glyphs at the new size until something
+        // else evicts them. App zoom rides along on weaker evidence —
+        // see `stalesTextureAtlas` for why it is kept despite not
+        // reproducing the symptom.
+        if (stalesTextureAtlas(e.key)) {
+          webglRef.current?.clearTextureAtlas();
+          refitAndPush();
         }
       } catch {
         // xterm may reject runtime mutation of some options; the next
@@ -1083,6 +1112,9 @@ export const RunnerTerminal = forwardRef<
       window.removeEventListener("storage", onStorage);
       appResumedCancelled = true;
       unlistenAppResumed?.();
+      appWokeCancelled = true;
+      unlistenAppWoke?.();
+      disposeBackingScale();
       focusCancelled = true;
       unlistenFocus?.();
       wakeRafs.forEach((id) => window.cancelAnimationFrame(id));

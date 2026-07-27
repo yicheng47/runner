@@ -11,6 +11,8 @@ mod router;
 mod runtime_status;
 mod session;
 mod shell_path;
+#[cfg(target_os = "macos")]
+mod wake;
 mod window_state;
 mod windows;
 
@@ -145,6 +147,11 @@ pub fn run() {
 
             // First line of every app start. Triage-from-log starts here.
             log_startup_banner(app.handle(), &app_data_dir);
+
+            // System wake → `app/woke` (impl 0037). See wake.rs for why
+            // `RunEvent::Resumed` is not this signal on macOS.
+            #[cfg(target_os = "macos")]
+            wake::install(app.handle());
 
             let db_path = app_data_dir.join("runner.db");
             let pool = Arc::new(db::open_pool(&db_path)?);
