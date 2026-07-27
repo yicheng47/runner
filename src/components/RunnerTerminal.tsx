@@ -6,7 +6,7 @@
 //
 // Setup: active-pane WebGL renderer for cell-row alignment, base64 PTY frames
 // to preserve raw bytes, backend snapshot replay for late attach, and SIGWINCH
-// dance on attach so claude-code/codex/qoder repaint onto a fresh grid.
+// dance on attach so claude-code/codex/qoder/trae repaint onto a fresh grid.
 
 import {
   forwardRef,
@@ -106,7 +106,7 @@ function inferPasteImageMime(
 interface RunnerTerminalProps {
   sessionId: string;
   /** Runtime kind of the runner driving this session (e.g.
-   *  `"claude-code"`, `"codex"`, `"qoder"`, `"shell"`). Used to gate the
+   *  `"claude-code"`, `"codex"`, `"qoder"`, `"trae"`, `"shell"`). Used to gate the
    *  scrollback-clear on resize: TUI agents whose `SIGWINCH` repaint
    *  policy fully redraws the screen get a hard-clear before the
    *  resize lands, so the previous frame doesn't stay visible in

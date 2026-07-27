@@ -179,7 +179,10 @@ export function CreateRunnerModal({
           <RuntimeSelect
             id="new-runner-runtime"
             value={runtime}
-            onChange={(opt) => setRuntime(opt.value)}
+            onChange={(opt) => {
+              setRuntime(opt.value);
+              setModel("");
+            }}
           />
         </Field>
 

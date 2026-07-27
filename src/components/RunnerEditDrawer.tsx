@@ -33,14 +33,19 @@ import {
 export function RunnerEditDrawer({
   open,
   runner,
+  effectiveRuntime,
+  effectiveModel,
   onClose,
   onSaved,
 }: {
   open: boolean;
   runner: Runner | null;
+  effectiveRuntime?: string;
+  effectiveModel?: string | null;
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }) {
+  const previewsSlotEngine = effectiveRuntime !== undefined;
   const [displayName, setDisplayName] = useState("");
   const [runtime, setRuntime] = useState<string>(RUNTIME_OPTIONS[0].value);
   // Command is bound to runtime — the field below is read-only — but
@@ -70,27 +75,49 @@ export function RunnerEditDrawer({
   useEffect(() => {
     if (open && runner) {
       setDisplayName(runner.display_name);
-      setRuntime(runner.runtime);
-      setCommand(runner.command);
-      setArgsText(stripPermissionFlags(runner.runtime, runner.args).join(" "));
+      const runtime = effectiveRuntime ?? runner.runtime;
+      const runtimeOption = RUNTIME_OPTIONS.find((option) => option.value === runtime);
+      setRuntime(runtime);
+      setCommand(
+        previewsSlotEngine
+          ? (runtimeOption?.defaultCommand ?? runner.command)
+          : runner.command,
+      );
+      setArgsText(
+        previewsSlotEngine
+          ? ""
+          : stripPermissionFlags(runner.runtime, runner.args).join(" "),
+      );
       setWorkingDir(runner.working_dir ?? "");
       setSystemPrompt(runner.system_prompt ?? "");
-      setModel(runner.model ?? "");
+      setModel(
+        previewsSlotEngine ? (effectiveModel ?? "") : (runner.model ?? ""),
+      );
       // Coerce historically-stored effort values that aren't in this
       // runtime's current enum (e.g. an old codex row with
       // `minimal`, dropped from the picker) to "" so what's saved
       // matches what's shown.
       {
-        const loaded = runner.effort ?? "";
-        const validEfforts = EFFORT_OPTIONS_BY_RUNTIME[runner.runtime] ?? [];
+        const loaded = previewsSlotEngine ? "" : (runner.effort ?? "");
+        const validEfforts = EFFORT_OPTIONS_BY_RUNTIME[runtime] ?? [];
         setEffort(
           validEfforts.some((o) => o.value === loaded) ? loaded : "",
         );
       }
-      setPermissionMode(inferPermissionMode(runner.runtime, runner.args));
+      setPermissionMode(
+        previewsSlotEngine
+          ? "default"
+          : inferPermissionMode(runner.runtime, runner.args),
+      );
       setError(null);
     }
-  }, [open, runner]);
+  }, [
+    effectiveModel,
+    effectiveRuntime,
+    open,
+    previewsSlotEngine,
+    runner,
+  ]);
 
   const canSubmit =
     runner !== null &&
@@ -105,26 +132,20 @@ export function RunnerEditDrawer({
     try {
       const input: UpdateRunnerInput = {
         display_name: displayName.trim(),
-        runtime,
-        command: command.trim(),
-        args: argsText.trim() ? argsText.trim().split(/\s+/) : [],
         working_dir: workingDir.trim() || null,
         system_prompt: systemPrompt.trim() || null,
-        // Send the trimmed string (empty when cleared/“default”), not
-        // null: the backend collapses a blank string to NULL, but an
-        // explicit JSON null deserializes to the outer `None` (= "leave
-        // unchanged"), so null could never clear a previously-pinned
-        // value. See commands::runner::update.
-        model: model.trim(),
-        effort: effort.trim(),
-        // Send the mode only for runtimes that support it —
-        // otherwise the backend's permission-flag helper is a no-op
-        // anyway, but keeping the field undefined for shell/unknown
-        // makes the contract explicit (`None` mode on the Rust side
-        // preserves args verbatim).
-        ...(runtimeSupportsPermissionMode(runtime)
-          ? { permission_mode: permissionMode }
-          : {}),
+        ...(previewsSlotEngine
+          ? {}
+          : {
+              runtime,
+              command: command.trim(),
+              args: argsText.trim() ? argsText.trim().split(/\s+/) : [],
+              model: model.trim(),
+              effort: effort.trim(),
+              ...(runtimeSupportsPermissionMode(runtime)
+                ? { permission_mode: permissionMode }
+                : {}),
+            }),
       };
       await api.runner.update(runner.id, input);
       await onSaved();
@@ -177,62 +198,86 @@ export function RunnerEditDrawer({
           />
         </Field>
 
-        <Field id="edit-runtime" label="Runtime">
-          <RuntimeSelect
-            id="edit-runtime"
-            value={runtime}
-            onChange={(opt) => {
-              setRuntime(opt.value);
-              // Runtime change is the explicit signal to normalize
-              // Command to the new runtime's defaultCommand. Without
-              // a runtime change we keep whatever was saved on the
-              // row so custom commands aren't wiped silently.
-              setCommand(opt.defaultCommand);
-              // Coerce effort to "" if the current value isn't in
-              // the new runtime's enum, so the saved value tracks
-              // what the dropdown displays. claude-code's `max` is
-              // not in codex's enum; codex's `none / minimal` aren't
-              // in claude-code's.
-              const nextEffortOptions =
-                EFFORT_OPTIONS_BY_RUNTIME[opt.value] ?? [];
-              if (!nextEffortOptions.some((o) => o.value === effort)) {
-                setEffort("");
-              }
-            }}
-          />
+        <Field
+          id="edit-runtime"
+          label="Runtime"
+          hint={
+            previewsSlotEngine
+              ? "effective crew-slot override · change it from the crew row"
+              : undefined
+          }
+        >
+          {previewsSlotEngine ? (
+            <Input id="edit-runtime" value={runtime} disabled readOnly />
+          ) : (
+            <RuntimeSelect
+              id="edit-runtime"
+              value={runtime}
+              onChange={(opt) => {
+                setRuntime(opt.value);
+                setModel("");
+                // Runtime change is the explicit signal to normalize
+                // Command to the new runtime's defaultCommand. Without
+                // a runtime change we keep whatever was saved on the
+                // row so custom commands aren't wiped silently.
+                setCommand(opt.defaultCommand);
+                // Coerce effort to "" if the current value isn't in
+                // the new runtime's enum, so the saved value tracks
+                // what the dropdown displays. claude-code's `max` is
+                // not in codex's enum; codex's `none / minimal` aren't
+                // in claude-code's.
+                const nextEffortOptions =
+                  EFFORT_OPTIONS_BY_RUNTIME[opt.value] ?? [];
+                if (!nextEffortOptions.some((o) => o.value === effort)) {
+                  setEffort("");
+                }
+              }}
+            />
+          )}
         </Field>
 
         <Field id="edit-command" label="Command">
           <Input id="edit-command" value={command} disabled readOnly />
         </Field>
 
-        <Field
-          id="edit-args"
-          label="Args"
-          hint="extra flags · whitespace-separated"
-        >
-          <Input
+        {!previewsSlotEngine ? (
+          <Field
             id="edit-args"
-            value={argsText}
-            placeholder="--mcp-debug"
-            onChange={(e) => setArgsText(e.target.value)}
-          />
-        </Field>
+            label="Args"
+            hint="extra flags · whitespace-separated"
+          >
+            <Input
+              id="edit-args"
+              value={argsText}
+              placeholder="--mcp-debug"
+              onChange={(e) => setArgsText(e.target.value)}
+            />
+          </Field>
+        ) : null}
 
         <Field
           id="edit-model"
           label="Model"
           hint="optional · blank uses the runtime's own model · type a name or pick an alias"
         >
-          <ModelField
-            id="edit-model"
-            runtime={runtime}
-            model={model}
-            onModelChange={setModel}
-          />
+          {previewsSlotEngine ? (
+            <Input
+              id="edit-model"
+              value={model || "default"}
+              disabled
+              readOnly
+            />
+          ) : (
+            <ModelField
+              id="edit-model"
+              runtime={runtime}
+              model={model}
+              onModelChange={setModel}
+            />
+          )}
         </Field>
 
-        {runtimeSupportsEffort(runtime) ? (() => {
+        {!previewsSlotEngine && runtimeSupportsEffort(runtime) ? (() => {
           const effortOptions = EFFORT_OPTIONS_BY_RUNTIME[runtime] ?? [];
           // Effort enums differ per runtime — claude-code's `max` is
           // not in codex's enum; codex's `none / minimal` aren't in
@@ -262,7 +307,7 @@ export function RunnerEditDrawer({
           );
         })() : null}
 
-        {runtimeSupportsPermissionMode(runtime) ? (() => {
+        {!previewsSlotEngine && runtimeSupportsPermissionMode(runtime) ? (() => {
           const modeOptions = PERMISSION_MODES_BY_RUNTIME[runtime] ?? [];
           // Mode space is per-runtime: a mode that's valid for the
           // prior runtime might not exist for the new one (e.g.

@@ -50,6 +50,11 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         display_name: "Qoder",
         command: "qodercli",
     },
+    RuntimeDefinition {
+        name: "trae",
+        display_name: "TRAE CLI",
+        command: "traecli",
+    },
 ];
 
 pub fn runtime_definitions() -> &'static [RuntimeDefinition] {
@@ -126,7 +131,7 @@ pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str
             }
             out
         }
-        "codex" => {
+        "codex" | "trae" => {
             let mut out = Vec::new();
             if let Some(m) = model {
                 out.push("--model".into());
@@ -184,6 +189,11 @@ pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str
 /// qoder (2 modes — only the live-probed flag is exposed):
 /// - **Default** — no flag.
 /// - **Auto** — `--permission-mode auto`.
+///
+/// trae (3 modes — native presets declared by `traecli --help`):
+/// - **Default** — no flag; use TRAE CLI's configured default.
+/// - **Auto** — `--permission-mode auto`.
+/// - **Bypass** — `--permission-mode bypass_permissions`.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
@@ -223,11 +233,19 @@ pub fn permission_mode_args(runtime: &str, mode: PermissionMode) -> Vec<String> 
         ("qoder", PermissionMode::Auto) => {
             vec!["--permission-mode".into(), "auto".into()]
         }
+        ("trae", PermissionMode::Auto) => {
+            vec!["--permission-mode".into(), "auto".into()]
+        }
+        ("trae", PermissionMode::Bypass) => {
+            vec!["--permission-mode".into(), "bypass_permissions".into()]
+        }
         // codex: `--ask-for-approval <cadence> --sandbox
         // workspace-write` pair for both Auto and Bypass. AcceptEdits
         // returns empty (codex has no equivalent) so a user who
         // somehow lands AcceptEdits on a codex row reads as Default.
-        ("codex", PermissionMode::AcceptEdits) => Vec::new(),
+        ("codex", PermissionMode::AcceptEdits) | ("trae", PermissionMode::AcceptEdits) => {
+            Vec::new()
+        }
         ("codex", PermissionMode::Auto) => vec![
             "--ask-for-approval".into(),
             "on-request".into(),
@@ -259,7 +277,7 @@ pub fn permission_mode_args(runtime: &str, mode: PermissionMode) -> Vec<String> 
 ///     `--dangerously-skip-permissions` (standalone, kept in the
 ///     strip set so legacy rows that still carry the deprecated flag
 ///     get cleaned up the next time the user touches their row).
-///   - qoder: `--permission-mode <value>` (value-bearing).
+///   - qoder/trae: `--permission-mode <value>` (value-bearing).
 pub fn strip_permission_flags(runtime: &str, args: &[String]) -> Vec<String> {
     // (flag_name, takes_value)
     let keys: &[(&str, bool)] = match runtime {
@@ -268,7 +286,7 @@ pub fn strip_permission_flags(runtime: &str, args: &[String]) -> Vec<String> {
             ("--dangerously-skip-permissions", false),
             ("--permission-mode", true),
         ],
-        "qoder" => &[("--permission-mode", true)],
+        "qoder" | "trae" => &[("--permission-mode", true)],
         _ => &[],
     };
     if keys.is_empty() {
@@ -396,6 +414,8 @@ fn mode_match_pairs(
             &[("--permission-mode", Some("bypassPermissions"))]
         }
         ("qoder", PermissionMode::Auto) => &[("--permission-mode", Some("auto"))],
+        ("trae", PermissionMode::Auto) => &[("--permission-mode", Some("auto"))],
+        ("trae", PermissionMode::Bypass) => &[("--permission-mode", Some("bypass_permissions"))],
         ("codex", PermissionMode::Auto) => &[
             ("--ask-for-approval", Some("on-request")),
             ("--sandbox", Some("workspace-write")),
@@ -488,7 +508,7 @@ pub const FIRST_TURN_ARGV_MAX_BYTES: usize = 32 * 1024;
 /// Map a runtime + composed first-turn body to the positional argv
 /// the agent CLI reads as its first user turn at process spawn.
 ///
-/// claude-code, codex, and qoder accept a positional `[PROMPT]` argument.
+/// claude-code, codex, qoder, and trae accept a positional `[PROMPT]` argument.
 /// Delivering
 /// the first turn at spawn-time eliminates the post-spawn paste race
 /// the original `inject_paste_with_verify` machinery was working
@@ -519,7 +539,7 @@ pub fn first_turn_argv(runtime: &str, body: Option<&str>) -> Vec<String> {
         return Vec::new();
     }
     match runtime {
-        "claude-code" | "codex" | "qoder" => vec![body.to_string()],
+        "claude-code" | "codex" | "qoder" | "trae" => vec![body.to_string()],
         _ => Vec::new(),
     }
 }
@@ -528,9 +548,9 @@ pub fn first_turn_argv(runtime: &str, body: Option<&str>) -> Vec<String> {
 /// any `system_prompt` argv + first-turn body positional) in the
 /// order the runtime's CLI expects.
 ///
-/// `system_prompt_args` still returns empty for all three first-class
-/// runtimes (claude-code's `--append-system-prompt` is SDK-only; codex
-/// and qoder have no probed equivalent flag). The first user turn —
+/// `system_prompt_args` still returns empty for all four first-class
+/// runtimes (claude-code's `--append-system-prompt` is SDK-only; codex,
+/// qoder, and trae have no probed equivalent flag). The first user turn —
 /// composed launch prompt for a mission lead, worker preamble for
 /// non-leads, persona for direct chats — rides on `first_turn_argv`
 /// instead and lands as the trailing positional.
@@ -576,18 +596,18 @@ pub fn mission_bus_sandbox_args(runtime: &str, mission_dir: Option<&Path>) -> Ve
 #[derive(Debug, Clone)]
 pub struct ResumePlan {
     /// Args to splice into the spawn command. For claude-code and qoder these
-    /// are trailing flags; for codex `resume <uuid>` is a subcommand prefix
-    /// the caller must place ahead of any user-supplied args. See `prepend`.
+    /// are trailing flags; for codex and trae `resume <uuid>` is a subcommand
+    /// prefix the caller must place ahead of any user-supplied args. See `prepend`.
     pub args: Vec<String>,
     /// `true` when `args` are a subcommand prefix that must precede the
-    /// runner's configured args (codex resume). `false` when they are
+    /// runner's configured args (codex/trae resume). `false` when they are
     /// trailing flags safe to append (claude-code/qoder --session-id / --resume).
     pub prepend: bool,
     /// The native agent session key this spawn is bound to, when known up
     /// front. claude-code/qoder: a freshly-generated UUID we just told the CLI
-    /// to use, or the prior key when resuming. codex: the prior key when
-    /// resuming, otherwise `None` (fresh codex sessions self-assign an id;
-    /// post-spawn capture is a follow-up).
+    /// to use, or the prior key when resuming. codex/trae: the prior key when
+    /// resuming, otherwise `None` (fresh sessions self-assign an id that
+    /// Runner captures post-spawn).
     pub assigned_key: Option<String>,
     /// Whether this plan is a resume of a prior conversation. Callers can
     /// surface a "resuming previous session" hint, and on later detection
@@ -615,10 +635,8 @@ impl ResumePlan {
 ///   - claude-code/qoder with no `prior_key` → fresh spawn but with a
 ///     self-assigned UUID via `--session-id`, so the very next respawn can
 ///     resume.
-///   - codex with no `prior_key` → fresh spawn, no key. Capturing the codex
-///     rollout id post-spawn is tracked as a follow-up; until then, codex
-///     resumes only if the user has previously triggered a captured key by
-///     other means (manual seed, future capture path).
+///   - codex/trae with no `prior_key` → fresh spawn, no key. Runner captures
+///     the rollout id post-spawn.
 ///
 /// `prior_key` should be the value of `sessions.agent_session_key` from the
 /// most recent prior session in the same scope. The caller decides how to
@@ -680,7 +698,7 @@ pub fn resume_plan(runtime: &str, prior_key: Option<&str>) -> ResumePlan {
                 }
             }
         },
-        "codex" => match prior_key {
+        "codex" | "trae" => match prior_key {
             Some(k) if is_uuid(k) => ResumePlan {
                 // `codex resume <uuid>` is a subcommand prefix. The caller
                 // places these args ahead of any user-supplied args.
@@ -934,6 +952,24 @@ mod tests {
     }
 
     #[test]
+    fn trae_fresh_returns_empty_plan() {
+        let plan = resume_plan("trae", None);
+        assert!(plan.args.is_empty());
+        assert!(plan.assigned_key.is_none());
+        assert!(!plan.resuming);
+    }
+
+    #[test]
+    fn trae_resume_uses_subcommand_prefix() {
+        let prior = "019fa1b9-a133-7841-b4dd-730d376ab1d1".to_string();
+        let plan = resume_plan("trae", Some(&prior));
+        assert!(plan.resuming);
+        assert!(plan.prepend, "trae resume is a subcommand, must prepend");
+        assert_eq!(plan.args, vec!["resume", &prior]);
+        assert_eq!(plan.assigned_key.as_deref(), Some(prior.as_str()));
+    }
+
+    #[test]
     fn unknown_runtime_returns_empty_resume_plan() {
         let plan = resume_plan("aider-future", Some("anything"));
         assert!(plan.args.is_empty());
@@ -971,6 +1007,20 @@ mod tests {
             args.windows(2)
                 .any(|w| w[0] == "-c" && w[1] == "model_reasoning_effort=high"),
             "expected `-c model_reasoning_effort=high`, got: {args:?}",
+        );
+    }
+
+    #[test]
+    fn trae_emits_model_and_reasoning_effort_override() {
+        let args = model_effort_args("trae", Some("trae-model"), Some("High"));
+        assert_eq!(
+            args,
+            vec![
+                "--model".to_string(),
+                "trae-model".to_string(),
+                "-c".to_string(),
+                "model_reasoning_effort=high".to_string(),
+            ],
         );
     }
 
@@ -1069,6 +1119,7 @@ mod tests {
         // Default → no flags for any runtime / any mode.
         assert!(permission_mode_args("claude-code", PermissionMode::Default).is_empty());
         assert!(permission_mode_args("codex", PermissionMode::Default).is_empty());
+        assert!(permission_mode_args("trae", PermissionMode::Default).is_empty());
         // claude-code: AcceptEdits / Auto / Bypass each emit
         // `--permission-mode <value>` with a runtime-specific value.
         assert_eq!(
@@ -1112,6 +1163,18 @@ mod tests {
                 "never".to_string(),
                 "--sandbox".to_string(),
                 "workspace-write".to_string(),
+            ],
+        );
+        assert!(permission_mode_args("trae", PermissionMode::AcceptEdits).is_empty());
+        assert_eq!(
+            permission_mode_args("trae", PermissionMode::Auto),
+            vec!["--permission-mode".to_string(), "auto".to_string()],
+        );
+        assert_eq!(
+            permission_mode_args("trae", PermissionMode::Bypass),
+            vec![
+                "--permission-mode".to_string(),
+                "bypass_permissions".to_string(),
             ],
         );
         // Unknown runtime → empty for every mode.
@@ -1217,6 +1280,25 @@ mod tests {
         ];
         let out = apply_permission_mode("codex", &user, PermissionMode::Default);
         assert_eq!(out, vec!["--debug".to_string()]);
+    }
+
+    #[test]
+    fn apply_permission_mode_trae_round_trips_auto_to_default() {
+        let user = vec!["--debug".to_string()];
+        let auto = apply_permission_mode("trae", &user, PermissionMode::Auto);
+        assert_eq!(
+            auto,
+            vec![
+                "--debug".to_string(),
+                "--permission-mode".to_string(),
+                "auto".to_string(),
+            ],
+        );
+        assert_eq!(infer_permission_mode("trae", &auto), PermissionMode::Auto);
+        assert_eq!(
+            apply_permission_mode("trae", &auto, PermissionMode::Default),
+            user,
+        );
     }
 
     #[test]
@@ -1545,7 +1627,7 @@ mod tests {
 
     #[test]
     fn first_turn_rides_trailing_argv_on_fresh_spawn_for_supported_runtimes() {
-        for runtime in ["claude-code", "codex", "qoder"] {
+        for runtime in ["claude-code", "codex", "qoder", "trae"] {
             let body = "You are the architect. Goal: ship 0007.";
             let args = trailing_runtime_args(
                 runtime,
@@ -1568,7 +1650,7 @@ mod tests {
 
     #[test]
     fn first_turn_suppressed_on_resume_for_supported_runtimes() {
-        for runtime in ["claude-code", "codex", "qoder"] {
+        for runtime in ["claude-code", "codex", "qoder", "trae"] {
             let body = "You are the architect. Goal: ship 0007.";
             let args = trailing_runtime_args(
                 runtime,

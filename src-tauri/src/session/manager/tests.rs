@@ -333,6 +333,7 @@ fn slot_for(runner: &Runner) -> crate::model::Slot {
         position: 0,
         lead: true,
         runtime_override: None,
+        model_override: None,
         added_at: Utc::now(),
     }
 }
@@ -1319,6 +1320,22 @@ fn mission_spawn_worker_preamble_lands_as_trailing_positional_argv_with_brief() 
     );
 
     mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn trae_first_turn_gets_capture_prompt_marker() {
+    let (first_turn, marker) = SessionManager::codex_capture_prompt_marker(
+        "trae",
+        "session-id",
+        Some("first turn".to_string()),
+    );
+    let marker = marker.expect("trae must use the codex-lineage capture marker");
+    assert_eq!(
+        marker,
+        crate::session::codex_capture::prompt_marker("session-id")
+    );
+    let expected = format!("first turn\n\n{marker}");
+    assert_eq!(first_turn.as_deref(), Some(expected.as_str()));
 }
 
 #[test]
@@ -2981,9 +2998,8 @@ fn resume_keeps_scrollback_for_qoder() {
     assert_resume_keeps_scrollback("qoder");
 }
 
-#[test]
-fn resume_purges_scrollback_for_codex() {
-    // Codex keeps the pre-0024 behavior: its full-frame repaint over
+fn assert_resume_purges_scrollback(runtime: &str) {
+    // Codex-lineage runtimes keep the pre-0024 behavior: their full-frame repaint over
     // retained scrollback is the stacking artifact the purge was
     // added for, so resume still drops the ring — while the watermark
     // is stamped uniformly (equal to the post-purge floor here).
@@ -2997,16 +3013,16 @@ fn resume_purges_scrollback_for_codex() {
                     (id, handle, display_name, runtime, command,
                      args_json, working_dir, system_prompt, env_json,
                      created_at, updated_at)
-                 VALUES (?1, 'purger', 'P', 'codex', '/bin/sh',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now],
+                 VALUES (?1, 'purger', 'P', ?2, '/bin/sh',
+                         NULL, NULL, NULL, NULL, ?3, ?3)",
+            params![runner_id, runtime, now],
         )
         .unwrap();
     }
     let mut runner = runner("/bin/sh", &[]);
     runner.id = runner_id;
     runner.handle = "purger".into();
-    runner.runtime = "codex".into();
+    runner.runtime = runtime.into();
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
@@ -3047,7 +3063,7 @@ fn resume_purges_scrollback_for_codex() {
     assert_eq!(
         reset_snapshot.len(),
         1,
-        "codex resume must replace prior output with one reset chunk"
+        "{runtime} resume must replace prior output with one reset chunk"
     );
     assert_eq!(
         BASE64.decode(&reset_snapshot[0].data).unwrap(),
@@ -3074,6 +3090,16 @@ fn resume_purges_scrollback_for_codex() {
     assert_eq!(snapshot[1].data, BASE64.encode(b"fresh repaint"));
 
     mgr.kill(&session_id).unwrap();
+}
+
+#[test]
+fn resume_purges_scrollback_for_codex() {
+    assert_resume_purges_scrollback("codex");
+}
+
+#[test]
+fn resume_purges_scrollback_for_trae() {
+    assert_resume_purges_scrollback("trae");
 }
 
 #[test]
@@ -3966,6 +3992,7 @@ fn runtime_clears_on_resize_resolves_runner_backed_runtimes() {
     for (runner_id, runtime) in [
         ("r-codex", "codex"),
         ("r-qoder", "qoder"),
+        ("r-trae", "trae"),
         ("r-shell", "shell"),
     ] {
         conn.execute(
@@ -3989,6 +4016,12 @@ fn runtime_clears_on_resize_resolves_runner_backed_runtimes() {
     conn.execute(
         "INSERT INTO sessions (id, mission_id, runner_id, cwd, status, started_at)
              VALUES ('s-qoder-runner', NULL, 'r-qoder', '/tmp', 'running', ?1)",
+        params![now],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO sessions (id, mission_id, runner_id, cwd, status, started_at)
+             VALUES ('s-trae-runner', NULL, 'r-trae', '/tmp', 'running', ?1)",
         params![now],
     )
     .unwrap();
@@ -4018,6 +4051,14 @@ fn runtime_clears_on_resize_resolves_runner_backed_runtimes() {
     ));
     assert!(super::output::runtime_clears_on_resize(
         "s-qoder-runner",
+        &pool
+    ));
+    assert!(super::output::runtime_clears_on_resize(
+        "s-trae-runner",
+        &pool
+    ));
+    assert!(super::output::runtime_purges_on_resume(
+        "s-trae-runner",
         &pool
     ));
     assert!(!super::output::runtime_clears_on_resize(
@@ -4126,7 +4167,7 @@ fn runtime_override_helper_distinguishes_absent_matching_and_differing() {
 
     // Absent / blank: no rebuild, no pin.
     for value in [None, Some("  ")] {
-        let res = resolve_runtime_override(&r, value).unwrap();
+        let res = resolve_runtime_override(&r, value, None).unwrap();
         assert!(res.effective.is_none());
         assert!(!res.pinned, "absent/blank override must not pin");
     }
@@ -4134,13 +4175,13 @@ fn runtime_override_helper_distinguishes_absent_matching_and_differing() {
     // Matching: no rebuild (spawn stays byte-identical), but pinned —
     // the session row must record the engine so a later runner-
     // template edit can't re-engine its resume.
-    let matching = resolve_runtime_override(&r, Some("codex")).unwrap();
+    let matching = resolve_runtime_override(&r, Some("codex"), None).unwrap();
     assert!(matching.effective.is_none());
     assert!(matching.pinned, "explicit matching override must pin");
 
     // Differing: rebuild + pin for every other catalog runtime.
-    for runtime in ["claude-code", "qoder"] {
-        let differing = resolve_runtime_override(&r, Some(runtime)).unwrap();
+    for runtime in ["claude-code", "qoder", "trae"] {
+        let differing = resolve_runtime_override(&r, Some(runtime), None).unwrap();
         assert_eq!(
             differing.effective.as_ref().map(|r| r.runtime.as_str()),
             Some(runtime),
@@ -4159,7 +4200,7 @@ fn runtime_override_helper_resets_engine_fields_and_keeps_persona() {
     r.working_dir = Some("/work".into());
     r.env.insert("FOO".into(), "bar".into());
 
-    let effective = resolve_runtime_override(&r, Some("claude-code"))
+    let effective = resolve_runtime_override(&r, Some("claude-code"), None)
         .unwrap()
         .effective
         .expect("differing runtime must produce an effective runner");
@@ -4187,9 +4228,31 @@ fn runtime_override_helper_resets_engine_fields_and_keeps_persona() {
 }
 
 #[test]
+fn runtime_override_helper_applies_slot_model_to_selected_runtime() {
+    let mut r = runner("codex-custom", &["--custom"]);
+    r.runtime = "codex".into();
+    r.model = Some("runner-model".into());
+
+    let differing = resolve_runtime_override(&r, Some("trae"), Some("trae-slot-model"))
+        .unwrap()
+        .effective
+        .expect("differing runtime must produce an effective runner");
+    assert_eq!(differing.runtime, "trae");
+    assert_eq!(differing.model.as_deref(), Some("trae-slot-model"));
+
+    let matching = resolve_runtime_override(&r, Some("codex"), Some("codex-slot-model"))
+        .unwrap()
+        .effective
+        .expect("a model override must rebuild even for a matching runtime");
+    assert_eq!(matching.runtime, "codex");
+    assert_eq!(matching.model.as_deref(), Some("codex-slot-model"));
+    assert_eq!(matching.args, r.args);
+}
+
+#[test]
 fn runtime_override_helper_rejects_unknown_runtime() {
     let r = runner("/bin/sh", &[]);
-    let err = resolve_runtime_override(&r, Some("aider-future")).unwrap_err();
+    let err = resolve_runtime_override(&r, Some("aider-future"), None).unwrap_err();
     assert!(err.to_string().contains("unknown runtime"), "got: {err}",);
 }
 
@@ -4201,7 +4264,8 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
     let slot_id = insert_crew_runner(&pool, &mission_row.id, &runner_id);
 
     // Runner row is a codex engine with custom flags + pinned
-    // model/effort; the slot overrides to claude-code.
+    // model/effort; the slot overrides to claude-code and selects
+    // its own model.
     let mut runner = runner("codex-custom", &["--custom-flag"]);
     runner.id = runner_id.clone();
     runner.runtime = "codex".into();
@@ -4211,6 +4275,7 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
     let mut slot = slot_for(&runner);
     slot.id = slot_id;
     slot.runtime_override = Some("claude-code".into());
+    slot.model_override = Some("opus".into());
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
@@ -4235,8 +4300,10 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
         spec.args,
     );
     assert!(
-        !spec.args.contains(&"--model".to_string()),
-        "pinned model must be dropped on override: {:?}",
+        spec.args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == "opus"),
+        "slot model must replace the runner model on override: {:?}",
         spec.args,
     );
     assert!(

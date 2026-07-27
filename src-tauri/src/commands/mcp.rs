@@ -1,3 +1,5 @@
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -12,6 +14,7 @@ pub struct McpConfigSnippet {
     pub claude_code: String,
     pub codex: String,
     pub qoder: String,
+    pub trae: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -22,6 +25,7 @@ pub struct McpIntegrationStatus {
     pub claude_code: McpClientStatus,
     pub codex: McpClientStatus,
     pub qoder: McpClientStatus,
+    pub trae: McpClientStatus,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -58,6 +62,7 @@ enum Client {
     ClaudeCode,
     Codex,
     Qoder,
+    Trae,
 }
 
 impl Client {
@@ -66,8 +71,9 @@ impl Client {
             "claude_code" => Ok(Self::ClaudeCode),
             "codex" => Ok(Self::Codex),
             "qoder" => Ok(Self::Qoder),
+            "trae" => Ok(Self::Trae),
             other => Err(Error::msg(format!(
-                "unknown MCP client: {other:?} (expected claude_code, codex, or qoder)"
+                "unknown MCP client: {other:?} (expected claude_code, codex, qoder, or trae)"
             ))),
         }
     }
@@ -89,6 +95,10 @@ fn codex_path() -> Result<PathBuf> {
 
 fn qoder_path() -> Result<PathBuf> {
     Ok(home_dir()?.join(".qoder").join("settings.json"))
+}
+
+fn trae_path() -> Result<PathBuf> {
+    Ok(home_dir()?.join(".trae").join("traecli.toml"))
 }
 
 fn mcp_binary_path(state: &AppState) -> String {
@@ -310,7 +320,14 @@ pub(crate) fn codex_write_at(path: &Path, enabled: bool, binary_path: &str) -> R
         servers.remove("runner");
     }
 
-    std::fs::write(path, doc.to_string())
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| Error::msg(format!("write {}: {e}", path.display())))?;
+    file.write_all(doc.to_string().as_bytes())
         .map_err(|e| Error::msg(format!("write {}: {e}", path.display())))?;
     Ok(())
 }
@@ -321,12 +338,15 @@ pub async fn mcp_integration_status(state: State<'_, AppState>) -> Result<McpInt
     let claude_code_path = claude_code_path()?;
     let codex_path = codex_path()?;
     let qoder_path = qoder_path()?;
+    let trae_path = trae_path()?;
     let claude_code = claude_code_status_at(&claude_code_path, &binary_path)
         .unwrap_or_else(|e| McpClientStatus::error(&claude_code_path, e.to_string()));
     let codex = codex_status_at(&codex_path, &binary_path)
         .unwrap_or_else(|e| McpClientStatus::error(&codex_path, e.to_string()));
     let qoder = qoder_status_at(&qoder_path, &binary_path)
         .unwrap_or_else(|e| McpClientStatus::error(&qoder_path, e.to_string()));
+    let trae = codex_status_at(&trae_path, &binary_path)
+        .unwrap_or_else(|e| McpClientStatus::error(&trae_path, e.to_string()));
     Ok(McpIntegrationStatus {
         environment: environment_label(),
         socket_path: socket_path(&state),
@@ -334,6 +354,7 @@ pub async fn mcp_integration_status(state: State<'_, AppState>) -> Result<McpInt
         claude_code,
         codex,
         qoder,
+        trae,
     })
 }
 
@@ -348,6 +369,7 @@ pub async fn mcp_set_integration(
         Client::ClaudeCode => claude_code_write_at(&claude_code_path()?, enabled, &binary_path),
         Client::Codex => codex_write_at(&codex_path()?, enabled, &binary_path),
         Client::Qoder => qoder_write_at(&qoder_path()?, enabled, &binary_path),
+        Client::Trae => codex_write_at(&trae_path()?, enabled, &binary_path),
     }
 }
 
@@ -362,6 +384,7 @@ pub async fn mcp_config_snippet(state: State<'_, AppState>) -> Result<McpConfigS
     });
 
     let codex = format!("[mcp_servers.runner]\ncommand = \"{runner_bin}\"\n");
+    let trae = codex.clone();
     let qoder = json!({
         "mcpServers": {
             "runner": json_mcp_entry(&runner_bin)
@@ -372,6 +395,7 @@ pub async fn mcp_config_snippet(state: State<'_, AppState>) -> Result<McpConfigS
         claude_code: serde_json::to_string_pretty(&claude_code).unwrap_or_default(),
         codex,
         qoder: serde_json::to_string_pretty(&qoder).unwrap_or_default(),
+        trae,
     })
 }
 
@@ -579,6 +603,79 @@ mod tests {
             Some("gh-mcp")
         );
         assert_eq!(after_disable["model"].as_str(), Some("gpt-5"));
+    }
+
+    #[test]
+    fn trae_write_creates_dir_and_runner_entry() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".trae").join("traecli.toml");
+
+        codex_write_at(&path, true, "/test/runner-mcp").unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600,
+        );
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(
+            doc["mcp_servers"]["runner"]["command"].as_str(),
+            Some("/test/runner-mcp")
+        );
+        let status = codex_status_at(&path, "/test/runner-mcp").unwrap();
+        assert!(status.registered);
+        assert!(status.matches_current);
+    }
+
+    #[test]
+    fn trae_write_preserves_auth_hooks_and_other_servers() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("traecli.toml");
+        std::fs::write(
+            &path,
+            "auth_token = \"secret\"\n\n[hooks.state]\nstop = \"trusted\"\n\n[mcp_servers.github]\ncommand = \"gh-mcp\"\nargs = []\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        codex_write_at(&path, true, "/test/runner-mcp").unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640,
+        );
+        let after: toml_edit::DocumentMut =
+            std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(after["auth_token"].as_str(), Some("secret"));
+        assert_eq!(after["hooks"]["state"]["stop"].as_str(), Some("trusted"));
+        assert_eq!(
+            after["mcp_servers"]["github"]["command"].as_str(),
+            Some("gh-mcp")
+        );
+        assert_eq!(
+            after["mcp_servers"]["runner"]["command"].as_str(),
+            Some("/test/runner-mcp")
+        );
+
+        codex_write_at(&path, false, "/test/runner-mcp").unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640,
+        );
+        let after_disable: toml_edit::DocumentMut =
+            std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert!(after_disable["mcp_servers"].get("runner").is_none());
+        assert_eq!(after_disable["auth_token"].as_str(), Some("secret"));
+        assert_eq!(
+            after_disable["hooks"]["state"]["stop"].as_str(),
+            Some("trusted")
+        );
+        assert_eq!(
+            after_disable["mcp_servers"]["github"]["command"].as_str(),
+            Some("gh-mcp")
+        );
     }
 
     #[test]

@@ -460,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn status_list_includes_qoder_from_the_catalog() {
+    fn status_list_includes_all_catalog_runtimes() {
         let pool = crate::db::open_in_memory().unwrap();
         let shell_env = Arc::new(RwLock::new(LoginShellEnv::default()));
         let status = status_list(&pool, &shell_env, &completed_discovery()).unwrap();
@@ -478,6 +478,7 @@ mod tests {
                 ("codex", "Codex", "codex"),
                 ("claude-code", "Claude Code", "claude"),
                 ("qoder", "Qoder", "qodercli"),
+                ("trae", "TRAE CLI", "traecli"),
             ],
         );
     }

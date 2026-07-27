@@ -29,7 +29,7 @@ const direct = (value: string): Subject => ({ type: "DirectChat", value });
 
 describe("reportSubjectsNow", () => {
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     mocks.reportSubjects.mockClear();
   });
 

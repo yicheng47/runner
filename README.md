@@ -16,6 +16,8 @@
   ·
   <a href="#features">Features</a>
   ·
+  <a href="#supported-agent-runtimes">Runtimes</a>
+  ·
   <a href="#drive-it-from-your-agents-mcp">MCP</a>
   ·
   <a href="#example-crew">Crew example</a>
@@ -42,6 +44,19 @@ Runner is an **agentic development environment (ADE)**. Where an IDE organizes b
 The coordination model is explicit. A **runner** is a reusable agent configuration — runtime, role, system prompt, working directory. A **crew** composes runners with exactly one lead. Starting a **mission** spawns one real PTY per slot into a tabbed workspace where the crew coordinates over an append-only event log: handoffs and status flow between agents, and when a decision needs a human, `ask_human` surfaces it in the feed. Everything runs and persists locally — sessions are real processes on your machine, and the log is on-disk and replayable.
 
 Runner also runs as an **MCP server**: any MCP client — including the agents themselves — can create crews, start missions, and steer them programmatically. See [Drive it from your agents](#drive-it-from-your-agents-mcp).
+
+## Supported agent runtimes
+
+Runner currently ships first-class adapters for four CLI coding agents:
+
+| Runtime | Default command | Notes |
+| --- | --- | --- |
+| Claude Code | `claude` | Direct chats, crews, conversation resume, permission modes, and MCP registration. |
+| Codex | `codex` | Direct chats, crews, conversation resume, model effort, permission modes, and MCP registration. |
+| Qoder | `qodercli` | Direct chats, crews, conversation resume, permission modes, and MCP registration. |
+| TRAE CLI | `traecli` | Internal-edition runtime; activates when `traecli` is available on `PATH`. Supports chats, crews, resume, model effort, permission modes, and MCP registration. |
+
+Runner does not bundle these agent CLIs. Install and authenticate each runtime separately; Runner detects its default command from `PATH`, and **Settings → Agents** lets you override the executable path.
 
 ## Download
 

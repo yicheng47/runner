@@ -104,6 +104,9 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // resume can fork at the prior width before any frontend pane is measurable.
 // 0017: records sessions that were running at graceful quit so the next
 // launch can resume them without treating crash-demoted rows the same way.
+// 0018: adds nullable `slots.model_override` so a slot that selects a
+// different runtime can pin that runtime's model without mutating the
+// reusable runner template.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -145,6 +148,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         17,
         include_str!("../migrations/0017_session_resume_on_launch.sql"),
+    ),
+    (
+        18,
+        include_str!("../migrations/0018_slot_model_override.sql"),
     ),
 ];
 
