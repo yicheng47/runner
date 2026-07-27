@@ -17,6 +17,9 @@ import { consumeResumeOnLaunch } from "./lib/autoResume";
 import { api } from "./lib/api";
 import { nudgeAppZoom, syncTitlebarZoom } from "./lib/appZoom";
 import { eventMatchesShortcut } from "./lib/keymap";
+import { launchDimsFor } from "./lib/launchDims";
+import { hydratePaneLayoutsFromDb } from "./lib/paneLayout";
+import { awaitWindowGeometrySettle } from "./lib/windowSettle";
 import {
   DEFAULT_RESUME_ON_LAUNCH,
   readAppZoom,
@@ -53,13 +56,25 @@ export default function App() {
       void invoke("app_ready")
         .then(async () => {
           if (cancelled || getCurrentWebview().label !== "main") return;
-          await consumeResumeOnLaunch(
-            readStoredBool(
-              STORAGE_RESUME_ON_LAUNCH,
-              DEFAULT_RESUME_ON_LAUNCH,
-            ),
-            api.session,
+          const enabled = readStoredBool(
+            STORAGE_RESUME_ON_LAUNCH,
+            DEFAULT_RESUME_ON_LAUNCH,
           );
+          if (enabled) {
+            // Both inputs to every dims computation below, awaited before
+            // the first fork (impl 0036, decision 1): the restored frame has
+            // to have reached the webview, and the tab layouts have to be
+            // hydrated for a split pane's share of the width to be known.
+            // Neither can hang the queue — the settle gate has a ceiling and
+            // a failed hydration just costs the split divisor.
+            const settle = await awaitWindowGeometrySettle();
+            if (settle !== "settled") {
+              console.info(`[auto-resume] window geometry settle: ${settle}`);
+            }
+            await hydratePaneLayoutsFromDb().catch(console.error);
+            if (cancelled) return;
+          }
+          await consumeResumeOnLaunch(enabled, api.session, launchDimsFor);
         })
         .catch(console.error);
     });

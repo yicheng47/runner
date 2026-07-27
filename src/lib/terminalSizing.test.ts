@@ -8,7 +8,15 @@
 // cache must therefore lose to every fresh source and never be read
 // when a fresh source measures.
 
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 import type { TerminalGridSize } from "./terminalSizing";
 
@@ -16,10 +24,21 @@ import type { TerminalGridSize } from "./terminalSizing";
 // canvas, so stub the probe before the module evaluates (same pattern
 // as terminalBlank.test.ts).
 let pickRespawnDims: typeof import("./terminalSizing").pickRespawnDims;
+let chatPaneAreaBox: typeof import("./terminalSizing").chatPaneAreaBox;
+let missionPaneAreaBox: typeof import("./terminalSizing").missionPaneAreaBox;
 beforeAll(async () => {
   HTMLCanvasElement.prototype.getContext = (() => null) as never;
-  ({ pickRespawnDims } = await import("./terminalSizing"));
+  ({ pickRespawnDims, chatPaneAreaBox, missionPaneAreaBox } = await import(
+    "./terminalSizing"
+  ));
 });
+
+/** jsdom gives every element a zero rect; give <main> a real one. */
+function mountShell(width: number, height: number): void {
+  document.body.innerHTML = "<main></main>";
+  const main = document.querySelector("main")!;
+  main.getBoundingClientRect = () => ({ width, height }) as DOMRect;
+}
 
 const dims = (cols: number): TerminalGridSize => ({ cols, rows: 40 });
 
@@ -70,5 +89,60 @@ describe("pickRespawnDims", () => {
         readHiddenCache: () => null,
       }),
     ).toBeNull();
+  });
+});
+
+// Surface chrome arithmetic (impl 0036). These feed the launch-resume
+// estimate directly, so a stale constant here forks the PTY at the wrong
+// size — the failure #363 is about. Asserted on the pixel boxes rather than
+// through the grid helpers, which would need a real xterm fit.
+describe("pane area boxes", () => {
+  beforeEach(() => {
+    // Map-backed rather than jsdom's shim, which has no `clear`, so each case
+    // starts from "nothing dragged yet".
+    const store = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, value),
+      removeItem: (key: string) => void store.delete(key),
+    });
+    mountShell(1440, 900);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("takes the chat topbar and the side panel out of the shell box", () => {
+    // Nothing dragged yet → the panel's 320px default, not its 200px minimum.
+    expect(chatPaneAreaBox()).toEqual({ width: 1440 - 320, height: 900 - 44 });
+  });
+
+  it("gives the chat surface the full width once the side panel is closed", () => {
+    localStorage.setItem("runner.chat.panel.open", "0");
+    expect(chatPaneAreaBox()).toEqual({ width: 1440, height: 900 - 44 });
+  });
+
+  it("clamps a dragged side panel to its range", () => {
+    localStorage.setItem("runner.chat.panel.width", "9000");
+    expect(chatPaneAreaBox().width).toBe(1440 - 480);
+    localStorage.setItem("runner.chat.panel.width", "10");
+    expect(chatPaneAreaBox().width).toBe(1440 - 200);
+  });
+
+  it("takes the mission topbar, tab strip, and rail out of the shell box", () => {
+    // h-11 topbar + h-[38px] strip; the rail defaults to 288 un-dragged.
+    expect(missionPaneAreaBox()).toEqual({
+      width: 1440 - 288,
+      height: 900 - 44 - 38,
+    });
+  });
+
+  it("falls back to the window when the shell has not laid out", () => {
+    document.body.innerHTML = "";
+    expect(chatPaneAreaBox()).toEqual({
+      width: window.innerWidth - 320,
+      height: window.innerHeight - 44,
+    });
   });
 });
