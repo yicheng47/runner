@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented. Tracking issue [#360](https://github.com/yicheng47/runner/issues/360). Phase 1's findings and the answered open questions are recorded below.
+Shipped. Tracking issue [#360](https://github.com/yicheng47/runner/issues/360). Wake behavior confirmed by smoke test on 2026-07-27. Phase 1's findings and the answered open questions are recorded below.
 
 ## Problem
 
@@ -116,6 +116,6 @@ Automated:
 Manual (Jason smoke-tests):
 
 - [x] Change app zoom with visible output on screen → glyphs stay correctly spaced. Done 2026-07-27: they do, and they did before this change too — zoom never broke them.
-- [ ] Sleep the Mac with an active pane, wake, focus Runner → glyphs correct without touching anything.
-- [ ] Move the window between displays of different scale → glyphs correct.
-- [ ] Alt-tab repeatedly → no visible re-rasterization stutter.
+- [x] Sleep the Mac with an active pane, wake, focus Runner → glyphs correct without touching anything. **Confirmed 2026-07-27** — the fix works. This is the one that mattered: with no deterministic repro available, it is the only end-to-end evidence that clearing on `app/woke` repairs the symptom #360 reported.
+- [ ] Move the window between displays of different scale → glyphs correct. Not run — decision 3's watcher is unvalidated in the field, and xterm's upstream `ScreenDprMonitor` may be doing the real work here regardless.
+- [ ] Alt-tab repeatedly → no visible re-rasterization stutter. Not run — the no-clear-on-focus constraint is held by construction (no call site on the focus path), not by observation.
