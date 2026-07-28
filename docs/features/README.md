@@ -23,6 +23,7 @@ links to its tracking issue.
 - [52 — Hook-based session status](./52-hook-based-session-status.md) — authoritative `working`/`waiting`/`done` status from agent CLI hooks injected per spawn (claude `--settings`, codex hooks.json — never the user's config), with the byte-flow IdleDetector demoted to a universal fallback tier; adds the needs-you attention state.
 - [53 — Session fork](./53-session-fork.md) — branch a chat into a new session: native full-history fork for claude-code via `--resume <key> --fork-session`, bounded ring-transcript handoff draft for other runtimes; original session untouched.
 - [54 — Draft-aware delivery gate](./54-draft-aware-delivery-gate.md) — replace the one-way `local_input_pending` latch with a draft line model so a stray keystroke (typed then backspaced) stops blocking a runner's inbox forever; adds an abandonment backstop, a non-destructive manual clear, and a visible gated-on-your-input slot state.
+- [55 — Paste file paths into the terminal](./55-paste-file-paths.md) — ⌘V over a pane with a copied file inserts its shell-quoted absolute path, matching every native terminal; reads `public.file-url` off NSPasteboard in Rust because `DataTransfer` withholds filesystem paths, and branches inside the existing image-paste interceptor.
 
 ## Archive
 
