@@ -1544,6 +1544,7 @@ function SlotPtyPane({
           ref={registerTerminal}
           sessionId={session.id}
           runnerRuntime={session.runtime}
+          paneSurface="mission"
           onError={onError}
           active={active && !resuming && !starting}
           hiddenByDisplayNone={hiddenByDisplayNone}

@@ -26,7 +26,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
-import { api, type PasteImageMimeType } from "../lib/api";
+import { api, type PaneSurface } from "../lib/api";
 import {
   readTerminalCursorStyle,
   readTerminalFontFamily,
@@ -56,6 +56,7 @@ import {
 import { TERMINAL_SCROLLBAR_WIDTH_PX } from "../lib/terminalSizing";
 import { observeBackingScale, stalesTextureAtlas } from "../lib/textureAtlas";
 import { eventMatchesShortcut } from "../lib/keymap";
+import { handleTerminalPaste } from "../lib/terminalPaste";
 import { runtimeClearsOnResize } from "./ui/runtimes";
 
 interface OutputEvent {
@@ -77,32 +78,6 @@ const SIDEBAR_TOGGLE_EVENT = "runner:toggle-sidebar";
 const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
 const RUNNER_TERMINAL_CYCLE_EVENT = "runner:cycle-terminal";
 const OPEN_SETTINGS_EVENT = "runner:open-settings";
-
-function normalizePasteImageMime(type: string): PasteImageMimeType | null {
-  switch (type.trim().toLowerCase()) {
-    case "image/png":
-      return "image/png";
-    case "image/jpeg":
-    case "image/jpg":
-      return "image/jpeg";
-    default:
-      return null;
-  }
-}
-
-function inferPasteImageMime(
-  itemType: string,
-  file: File,
-): PasteImageMimeType | null {
-  const fromType =
-    normalizePasteImageMime(itemType) ?? normalizePasteImageMime(file.type);
-  if (fromType) return fromType;
-
-  const name = file.name.toLowerCase();
-  if (name.endsWith(".png")) return "image/png";
-  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
-  return null;
-}
 
 interface RunnerTerminalProps {
   sessionId: string;
@@ -141,6 +116,12 @@ interface RunnerTerminalProps {
    *  Stopped panes keep this false so their measured size is persisted
    *  for the next resume even though keyboard input stays disabled. */
   resizeDisabled?: boolean;
+  /** Pane box this terminal sits in. Every grid pushed to the backend is
+   *  also cached under this surface so a spawn the backend initiates
+   *  (MCP `mission_start` / `session_start_direct`) can fork at a width
+   *  a real pane had. Mission and chat boxes differ, so they never share
+   *  a cache entry. See docs/impls/0039. */
+  paneSurface: PaneSurface;
 }
 
 /**
@@ -185,6 +166,7 @@ export const RunnerTerminal = forwardRef<
     autoFocus,
     disabled,
     resizeDisabled,
+    paneSurface,
   },
   ref,
 ) {
@@ -204,6 +186,9 @@ export const RunnerTerminal = forwardRef<
   // — declared inside the long-lived mount effect — sees the current
   // runtime kind without a re-render restarting the whole xterm.
   const runnerRuntimeRef = useRef<string>(runnerRuntime);
+  // Mirrors `paneSurface` so the resize funnel — declared inside the
+  // long-lived mount effect — reads it without re-running the effect.
+  const paneSurfaceRef = useRef<PaneSurface>(paneSurface);
   // Mirrors the `disabled` prop into a ref so the onData/resize
   // closures don't capture a stale value across the long-lived
   // terminal effect.
@@ -301,6 +286,10 @@ export const RunnerTerminal = forwardRef<
   }, [runnerRuntime]);
 
   useEffect(() => {
+    paneSurfaceRef.current = paneSurface;
+  }, [paneSurface]);
+
+  useEffect(() => {
     onExitRef.current = onExit;
   }, [onExit]);
 
@@ -354,6 +343,24 @@ export const RunnerTerminal = forwardRef<
     lastPushedColsRef.current = lastPushed.cols;
     lastPushedRowsRef.current = lastPushed.rows;
   }, []);
+
+  // Cache every grid that actually reaches the backend, from whichever
+  // push path sent it. Not folded into `sendBackendResize`: mission slot
+  // terminals mount under `display:none`, so the mount-time push is
+  // skipped and their first real grid arrives through
+  // `refreshActiveTerminal`'s own resize calls — which set `lastPushed*`
+  // themselves, making the next `pushSize` dedupe away. Routing only the
+  // one funnel would leave the cache empty for exactly the panes #367 is
+  // about. Best-effort: a failed write just leaves the previous grid.
+  const cachePaneGrid = useCallback((cols: number, rows: number) => {
+    void api.session
+      .recordPaneGrid(paneSurfaceRef.current, cols, rows)
+      .catch(() => {});
+  }, []);
+  // Mirrored for `sendBackendResize`, which lives inside the long-lived
+  // mount effect and must not take a dependency that re-runs it.
+  const cachePaneGridRef = useRef(cachePaneGrid);
+  cachePaneGridRef.current = cachePaneGrid;
 
   const refreshActiveTerminal = useCallback(
     ({
@@ -432,6 +439,7 @@ export const RunnerTerminal = forwardRef<
           );
           lastPushedColsRef.current = cols;
           lastPushedRowsRef.current = rows;
+          cachePaneGrid(cols, rows);
           void api.session.resize(sid, cols, rows).catch(() => {
             rejectSizePush(cols, rows);
           });
@@ -485,6 +493,7 @@ export const RunnerTerminal = forwardRef<
           );
           lastPushedColsRef.current = cols;
           lastPushedRowsRef.current = rows;
+          cachePaneGrid(cols, rows);
           void api.session.resize(sid, cols, rows).catch(() => {
             rejectSizePush(cols, rows);
           });
@@ -517,6 +526,9 @@ export const RunnerTerminal = forwardRef<
         replayJustDrainedRef.current = false;
         lastPushedColsRef.current = cols;
         lastPushedRowsRef.current = rows;
+        // The settled grid, not the nudge — `nudgedRows` is a one-ioctl
+        // SIGWINCH trick, never a size any pane is left at.
+        cachePaneGrid(cols, rows);
         const nudgedRows = rows > 1 ? rows - 1 : rows + 1;
         void api.session
           .resize(sid, cols, nudgedRows)
@@ -530,7 +542,7 @@ export const RunnerTerminal = forwardRef<
         return false;
       }
     },
-    [ensureWebglRenderer, rejectSizePush, blankGate],
+    [ensureWebglRenderer, rejectSizePush, blankGate, cachePaneGrid],
   );
 
   useEffect(() => {
@@ -587,6 +599,8 @@ export const RunnerTerminal = forwardRef<
       void api.session.resize(sid, current.cols, current.rows).catch(() => {
         rejectSizePush(current.cols, current.rows);
       });
+      // Same value, same moment — no separate measuring pass.
+      cachePaneGridRef.current(current.cols, current.rows);
     }
     function pushBackendResize() {
       if (resizeDisabledRef.current) return false;
@@ -746,38 +760,21 @@ export const RunnerTerminal = forwardRef<
     // they would in a host terminal, attach the image with their
     // native `[Image x]` placeholder. Pure-text pastes fall through
     // to xterm.js's default behavior unchanged.
+    //
+    // Copying a *file* takes the same interception point but the other
+    // branch (feature 55): the clipboard carries no text at all, only
+    // `public.file-url`, so xterm's default paste inserts nothing. We
+    // ask NSPasteboard for the paths and inject them instead, which is
+    // what Terminal.app / iTerm2 / Ghostty do.
     const onPaste = (e: ClipboardEvent) => {
       const sid = sessionIdRef.current;
       if (!sid || disabledRef.current) return;
-      const items = e.clipboardData?.items;
-      if (!items) return;
-      let imageFile: File | null = null;
-      let imageMimeType: PasteImageMimeType | null = null;
-      for (let i = 0; i < items.length; i += 1) {
-        const it = items[i];
-        if (it.kind !== "file") continue;
-        const file = it.getAsFile();
-        if (!file) continue;
-        const mimeType = inferPasteImageMime(it.type, file);
-        if (!mimeType) continue;
-        imageFile = file;
-        imageMimeType = mimeType;
-        break;
-      }
-      if (!imageFile || !imageMimeType) return;
-      const file = imageFile;
-      const mimeType = imageMimeType;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      void (async () => {
-        try {
-          const buf = await file.arrayBuffer();
-          await api.session.pasteImage(new Uint8Array(buf), mimeType);
-          await api.session.injectStdin(sid, "\x16");
-        } catch (err) {
-          onErrorRef.current?.(String(err));
-        }
-      })();
+      void handleTerminalPaste(e, {
+        clipboardFilePaths: () => api.session.clipboardFilePaths(),
+        injectStdin: (text) => api.session.injectStdin(sid, text),
+        pasteImage: (bytes, mimeType) => api.session.pasteImage(bytes, mimeType),
+        onError: (message) => onErrorRef.current?.(message),
+      });
     };
     const textarea = term.textarea;
     textarea?.addEventListener("paste", onPaste, { capture: true });

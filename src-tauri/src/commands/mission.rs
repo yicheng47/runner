@@ -485,12 +485,26 @@ pub async fn mission_post_human_signal(
     mission_post_human_signal_impl(&state, input).await
 }
 
+/// Start a mission with no caller-supplied geometry — the MCP tool's
+/// entry point. The UI's Start Mission modal goes through
+/// `mission_start_impl_with_size` with the dims it measured.
+///
+/// An MCP caller is an agent with no view of the window, so instead of
+/// forking at `DEFAULT_PTY_SIZE` (which seeds `last_pty_cols = 80` and
+/// makes the first real resize purge the whole transcript) we reuse the
+/// last grid a mission pane actually measured. An empty cache still
+/// means 80×24: guessing would not avoid the purge, and the cache
+/// self-heals as soon as any mission pane has rendered once. See impl
+/// 0039.
 pub(crate) async fn mission_start_impl(
     state: &AppState,
     app: &tauri::AppHandle,
     input: StartMissionInput,
 ) -> Result<StartMissionOutput> {
-    mission_start_impl_with_size(state, app, input, None).await
+    let cached = crate::db::pane_grid(&state.db, crate::db::PaneSurface::Mission)
+        .unwrap_or_default()
+        .map(|grid| (grid.cols, grid.rows));
+    mission_start_impl_with_size(state, app, input, cached).await
 }
 
 async fn mission_start_impl_with_size(

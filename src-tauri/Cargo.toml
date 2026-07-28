@@ -64,13 +64,20 @@ libc = "0.2"
 portable-pty = "0.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow", "NSWorkspace"] }
+# `NSPasteboard` + `NSPasteboardItem` back the file-path paste (feature 55).
+# A file copy puts no text on the clipboard, only `public.file-url` flavors,
+# and `DataTransfer` deliberately withholds filesystem paths — so the path can
+# only come from the pasteboard itself. objc2 gates every class behind its own
+# feature, hence the explicit adds.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSButton", "NSControl", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSView", "NSWindow", "NSWorkspace"] }
 # System-wake observer (impl 0037). `NSWorkspace`'s notification center is
 # the only precise sleep/wake signal available to the app — tao never emits
 # `Event::Resumed` on macOS. `block2` + `NSOperation` are what the
 # `addObserverForName:object:queue:usingBlock:` binding is gated on; both
 # crates are already in the lock via tao/wry.
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSNotification", "NSOperation", "NSString", "block2"] }
+# `NSURL` decodes the pasteboard's percent-encoded `file://` strings into
+# POSIX paths (feature 55).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSNotification", "NSOperation", "NSString", "NSURL", "block2"] }
 block2 = "0.6"
 
 [dev-dependencies]
