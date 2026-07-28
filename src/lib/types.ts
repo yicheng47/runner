@@ -142,6 +142,7 @@ export interface SessionOutputEvent {
   session_id: string;
   mission_id: string | null;
   seq: number;
+  width?: number;
   data: string;
 }
 

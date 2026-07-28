@@ -404,6 +404,8 @@ pub struct OutputEvent {
     /// Monotonic per-session sequence number. Frontend attach uses this to
     /// merge a replay snapshot with live events without duplicating chunks.
     pub seq: u64,
+    /// PTY columns in effect when this chunk was read.
+    pub width: u16,
     /// Base64-encoded raw bytes read from the PTY.
     pub data: String,
 }
@@ -554,10 +556,8 @@ struct SessionState {
     mouse_1003_on: bool,
     mouse_1006_on: bool,
     /// Cols of the last PTY winsize applied (seeded at spawn, updated by
-    /// `resize`). Gates the resize ring purge: rows-only changes — the
-    /// frontend's SIGWINCH nudge dance on every tab return — can't garble
-    /// replay reflow (wrap depends on cols alone), so the ring survives
-    /// them; only a real width change still purges.
+    /// `resize`). Output chunks copy this value so the frontend can replay
+    /// each width-run into xterm before reflowing to the pane.
     last_pty_cols: Option<u16>,
     resuming: bool,
     killed: bool,
@@ -887,9 +887,7 @@ impl SessionManager {
             state.handle = Some(handle);
             state.mission_status_sink = mission_status_sink;
             state.killed = false;
-            // Seed the resize purge gate with the cols the PTY actually
-            // opened at, so the first same-width resize after spawn/resume
-            // doesn't purge the ring.
+            // Seed output tagging with the cols the PTY actually opened at.
             state.last_pty_cols = Some(
                 initial_size
                     .expect("spawn size must be resolved before handle install")

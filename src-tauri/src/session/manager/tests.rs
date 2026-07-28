@@ -3979,13 +3979,11 @@ fn enter_claude_launch_gate_first_claude_does_not_sleep() {
     );
 }
 
-// Regression for the resize buffer purge (impl 0020 dogfooding): the
-// runtime lookup must resolve runner-backed sessions too, where
+// The resume-purge lookup must resolve runner-backed sessions too, where
 // `sessions.agent_runtime` is NULL and the runtime lives on the runner
-// row — the common "Chat now" / mission path. A shell runner must NOT
-// purge (no SIGWINCH repaint would rebuild its history).
+// row — the common "Chat now" / mission path.
 #[test]
-fn runtime_clears_on_resize_resolves_runner_backed_runtimes() {
+fn runtime_purges_on_resume_resolves_runner_backed_runtimes() {
     let pool = db::open_in_memory().unwrap();
     let now = chrono::Utc::now().to_rfc3339();
     let conn = pool.get().unwrap();
@@ -4041,42 +4039,31 @@ fn runtime_clears_on_resize_resolves_runner_backed_runtimes() {
     .unwrap();
     drop(conn);
 
-    assert!(super::output::runtime_clears_on_resize(
+    assert!(super::output::runtime_purges_on_resume(
         "s-codex-runner",
-        &pool
-    ));
-    assert!(super::output::runtime_clears_on_resize(
-        "s-claude-runtime",
-        &pool
-    ));
-    assert!(super::output::runtime_clears_on_resize(
-        "s-qoder-runner",
-        &pool
-    ));
-    assert!(super::output::runtime_clears_on_resize(
-        "s-trae-runner",
         &pool
     ));
     assert!(super::output::runtime_purges_on_resume(
         "s-trae-runner",
         &pool
     ));
-    assert!(!super::output::runtime_clears_on_resize(
+    assert!(super::output::runtime_purges_on_resume(
         "s-shell-runner",
         &pool
     ));
-    assert!(!super::output::runtime_clears_on_resize("s-missing", &pool));
+    assert!(super::output::runtime_purges_on_resume("s-missing", &pool));
+    assert!(!super::output::runtime_purges_on_resume(
+        "s-claude-runtime",
+        &pool
+    ));
+    assert!(!super::output::runtime_purges_on_resume(
+        "s-qoder-runner",
+        &pool
+    ));
 }
 
-// The resize ring purge must gate on a *width* change. The frontend's
-// activation dance resizes rows-1 → rows with cols held constant on
-// every tab return; purging there wiped claude-code's replayable
-// history even though rows-only SIGWINCHes can't garble reflow (wrap
-// depends on cols alone) — the #306 "remount shows only the latest
-// frame" symptom. Spawn seeds the gate, so even the first same-width
-// resize keeps the ring.
 #[test]
-fn resize_purges_ring_only_on_cols_change() {
+fn output_chunks_keep_the_ring_and_carry_the_applied_width_across_resize() {
     let pool = pool_with_schema();
     let now = Utc::now().to_rfc3339();
     let runner_id = ulid::Ulid::new().to_string();
@@ -4115,29 +4102,20 @@ fn resize_purges_ring_only_on_cols_change() {
         )
         .unwrap();
 
-    fake.push_output(0, b"history to keep");
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while mgr.output_snapshot(&spawned.id).is_empty() {
-        if Instant::now() > deadline {
-            panic!("output never reached the ring");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    fake.push_output(0, b"first width");
+    let first = wait_for_snapshot(&mgr, &spawned.id, 1);
+    assert_eq!(first[0].width, 120);
 
-    // Rows-only nudge (the activation dance): ring must survive both legs.
     mgr.resize(&spawned.id, 120, 29, &pool).unwrap();
     mgr.resize(&spawned.id, 120, 30, &pool).unwrap();
-    assert!(
-        !mgr.output_snapshot(&spawned.id).is_empty(),
-        "rows-only resize must keep the replay ring"
+    mgr.resize(&spawned.id, 100, 30, &pool).unwrap();
+    fake.push_output(0, b"second width");
+    let snapshot = wait_for_snapshot(&mgr, &spawned.id, 2);
+    assert_eq!(
+        snapshot.iter().map(|event| event.width).collect::<Vec<_>>(),
+        vec![120, 100]
     );
 
-    // Width change: stale-width bytes must still purge.
-    mgr.resize(&spawned.id, 100, 30, &pool).unwrap();
-    assert!(
-        mgr.output_snapshot(&spawned.id).is_empty(),
-        "cols change must purge the replay ring"
-    );
     let persisted: (u16, u16) = pool
         .get()
         .unwrap()

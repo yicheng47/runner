@@ -516,34 +516,10 @@ impl SessionManager {
         };
         // Pane geometry is the next fork's desired size even if the current
         // PTY rejects the ioctl. Keep last_pty_cols as the last size actually
-        // applied so a failed live resize cannot trigger a ring purge.
+        // applied so output is never tagged with a rejected width.
+        let mut state = state.lock().unwrap();
         self.runtime.resize(&rt_session, cols, rows)?;
-        // Full-repaint TUI runtimes (claude-code, codex, qoder, trae) redraw the whole
-        // frame on SIGWINCH, so bytes buffered before a *width* change
-        // describe a stale grid width. Replaying them into the new grid on
-        // a later snapshot re-attach wraps their absolute-positioned frames
-        // wrong — box-drawing borders shredded into scrollback garbage
-        // (seen dogfooding split view, impl 0020). Drop them: the incoming
-        // repaint rebuilds the buffer at the new width, and the frontend
-        // already hard-clears its local viewport for these runtimes on
-        // width changes.
-        //
-        // Rows-only resizes keep the ring: reflow depends on cols alone,
-        // and the frontend's activation dance nudges rows (rows-1 → rows)
-        // with width held constant on every tab return — purging there
-        // threw away claude-code history that snapshot replay could have
-        // restored (the #306 symptom: remount shows only the latest
-        // frame). Shells keep their buffer unconditionally — no repaint
-        // would arrive, and their history is meaningful.
-        let cols_changed = {
-            let mut state = state.lock().unwrap();
-            let changed = state.last_pty_cols != Some(cols);
-            state.last_pty_cols = Some(cols);
-            changed
-        };
-        if cols_changed && runtime_clears_on_resize(session_id, pool) {
-            self.purge_output_buffer_keep_modes(session_id);
-        }
+        state.last_pty_cols = Some(cols);
         Ok(())
     }
 
@@ -600,6 +576,7 @@ impl SessionManager {
                     session_id: session_id.into(),
                     mission_id: None,
                     seq: 0,
+                    width: state.last_pty_cols.unwrap_or(DEFAULT_PTY_SIZE.0),
                     data: BASE64.encode(synthetic_prefix),
                 },
             );
@@ -673,18 +650,6 @@ impl SessionManager {
             state.mouse_1006_on = false;
         }
         self.prune_empty_session_state(session_id);
-    }
-
-    /// Buffer-only purge for `resize`: the child process survives, so its
-    /// terminal modes persist — a SIGWINCH repaint does not re-emit the
-    /// enter-alt-screen / bracketed-paste escapes, and clearing the flags
-    /// here would strip the synthetic prefix a later snapshot needs. The
-    /// seq counter is likewise untouched.
-    fn purge_output_buffer_keep_modes(&self, session_id: &str) {
-        if let Some(state) = self.session_state(session_id) {
-            let mut state = state.lock().unwrap();
-            state.output_buffer.clear();
-        }
     }
 
     /// Update per-session terminal mode flags from a raw runtime
@@ -776,6 +741,7 @@ impl SessionManager {
             session_id: session_id.into(),
             mission_id: mission_id.map(str::to_string),
             seq,
+            width: state.last_pty_cols.unwrap_or(DEFAULT_PTY_SIZE.0),
             data,
         };
 
@@ -785,33 +751,6 @@ impl SessionManager {
         }
         ev
     }
-}
-
-/// Whether the session's agent runtime fully repaints on SIGWINCH — the
-/// same set the frontend's `runtimeClearsOnResize` gates its local
-/// viewport clear on. Runner-backed sessions leave
-/// `sessions.agent_runtime` NULL and carry their runtime on the runner
-/// row, hence the COALESCE join (same pattern as the direct-chat
-/// queries). Best-effort: a DB miss keeps the buffer.
-pub(super) fn runtime_clears_on_resize(session_id: &str, pool: &DbPool) -> bool {
-    let Ok(conn) = pool.get() else {
-        return false;
-    };
-    let runtime = conn
-        .query_row(
-            "SELECT COALESCE(s.agent_runtime, r.runtime)
-               FROM sessions s
-               LEFT JOIN runners r ON r.id = s.runner_id
-              WHERE s.id = ?1",
-            params![session_id],
-            |r| r.get::<_, Option<String>>(0),
-        )
-        .ok()
-        .flatten();
-    matches!(
-        runtime.as_deref(),
-        Some("claude-code") | Some("codex") | Some("qoder") | Some("trae")
-    )
 }
 
 /// Whether `resume` should drop the session's output ring before

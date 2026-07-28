@@ -53,6 +53,7 @@ import {
   terminalSizeAfterRejectedPush,
   type TerminalGridSize,
 } from "../lib/terminalResize";
+import { replayOutputAtWidths } from "../lib/terminalReplay";
 import { TERMINAL_SCROLLBAR_WIDTH_PX } from "../lib/terminalSizing";
 import { observeBackingScale, stalesTextureAtlas } from "../lib/textureAtlas";
 import { eventMatchesShortcut } from "../lib/keymap";
@@ -63,6 +64,7 @@ interface OutputEvent {
   session_id: string;
   mission_id: string | null;
   seq: number;
+  width?: number;
   data: string;
 }
 
@@ -193,7 +195,9 @@ export const RunnerTerminal = forwardRef<
   // closures don't capture a stale value across the long-lived
   // terminal effect.
   const disabledRef = useRef<boolean>(disabled ?? false);
+  const resizeDisabledPropRef = useRef<boolean>(resizeDisabled ?? false);
   const resizeDisabledRef = useRef<boolean>(resizeDisabled ?? false);
+  const replayResizeSuppressionCountRef = useRef(0);
   // Mirrors `autoFocus` for the activation effect below.
   const autoFocusRef = useRef<boolean>(autoFocus ?? true);
   // Last (cols, rows) pushed to the backend. Shared between `pushSize`
@@ -261,8 +265,21 @@ export const RunnerTerminal = forwardRef<
   }, [sessionId]);
 
   useEffect(() => {
-    resizeDisabledRef.current = resizeDisabled ?? false;
+    resizeDisabledPropRef.current = resizeDisabled ?? false;
+    resizeDisabledRef.current =
+      resizeDisabledPropRef.current ||
+      replayResizeSuppressionCountRef.current > 0;
   }, [resizeDisabled]);
+
+  const setReplayResizeSuppressed = useCallback((suppressed: boolean) => {
+    replayResizeSuppressionCountRef.current = Math.max(
+      0,
+      replayResizeSuppressionCountRef.current + (suppressed ? 1 : -1),
+    );
+    resizeDisabledRef.current =
+      resizeDisabledPropRef.current ||
+      replayResizeSuppressionCountRef.current > 0;
+  }, []);
 
   useEffect(() => {
     const nextDisabled = disabled ?? false;
@@ -379,10 +396,27 @@ export const RunnerTerminal = forwardRef<
       if (!t || !fit || !node) return false;
       const rect = node.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return false;
+      const deferUntilReplayFlushed = () => {
+        if (!replayFlushPendingRef.current) return false;
+        if (focus && !disabledRef.current) t.focus();
+        replayAfterFlushRef.current.push(() => {
+          window.requestAnimationFrame(() => {
+            refreshActiveTerminal({
+              focus,
+              forceResizeDance,
+              pushBackendSize,
+            });
+          });
+        });
+        return true;
+      };
+      if (deferUntilReplayFlushed()) return true;
       try {
         const beforeCols = t.cols;
         const beforeRows = t.rows;
         ensureWebglRenderer();
+        tryDrainReplayRef.current?.();
+        if (deferUntilReplayFlushed()) return true;
         fit.fit();
         if (t.cols !== beforeCols || t.rows !== beforeRows) {
           console.info(
@@ -391,20 +425,6 @@ export const RunnerTerminal = forwardRef<
               `disabled=${disabledRef.current} forceDance=${forceResizeDance} ` +
               `pushBackend=${pushBackendSize}`,
           );
-        }
-        tryDrainReplayRef.current?.();
-        if (replayFlushPendingRef.current) {
-          if (focus && !disabledRef.current) t.focus();
-          replayAfterFlushRef.current.push(() => {
-            window.requestAnimationFrame(() => {
-              refreshActiveTerminal({
-                focus,
-                forceResizeDance,
-                pushBackendSize,
-              });
-            });
-          });
-          return true;
         }
         t.refresh(0, t.rows - 1);
         if (focus && !disabledRef.current) t.focus();
@@ -826,6 +846,12 @@ export const RunnerTerminal = forwardRef<
       sendBackendResize(current);
     };
     reassertSizeRef.current = () => {
+      if (replayFlushPendingRef.current) {
+        replayAfterFlushRef.current.push(() => {
+          reassertSizeRef.current?.();
+        });
+        return;
+      }
       const node = containerRef.current;
       if (!node) return;
       const rect = node.getBoundingClientRect();
@@ -870,6 +896,12 @@ export const RunnerTerminal = forwardRef<
       if (!containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
+      if (replayFlushPendingRef.current) {
+        replayAfterFlushRef.current.push(() => {
+          refitAndPush({ allowPendingLargeDrop });
+        });
+        return;
+      }
       try {
         const beforeCols = term.cols;
         const beforeRows = term.rows;
@@ -1240,12 +1272,14 @@ export const RunnerTerminal = forwardRef<
         return false;
       }
 
+      const fallbackWidth = t.cols;
       try {
         fit.fit();
       } catch {
         // teardown in progress
         return false;
       }
+      const target = { cols: t.cols, rows: t.rows };
 
       t.reset();
       const queued: OutputEvent[] = [];
@@ -1263,9 +1297,9 @@ export const RunnerTerminal = forwardRef<
         lastWrittenSeqRef.current = ev.seq;
       }
       pendingLiveRef.current = [];
-      replayDoneRef.current = true;
 
       if (queued.length === 0) {
+        replayDoneRef.current = true;
         return true;
       }
 
@@ -1277,13 +1311,67 @@ export const RunnerTerminal = forwardRef<
         for (const cb of callbacks) cb();
       };
 
-      queued.forEach((ev, index) => {
-        const isLast = index === queued.length - 1;
-        termRef.current?.write(
-          decodeBase64Chunk(ev.data),
-          isLast ? onReplayFlushed : undefined,
-        );
-      });
+      const takePendingChunks = () => {
+        if (pendingLiveOverflowRef.current) return [];
+        const pending = pendingLiveRef.current;
+        pendingLiveRef.current = [];
+        const next: Array<{ data: Uint8Array; width?: number }> = [];
+        for (const ev of pending) {
+          if (ev.seq <= lastWrittenSeqRef.current) continue;
+          lastWrittenSeqRef.current = ev.seq;
+          next.push({
+            data: decodeBase64Chunk(ev.data),
+            width: ev.width,
+          });
+        }
+        return next;
+      };
+
+      void replayOutputAtWidths({
+        terminal: t,
+        initialChunks: queued.map((ev) => ({
+          data: decodeBase64Chunk(ev.data),
+          width: ev.width,
+        })),
+        takePendingChunks,
+        fallbackWidth,
+        target,
+        setResizeSuppressed: setReplayResizeSuppressed,
+        shouldContinue: () =>
+          !cancelled &&
+          termRef.current === t &&
+          sessionIdRef.current === sessionId,
+      })
+        .then((completed) => {
+          if (
+            !completed ||
+            cancelled ||
+            termRef.current !== t ||
+            sessionIdRef.current !== sessionId
+          ) {
+            return;
+          }
+          if (pendingLiveOverflowRef.current) {
+            replayFlushPendingRef.current = false;
+            pendingSnapshotRef.current = [];
+            tryDrainReplayRef.current?.();
+            return;
+          }
+          replayDoneRef.current = true;
+          onReplayFlushed();
+        })
+        .catch((error) => {
+          if (
+            cancelled ||
+            termRef.current !== t ||
+            sessionIdRef.current !== sessionId
+          ) {
+            return;
+          }
+          replayDoneRef.current = true;
+          onReplayFlushed();
+          onErrorRef.current?.(String(error));
+        });
       return true;
     };
     tryDrainReplayRef.current = tryDrainReplay;
@@ -1348,7 +1436,12 @@ export const RunnerTerminal = forwardRef<
       unlistenOutput?.();
       unlistenExit?.();
     };
-  }, [sessionId, refreshActiveTerminal, blankGate]);
+  }, [
+    sessionId,
+    refreshActiveTerminal,
+    blankGate,
+    setReplayResizeSuppressed,
+  ]);
 
   // Latch WHY this terminal is inactive. `active=false` with
   // `disabled=true` is the transitional resume/start window — the canvas
@@ -1434,6 +1527,12 @@ export const RunnerTerminal = forwardRef<
           return { cols: t.cols, rows: t.rows };
         }
         try {
+          if (replayFlushPendingRef.current) {
+            const proposed = fit.proposeDimensions();
+            return proposed
+              ? { cols: proposed.cols, rows: proposed.rows }
+              : null;
+          }
           // Force a fit before reading dims so a stopped pane reflects
           // its latest measurable container when the user clicks Resume.
           const beforeCols = t.cols;

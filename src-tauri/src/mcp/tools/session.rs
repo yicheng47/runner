@@ -45,9 +45,9 @@ impl RunnerMcpHandler {
     ) -> Result<CallToolResult, ErrorData> {
         let app_state = self.state.app_state();
         // An MCP caller has no view of the window, so reuse the last
-        // grid a chat pane measured rather than forking at 80×24 and
-        // letting the first real resize purge the transcript. Empty
-        // cache keeps today's behavior. See impl 0039.
+        // grid a chat pane measured rather than forking at 80×24.
+        // Empty cache keeps today's behavior; width-tagged replay makes
+        // either path safe. See impls 0039 and 0040.
         let cached =
             crate::db::pane_grid(&app_state.db, crate::db::PaneSurface::Chat).unwrap_or_default();
         let output = session::session_start_direct_impl(

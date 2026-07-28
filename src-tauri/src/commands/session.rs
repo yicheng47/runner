@@ -120,9 +120,9 @@ pub async fn session_resize(
 ///
 /// The frontend calls this with the same dims it pushes to
 /// `session_resize`, from the same place — this adds no measuring pass
-/// of its own. Rust never derives a grid from window geometry: the
-/// purge gate is exact equality on cols, so an estimate that lands one
-/// column off purges exactly as hard as no estimate. See impl 0039.
+/// of its own. Rust never derives a grid from window geometry; a measured
+/// grid improves the next backend-initiated fork without becoming a
+/// replay-correctness requirement. See impls 0039 and 0040.
 ///
 /// Async so the SQLite write stays off the main thread — this fires on
 /// every deduped size change, including each column crossed during a

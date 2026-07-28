@@ -490,12 +490,10 @@ pub async fn mission_post_human_signal(
 /// `mission_start_impl_with_size` with the dims it measured.
 ///
 /// An MCP caller is an agent with no view of the window, so instead of
-/// forking at `DEFAULT_PTY_SIZE` (which seeds `last_pty_cols = 80` and
-/// makes the first real resize purge the whole transcript) we reuse the
-/// last grid a mission pane actually measured. An empty cache still
-/// means 80×24: guessing would not avoid the purge, and the cache
-/// self-heals as soon as any mission pane has rendered once. See impl
-/// 0039.
+/// forking at `DEFAULT_PTY_SIZE` we reuse the last grid a mission pane
+/// actually measured. An empty cache still means 80×24; width-tagged
+/// replay preserves the transcript either way, while the cache improves
+/// first paint and reduces reflow. See impls 0039 and 0040.
 pub(crate) async fn mission_start_impl(
     state: &AppState,
     app: &tauri::AppHandle,
@@ -1423,12 +1421,9 @@ pub(crate) async fn mission_reset_impl(
     // see the analogous block in `mission_start`. See issue #171.
     for (idx, member) in roster.iter().enumerate() {
         let first_turn = first_turns.get(idx).cloned().flatten();
-        // `initial_size` matters beyond first paint: an unsized respawn
-        // forks at 80×24 and seeds the resize purge gate at 80 cols, so
-        // the agent's launch frames land in the ring at 80 cols and the
-        // first slot-tab activation's real-cols push purges them all
-        // (`SessionManager::resize` cols-gate). Sized respawns make that
-        // push a same-width no-op and the opening history survives.
+        // A measured `initial_size` gives the respawn a closer first paint
+        // and avoids replay reflow when the pane returns. Width-tagged
+        // replay preserves the opening history even when this is absent.
         let register_res = state.sessions.register_mission_session(
             &mission_for_spawn,
             &member.runner,

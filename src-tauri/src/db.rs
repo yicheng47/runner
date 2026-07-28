@@ -209,11 +209,10 @@ impl PaneSurface {
 
 /// A terminal grid the frontend actually measured, not one computed from
 /// window geometry. Backend-initiated spawns (MCP `mission_start`,
-/// `session_start_direct`) have no pane to measure, and forking at
-/// `DEFAULT_PTY_SIZE` seeds `last_pty_cols = 80`; the first real-cols
-/// resize then trips the purge gate and discards the transcript. The
-/// cols-gate is exact equality, so only a real measurement helps — see
-/// impl 0039.
+/// `session_start_direct`) have no pane to measure. Reusing a real grid
+/// gives them a closer first paint and avoids unnecessary replay reflow;
+/// width-tagged replay still preserves history when the cache is absent
+/// or stale. See impls 0039 and 0040.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneGrid {
     pub cols: u16,
