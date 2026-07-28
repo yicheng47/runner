@@ -115,6 +115,31 @@ pub async fn session_resize(
     state.sessions.resize(&session_id, cols, rows, &state.db)
 }
 
+/// Record the grid a pane just measured, so a backend-initiated spawn
+/// can fork at a width some real pane actually had.
+///
+/// The frontend calls this with the same dims it pushes to
+/// `session_resize`, from the same place — this adds no measuring pass
+/// of its own. Rust never derives a grid from window geometry: the
+/// purge gate is exact equality on cols, so an estimate that lands one
+/// column off purges exactly as hard as no estimate. See impl 0039.
+///
+/// Async so the SQLite write stays off the main thread — this fires on
+/// every deduped size change, including each column crossed during a
+/// window drag.
+#[tauri::command]
+pub async fn session_record_pane_grid(
+    state: State<'_, AppState>,
+    surface: crate::db::PaneSurface,
+    cols: u16,
+    rows: u16,
+) -> Result<()> {
+    if cols == 0 || rows == 0 {
+        return Ok(());
+    }
+    crate::db::set_pane_grid(&state.db, surface, crate::db::PaneGrid { cols, rows })
+}
+
 #[tauri::command]
 pub async fn session_output_snapshot(
     state: State<'_, AppState>,
@@ -236,6 +261,60 @@ pub async fn session_paste_image(bytes: Vec<u8>, mime_type: String) -> Result<()
             )));
         }
         Ok(())
+    }
+}
+
+/// POSIX paths of the files currently referenced on the general
+/// pasteboard, in pasteboard order. Empty when the clipboard carries no
+/// `public.file-url` flavor — which is every ordinary text or
+/// image-*bytes* copy.
+///
+/// Native terminals paste a copied file's path; the webview can't reach
+/// it. `DataTransfer` withholds filesystem paths by design (`File.name`
+/// is only the basename, WKWebView exposes no `file.path`), so the path
+/// has to come from NSPasteboard directly. This is a direct objc2
+/// binding rather than another `osascript` shell-out like
+/// `session_paste_image` above: the read happens on every candidate
+/// paste, and a process spawn per paste isn't worth the symmetry.
+///
+/// Presence of the file-url flavor is also what decides path-vs-attach
+/// for an image *file* (feature 55 decision 3): a Finder-copied
+/// `shot.png` carries a file-url and pastes its path, while a screenshot
+/// or a browser copy carries bytes only and keeps #79's attach flow.
+///
+/// macOS-only; elsewhere this returns empty and the caller falls through
+/// to the image scan.
+#[tauri::command]
+pub fn session_clipboard_file_paths() -> Vec<String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL};
+        use objc2_foundation::NSURL;
+
+        // SAFETY: AppKit's own flavor constant, read-only.
+        let file_url_type = unsafe { NSPasteboardTypeFileURL };
+        let Some(items) = NSPasteboard::generalPasteboard().pasteboardItems() else {
+            return Vec::new();
+        };
+        items
+            .to_vec()
+            .into_iter()
+            .filter_map(|item| {
+                // Percent-encoded `file://…` per item. NSURL decodes it;
+                // hand-decoding would be a second, worse parser.
+                let url_string = item.stringForType(file_url_type)?;
+                let url = NSURL::URLWithString(&url_string)?;
+                if !url.isFileURL() {
+                    return None;
+                }
+                Some(url.path()?.to_string())
+            })
+            .collect()
     }
 }
 

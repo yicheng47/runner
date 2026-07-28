@@ -352,6 +352,7 @@ export function ChatPaneGroup({
             ref={terminalRefFor(chat.id)}
             sessionId={chat.id}
             runnerRuntime={runtimeFor(chat.id)}
+            paneSurface="chat"
             // While the resume/start loader is up the canvas is hidden, so
             // xterm behaves as inactive (no resize pushes, no focus); when
             // the flag clears, the activation effect fits + repaints.

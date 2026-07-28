@@ -79,6 +79,10 @@ export interface DirectSessionEntry {
 
 export type PasteImageMimeType = "image/png" | "image/jpeg";
 
+/** Pane box a measured terminal grid belongs to. Mission panes and chat
+ *  panes subtract different chrome, so their cached grids never mix. */
+export type PaneSurface = "mission" | "chat";
+
 export interface ProjectRow {
   id: string;
   name: string;
@@ -398,6 +402,12 @@ export const api = {
     kill: (sessionId: string) => invoke<void>("session_kill", { sessionId }),
     resize: (sessionId: string, cols: number, rows: number) =>
       invoke<void>("session_resize", { sessionId, cols, rows }),
+    /** Record the grid a pane just measured so backend-initiated spawns
+     *  (MCP `mission_start` / `session_start_direct`) can fork at a real
+     *  width instead of 80×24. Mission and chat panes sit in different
+     *  boxes, so they cache separately. See docs/impls/0039. */
+    recordPaneGrid: (surface: PaneSurface, cols: number, rows: number) =>
+      invoke<void>("session_record_pane_grid", { surface, cols, rows }),
     outputSnapshot: (sessionId: string) =>
       invoke<SessionOutputEvent[]>("session_output_snapshot", { sessionId }),
     /** Seq the output ring had reached when the most recent resume
@@ -414,6 +424,12 @@ export const api = {
         bytes: Array.from(bytes),
         mimeType,
       }),
+    /** POSIX paths for the files the clipboard references, in pasteboard
+     *  order; empty for every clipboard shape that carries no
+     *  `public.file-url` flavor (ordinary text, screenshots, browser
+     *  image copies). See docs/features/55-paste-file-paths.md. */
+    clipboardFilePaths: () =>
+      invoke<string[]>("session_clipboard_file_paths"),
     startDirect: (
       runnerId: string,
       cwd: string | null,

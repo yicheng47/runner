@@ -177,12 +177,47 @@ const MIGRATIONS: &[(i64, &str)] = &[
 const SEED_MARKER_KEY: &str = "default_crew_seeded";
 const LOGIN_SHELL_ENV_LKG_KEY: &str = "login_shell_env_lkg";
 const RUNTIME_OVERRIDES_KEY: &str = "runtime_overrides";
+const PANE_GRID_MISSION_KEY: &str = "pane_grid_mission";
+const PANE_GRID_CHAT_KEY: &str = "pane_grid_chat";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoginShellEnvLkg {
     pub env: crate::shell_path::LoginShellEnv,
     pub shell: String,
     pub captured_at: String,
+}
+
+/// Which pane box a cached grid was measured in. Mission and chat panes
+/// occupy different boxes (`terminalSizing.ts`'s `missionPaneAreaBox` vs
+/// `chatPaneAreaBox`), so a mission spawn must never read a chat
+/// measurement or vice versa. See impl 0039 decision 3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PaneSurface {
+    Mission,
+    Chat,
+}
+
+impl PaneSurface {
+    fn key(self) -> &'static str {
+        match self {
+            PaneSurface::Mission => PANE_GRID_MISSION_KEY,
+            PaneSurface::Chat => PANE_GRID_CHAT_KEY,
+        }
+    }
+}
+
+/// A terminal grid the frontend actually measured, not one computed from
+/// window geometry. Backend-initiated spawns (MCP `mission_start`,
+/// `session_start_direct`) have no pane to measure, and forking at
+/// `DEFAULT_PTY_SIZE` seeds `last_pty_cols = 80`; the first real-cols
+/// resize then trips the purge gate and discards the transcript. The
+/// cols-gate is exact equality, so only a real measurement helps — see
+/// impl 0039.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneGrid {
+    pub cols: u16,
+    pub rows: u16,
 }
 
 fn ensure_app_state_table(conn: &Connection) -> Result<()> {
@@ -228,6 +263,18 @@ pub fn set_login_shell_env_lkg(pool: &DbPool, snapshot: &LoginShellEnvLkg) -> Re
         LOGIN_SHELL_ENV_LKG_KEY,
         &serde_json::to_string(snapshot)?,
     )
+}
+
+pub fn pane_grid(pool: &DbPool, surface: PaneSurface) -> Result<Option<PaneGrid>> {
+    let conn = pool.get()?;
+    app_state_get(&conn, surface.key())?
+        .map(|value| serde_json::from_str(&value).map_err(Into::into))
+        .transpose()
+}
+
+pub fn set_pane_grid(pool: &DbPool, surface: PaneSurface, grid: PaneGrid) -> Result<()> {
+    let conn = pool.get()?;
+    app_state_set(&conn, surface.key(), &serde_json::to_string(&grid)?)
 }
 
 pub fn runtime_overrides(pool: &DbPool) -> Result<BTreeMap<String, String>> {
@@ -820,6 +867,64 @@ mod tests {
         assert_eq!(login_shell_env_lkg(&pool).unwrap(), None);
         set_login_shell_env_lkg(&pool, &snapshot).unwrap();
         assert_eq!(login_shell_env_lkg(&pool).unwrap(), Some(snapshot));
+    }
+
+    #[test]
+    fn pane_grid_round_trips_per_surface() {
+        let pool = open_in_memory().unwrap();
+        assert_eq!(pane_grid(&pool, PaneSurface::Mission).unwrap(), None);
+        assert_eq!(pane_grid(&pool, PaneSurface::Chat).unwrap(), None);
+
+        set_pane_grid(
+            &pool,
+            PaneSurface::Mission,
+            PaneGrid {
+                cols: 214,
+                rows: 51,
+            },
+        )
+        .unwrap();
+        set_pane_grid(&pool, PaneSurface::Chat, PaneGrid { cols: 97, rows: 44 }).unwrap();
+
+        assert_eq!(
+            pane_grid(&pool, PaneSurface::Mission).unwrap(),
+            Some(PaneGrid {
+                cols: 214,
+                rows: 51
+            })
+        );
+        assert_eq!(
+            pane_grid(&pool, PaneSurface::Chat).unwrap(),
+            Some(PaneGrid { cols: 97, rows: 44 })
+        );
+    }
+
+    #[test]
+    fn pane_grid_survives_a_pool_reopen() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("runner.db");
+        {
+            let pool = open_pool(&path).unwrap();
+            set_pane_grid(
+                &pool,
+                PaneSurface::Mission,
+                PaneGrid {
+                    cols: 180,
+                    rows: 48,
+                },
+            )
+            .unwrap();
+        }
+        let pool = open_pool(&path).unwrap();
+        assert_eq!(
+            pane_grid(&pool, PaneSurface::Mission).unwrap(),
+            Some(PaneGrid {
+                cols: 180,
+                rows: 48
+            })
+        );
+        assert_eq!(pane_grid(&pool, PaneSurface::Chat).unwrap(), None);
     }
 
     #[test]

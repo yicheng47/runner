@@ -44,6 +44,12 @@ impl RunnerMcpHandler {
         Parameters(args): Parameters<StartDirectSessionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let app_state = self.state.app_state();
+        // An MCP caller has no view of the window, so reuse the last
+        // grid a chat pane measured rather than forking at 80×24 and
+        // letting the first real resize purge the transcript. Empty
+        // cache keeps today's behavior. See impl 0039.
+        let cached =
+            crate::db::pane_grid(&app_state.db, crate::db::PaneSurface::Chat).unwrap_or_default();
         let output = session::session_start_direct_impl(
             &app_state,
             &self.state.app_handle,
@@ -51,8 +57,8 @@ impl RunnerMcpHandler {
             args.runtime,
             args.project_id,
             args.cwd,
-            None,
-            None,
+            cached.map(|grid| grid.cols),
+            cached.map(|grid| grid.rows),
         )
         .map_err(command_error)?;
         Ok(CallToolResult::success(vec![Content::json(&output)?]))
