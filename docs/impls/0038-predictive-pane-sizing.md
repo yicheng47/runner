@@ -1,95 +1,84 @@
-# Predictive pane sizing for launch resume
+# Launch estimate: the fallback returns the wrong box
 
 ## Status
 
-Planned. Tracking issue [#366](https://github.com/yicheng47/runner/issues/366). **Corrects [0036](0036-launch-resume-fork-width.md)**, whose precedence chain is sound but whose estimated rung was wired to the wrong helpers — see Problem.
+Planned, and **substantially narrowed**. Tracking issue [#366](https://github.com/yicheng47/runner/issues/366).
 
-## Problem
+## Correction — the original premise was wrong
 
-0036 shipped and the symptom survived in packaged builds. The root cause is a category error:
+The first draft of this document (committed as `20979b8`, never implemented) claimed that `chatPaneAreaBox()` composes a `<main>` measurement taken on the `/runners` boot route with chrome subtractions that only apply to the chat surface — "a measurement of one surface, plus chrome corrections for another, describes neither." That is false, and [#366's comment](https://github.com/yicheng47/runner/issues/366#issuecomment-5101422726) is correct to reject it.
 
-**The estimate answers a question about a layout that is not rendered by measuring the layout that is.**
+There is exactly one shell `<main>` — `AppShell.tsx:120` — a flex sibling of `<Sidebar>` with `flex-1`, with `PersistentSurfaces` mounted inside it. Its width is `window − sidebar` and it is **route-independent**: same element, same box, on `/runners` and on a chat route. What is currently rendered inside it does not change its width. `terminalSizing.ts:142-144` says this outright — *"Mounted from boot, so this reads true even with no chat or mission surface on screen"* — and the original draft failed to weigh it.
 
-At cold launch the main window boots on `/runners` (`App.tsx:117`), so no chat surface exists and the *measured* rung is unreachable — `launchDims.ts:8-9` documents this. Every auto-resumed session therefore falls to the *estimated* rung, which does:
+So subtracting the stored chat-panel width from that box is not a mis-applied measurement. It is a deliberate prediction of the destination pane area, which is exactly what a launch estimate must be.
 
+The localStorage-per-origin argument fails on its own terms too. `storedSideWidth` and `RunnerChat.tsx:272` read the **same key** with the **same** absent-means-open default, so within one origin the estimate and the surface the session returns into agree. Dev and packaged profiles do have separate stores, but both halves of the computation live in the same origin, so that divergence cannot produce an asymmetry between them.
+
+### The original fix would have made things worse
+
+The draft proposed replacing the `<main>` read with a DOM-free reconstruction from `window.innerWidth` minus stored chrome. That would discard information the measurement gets for free:
+
+`Sidebar.tsx:2004-2010` sets `width: sidebarVisible ? width : 0` on a `shrink-0` flex item, and the collapsed hover-peek switches it to an absolute overlay. Measuring `<main>` therefore already accounts for collapsed (0), expanded (the dragged width), mid-animation (the interpolated width), and peek-overlay (0) — correctly, and without knowing any of those rules. A reconstruction would have to re-derive all of it from localStorage and would get the overlay and animation cases wrong.
+
+Reading the live layout is the right call here. The draft's own principle — prefer a value that described a real box over a computed one — argued against its own conclusion.
+
+## What actually survives
+
+One defect, in `shellContentBox` (`terminalSizing.ts:145-152`):
+
+```js
+return {
+  width: rect && rect.width > 0 ? rect.width : window.innerWidth,
+  height: rect && rect.height > 0 ? rect.height : window.innerHeight,
+};
 ```
-chatPaneAreaBox()                  // terminalSizing.ts:210
-  → shellContentBox()              // :145 — document.querySelector("main")
-  → width − storedSideWidth("runner.chat.panel.open", …, default 320)
-```
 
-`<main>` on `/runners` holds the runners list and no chat side panel, but the panel width is subtracted anyway. A measurement of one surface, plus chrome corrections for another, describes neither. With the panel open — which is the default, since `RunnerChat.tsx:272` treats a missing key as open — the estimate is `CHAT_PANEL_DEFAULT_WIDTH_PX` (320) too narrow, roughly 30–35 columns.
+`window.innerWidth` is the full window **including** the sidebar, so the fallback silently substitutes a box roughly a sidebar-width too wide. It is a fallback that answers a different question rather than declining to answer.
 
-`shellContentBox()` carries the same error one level down: when `<main>` is missing or zero-width it falls back to `window.innerWidth`, the full window *including* the sidebar. Opposite sign, identical mistake — substituting a different box rather than declining to answer.
+A concrete reachable path: `SettingsPage.tsx:233` renders a **second** `<main>` while AppShell's is `display:none` under the Settings takeover (`AppShell.tsx:102-105`). `document.querySelector("main")` returns the first in document order — AppShell's hidden one — whose rect is zero, so the fallback fires and over-estimates.
 
-Structurally: these helpers were written for the **live** case, where the chat surface is mounted and measure-then-subtract is exactly right. 0036's decision 2 named them for the **predictive** case without noticing that their correctness depends on the surface being on screen. They are correct where they came from and wrong where they were reused. That instruction was in the impl doc, not an implementation slip.
+Note the sign: this makes the estimate too **wide**, the opposite of #366's reported symptom. It is a real defect and worth fixing, but it does not explain the report.
 
-### Why dev looked fixed
+## The reported symptom is #367
 
-Two stores diverge between builds, which is why this reproduced only in production:
+The screenshot behind "0.4.6 still didn't fix the restart width problem" shows a correctly-wrapped full-width frame with **no scrollback above it**. That is not a width bug — it is [#367](https://github.com/yicheng47/runner/issues/367): MCP-started missions fork slots at 80×24, and the first slot visit trips the cols-gate purge and discards the ring. See [impl 0039](0039-backend-initiated-spawn-width.md).
 
-1. **localStorage is per-origin.** Dev serves from `http://localhost:1420`; a packaged build uses the Tauri asset protocol. `runner.chat.panel.open` / `.width` are not shared. A dev profile with the panel closed subtracts 0 and looks correct.
-2. **Database and window state are separate** — `lib.rs:126-134` gives debug builds a sibling `<identifier>-dev` data dir. Different sessions, tab layouts, and split shapes.
+Absent a reproduction that survives the analysis above, there is no confirmed launch-estimate width bug in the shipped tree.
 
 ## Key Decisions
 
-1. **Predictive sizing is its own computation, with no DOM input.** Add a distinct path for "how wide will this pane be once its surface exists," derived from window geometry plus stored chrome. It must not call `document.querySelector` — reading the current DOM is precisely what makes the answer describe the wrong surface. The live helpers stay as they are for the mounted case; this is a sibling, not a replacement.
-2. **Inputs are all available without rendering anything.** `window.innerWidth` / `innerHeight`; sidebar from `runner.sidebar.collapsed` and `runner.sidebar.width` (`Sidebar.tsx:155` — it is draggable, so the width is stored, and collapsed renders as an overlay costing no layout width — confirm); chat side panel from `runner.chat.panel.open` / `.width`; `CHAT_HEADER_HEIGHT_PX`; and the pane's share of its tab from the persisted layout via `paneBoxForSession`. Mission sessions take the mission chrome constants the same way.
-3. **Fail null, never approximate.** When any input is missing or implausible, return null and let the backend's persisted rung take over. A persisted `last_cols` described a real pane once; a confidently wrong estimate never did. This is the principle that would have prevented both defects in this family, and it applies especially to the `window.innerWidth` fallback — delete it rather than repair it.
-4. **Keep the measured rung.** It is dead at cold launch today, but it is correct whenever it does resolve, costs nothing, and becomes live if the boot route changes or a second window ever resumes. Document its reachability where it is defined so the next reader does not mistake it for the working path.
-5. **Verify against a packaged build.** `pnpm tauri dev` cannot reproduce this class — separate origin, separate database. Any check that only passes under `tauri dev` proves nothing here. Unit tests should drive the computation directly with injected geometry and stored values rather than through a rendered tree.
-
-## Open questions
-
-- **Collapsed sidebar width.** Confirm the collapsed sidebar is an overlay contributing 0 to layout width rather than a persistent thin strip; the peek overlay behavior suggests overlay, but the predictive path needs the exact number.
-- **Zoom.** `window.innerWidth` is in CSS pixels and app zoom scales them, so the stored chrome constants and the window measurement should already be in the same space — worth confirming rather than assuming, given #360's WebKit zoom surprise.
-- **Whether the live helpers should also stop falling back.** `shellContentBox`'s `window.innerWidth` fallback is wrong in the live case too, just less visibly. Fixing it there is in scope if it does not disturb mounted-pane behavior; if it does, that is a separate finding.
-
-## Goals
-
-- A session auto-resumed at launch in a **packaged** build forks at the width it will actually be displayed at, with the chat side panel open and several tabs present.
-- The width estimate never silently substitutes a different box; unknown inputs produce null and defer to the persisted value.
-- Live, mounted-pane sizing is unchanged.
+1. **Keep the `<main>` measurement.** It is route-independent, and it captures sidebar collapse, drag width, animation, and peek-overlay state for free. Do not replace it with a reconstruction from stored values.
+2. **Fail null instead of substituting a different box.** When `<main>` is missing or zero-width, return null and let the precedence chain fall to the persisted rung. A persisted `last_cols` described a real pane once; `window.innerWidth` describes a box that includes chrome the terminal never gets.
+3. **Fix the multiple-`<main>` selector while here.** `querySelector("main")` picking a hidden element is a latent trap independent of the fallback. Scope the lookup to the shell's own element rather than relying on document order.
+4. **No change to the precedence chain.** 0036's measured → estimated → persisted → default ordering stands, and its decision 2 was right after all — no correction note is owed to it.
 
 ## Non-Goals
 
-- Changing 0036's precedence order — measured → estimated → persisted → default is right; only the estimated rung's implementation is wrong.
-- Changing the window-settle gate, the 300ms stagger, or anything in #320's auto-resume semantics.
-- Repairing scrollback already mis-wrapped by earlier versions.
-- Reworking live terminal sizing for mounted panes beyond the fallback noted in open questions.
+- Replacing, rewriting, or DOM-freeing the estimate. That was the original draft's proposal and it is withdrawn.
+- Anything in #367 / impl 0039.
+- Changing the window-settle gate, the 300ms stagger, or #320's auto-resume semantics.
 
 ## Implementation Phases
 
-### Phase 1 — predictive sizing path
+### Phase 1 — fallback and selector
 
-- Add the DOM-free computation described in decisions 1–2, for both chat and mission destinations.
-- Point `launchDims.ts`'s estimate rung at it; leave the measured rung intact with a reachability comment.
-- Remove the `window.innerWidth` fallback from the predictive path entirely (decision 3).
+- `shellContentBox` returns null when it cannot measure the shell's `<main>`; callers propagate null rather than substituting.
+- Scope the element lookup so a Settings-route `<main>` cannot shadow the shell's.
 
-### Phase 2 — tests
+### Phase 2 — tests and validation
 
-- Drive the computation directly with injected window dimensions and stored chrome: panel open vs closed, sidebar expanded vs collapsed, single pane vs 2- and 3-pane splits, missing keys, implausible values.
-- Assert the null-not-approximate contract: any missing input yields null rather than a number.
-
-### Phase 3 — verification and record
-
-- Full check matrix: `cargo fmt --check`, `cargo clippy --workspace`, `cargo test --workspace`, `pnpm exec tsc --noEmit`, `pnpm run lint`, `pnpm test`.
-- Append a correction note to 0036 decision 2 pointing at 0038 and #366.
+- Unit-test: absent `<main>` → null; zero-rect `<main>` → null; two `<main>`s with the first hidden → the shell's box, not the other one.
+- `pnpm exec tsc --noEmit`, `pnpm run lint`, `pnpm test`.
 
 ## Verification
 
 Automated:
 
-- [ ] Predictive width with the panel open matches panel-closed width minus the stored panel width — and neither reads the DOM.
-- [ ] Collapsed vs expanded sidebar changes the result by the stored sidebar width.
-- [ ] A session in a 2-pane split gets roughly half the pane area; a 3-pane `cols-3` and a `main-2` with the same pane count give different boxes.
-- [ ] Any missing or implausible input yields null.
-- [ ] Mounted-pane (live) sizing is unchanged.
+- [ ] No measurable `<main>` yields null, and the launch path defers to the persisted rung rather than forking on `window.innerWidth`.
+- [ ] A hidden first `<main>` does not shadow the shell's.
+- [ ] Estimates with a normally-laid-out `<main>` are unchanged, panel open and closed.
 
-Manual (Jason smoke-tests, **packaged build only**):
+Manual (Jason smoke-tests, **packaged build**):
 
-- [ ] Panel open, auto-resume on, quit and relaunch → restored pane wraps at the correct width.
-- [ ] Same with the panel closed.
-- [ ] Same with the sidebar collapsed, and with a widened sidebar.
-- [ ] Same for a session in a 2-pane split tab.
-- [ ] Resize the window between quit and relaunch → still correct (the #363 case stays fixed).
+- [ ] Auto-resume with the Settings surface open at quit → restored panes wrap correctly.
+- [ ] Ordinary quit/relaunch with the panel open → unchanged from today.
