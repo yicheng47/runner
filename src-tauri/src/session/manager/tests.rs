@@ -411,6 +411,12 @@ fn capture() -> Arc<Capture> {
     Arc::new(Capture::default())
 }
 
+/// The settle's in-band viewport clear (`ESC[2J ESC[H`), base64 as it
+/// sits in the ring and on the live channel.
+fn is_inband_clear(ev: &OutputEvent) -> bool {
+    ev.data == BASE64.encode(b"\x1b[2J\x1b[H")
+}
+
 fn wait_for_session_status_event(
     cap: &Capture,
     session_id: &str,
@@ -3406,7 +3412,9 @@ fn resume_size_resolution_prefers_explicit_then_persisted_after_manager_restart(
         .unwrap();
     first_fake.close_spawn(0);
     wait_for_db_stop(&pool, &spawned.id);
-    first_mgr.resize(&spawned.id, 132, 41, &pool).unwrap();
+    first_mgr
+        .resize(&spawned.id, 132, 41, &pool, capture())
+        .unwrap();
     let persisted: (u16, u16) = pool
         .get()
         .unwrap()
@@ -3472,7 +3480,9 @@ fn resize_rejects_unknown_session_without_creating_state() {
     let pool = pool_with_schema();
     let mgr = mgr_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
 
-    let err = mgr.resize("missing-session", 120, 30, &pool).unwrap_err();
+    let err = mgr
+        .resize("missing-session", 120, 30, &pool, capture())
+        .unwrap_err();
 
     assert_eq!(format!("{err}"), "session not found: missing-session");
     assert!(
@@ -4340,8 +4350,8 @@ fn resize_purges_ring_only_on_cols_change() {
 
     // Rows-only nudge (the activation dance): synchronous ioctls, ring
     // survives both legs.
-    mgr.resize(&spawned.id, 120, 29, &pool).unwrap();
-    mgr.resize(&spawned.id, 120, 30, &pool).unwrap();
+    mgr.resize(&spawned.id, 120, 29, &pool, capture()).unwrap();
+    mgr.resize(&spawned.id, 120, 30, &pool, capture()).unwrap();
     assert_eq!(
         fake.resizes.lock().unwrap().len(),
         2,
@@ -4353,7 +4363,7 @@ fn resize_purges_ring_only_on_cols_change() {
     );
 
     // Width change: parks in the debounce — no ioctl, no purge yet.
-    mgr.resize(&spawned.id, 100, 30, &pool).unwrap();
+    mgr.resize(&spawned.id, 100, 30, &pool, capture()).unwrap();
     assert_eq!(
         fake.resizes.lock().unwrap().len(),
         2,
@@ -4386,9 +4396,10 @@ fn resize_purges_ring_only_on_cols_change() {
         Some((spawned.id.clone(), 100, 30)),
         "the settle must apply the final ioctl"
     );
+    let snapshot = mgr.output_snapshot(&spawned.id);
     assert!(
-        mgr.output_snapshot(&spawned.id).is_empty(),
-        "a settled cols change must purge the replay ring"
+        snapshot.len() == 1 && is_inband_clear(&snapshot[0]),
+        "a settled cols change must purge the ring down to the in-band clear"
     );
 
     mgr.kill(&spawned.id).unwrap();
@@ -4464,7 +4475,7 @@ fn resize_storm_collapses_to_one_settled_push() {
     mgr.set_resize_settle_ms(3_600_000);
 
     for cols in [78u16, 76, 209, 76, 210] {
-        mgr.resize(&id, cols, 30, &pool).unwrap();
+        mgr.resize(&id, cols, 30, &pool, capture()).unwrap();
     }
     assert!(
         fake.resizes.lock().unwrap().is_empty(),
@@ -4481,9 +4492,10 @@ fn resize_storm_collapses_to_one_settled_push() {
         vec![(id.clone(), 210, 30)],
         "the storm must collapse to one ioctl at the settled width"
     );
+    let snapshot = mgr.output_snapshot(&id);
     assert!(
-        mgr.output_snapshot(&id).is_empty(),
-        "the settled width change purges once"
+        snapshot.len() == 1 && is_inband_clear(&snapshot[0]),
+        "the settled width change purges once, leaving only the in-band clear"
     );
 
     mgr.kill(&id).unwrap();
@@ -4494,15 +4506,16 @@ fn resize_storm_collapses_to_one_settled_push() {
 // settled width. The settle still lands the child on the requested
 // size, but as a rows nudge (rows-1 → rows) rather than one same-size
 // ioctl — a same-size TIOCSWINSZ is a kernel no-op with no SIGWINCH,
-// and the owning pane cleared its viewport for the intermediate pushes,
-// so without a forced repaint a round-trip drag would end blank.
+// and the pane's local grid reflowed through the intermediate widths,
+// so the nudge forces one re-anchoring repaint. Nothing is cleared:
+// the retained grid was never wrong.
 #[test]
 fn round_trip_resize_storm_produces_zero_purges() {
     let (pool, fake, mgr, id) = spawn_claude_for_resize("roundtrip");
     mgr.set_resize_settle_ms(3_600_000);
 
     for cols in [150u16, 209, 150, 120] {
-        mgr.resize(&id, cols, 30, &pool).unwrap();
+        mgr.resize(&id, cols, 30, &pool, capture()).unwrap();
     }
     mgr.settle_pending_resize_now(&id);
     assert_eq!(
@@ -4510,9 +4523,14 @@ fn round_trip_resize_storm_produces_zero_purges() {
         vec![(id.clone(), 120, 29), (id.clone(), 120, 30)],
         "a round-trip settle must force the repaint via the rows nudge"
     );
+    let snapshot = mgr.output_snapshot(&id);
     assert!(
-        !mgr.output_snapshot(&id).is_empty(),
+        !snapshot.is_empty(),
         "a storm that settles at the ring's own width must not purge"
+    );
+    assert!(
+        !snapshot.iter().any(is_inband_clear),
+        "a round-trip settle must not inject a viewport clear"
     );
 
     mgr.kill(&id).unwrap();
@@ -4529,7 +4547,7 @@ fn settle_during_inflight_kill_aborts_untouched() {
     let (pool, fake, mgr, id) = spawn_claude_for_resize("killwindow");
     mgr.set_resize_settle_ms(3_600_000);
 
-    mgr.resize(&id, 100, 30, &pool).unwrap();
+    mgr.resize(&id, 100, 30, &pool, capture()).unwrap();
     let (stop_entered, stop_release) = fake.arm_stop_gate();
     let kill = {
         let mgr = Arc::clone(&mgr);
@@ -4571,7 +4589,7 @@ fn stale_settle_after_kill_and_respawn_touches_nothing() {
     let (pool, fake, mgr, id) = spawn_claude_for_resize("respawn");
     mgr.set_resize_settle_ms(3_600_000);
 
-    mgr.resize(&id, 100, 30, &pool).unwrap();
+    mgr.resize(&id, 100, 30, &pool, capture()).unwrap();
     mgr.kill(&id).unwrap();
     // Respawn the same session row at a fresh size, as resume's
     // install_handle does after the runtime spawn replaced the PTY.
@@ -4606,7 +4624,7 @@ fn stale_settle_after_kill_and_respawn_touches_nothing() {
         "a stale settle must not clear the fresh ring"
     );
 
-    mgr.resize(&id, 199, 58, &pool).unwrap();
+    mgr.resize(&id, 199, 58, &pool, capture()).unwrap();
     assert_eq!(
         fake.resizes.lock().unwrap().clone(),
         vec![(id.clone(), 199, 58)],
@@ -4630,7 +4648,7 @@ fn failed_settled_resize_cannot_purge() {
     mgr.set_resize_settle_ms(3_600_000);
 
     fake.fail_resize_for(&id);
-    mgr.resize(&id, 100, 30, &pool).unwrap();
+    mgr.resize(&id, 100, 30, &pool, capture()).unwrap();
     mgr.settle_pending_resize_now(&id);
     assert_eq!(
         fake.resizes.lock().unwrap().clone(),
@@ -4643,12 +4661,36 @@ fn failed_settled_resize_cannot_purge() {
     );
 
     fake.allow_resize_for(&id);
-    mgr.resize(&id, 100, 30, &pool).unwrap();
+    mgr.resize(&id, 100, 30, &pool, capture()).unwrap();
     mgr.settle_pending_resize_now(&id);
+    let snapshot = mgr.output_snapshot(&id);
     assert!(
-        mgr.output_snapshot(&id).is_empty(),
+        snapshot.len() == 1 && is_inband_clear(&snapshot[0]),
         "the retried width change must purge — the failed settle left the gate unmoved"
     );
+
+    mgr.kill(&id).unwrap();
+}
+
+// The width-change settle's clear reaches live listeners too, through
+// the sink the storm was opened with — mounts must receive it on the
+// output channel ahead of the repaint bytes (the emit happens under
+// the session state lock, which the PTY reader's ingest also needs).
+#[test]
+fn settled_purge_emits_inband_clear_to_live_listeners() {
+    let (pool, _fake, mgr, id) = spawn_claude_for_resize("stormemit");
+    mgr.set_resize_settle_ms(3_600_000);
+
+    let events = capture();
+    mgr.resize(&id, 100, 30, &pool, events.clone()).unwrap();
+    mgr.settle_pending_resize_now(&id);
+    {
+        let outputs = events.output.lock().unwrap();
+        assert!(
+            outputs.len() == 1 && is_inband_clear(&outputs[0]),
+            "the settle must emit exactly the in-band clear to the storm's sink"
+        );
+    }
 
     mgr.kill(&id).unwrap();
 }
@@ -4663,10 +4705,14 @@ fn resize_settle_thread_applies_without_manual_nudge() {
     mgr.set_resize_settle_ms(25);
 
     for cols in [78u16, 209, 210] {
-        mgr.resize(&id, cols, 30, &pool).unwrap();
+        mgr.resize(&id, cols, 30, &pool, capture()).unwrap();
     }
     let deadline = Instant::now() + Duration::from_secs(2);
-    while !mgr.output_snapshot(&id).is_empty() {
+    loop {
+        let snapshot = mgr.output_snapshot(&id);
+        if snapshot.len() == 1 && is_inband_clear(&snapshot[0]) {
+            break;
+        }
         if Instant::now() > deadline {
             panic!("settle thread never applied the storm");
         }

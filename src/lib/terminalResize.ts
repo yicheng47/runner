@@ -44,33 +44,6 @@ export function sizePushVerdict({
   return "push";
 }
 
-/**
- * Whether the owner pane should hard-clear its visible region before a
- * backend size push. The clear prevents the stacking artifact when the
- * settle-driven SIGWINCH repaint lands, so it must pair 1:1 with pushes
- * that can produce such a repaint: a suppressed or deduped push must
- * never clear (a mount that doesn't write may not blank its viewport —
- * with the backend debounce, no repaint would follow to restore it).
- * The backend guarantees the other half of the pairing: a purge settle
- * repaints via the real width change, and a round-trip settle forces
- * the repaint with the rows nudge (see `settle_pending_resize`).
- */
-export function shouldClearViewportBeforePush({
-  verdict,
-  clearsOnResize,
-  replayJustDrained,
-  disabled,
-}: {
-  verdict: SizePushVerdict;
-  clearsOnResize: boolean;
-  replayJustDrained: boolean;
-  disabled: boolean;
-}): boolean {
-  return (
-    verdict === "push" && clearsOnResize && !replayJustDrained && !disabled
-  );
-}
-
 export function terminalSizeAfterRejectedPush(
   lastPushed: TerminalGridSize,
   rejected: TerminalGridSize,

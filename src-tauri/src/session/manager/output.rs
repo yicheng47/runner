@@ -485,7 +485,14 @@ impl SessionManager {
     /// xterm fits its container — without it, claude-code stays at
     /// the spawn-time grid regardless of how big the visible grid
     /// is.
-    pub fn resize(&self, session_id: &str, cols: u16, rows: u16, pool: &DbPool) -> Result<()> {
+    pub fn resize(
+        &self,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+        pool: &DbPool,
+        events: Arc<dyn SessionEvents>,
+    ) -> Result<()> {
         let state = self.session_state(session_id);
         let rt_session = state.as_ref().and_then(|state| {
             state
@@ -592,6 +599,7 @@ impl SessionManager {
                         deadline: Instant::now() + Duration::from_millis(settle_ms),
                         suppressed: 0,
                         clears_on_resize,
+                        events,
                     });
                     true
                 }
@@ -629,14 +637,18 @@ impl SessionManager {
     /// drives it deterministically.
     ///
     /// A purge settle sends one ioctl — the cols changed against the
-    /// last applied size, so the SIGWINCH (and the repaint that restores
-    /// the owner pane's pre-cleared viewport) is guaranteed. A
-    /// round-trip settle would be a same-size TIOCSWINSZ — a kernel
-    /// no-op with no SIGWINCH — while the owning pane already cleared
-    /// its viewport for the intermediate pushes; without a repaint the
-    /// pane would sit blank until the next output. So the no-purge path
-    /// always nudges rows (rows-1 → rows, width constant — the same
-    /// trick the frontend dance documents) to force the repaint.
+    /// last applied size, so the SIGWINCH repaint is guaranteed — and
+    /// prepends an in-band `ESC[2J ESC[H` to the just-purged ring and
+    /// the live event stream, so every mount clears immediately ahead
+    /// of the new-width repaint instead of per push (the per-push owner
+    /// clear smeared still-streaming frames across the viewport once
+    /// the debounce separated it from its repaint). A round-trip
+    /// settle would be a same-size TIOCSWINSZ — a kernel no-op with no
+    /// SIGWINCH — while the pane's local grid reflowed through the
+    /// intermediate widths, so the no-purge path nudges rows (rows-1 →
+    /// rows, width constant — the same trick the frontend dance
+    /// documents) to force one re-anchoring repaint, clearing nothing:
+    /// the retained grid was never wrong.
     ///
     /// The failed-ioctl guard survives the debounce: an ioctl error
     /// drops the storm without touching `last_pty_cols` and without
@@ -685,6 +697,7 @@ impl SessionManager {
             return;
         };
         let rt_session = handle.runtime_session.clone();
+        let mission_id = handle.mission_id.clone();
         let prev_cols = st.last_pty_cols;
         let purge = pending.clears_on_resize && prev_cols != Some(pending.cols);
         let ioctl = if purge {
@@ -717,6 +730,25 @@ impl SessionManager {
             // prefix a later snapshot needs. The seq counter is
             // likewise untouched.
             st.output_buffer.clear();
+            // In-band viewport clear, ring + live emit, ahead of the
+            // repaint (#373 follow-up). The owner pane no longer wipes
+            // its viewport per push: a debounced push has no prompt
+            // repaint to pair with, and its ESC[H cursor-home under a
+            // still-streaming TUI's relative moves smeared frames
+            // across the viewport. Emitting here — still under the state lock —
+            // is strictly ordered ahead of the repaint bytes: the PTY
+            // reader's record_output blocks on this lock until the
+            // settle releases it. Round-trip settles append nothing;
+            // the retained grid was never wrong.
+            st.output_seq += 1;
+            let clear = OutputEvent {
+                session_id: session_id.to_string(),
+                mission_id,
+                seq: st.output_seq,
+                data: BASE64.encode(b"\x1b[2J\x1b[H"),
+            };
+            st.output_buffer.push_back(clear.clone());
+            pending.events.output(&clear);
         }
         drop(st);
         if purge {

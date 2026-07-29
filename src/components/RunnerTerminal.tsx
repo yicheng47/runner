@@ -49,7 +49,6 @@ import {
 } from "../lib/terminalBlank";
 import {
   activationResizeRequest,
-  shouldClearViewportBeforePush,
   shouldDelayTerminalResize,
   sizePushVerdict,
   terminalSizeAfterDisabledChange,
@@ -249,12 +248,6 @@ export const RunnerTerminal = forwardRef<
   const replayAfterFlushRef = useRef<Array<() => void>>([]);
   const pendingLiveOverflowRef = useRef(false);
   const snapshotRefreshPendingRef = useRef(false);
-  // A just-replayed snapshot already paints the current TUI frame,
-  // including SGR-dependent background cells. The activation resize
-  // dance should still wake the backend PTY, but must not locally
-  // clear those cells first or Codex can repaint text without the
-  // gray input background.
-  const replayJustDrainedRef = useRef(false);
   // Live writes still queued in xterm's async write buffer. The
   // blank-grid dance check (#312) reads the parsed buffer
   // synchronously, so bytes in this window are invisible to it — a
@@ -499,26 +492,13 @@ export const RunnerTerminal = forwardRef<
         // calls are kernel no-ops on macOS/Linux, so we perturb rows
         // only: width stays constant, avoiding hard-wrapped narrow
         // lines in scrollback, while both ioctls still emit SIGWINCH.
-        //
-        // Skip the local clear when the grid size hasn't changed since
-        // the last push: the clear exists to stop reflow stacking, and
-        // with unchanged dims codex overdraws in place — clearing first
-        // discards SGR background cells (the gray input box) that the
-        // SIGWINCH repaint doesn't re-emit. Fresh split panes hit this
-        // on activation right after their first paint (impl 0020).
-        const dimsUnchanged =
-          cols === lastPushedColsRef.current &&
-          rows === lastPushedRowsRef.current;
-        const skipLocalClear = replayJustDrainedRef.current || dimsUnchanged;
+        // No local clear here either — the backend's width-change
+        // settle emits the in-band clear (see pushSize), and a
+        // same-width dance overdraws in place.
         console.info(
           `[terminal] resize-dance session=${sid} cols=${cols} rows=${rows} ` +
-            `lastPushed=${lastPushedColsRef.current}x${lastPushedRowsRef.current} ` +
-            `skipLocalClear=${skipLocalClear}`,
+            `lastPushed=${lastPushedColsRef.current}x${lastPushedRowsRef.current}`,
         );
-        if (runtimeClearsOnResize(runnerRuntimeRef.current) && !skipLocalClear) {
-          t.write("\x1b[2J\x1b[H");
-        }
-        replayJustDrainedRef.current = false;
         lastPushedColsRef.current = cols;
         lastPushedRowsRef.current = rows;
         onSizePushedRef.current?.({ cols, rows });
@@ -807,39 +787,16 @@ export const RunnerTerminal = forwardRef<
       const current = { cols: t.cols, rows: t.rows };
       const verdict = resolvePushVerdict(current);
       if (verdict !== "push") return;
-      // Clear the visible region before the SIGWINCH-driven redraw
-      // lands for full-screen TUI agents. Without this, claude-code /
-      // codex repaint at the new dims and the prior frame's visible
-      // rows get pushed into scrollback as the new paint arrives —
-      // the "stacking" UX bug. We deliberately do NOT also write
-      // `\x1b[3J` (erase saved lines): wiping the scrollback on every
-      // resize made it impossible to scroll up to older conversation
-      // history after touching the window edge. The visible-region
-      // wipe alone is enough to prevent the duplicated-frame artifact,
-      // and any older scrollback the user had accumulated stays
-      // intact. Plain shells skip the wipe entirely and keep their
-      // history. See docs/impls/archive/0011-pty-host-terminal-runtime.md
-      // §"Per-runtime clear-on-resize".
-      //
-      // With the backend debounce (#373) the restoring repaint arrives
-      // only at the storm's settle — which guarantees one: a purge
-      // settle SIGWINCHes via the width change, and a round-trip settle
-      // forces it with the rows nudge. The clear must therefore pair
-      // only with verdict="push" (see shouldClearViewportBeforePush) —
-      // a mount that doesn't write may never blank its viewport.
-      if (
-        shouldClearViewportBeforePush({
-          verdict,
-          clearsOnResize: runtimeClearsOnResize(runnerRuntimeRef.current),
-          replayJustDrained: replayJustDrainedRef.current,
-          disabled: disabledRef.current,
-        })
-      ) {
-        // ESC[2J — erase visible region
-        // ESC[H  — cursor home
-        t.write("\x1b[2J\x1b[H");
-      }
-      if (!disabledRef.current) replayJustDrainedRef.current = false;
+      // No local viewport clear here. The pre-#373 clear-per-push
+      // paired with a synchronous SIGWINCH repaint; with the backend
+      // debounce the repaint arrives only at the storm's settle, and
+      // an ESC[2J ESC[H under a still-streaming TUI's relative cursor
+      // moves smears frames across the viewport (settings-and-back
+      // regression). The backend now owns the clear: a width-change
+      // settle prepends an in-band ESC[2J ESC[H to the purged ring and
+      // the live stream immediately ahead of the repaint, and a
+      // round-trip settle clears nothing — the retained grid was never
+      // wrong. See `settle_pending_resize`.
       sendBackendResize(current);
     };
     reassertSizeRef.current = () => {
@@ -847,6 +804,11 @@ export const RunnerTerminal = forwardRef<
       if (!node) return;
       const rect = node.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
+      // Same non-owner freeze as refitAndPush: a hidden mount neither
+      // refits nor pushes.
+      if (!activeRef.current && !(term.cols === 80 && term.rows === 24)) {
+        return;
+      }
       try {
         fit.fit();
         pushBackendResize();
@@ -877,18 +839,28 @@ export const RunnerTerminal = forwardRef<
         });
       }, 150);
     };
-    // Refit whenever the pane is measurable. PersistentSurfaces keeps
-    // inactive surfaces laid out under visibility:hidden, so their local
-    // xterm grid stays sized — but only the visible owning pane pushes
-    // that size to the backend (#373); hidden mounts observe without
-    // writing, and the activation refresh pushes the owner's size when a
-    // surface comes to the front.
+    // Refit whenever the pane is measurable AND owns the session's
+    // size. A non-owner mount (background tab, hidden pool) must not
+    // refit at all — the PTY stays at the owner's size, and reflowing
+    // the live byte stream through a divergently-sized local grid
+    // mis-wraps every line, stacking duplicated frames into the
+    // retained buffer (the mid-stream tab-switch artifact, #373
+    // follow-up). Frozen grid == PTY grid, so hidden mounts keep
+    // parsing the stream correctly; the activation refresh refits and
+    // pushes together when the mount comes to the front, and any real
+    // width change then flows through the settle's in-band clear. The
+    // constructor-size sentinel (80x24, same convention as measure())
+    // exempts a never-fitted fresh mount so snapshot replay gets a
+    // workable grid.
     function refitAndPush({
       allowPendingLargeDrop = false,
     }: { allowPendingLargeDrop?: boolean } = {}) {
       if (!containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
+      if (!activeRef.current && !(term.cols === 80 && term.rows === 24)) {
+        return;
+      }
       try {
         const beforeCols = term.cols;
         const beforeRows = term.rows;
@@ -934,8 +906,8 @@ export const RunnerTerminal = forwardRef<
     // grid and backend PTY geometry stay stale until the user nudges
     // the OS window (#108). Observing the container catches those
     // CSS-driven size changes. The measurable-rect guard still excludes
-    // internal display:none panes; invisible persistent surfaces refit
-    // locally but no longer push (#373 single-writer).
+    // internal display:none panes; invisible persistent surfaces
+    // neither refit nor push (#373 single-writer + non-owner freeze).
     const ro = new ResizeObserver(() => {
       const activationRefresh = activationRefreshRef.current;
       if (activationRefresh?.()) {
@@ -1187,7 +1159,6 @@ export const RunnerTerminal = forwardRef<
     blankGate.cancelRecheck();
     pendingLiveOverflowRef.current = false;
     snapshotRefreshPendingRef.current = false;
-    replayJustDrainedRef.current = false;
 
     const writeOutput = (ev: OutputEvent) => {
       const t = termRef.current;
@@ -1291,7 +1262,6 @@ export const RunnerTerminal = forwardRef<
       replayFlushPendingRef.current = true;
       const onReplayFlushed = () => {
         replayFlushPendingRef.current = false;
-        replayJustDrainedRef.current = true;
         const callbacks = replayAfterFlushRef.current.splice(0);
         for (const cb of callbacks) cb();
       };

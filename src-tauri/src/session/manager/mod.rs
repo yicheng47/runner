@@ -551,6 +551,10 @@ struct PendingResize {
     deadline: Instant,
     suppressed: u32,
     clears_on_resize: bool,
+    /// Sink for the in-band viewport clear a width-change settle
+    /// prepends to the repaint (#373 follow-up): captured at storm
+    /// start so the settle thread can emit without an AppHandle.
+    events: Arc<dyn SessionEvents>,
 }
 
 #[derive(Default)]

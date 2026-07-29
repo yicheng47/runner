@@ -108,11 +108,18 @@ pub fn session_activity_snapshot(
 #[tauri::command]
 pub async fn session_resize(
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
     session_id: String,
     cols: u16,
     rows: u16,
 ) -> Result<()> {
-    state.sessions.resize(&session_id, cols, rows, &state.db)
+    state.sessions.resize(
+        &session_id,
+        cols,
+        rows,
+        &state.db,
+        Arc::new(TauriSessionEvents(app)),
+    )
 }
 
 #[tauri::command]

@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   activationResizeRequest,
   isLargeTerminalRowDrop,
-  shouldClearViewportBeforePush,
   shouldDelayTerminalResize,
   shouldPushTerminalSize,
   sizePushVerdict,
@@ -116,68 +115,6 @@ describe("sizePushVerdict", () => {
         resizeDisabled: false,
       }),
     ).toBe("unchanged");
-  });
-});
-
-// #373 review finding 1: with the backend debounce, the restoring
-// repaint only arrives at settle — so the owner's viewport clear must
-// pair 1:1 with pushes that actually go out. A suppressed or deduped
-// push clearing the viewport would leave the pane blank with no
-// repaint coming.
-describe("shouldClearViewportBeforePush", () => {
-  it("clears only for an owner push of a clears-on-resize runtime", () => {
-    expect(
-      shouldClearViewportBeforePush({
-        verdict: "push",
-        clearsOnResize: true,
-        replayJustDrained: false,
-        disabled: false,
-      }),
-    ).toBe(true);
-  });
-
-  it("never clears for a suppressed or deduped push", () => {
-    for (const verdict of [
-      "unchanged",
-      "suppressed-transitional",
-      "suppressed-nonowner",
-    ] as const) {
-      expect(
-        shouldClearViewportBeforePush({
-          verdict,
-          clearsOnResize: true,
-          replayJustDrained: false,
-          disabled: false,
-        }),
-      ).toBe(false);
-    }
-  });
-
-  it("keeps the shell / just-replayed / stopped-pane exemptions", () => {
-    expect(
-      shouldClearViewportBeforePush({
-        verdict: "push",
-        clearsOnResize: false,
-        replayJustDrained: false,
-        disabled: false,
-      }),
-    ).toBe(false);
-    expect(
-      shouldClearViewportBeforePush({
-        verdict: "push",
-        clearsOnResize: true,
-        replayJustDrained: true,
-        disabled: false,
-      }),
-    ).toBe(false);
-    expect(
-      shouldClearViewportBeforePush({
-        verdict: "push",
-        clearsOnResize: true,
-        replayJustDrained: false,
-        disabled: true,
-      }),
-    ).toBe(false);
   });
 });
 
