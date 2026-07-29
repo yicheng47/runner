@@ -176,12 +176,7 @@ impl FakeRuntime {
     /// Arm the one-shot stop block. Returns (entered, release): recv on
     /// `entered` to know a stop is parked inside the runtime, send on
     /// `release` to let it finish.
-    fn arm_stop_gate(
-        &self,
-    ) -> (
-        std::sync::mpsc::Receiver<()>,
-        std::sync::mpsc::Sender<()>,
-    ) {
+    fn arm_stop_gate(&self) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         *self.stop_gate.lock().unwrap() = Some(RuntimeGate {

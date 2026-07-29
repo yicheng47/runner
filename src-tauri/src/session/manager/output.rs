@@ -540,7 +540,9 @@ impl SessionManager {
         // kill the dance. Shells also stay synchronous: they never purge,
         // so the debounce would buy nothing and cost drag-latency for a
         // TUI running inside the shell.
-        let settle_ms = self.resize_settle_ms.load(std::sync::atomic::Ordering::Relaxed);
+        let settle_ms = self
+            .resize_settle_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
         {
             let mut st = state.lock().unwrap();
             if let Some(pending) = st.pending_resize.as_mut() {
