@@ -1,4 +1,4 @@
-.PHONY: dev dev-web build package install lint lint-frontend lint-rust typecheck test test-rust test-ts check fmt fmt-check ci clean clean-all stage-runner-cli-binaries
+.PHONY: dev dev-web build package install lint lint-frontend lint-rust typecheck test test-rust test-ts check fmt fmt-check ci clean-rust-stale clean clean-all stage-runner-cli-binaries
 
 # Start Tauri app (frontend + Rust backend) in dev mode
 dev:
@@ -83,6 +83,10 @@ fmt-check:
 # run, in the same order. Heavier than `make lint` — includes
 # cargo check + the full workspace test run.
 ci: lint check test-rust
+
+# Remove accumulated Runner dev generations while keeping dependency artifacts
+clean-rust-stale:
+	cargo clean -p runner --profile dev
 
 # Clean dev artifacts
 clean:
