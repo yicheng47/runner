@@ -1,7 +1,7 @@
 // The settle gate's contract: it resolves as soon as the webview viewport
 // agrees with the restored native frame, it never waits past the ceiling, and
 // it degrades to "proceed anyway" rather than hanging when there is nothing to
-// compare against (impl 0036, phase 1).
+// compare against (impl 0038, phase 1).
 
 import { describe, expect, it, vi } from "vitest";
 

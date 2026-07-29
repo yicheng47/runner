@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-// Which source a launch resume's dims come from (impl 0036, decision 2). The
+// Which source a launch resume's dims come from (impl 0038, decision 2). The
 // sizing helpers are stubbed — their pixel math is terminalSizing's own
 // concern, and stubbing keeps xterm out of jsdom. What matters here is that a
 // laid-out pane wins over an estimate, that a chat session is estimated at its
@@ -12,8 +12,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPresetPure, resetPaneLayoutsForTest } from "./paneLayout";
 
 type Grid = { cols: number; rows: number } | null;
+type Box = { width: number; height: number } | null;
 
-const chatPaneAreaBox = vi.fn(() => ({ width: 1000, height: 800 }));
+const chatPaneAreaBox = vi.fn<() => Box>(() => ({ width: 1000, height: 800 }));
+const missionPaneAreaBox = vi.fn<() => Box>(() => ({
+  width: 952,
+  height: 762,
+}));
+const shellContentBox = vi.fn<() => Box>(() => ({ width: 1240, height: 844 }));
 const estimateMissionTerminalGrid = vi.fn<() => Grid>(() => ({
   cols: 90,
   rows: 30,
@@ -30,12 +36,18 @@ const terminalGridFromPixels = vi.fn<(w: number, h: number) => Grid>(() => ({
 vi.mock("./terminalSizing", () => ({
   TERMINAL_HOST_SESSION_ATTR: "data-terminal-session",
   chatPaneAreaBox: () => chatPaneAreaBox(),
+  missionPaneAreaBox: () => missionPaneAreaBox(),
+  shellContentBox: () => shellContentBox(),
   estimateMissionTerminalGrid: () => estimateMissionTerminalGrid(),
   terminalGridFromHostElement: (host: HTMLElement) =>
     terminalGridFromHostElement(host),
   terminalGridFromPixels: (width: number, height: number) =>
     terminalGridFromPixels(width, height),
 }));
+
+// The [launch-dims] mirror invokes a Tauri command; keep tests silent and
+// runtime-free.
+vi.mock("./frontendLog", () => ({ logLaunchDims: () => {} }));
 
 const { launchDimsFor } = await import("./launchDims");
 
@@ -90,5 +102,14 @@ describe("launchDimsFor", () => {
   it("uses the mission estimate for a session that is not in any tab", () => {
     expect(launchDimsFor("mission-slot")).toEqual({ cols: 90, rows: 30 });
     expect(chatPaneAreaBox).not.toHaveBeenCalled();
+  });
+
+  it("abstains when the chat pane area cannot be measured", () => {
+    // #371: a failed <main> measurement makes the estimate rung return
+    // null so the backend's persisted rung takes over — no window-derived
+    // guess.
+    chatPaneAreaBox.mockReturnValueOnce(null);
+    expect(launchDimsFor("chat-a")).toBeNull();
+    expect(terminalGridFromPixels).not.toHaveBeenCalled();
   });
 });

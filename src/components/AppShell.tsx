@@ -117,7 +117,10 @@ export function AppShell({ children }: { children?: ReactNode }) {
           previewOpen={sidebarPreviewOpen}
           onPreviewOpenChange={setSidebarPreviewOpen}
         />
-        <main className="relative flex flex-1 flex-col overflow-hidden">
+        <main
+          data-shell-main
+          className="relative flex flex-1 flex-col overflow-hidden"
+        >
           <div
             data-tauri-drag-region
             className="pointer-events-auto absolute left-0 right-0 top-0 z-10 h-7"

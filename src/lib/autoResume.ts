@@ -1,3 +1,4 @@
+import { markLaunchResumed } from "./launchResumeTrace";
 import type { TerminalGridSize } from "./terminalSizing";
 
 export const AUTO_RESUME_STAGGER_MS = 300;
@@ -13,7 +14,7 @@ interface AutoResumeApi {
 }
 
 /**
- * Launch-resume dims precedence (impl 0036, decision 2). A real measurement
+ * Launch-resume dims precedence (impl 0038, decision 2). A real measurement
  * from a laid-out pane beats an estimate derived from this launch's window
  * geometry; null hands the remaining two rungs to the backend, which resolves
  * `last_cols`/`last_rows` and then `DEFAULT_PTY_SIZE` (`spawn.rs`).
@@ -74,6 +75,10 @@ export async function consumeResumeOnLaunch(
         dims?.cols ?? null,
         dims?.rows ?? null,
       );
+      // Only sessions that actually resumed get a pending first-fit
+      // mark — RunnerTerminal consumes it to log the estimate-vs-actual
+      // grid delta for this launch (#366).
+      markLaunchResumed(sessionId);
     } catch (error) {
       onError(error);
     }

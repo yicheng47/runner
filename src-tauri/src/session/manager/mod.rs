@@ -49,7 +49,7 @@ mod tests;
 
 const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
 const RECENT_LOCAL_INPUT_WINDOW: Duration = Duration::from_secs(2);
-const DEFAULT_PTY_SIZE: (u16, u16) = (80, 24);
+pub(crate) const DEFAULT_PTY_SIZE: (u16, u16) = (80, 24);
 
 /// Minimum spacing between consecutive `claude-code` PTY launches.
 /// Long enough for one claude's OAuth refresh round-trip (network
@@ -682,6 +682,9 @@ pub struct PendingMissionSpawn {
     mission: Mission,
     runner: Runner,
     slot_handle: String,
+    /// Where `spec.initial_size` came from (caller-supplied / mission-hint /
+    /// DEFAULT_PTY_SIZE), for the post-spawn fork log line (#366).
+    size_source: &'static str,
     plan: router::runtime::ResumePlan,
     first_turn_delivered_via_argv: bool,
     resolved_cwd: Option<String>,

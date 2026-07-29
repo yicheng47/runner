@@ -22,6 +22,14 @@ export const TERMINAL_SCROLLBAR_WIDTH_PX = 8;
  *  Must match the literal in that component's JSX. */
 export const TERMINAL_HOST_SESSION_ATTR = "data-terminal-session";
 
+/** Attribute AppShell stamps on its `<main>` — the box every
+ *  terminal-bearing surface renders into. `shellContentBox` queries for it
+ *  specifically because the document can hold more than one `<main>`:
+ *  SettingsPage renders its own while AppShell's sits display:none under
+ *  the takeover, and a bare `querySelector("main")` can grab the zero-rect
+ *  one (#371). Must match the literal in AppShell's JSX. */
+export const SHELL_MAIN_ATTR = "data-shell-main";
+
 // Mission-surface chrome above the pane container, mirroring
 // MissionWorkspace: an `h-11` topbar and an `h-[38px]` slot-tab strip. Both
 // are border-box, so each value is the full cost.
@@ -141,14 +149,16 @@ export function pickRespawnDims(sources: {
 
 /** The shell's <main> box — the area every terminal-bearing surface renders
  *  into. Mounted from boot, so this reads true even with no chat or mission
- *  surface on screen. */
-function shellContentBox(): { width: number; height: number } {
-  const main = document.querySelector("main");
+ *  surface on screen. Null when it can't be measured (not mounted yet, or
+ *  display:none under the Settings takeover): a failed measurement must make
+ *  the estimate rung abstain so `launchDimsFor` falls through to the
+ *  persisted `last_cols` rung — `window.innerWidth` includes the sidebar and
+ *  over-estimates by its width (#371). */
+export function shellContentBox(): { width: number; height: number } | null {
+  const main = document.querySelector(`main[${SHELL_MAIN_ATTR}]`);
   const rect = main?.getBoundingClientRect();
-  return {
-    width: rect && rect.width > 0 ? rect.width : window.innerWidth,
-    height: rect && rect.height > 0 ? rect.height : window.innerHeight,
-  };
+  if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+  return { width: rect.width, height: rect.height };
 }
 
 /** Width a collapsible side surface (mission rail, chat side panel) is taking
@@ -175,10 +185,12 @@ function storedSideWidth(
  * Pixel box the mission workspace's pane container occupies right now:
  * <main> minus the topbar, the slot-tab strip, and the runners rail. The
  * workspace shows one slot terminal at a time, so unlike the chat surface
- * there is no split to divide this by.
+ * there is no split to divide this by. Null when <main> is unmeasurable.
  */
-export function missionPaneAreaBox(): { width: number; height: number } {
-  const { width, height } = shellContentBox();
+export function missionPaneAreaBox(): { width: number; height: number } | null {
+  const shell = shellContentBox();
+  if (!shell) return null;
+  const { width, height } = shell;
   const railWidth = storedSideWidth(
     "runner.mission.rail.open",
     "runner.mission.rail.width",
@@ -196,8 +208,8 @@ export function missionPaneAreaBox(): { width: number; height: number } {
 }
 
 export function estimateMissionTerminalGrid(): TerminalGridSize | null {
-  const { width, height } = missionPaneAreaBox();
-  return terminalGridFromPixels(width, height);
+  const box = missionPaneAreaBox();
+  return box ? terminalGridFromPixels(box.width, box.height) : null;
 }
 
 /**
@@ -205,10 +217,13 @@ export function estimateMissionTerminalGrid(): TerminalGridSize | null {
  * chat topbar and the side panel. This is the area ChatPaneGroup divides
  * between panes, so a session's own box is this run through
  * `paneBoxForSession` (paneLayout.ts) — the split divisor is not folded in
- * here, because the same area serves every pane of a tab.
+ * here, because the same area serves every pane of a tab. Null when <main>
+ * is unmeasurable.
  */
-export function chatPaneAreaBox(): { width: number; height: number } {
-  const { width, height } = shellContentBox();
+export function chatPaneAreaBox(): { width: number; height: number } | null {
+  const shell = shellContentBox();
+  if (!shell) return null;
+  const { width, height } = shell;
   const panelWidth = storedSideWidth(
     "runner.chat.panel.open",
     "runner.chat.panel.width",

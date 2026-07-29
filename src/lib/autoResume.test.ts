@@ -6,6 +6,10 @@ import {
   resolveLaunchDims,
 } from "./autoResume";
 import {
+  resetLaunchResumeTraceForTest,
+  takeLaunchResumed,
+} from "./launchResumeTrace";
+import {
   DEFAULT_RESUME_ON_LAUNCH,
   readStoredBool,
   STORAGE_RESUME_ON_LAUNCH,
@@ -14,6 +18,7 @@ import type { TerminalGridSize } from "./terminalSizing";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  resetLaunchResumeTraceForTest();
 });
 
 const noDims = () => null;
@@ -135,6 +140,46 @@ describe("consumeResumeOnLaunch", () => {
       ["session-b", 120, 40],
     ]);
     expect(onError).toHaveBeenCalledOnce();
+  });
+
+  // #366: RunnerTerminal emits one [launch-dims] first-fit line per
+  // LAUNCH-resumed session by consuming this mark. Ordinary sessions
+  // (fresh chats, manual resumes) never enter the set, a failed resume
+  // must not be marked, and a mark consumes exactly once so remounts
+  // can't re-log.
+  it("marks only successfully resumed sessions for the first-fit trace", async () => {
+    const takeResumeOnLaunch = vi
+      .fn<() => Promise<string | null>>()
+      .mockResolvedValueOnce("session-a")
+      .mockResolvedValueOnce("session-b")
+      .mockResolvedValueOnce(null);
+    const resumeOnLaunch = vi
+      .fn<
+        (
+          sessionId: string,
+          cols: number | null,
+          rows: number | null,
+        ) => Promise<void>
+      >()
+      .mockRejectedValueOnce(new Error("spawn failed"))
+      .mockResolvedValueOnce();
+
+    await consumeResumeOnLaunch(
+      true,
+      {
+        takeResumeOnLaunch,
+        clearResumeOnLaunch: vi.fn<() => Promise<void>>(),
+        resumeOnLaunch,
+      },
+      noDims,
+      vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(),
+      vi.fn(),
+    );
+
+    expect(takeLaunchResumed("session-a")).toBe(false); // resume failed
+    expect(takeLaunchResumed("session-b")).toBe(true); // resumed
+    expect(takeLaunchResumed("session-b")).toBe(false); // consumed once
+    expect(takeLaunchResumed("fresh-chat")).toBe(false); // never launched
   });
 
   it("clears pending stamps without resuming when disabled", async () => {

@@ -229,6 +229,7 @@ impl SessionManager {
         pool: Arc<DbPool>,
         first_turn: Option<String>,
         initial_size: Option<(u16, u16)>,
+        size_source: &'static str,
     ) -> Result<PendingMissionSpawn> {
         let initial_size = Some(initial_size.unwrap_or(DEFAULT_PTY_SIZE));
 
@@ -354,6 +355,7 @@ impl SessionManager {
             mission: mission.clone(),
             runner: runner.clone(),
             slot_handle: slot.slot_handle.clone(),
+            size_source,
             plan,
             first_turn_delivered_via_argv,
             resolved_cwd,
@@ -397,6 +399,7 @@ impl SessionManager {
             mission,
             runner,
             slot_handle,
+            size_source,
             plan,
             first_turn_delivered_via_argv,
             resolved_cwd,
@@ -475,6 +478,18 @@ impl SessionManager {
                 );
             }
             return Ok(CompleteSpawnOutcome::Cancelled);
+        }
+
+        // The PTY exists and survived both cancellation windows — this
+        // line reports a fork that actually happened. One per slot so a
+        // production log shows the width every mission session started
+        // at and where it came from (#366).
+        if let Some((cols, rows)) = initial_size {
+            log::info!(
+                "mission slot fork: session={session_id} runtime={} \
+                 size={cols}x{rows} source={size_source}",
+                runner.runtime,
+            );
         }
 
         let spawn_pid = self.runtime_pid(&rt_session);
@@ -626,6 +641,7 @@ impl SessionManager {
             Arc::clone(&pool),
             first_turn,
             None,
+            "DEFAULT_PTY_SIZE",
         )?;
         let session_id = pending.session_id.clone();
         let mission_id = pending.mission.id.clone();
@@ -1074,10 +1090,12 @@ impl SessionManager {
             }
             row
         };
-        let initial_size = cols
-            .zip(rows)
-            .or(snap.last_cols.zip(snap.last_rows))
-            .unwrap_or(DEFAULT_PTY_SIZE);
+        let (initial_size, size_source) = match (cols.zip(rows), snap.last_cols.zip(snap.last_rows))
+        {
+            (Some(size), _) => (size, "caller-supplied"),
+            (None, Some(size)) => (size, "persisted-last-size"),
+            (None, None) => (DEFAULT_PTY_SIZE, "DEFAULT_PTY_SIZE"),
+        };
 
         // Stamp the resume watermark (and, for full-frame-repaint
         // runtimes, purge the prior output buffer) up front. Two
@@ -1343,6 +1361,22 @@ impl SessionManager {
                 return Err(Error::msg(format!("spawn {}: {e}", runner.command)));
             }
         };
+
+        // The PTY exists — this line reports a fork that actually
+        // happened, not an attempt. One per resume so a production log
+        // shows the width every resumed session started at and where it
+        // came from (#366).
+        log::info!(
+            "{} fork: session={session_id} runtime={} size={}x{} source={size_source}",
+            if allow_fresh_fallback {
+                "resume"
+            } else {
+                "resume-on-launch"
+            },
+            runner.runtime,
+            initial_size.0,
+            initial_size.1,
+        );
 
         let spawn_pid = self.runtime_pid(&rt_session);
 

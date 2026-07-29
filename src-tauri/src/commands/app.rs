@@ -34,6 +34,19 @@ pub(crate) fn show_main_window(app: &AppHandle) -> crate::error::Result<()> {
     Ok(())
 }
 
+/// Route a frontend diagnostic line into the same rotating file log the
+/// backend writes. Packaged builds have no webview console, and the
+/// launch-resume width bug (#366) only reproduces there — this is how the
+/// `[launch-dims]` lines reach `~/Library/Logs/…/runner.log`.
+#[tauri::command]
+pub fn frontend_log(level: String, message: String) {
+    match level.as_str() {
+        "error" => log::error!(target: "frontend", "{message}"),
+        "warn" => log::warn!(target: "frontend", "{message}"),
+        _ => log::info!(target: "frontend", "{message}"),
+    }
+}
+
 /// Reveal the app log directory in the system file browser.
 ///
 /// On macOS this is `~/Library/Logs/com.wycstudios.runner/` for

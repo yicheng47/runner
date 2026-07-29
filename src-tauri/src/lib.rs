@@ -17,7 +17,7 @@ mod window_state;
 mod windows;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 #[cfg(target_os = "macos")]
 use tauri::menu::{AboutMetadataBuilder, PredefinedMenuItem};
@@ -63,6 +63,14 @@ pub struct AppState {
     /// was last focused, so exactly one window owns a duplicated subject's
     /// PTY. `main` is registered in `setup`.
     pub windows: Arc<windows::WindowRegistry>,
+    /// Most recent known-good mission pane grid (cols, rows), pushed by
+    /// the frontend: once per launch after the window-geometry settle
+    /// gate, and whenever the mission workspace measures real slot dims.
+    /// Backend-initiated mission spawns (MCP `mission_start` /
+    /// `mission_reset`) consume it when the caller supplies no size, so
+    /// their slots don't fork at 80×24 and lose their scrollback to the
+    /// first slot-tab visit's cols-gate purge (#367).
+    pub mission_grid_hint: Arc<Mutex<Option<(u16, u16)>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -228,6 +236,7 @@ pub fn run() {
             // MCP-reconstructed `AppState` sees the same map.
             let window_registry = Arc::new(windows::WindowRegistry::new());
             window_registry.register("main");
+            let mission_grid_hint = Arc::new(Mutex::new(None));
             let mcp_state = mcp::state::McpState {
                 db: Arc::clone(&pool),
                 app_data_dir: app_data_dir.clone(),
@@ -238,6 +247,7 @@ pub fn run() {
                 routers: Arc::clone(&routers),
                 mcp: Arc::clone(&mcp_handle),
                 windows: Arc::clone(&window_registry),
+                mission_grid_hint: Arc::clone(&mission_grid_hint),
                 app_handle: app.handle().clone(),
             };
             if let Err(e) = mcp_handle.start(&app_data_dir.join("mcp.sock"), mcp_state) {
@@ -254,6 +264,7 @@ pub fn run() {
                 routers,
                 mcp: mcp_handle,
                 windows: window_registry,
+                mission_grid_hint,
             };
 
             // Mount router + bus for every `running` mission before
@@ -358,6 +369,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app::app_ready,
             commands::app::runner_logs_reveal,
+            commands::app::frontend_log,
             commands::crew::crew_list,
             commands::crew::crew_get,
             commands::crew::crew_create,
@@ -399,6 +411,7 @@ pub fn run() {
             commands::slot::slot_set_lead,
             commands::slot::slot_reorder,
             commands::mission::mission_start,
+            commands::mission::mission_grid_hint_set,
             commands::mission::mission_attach,
             commands::mission::mission_stop,
             commands::mission::mission_archive,

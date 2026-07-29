@@ -1454,10 +1454,168 @@ fn mission_registration_preserves_initial_terminal_size() {
             Arc::clone(&pool),
             None,
             Some((132, 41)),
+            "caller-supplied",
         )
         .unwrap();
 
     assert_eq!(pending.spec.initial_size, Some((132, 41)));
+}
+
+#[test]
+fn hinted_mission_start_forks_slots_at_the_hint() {
+    // #367 across the whole seam: the size the resolver derives from the
+    // frontend grid hint (mission_fork_size — exactly what mission_start
+    // feeds register when the caller passes no size) must reach the PTY
+    // fork itself. FakeRuntime records the SpawnSpec actually forked.
+    let (size, source) = crate::commands::mission::mission_fork_size(None, Some((161, 45)));
+    let pool = pool_with_schema();
+    let mission_base = Mission {
+        crew_id: "c".into(),
+        ..mission()
+    };
+    let runner = runner("/bin/cat", &[]);
+    let slot_id = insert_crew_runner(&pool, &mission_base.id, &runner.id);
+    let fresh_mission_id: String = {
+        let conn = pool.get().unwrap();
+        conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
+            .unwrap()
+    };
+    let mission = Mission {
+        id: fresh_mission_id,
+        ..mission_base
+    };
+    let mut slot = slot_for(&runner);
+    slot.id = slot_id;
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture();
+    let pending = mgr
+        .register_mission_session(
+            &mission,
+            &runner,
+            &slot,
+            std::path::Path::new("/tmp"),
+            PathBuf::from("/dev/null"),
+            Arc::clone(&pool),
+            None,
+            size,
+            source,
+        )
+        .unwrap();
+    let session_id = pending.session_id.clone();
+    let outcome = mgr
+        .complete_mission_session_spawn(
+            pending,
+            Arc::clone(&cap) as Arc<dyn SessionEvents>,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .unwrap();
+
+    assert!(matches!(outcome, CompleteSpawnOutcome::Spawned));
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().initial_size,
+        Some((161, 45))
+    );
+    mgr.kill(&session_id).unwrap();
+}
+
+#[test]
+fn unhinted_mission_start_still_forks_at_default() {
+    // Same seam with no caller size and no recorded hint: the fork still
+    // happens, at DEFAULT_PTY_SIZE — the pre-#367 behavior.
+    let (size, source) = crate::commands::mission::mission_fork_size(None, None);
+    let pool = pool_with_schema();
+    let mission_base = Mission {
+        crew_id: "c".into(),
+        ..mission()
+    };
+    let runner = runner("/bin/cat", &[]);
+    let slot_id = insert_crew_runner(&pool, &mission_base.id, &runner.id);
+    let fresh_mission_id: String = {
+        let conn = pool.get().unwrap();
+        conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
+            .unwrap()
+    };
+    let mission = Mission {
+        id: fresh_mission_id,
+        ..mission_base
+    };
+    let mut slot = slot_for(&runner);
+    slot.id = slot_id;
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture();
+    let pending = mgr
+        .register_mission_session(
+            &mission,
+            &runner,
+            &slot,
+            std::path::Path::new("/tmp"),
+            PathBuf::from("/dev/null"),
+            Arc::clone(&pool),
+            None,
+            size,
+            source,
+        )
+        .unwrap();
+    let session_id = pending.session_id.clone();
+    let outcome = mgr
+        .complete_mission_session_spawn(
+            pending,
+            Arc::clone(&cap) as Arc<dyn SessionEvents>,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .unwrap();
+
+    assert!(matches!(outcome, CompleteSpawnOutcome::Spawned));
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().initial_size,
+        Some(DEFAULT_PTY_SIZE)
+    );
+    mgr.kill(&session_id).unwrap();
+}
+
+#[test]
+fn mission_registration_defaults_to_80x24_when_unsized() {
+    // The last rung of the #367 chain: no caller size and no recorded
+    // grid hint must still fork — at DEFAULT_PTY_SIZE, as before.
+    let pool = pool_with_schema();
+    let mission_base = Mission {
+        crew_id: "c".into(),
+        ..mission()
+    };
+    let runner = runner("/bin/cat", &[]);
+    let slot_id = insert_crew_runner(&pool, &mission_base.id, &runner.id);
+    let fresh_mission_id: String = {
+        let conn = pool.get().unwrap();
+        conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
+            .unwrap()
+    };
+    let mission = Mission {
+        id: fresh_mission_id,
+        ..mission_base
+    };
+    let mut slot = slot_for(&runner);
+    slot.id = slot_id;
+
+    let mgr = mgr_with_fake(None, fake_runtime());
+    let pending = mgr
+        .register_mission_session(
+            &mission,
+            &runner,
+            &slot,
+            std::path::Path::new("/tmp"),
+            PathBuf::from("/dev/null"),
+            Arc::clone(&pool),
+            None,
+            None,
+            "DEFAULT_PTY_SIZE",
+        )
+        .unwrap();
+
+    assert_eq!(pending.spec.initial_size, Some(DEFAULT_PTY_SIZE));
 }
 
 #[test]
