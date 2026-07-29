@@ -27,7 +27,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 import { api, type PasteImageMimeType } from "../lib/api";
-import { logLaunchDims } from "../lib/frontendLog";
+import { logLaunchDims, logResizeGate } from "../lib/frontendLog";
 import { takeLaunchResumed } from "../lib/launchResumeTrace";
 import {
   readTerminalCursorStyle,
@@ -49,10 +49,12 @@ import {
 } from "../lib/terminalBlank";
 import {
   activationResizeRequest,
+  shouldClearViewportBeforePush,
   shouldDelayTerminalResize,
-  shouldPushTerminalSize,
+  sizePushVerdict,
   terminalSizeAfterDisabledChange,
   terminalSizeAfterRejectedPush,
+  type SizePushVerdict,
   type TerminalGridSize,
 } from "../lib/terminalResize";
 import { TERMINAL_SCROLLBAR_WIDTH_PX } from "../lib/terminalSizing";
@@ -618,17 +620,43 @@ export const RunnerTerminal = forwardRef<
         rejectSizePush(current.cols, current.rows);
       });
     }
-    function pushBackendResize() {
-      if (resizeDisabledRef.current) return false;
-      const current = { cols: term.cols, rows: term.rows };
-      if (
-        !shouldPushTerminalSize(current, {
+    // Suppressed pushes are mirrored into runner.log (#373
+    // instrumentation) so a storm and the gate that held it back are
+    // verifiable in one file. Throttled: a live drag re-suppresses a
+    // background mount once per frame, and one line a second is enough
+    // to prove the gate held.
+    let lastGateLogAt = 0;
+    function logSuppressedPush(
+      verdict: SizePushVerdict,
+      current: TerminalGridSize,
+    ) {
+      const now = Date.now();
+      if (now - lastGateLogAt < 1000) return;
+      lastGateLogAt = now;
+      logResizeGate(
+        `${verdict} session=${sessionIdRef.current} ` +
+          `${current.cols}x${current.rows} ` +
+          `lastPushed=${lastPushedColsRef.current}x${lastPushedRowsRef.current}`,
+      );
+    }
+    function resolvePushVerdict(current: TerminalGridSize): SizePushVerdict {
+      const verdict = sizePushVerdict({
+        current,
+        lastPushed: {
           cols: lastPushedColsRef.current,
           rows: lastPushedRowsRef.current,
-        })
-      ) {
-        return false;
+        },
+        active: activeRef.current,
+        resizeDisabled: resizeDisabledRef.current,
+      });
+      if (verdict === "suppressed-transitional" || verdict === "suppressed-nonowner") {
+        logSuppressedPush(verdict, current);
       }
+      return verdict;
+    }
+    function pushBackendResize() {
+      const current = { cols: term.cols, rows: term.rows };
+      if (resolvePushVerdict(current) !== "push") return false;
       sendBackendResize(current);
       return true;
     }
@@ -813,29 +841,16 @@ export const RunnerTerminal = forwardRef<
     const textarea = term.textarea;
     textarea?.addEventListener("paste", onPaste, { capture: true });
 
-    // Dedupe by last-pushed dims. See `lastPushedColsRef` comment for why.
+    // Dedupe by last-pushed dims (see `lastPushedColsRef`) and gate on
+    // ownership: only the visible owning pane writes sizes for the
+    // session (#373 defect 3) — see `sizePushVerdict`.
     const pushSize = () => {
       const t = termRef.current;
       const sid = sessionIdRef.current;
-      if (
-        !t ||
-        !sid ||
-        resizeDisabledRef.current
-      ) {
-        return;
-      }
+      if (!t || !sid) return;
       const current = { cols: t.cols, rows: t.rows };
-      if (
-        !shouldPushTerminalSize(
-          current,
-          {
-            cols: lastPushedColsRef.current,
-            rows: lastPushedRowsRef.current,
-          },
-        )
-      ) {
-        return;
-      }
+      const verdict = resolvePushVerdict(current);
+      if (verdict !== "push") return;
       // Clear the visible region before the SIGWINCH-driven redraw
       // lands for full-screen TUI agents. Without this, claude-code /
       // codex repaint at the new dims and the prior frame's visible
@@ -849,9 +864,21 @@ export const RunnerTerminal = forwardRef<
       // intact. Plain shells skip the wipe entirely and keep their
       // history. See docs/impls/archive/0011-pty-host-terminal-runtime.md
       // §"Per-runtime clear-on-resize".
-      const skipLocalClear =
-        replayJustDrainedRef.current || disabledRef.current;
-      if (runtimeClearsOnResize(runnerRuntimeRef.current) && !skipLocalClear) {
+      //
+      // With the backend debounce (#373) the restoring repaint arrives
+      // only at the storm's settle — which guarantees one: a purge
+      // settle SIGWINCHes via the width change, and a round-trip settle
+      // forces it with the rows nudge. The clear must therefore pair
+      // only with verdict="push" (see shouldClearViewportBeforePush) —
+      // a mount that doesn't write may never blank its viewport.
+      if (
+        shouldClearViewportBeforePush({
+          verdict,
+          clearsOnResize: runtimeClearsOnResize(runnerRuntimeRef.current),
+          replayJustDrained: replayJustDrainedRef.current,
+          disabled: disabledRef.current,
+        })
+      ) {
         // ESC[2J — erase visible region
         // ESC[H  — cursor home
         t.write("\x1b[2J\x1b[H");
@@ -894,10 +921,12 @@ export const RunnerTerminal = forwardRef<
         });
       }, 150);
     };
-    // Refit + push backend geometry whenever the pane is measurable.
-    // PersistentSurfaces keeps inactive surfaces laid out under
-    // visibility:hidden, so they stay sized while rendering, focus,
-    // WebGL, and wake handling remain gated by `active`.
+    // Refit whenever the pane is measurable. PersistentSurfaces keeps
+    // inactive surfaces laid out under visibility:hidden, so their local
+    // xterm grid stays sized — but only the visible owning pane pushes
+    // that size to the backend (#373); hidden mounts observe without
+    // writing, and the activation refresh pushes the owner's size when a
+    // surface comes to the front.
     function refitAndPush({
       allowPendingLargeDrop = false,
     }: { allowPendingLargeDrop?: boolean } = {}) {
@@ -949,8 +978,8 @@ export const RunnerTerminal = forwardRef<
     // grid and backend PTY geometry stay stale until the user nudges
     // the OS window (#108). Observing the container catches those
     // CSS-driven size changes. The measurable-rect guard still excludes
-    // internal display:none panes while invisible persistent surfaces
-    // keep their PTY geometry current.
+    // internal display:none panes; invisible persistent surfaces refit
+    // locally but no longer push (#373 single-writer).
     const ro = new ResizeObserver(() => {
       const activationRefresh = activationRefreshRef.current;
       if (activationRefresh?.()) {

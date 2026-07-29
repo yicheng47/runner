@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   activationResizeRequest,
   isLargeTerminalRowDrop,
+  shouldClearViewportBeforePush,
   shouldDelayTerminalResize,
   shouldPushTerminalSize,
+  sizePushVerdict,
   terminalSizeAfterDisabledChange,
   terminalSizeAfterRejectedPush,
 } from "./terminalResize";
@@ -47,6 +49,135 @@ describe("terminal size push state", () => {
     expect(terminalSizeAfterDisabledChange(current, false, true)).toEqual(
       current,
     );
+  });
+});
+
+// #373: exactly one surface — the visible owning pane — may push sizes
+// for a session; transitional and non-owning mounts must push nothing.
+describe("sizePushVerdict", () => {
+  const current = { cols: 209, rows: 59 };
+  const lastPushed = { cols: 76, rows: 59 };
+
+  it("lets the visible owning pane push a changed size", () => {
+    expect(
+      sizePushVerdict({
+        current,
+        lastPushed,
+        active: true,
+        resizeDisabled: false,
+      }),
+    ).toBe("push");
+  });
+
+  it("suppresses a transitional pane before ownership", () => {
+    expect(
+      sizePushVerdict({
+        current,
+        lastPushed,
+        active: true,
+        resizeDisabled: true,
+      }),
+    ).toBe("suppressed-transitional");
+    expect(
+      sizePushVerdict({
+        current,
+        lastPushed,
+        active: false,
+        resizeDisabled: true,
+      }),
+    ).toBe("suppressed-transitional");
+  });
+
+  it("suppresses a non-owning mount (hidden pool, background tab)", () => {
+    expect(
+      sizePushVerdict({
+        current,
+        lastPushed,
+        active: false,
+        resizeDisabled: false,
+      }),
+    ).toBe("suppressed-nonowner");
+  });
+
+  it("keeps the dedupe silent for an unchanged size", () => {
+    expect(
+      sizePushVerdict({
+        current,
+        lastPushed: current,
+        active: true,
+        resizeDisabled: false,
+      }),
+    ).toBe("unchanged");
+    expect(
+      sizePushVerdict({
+        current,
+        lastPushed: current,
+        active: false,
+        resizeDisabled: false,
+      }),
+    ).toBe("unchanged");
+  });
+});
+
+// #373 review finding 1: with the backend debounce, the restoring
+// repaint only arrives at settle — so the owner's viewport clear must
+// pair 1:1 with pushes that actually go out. A suppressed or deduped
+// push clearing the viewport would leave the pane blank with no
+// repaint coming.
+describe("shouldClearViewportBeforePush", () => {
+  it("clears only for an owner push of a clears-on-resize runtime", () => {
+    expect(
+      shouldClearViewportBeforePush({
+        verdict: "push",
+        clearsOnResize: true,
+        replayJustDrained: false,
+        disabled: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("never clears for a suppressed or deduped push", () => {
+    for (const verdict of [
+      "unchanged",
+      "suppressed-transitional",
+      "suppressed-nonowner",
+    ] as const) {
+      expect(
+        shouldClearViewportBeforePush({
+          verdict,
+          clearsOnResize: true,
+          replayJustDrained: false,
+          disabled: false,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it("keeps the shell / just-replayed / stopped-pane exemptions", () => {
+    expect(
+      shouldClearViewportBeforePush({
+        verdict: "push",
+        clearsOnResize: false,
+        replayJustDrained: false,
+        disabled: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldClearViewportBeforePush({
+        verdict: "push",
+        clearsOnResize: true,
+        replayJustDrained: true,
+        disabled: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldClearViewportBeforePush({
+        verdict: "push",
+        clearsOnResize: true,
+        replayJustDrained: false,
+        disabled: true,
+      }),
+    ).toBe(false);
   });
 });
 

@@ -77,6 +77,12 @@ impl SessionManager {
                     state.last_local_input_at = None;
                     state.mission_status_sink = None;
                     state.completion_armed = false;
+                    // Drop any coalescing resize storm with the child; a
+                    // settle that fires later sees None and exits without
+                    // an ioctl. One that fired between `killed = true` and
+                    // here aborted on the killed flag (settles run under
+                    // the state lock, so none is mid-flight right now).
+                    state.pending_resize = None;
                     (h.stop.clone(), h.forwarder.take())
                 }
                 None => return Ok(()), // raced with another caller; no-op

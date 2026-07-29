@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 use std::thread;
@@ -50,6 +50,14 @@ mod tests;
 const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
 const RECENT_LOCAL_INPUT_WINDOW: Duration = Duration::from_secs(2);
 pub(crate) const DEFAULT_PTY_SIZE: (u16, u16) = (80, 24);
+
+/// How long a cols-change resize storm must stay quiet before the
+/// settled size is applied to the PTY (#373). Live drags emit a width
+/// per frame; production launch churn emitted ~50 in 90s. 175ms sits
+/// inside the 150-200ms band the issue calls for: comfortably above
+/// one drag frame, small enough that the settle repaint still feels
+/// attached to the drag ending.
+const RESIZE_SETTLE_MS: u64 = 175;
 
 /// Minimum spacing between consecutive `claude-code` PTY launches.
 /// Long enough for one claude's OAuth refresh round-trip (network
@@ -529,6 +537,22 @@ struct DeliveryGate {
     ready: Condvar,
 }
 
+/// One coalesced PTY resize waiting out a storm (#373). Cols-changing
+/// pushes for clears-on-resize runtimes park here instead of applying
+/// immediately; a settle thread applies the latest value once no new
+/// push has arrived for the settle window. `deadline` moves forward on
+/// every folded-in push (trailing debounce), `suppressed` counts the
+/// pushes absorbed beyond the one that will apply, and
+/// `clears_on_resize` is resolved once at storm start so the settle
+/// thread never needs a DB pool.
+struct PendingResize {
+    cols: u16,
+    rows: u16,
+    deadline: Instant,
+    suppressed: u32,
+    clears_on_resize: bool,
+}
+
 #[derive(Default)]
 struct SessionState {
     handle: Option<SessionHandle>,
@@ -559,6 +583,15 @@ struct SessionState {
     /// replay reflow (wrap depends on cols alone), so the ring survives
     /// them; only a real width change still purges.
     last_pty_cols: Option<u16>,
+    /// In-flight debounced resize, if a cols-change storm is being
+    /// coalesced. See `PendingResize` and `SessionManager::resize`.
+    /// Cleared by every lifecycle transition that retargets the session
+    /// (`install_handle`, `kill`, `purge_session_buffers`); the settle
+    /// itself takes it, validates `killed`/`resuming`/handle, applies
+    /// the ioctl, and commits in one critical section under the state
+    /// lock — see `settle_pending_resize` for the linearization
+    /// argument.
+    pending_resize: Option<PendingResize>,
     resuming: bool,
     killed: bool,
 }
@@ -582,6 +615,7 @@ impl SessionState {
             && !self.mouse_1003_on
             && !self.mouse_1006_on
             && self.last_pty_cols.is_none()
+            && self.pending_resize.is_none()
             && !self.resuming
             && !self.killed
     }
@@ -627,6 +661,10 @@ pub struct SessionManager {
     /// owns DB + event-buffer state but never reads/writes a PTY
     /// directly.
     runtime: Arc<dyn SessionRuntime>,
+    /// Quiescence window for the cols-change resize debounce (#373),
+    /// in milliseconds. A field rather than a const so tests can pin
+    /// it high (deterministic manual settle) or low (thread wiring).
+    resize_settle_ms: AtomicU64,
 }
 
 /// RAII guard that releases a session state's `resuming` flag on drop. The
@@ -729,7 +767,13 @@ impl SessionManager {
             claude_launch_gate: Mutex::new(None),
             pending_mission_cancels: Mutex::new(HashMap::new()),
             runtime,
+            resize_settle_ms: AtomicU64::new(RESIZE_SETTLE_MS),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_resize_settle_ms(&self, ms: u64) {
+        self.resize_settle_ms.store(ms, Ordering::Relaxed);
     }
 
     fn session_state(&self, session_id: &str) -> Option<Arc<Mutex<SessionState>>> {
@@ -898,6 +942,12 @@ impl SessionManager {
                     .expect("spawn size must be resolved before handle install")
                     .0,
             );
+            // A storm aimed at the previous child must not settle onto
+            // the fresh PTY — the fork already sized it. (A settle
+            // already running holds the state lock this block is inside,
+            // so it completed against the OLD child before this point;
+            // one mid-resume would have aborted on `resuming`.)
+            state.pending_resize = None;
         }
         self.notify_delivery_event(session_id, router::SessionDeliveryEvent::Respawned);
     }

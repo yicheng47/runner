@@ -514,45 +514,237 @@ impl SessionManager {
         let Some(state) = state else {
             return Ok(());
         };
-        // Pane geometry is the next fork's desired size even if the current
-        // PTY rejects the ioctl. Keep last_pty_cols as the last size actually
-        // applied so a failed live resize cannot trigger a ring purge.
-        self.runtime.resize(&rt_session, cols, rows)?;
         // Full-repaint TUI runtimes (claude-code, codex, qoder, trae) redraw the whole
         // frame on SIGWINCH, so bytes buffered before a *width* change
         // describe a stale grid width. Replaying them into the new grid on
         // a later snapshot re-attach wraps their absolute-positioned frames
         // wrong — box-drawing borders shredded into scrollback garbage
-        // (seen dogfooding split view, impl 0020). Drop them: the incoming
-        // repaint rebuilds the buffer at the new width, and the frontend
-        // already hard-clears its local viewport for these runtimes on
-        // width changes.
+        // (seen dogfooding split view, impl 0020). The purge remains the
+        // correct response to genuinely stale-width bytes — but a live
+        // drag emits one width per frame, and purging per intermediate
+        // width obliterated scrollback dozens of times per drag while
+        // launch layout churn did the same with nobody touching anything
+        // (#373). So cols changes for these runtimes are DEBOUNCED: the
+        // request parks in `pending_resize`, every further push folds in
+        // and extends the deadline, and a settle thread applies only the
+        // final ioctl once the storm has been quiet for the settle
+        // window. If the settled cols equal the cols the ring already
+        // holds (a drag that ended where it began), the purge is skipped
+        // entirely. See `settle_pending_resize`.
         //
-        // Rows-only resizes keep the ring: reflow depends on cols alone,
-        // and the frontend's activation dance nudges rows (rows-1 → rows)
-        // with width held constant on every tab return — purging there
-        // threw away claude-code history that snapshot replay could have
-        // restored (the #306 symptom: remount shows only the latest
-        // frame). Shells keep their buffer unconditionally — no repaint
-        // would arrive, and their history is meaningful.
-        let (cols_changed, prev_cols) = {
-            let mut state = state.lock().unwrap();
-            let prev = state.last_pty_cols;
-            let changed = prev != Some(cols);
-            state.last_pty_cols = Some(cols);
-            (changed, prev)
+        // Rows-only resizes keep today's synchronous path: reflow depends
+        // on cols alone, so they never purge (#306), and the frontend's
+        // activation dance nudges rows (rows-1 → rows) with width held
+        // constant to force a SIGWINCH repaint — debouncing those two
+        // ioctls would collapse them into a same-size kernel no-op and
+        // kill the dance. Shells also stay synchronous: they never purge,
+        // so the debounce would buy nothing and cost drag-latency for a
+        // TUI running inside the shell.
+        let settle_ms = self.resize_settle_ms.load(std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut st = state.lock().unwrap();
+            if let Some(pending) = st.pending_resize.as_mut() {
+                pending.cols = cols;
+                pending.rows = rows;
+                pending.deadline = Instant::now() + Duration::from_millis(settle_ms);
+                pending.suppressed += 1;
+                return Ok(());
+            }
+            if st.last_pty_cols == Some(cols) {
+                // Rows-only (or same-size reassert): apply now. Pane
+                // geometry is the next fork's desired size even if the
+                // current PTY rejects the ioctl; last_pty_cols stays the
+                // last size actually applied so a failed live resize
+                // cannot trigger a ring purge.
+                drop(st);
+                self.runtime.resize(&rt_session, cols, rows)?;
+                state.lock().unwrap().last_pty_cols = Some(cols);
+                return Ok(());
+            }
+        }
+        // Cols change with no storm in flight. Resolve the purge gate
+        // once here (DB read) so the settle thread never needs the pool.
+        let clears_on_resize = runtime_clears_on_resize(session_id, pool);
+        if !clears_on_resize {
+            // Non-purging runtime: nothing to coalesce away from — keep
+            // the synchronous ioctl and the failed-resize guard.
+            self.runtime.resize(&rt_session, cols, rows)?;
+            state.lock().unwrap().last_pty_cols = Some(cols);
+            return Ok(());
+        }
+        let spawn_settle_thread = {
+            let mut st = state.lock().unwrap();
+            match st.pending_resize.as_mut() {
+                // Raced with another writer between the two locks: fold in.
+                Some(pending) => {
+                    pending.cols = cols;
+                    pending.rows = rows;
+                    pending.deadline = Instant::now() + Duration::from_millis(settle_ms);
+                    pending.suppressed += 1;
+                    false
+                }
+                None => {
+                    st.pending_resize = Some(PendingResize {
+                        cols,
+                        rows,
+                        deadline: Instant::now() + Duration::from_millis(settle_ms),
+                        suppressed: 0,
+                        clears_on_resize,
+                    });
+                    true
+                }
+            }
         };
-        if cols_changed && runtime_clears_on_resize(session_id, pool) {
+        if spawn_settle_thread {
+            let session_id = session_id.to_string();
+            let state = Arc::clone(&state);
+            let runtime = Arc::clone(&self.runtime);
+            thread::spawn(move || loop {
+                let wait = {
+                    let st = state.lock().unwrap();
+                    let Some(pending) = st.pending_resize.as_ref() else {
+                        // Cancelled: respawn re-seeded the gate, or kill /
+                        // purge tore the session down mid-storm.
+                        return;
+                    };
+                    pending.deadline.saturating_duration_since(Instant::now())
+                };
+                if !wait.is_zero() {
+                    thread::sleep(wait);
+                    continue;
+                }
+                Self::settle_pending_resize(&session_id, &state, runtime.as_ref());
+                return;
+            });
+        }
+        Ok(())
+    }
+
+    /// Apply a quiesced `pending_resize`: the final ioctl(s) at the
+    /// settled size, then the cols-gate purge only when the settled cols
+    /// differ from the cols the ring's bytes were emitted at. Runs on
+    /// the settle thread; the test-only `settle_pending_resize_now`
+    /// drives it deterministically.
+    ///
+    /// A purge settle sends one ioctl — the cols changed against the
+    /// last applied size, so the SIGWINCH (and the repaint that restores
+    /// the owner pane's pre-cleared viewport) is guaranteed. A
+    /// round-trip settle would be a same-size TIOCSWINSZ — a kernel
+    /// no-op with no SIGWINCH — while the owning pane already cleared
+    /// its viewport for the intermediate pushes; without a repaint the
+    /// pane would sit blank until the next output. So the no-purge path
+    /// always nudges rows (rows-1 → rows, width constant — the same
+    /// trick the frontend dance documents) to force the repaint.
+    ///
+    /// The failed-ioctl guard survives the debounce: an ioctl error
+    /// drops the storm without touching `last_pty_cols` and without
+    /// purging — same contract as the synchronous path, minus the error
+    /// propagation (there is no caller left to return it to, so it is
+    /// logged instead).
+    ///
+    /// The whole settle — take, guards, ioctl, commit — runs as ONE
+    /// critical section under the session's state lock, because the
+    /// runtime resolves `RuntimeSession` by reusable session id and a
+    /// respawn overwrites that mapping: an ioctl issued outside the
+    /// lock could physically resize a child spawned after the storm.
+    /// The lock linearizes the settle against every lifecycle
+    /// transition that could retarget it: `kill` sets `killed` under
+    /// this lock BEFORE `runtime.stop` begins, and `resume` sets
+    /// `resuming` under this lock BEFORE `runtime.spawn` can overwrite
+    /// the map — so if neither flag is set and the handle is present,
+    /// the id still resolves to the child this storm measured, and
+    /// neither teardown nor replacement can start until the settle
+    /// releases the lock. A settle that finds `killed`/`resuming` set
+    /// (or the handle gone) drops the storm untouched: the fresh PTY is
+    /// sized by its own path, and a dead session keeps its ring for
+    /// dimmed scrollback. Holding the lock across the ioctl stalls
+    /// output ingestion only for the duration of a TIOCSWINSZ.
+    fn settle_pending_resize(
+        session_id: &str,
+        state: &Arc<Mutex<SessionState>>,
+        runtime: &dyn SessionRuntime,
+    ) {
+        let mut st = state.lock().unwrap();
+        let Some(pending) = st.pending_resize.take() else {
+            return;
+        };
+        if st.killed || st.resuming {
+            log::info!(
+                "cols-gate settle abandoned: session={session_id} {}x{} ({} coalesced) — \
+                 kill/resume in flight",
+                pending.cols,
+                pending.rows,
+                pending.suppressed,
+            );
+            return;
+        }
+        let Some(handle) = st.handle.as_ref() else {
+            // Child died mid-storm; the next spawn re-seeds the gate.
+            return;
+        };
+        let rt_session = handle.runtime_session.clone();
+        let prev_cols = st.last_pty_cols;
+        let purge = pending.clears_on_resize && prev_cols != Some(pending.cols);
+        let ioctl = if purge {
+            runtime.resize(&rt_session, pending.cols, pending.rows)
+        } else {
+            let nudged_rows = if pending.rows > 1 {
+                pending.rows - 1
+            } else {
+                pending.rows + 1
+            };
+            runtime
+                .resize(&rt_session, pending.cols, nudged_rows)
+                .and_then(|()| runtime.resize(&rt_session, pending.cols, pending.rows))
+        };
+        if let Err(error) = ioctl {
+            log::warn!(
+                "settled resize failed: session={session_id} {}x{} ({} coalesced): {error}",
+                pending.cols,
+                pending.rows,
+                pending.suppressed,
+            );
+            return;
+        }
+        st.last_pty_cols = Some(pending.cols);
+        if purge {
+            // Buffer-only purge: the child survives the resize, so its
+            // terminal modes persist — a SIGWINCH repaint does not
+            // re-emit the enter-alt-screen / bracketed-paste escapes,
+            // and clearing the flags here would strip the synthetic
+            // prefix a later snapshot needs. The seq counter is
+            // likewise untouched.
+            st.output_buffer.clear();
+        }
+        drop(st);
+        if purge {
             // Estimate-vs-reality mismatches show up here: a session
             // forked at a wrong width loses its ring to this purge on
             // the pane's first real-cols push (#366 diagnostics).
             log::info!(
-                "cols-gate purge: session={session_id} cols {} -> {cols}",
+                "cols-gate purge: session={session_id} cols {} -> {} ({} coalesced)",
                 prev_cols.map_or_else(|| "none".to_string(), |c| c.to_string()),
+                pending.cols,
+                pending.suppressed,
             );
-            self.purge_output_buffer_keep_modes(session_id);
+        } else {
+            log::info!(
+                "cols-gate settle: session={session_id} cols {} round-trip, purge skipped, \
+                 repaint nudged ({} coalesced)",
+                pending.cols,
+                pending.suppressed,
+            );
         }
-        Ok(())
+    }
+
+    /// Test-only deterministic settle: run the storm's apply step now,
+    /// regardless of deadline. Pair with a high `set_resize_settle_ms`
+    /// so the background thread cannot race the assertion.
+    #[cfg(test)]
+    pub(crate) fn settle_pending_resize_now(&self, session_id: &str) {
+        if let Some(state) = self.session_state(session_id) {
+            Self::settle_pending_resize(session_id, &state, self.runtime.as_ref());
+        }
     }
 
     /// Return the bounded in-memory PTY output snapshot for a session.
@@ -632,6 +824,7 @@ impl SessionManager {
             state.mouse_1003_on = false;
             state.mouse_1006_on = false;
             state.last_pty_cols = None;
+            state.pending_resize = None;
         }
         self.prune_empty_session_state(session_id);
     }
@@ -681,18 +874,6 @@ impl SessionManager {
             state.mouse_1006_on = false;
         }
         self.prune_empty_session_state(session_id);
-    }
-
-    /// Buffer-only purge for `resize`: the child process survives, so its
-    /// terminal modes persist — a SIGWINCH repaint does not re-emit the
-    /// enter-alt-screen / bracketed-paste escapes, and clearing the flags
-    /// here would strip the synthetic prefix a later snapshot needs. The
-    /// seq counter is likewise untouched.
-    fn purge_output_buffer_keep_modes(&self, session_id: &str) {
-        if let Some(state) = self.session_state(session_id) {
-            let mut state = state.lock().unwrap();
-            state.output_buffer.clear();
-        }
     }
 
     /// Update per-session terminal mode flags from a raw runtime
