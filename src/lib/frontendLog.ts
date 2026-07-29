@@ -9,7 +9,20 @@ import { invoke } from "@tauri-apps/api/core";
  * (browser preview) degrades to the console line alone.
  */
 export function logLaunchDims(message: string): void {
-  const line = `[launch-dims] ${message}`;
+  mirrorInfoLine(`[launch-dims] ${message}`);
+}
+
+/**
+ * Same file mirroring for the resize-gate instrumentation (#373):
+ * suppressed size pushes and pane placement land next to the backend's
+ * `cols-gate` lines in runner.log, so a purge storm and the gate that
+ * should have prevented it are verifiable in one file.
+ */
+export function logResizeGate(message: string): void {
+  mirrorInfoLine(`[resize-gate] ${message}`);
+}
+
+function mirrorInfoLine(line: string): void {
   console.info(line);
   try {
     void invoke("frontend_log", { level: "info", message: line }).catch(

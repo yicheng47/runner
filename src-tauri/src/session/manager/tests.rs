@@ -65,6 +65,12 @@ struct FakeRuntime {
     stops: std::sync::Mutex<Vec<String>>,
     stop_failures: std::sync::Mutex<HashSet<String>>,
     resizes: std::sync::Mutex<Vec<(String, u16, u16)>>,
+    resize_failures: std::sync::Mutex<HashSet<String>>,
+    /// One-shot block inside `stop()`: signals `entered`, then waits
+    /// for `release`. Models a real PtyRuntime::stop spending hundreds
+    /// of ms reaping the child, so the settle-vs-kill tests can run a
+    /// settle inside that window.
+    stop_gate: std::sync::Mutex<Option<RuntimeGate>>,
     /// What `status()` returns for any pane lookup. Most tests
     /// want exit_code=0 (clean stop); the kill-semantics test
     /// wants exit_code=143 (SIGTERM) to verify the
@@ -85,6 +91,11 @@ struct FakeSpawn {
 enum FakeInput {
     Bytes { session_id: String, bytes: Vec<u8> },
     Key { session_id: String, key: String },
+}
+
+struct RuntimeGate {
+    entered: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
 }
 
 impl FakeRuntime {
@@ -155,6 +166,30 @@ impl FakeRuntime {
         self.stop_failures.lock().unwrap().remove(session_id);
     }
 
+    fn fail_resize_for(&self, session_id: &str) {
+        self.resize_failures
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string());
+    }
+
+    /// Arm the one-shot stop block. Returns (entered, release): recv on
+    /// `entered` to know a stop is parked inside the runtime, send on
+    /// `release` to let it finish.
+    fn arm_stop_gate(&self) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        *self.stop_gate.lock().unwrap() = Some(RuntimeGate {
+            entered: entered_tx,
+            release: release_rx,
+        });
+        (entered_rx, release_tx)
+    }
+
+    fn allow_resize_for(&self, session_id: &str) {
+        self.resize_failures.lock().unwrap().remove(session_id);
+    }
+
     fn last_spawn_spec(&self) -> Option<SpawnSpec> {
         self.spawns.lock().unwrap().last().map(|s| s.spec.clone())
     }
@@ -202,6 +237,11 @@ impl SessionRuntime for FakeRuntime {
 
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
         self.stops.lock().unwrap().push(session.session_id.clone());
+        let gate = self.stop_gate.lock().unwrap().take();
+        if let Some(gate) = gate {
+            let _ = gate.entered.send(());
+            let _ = gate.release.recv();
+        }
         if self
             .stop_failures
             .lock()
@@ -241,10 +281,23 @@ impl SessionRuntime for FakeRuntime {
     }
 
     fn resize(&self, session: &RuntimeSession, cols: u16, rows: u16) -> RuntimeResult<()> {
+        // Attempts are recorded even when failing, so tests can assert
+        // that a failed settle actually reached the ioctl layer.
         self.resizes
             .lock()
             .unwrap()
             .push((session.session_id.clone(), cols, rows));
+        if self
+            .resize_failures
+            .lock()
+            .unwrap()
+            .contains(&session.session_id)
+        {
+            return Err(RuntimeError::Msg(format!(
+                "injected resize failure for {}",
+                session.session_id
+            )));
+        }
         Ok(())
     }
 
@@ -4258,6 +4311,9 @@ fn resize_purges_ring_only_on_cols_change() {
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    // Deterministic settling: the background thread never fires; the test
+    // drives the storm's apply step via settle_pending_resize_now.
+    mgr.set_resize_settle_ms(3_600_000);
     let spawned = mgr
         .spawn_direct(
             &runner,
@@ -4282,20 +4338,33 @@ fn resize_purges_ring_only_on_cols_change() {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    // Rows-only nudge (the activation dance): ring must survive both legs.
+    // Rows-only nudge (the activation dance): synchronous ioctls, ring
+    // survives both legs.
     mgr.resize(&spawned.id, 120, 29, &pool).unwrap();
     mgr.resize(&spawned.id, 120, 30, &pool).unwrap();
+    assert_eq!(
+        fake.resizes.lock().unwrap().len(),
+        2,
+        "rows-only resizes must reach the PTY immediately (the dance's SIGWINCH nudge)"
+    );
     assert!(
         !mgr.output_snapshot(&spawned.id).is_empty(),
         "rows-only resize must keep the replay ring"
     );
 
-    // Width change: stale-width bytes must still purge.
+    // Width change: parks in the debounce — no ioctl, no purge yet.
     mgr.resize(&spawned.id, 100, 30, &pool).unwrap();
-    assert!(
-        mgr.output_snapshot(&spawned.id).is_empty(),
-        "cols change must purge the replay ring"
+    assert_eq!(
+        fake.resizes.lock().unwrap().len(),
+        2,
+        "a cols change must not reach the PTY before the storm settles"
     );
+    assert!(
+        !mgr.output_snapshot(&spawned.id).is_empty(),
+        "the ring must survive until the storm settles"
+    );
+    // Pane geometry persistence stays prompt even while the ioctl is
+    // debounced: the row already carries the requested size.
     let persisted: (u16, u16) = pool
         .get()
         .unwrap()
@@ -4308,10 +4377,308 @@ fn resize_purges_ring_only_on_cols_change() {
     assert_eq!(
         persisted,
         (100, 30),
-        "a live resize must still persist the applied dimensions"
+        "update_last_size must record the requested size before the settle"
+    );
+
+    mgr.settle_pending_resize_now(&spawned.id);
+    assert_eq!(
+        fake.resizes.lock().unwrap().last().cloned(),
+        Some((spawned.id.clone(), 100, 30)),
+        "the settle must apply the final ioctl"
+    );
+    assert!(
+        mgr.output_snapshot(&spawned.id).is_empty(),
+        "a settled cols change must purge the replay ring"
     );
 
     mgr.kill(&spawned.id).unwrap();
+}
+
+/// Shared setup for the #373 debounce tests: a claude-code-backed
+/// session spawned at 120x30 through the FakeRuntime, with one chunk
+/// already in the ring. Settle stays at the production default unless
+/// the test pins it.
+fn spawn_claude_for_resize(
+    handle: &str,
+) -> (
+    Arc<db::DbPool>,
+    Arc<FakeRuntime>,
+    Arc<SessionManager>,
+    String,
+) {
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, ?2, 'Debounce', 'claude-code', '/bin/cat',
+                         NULL, NULL, NULL, NULL, ?3, ?3)",
+            params![runner_id, handle, now],
+        )
+        .unwrap();
+    }
+    let mut runner = runner("/bin/cat", &[]);
+    runner.id = runner_id;
+    runner.handle = handle.into();
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let spawned = mgr
+        .spawn_direct(
+            &runner,
+            None,
+            None,
+            Some("/tmp"),
+            Some(120),
+            Some(30),
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+
+    fake.push_output(0, b"history to keep");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while mgr.output_snapshot(&spawned.id).is_empty() {
+        if Instant::now() > deadline {
+            panic!("output never reached the ring");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let id = spawned.id;
+    (pool, fake, mgr, id)
+}
+
+// A live-drag storm (#373 defect 1): every intermediate width parks in
+// the debounce; the settle applies exactly one ioctl at the final width
+// and purges exactly once.
+#[test]
+fn resize_storm_collapses_to_one_settled_push() {
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("storm");
+    mgr.set_resize_settle_ms(3_600_000);
+
+    for cols in [78u16, 76, 209, 76, 210] {
+        mgr.resize(&id, cols, 30, &pool).unwrap();
+    }
+    assert!(
+        fake.resizes.lock().unwrap().is_empty(),
+        "no intermediate width may reach the PTY mid-storm"
+    );
+    assert!(
+        !mgr.output_snapshot(&id).is_empty(),
+        "no intermediate width may purge the ring mid-storm"
+    );
+
+    mgr.settle_pending_resize_now(&id);
+    assert_eq!(
+        fake.resizes.lock().unwrap().clone(),
+        vec![(id.clone(), 210, 30)],
+        "the storm must collapse to one ioctl at the settled width"
+    );
+    assert!(
+        mgr.output_snapshot(&id).is_empty(),
+        "the settled width change purges once"
+    );
+
+    mgr.kill(&id).unwrap();
+}
+
+// A drag that ends where it began (#373: `174 -> ... -> 209 -> ... ->
+// 174`) must produce zero purges: the ring already holds bytes at the
+// settled width. The settle still lands the child on the requested
+// size, but as a rows nudge (rows-1 → rows) rather than one same-size
+// ioctl — a same-size TIOCSWINSZ is a kernel no-op with no SIGWINCH,
+// and the owning pane cleared its viewport for the intermediate pushes,
+// so without a forced repaint a round-trip drag would end blank.
+#[test]
+fn round_trip_resize_storm_produces_zero_purges() {
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("roundtrip");
+    mgr.set_resize_settle_ms(3_600_000);
+
+    for cols in [150u16, 209, 150, 120] {
+        mgr.resize(&id, cols, 30, &pool).unwrap();
+    }
+    mgr.settle_pending_resize_now(&id);
+    assert_eq!(
+        fake.resizes.lock().unwrap().clone(),
+        vec![(id.clone(), 120, 29), (id.clone(), 120, 30)],
+        "a round-trip settle must force the repaint via the rows nudge"
+    );
+    assert!(
+        !mgr.output_snapshot(&id).is_empty(),
+        "a storm that settles at the ring's own width must not purge"
+    );
+
+    mgr.kill(&id).unwrap();
+}
+
+// kill sets `killed = true` under the state lock and only then enters
+// `runtime.stop`, which on the real PtyRuntime can spend hundreds of
+// ms reaping the child; the handle/pending teardown runs after stop
+// returns. A settle firing inside that window must abort on the killed
+// flag: no ioctl, no purge, no gate update. The stop gate holds kill
+// exactly there.
+#[test]
+fn settle_during_inflight_kill_aborts_untouched() {
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("killwindow");
+    mgr.set_resize_settle_ms(3_600_000);
+
+    mgr.resize(&id, 100, 30, &pool).unwrap();
+    let (stop_entered, stop_release) = fake.arm_stop_gate();
+    let kill = {
+        let mgr = Arc::clone(&mgr);
+        let id = id.clone();
+        std::thread::spawn(move || mgr.kill(&id))
+    };
+    stop_entered
+        .recv_timeout(Duration::from_secs(2))
+        .expect("kill never reached runtime.stop");
+    // killed=true is set; handle and pending are still in place.
+    mgr.settle_pending_resize_now(&id);
+    assert!(
+        fake.resizes.lock().unwrap().is_empty(),
+        "a settle inside kill's stop window must not ioctl"
+    );
+    assert!(
+        !mgr.output_snapshot(&id).is_empty(),
+        "a settle inside kill's stop window must not purge the ring"
+    );
+
+    stop_release.send(()).unwrap();
+    kill.join().unwrap().unwrap();
+    assert!(
+        !mgr.output_snapshot(&id).is_empty(),
+        "the killed session keeps its ring for dimmed scrollback"
+    );
+}
+
+// Full replacement ordering: the runtime resolves `RuntimeSession` by
+// reusable session id, and a respawn overwrites that mapping — so a
+// storm aimed at the old child that settles after kill + respawn must
+// find nothing to do, or it would physically resize the fresh PTY and
+// clear the resume output. The follow-up same-width push proves the
+// respawn's seeded cols survived: had the stale storm committed, that
+// push would open a new storm instead of taking the synchronous
+// rows-only path.
+#[test]
+fn stale_settle_after_kill_and_respawn_touches_nothing() {
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("respawn");
+    mgr.set_resize_settle_ms(3_600_000);
+
+    mgr.resize(&id, 100, 30, &pool).unwrap();
+    mgr.kill(&id).unwrap();
+    // Respawn the same session row at a fresh size, as resume's
+    // install_handle does after the runtime spawn replaced the PTY.
+    mgr.install_handle(
+        &id,
+        SessionHandle {
+            id: id.clone(),
+            mission_id: None,
+            runner_id: None,
+            runtime_session: RuntimeSession {
+                runtime: "fake".into(),
+                session_id: id.clone(),
+            },
+            codex_capture: None,
+            forwarder: None,
+            stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        },
+        None,
+        Some((199, 59)),
+    );
+    let events = capture();
+    mgr.append_synthetic_output(&id, None, b"fresh resume repaint", events.as_ref());
+
+    // The old storm's settle thread fires late.
+    mgr.settle_pending_resize_now(&id);
+    assert!(
+        fake.resizes.lock().unwrap().is_empty(),
+        "a stale settle must not resize the fresh child"
+    );
+    assert!(
+        !mgr.output_snapshot(&id).is_empty(),
+        "a stale settle must not clear the fresh ring"
+    );
+
+    mgr.resize(&id, 199, 58, &pool).unwrap();
+    assert_eq!(
+        fake.resizes.lock().unwrap().clone(),
+        vec![(id.clone(), 199, 58)],
+        "the respawn's seeded cols must still gate the next push"
+    );
+    assert!(
+        !mgr.output_snapshot(&id).is_empty(),
+        "the rows-only push against the fresh seed keeps the ring"
+    );
+
+    mgr.kill(&id).unwrap();
+}
+
+// The failed-ioctl guard survives the debounce: a settle whose ioctl
+// fails must not purge and must not advance last_pty_cols — the next
+// successful resize to the same width still purges (proving the gate
+// was left untouched by the failure).
+#[test]
+fn failed_settled_resize_cannot_purge() {
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("failioctl");
+    mgr.set_resize_settle_ms(3_600_000);
+
+    fake.fail_resize_for(&id);
+    mgr.resize(&id, 100, 30, &pool).unwrap();
+    mgr.settle_pending_resize_now(&id);
+    assert_eq!(
+        fake.resizes.lock().unwrap().clone(),
+        vec![(id.clone(), 100, 30)],
+        "the settle must have attempted the ioctl"
+    );
+    assert!(
+        !mgr.output_snapshot(&id).is_empty(),
+        "a failed live resize cannot trigger a ring purge"
+    );
+
+    fake.allow_resize_for(&id);
+    mgr.resize(&id, 100, 30, &pool).unwrap();
+    mgr.settle_pending_resize_now(&id);
+    assert!(
+        mgr.output_snapshot(&id).is_empty(),
+        "the retried width change must purge — the failed settle left the gate unmoved"
+    );
+
+    mgr.kill(&id).unwrap();
+}
+
+// Wiring check for the settle thread itself: with a short settle window
+// and no manual nudge, the storm applies on its own. Only the final
+// state is asserted — exact-count coverage lives in the deterministic
+// tests above.
+#[test]
+fn resize_settle_thread_applies_without_manual_nudge() {
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("stormthread");
+    mgr.set_resize_settle_ms(25);
+
+    for cols in [78u16, 209, 210] {
+        mgr.resize(&id, cols, 30, &pool).unwrap();
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !mgr.output_snapshot(&id).is_empty() {
+        if Instant::now() > deadline {
+            panic!("settle thread never applied the storm");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        fake.resizes.lock().unwrap().last().cloned(),
+        Some((id.clone(), 210, 30)),
+        "the thread-applied settle must land on the final width"
+    );
+
+    mgr.kill(&id).unwrap();
 }
 
 // ---------------------------------------------------------------------

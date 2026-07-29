@@ -20,8 +20,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Archive, MoreHorizontal, Terminal, SquarePen, X } from "lucide-react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 
+import { createPaneGeometry } from "../lib/paneGeometry";
 import {
-  findLeaf,
   leafForSession,
   recordSplitSizes,
   type PaneLayout,
@@ -378,90 +378,6 @@ export function ChatPaneGroup({
       {chats.map((chat) => renderTerminalPane(chat))}
     </div>
   );
-}
-
-/// Geometry sync (impl 0020, decision 4). Closure over plain Maps instead
-/// of refs so the callback-ref factories can be called during render
-/// (react-hooks/refs forbids `ref.current` there); the returned callbacks
-/// are stable per key so React doesn't detach/reattach them per commit.
-function createPaneGeometry() {
-  let container: HTMLDivElement | null = null;
-  let ro: ResizeObserver | null = null;
-  let root: PaneNode | null = null;
-  const paneBodies = new Map<string, HTMLDivElement>();
-  const termWraps = new Map<string, HTMLDivElement>();
-  const paneBodyCbs = new Map<string, (el: HTMLDivElement | null) => void>();
-  const termWrapCbs = new Map<string, (el: HTMLDivElement | null) => void>();
-
-  const sync = () => {
-    if (!container || !root) return;
-    const cRect = container.getBoundingClientRect();
-    for (const [paneId, bodyEl] of paneBodies) {
-      const leaf = findLeaf(root, paneId);
-      if (!leaf?.sessionId) continue;
-      const wrap = termWraps.get(leaf.sessionId);
-      if (!wrap) continue;
-      const r = bodyEl.getBoundingClientRect();
-      wrap.style.left = `${r.left - cRect.left}px`;
-      wrap.style.top = `${r.top - cRect.top}px`;
-      wrap.style.width = `${r.width}px`;
-      wrap.style.height = `${r.height}px`;
-    }
-  };
-
-  return {
-    sync,
-    containerRef(el: HTMLDivElement | null) {
-      container = el;
-    },
-    setRoot(next: PaneNode) {
-      root = next;
-    },
-    paneBodyRefFor(paneId: string) {
-      let cb = paneBodyCbs.get(paneId);
-      if (!cb) {
-        cb = (el) => {
-          const prev = paneBodies.get(paneId);
-          if (prev) ro?.unobserve(prev);
-          if (el) {
-            paneBodies.set(paneId, el);
-            ro ??= new ResizeObserver(sync);
-            ro.observe(el);
-          } else {
-            paneBodies.delete(paneId);
-          }
-        };
-        paneBodyCbs.set(paneId, cb);
-      }
-      return cb;
-    },
-    termWrapRefFor(sessionId: string) {
-      let cb = termWrapCbs.get(sessionId);
-      if (!cb) {
-        cb = (el) => {
-          if (el) {
-            termWraps.set(sessionId, el);
-            // A wrapper can mount a commit AFTER its pane body has already
-            // settled: restored-split hydration attaches the session
-            // (adding it to `chats`) once the pane tree is stable, so
-            // `layout.root` doesn't change and neither the geometry
-            // layoutEffect nor the pane-body ResizeObserver fires. Position
-            // it now from the existing pane rects. On the component's first
-            // mount `root`/`container` aren't set yet so this no-ops,
-            // leaving the layoutEffect to drive the initial sync.
-            sync();
-          } else {
-            termWraps.delete(sessionId);
-          }
-        };
-        termWrapCbs.set(sessionId, cb);
-      }
-      return cb;
-    },
-    dispose() {
-      ro?.disconnect();
-    },
-  };
 }
 
 /// Per-pane overflow menu — Archive for this pane's chat. Mirrors the
