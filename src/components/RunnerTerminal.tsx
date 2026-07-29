@@ -26,7 +26,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
-import { api, type PasteImageMimeType } from "../lib/api";
+import { api } from "../lib/api";
 import { logLaunchDims, logResizeGate } from "../lib/frontendLog";
 import { takeLaunchResumed } from "../lib/launchResumeTrace";
 import {
@@ -58,6 +58,7 @@ import {
   type TerminalGridSize,
 } from "../lib/terminalResize";
 import { TERMINAL_SCROLLBAR_WIDTH_PX } from "../lib/terminalSizing";
+import { handleTerminalPaste } from "../lib/terminalPaste";
 import { observeBackingScale, stalesTextureAtlas } from "../lib/textureAtlas";
 import { eventMatchesShortcut } from "../lib/keymap";
 import { runtimeClearsOnResize } from "./ui/runtimes";
@@ -81,32 +82,6 @@ const SIDEBAR_TOGGLE_EVENT = "runner:toggle-sidebar";
 const SIDEBAR_NAVIGATE_EVENT = "runner:navigate-sidebar-page";
 const RUNNER_TERMINAL_CYCLE_EVENT = "runner:cycle-terminal";
 const OPEN_SETTINGS_EVENT = "runner:open-settings";
-
-function normalizePasteImageMime(type: string): PasteImageMimeType | null {
-  switch (type.trim().toLowerCase()) {
-    case "image/png":
-      return "image/png";
-    case "image/jpeg":
-    case "image/jpg":
-      return "image/jpeg";
-    default:
-      return null;
-  }
-}
-
-function inferPasteImageMime(
-  itemType: string,
-  file: File,
-): PasteImageMimeType | null {
-  const fromType =
-    normalizePasteImageMime(itemType) ?? normalizePasteImageMime(file.type);
-  if (fromType) return fromType;
-
-  const name = file.name.toLowerCase();
-  if (name.endsWith(".png")) return "image/png";
-  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
-  return null;
-}
 
 interface RunnerTerminalProps {
   sessionId: string;
@@ -805,38 +780,19 @@ export const RunnerTerminal = forwardRef<
     // they would in a host terminal, attach the image with their
     // native `[Image x]` placeholder. Pure-text pastes fall through
     // to xterm.js's default behavior unchanged.
+    //
+    // When neither an image nor usable text is present, the clipboard
+    // may hold native file references. Read their paths from
+    // NSPasteboard and inject them without submitting the prompt.
     const onPaste = (e: ClipboardEvent) => {
       const sid = sessionIdRef.current;
       if (!sid || disabledRef.current) return;
-      const items = e.clipboardData?.items;
-      if (!items) return;
-      let imageFile: File | null = null;
-      let imageMimeType: PasteImageMimeType | null = null;
-      for (let i = 0; i < items.length; i += 1) {
-        const it = items[i];
-        if (it.kind !== "file") continue;
-        const file = it.getAsFile();
-        if (!file) continue;
-        const mimeType = inferPasteImageMime(it.type, file);
-        if (!mimeType) continue;
-        imageFile = file;
-        imageMimeType = mimeType;
-        break;
-      }
-      if (!imageFile || !imageMimeType) return;
-      const file = imageFile;
-      const mimeType = imageMimeType;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      void (async () => {
-        try {
-          const buf = await file.arrayBuffer();
-          await api.session.pasteImage(new Uint8Array(buf), mimeType);
-          await api.session.injectStdin(sid, "\x16");
-        } catch (err) {
-          onErrorRef.current?.(String(err));
-        }
-      })();
+      void handleTerminalPaste(e, {
+        clipboardFilePaths: () => api.session.clipboardFilePaths(),
+        injectStdin: (text) => api.session.injectStdin(sid, text),
+        pasteImage: (bytes, mimeType) => api.session.pasteImage(bytes, mimeType),
+        onError: (message) => onErrorRef.current?.(message),
+      });
     };
     const textarea = term.textarea;
     textarea?.addEventListener("paste", onPaste, { capture: true });

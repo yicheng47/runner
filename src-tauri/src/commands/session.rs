@@ -239,6 +239,44 @@ pub async fn session_paste_image(bytes: Vec<u8>, mime_type: String) -> Result<()
     }
 }
 
+/// POSIX paths of files referenced by the general pasteboard, in
+/// pasteboard order.
+///
+/// The frontend calls this only after its current image scan and
+/// `text/plain` check both come up empty. File URLs therefore fill the
+/// existing no-op paste case without changing image or text precedence.
+#[tauri::command]
+pub fn session_clipboard_file_paths() -> Vec<String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL};
+        use objc2_foundation::NSURL;
+
+        // SAFETY: AppKit's own flavor constant, read-only.
+        let file_url_type = unsafe { NSPasteboardTypeFileURL };
+        let Some(items) = NSPasteboard::generalPasteboard().pasteboardItems() else {
+            return Vec::new();
+        };
+        items
+            .to_vec()
+            .into_iter()
+            .filter_map(|item| {
+                let url_string = item.stringForType(file_url_type)?;
+                let url = NSURL::URLWithString(&url_string)?;
+                if !url.isFileURL() {
+                    return None;
+                }
+                Some(url.path()?.to_string())
+            })
+            .collect()
+    }
+}
+
 /// One row per direct-chat *session* in the sidebar SESSION tray. Each
 /// runner can host multiple parallel chats — see
 /// docs/impls/archive/0003-direct-chats.md — so the tray is flat (not collapsed per
