@@ -307,28 +307,23 @@ pub fn stop(conn: &mut Connection, app_data_dir: &Path, id: &str) -> Result<Miss
     // fails, the mission stays `running` and the operator can retry.
     let tx = conn.transaction()?;
 
-    // Conditional UPDATE binds the status check and the transition into one
-    // atomic SQL statement. Without this, two racing `mission_stop` calls
-    // could each observe `running`, both commit `completed`, and both append
-    // a `mission_stopped` event (duplicate terminal). With `WHERE status =
-    // 'running'`, the slower of the two updates 0 rows and is rejected
-    // below, so only one writer ever reaches the log append.
-    //
-    // `archived_at` is set in the same UPDATE: `stop()` is reached only
-    // via `mission_archive`, so a terminal stop is by definition an
-    // archive. Atomic with the status flip means a row never observes
-    // `status='completed' AND archived_at IS NULL` (other than
-    // pre-existing rows the migration backfilled).
+    // Two entry states, one guarded UPDATE each (#376). A running
+    // mission takes the terminal-stop path: the status flip and the
+    // archive stamp bind into one atomic statement so two racing
+    // `mission_archive` calls can't both append the `mission_stopped`
+    // terminal event — the slower UPDATE hits 0 rows and falls
+    // through. A mission already out of `running` (restored from the
+    // Archived pane, or an aborted spawn) archives on the visibility
+    // axis alone: `archived_at` stamps, the lifecycle columns stay,
+    // and no second `mission_stopped` is appended — its terminal stop
+    // already happened.
     let stopped_at = now();
-    let affected = repo::mission::complete_and_archive_if_running(&tx, id, stopped_at)?;
-    if affected == 0 {
-        // Either the id doesn't exist or the mission isn't running anymore
-        // (a concurrent stop won the race). Fetch for a precise error.
-        let mission = get(&tx, id)?;
-        return Err(Error::msg(format!(
-            "mission {id} is not running; status = {:?}",
-            mission.status
-        )));
+    let was_running = repo::mission::complete_and_archive_if_running(&tx, id, stopped_at)? == 1;
+    if !was_running && repo::mission::archive_if_stopped(&tx, id, stopped_at)? == 0 {
+        // Unknown ids error out of the `get`; a row that both UPDATEs
+        // refused can only be here because it's already archived.
+        let _ = get(&tx, id)?;
+        return Err(Error::msg(format!("mission {id} is already archived")));
     }
 
     // Archiving removes the mission from the sidebar tree; unarchive
@@ -339,17 +334,19 @@ pub fn stop(conn: &mut Connection, app_data_dir: &Path, id: &str) -> Result<Miss
     // transition; used for the mission-dir path below.
     let mission = get(&tx, id)?;
 
-    let mission_dir = event_log::mission_dir(app_data_dir, &mission.crew_id, id);
-    let log = EventLog::open(&mission_dir)?;
-    log.append(EventDraft {
-        crew_id: mission.crew_id.clone(),
-        mission_id: id.to_string(),
-        kind: EventKind::Signal,
-        from: "system".into(),
-        to: None,
-        signal_type: Some(SignalType::new("mission_stopped")),
-        payload: serde_json::json!({}),
-    })?;
+    if was_running {
+        let mission_dir = event_log::mission_dir(app_data_dir, &mission.crew_id, id);
+        let log = EventLog::open(&mission_dir)?;
+        log.append(EventDraft {
+            crew_id: mission.crew_id.clone(),
+            mission_id: id.to_string(),
+            kind: EventKind::Signal,
+            from: "system".into(),
+            to: None,
+            signal_type: Some(SignalType::new("mission_stopped")),
+            payload: serde_json::json!({}),
+        })?;
+    }
 
     tx.commit()?;
     Ok(mission)
@@ -2550,7 +2547,84 @@ mod tests {
         stop(&mut conn, tmp.path(), &out.mission.id).unwrap();
 
         let err = stop(&mut conn, tmp.path(), &out.mission.id).unwrap_err();
-        assert!(format!("{err}").contains("not running"));
+        assert!(format!("{err}").contains("already archived"));
+    }
+
+    // #376: a restored mission (completed + unarchived, the state
+    // Settings → Archived → Restore creates) must archive again. The
+    // visibility-only path stamps archived_at, leaves the lifecycle
+    // columns alone, drops the sidebar node, and appends no second
+    // mission_stopped — the terminal event from the first archive is
+    // the only one in the log.
+    #[test]
+    fn restored_mission_archives_again_without_second_terminal_event() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "A", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                project_id: None,
+                crew_id: crew_id.clone(),
+                title: "m".into(),
+                goal_override: Some("go".into()),
+                cwd: None,
+            },
+        )
+        .unwrap();
+        let id = out.mission.id.clone();
+        let archived = stop(&mut conn, tmp.path(), &id).unwrap();
+        let first_stop_at = archived
+            .stopped_at
+            .expect("first archive stamps stopped_at");
+
+        // Restore (mission_unarchive_impl): clear the marker, re-create
+        // the sidebar node.
+        assert_eq!(repo::mission::unarchive(&conn, &id).unwrap(), 1);
+        repo::node::ensure_mission_node(&conn, &id, None).unwrap();
+
+        let rearchived = stop(&mut conn, tmp.path(), &id).unwrap();
+        assert!(
+            rearchived.archived_at.is_some(),
+            "re-archive must stamp archived_at"
+        );
+        assert_eq!(
+            rearchived.status,
+            MissionStatus::Completed,
+            "re-archive must not touch the lifecycle status"
+        );
+        assert_eq!(
+            rearchived.stopped_at,
+            Some(first_stop_at),
+            "re-archive must not move stopped_at"
+        );
+        assert!(
+            repo::node::find_by_ref(&conn, repo::node::NodeType::Mission, &id)
+                .unwrap()
+                .is_none(),
+            "re-archive must drop the sidebar node"
+        );
+
+        let log = EventLog::open(&event_log::mission_dir(tmp.path(), &crew_id, &id)).unwrap();
+        let stops = log
+            .read_from(0)
+            .unwrap()
+            .iter()
+            .filter(|e| {
+                e.event
+                    .signal_type
+                    .as_ref()
+                    .is_some_and(|t| t.as_str() == "mission_stopped")
+            })
+            .count();
+        assert_eq!(
+            stops, 1,
+            "re-archive must not append a second mission_stopped"
+        );
     }
 
     #[test]
@@ -2744,13 +2818,16 @@ mod tests {
         let r1 = h1.join().unwrap();
         let r2 = h2.join().unwrap();
 
-        // Exactly one succeeded and exactly one failed with "not running".
+        // Exactly one succeeded; the loser found the row already
+        // archived by the winner (#376: the not-running fallthrough
+        // archives on the visibility axis, and the archived_at guard
+        // rejects it).
         let (ok_count, err_count) = [&r1, &r2].iter().fold((0, 0), |(o, e), r| match r {
             Ok(_) => (o + 1, e),
             Err(err) => {
                 assert!(
-                    format!("{err}").contains("not running"),
-                    "loser should report not-running, got {err}"
+                    format!("{err}").contains("already archived"),
+                    "loser should report already-archived, got {err}"
                 );
                 (o, e + 1)
             }
@@ -3139,9 +3216,10 @@ mod tests {
     #[test]
     fn stop_sets_archived_at_alongside_status() {
         // stop() is the only path to status='completed' (only called
-        // from mission_archive); the same UPDATE must stamp
-        // archived_at so a future row can never be observed as
-        // completed-but-not-archived.
+        // from mission_archive); for a running mission the same UPDATE
+        // stamps archived_at, so completed-but-unarchived only ever
+        // arises from an explicit restore (impl 0026, re-archived via
+        // the visibility-only path — #376).
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);

@@ -9,7 +9,8 @@
 //                working dir), one row per live direct-chat. The
 //                currently-open direct chat is highlighted.
 //
-// MISSION pulls from `mission_list_summary` (filtered to status === "running").
+// MISSION pulls from `mission_list_summary` (every unarchived mission —
+// running, restored, or aborted; archived rows are excluded backend-side).
 // SESSION continues to consume `runner/activity` events for live direct chats.
 // The two runtime sections refresh independently so a mission_start doesn't
 // blink the direct-chat list and vice versa.
