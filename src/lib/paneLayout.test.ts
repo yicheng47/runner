@@ -803,7 +803,7 @@ describe("cold-start hydration", () => {
   });
 });
 
-// The split divisor behind the launch-resume estimate (impl 0036, open
+// The split divisor behind the launch-resume estimate (impl 0038, open
 // question 3). A session returning into a 2–3 pane tab must be sized at its
 // own pane's share of the area, not the tab's — the layout is known from
 // persisted state before any pane mounts, so no measurement is needed.

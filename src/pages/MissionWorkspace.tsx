@@ -595,27 +595,37 @@ export default function MissionWorkspace({
   // probe reads the current rect, and a hidden terminal's cached
   // dims — stale after any rail/sidebar/window width change, which
   // would re-arm the ring purge — are the last resort only.
-  const measureSlotDims = useCallback(
-    (): TerminalGridSize | null =>
-      pickRespawnDims({
-        measureActiveSlot: () =>
-          activeTab !== "feed"
-            ? (terminalsRef.current.get(activeTab)?.measure() ?? null)
-            : null,
-        probeContainer: () =>
-          paneContainerRef.current
-            ? workspaceDimsFromContainer(paneContainerRef.current)
-            : null,
-        readHiddenCache: () => {
-          for (const s of sessions) {
-            const d = terminalsRef.current.get(s.id)?.measure();
-            if (d) return d;
-          }
-          return null;
-        },
-      }),
-    [activeTab, sessions],
-  );
+  const measureSlotDims = useCallback((): TerminalGridSize | null => {
+    const dims = pickRespawnDims({
+      measureActiveSlot: () =>
+        activeTab !== "feed"
+          ? (terminalsRef.current.get(activeTab)?.measure() ?? null)
+          : null,
+      probeContainer: () =>
+        paneContainerRef.current
+          ? workspaceDimsFromContainer(paneContainerRef.current)
+          : null,
+      readHiddenCache: () => {
+        for (const s of sessions) {
+          const d = terminalsRef.current.get(s.id)?.measure();
+          if (d) return d;
+        }
+        return null;
+      },
+    });
+    // A real workspace measurement is the freshest grid hint a
+    // backend-initiated mission start can get (#367).
+    if (dims) void api.mission.setGridHint(dims).catch(() => {});
+    return dims;
+  }, [activeTab, sessions]);
+
+  // Same hint, driven by the terminals themselves: every real geometry
+  // push from a slot pane (window/rail/sidebar/zoom resize, tab
+  // activation) refreshes it, so an MCP mission started long after
+  // launch forks at the current width, not the launch estimate (#367).
+  const pushSlotGridHint = useCallback((dims: TerminalGridSize) => {
+    void api.mission.setGridHint(dims).catch(() => {});
+  }, []);
 
   // Reset = wipe the run, respawn slots, keep the mission row. Used
   // for testing — you get the same mission back with a clean event
@@ -1225,6 +1235,7 @@ export default function MissionWorkspace({
                           if (handle) terminalsRef.current.set(s.id, handle);
                           else terminalsRef.current.delete(s.id);
                         }}
+                        onSizePushed={pushSlotGridHint}
                       />
                     </Pane>
                   ))
@@ -1375,6 +1386,7 @@ function SlotPtyPane({
   onArchiveMission,
   hiddenByDisplayNone,
   registerTerminal,
+  onSizePushed,
 }: {
   session: SessionRow;
   deliveryBlockedUnreadCount: number | null;
@@ -1402,6 +1414,9 @@ function SlotPtyPane({
   /** Hand the parent a handle to this slot's xterm so it can measure
    *  cols/rows before the resume RPC and avoid the 80×24 default. */
   registerTerminal: (handle: RunnerTerminalHandle | null) => void;
+  /** Forwarded to RunnerTerminal: real geometry pushes refresh the
+   *  backend's mission grid hint (#367). */
+  onSizePushed: (size: TerminalGridSize) => void;
 }) {
   const resuming = !!forcedResuming;
   const dead = session.status !== "running";
@@ -1549,6 +1564,7 @@ function SlotPtyPane({
           hiddenByDisplayNone={hiddenByDisplayNone}
           disabled={dead || resuming || starting}
           resizeDisabled={resuming || starting}
+          onSizePushed={onSizePushed}
         />
       </div>
       {!dead && deliveryBlockedUnreadCount !== null ? (

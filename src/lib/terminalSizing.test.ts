@@ -33,9 +33,11 @@ beforeAll(async () => {
   ));
 });
 
-/** jsdom gives every element a zero rect; give <main> a real one. */
+/** jsdom gives every element a zero rect; give AppShell's <main> a real one.
+ *  The attribute matches SHELL_MAIN_ATTR — shellContentBox targets it
+ *  specifically (#371). */
 function mountShell(width: number, height: number): void {
-  document.body.innerHTML = "<main></main>";
+  document.body.innerHTML = "<main data-shell-main></main>";
   const main = document.querySelector("main")!;
   main.getBoundingClientRect = () => ({ width, height }) as DOMRect;
 }
@@ -92,7 +94,7 @@ describe("pickRespawnDims", () => {
   });
 });
 
-// Surface chrome arithmetic (impl 0036). These feed the launch-resume
+// Surface chrome arithmetic (impl 0038). These feed the launch-resume
 // estimate directly, so a stale constant here forks the PTY at the wrong
 // size — the failure #363 is about. Asserted on the pixel boxes rather than
 // through the grid helpers, which would need a real xterm fit.
@@ -125,9 +127,9 @@ describe("pane area boxes", () => {
 
   it("clamps a dragged side panel to its range", () => {
     localStorage.setItem("runner.chat.panel.width", "9000");
-    expect(chatPaneAreaBox().width).toBe(1440 - 480);
+    expect(chatPaneAreaBox()!.width).toBe(1440 - 480);
     localStorage.setItem("runner.chat.panel.width", "10");
-    expect(chatPaneAreaBox().width).toBe(1440 - 200);
+    expect(chatPaneAreaBox()!.width).toBe(1440 - 200);
   });
 
   it("takes the mission topbar, tab strip, and rail out of the shell box", () => {
@@ -138,11 +140,32 @@ describe("pane area boxes", () => {
     });
   });
 
-  it("falls back to the window when the shell has not laid out", () => {
+  // #371: a failed <main> measurement must abstain (null), never fall back
+  // to window.innerWidth — the window includes the sidebar, so that
+  // fallback over-estimated by ~260px and beat the persisted rung with a
+  // confidently wrong value.
+  it("abstains when the shell has not laid out", () => {
     document.body.innerHTML = "";
-    expect(chatPaneAreaBox()).toEqual({
-      width: window.innerWidth - 320,
-      height: window.innerHeight - 44,
-    });
+    expect(chatPaneAreaBox()).toBeNull();
+    expect(missionPaneAreaBox()).toBeNull();
+  });
+
+  it("abstains when AppShell's main is hidden (zero rect)", () => {
+    // The Settings takeover puts AppShell's <main> at display:none; jsdom's
+    // default zero rect models exactly that.
+    document.body.innerHTML = "<main data-shell-main></main>";
+    expect(chatPaneAreaBox()).toBeNull();
+    expect(missionPaneAreaBox()).toBeNull();
+  });
+
+  it("ignores a foreign <main> even when it comes first in document order", () => {
+    // SettingsPage renders its own <main> (#371); a bare
+    // querySelector("main") would grab it. The measurement must key on
+    // AppShell's data-shell-main attribute instead.
+    document.body.innerHTML = "<main></main><main data-shell-main></main>";
+    const [decoy, shell] = Array.from(document.querySelectorAll("main"));
+    decoy.getBoundingClientRect = () => ({ width: 999, height: 999 }) as DOMRect;
+    shell.getBoundingClientRect = () => ({ width: 1440, height: 900 }) as DOMRect;
+    expect(chatPaneAreaBox()).toEqual({ width: 1440 - 320, height: 900 - 44 });
   });
 });

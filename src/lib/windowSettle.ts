@@ -1,4 +1,4 @@
-// Window-restore settle gate for launch auto-resume (impl 0036, decision 1).
+// Window-restore settle gate for launch auto-resume (impl 0038, decision 1).
 //
 // `window_state::restore` (impl 0027) applies the saved frame during Tauri
 // `setup`, before the webview evaluates any script, and `app_ready` reveals

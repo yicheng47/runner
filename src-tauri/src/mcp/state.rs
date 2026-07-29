@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tauri::AppHandle;
 
@@ -25,6 +25,7 @@ pub(crate) struct McpState {
     pub routers: Arc<RouterRegistry>,
     pub mcp: Arc<McpHandle>,
     pub windows: Arc<WindowRegistry>,
+    pub mission_grid_hint: Arc<Mutex<Option<(u16, u16)>>>,
     pub app_handle: AppHandle,
 }
 
@@ -40,6 +41,7 @@ impl McpState {
             routers: Arc::clone(&self.routers),
             mcp: Arc::clone(&self.mcp),
             windows: Arc::clone(&self.windows),
+            mission_grid_hint: Arc::clone(&self.mission_grid_hint),
         }
     }
 }

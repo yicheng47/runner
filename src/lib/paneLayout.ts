@@ -138,7 +138,7 @@ const PANE_MIN_SIZE_PX = 120;
  * pane area), mirroring ChatPaneGroup's render. Null when the session is not
  * in this layout.
  *
- * This is the split divisor the launch-resume estimate needs (impl 0036, open
+ * This is the split divisor the launch-resume estimate needs (impl 0038, open
  * question 3): the layout is known from persisted tab state before any pane
  * mounts, so a session returning into a 2–3 pane tab can be estimated at its
  * own width rather than the tab's.

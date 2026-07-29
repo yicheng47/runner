@@ -616,6 +616,7 @@ mod tests {
             routers: RouterRegistry::new(),
             mcp: Arc::new(McpHandle::new()),
             windows: Arc::new(WindowRegistry::new()),
+            mission_grid_hint: Arc::new(std::sync::Mutex::new(None)),
         });
         app
     }

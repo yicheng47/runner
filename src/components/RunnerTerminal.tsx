@@ -27,6 +27,8 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 import { api, type PasteImageMimeType } from "../lib/api";
+import { logLaunchDims } from "../lib/frontendLog";
+import { takeLaunchResumed } from "../lib/launchResumeTrace";
 import {
   readTerminalCursorStyle,
   readTerminalFontFamily,
@@ -141,6 +143,12 @@ interface RunnerTerminalProps {
    *  Stopped panes keep this false so their measured size is persisted
    *  for the next resume even though keyboard input stays disabled. */
   resizeDisabled?: boolean;
+  /** Notified with the real grid every time this terminal pushes a new
+   *  size to the backend (already deduped by the push gate). The mission
+   *  workspace uses it to refresh the backend's mission grid hint so a
+   *  backend-initiated mission start after a window/rail resize forks at
+   *  the current width (#367). Chat surfaces leave it unset. */
+  onSizePushed?: (size: TerminalGridSize) => void;
 }
 
 /**
@@ -185,6 +193,7 @@ export const RunnerTerminal = forwardRef<
     autoFocus,
     disabled,
     resizeDisabled,
+    onSizePushed,
   },
   ref,
 ) {
@@ -221,6 +230,21 @@ export const RunnerTerminal = forwardRef<
   const lastPushedColsRef = useRef(0);
   const lastPushedRowsRef = useRef(0);
   const reassertSizeRef = useRef<(() => void) | null>(null);
+  // Mirrors `onSizePushed` so the long-lived push closures below see the
+  // current callback without re-creating the terminal.
+  const onSizePushedRef = useRef(onSizePushed);
+  useEffect(() => {
+    onSizePushedRef.current = onSizePushed;
+  }, [onSizePushed]);
+  // One `[launch-dims] first-fit` line per LAUNCH-RESUMED session (#366):
+  // `takeLaunchResumed` consumes the mark autoResume set when this
+  // session's launch resume succeeded, so fresh chats, UI-started
+  // missions, manual resumes, and remounts never log.
+  const noteFirstRealFit = useCallback((cols: number, rows: number) => {
+    const sid = sessionIdRef.current;
+    if (!sid || !takeLaunchResumed(sid)) return;
+    logLaunchDims(`first-fit session=${sid} ${cols}x${rows}`);
+  }, []);
   // Snapshot replay is deferred until the pane is both active and
   // measurable. Mission workspaces mount every slot's RunnerTerminal
   // at once with `activeTab="feed"` by default — every slot pane is
@@ -377,6 +401,7 @@ export const RunnerTerminal = forwardRef<
         const beforeRows = t.rows;
         ensureWebglRenderer();
         fit.fit();
+        noteFirstRealFit(t.cols, t.rows);
         if (t.cols !== beforeCols || t.rows !== beforeRows) {
           console.info(
             `[terminal] refresh-fit session=${sessionIdRef.current} ` +
@@ -432,6 +457,7 @@ export const RunnerTerminal = forwardRef<
           );
           lastPushedColsRef.current = cols;
           lastPushedRowsRef.current = rows;
+          onSizePushedRef.current?.({ cols, rows });
           void api.session.resize(sid, cols, rows).catch(() => {
             rejectSizePush(cols, rows);
           });
@@ -485,6 +511,7 @@ export const RunnerTerminal = forwardRef<
           );
           lastPushedColsRef.current = cols;
           lastPushedRowsRef.current = rows;
+          onSizePushedRef.current?.({ cols, rows });
           void api.session.resize(sid, cols, rows).catch(() => {
             rejectSizePush(cols, rows);
           });
@@ -517,6 +544,7 @@ export const RunnerTerminal = forwardRef<
         replayJustDrainedRef.current = false;
         lastPushedColsRef.current = cols;
         lastPushedRowsRef.current = rows;
+        onSizePushedRef.current?.({ cols, rows });
         const nudgedRows = rows > 1 ? rows - 1 : rows + 1;
         void api.session
           .resize(sid, cols, nudgedRows)
@@ -530,7 +558,7 @@ export const RunnerTerminal = forwardRef<
         return false;
       }
     },
-    [ensureWebglRenderer, rejectSizePush, blankGate],
+    [ensureWebglRenderer, rejectSizePush, blankGate, noteFirstRealFit],
   );
 
   useEffect(() => {
@@ -584,6 +612,8 @@ export const RunnerTerminal = forwardRef<
       );
       lastPushedColsRef.current = current.cols;
       lastPushedRowsRef.current = current.rows;
+      onSizePushedRef.current?.({ cols: current.cols, rows: current.rows });
+      noteFirstRealFit(current.cols, current.rows);
       void api.session.resize(sid, current.cols, current.rows).catch(() => {
         rejectSizePush(current.cols, current.rows);
       });
@@ -605,6 +635,7 @@ export const RunnerTerminal = forwardRef<
     const initialRect = containerRef.current.getBoundingClientRect();
     if (initialRect.width > 0 && initialRect.height > 0) {
       fit.fit();
+      noteFirstRealFit(term.cols, term.rows);
       // Push the freshly-fitted dims to the backend right here, before
       // the snapshot effect below fires its outputSnapshot RPC. The
       // backend's buffered bytes were emitted by the agent at whatever
@@ -1128,7 +1159,7 @@ export const RunnerTerminal = forwardRef<
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [refreshActiveTerminal, rejectSizePush]);
+  }, [refreshActiveTerminal, rejectSizePush, noteFirstRealFit]);
 
   // A mounted hidden terminal still owns its CPU-side xterm buffer, but it
   // must not hold a WebGL context: RunnerChat deliberately keeps every
@@ -1462,7 +1493,7 @@ export const RunnerTerminal = forwardRef<
   return (
     // Keep this attribute in sync with terminalSizing's
     // TERMINAL_HOST_SESSION_ATTR: it lets launch auto-resume find this host
-    // and measure the box the terminal will fit to (impl 0036, rung 1)
+    // and measure the box the terminal will fit to (impl 0038, rung 1)
     // without a surface-local terminal registry.
     <div
       data-terminal-session={sessionId}

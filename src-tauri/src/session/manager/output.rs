@@ -535,13 +535,21 @@ impl SessionManager {
         // restored (the #306 symptom: remount shows only the latest
         // frame). Shells keep their buffer unconditionally — no repaint
         // would arrive, and their history is meaningful.
-        let cols_changed = {
+        let (cols_changed, prev_cols) = {
             let mut state = state.lock().unwrap();
-            let changed = state.last_pty_cols != Some(cols);
+            let prev = state.last_pty_cols;
+            let changed = prev != Some(cols);
             state.last_pty_cols = Some(cols);
-            changed
+            (changed, prev)
         };
         if cols_changed && runtime_clears_on_resize(session_id, pool) {
+            // Estimate-vs-reality mismatches show up here: a session
+            // forked at a wrong width loses its ring to this purge on
+            // the pane's first real-cols push (#366 diagnostics).
+            log::info!(
+                "cols-gate purge: session={session_id} cols {} -> {cols}",
+                prev_cols.map_or_else(|| "none".to_string(), |c| c.to_string()),
+            );
             self.purge_output_buffer_keep_modes(session_id);
         }
         Ok(())

@@ -23,7 +23,7 @@ So 0035 made the *eventual* state correct and left the *visible* damage in place
 2. **Supply dims at the call site; stop passing `null`.** `resumeOnLaunch` gains cols/rows. `session_resume` already threads them (`commands/session.rs:620-649`), so this is caller-side only. Precedence for what to send, best first: **measured** from the session's laid-out container when it has one → **estimated** from current window geometry via the `terminalSizing.ts` helpers → **persisted** `last_cols`/`last_rows` → `DEFAULT_PTY_SIZE`. Today's chain starts at step three; this prepends the two rungs that reflect reality.
 3. **Prefer deferring over guessing for panes that are about to exist.** A session whose pane is mounting should fork against that pane's real measurement rather than an estimate. Where that can be awaited cheaply without stalling the queue, do it; where it cannot, fall to the estimate. Do not stall the whole queue on one pane — a slow or never-mounting surface must not block the rest (0035's failure-tolerance rule from #320 still holds).
 4. **0035's decisions 1 and 2 stay, as the safety net.** Persisting geometry while stopped and re-asserting on going live remain correct and still catch anything dropped in flight (session exiting mid-resize, crash-and-resume, window handoff). This impl removes the need for them to be the *primary* mechanism, not the mechanisms themselves.
-5. **Record the correction in 0035.** Its decisions 3 and 4 currently read as considered acceptances, and someone will hit this again if they stand unqualified. Add a short note pointing at 0036 and this issue.
+5. **Record the correction in 0035.** Its decisions 3 and 4 currently read as considered acceptances, and someone will hit this again if they stand unqualified. Add a short note pointing at 0038 and this issue.
 
 ## Open questions — resolved
 
@@ -54,7 +54,7 @@ So 0035 made the *eventual* state correct and left the *visible* damage in place
 ### Phase 1 — settle gate
 
 - `src/lib/windowSettle.ts`: `awaitWindowGeometrySettle` resolves once the webview viewport agrees with the native frame, or at `WINDOW_SETTLE_CEILING_MS`, or immediately when there is no native window to read. Deps are injected so the gate is testable without a window.
-- `src/App.tsx`: awaited before `consumeResumeOnLaunch`, together with `hydratePaneLayoutsFromDb()` — the other input the dims computation depends on. Only when the toggle is on; the default-off path still clears stamps immediately.
+- `src/App.tsx`: awaited before `consumeResumeOnLaunch`, together with `hydratePaneLayoutsFromDb()` — the other input the dims computation depends on. Originally gated on the resume toggle; since #367 the settle gate runs on every launch, because the mission grid-hint push (`estimateMissionTerminalGrid()` → `mission_grid_hint_set`) needs settled geometry regardless of the toggle. Only the pane-layout hydration remains toggle-gated; the default-off path still clears stamps right after the gate.
 - Tests (`windowSettle.test.ts`): settles with no wait when the viewport already agrees; waits out a lagging viewport; accepts rounding within tolerance; returns `timeout` at the ceiling instead of hanging; returns `unavailable` when the native size cannot be read.
 
 ### Phase 2 — dims at the call site

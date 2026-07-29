@@ -493,6 +493,39 @@ pub(crate) async fn mission_start_impl(
     mission_start_impl_with_size(state, app, input, None).await
 }
 
+/// Grid a mission fork will use, plus the source tag the fork log line
+/// reports. Caller-measured dims win; with none, the frontend's cached
+/// mission pane grid fills in so backend-initiated starts (MCP
+/// `mission_start` / `mission_reset` pass no size) don't fork at 80×24
+/// and lose their scrollback to the first slot-tab visit's cols-gate
+/// purge (#367). `None` means no hint was ever recorded and
+/// `register_mission_session` falls to `DEFAULT_PTY_SIZE`.
+pub(crate) fn mission_fork_size(
+    caller: Option<(u16, u16)>,
+    hint: Option<(u16, u16)>,
+) -> (Option<(u16, u16)>, &'static str) {
+    match (caller, hint) {
+        (Some(size), _) => (Some(size), "caller-supplied"),
+        (None, Some(size)) => (Some(size), "mission-hint"),
+        (None, None) => (None, "DEFAULT_PTY_SIZE"),
+    }
+}
+
+/// Record the frontend's most recent measured/estimated mission pane grid.
+/// Pushed once per launch after the window-geometry settle gate and again
+/// whenever the mission workspace measures real slot dims; consumed by
+/// `mission_fork_size` above.
+#[tauri::command]
+pub fn mission_grid_hint_set(state: State<'_, AppState>, cols: u16, rows: u16) -> Result<()> {
+    if cols == 0 || rows == 0 {
+        return Err(Error::msg(format!(
+            "mission grid hint must be positive; got {cols}x{rows}"
+        )));
+    }
+    *state.mission_grid_hint.lock().unwrap() = Some((cols, rows));
+    Ok(())
+}
+
 async fn mission_start_impl_with_size(
     state: &AppState,
     app: &tauri::AppHandle,
@@ -506,6 +539,9 @@ async fn mission_start_impl_with_size(
     };
     use crate::session::manager::{SessionEvents, TauriSessionEvents};
     use std::sync::Arc;
+
+    let (initial_size, size_source) =
+        mission_fork_size(initial_size, *state.mission_grid_hint.lock().unwrap());
 
     let out = {
         let mut conn = state.db.get()?;
@@ -694,6 +730,7 @@ async fn mission_start_impl_with_size(
             state.db.clone(),
             first_turn,
             initial_size,
+            size_source,
         );
         match register_res {
             Ok(pending) => {
@@ -1200,6 +1237,11 @@ pub(crate) async fn mission_reset_impl(
     use crate::session::manager::{SessionEvents, TauriSessionEvents};
     use std::sync::Arc;
 
+    // Same hint fallback as mission_start: the MCP `mission_reset` tool
+    // passes no size, and an unsized respawn re-arms the cols-gate purge.
+    let (initial_size, size_source) =
+        mission_fork_size(initial_size, *state.mission_grid_hint.lock().unwrap());
+
     // 1. Snapshot the mission + crew + roster up front.
     let mission_snap = {
         let conn = state.db.get()?;
@@ -1424,6 +1466,7 @@ pub(crate) async fn mission_reset_impl(
             state.db.clone(),
             first_turn,
             initial_size,
+            size_source,
         );
         match register_res {
             Ok(pending) => {
@@ -1950,6 +1993,35 @@ mod tests {
             serde_json::json!({ "state": state }),
         ))
         .unwrap();
+    }
+
+    // #367: MCP mission_start/mission_reset pass no size and the recorded
+    // frontend grid hint must fill in. These cover the resolver's ordering
+    // only; the resolver-to-fork seam (resolved size reaching the SpawnSpec
+    // the runtime actually forks) is covered by
+    // `hinted_mission_start_forks_slots_at_the_hint` /
+    // `unhinted_mission_start_still_forks_at_default` in
+    // `session::manager::tests`.
+    #[test]
+    fn mission_fork_size_uses_hint_when_caller_absent() {
+        assert_eq!(
+            mission_fork_size(None, Some((161, 45))),
+            (Some((161, 45)), "mission-hint"),
+        );
+    }
+
+    #[test]
+    fn mission_fork_size_abstains_without_caller_or_hint() {
+        assert_eq!(mission_fork_size(None, None), (None, "DEFAULT_PTY_SIZE"));
+    }
+
+    #[test]
+    fn mission_fork_size_prefers_caller_over_hint() {
+        // The UI path measures a real pane; a stale hint must not override it.
+        assert_eq!(
+            mission_fork_size(Some((120, 30)), Some((161, 45))),
+            (Some((120, 30)), "caller-supplied"),
+        );
     }
 
     #[test]

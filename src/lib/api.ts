@@ -278,6 +278,15 @@ export const api = {
         initialCols: initialSize?.cols ?? null,
         initialRows: initialSize?.rows ?? null,
       }),
+    /** Record the most recent known-good mission pane grid backend-side.
+     *  Backend-initiated starts (MCP `mission_start`/`mission_reset` pass
+     *  no size) fork their slots at this hint instead of 80×24, whose
+     *  first slot-tab visit would purge the whole ring (#367). */
+    setGridHint: (size: { cols: number; rows: number }) =>
+      invoke<void>("mission_grid_hint_set", {
+        cols: size.cols,
+        rows: size.rows,
+      }),
     /** Re-mount router/bus on workspace mount; idempotent. After app restart
      *  the in-memory router/bus need to be rebuilt from the persisted log
      *  before stdin pushes can land on resumed slot PTYs. */
@@ -369,7 +378,7 @@ export const api = {
     clearResumeOnLaunch: () =>
       invoke<void>("session_clear_resume_on_launch"),
     /** Auto-resume-on-launch. Dims come from the caller's precedence chain
-     *  (impl 0036) — passing null forks at the row's persisted geometry, or
+     *  (impl 0038) — passing null forks at the row's persisted geometry, or
      *  80×24 when it has none. */
     resumeOnLaunch: (
       sessionId: string,

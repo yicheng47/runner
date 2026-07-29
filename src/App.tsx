@@ -16,9 +16,11 @@ import { UpdateProvider, useUpdate } from "./contexts/UpdateContext";
 import { consumeResumeOnLaunch } from "./lib/autoResume";
 import { api } from "./lib/api";
 import { nudgeAppZoom, syncTitlebarZoom } from "./lib/appZoom";
+import { logLaunchDims } from "./lib/frontendLog";
 import { eventMatchesShortcut } from "./lib/keymap";
 import { launchDimsFor } from "./lib/launchDims";
 import { hydratePaneLayoutsFromDb } from "./lib/paneLayout";
+import { estimateMissionTerminalGrid } from "./lib/terminalSizing";
 import { awaitWindowGeometrySettle } from "./lib/windowSettle";
 import {
   DEFAULT_RESUME_ON_LAUNCH,
@@ -60,17 +62,32 @@ export default function App() {
             STORAGE_RESUME_ON_LAUNCH,
             DEFAULT_RESUME_ON_LAUNCH,
           );
+          // The settle gate runs on every launch, not just resume-enabled
+          // ones (impl 0038, decision 1): the restored frame has to have
+          // reached the webview before any geometry read — both the
+          // resume-dims chain below and the mission grid-hint push. It has
+          // a ceiling, so it can't hang the queue.
+          const settleStart = performance.now();
+          const settle = await awaitWindowGeometrySettle();
+          logLaunchDims(
+            `settle=${settle} elapsedMs=${Math.round(
+              performance.now() - settleStart,
+            )}`,
+          );
+          if (cancelled) return;
+          // Seed the backend's mission pane grid hint so an MCP-started
+          // mission forks its slots at the destination width instead of
+          // 80×24 (#367). Unconditional: MCP starts don't care whether
+          // resume-on-launch is enabled.
+          const hint = estimateMissionTerminalGrid();
+          if (hint) {
+            logLaunchDims(`mission-grid-hint ${hint.cols}x${hint.rows}`);
+            void api.mission.setGridHint(hint).catch(console.error);
+          }
           if (enabled) {
-            // Both inputs to every dims computation below, awaited before
-            // the first fork (impl 0036, decision 1): the restored frame has
-            // to have reached the webview, and the tab layouts have to be
-            // hydrated for a split pane's share of the width to be known.
-            // Neither can hang the queue — the settle gate has a ceiling and
-            // a failed hydration just costs the split divisor.
-            const settle = await awaitWindowGeometrySettle();
-            if (settle !== "settled") {
-              console.info(`[auto-resume] window geometry settle: ${settle}`);
-            }
+            // Second input to the resume dims chain: tab layouts have to
+            // be hydrated for a split pane's share of the width to be
+            // known. A failed hydration just costs the split divisor.
             await hydratePaneLayoutsFromDb().catch(console.error);
             if (cancelled) return;
           }
