@@ -423,6 +423,8 @@ export const api = {
         bytes: Array.from(bytes),
         mimeType,
       }),
+    clipboardFilePaths: () =>
+      invoke<string[]>("session_clipboard_file_paths"),
     startDirect: (
       runnerId: string,
       cwd: string | null,
