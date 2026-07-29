@@ -192,9 +192,9 @@ const containerDndId = (containerId: string) =>
   `nav-container-drop:${containerId}`;
 
 /** A sidebar row resolved from a tree node: tab nodes join their pane
- *  layout + member sessions, mission nodes their running summary. Nodes
- *  whose content is missing (archived member rows mid-refresh,
- *  non-running missions) resolve to nothing and stay hidden. */
+ *  layout + member sessions, mission nodes their summary. Nodes whose
+ *  content is missing (archived member rows mid-refresh) resolve to
+ *  nothing and stay hidden. */
 type NavRowModel =
   | {
       kind: "tab";
@@ -688,7 +688,12 @@ export function Sidebar({
   const refreshMissions = useCallback(async () => {
     try {
       const rows = await api.mission.listSummary();
-      setMissions(rows.filter((m) => m.status === "running"));
+      // No status filter: a restored mission comes back `completed` but
+      // unarchived (impl 0026), and its tree node needs this summary to
+      // render — filtering to running made Restore look like a no-op.
+      // The list stays small anyway: a terminal stop archives the row,
+      // so unarchived missions are only ever running or restored.
+      setMissions(rows);
     } catch (e) {
       // best-effort; the next event/refetch will resolve transient errors
       console.error("sidebar: refreshMissions failed", e);

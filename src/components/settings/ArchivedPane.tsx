@@ -1,7 +1,7 @@
 // Archived pane — impl 0026. One flat list of archived missions and
 // direct chats merged by archive recency, with search (title + cwd)
-// and an All | Missions | Chats segmented filter. Unarchive clears
-// `archived_at` only; the backend events (`mission/changed` /
+// and an All | Missions | Chats segmented filter. Restore (unarchive)
+// clears `archived_at` only; the backend events (`mission/changed` /
 // `session/updated`) reinstate the row in the app sidebar live.
 // Delete all (title row, feature 01 Phase 4) permanently deletes every
 // archived item behind the ConfirmDialog styled per the design's
@@ -311,7 +311,7 @@ function ArchivedRow({
         }}
         className="shrink-0 cursor-pointer rounded-md border border-line bg-raised px-2.5 py-1 text-[12px] font-medium text-fg-2 transition-colors hover:border-line-strong hover:text-fg"
       >
-        Unarchive
+        Restore
       </button>
     </div>
   );
