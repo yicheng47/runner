@@ -84,9 +84,10 @@ fmt-check:
 # cargo check + the full workspace test run.
 ci: lint check test-rust
 
-# Remove accumulated Runner dev generations while keeping dependency artifacts
+# Remove accumulated dev generations of all workspace crates while
+# keeping dependency artifacts warm
 clean-rust-stale:
-	cargo clean -p runner --profile dev
+	cargo clean -p runner -p runner-cli -p runner-core --profile dev
 
 # Clean dev artifacts
 clean:
