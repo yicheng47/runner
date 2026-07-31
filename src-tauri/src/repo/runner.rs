@@ -178,6 +178,44 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Runner>> {
     rows.map(|r| r.map(Runner::from)).collect()
 }
 
+const SEARCH_PREDICATE: &str = "(
+       LOWER(r.handle) LIKE LOWER(?1) ESCAPE '\\'
+    OR LOWER(r.display_name) LIKE LOWER(?1) ESCAPE '\\'
+)";
+
+pub fn count(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row("SELECT COUNT(*) FROM runners", [], |row| row.get(0))
+}
+
+pub fn count_matching(conn: &Connection, pattern: &str) -> rusqlite::Result<i64> {
+    conn.query_row(
+        &format!("SELECT COUNT(*) FROM runners r WHERE {SEARCH_PREDICATE}"),
+        rusqlite::params![pattern],
+        |row| row.get(0),
+    )
+}
+
+pub fn list_page(
+    conn: &Connection,
+    pattern: &str,
+    limit: i64,
+    offset: i64,
+) -> rusqlite::Result<Vec<Runner>> {
+    let sql = format!(
+        "SELECT {}
+           FROM runners r
+          WHERE {SEARCH_PREDICATE}
+          ORDER BY r.handle ASC
+          LIMIT ?2 OFFSET ?3",
+        super::qualified_select_list("r", COLUMNS)
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params![pattern, limit, offset], |row| {
+        from_row::<RunnerRow>(row).map_err(de_err)
+    })?;
+    rows.map(|row| row.map(Runner::from)).collect()
+}
+
 pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
     conn.execute("DELETE FROM runners WHERE id = ?1", rusqlite::params![id])
 }

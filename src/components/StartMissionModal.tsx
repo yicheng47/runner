@@ -70,7 +70,7 @@ export function StartMissionModal({
     setCrewPickerOpen(false);
     setCrewSlots([]);
     void api.crew
-      .list()
+      .listAll()
       .then((rows) => {
         setCrews(rows);
         const launchable = rows.find((c) => c.runner_count > 0);

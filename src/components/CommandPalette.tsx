@@ -71,7 +71,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
         api.mission.listSummary().catch(() => [] as MissionSummary[]),
         api.session.listRecentDirect().catch(() => [] as DirectSessionEntry[]),
         api.runner.list().catch(() => [] as Runner[]),
-        api.crew.list().catch(() => [] as CrewListItem[]),
+        api.crew.listAll().catch(() => [] as CrewListItem[]),
       ]);
       const next: PaletteItem[] = [];
       missions.forEach((m, i) =>

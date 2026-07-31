@@ -18,6 +18,7 @@ import type {
   Event,
   Mission,
   MissionSummary,
+  ListPage,
   PostHumanSignalInput,
   Runner,
   RunnerActivity,
@@ -35,6 +36,8 @@ import type {
   UpdateSlotInput,
   WindowEntry,
 } from "./types";
+
+const INTERNAL_LIST_PAGE_SIZE = 1_000_000;
 
 /** Session row joined with the runner's handle for UI labels. */
 export interface SessionRow extends Session {
@@ -214,7 +217,14 @@ export const api = {
       invoke<NodeRow>("node_mark_viewed", { id, memberIds }),
   },
   crew: {
-    list: () => invoke<CrewListItem[]>("crew_list"),
+    list: (page: number, pageSize: number, query: string) =>
+      invoke<ListPage<CrewListItem>>("crew_list", { page, pageSize, query }),
+    listAll: () =>
+      invoke<ListPage<CrewListItem>>("crew_list", {
+        page: 1,
+        pageSize: INTERNAL_LIST_PAGE_SIZE,
+        query: "",
+      }).then((result) => result.items),
     get: (id: string) => invoke<Crew>("crew_get", { id }),
     create: (input: CreateCrewInput) => invoke<Crew>("crew_create", { input }),
     update: (id: string, input: UpdateCrewInput) =>
@@ -237,8 +247,18 @@ export const api = {
   },
   runner: {
     list: () => invoke<Runner[]>("runner_list"),
-    listWithActivity: () =>
-      invoke<RunnerWithActivity[]>("runner_list_with_activity"),
+    listWithActivity: (page: number, pageSize: number, query: string) =>
+      invoke<ListPage<RunnerWithActivity>>("runner_list_with_activity", {
+        page,
+        pageSize,
+        query,
+      }),
+    listAllWithActivity: () =>
+      invoke<ListPage<RunnerWithActivity>>("runner_list_with_activity", {
+        page: 1,
+        pageSize: INTERNAL_LIST_PAGE_SIZE,
+        query: "",
+      }).then((result) => result.items),
     get: (id: string) => invoke<Runner>("runner_get", { id }),
     getByHandle: (handle: string) =>
       invoke<Runner>("runner_get_by_handle", { handle }),

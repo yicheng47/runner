@@ -61,7 +61,7 @@ export function AddSlotModal({
     setSubmitting(false);
     setLoading(true);
     void api.runner
-      .listWithActivity()
+      .listAllWithActivity()
       .then((rows) => {
         if (cancelled) return;
         setRunners(rows);

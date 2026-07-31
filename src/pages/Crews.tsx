@@ -3,7 +3,7 @@
 // Vertical stack of dark crew cards. Empty state uses the shared
 // EmptyStateCard so all three list pages stay visually consistent.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { listen } from "@tauri-apps/api/event";
@@ -12,34 +12,14 @@ import { SearchX } from "lucide-react";
 import { useToast } from "../contexts/ToastContext";
 import { useListControls } from "../hooks/useListControls";
 import { api } from "../lib/api";
-import { buildSearchDoc } from "../lib/listControls";
 import type { CrewListItem } from "../lib/types";
 import { Button } from "../components/ui/Button";
 import { Modal } from "../components/ui/Overlay";
-import { Pager } from "../components/ui/Pager";
-import { SearchInput } from "../components/ui/SearchInput";
 import { Field, Input, Textarea } from "../components/ui/Field";
 import { EmptyStateCard } from "../components/EmptyStateCard";
-
-function crewSearchDocument(crew: CrewListItem) {
-  return buildSearchDoc([
-    crew.name,
-    crew.purpose,
-    crew.goal,
-    crew.system_prompt_addendum,
-    ...crew.members.flatMap((member) => [
-      member.slot_handle,
-      member.runner_handle,
-      member.runtime,
-    ]),
-  ]);
-}
+import { PaginatedListPage } from "../components/PaginatedListPage";
 
 export default function Crews() {
-  const [crews, setCrews] = useState<CrewListItem[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [deletingCrewId, setDeletingCrewId] = useState<string | null>(null);
   const { showToast } = useToast();
@@ -53,24 +33,11 @@ export default function Crews() {
     filteredCount,
     totalCount,
     pageCount,
-  } = useListControls(crews, crewSearchDocument);
-
-  const refresh = useCallback(async () => {
-    try {
-      setError(null);
-      const list = await api.crew.list();
-      setCrews(list);
-      setLoaded(true);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    loaded,
+    loading,
+    error,
+    refresh,
+  } = useListControls(api.crew.list);
 
   useEffect(() => {
     let unlistenCrew: (() => void) | null = null;
@@ -130,102 +97,69 @@ export default function Crews() {
 
   return (
     <>
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="flex min-h-0 w-full flex-1 flex-col gap-6 px-8 pb-8 pt-10">
-          <header className="flex items-center justify-between gap-4">
-            <div className="flex flex-col gap-1">
-              <h1 className="text-2xl font-bold tracking-tight text-fg">
-                Crews
-              </h1>
-              <p className="text-sm text-fg-2">
-                Named groups of runners with a shared goal.
-              </p>
-            </div>
-            <Button variant="primary" onClick={() => setCreating(true)}>
-              + New crew
+      <PaginatedListPage
+        title="Crews"
+        description="Named groups of runners with a shared goal."
+        action={
+          <Button variant="primary" onClick={() => setCreating(true)}>
+            + New crew
+          </Button>
+        }
+        error={error}
+        loading={loading}
+        loaded={loaded}
+        totalCount={totalCount}
+        filteredCount={filteredCount}
+        noun="crews"
+        emptyState={
+          <EmptyStateCard
+            icon={<UsersIcon />}
+            title="No crews yet"
+            description="A crew is a named group of runners working a goal together. Spin up your first one to get started."
+            action={
+              <Button variant="primary" onClick={() => setCreating(true)}>
+                + New crew
+              </Button>
+            }
+          />
+        }
+        query={query}
+        onQueryChange={setQuery}
+        searchLabel="Search crews"
+        searchPlaceholder="Search crews…"
+        noMatches={
+          <div className="flex w-full flex-col items-center gap-3 rounded-lg border border-line bg-panel px-8 py-14 text-center">
+            <SearchX aria-hidden className="h-5 w-5 text-fg-3" />
+            <h2 className="text-sm font-medium text-fg">
+              No crews match &quot;{query}&quot;
+            </h2>
+            <p className="text-xs leading-relaxed text-fg-2">
+              Search checks names, purposes, goals, system prompts, slot
+              handles, runner handles, and runtimes.
+            </p>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setQuery("")}
+            >
+              Clear search
             </Button>
-          </header>
-
-          {error ? (
-            <div className="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-              {error}
-            </div>
-          ) : null}
-
-          {loading ? (
-            <div className="text-sm text-fg-2">Loading…</div>
-          ) : !loaded ? (
-            <div className="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-              Failed to load crews.
-            </div>
-          ) : crews.length === 0 ? (
-            <EmptyStateCard
-              icon={<UsersIcon />}
-              title="No crews yet"
-              description="A crew is a named group of runners working a goal together. Spin up your first one to get started."
-              action={
-                <Button variant="primary" onClick={() => setCreating(true)}>
-                  + New crew
-                </Button>
-              }
-            />
-          ) : (
-            <>
-              <div className="flex items-center justify-between gap-4">
-                <SearchInput
-                  value={query}
-                  onChange={setQuery}
-                  label="Search crews"
-                  placeholder="Search crews…"
-                />
-                <span className="shrink-0 font-mono text-[11px] text-fg-2">
-                  {pageItems.length} of {totalCount} crews
-                </span>
-              </div>
-              {filteredCount === 0 ? (
-                <div className="flex w-full flex-col items-center gap-3 rounded-lg border border-line bg-panel px-8 py-14 text-center">
-                  <SearchX aria-hidden className="h-5 w-5 text-fg-3" />
-                  <h2 className="text-sm font-medium text-fg">
-                    No crews match &quot;{query}&quot;
-                  </h2>
-                  <p className="text-xs leading-relaxed text-fg-2">
-                    Search checks names, purposes, goals, system prompts, slot
-                    handles, runner handles, and runtimes.
-                  </p>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => setQuery("")}
-                  >
-                    Clear search
-                  </Button>
-                </div>
-              ) : (
-                <>
-                  <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                    {pageItems.map((c) => (
-                      <CrewCard
-                        key={c.id}
-                        item={c}
-                        deleting={deletingCrewId === c.id}
-                        onOpen={() => navigate(`/crews/${c.id}`)}
-                        onDelete={() => onDelete(c.id, c.name)}
-                      />
-                    ))}
-                  </div>
-                  <div className="mt-auto flex justify-center pt-3">
-                    <Pager
-                      page={page}
-                      pageCount={pageCount}
-                      onPageChange={setPage}
-                    />
-                  </div>
-                </>
-              )}
-            </>
-          )}
-        </div>
-      </div>
+          </div>
+        }
+        page={page}
+        pageCount={pageCount}
+        onPageChange={setPage}
+      >
+        {pageItems.map((c) => (
+          <CrewCard
+            key={c.id}
+            item={c}
+            deleting={deletingCrewId === c.id}
+            onOpen={() => navigate(`/crews/${c.id}`)}
+            onDelete={() => onDelete(c.id, c.name)}
+          />
+        ))}
+      </PaginatedListPage>
 
       <CreateCrewModal
         open={creating}

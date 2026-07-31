@@ -46,7 +46,7 @@ export function GeneralPane() {
   useEffect(() => {
     let cancelled = false;
     void api.crew
-      .list()
+      .listAll()
       .then((rows) => {
         if (cancelled) return;
         setCrews(rows.map((c) => ({ id: c.id, name: c.name })));
