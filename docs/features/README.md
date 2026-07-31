@@ -14,10 +14,6 @@ links to its tracking issue.
   one central catalog of MCP servers and skills, stored in a neutral
   shape and materialized per agent (claude-code JSON, codex TOML,
   skill dirs); informed by the skills-manager reference analysis.
-- [24 — Cronjobs](./24-cronjobs.md)
-  — scheduled recurring missions dispatched to a crew on a cron
-  expression; in-process Tokio scheduler, skip-on-overlap, one
-  missed-tick catch-up; new sidebar section between MISSION and CHAT.
 - [37 — Agent runtime executable settings](./37-agent-runtime-executable-settings.md) — detect and display Claude Code/Codex executables from the user's login-shell environment, fix slow shell initialization failures, and provide explicit per-runtime path overrides.
 - [45 — Auto-resume on launch](./45-auto-resume-on-launch.md) — stamp quit-killed running chats and mission-slot sessions with `resume_on_launch`, then auto-resume them (staggered, resume-only, settings-gated) on next open; crash path never stamps.
 - [52 — Hook-based session status](./52-hook-based-session-status.md) — authoritative `working`/`waiting`/`done` status from agent CLI hooks injected per spawn (claude `--settings`, codex hooks.json — never the user's config), with the byte-flow IdleDetector demoted to a universal fallback tier; adds the needs-you attention state.
@@ -44,3 +40,11 @@ Considered and deliberately not built. Spec kept in-repo as the record.
   the CLIs' own resume pickers (`claude --resume` / `codex resume` from a
   pane in the project cwd) cover the core need, so the native-store import
   machinery wasn't worth its maintenance surface.
+- [24 — Cronjobs](./24-cronjobs.md)
+  — closed as won't-do ([#193](https://github.com/yicheng47/runner/issues/193)):
+  a resident scheduler (overlap, catch-up, timeouts, wake correctness)
+  is always-on machinery inside an app whose identity is a cockpit you
+  open to work in, and `mission_start` over MCP/CLI already lets any
+  external scheduler fire missions on cron with zero app code. Revisit
+  only if the same mission goal keeps getting launched manually on a
+  rhythm.
