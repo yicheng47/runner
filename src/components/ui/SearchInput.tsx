@@ -37,9 +37,6 @@ export function SearchInput({
           <X aria-hidden className="h-3.5 w-3.5" />
         </button>
       ) : null}
-      <span className="rounded border border-line bg-raised px-1.5 py-px font-mono text-[10px] leading-none text-fg-3">
-        esc
-      </span>
     </div>
   );
 }

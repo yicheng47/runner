@@ -113,11 +113,65 @@ pub fn list_with_runner_count(conn: &Connection) -> rusqlite::Result<Vec<(Crew, 
         "SELECT {},
                 (SELECT COUNT(*) FROM slots s WHERE s.crew_id = c.id) AS runner_count
            FROM crews c
-         ORDER BY c.created_at ASC",
+         ORDER BY c.created_at ASC, c.id ASC",
         super::qualified_select_list("c", COLUMNS)
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], |row| {
+        let crew = from_row::<CrewRow>(row).map_err(de_err)?;
+        let runner_count: i64 = row.get("runner_count")?;
+        Ok((Crew::from(crew), runner_count))
+    })?;
+    rows.collect()
+}
+
+const SEARCH_PREDICATE: &str = "(
+       LOWER(c.name) LIKE LOWER(?1) ESCAPE '\\'
+    OR LOWER(COALESCE(c.purpose, '')) LIKE LOWER(?1) ESCAPE '\\'
+    OR LOWER(COALESCE(c.goal, '')) LIKE LOWER(?1) ESCAPE '\\'
+    OR LOWER(COALESCE(c.system_prompt_addendum, '')) LIKE LOWER(?1) ESCAPE '\\'
+    OR EXISTS (
+        SELECT 1
+          FROM slots s
+          JOIN runners r ON r.id = s.runner_id
+         WHERE s.crew_id = c.id
+           AND (
+                  LOWER(s.slot_handle) LIKE LOWER(?1) ESCAPE '\\'
+               OR LOWER(r.handle) LIKE LOWER(?1) ESCAPE '\\'
+               OR LOWER(COALESCE(s.runtime_override, r.runtime)) LIKE LOWER(?1) ESCAPE '\\'
+           )
+    )
+)";
+
+pub fn count(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row("SELECT COUNT(*) FROM crews", [], |row| row.get(0))
+}
+
+pub fn count_matching(conn: &Connection, pattern: &str) -> rusqlite::Result<i64> {
+    conn.query_row(
+        &format!("SELECT COUNT(*) FROM crews c WHERE {SEARCH_PREDICATE}"),
+        rusqlite::params![pattern],
+        |row| row.get(0),
+    )
+}
+
+pub fn list_with_runner_count_page(
+    conn: &Connection,
+    pattern: &str,
+    limit: i64,
+    offset: i64,
+) -> rusqlite::Result<Vec<(Crew, i64)>> {
+    let sql = format!(
+        "SELECT {},
+                (SELECT COUNT(*) FROM slots s WHERE s.crew_id = c.id) AS runner_count
+           FROM crews c
+          WHERE {SEARCH_PREDICATE}
+          ORDER BY c.created_at ASC, c.id ASC
+          LIMIT ?2 OFFSET ?3",
+        super::qualified_select_list("c", COLUMNS)
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params![pattern, limit, offset], |row| {
         let crew = from_row::<CrewRow>(row).map_err(de_err)?;
         let runner_count: i64 = row.get("runner_count")?;
         Ok((Crew::from(crew), runner_count))
@@ -148,6 +202,29 @@ pub fn list_member_previews(conn: &Connection) -> rusqlite::Result<Vec<MemberPre
           ORDER BY s.crew_id ASC, s.position ASC",
     )?;
     let rows = stmt.query_map([], |row| from_row::<MemberPreviewRow>(row).map_err(de_err))?;
+    rows.collect()
+}
+
+pub fn list_member_previews_for_crews(
+    conn: &Connection,
+    crew_ids: &[String],
+) -> rusqlite::Result<Vec<MemberPreviewRow>> {
+    if crew_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; crew_ids.len()].join(", ");
+    let sql = format!(
+        "SELECT s.crew_id, s.slot_handle, s.lead, r.handle AS runner_handle,
+                COALESCE(s.runtime_override, r.runtime) AS runtime
+           FROM slots s
+           JOIN runners r ON r.id = s.runner_id
+          WHERE s.crew_id IN ({placeholders})
+          ORDER BY s.crew_id ASC, s.position ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(crew_ids), |row| {
+        from_row::<MemberPreviewRow>(row).map_err(de_err)
+    })?;
     rows.collect()
 }
 

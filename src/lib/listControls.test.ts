@@ -1,26 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildSearchDoc,
   clampPage,
-  matchesQuery,
   pageWindow,
 } from "./listControls";
-
-describe("buildSearchDoc", () => {
-  it("joins non-null fields into a lowercase search document", () => {
-    expect(buildSearchDoc(["Lead", null, "Claude-Code", undefined, ""])).toBe(
-      "lead claude-code ",
-    );
-  });
-});
-
-describe("matchesQuery", () => {
-  it("matches normalized substrings", () => {
-    expect(matchesQuery("lead claude-code", " CLAUDE ")).toBe(true);
-    expect(matchesQuery("lead claude-code", "codex")).toBe(false);
-  });
-});
 
 describe("clampPage", () => {
   it("clamps pages to the available range", () => {

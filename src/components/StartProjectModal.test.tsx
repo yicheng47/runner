@@ -30,7 +30,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 vi.mock("../lib/api", () => ({
   api: {
-    crew: { list: mocks.crewList },
+    crew: { listAll: mocks.crewList },
     slot: { list: vi.fn(async () => []) },
     mission: { start: vi.fn() },
     runner: { list: mocks.runnerList },

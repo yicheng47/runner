@@ -2,16 +2,6 @@ export const PAGE_SIZE = 8;
 
 export type PageWindowItem = number | "ellipsis";
 
-export function buildSearchDoc(
-  fields: readonly (string | null | undefined)[],
-): string {
-  return fields.filter((field) => field != null).join(" ").toLowerCase();
-}
-
-export function matchesQuery(document: string, query: string): boolean {
-  return document.includes(query.trim().toLowerCase());
-}
-
 export function clampPage(page: number, totalPages: number): number {
   return Math.min(Math.max(page, 1), Math.max(totalPages, 1));
 }

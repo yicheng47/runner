@@ -9,6 +9,12 @@ export type Timestamp = string; // RFC3339
 export type Ulid = string;
 export type SignalType = string;
 
+export interface ListPage<T> {
+  items: T[];
+  total_count: number;
+  filtered_count: number;
+}
+
 export interface Crew {
   id: string;
   name: string;

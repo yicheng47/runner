@@ -2026,7 +2026,7 @@ export function Sidebar({
         }`}
       >
         {showPanel ? (
-          <div className="flex min-h-0 flex-1 flex-col pb-4">
+          <div className="flex min-h-0 flex-1 flex-col pb-3">
             <div
               data-tauri-drag-region
               className={`flex h-11 shrink-0 items-center pr-3 ${

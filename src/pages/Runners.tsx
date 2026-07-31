@@ -6,7 +6,7 @@
 // Duplicate / Delete runner (Duplicate is a v0.x stub for now — kept off
 // the menu until the backend supports it).
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { listen } from "@tauri-apps/api/event";
@@ -15,36 +15,16 @@ import { MessageSquare, SearchX } from "lucide-react";
 import { useToast } from "../contexts/ToastContext";
 import { useListControls } from "../hooks/useListControls";
 import { api } from "../lib/api";
-import { buildSearchDoc } from "../lib/listControls";
 import { readDefaultWorkingDir } from "../lib/settings";
 import type { RunnerActivityEvent, RunnerWithActivity } from "../lib/types";
 // AppShell is supplied by the layout route in App.tsx; pages render
 // their content as-is and the shell wraps them automatically.
 import { Button } from "../components/ui/Button";
-import { Pager } from "../components/ui/Pager";
-import { SearchInput } from "../components/ui/SearchInput";
 import { CreateRunnerModal } from "../components/CreateRunnerModal";
 import { EmptyStateCard } from "../components/EmptyStateCard";
-
-function runnerSearchDocument(runner: RunnerWithActivity) {
-  return buildSearchDoc([
-    runner.handle,
-    runner.display_name,
-    runner.runtime,
-    runner.command,
-    runner.args.join(" "),
-    runner.model,
-    runner.effort,
-    runner.working_dir,
-    runner.system_prompt,
-  ]);
-}
+import { PaginatedListPage } from "../components/PaginatedListPage";
 
 export default function Runners() {
-  const [runners, setRunners] = useState<RunnerWithActivity[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const { showToast } = useToast();
   const location = useLocation();
@@ -55,27 +35,15 @@ export default function Runners() {
     page,
     setPage,
     pageItems,
+    updatePageItems,
     filteredCount,
     totalCount,
     pageCount,
-  } = useListControls(runners, runnerSearchDocument);
-
-  const refresh = useCallback(async () => {
-    try {
-      setError(null);
-      const list = await api.runner.listWithActivity();
-      setRunners(list);
-      setLoaded(true);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    loaded,
+    loading,
+    error,
+    refresh,
+  } = useListControls(api.runner.listWithActivity);
 
   useEffect(() => {
     let unlistenRunner: (() => void) | null = null;
@@ -115,7 +83,7 @@ export default function Runners() {
     let unlisten: (() => void) | null = null;
     void listen<RunnerActivityEvent>("runner/activity", (event) => {
       const ev = event.payload;
-      setRunners((prev) =>
+      updatePageItems((prev) =>
         prev.map((r) =>
           r.id === ev.runner_id
             ? {
@@ -133,7 +101,7 @@ export default function Runners() {
     return () => {
       unlisten?.();
     };
-  }, []);
+  }, [updatePageItems]);
 
   // The Chat pill on a runner card always spawns a fresh chat — a
   // runner can host multiple direct chats, so re-attaching to "the"
@@ -190,104 +158,71 @@ export default function Runners() {
 
   return (
     <>
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="flex min-h-0 w-full flex-1 flex-col gap-6 px-8 pb-8 pt-10">
-          <header className="flex items-center justify-between gap-4">
-            <div className="flex flex-col gap-1">
-              <h1 className="text-2xl font-bold tracking-tight text-fg">
-                Runners
-              </h1>
-              <p className="text-sm text-fg-2">
-                Reusable CLI agents — pick one for a crew slot or chat
-                directly.
-              </p>
-            </div>
-            <Button variant="primary" onClick={() => setCreating(true)}>
-              + New runner
+      <PaginatedListPage
+        title="Runners"
+        description={
+          <>Reusable CLI agents — pick one for a crew slot or chat directly.</>
+        }
+        action={
+          <Button variant="primary" onClick={() => setCreating(true)}>
+            + New runner
+          </Button>
+        }
+        error={error}
+        loading={loading}
+        loaded={loaded}
+        totalCount={totalCount}
+        filteredCount={filteredCount}
+        noun="runners"
+        emptyState={
+          <EmptyStateCard
+            icon={<TerminalIcon />}
+            title="No runners yet"
+            description="A runner is a reusable CLI agent — claude-code, codex, a custom shell — that crews pull in. Add one to start composing crews."
+            action={
+              <Button variant="primary" onClick={() => setCreating(true)}>
+                + New runner
+              </Button>
+            }
+          />
+        }
+        query={query}
+        onQueryChange={setQuery}
+        searchLabel="Search runners"
+        searchPlaceholder="Search runners…"
+        noMatches={
+          <div className="flex w-full flex-col items-center gap-3 rounded-lg border border-line bg-panel px-8 py-14 text-center">
+            <SearchX aria-hidden className="h-5 w-5 text-fg-3" />
+            <h2 className="text-sm font-medium text-fg">
+              No runners match &quot;{query}&quot;
+            </h2>
+            <p className="text-xs leading-relaxed text-fg-2">
+              Search checks handles and names.
+            </p>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setQuery("")}
+            >
+              Clear search
             </Button>
-          </header>
-
-          {error ? (
-            <div className="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-              {error}
-            </div>
-          ) : null}
-
-          {loading ? (
-            <div className="text-sm text-fg-2">Loading…</div>
-          ) : !loaded ? (
-            <div className="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-              Failed to load runners.
-            </div>
-          ) : runners.length === 0 ? (
-            <EmptyStateCard
-              icon={<TerminalIcon />}
-              title="No runners yet"
-              description="A runner is a reusable CLI agent — claude-code, codex, a custom shell — that crews pull in. Add one to start composing crews."
-              action={
-                <Button variant="primary" onClick={() => setCreating(true)}>
-                  + New runner
-                </Button>
-              }
-            />
-          ) : (
-            <>
-              <div className="flex items-center justify-between gap-4">
-                <SearchInput
-                  value={query}
-                  onChange={setQuery}
-                  label="Search runners"
-                  placeholder="Search runners…"
-                />
-                <span className="shrink-0 font-mono text-[11px] text-fg-2">
-                  {pageItems.length} of {totalCount} runners
-                </span>
-              </div>
-              {filteredCount === 0 ? (
-                <div className="flex w-full flex-col items-center gap-3 rounded-lg border border-line bg-panel px-8 py-14 text-center">
-                  <SearchX aria-hidden className="h-5 w-5 text-fg-3" />
-                  <h2 className="text-sm font-medium text-fg">
-                    No runners match &quot;{query}&quot;
-                  </h2>
-                  <p className="text-xs leading-relaxed text-fg-2">
-                    Search checks handles, names, runtimes, commands, models,
-                    effort, working directories, and system prompts.
-                  </p>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => setQuery("")}
-                  >
-                    Clear search
-                  </Button>
-                </div>
-              ) : (
-                <>
-                  <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                    {pageItems.map((r) => (
-                      <RunnerCard
-                        key={r.id}
-                        item={r}
-                        onOpen={() => navigate(`/runners/${r.handle}`)}
-                        onChat={() => void onChat(r)}
-                        chatPending={chatPending === r.id}
-                        onDelete={() => onDelete(r.id, r.handle)}
-                      />
-                    ))}
-                  </div>
-                  <div className="mt-auto flex justify-center pt-3">
-                    <Pager
-                      page={page}
-                      pageCount={pageCount}
-                      onPageChange={setPage}
-                    />
-                  </div>
-                </>
-              )}
-            </>
-          )}
-        </div>
-      </div>
+          </div>
+        }
+        page={page}
+        pageCount={pageCount}
+        onPageChange={setPage}
+      >
+        {pageItems.map((r) => (
+          <RunnerCard
+            key={r.id}
+            item={r}
+            onOpen={() => navigate(`/runners/${r.handle}`)}
+            onChat={() => void onChat(r)}
+            chatPending={chatPending === r.id}
+            onDelete={() => onDelete(r.id, r.handle)}
+          />
+        ))}
+      </PaginatedListPage>
 
       <CreateRunnerModal
         open={creating}
