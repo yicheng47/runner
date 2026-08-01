@@ -1,0 +1,671 @@
+{
+  "version": "2.14",
+  "children": [
+    {
+      "type": "frame",
+      "id": "c78FA",
+      "x": 40,
+      "y": 40,
+      "name": "Feed · channel composer (378)",
+      "clip": true,
+      "width": 960,
+      "height": 640,
+      "fill": "$bg",
+      "cornerRadius": 12,
+      "layout": "vertical",
+      "children": [
+        {
+          "type": "frame",
+          "id": "c78Fd",
+          "name": "Feed",
+          "width": "fill_container",
+          "height": "fill_container",
+          "layout": "vertical",
+          "gap": 20,
+          "padding": 24,
+          "children": [
+            {
+              "type": "frame",
+              "id": "c78r1",
+              "name": "row @impl",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 6,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "c78r1h",
+                  "name": "rowHead",
+                  "gap": 8,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "c78r1a",
+                      "name": "author",
+                      "fill": "$accent",
+                      "content": "@impl",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 12,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "text",
+                      "id": "c78r1m",
+                      "name": "meta",
+                      "fill": "$text-low",
+                      "content": "12:04 · to channel",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "c78r1b",
+                  "name": "body",
+                  "fill": "$text-hi",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Implementation ready on fix/359-draft-aware-delivery-gate — 14 files, all checks green. @reviewer please take the working-tree diff.",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "c78r2",
+              "name": "row @reviewer",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 6,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "c78r2h",
+                  "name": "rowHead",
+                  "gap": 8,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "c78r2a",
+                      "name": "author",
+                      "fill": "$accent",
+                      "content": "@reviewer",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 12,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "text",
+                      "id": "c78r2m",
+                      "name": "meta",
+                      "fill": "$text-low",
+                      "content": "12:11 · to channel",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "c78r2b",
+                  "name": "body",
+                  "fill": "$text-hi",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Review round 1 posted: 2 must-fix (rollback misses draft struct; abandonment test pins the wrong window). Details in the message log.",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "c78r3",
+              "name": "row you",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 6,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "c78r3h",
+                  "name": "rowHead",
+                  "gap": 8,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "c78r3a",
+                      "name": "author",
+                      "fill": "$warn",
+                      "content": "you",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 12,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "text",
+                      "id": "c78r3m",
+                      "name": "meta",
+                      "fill": "$text-low",
+                      "content": "12:13 · to channel",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "c78r3b",
+                  "name": "body",
+                  "fill": "$text-hi",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Keep the classifier table in one match — no helper indirection please.",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "c78r4",
+              "name": "row you",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 6,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "c78r4h",
+                  "name": "rowHead",
+                  "gap": 8,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "c78r4a",
+                      "name": "author",
+                      "fill": "$warn",
+                      "content": "you",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 12,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "text",
+                      "id": "c78r4t",
+                      "name": "target",
+                      "fill": "$text-mid",
+                      "content": "→ @impl",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 12,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "c78r4m",
+                      "name": "meta",
+                      "fill": "$text-low",
+                      "content": "12:14",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "c78r4b",
+                  "name": "body",
+                  "fill": "$text-hi",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "naming: DraftState not InputShadow, match the impl doc.",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "c78C",
+          "name": "Composer",
+          "width": "fill_container",
+          "stroke": "$border",
+          "strokeWidth": {
+            "top": 1
+          },
+          "strokeAlignment": "inner",
+          "layout": "vertical",
+          "padding": [
+            12,
+            24,
+            16,
+            24
+          ],
+          "children": [
+            {
+              "type": "frame",
+              "id": "c78Cbox",
+              "name": "composerBox",
+              "width": "fill_container",
+              "fill": "$panel",
+              "cornerRadius": 8,
+              "stroke": "$border",
+              "strokeWidth": 1,
+              "strokeAlignment": "inner",
+              "gap": 8,
+              "padding": [
+                10,
+                12
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "c78Cp",
+                  "name": "placeholder",
+                  "fill": "$text-low",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Message the crew — @handle to address one runner",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "c78FB",
+      "x": 40,
+      "y": 730,
+      "name": "Composer · targeted state",
+      "width": 960,
+      "fill": "$bg",
+      "cornerRadius": 12,
+      "layout": "vertical",
+      "children": [
+        {
+          "type": "frame",
+          "id": "c78D",
+          "name": "Composer",
+          "width": "fill_container",
+          "stroke": "$border",
+          "strokeWidth": {
+            "top": 1
+          },
+          "strokeAlignment": "inner",
+          "layout": "vertical",
+          "padding": [
+            12,
+            24,
+            16,
+            24
+          ],
+          "children": [
+            {
+              "type": "frame",
+              "id": "c78Dbox",
+              "name": "composerBox",
+              "width": "fill_container",
+              "fill": "$panel",
+              "cornerRadius": 8,
+              "stroke": "$border",
+              "strokeWidth": 1,
+              "strokeAlignment": "inner",
+              "gap": 8,
+              "padding": [
+                10,
+                12
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "c78Dc",
+                  "name": "targetChip",
+                  "fill": "#00FF9C26",
+                  "cornerRadius": 4,
+                  "padding": [
+                    2,
+                    6
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "c78Dt",
+                      "name": "chipTxt",
+                      "fill": "$accent",
+                      "content": "@reviewer",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 12,
+                      "fontWeight": "600"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "c78Dx",
+                  "name": "draft",
+                  "fill": "$text-hi",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "the roster validation belongs in the command, not the composer",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 13,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "text",
+                  "id": "c78De",
+                  "name": "hint",
+                  "fill": "$text-low",
+                  "content": "↵ send",
+                  "fontFamily": "$font-mono",
+                  "fontSize": 10,
+                  "fontWeight": "normal"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "note",
+      "id": "c78Nt",
+      "x": 1040,
+      "y": 40,
+      "name": "378 notes",
+      "width": 620,
+      "height": 0,
+      "content": "Feature 378 / impl 0042 — mission channel composer\n\n• The composer is the HUMAN side of the already-shipped channel: runners broadcast with `runner msg post` today; this posts kind=message from=\"human\" (to=null broadcast, to=@handle targeted). No new signals or routing.\n• Pinned under the feed, top hairline aligned with the app's divider language. Primary window only (secondary stays read-only).\n• Typing @ at position 0 opens the roster picker above the box (third frame): handle + slot role · runtime per row, ↑↓ to move, ↵/Tab selects → accent chip, Esc dismisses; typing filters the list. Only a leading @ targets — mid-text @ never opens the picker and stays plain broadcast text. Unknown @word falls through as typed.\n• Enter sends, Shift+Enter newline. No send button — terminal-flavored surface; the ↵ hint sits inside the box (drop if it reads as noise, cf. the esc keycap removal in 56).\n• Human rows: author \"you\" in amber ($warn) — runner handles keep accent green; targeted rows show \"→ @handle\". Matches the ask-card's human-interaction amber.\n• Delivery: nudges land at turn boundaries via existing message_nudge; the feed row appears immediately."
+    },
+    {
+      "type": "frame",
+      "id": "ASuQW",
+      "x": 40,
+      "y": 950,
+      "name": "Composer · @ mention picker",
+      "width": 960,
+      "fill": "$bg",
+      "cornerRadius": 12,
+      "layout": "vertical",
+      "gap": 8,
+      "padding": [
+        16,
+        24
+      ],
+      "children": [
+        {
+          "type": "frame",
+          "id": "eIpWG",
+          "name": "MentionPopover",
+          "width": 380,
+          "fill": "$panel",
+          "cornerRadius": 8,
+          "stroke": "$line-strong",
+          "strokeWidth": 1,
+          "strokeAlignment": "inner",
+          "effect": {
+            "type": "shadow",
+            "shadowType": "outer",
+            "color": "#00000066",
+            "offset": {
+              "x": 0,
+              "y": 4
+            },
+            "blur": 16
+          },
+          "layout": "vertical",
+          "gap": 2,
+          "padding": 6,
+          "children": [
+            {
+              "type": "frame",
+              "id": "ntGUB",
+              "name": "popHead",
+              "padding": [
+                4,
+                8,
+                2,
+                8
+              ],
+              "children": [
+                {
+                  "type": "text",
+                  "id": "W9AXiK",
+                  "name": "popHeadTxt",
+                  "fill": "$text-low",
+                  "content": "ROSTER",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 10,
+                  "fontWeight": "600",
+                  "letterSpacing": 1.5
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "UHsnv",
+              "name": "rowImpl (selected)",
+              "width": "fill_container",
+              "fill": "$raised",
+              "cornerRadius": 4,
+              "stroke": "$line-strong",
+              "strokeWidth": 1,
+              "strokeAlignment": "inner",
+              "gap": 8,
+              "padding": [
+                6,
+                8
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "pIj9j",
+                  "name": "r1handle",
+                  "fill": "$accent",
+                  "content": "@impl",
+                  "fontFamily": "$font-mono",
+                  "fontSize": 12,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "text",
+                  "id": "s3ssa",
+                  "name": "r1sub",
+                  "fill": "$text-mid",
+                  "content": "coder · codex",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "frame",
+                  "id": "m6Tz2",
+                  "name": "r1flex",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "text",
+                  "id": "UBN1j",
+                  "name": "r1hint",
+                  "fill": "$text-low",
+                  "content": "↵",
+                  "fontFamily": "$font-mono",
+                  "fontSize": 10,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "E0kwe",
+              "name": "rowReviewer",
+              "width": "fill_container",
+              "cornerRadius": 4,
+              "gap": 8,
+              "padding": [
+                6,
+                8
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "FgRhn",
+                  "name": "r2handle",
+                  "fill": "$accent",
+                  "content": "@reviewer",
+                  "fontFamily": "$font-mono",
+                  "fontSize": 12,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "text",
+                  "id": "pjttj",
+                  "name": "r2sub",
+                  "fill": "$text-mid",
+                  "content": "reviewer · claude-code",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "m4xowK",
+          "name": "ComposerBox",
+          "width": "fill_container",
+          "fill": "$panel",
+          "cornerRadius": 8,
+          "stroke": "$border",
+          "strokeWidth": 1,
+          "strokeAlignment": "inner",
+          "gap": 2,
+          "padding": [
+            10,
+            12
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "text",
+              "id": "vTxy7",
+              "name": "atChar",
+              "fill": "$text-hi",
+              "content": "@",
+              "fontFamily": "$font-ui",
+              "fontSize": 13,
+              "fontWeight": "normal"
+            },
+            {
+              "type": "rectangle",
+              "id": "ZZhwh",
+              "name": "caret",
+              "fill": "$accent",
+              "width": 2,
+              "height": 14
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variables": {
+    "bg": {
+      "type": "color",
+      "value": "#15161B"
+    },
+    "panel": {
+      "type": "color",
+      "value": "#1D1E23"
+    },
+    "border": {
+      "type": "color",
+      "value": "#272930"
+    },
+    "text-hi": {
+      "type": "color",
+      "value": "#DCDCE0"
+    },
+    "text-mid": {
+      "type": "color",
+      "value": "#9A9BA5"
+    },
+    "text-low": {
+      "type": "color",
+      "value": "#5A5C66"
+    },
+    "accent": {
+      "type": "color",
+      "value": "#00FF9C"
+    },
+    "danger": {
+      "type": "color",
+      "value": "#FF4D6D"
+    },
+    "font-ui": {
+      "type": "string",
+      "value": "Inter"
+    },
+    "font-mono": {
+      "type": "string",
+      "value": "JetBrains Mono"
+    },
+    "raised": {
+      "type": "color",
+      "value": "#272930"
+    },
+    "line-strong": {
+      "type": "color",
+      "value": "#2A2C33"
+    },
+    "sidebar": {
+      "type": "color",
+      "value": "#272930"
+    },
+    "sidebar-sel": {
+      "type": "color",
+      "value": "#333640"
+    },
+    "sidebar-sel-border": {
+      "type": "color",
+      "value": "#3B3E49"
+    },
+    "accent-ink": {
+      "type": "color",
+      "value": "#001F10"
+    },
+    "warn": {
+      "type": "color",
+      "value": "#FFB020"
+    }
+  },
+  "fileToken": "851a0000-00e5-45dd-8a14-e58038efed28"
+}

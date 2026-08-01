@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned. Tracking issue [#378](https://github.com/yicheng47/runner/issues/378).
+Planned. Tracking issue [#378](https://github.com/yicheng47/runner/issues/378). Design: `design/mission-feed-composer.pen` — frame `c78FA` (feed + composer), `c78FB` (targeted chip state), `ASuQW` (@ mention picker), note `c78Nt`.
 
 ## Problem
 
@@ -16,7 +16,7 @@ The mission feed reads like a group channel but the human can't speak into it. R
 
 3. **`human_said` stays untouched as the immediate-attention exception.** It injects into one runner's stdin now (through the draft-aware gate); channel posts wait for a turn boundary via the nudge machinery. Two verbs, two urgencies — the composer speaks mail, MCP keeps both.
 
-4. **Composer UI: a pinned input at the bottom of the feed tab, primary window only.** Plain textarea (Enter posts, Shift+Enter newline), placeholder "Message the crew — @handle to address one runner". A leading `@handle ` token targets; anything else broadcasts. No autocomplete in v1 (the roster is 2-3 handles; revisit on friction). The secondary (read-mostly) workspace stays read-only — it already suppresses PTY interaction, and the composer follows (resolves the issue's open question).
+4. **Composer UI: a pinned input at the bottom of the feed tab, primary window only.** Plain textarea (Enter posts, Shift+Enter newline), placeholder "Message the crew — @handle to address one runner". Typing `@` at position 0 opens a roster picker above the box (design frame `ASuQW`): one row per slot — handle, `role · runtime` subtitle — filtered as you type, ↑↓ to move, Enter/Tab selects into an accent chip, Esc dismisses. Only a leading `@` targets: mid-text `@` never opens the picker, and an unrecognized `@word` falls through as plain broadcast text. The secondary (read-mostly) workspace stays read-only — it already suppresses PTY interaction, and the composer follows (resolves the issue's open question).
 
 5. **Feed treats human messages as human-authored.** `isHumanAuthored` (`EventFeed.tsx`) extends to `kind === "message" && from === "human"` so the feed commits to bottom on your own post, and the row styling matches the existing `human_said` message-row treatment.
 
@@ -33,7 +33,7 @@ The mission feed reads like a group channel but the human can't speak into it. R
 
 - Changing `human_said`/`human_response`, the ask-card flow, or any injection path.
 - Runner-side changes — the CLI, nudge fan-out, and inbox projection ship as-is.
-- Autocomplete, mentions-highlighting, message editing/deletion, or read receipts.
+- Mentions-highlighting in feed rows, message editing/deletion, read receipts, or fuzzy search in the picker (it's a prefix filter over 2-3 handles).
 - The secondary-window composer.
 
 ## Implementation Notes
@@ -48,6 +48,6 @@ The mission feed reads like a group channel but the human can't speak into it. R
 ## Validation
 
 - Rust: command tests — broadcast append shape (`kind=message`, `from=human`, `to=None`), targeted append with roster validation, refusal for unknown handle, `to="human"`, and non-running mission; router test that a `from="human"` broadcast nudges every roster handle and a targeted one nudges only its recipient.
-- Frontend (vitest): `@handle` prefix parsing (valid handle extracts, unknown handle falls through to broadcast text as typed, mid-text `@` never targets); `isHumanAuthored` classification for human message rows.
+- Frontend (vitest): mention-picker state machine (`@` at position 0 opens, mid-text `@` doesn't, typing filters, Enter/Tab commits a chip, Esc dismisses, unknown `@word` falls through as text); `isHumanAuthored` classification for human message rows.
 - Manual: post a broadcast into a live 2-slot mission → both runners nudged at turn boundaries and `runner msg read` shows it; `@handle` post nudges only that runner; post from MCP; composer absent in the secondary window; Enter/Shift+Enter behavior.
 - `cargo fmt --check`, `cargo clippy`, `cargo test --workspace`, `pnpm exec tsc --noEmit`, `pnpm run lint`, `pnpm test`.
