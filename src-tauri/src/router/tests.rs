@@ -1249,6 +1249,83 @@ fn broadcast_message_nudges_every_slot_except_sender() {
 }
 
 #[test]
+fn human_messages_nudge_the_broadcast_roster_or_target_only() {
+    let roster = || {
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+            slot_with_runner("reviewer", false),
+        ]
+    };
+    let sessions = &[
+        ("lead", "S-LEAD"),
+        ("impl", "S-IMPL"),
+        ("reviewer", "S-REV"),
+    ];
+
+    {
+        let (router, injector, log, _dir) = fixture(roster(), sessions);
+        let broadcast = log
+            .append(message("human", None, "Message the crew"))
+            .unwrap();
+        router.handle_event(&broadcast);
+        assert_eq!(injector.pushes_for("S-LEAD").len(), 1);
+        assert_eq!(injector.pushes_for("S-IMPL").len(), 1);
+        assert_eq!(injector.pushes_for("S-REV").len(), 1);
+    }
+
+    let (router, injector, log, _dir) = fixture(roster(), sessions);
+    let targeted = log
+        .append(message("human", Some("reviewer"), "Please review"))
+        .unwrap();
+    router.handle_event(&targeted);
+    assert!(injector.pushes_for("S-LEAD").is_empty());
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+    assert_eq!(injector.pushes_for("S-REV").len(), 1);
+}
+
+#[test]
+fn human_broadcast_waits_for_sessions_still_starting() {
+    let sessions = &[
+        ("lead", "S-LEAD"),
+        ("impl", "S-IMPL"),
+        ("reviewer", "S-REV"),
+    ];
+    let (router, injector, log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+            slot_with_runner("reviewer", false),
+        ],
+        sessions,
+    );
+    let pending: Vec<(String, String)> = sessions
+        .iter()
+        .map(|(handle, session)| (handle.to_string(), session.to_string()))
+        .collect();
+    router.register_pending_sessions(&pending);
+
+    let broadcast = log
+        .append(message("human", None, "Message the crew"))
+        .unwrap();
+    router.handle_event(&broadcast);
+    assert!(injector.all_pushes().is_empty());
+    assert!(!read_signals(&log).iter().any(|event| {
+        event
+            .signal_type
+            .as_ref()
+            .is_some_and(|signal| signal.as_str() == "mission_warning")
+    }));
+
+    for (_, session_id) in sessions {
+        injector.respawn(session_id);
+        wait_until(Duration::from_millis(100), || {
+            injector.submitted_bodies_for(session_id).len() == 1
+        });
+    }
+}
+
+#[test]
 fn message_self_directed_is_not_nudged() {
     // Edge case: a runner posting `runner msg post --to @self`. We
     // never echo a message back to its sender — that would create a

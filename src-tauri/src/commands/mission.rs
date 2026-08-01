@@ -825,7 +825,7 @@ async fn mission_start_impl_with_size(
     // Register the full session map BEFORE the bus mount. From this point
     // any event the bus's initial replay delivers to the router will land
     // on a fully-wired handle map.
-    router.register_sessions(&spawned_pairs);
+    router.register_pending_sessions(&spawned_pairs);
 
     // Now mount the bus. Initial replay from offset 0 picks up the opening
     // events (durable since `start()` committed them under the DB tx),
@@ -1554,7 +1554,7 @@ pub(crate) async fn mission_reset_impl(
             }
         }
     }
-    router.register_sessions(&spawned_pairs);
+    router.register_pending_sessions(&spawned_pairs);
 
     let roster_handles: Vec<String> = roster.iter().map(|m| m.slot.slot_handle.clone()).collect();
     let tauri_emitter: Arc<dyn BusEmitter> = Arc::new(TauriBusEvents(app.clone()));
