@@ -1220,6 +1220,7 @@ export default function MissionWorkspace({
                         deliveryBlockedUnreadCount={
                           deliveryBlockedBySession[s.id]?.unread_count ?? null
                         }
+                        runnerIdle={runnerStatusMap[s.handle] === "idle"}
                         // `visible` gate: a hidden keep-alive workspace
                         // deactivates even its front tab's terminal so it
                         // releases WebGL and skips geometry pushes.
@@ -1376,6 +1377,7 @@ export default function MissionWorkspace({
 function SlotPtyPane({
   session,
   deliveryBlockedUnreadCount,
+  runnerIdle,
   active,
   forcedResuming,
   anySessionLive,
@@ -1388,6 +1390,7 @@ function SlotPtyPane({
 }: {
   session: SessionRow;
   deliveryBlockedUnreadCount: number | null;
+  runnerIdle: boolean;
   active: boolean;
   /** True when the parent's "Resume mission" button is iterating
    *  through every slot. Drives the resuming overlay in this pane. */
@@ -1568,6 +1571,7 @@ function SlotPtyPane({
         <InboxBlockedPill
           sessionId={session.id}
           unreadCount={deliveryBlockedUnreadCount}
+          idle={runnerIdle}
           narrow={narrow}
           onError={onError}
         />

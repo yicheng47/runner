@@ -139,7 +139,7 @@ impl StdinInjector for SessionManager {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryReservation {
     Ready(u64),
-    PendingInput(Duration),
+    PendingInput,
     RecentlyTyping(Duration),
     InFlight,
 }
@@ -698,7 +698,7 @@ impl Router {
                     }
                     (session_id, None)
                 }
-                DeliveryReservation::PendingInput(delay) => {
+                DeliveryReservation::PendingInput => {
                     if reconciliation.is_some() {
                         return Ok(false);
                     }
@@ -710,7 +710,6 @@ impl Router {
                         outbox.handle = handle.to_string();
                         outbox.pending_input_blocked = true;
                         outbox.enqueue(delivery);
-                        retry = Some((session_id.clone(), delay));
                         self.blocked_transition(&mut state, &session_id);
                     }
                     (session_id, None)
@@ -1036,16 +1035,13 @@ impl Router {
                 }
                 self.schedule_outbox_retry(session_id.to_string(), delay);
             }
-            DeliveryReservation::PendingInput(delay) => {
-                {
-                    let mut state = self.state.lock().unwrap();
-                    let Some(outbox) = state.outbox_by_session.get_mut(session_id) else {
-                        return;
-                    };
-                    outbox.pending_input_blocked = true;
-                    self.blocked_transition(&mut state, session_id);
-                }
-                self.schedule_outbox_retry(session_id.to_string(), delay);
+            DeliveryReservation::PendingInput => {
+                let mut state = self.state.lock().unwrap();
+                let Some(outbox) = state.outbox_by_session.get_mut(session_id) else {
+                    return;
+                };
+                outbox.pending_input_blocked = true;
+                self.blocked_transition(&mut state, session_id);
             }
             DeliveryReservation::InFlight => {
                 let mut state = self.state.lock().unwrap();

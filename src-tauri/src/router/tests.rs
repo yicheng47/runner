@@ -48,7 +48,6 @@ struct RecordingInjector {
 #[derive(Default)]
 struct RecordingInputState {
     pending: bool,
-    pending_until: Option<Instant>,
     last_input_at: Option<Instant>,
     in_flight: bool,
     generation: u64,
@@ -123,14 +122,9 @@ impl RecordingInjector {
     }
 
     fn set_pending(&self, session_id: &str) {
-        self.set_pending_for(session_id, Duration::from_secs(10 * 60));
-    }
-
-    fn set_pending_for(&self, session_id: &str, duration: Duration) {
         let mut input = self.input.lock().unwrap();
         let input = input.entry(session_id.to_string()).or_default();
         input.pending = true;
-        input.pending_until = Some(Instant::now() + duration);
         input.last_input_at = Some(Instant::now());
     }
 
@@ -138,7 +132,6 @@ impl RecordingInjector {
         let mut input = self.input.lock().unwrap();
         let input = input.entry(session_id.to_string()).or_default();
         input.pending = false;
-        input.pending_until = None;
         input.last_input_at = Some(Instant::now() - Duration::from_millis(1950));
     }
 
@@ -154,7 +147,6 @@ impl RecordingInjector {
     fn clear_pending(&self, session_id: &str) {
         if let Some(input) = self.input.lock().unwrap().get_mut(session_id) {
             input.pending = false;
-            input.pending_until = None;
             input.last_input_at = None;
         }
         self.notify(session_id, SessionDeliveryEvent::InputCleared);
@@ -168,7 +160,6 @@ impl RecordingInjector {
             input.generation = input.generation.wrapping_add(1);
             input.in_flight = false;
             input.pending = false;
-            input.pending_until = None;
             input.last_input_at = None;
         }
         self.notify(session_id, SessionDeliveryEvent::Respawned);
@@ -180,7 +171,6 @@ impl RecordingInjector {
             input.generation = input.generation.wrapping_add(1);
             input.in_flight = false;
             input.pending = false;
-            input.pending_until = None;
             input.last_input_at = None;
         }
         self.notify(session_id, SessionDeliveryEvent::Exited);
@@ -286,16 +276,7 @@ impl StdinInjector for RecordingInjector {
             return Ok(DeliveryReservation::InFlight);
         }
         if input.pending {
-            let remaining = input
-                .pending_until
-                .expect("pending test input must have an abandonment deadline")
-                .saturating_duration_since(Instant::now());
-            if !remaining.is_zero() {
-                return Ok(DeliveryReservation::PendingInput(remaining));
-            }
-            input.pending = false;
-            input.pending_until = None;
-            input.last_input_at = None;
+            return Ok(DeliveryReservation::PendingInput);
         }
         if let Some(last) = input.last_input_at {
             let elapsed = last.elapsed();
@@ -1140,36 +1121,6 @@ fn recent_typing_retries_after_quiet_window() {
 
     wait_until(Duration::from_millis(300), || {
         injector.submitted_bodies_for("S-IMPL") == ["after quiet"]
-    });
-}
-
-#[test]
-fn pending_input_retries_after_abandonment_deadline() {
-    let (router, injector, _log, _dir) = fixture(
-        vec![
-            slot_with_runner("lead", true),
-            slot_with_runner("impl", false),
-        ],
-        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
-    );
-    injector.set_pending_for("S-IMPL", Duration::from_millis(25));
-    router
-        .inject_and_submit("impl", b"after abandonment")
-        .unwrap();
-    assert!(injector.pushes_for("S-IMPL").is_empty());
-    assert!(
-        router
-            .state
-            .lock()
-            .unwrap()
-            .outbox_by_session
-            .get("S-IMPL")
-            .is_some_and(|outbox| outbox.retry_scheduled),
-        "a draft-gated outbox must always have a scheduled retry"
-    );
-
-    wait_until(Duration::from_millis(300), || {
-        injector.submitted_bodies_for("S-IMPL") == ["after abandonment"]
     });
 }
 
