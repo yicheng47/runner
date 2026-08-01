@@ -44,7 +44,6 @@ describe("InboxBlockedPill", () => {
         <InboxBlockedPill
           sessionId="S-IMPL"
           unreadCount={2}
-          idle
           narrow={false}
           onError={() => {}}
           {...props}
@@ -53,15 +52,15 @@ describe("InboxBlockedPill", () => {
     });
   }
 
-  it("renders the unread count, body, and Enter action", async () => {
+  it("renders the draft copy and clears it with Ctrl-U", async () => {
     await render();
 
     expect(container.textContent).toContain("Inbox waiting (2)");
     expect(container.textContent).toContain(
-      "— typing detected, delivery paused",
+      "— delivery paused: you have unsent input here",
     );
-    expect(container.textContent).toContain("Clear input");
-    expect(container.textContent).toContain("↵");
+    expect(container.textContent).toContain("Clear draft");
+    expect(container.textContent).toContain("⌃U");
 
     await act(async () => {
       container
@@ -69,7 +68,8 @@ describe("InboxBlockedPill", () => {
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(mocks.injectStdin).toHaveBeenCalledTimes(1);
-    expect(mocks.injectStdin).toHaveBeenCalledWith("S-IMPL", "\r");
+    expect(mocks.injectStdin).toHaveBeenCalledWith("S-IMPL", "\x15");
+    expect(mocks.injectStdin).not.toHaveBeenCalledWith("S-IMPL", "\r");
     expect(mocks.injectStdin).not.toHaveBeenCalledWith("S-IMPL", "\x03");
   });
 
@@ -80,20 +80,14 @@ describe("InboxBlockedPill", () => {
     expect(container.textContent).not.toContain("Inbox waiting (1)");
   });
 
-  it("keeps the pill visible but hides the action while busy", async () => {
-    await render({ idle: false });
-
-    expect(container.textContent).toContain("Inbox waiting (2)");
-    expect(container.querySelector("button")).toBeNull();
-  });
-
   it("hides the body in a narrow pane", async () => {
     await render({ narrow: true });
 
     expect(container.textContent).toContain("Inbox waiting (2)");
     expect(container.textContent).not.toContain(
-      "— typing detected, delivery paused",
+      "— delivery paused: you have unsent input here",
     );
-    expect(container.textContent).toContain("Clear input");
+    expect(container.textContent).toContain("Clear draft");
+    expect(container.querySelector("button")).not.toBeNull();
   });
 });
