@@ -36,6 +36,7 @@ import type {
   HumanQuestionPayload,
   Mission,
   SessionUpdatedEvent,
+  SlotWithRunner,
   Subject,
   WarningEvent,
 } from "../lib/types";
@@ -48,6 +49,7 @@ import {
   useWindowFocus,
 } from "../lib/windowFocus";
 import { EventFeed } from "../components/EventFeed";
+import { MissionInput } from "../components/MissionInput";
 import { MissionMetaPanel } from "../components/MissionMetaPanel";
 import { MissionResetConfirm } from "../components/MissionResetConfirm";
 import { RunnersRail } from "../components/RunnersRail";
@@ -142,6 +144,7 @@ export default function MissionWorkspace({
   const navigate = useNavigate();
   const [mission, setMission] = useState<Mission | null>(null);
   const [crew, setCrew] = useState<Crew | null>(null);
+  const [roster, setRoster] = useState<SlotWithRunner[]>([]);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const deliveryBlockedBySession = useMissionDeliveryBlocked(
     id,
@@ -222,6 +225,7 @@ export default function MissionWorkspace({
     seenIdsRef.current = new Set();
     setMission(null);
     setCrew(null);
+    setRoster([]);
     setSessions([]);
     setEvents([]);
     setActiveTab("feed");
@@ -284,6 +288,12 @@ export default function MissionWorkspace({
             if (!cancelled) setCrew(c);
           })
           .catch((e) => console.error("MissionWorkspace: crew_get failed", e));
+        api.slot
+          .list(m.crew_id)
+          .then((members) => {
+            if (!cancelled) setRoster(members);
+          })
+          .catch((e) => console.error("MissionWorkspace: slot_list failed", e));
         const rememberedSessionId = getLastMissionTerminalId(id);
         const rememberedSession =
           m.archived_at == null && rememberedSessionId
@@ -522,6 +532,16 @@ export default function MissionWorkspace({
     if (sessions.length === 0) return "";
     return sessions.find((s) => s.lead)?.handle ?? sessions[0].handle;
   }, [sessions]);
+
+  const composerRoster = useMemo(
+    () =>
+      roster.map((member) => ({
+        handle: member.slot_handle,
+        role: member.runner.handle,
+        runtime: member.runtime_override ?? member.runner.runtime,
+      })),
+    [roster],
+  );
 
   // Stop = kill all live PTYs in the mission. Mission row stays
   // `running`; per-slot Resume buttons reanimate them. Cheap, reversible.
@@ -1178,6 +1198,16 @@ export default function MissionWorkspace({
                 active={visible && feedActive}
                 onError={setError}
               />
+              {mission.status === "running" &&
+              !isArchived &&
+              !isSecondary ? (
+                <MissionInput
+                  key={mission.id}
+                  missionId={mission.id}
+                  roster={composerRoster}
+                  onError={setError}
+                />
+              ) : null}
               {/* Pause overlay fires whenever *any* slot is stopped.
                   Per the "no single-slot resume" rule, a partial-
                   mission state (one worker crashed, lead still up)

@@ -406,6 +406,16 @@ pub struct PostHumanSignalInput {
     pub payload: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PostHumanMessageInput {
+    pub mission_id: String,
+    pub text: String,
+    /// Omit for a crew-wide channel post; set to a slot handle for a
+    /// targeted message.
+    #[serde(default)]
+    pub to: Option<String>,
+}
+
 /// Replay the full event log for a mission. Used by the workspace UI when
 /// it first mounts (or remounts after navigation): it folds the historical
 /// envelopes into its feed before subscribing to `event/appended` for live
@@ -480,6 +490,67 @@ pub async fn mission_post_human_signal(
     input: PostHumanSignalInput,
 ) -> Result<runner_core::model::Event> {
     mission_post_human_signal_impl(&state, input).await
+}
+
+fn post_human_message(
+    app_data_dir: &Path,
+    conn: &Connection,
+    input: PostHumanMessageInput,
+) -> Result<runner_core::model::Event> {
+    let text = input.text.trim().to_string();
+    if text.is_empty() {
+        return Err(Error::msg("mission message text must not be empty"));
+    }
+
+    let mission = get(conn, &input.mission_id)?;
+    if !matches!(mission.status, MissionStatus::Running) {
+        return Err(Error::msg(format!(
+            "mission {} is not running (status = {:?}); cannot post messages",
+            mission.id, mission.status
+        )));
+    }
+
+    if let Some(target) = input.to.as_deref() {
+        if target == "human" {
+            return Err(Error::msg("cannot address a mission message to @human"));
+        }
+        let roster = slot::list(conn, &mission.crew_id)?;
+        if !roster
+            .iter()
+            .any(|member| member.slot.slot_handle == target)
+        {
+            return Err(Error::msg(format!(
+                "runner @{target} is not in the mission crew roster"
+            )));
+        }
+    }
+
+    let mission_dir = event_log::mission_dir(app_data_dir, &mission.crew_id, &mission.id);
+    let log = EventLog::open(&mission_dir)?;
+    let event = log.append(EventDraft::message(
+        mission.crew_id,
+        mission.id,
+        "human",
+        input.to,
+        text,
+    ))?;
+    Ok(event)
+}
+
+pub(crate) async fn mission_post_human_message_impl(
+    state: &AppState,
+    input: PostHumanMessageInput,
+) -> Result<runner_core::model::Event> {
+    let conn = state.db.get()?;
+    post_human_message(&state.app_data_dir, &conn, input)
+}
+
+#[tauri::command]
+pub async fn mission_post_human_message(
+    state: State<'_, AppState>,
+    input: PostHumanMessageInput,
+) -> Result<runner_core::model::Event> {
+    mission_post_human_message_impl(&state, input).await
 }
 
 pub(crate) async fn mission_start_impl(
@@ -1975,6 +2046,26 @@ mod tests {
             .id
     }
 
+    fn start_message_test_mission(conn: &mut Connection, app_data_dir: &Path) -> (String, String) {
+        let crew_id = seed_crew(conn, "Message crew", None);
+        add_runner(conn, &crew_id, "lead");
+        add_runner(conn, &crew_id, "reviewer");
+        let mission = start(
+            conn,
+            app_data_dir,
+            StartMissionInput {
+                project_id: None,
+                crew_id: crew_id.clone(),
+                title: "Message mission".into(),
+                goal_override: Some("Ship it".into()),
+                cwd: None,
+            },
+        )
+        .unwrap()
+        .mission;
+        (crew_id, mission.id)
+    }
+
     fn append_runner_status(
         log: &EventLog,
         crew_id: &str,
@@ -2120,6 +2211,162 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{err}").contains("title must not be empty"));
+    }
+
+    #[test]
+    fn post_human_message_appends_broadcast_message() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
+
+        let event = post_human_message(
+            tmp.path(),
+            &conn,
+            PostHumanMessageInput {
+                mission_id: mission_id.clone(),
+                text: "Heads up".into(),
+                to: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(event.kind, EventKind::Message);
+        assert_eq!(event.crew_id, crew_id);
+        assert_eq!(event.mission_id, mission_id);
+        assert_eq!(event.from, "human");
+        assert_eq!(event.to, None);
+        assert_eq!(event.signal_type, None);
+        assert_eq!(event.payload, serde_json::json!({ "text": "Heads up" }));
+
+        let mission_dir = event_log::mission_dir(tmp.path(), &crew_id, &event.mission_id);
+        let entries = EventLog::open(&mission_dir).unwrap().read_from(0).unwrap();
+        assert_eq!(entries.last().unwrap().event.id, event.id);
+    }
+
+    #[test]
+    fn post_human_message_appends_targeted_roster_message() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (_crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
+
+        let event = post_human_message(
+            tmp.path(),
+            &conn,
+            PostHumanMessageInput {
+                mission_id,
+                text: "  Please review\n".into(),
+                to: Some("reviewer".into()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(event.kind, EventKind::Message);
+        assert_eq!(event.from, "human");
+        assert_eq!(event.to.as_deref(), Some("reviewer"));
+        assert_eq!(
+            event.payload,
+            serde_json::json!({ "text": "Please review" })
+        );
+    }
+
+    #[test]
+    fn post_human_message_rejects_unknown_target() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (_crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
+
+        let err = post_human_message(
+            tmp.path(),
+            &conn,
+            PostHumanMessageInput {
+                mission_id,
+                text: "Hello?".into(),
+                to: Some("missing".into()),
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("@missing"),
+            "error must name the unknown handle; got {err}"
+        );
+    }
+
+    #[test]
+    fn post_human_message_rejects_human_target() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (_crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
+
+        let err = post_human_message(
+            tmp.path(),
+            &conn,
+            PostHumanMessageInput {
+                mission_id,
+                text: "Echo".into(),
+                to: Some("human".into()),
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("@human"),
+            "error must explain the refused target; got {err}"
+        );
+    }
+
+    #[test]
+    fn post_human_message_rejects_empty_or_whitespace_text() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (_crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
+
+        for text in ["", "  \n\t"] {
+            let err = post_human_message(
+                tmp.path(),
+                &conn,
+                PostHumanMessageInput {
+                    mission_id: mission_id.clone(),
+                    text: text.into(),
+                    to: None,
+                },
+            )
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("must not be empty"),
+                "error must explain the text guard; got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn post_human_message_rejects_non_running_mission() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (_crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
+        stop(&mut conn, tmp.path(), &mission_id).unwrap();
+
+        let err = post_human_message(
+            tmp.path(),
+            &conn,
+            PostHumanMessageInput {
+                mission_id,
+                text: "Too late".into(),
+                to: None,
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("not running"),
+            "error must explain the mission guard; got {err}"
+        );
     }
 
     #[test]

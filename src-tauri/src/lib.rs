@@ -427,6 +427,7 @@ pub fn run() {
             commands::mission::mission_get,
             commands::mission::mission_events_replay,
             commands::mission::mission_post_human_signal,
+            commands::mission::mission_post_human_message,
             commands::session::session_list,
             commands::session::session_list_recent_direct,
             commands::session::session_list_archived,
