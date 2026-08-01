@@ -155,20 +155,20 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
 ];
 
-// Default-data seed: ships the Build squad starter crew on first launch.
+// Default-data seed: ships the Peer coding starter crew on first launch.
 //
 // Runs at most once per database. The marker
 // `_app_state.default_crew_seeded` records that the seed step has been
-// considered for this DB so we don't recreate Build squad if the user
+// considered for this DB so we don't recreate Peer coding if the user
 // later deletes everything ("first launch" must mean *first* launch,
 // not "any future launch where you happen to have zero crews").
 //
 // Even on first launch we only apply the seed when the DB has zero
 // crews AND zero runners. If the user has *any* prior data — e.g.
-// they ran the build-squad.seed.sh fixture against this DB before
+// they loaded another fixture into this DB before
 // opening the app — we skip cleanly and still set the marker. This
 // avoids the partial-crew failure mode where a colliding runner
-// handle would leave Build squad missing its lead, while the start-
+// handle would leave Peer coding missing its lead, while the start-
 // mission UI still treated it as launchable.
 //
 // Tests skip this entire path so command tests can assume an empty
@@ -262,14 +262,13 @@ pub fn set_runtime_override(pool: &DbPool, runtime: &str, path: Option<&str>) ->
     Ok(())
 }
 
-// Pinned IDs for the seeded rows. These are referenced by
-// `0002_persona_only_seeds.sql`'s WHERE clauses, so they must match
-// the values that migration's UPDATEs key on.
-const SEED_CREW_ID: &str = "01K000DEFAULT000BUILDSQUAD01";
-const SEED_ARCHITECT_RUNNER_ID: &str = "01K000DEFAULT000RUNNERARCH01";
-const SEED_IMPL_RUNNER_ID: &str = "01K000DEFAULT000RUNNERIMPL01";
+// Pinned IDs keep first-launch fixtures deterministic. Migration 0002
+// still owns the legacy Build squad IDs for historical upgrades; fresh
+// databases run migrations before this peer-coding seed is inserted.
+const SEED_CREW_ID: &str = "01K000DEFAULT000PEERCODING01";
+const SEED_CODER_RUNNER_ID: &str = "01K000DEFAULT000RUNNERCODER01";
 const SEED_REVIEWER_RUNNER_ID: &str = "01K000DEFAULT000RUNNERREVW01";
-const SEED_TIMESTAMP: &str = "2026-05-03T00:00:00Z";
+const SEED_TIMESTAMP: &str = "2026-08-01T00:00:00Z";
 
 // Auto permission mode args for the default Codex seed:
 // `codex --ask-for-approval on-request --sandbox workspace-write`.
@@ -278,15 +277,12 @@ const SEED_TIMESTAMP: &str = "2026-05-03T00:00:00Z";
 const SEED_RUNNER_ARGS_JSON: &str =
     r#"["--ask-for-approval","on-request","--sandbox","workspace-write"]"#;
 
-// Persona-only system prompts shared with `tests/fixtures/system-prompts/*.md`.
-// Keeping a single source of truth means the migration 0002 UPDATE
-// pin (which targets the *pre*-rewrite text) and the seed (which
-// writes the *current* text) can never disagree about what the
-// "current" persona looks like.
-const SEED_ARCHITECT_PROMPT: &str =
-    include_str!("../../tests/fixtures/system-prompts/architect.md");
-const SEED_IMPL_PROMPT: &str = include_str!("../../tests/fixtures/system-prompts/impl.md");
-const SEED_REVIEWER_PROMPT: &str = include_str!("../../tests/fixtures/system-prompts/reviewer.md");
+// The shipped crew and the copyable example share one source of truth.
+// Runner prompts stay persona-only so the templates also work in direct
+// chat; mission workflow and channel guidance live in the crew addendum.
+const SEED_CODER_PROMPT: &str = include_str!("../../examples/peer-coding/coder.md");
+const SEED_REVIEWER_PROMPT: &str = include_str!("../../examples/peer-coding/reviewer.md");
+const SEED_CREW_ADDENDUM: &str = include_str!("../../examples/peer-coding/team-conventions.md");
 
 fn seed_defaults(conn: &mut Connection) -> Result<()> {
     conn.execute_batch(
@@ -321,43 +317,34 @@ fn seed_defaults(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-/// Insert the Build squad crew, three runners (architect / impl /
-/// reviewer), and three slots inside the caller's transaction.
-/// Replaces the legacy `0002_default_crew.sql` seed file: the same
-/// shape, but written in Rust so the column layout is owned by the
-/// same code that handles user-driven runner creates and so
-/// permission-mode args flow through as a single string constant
-/// (`SEED_RUNNER_ARGS_JSON`) instead of a hand-encoded JSON literal
-/// scattered across three INSERT statements.
+/// Insert the two-runner Peer coding example inside the caller's
+/// transaction. The Rust seed owns the same fields as user-driven
+/// creates and reads the copyable example prompts directly.
 fn seed_default_crew(tx: &rusqlite::Transaction) -> Result<()> {
+    let addendum = SEED_CREW_ADDENDUM.trim_end_matches('\n');
     tx.execute(
-        "INSERT INTO crews (id, name, purpose, goal, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+        "INSERT INTO crews (
+            id, name, purpose, goal, system_prompt_addendum, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
         params![
             SEED_CREW_ID,
-            "Build squad",
-            "Plan, build, and review a single feature end-to-end. \
-             Architect dispatches, implementer ships, reviewer gates merge.",
-            "Definition of done = code merged behind a green test suite and a clean \
-             review pass, with a one-paragraph human-readable summary posted as a \
-             broadcast.",
+            "Peer coding crew",
+            "A two-runner coder/reviewer loop for a single implementation task. \
+             The coder ships the change; the reviewer audits it; the coder fixes \
+             findings until review is clean.",
+            "Definition of done: implemented, relevant checks passed, and reviewer \
+             reports no remaining must-fix issues.",
+            addendum,
             SEED_TIMESTAMP,
         ],
     )?;
 
     insert_seed_runner(
         tx,
-        SEED_ARCHITECT_RUNNER_ID,
-        "architect",
-        "Architect",
-        SEED_ARCHITECT_PROMPT,
-    )?;
-    insert_seed_runner(
-        tx,
-        SEED_IMPL_RUNNER_ID,
-        "impl",
-        "Implementation",
-        SEED_IMPL_PROMPT,
+        SEED_CODER_RUNNER_ID,
+        "coder",
+        "Coder",
+        SEED_CODER_PROMPT,
     )?;
     insert_seed_runner(
         tx,
@@ -369,26 +356,18 @@ fn seed_default_crew(tx: &rusqlite::Transaction) -> Result<()> {
 
     insert_seed_slot(
         tx,
-        "01K000DEFAULT000SLOTARCH0001",
-        SEED_ARCHITECT_RUNNER_ID,
-        "architect",
+        "01K000DEFAULT000SLOTCODER001",
+        SEED_CODER_RUNNER_ID,
+        "coder",
         0,
         true,
-    )?;
-    insert_seed_slot(
-        tx,
-        "01K000DEFAULT000SLOTIMPL0001",
-        SEED_IMPL_RUNNER_ID,
-        "impl",
-        1,
-        false,
     )?;
     insert_seed_slot(
         tx,
         "01K000DEFAULT000SLOTREVW0001",
         SEED_REVIEWER_RUNNER_ID,
         "reviewer",
-        2,
+        1,
         false,
     )?;
 
@@ -995,7 +974,7 @@ mod tests {
     }
 
     #[test]
-    fn seed_defaults_inserts_build_squad_on_empty_db() {
+    fn seed_defaults_inserts_peer_coding_crew_on_empty_db() {
         let pool = open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
         seed_defaults(&mut conn).unwrap();
@@ -1010,15 +989,28 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM slots", [], |r| r.get(0))
             .unwrap();
         assert_eq!(crew_count, 1);
-        assert_eq!(runner_count, 3);
-        assert_eq!(slot_count, 3);
+        assert_eq!(runner_count, 2);
+        assert_eq!(slot_count, 2);
 
         let lead_handle: String = conn
             .query_row("SELECT slot_handle FROM slots WHERE lead = 1", [], |r| {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(lead_handle, "architect");
+        assert_eq!(lead_handle, "coder");
+
+        let (name, addendum): (String, Option<String>) = conn
+            .query_row(
+                "SELECT name, system_prompt_addendum FROM crews WHERE id = ?1",
+                params![SEED_CREW_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "Peer coding crew");
+        assert_eq!(
+            addendum.as_deref(),
+            Some(SEED_CREW_ADDENDUM.trim_end_matches('\n'))
+        );
 
         let codex_seed_count: i64 = conn
             .query_row(
@@ -1033,9 +1025,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            codex_seed_count, 3,
+            codex_seed_count, 2,
             "all seeded runners should use codex Auto with inherited model/effort",
         );
+
+        for (handle, prompt) in [
+            ("coder", SEED_CODER_PROMPT),
+            ("reviewer", SEED_REVIEWER_PROMPT),
+        ] {
+            let stored: String = conn
+                .query_row(
+                    "SELECT system_prompt FROM runners WHERE handle = ?1",
+                    params![handle],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, prompt.trim_end_matches('\n'));
+        }
     }
 
     /// Verbatim copy of the pre-#51 architect `system_prompt`
@@ -1206,10 +1212,9 @@ Talking to the human:
         // (RUNNER_CREW_ID / RUNNER_MISSION_ID / RUNNER_EVENT_LOG are
         // unset off-bus, the bundled `runner` CLI is not on PATH).
         //
-        // Post-renumber the seed lives in `seed_default_crew` (Rust)
-        // and reads the .md files via `include_str!` — so checking
-        // the .md fixtures is checking the seed, no separate SQL
-        // pin needed.
+        // The seed reads the copyable peer-coding example via
+        // `include_str!`, so checking these sources checks the stored
+        // runner prompts too. Mission verbs belong in the crew addendum.
         let banned_substrings = [
             "runner msg post",
             "runner msg read",
@@ -1218,8 +1223,7 @@ Talking to the human:
             "ask_human",
         ];
         for (name, md) in [
-            ("architect.md", SEED_ARCHITECT_PROMPT),
-            ("impl.md", SEED_IMPL_PROMPT),
+            ("coder.md", SEED_CODER_PROMPT),
             ("reviewer.md", SEED_REVIEWER_PROMPT),
         ] {
             for needle in banned_substrings {
@@ -1257,20 +1261,12 @@ Talking to the human:
 
     #[test]
     fn seed_defaults_skips_when_user_has_a_runner_but_no_crew() {
-        // The partial-crew failure mode: a user manually created an
-        // `architect` runner template (or ran the seed.sh fixture
-        // directly into this DB), then opened the app for the first
-        // time. Pre-fix, the migration inserted the Build squad crew
-        // and inserted only impl + reviewer runners (architect skipped
-        // by the per-handle NOT EXISTS guard), then the slot insert
-        // for the architect slot couldn't find our runner ID and
-        // skipped — leaving Build squad with two slots and no lead.
-        // The start-mission UI treated that as launchable, then the
-        // backend rejected it. Now the whole seed bails, marker is
-        // still set, and we never produce a partial crew.
+        // Any existing runner means this is not a first-launch-empty DB.
+        // The seed must bail as one unit instead of colliding on a handle
+        // and leaving a partial crew without its lead.
         let pool = open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
-        insert_runner(&conn, "user-r1", "architect").unwrap();
+        insert_runner(&conn, "user-r1", "coder").unwrap();
         seed_defaults(&mut conn).unwrap();
 
         let crew_count: i64 = conn
@@ -1279,7 +1275,7 @@ Talking to the human:
         let runner_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM runners", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(crew_count, 0, "should not create Build squad");
+        assert_eq!(crew_count, 0, "should not create Peer coding crew");
         assert_eq!(runner_count, 1, "user's runner stays untouched");
     }
 
@@ -1324,8 +1320,8 @@ Talking to the human:
         let slot_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM slots", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(runner_count, 3);
-        assert_eq!(slot_count, 3);
+        assert_eq!(runner_count, 2);
+        assert_eq!(slot_count, 2);
     }
 
     /// Migration 0014: seed a pre-migration-shaped DB (schema 13),
