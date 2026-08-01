@@ -4,12 +4,12 @@
 // directed otherwise). The recipient must be in the per-mission roster
 // sidecar so typos can't silently land in nobody's inbox.
 //
-// Read: project the caller's inbox — `kind = "message" AND (to == null
-// OR to == handle)` — apply the optional `--since` / `--from` filters,
-// print in append order, and (only on success with at least one message
-// printed) emit a single `signal inbox_read` with `payload.up_to = max
-// printed ULID`. The watermark advance is what C7's `EventBus` consumes
-// to clear unread badges.
+// Read: project the caller's inbox — incoming `kind = "message"` events
+// where `to == null OR to == handle` — apply the optional `--since` /
+// `--from` filters, print in append order, and (only on success with at
+// least one message printed) emit a single `signal inbox_read` with
+// `payload.up_to = max printed ULID`. The watermark advance is what C7's
+// `EventBus` consumes to clear unread badges.
 
 use runner_core::event_log::EventLog;
 use runner_core::model::{Event, EventDraft, EventKind, SignalType};
@@ -24,8 +24,9 @@ pub fn post(text: &str, to: Option<&str>) -> i32 {
     if let Some(handle) = to {
         if handle == "human" {
             eprintln!(
-                "runner msg post: --to human is no longer supported. \
-                 The operator reads your terminal directly; answer in your TUI output."
+                "runner msg post: human is not a message recipient. \
+                 To reply in the crew channel, broadcast with \
+                 `runner msg post \"<text>\"` (omit --to)."
             );
             return 1;
         }
@@ -172,7 +173,7 @@ pub fn read(since: Option<&str>, from: Option<&str>) -> i32 {
 }
 
 fn is_inbox(ev: &Event, handle: &str) -> bool {
-    if !matches!(ev.kind, EventKind::Message) {
+    if !matches!(ev.kind, EventKind::Message) || ev.from == handle {
         return false;
     }
     match ev.to.as_deref() {
@@ -220,6 +221,8 @@ mod tests {
         assert!(is_inbox(&msg("1", "lead", None), "impl"));
         assert!(is_inbox(&msg("1", "lead", Some("impl")), "impl"));
         assert!(!is_inbox(&msg("1", "lead", Some("reviewer")), "impl"));
+        assert!(!is_inbox(&msg("1", "impl", None), "impl"));
+        assert!(!is_inbox(&msg("1", "impl", Some("impl")), "impl"));
     }
 
     #[test]
