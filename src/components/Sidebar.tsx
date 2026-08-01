@@ -49,8 +49,6 @@ import {
   useNavigate,
 } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
-import { basename } from "@tauri-apps/api/path";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   AppWindow,
   Archive,
@@ -143,6 +141,7 @@ import type {
   MissionSummary,
   SessionActivityState,
 } from "../lib/types";
+import { StartProjectModal } from "./StartProjectModal";
 import { StartMissionModal } from "./StartMissionModal";
 import { StartChatModal } from "./StartChatModal";
 import { CommandPalette } from "./CommandPalette";
@@ -349,6 +348,7 @@ export function Sidebar({
     getStoredFlag(STORAGE_SESSION_OPEN, true),
   );
 
+  const [creatingProject, setCreatingProject] = useState(false);
   const [creatingMission, setCreatingMission] = useState(false);
   const [newMissionProjectId, setNewMissionProjectId] = useState<
     string | null
@@ -1327,23 +1327,7 @@ export function Sidebar({
     setCreatingMission(true);
   }, []);
 
-  const addProject = useCallback(async () => {
-    try {
-      const picked = await openDialog({
-        directory: true,
-        multiple: false,
-        title: "Add a project",
-      });
-      if (typeof picked !== "string") return;
-      const project = await api.project.create(await basename(picked), picked);
-      setProjectsOpen(true);
-      setStoredFlag(STORAGE_PROJECTS_OPEN, true);
-      setActiveProjectId(project.id);
-      await refreshProjects();
-    } catch (e) {
-      console.error("sidebar: project_create failed", e);
-    }
-  }, [refreshProjects]);
+  const addProject = useCallback(() => setCreatingProject(true), []);
 
   const clearRowDrag = useCallback(() => {
     setDraggedNodeId(null);
@@ -2126,7 +2110,7 @@ export function Sidebar({
                   open={projectsOpen}
                   attention={projectsOpen ? null : projectAttention}
                   onToggle={toggleProjects}
-                  onPlus={() => void addProject()}
+                  onPlus={addProject}
                   plusTitle="Add project"
                 />
                 {projectsOpen ? (
@@ -2427,6 +2411,18 @@ export function Sidebar({
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
+      />
+
+      <StartProjectModal
+        open={creatingProject}
+        onClose={() => setCreatingProject(false)}
+        onCreated={async (project) => {
+          setCreatingProject(false);
+          setProjectsOpen(true);
+          setStoredFlag(STORAGE_PROJECTS_OPEN, true);
+          await refreshProjects();
+          setActiveProjectId(project.id);
+        }}
       />
 
       <StartMissionModal
