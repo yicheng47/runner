@@ -5,16 +5,18 @@ import { api } from "../lib/api";
 export function InboxBlockedPill({
   sessionId,
   unreadCount,
+  idle,
   narrow,
   onError,
 }: {
   sessionId: string;
   unreadCount: number;
+  idle: boolean;
   narrow: boolean;
   onError: (message: string) => void;
 }) {
-  const clearDraft = () => {
-    void api.session.injectStdin(sessionId, "\x15").catch((error) => {
+  const clearInput = () => {
+    void api.session.injectStdin(sessionId, "\r").catch((error) => {
       onError(String(error));
     });
   };
@@ -31,21 +33,23 @@ export function InboxBlockedPill({
       </span>
       {!narrow ? (
         <span className="whitespace-nowrap text-fg-2">
-          — delivery paused: you have unsent input here
+          — typing detected, delivery paused
         </span>
       ) : null}
-      <button
-        type="button"
-        tabIndex={-1}
-        onMouseDown={(event) => event.preventDefault()}
-        onClick={clearDraft}
-        className="pointer-events-auto flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-warn/40 bg-warn/10 px-2 py-1 text-[11px] font-semibold leading-none text-warn transition-colors hover:bg-warn/15 focus:outline-none"
-      >
-        Clear draft
-        <span className="font-mono text-[10px] font-normal text-warn/70">
-          ⌃U
-        </span>
-      </button>
+      {idle ? (
+        <button
+          type="button"
+          tabIndex={-1}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={clearInput}
+          className="pointer-events-auto flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-warn/40 bg-warn/10 px-2 py-1 text-[11px] font-semibold leading-none text-warn transition-colors hover:bg-warn/15 focus:outline-none"
+        >
+          Clear input
+          <span className="font-mono text-[10px] font-normal text-warn/70">
+            ↵
+          </span>
+        </button>
+      ) : null}
     </div>
   );
 }

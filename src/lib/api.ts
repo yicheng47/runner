@@ -360,6 +360,10 @@ export const api = {
       invoke<Event[]>("mission_events_replay", { missionId }),
     postHumanSignal: (input: PostHumanSignalInput) =>
       invoke<Event>("mission_post_human_signal", { input }),
+    postMessage: (missionId: string, text: string, to?: string) =>
+      invoke<Event>("mission_post_human_message", {
+        input: { mission_id: missionId, text, to: to ?? null },
+      }),
   },
   session: {
     list: (missionId: string) =>

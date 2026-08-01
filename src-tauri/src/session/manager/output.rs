@@ -7,224 +7,57 @@ pub(super) const KEEP_RESUME_SEAM: &[u8] =
     b"\x1b[0m\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\r\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum DraftOperation<'a> {
-    Append {
-        bytes: &'a [u8],
-        cause: DraftGateCause,
-    },
-    Backspace,
-    DeleteWord,
-    Clear(DraftGateCause),
-    MarkNonEmpty(DraftGateCause),
+pub(super) enum LocalInputClass {
+    SetPending,
+    ClearPending,
     ActivityOnly,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(super) struct LocalInputUpdate {
-    pub(super) input_cleared: bool,
-    pub(super) events: Vec<DraftGateEvent>,
-}
-
-const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
-const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
-const DRAFT_CONTENT_MARKER: &[u8] = b"?";
-const DRAFT_NEWLINE_MARKER: &[u8] = b"\n";
-
-fn find_sequence(bytes: &[u8], needle: &[u8]) -> Option<usize> {
-    bytes
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-fn csi_sequence_end(bytes: &[u8], start: usize) -> usize {
-    let mut cursor = start + 2;
-    while cursor < bytes.len() {
-        if matches!(bytes[cursor], 0x40..=0x7e) {
-            return cursor + 1;
-        }
-        cursor += 1;
-    }
-    bytes.len()
-}
-
-pub(super) fn classify_local_input(bytes: &[u8]) -> Vec<DraftOperation<'_>> {
+pub(super) fn classify_local_input(bytes: &[u8]) -> Option<LocalInputClass> {
     if bytes.is_empty() {
-        return Vec::new();
+        return None;
     }
-    if bytes == b"\x1b" {
-        return vec![DraftOperation::Clear(DraftGateCause::Esc)];
+    if bytes == b"\r" || bytes == b"\x03" {
+        return Some(LocalInputClass::ClearPending);
     }
-
-    let mut operations = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        let remaining = &bytes[index..];
-        if remaining.starts_with(BRACKETED_PASTE_START) {
-            let payload_start = index + BRACKETED_PASTE_START.len();
-            let payload_and_rest = &bytes[payload_start..];
-            if let Some(end_offset) = find_sequence(payload_and_rest, BRACKETED_PASTE_END) {
-                let payload_end = payload_start + end_offset;
-                operations.push(DraftOperation::Append {
-                    bytes: if payload_end == payload_start {
-                        DRAFT_CONTENT_MARKER
-                    } else {
-                        &bytes[payload_start..payload_end]
-                    },
-                    cause: DraftGateCause::Paste,
-                });
-                index = payload_end + BRACKETED_PASTE_END.len();
-            } else {
-                operations.push(DraftOperation::Append {
-                    bytes: if payload_start == bytes.len() {
-                        DRAFT_CONTENT_MARKER
-                    } else {
-                        &bytes[payload_start..]
-                    },
-                    cause: DraftGateCause::Paste,
-                });
-                index = bytes.len();
-            }
-            continue;
-        }
-        if remaining.starts_with(b"\x1b\r") {
-            operations.push(DraftOperation::Append {
-                bytes: DRAFT_NEWLINE_MARKER,
-                cause: DraftGateCause::Printable,
-            });
-            index += 2;
-            continue;
-        }
-        if remaining.starts_with(b"\x1b[") {
-            let end = csi_sequence_end(bytes, index);
-            let sequence = &bytes[index..end];
-            if sequence == b"\x1b[A" || sequence == b"\x1b[B" {
-                operations.push(DraftOperation::MarkNonEmpty(DraftGateCause::HistoryRecall));
-            } else {
-                operations.push(DraftOperation::ActivityOnly);
-            }
-            index = end;
-            continue;
-        }
-        if remaining.starts_with(b"\x1bO") {
-            let end = (index + 3).min(bytes.len());
-            let sequence = &bytes[index..end];
-            if sequence == b"\x1bOA" || sequence == b"\x1bOB" {
-                operations.push(DraftOperation::MarkNonEmpty(DraftGateCause::HistoryRecall));
-            } else {
-                operations.push(DraftOperation::ActivityOnly);
-            }
-            index = end;
-            continue;
-        }
-        if bytes[index] == 0x1b {
-            operations.push(DraftOperation::ActivityOnly);
-            index = (index + 2).min(bytes.len());
-            continue;
-        }
-        match bytes[index] {
-            b'\r' => {
-                operations.push(DraftOperation::Clear(DraftGateCause::Submit));
-                index += 1;
-            }
-            0x03 => {
-                operations.push(DraftOperation::Clear(DraftGateCause::Interrupt));
-                index += 1;
-            }
-            0x15 => {
-                operations.push(DraftOperation::Clear(DraftGateCause::ManualClear));
-                index += 1;
-            }
-            0x7f | 0x08 => {
-                operations.push(DraftOperation::Backspace);
-                index += 1;
-            }
-            0x17 => {
-                operations.push(DraftOperation::DeleteWord);
-                index += 1;
-            }
-            0x16 => {
-                operations.push(DraftOperation::Append {
-                    bytes: DRAFT_CONTENT_MARKER,
-                    cause: DraftGateCause::Paste,
-                });
-                index += 1;
-            }
-            0x00..=0x1f => {
-                operations.push(DraftOperation::ActivityOnly);
-                index += 1;
-            }
-            _ => {
-                let start = index;
-                index += 1;
-                while index < bytes.len() && !matches!(bytes[index], 0x00..=0x1f | 0x7f) {
-                    index += 1;
-                }
-                operations.push(DraftOperation::Append {
-                    bytes: &bytes[start..index],
-                    cause: DraftGateCause::Printable,
-                });
-            }
-        }
+    if bytes == b"\x16" || bytes.starts_with(b"\x1b[200~") {
+        return Some(LocalInputClass::SetPending);
     }
-    operations
+    if bytes.starts_with(b"\x1b") {
+        return Some(LocalInputClass::ActivityOnly);
+    }
+    if bytes
+        .iter()
+        .any(|byte| matches!(byte, 0x20..=0x7e | 0x80..=0xff))
+    {
+        Some(LocalInputClass::SetPending)
+    } else {
+        Some(LocalInputClass::ActivityOnly)
+    }
 }
 
 pub(super) fn update_local_input_state(
     state: &mut SessionState,
-    operations: &[DraftOperation<'_>],
+    input_class: Option<LocalInputClass>,
     now: Instant,
-) -> LocalInputUpdate {
-    let mut update = LocalInputUpdate::default();
-    for operation in operations {
-        let was_empty = state.draft.is_empty();
-        let mut saturated = false;
-        let cause = match operation {
-            DraftOperation::Append { bytes, cause } => {
-                saturated = state.draft.append(bytes);
-                state.last_local_input_at = Some(now);
-                *cause
-            }
-            DraftOperation::Backspace => {
-                state.draft.pop_char();
-                state.last_local_input_at = Some(now);
-                DraftGateCause::BackspaceEmptied
-            }
-            DraftOperation::DeleteWord => {
-                state.draft.pop_word();
-                state.last_local_input_at = Some(now);
-                DraftGateCause::BackspaceEmptied
-            }
-            DraftOperation::Clear(cause) => {
-                state.draft.clear();
-                state.last_local_input_at = None;
-                *cause
-            }
-            DraftOperation::MarkNonEmpty(cause) => {
-                state.draft.mark_opaque(DRAFT_CONTENT_MARKER);
-                state.last_local_input_at = Some(now);
-                *cause
-            }
-            DraftOperation::ActivityOnly => {
-                state.last_local_input_at = Some(now);
-                continue;
-            }
-        };
-        let is_empty = state.draft.is_empty();
-        if was_empty != is_empty {
-            update.events.push(DraftGateEvent {
-                blocked: !is_empty,
-                cause,
-            });
-            update.input_cleared |= is_empty;
+) -> bool {
+    match input_class {
+        Some(LocalInputClass::SetPending) => {
+            state.local_input_pending = true;
+            state.last_local_input_at = Some(now);
+            false
         }
-        if saturated {
-            update.events.push(DraftGateEvent {
-                blocked: true,
-                cause: DraftGateCause::Saturated,
-            });
+        Some(LocalInputClass::ClearPending) => {
+            state.local_input_pending = false;
+            state.last_local_input_at = None;
+            true
         }
+        Some(LocalInputClass::ActivityOnly) => {
+            state.last_local_input_at = Some(now);
+            false
+        }
+        None => false,
     }
-    update
 }
 
 impl SessionManager {
@@ -464,7 +297,7 @@ impl SessionManager {
         events: &dyn SessionEvents,
     ) -> Result<()> {
         let submitted = bytes == b"\r";
-        let draft_operations = classify_local_input(bytes);
+        let input_class = classify_local_input(bytes);
         let session = self
             .session_state(session_id)
             .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
@@ -493,7 +326,7 @@ impl SessionManager {
                 .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
             let previous_activity = session.activity;
             let previous_suppression = session.suppress_local_input_busy;
-            let previous_draft = session.draft.clone();
+            let previous_input_pending = session.local_input_pending;
             let previous_input_at = session.last_local_input_at;
             let mission_status_sink = session.mission_status_sink.clone();
             let mission_scoped = session
@@ -518,12 +351,11 @@ impl SessionManager {
                 }
                 None
             };
-            let draft_update =
-                update_local_input_state(&mut session, &draft_operations, Instant::now());
+            let input_cleared = update_local_input_state(&mut session, input_class, Instant::now());
             if let Err(error) = self.write_stdin_bytes(&rt_session, bytes) {
                 session.activity = previous_activity;
                 session.suppress_local_input_busy = previous_suppression;
-                session.draft = previous_draft;
+                session.local_input_pending = previous_input_pending;
                 session.last_local_input_at = previous_input_at;
                 return Err(error);
             }
@@ -534,7 +366,7 @@ impl SessionManager {
                 transition,
                 mission_status_sink,
                 mission_scoped,
-                draft_update,
+                input_cleared,
             ))
         })();
 
@@ -542,20 +374,17 @@ impl SessionManager {
         let input_queue_drained = delivery.next_served == delivery.next_ticket;
         let successful_clear = outcome
             .as_ref()
-            .is_ok_and(|(_, _, _, update)| update.input_cleared);
+            .is_ok_and(|(_, _, _, input_cleared)| *input_cleared);
         gate.ready.notify_all();
         drop(delivery);
         if input_queue_drained && !successful_clear {
             self.notify_delivery_event(session_id, router::SessionDeliveryEvent::InputQueueDrained);
         }
-        let (transition, mission_status_sink, mission_scoped, draft_update) = outcome?;
+        let (transition, mission_status_sink, mission_scoped, input_cleared) = outcome?;
         if submitted {
             self.capture_codex_session_key(session_id);
         }
-        for event in draft_update.events {
-            log_draft_gate_event(session_id, event);
-        }
-        if draft_update.input_cleared {
+        if input_cleared {
             self.notify_delivery_event(session_id, router::SessionDeliveryEvent::InputCleared);
         }
         if let Some(transition) = transition.as_ref() {
@@ -1028,8 +857,6 @@ impl SessionManager {
             state.mouse_1002_on = false;
             state.mouse_1003_on = false;
             state.mouse_1006_on = false;
-            state.draft.clear();
-            state.last_local_input_at = None;
             state.last_pty_cols = None;
             state.pending_resize = None;
         }

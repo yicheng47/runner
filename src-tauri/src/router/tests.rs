@@ -48,7 +48,6 @@ struct RecordingInjector {
 #[derive(Default)]
 struct RecordingInputState {
     pending: bool,
-    pending_until: Option<Instant>,
     last_input_at: Option<Instant>,
     in_flight: bool,
     generation: u64,
@@ -123,14 +122,9 @@ impl RecordingInjector {
     }
 
     fn set_pending(&self, session_id: &str) {
-        self.set_pending_for(session_id, Duration::from_secs(10 * 60));
-    }
-
-    fn set_pending_for(&self, session_id: &str, duration: Duration) {
         let mut input = self.input.lock().unwrap();
         let input = input.entry(session_id.to_string()).or_default();
         input.pending = true;
-        input.pending_until = Some(Instant::now() + duration);
         input.last_input_at = Some(Instant::now());
     }
 
@@ -138,7 +132,6 @@ impl RecordingInjector {
         let mut input = self.input.lock().unwrap();
         let input = input.entry(session_id.to_string()).or_default();
         input.pending = false;
-        input.pending_until = None;
         input.last_input_at = Some(Instant::now() - Duration::from_millis(1950));
     }
 
@@ -154,7 +147,6 @@ impl RecordingInjector {
     fn clear_pending(&self, session_id: &str) {
         if let Some(input) = self.input.lock().unwrap().get_mut(session_id) {
             input.pending = false;
-            input.pending_until = None;
             input.last_input_at = None;
         }
         self.notify(session_id, SessionDeliveryEvent::InputCleared);
@@ -168,7 +160,6 @@ impl RecordingInjector {
             input.generation = input.generation.wrapping_add(1);
             input.in_flight = false;
             input.pending = false;
-            input.pending_until = None;
             input.last_input_at = None;
         }
         self.notify(session_id, SessionDeliveryEvent::Respawned);
@@ -180,7 +171,6 @@ impl RecordingInjector {
             input.generation = input.generation.wrapping_add(1);
             input.in_flight = false;
             input.pending = false;
-            input.pending_until = None;
             input.last_input_at = None;
         }
         self.notify(session_id, SessionDeliveryEvent::Exited);
@@ -286,16 +276,7 @@ impl StdinInjector for RecordingInjector {
             return Ok(DeliveryReservation::InFlight);
         }
         if input.pending {
-            let remaining = input
-                .pending_until
-                .expect("pending test input must have an abandonment deadline")
-                .saturating_duration_since(Instant::now());
-            if !remaining.is_zero() {
-                return Ok(DeliveryReservation::PendingInput(remaining));
-            }
-            input.pending = false;
-            input.pending_until = None;
-            input.last_input_at = None;
+            return Ok(DeliveryReservation::PendingInput);
         }
         if let Some(last) = input.last_input_at {
             let elapsed = last.elapsed();
@@ -1144,36 +1125,6 @@ fn recent_typing_retries_after_quiet_window() {
 }
 
 #[test]
-fn pending_input_retries_after_abandonment_deadline() {
-    let (router, injector, _log, _dir) = fixture(
-        vec![
-            slot_with_runner("lead", true),
-            slot_with_runner("impl", false),
-        ],
-        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
-    );
-    injector.set_pending_for("S-IMPL", Duration::from_millis(25));
-    router
-        .inject_and_submit("impl", b"after abandonment")
-        .unwrap();
-    assert!(injector.pushes_for("S-IMPL").is_empty());
-    assert!(
-        router
-            .state
-            .lock()
-            .unwrap()
-            .outbox_by_session
-            .get("S-IMPL")
-            .is_some_and(|outbox| outbox.retry_scheduled),
-        "a draft-gated outbox must always have a scheduled retry"
-    );
-
-    wait_until(Duration::from_millis(300), || {
-        injector.submitted_bodies_for("S-IMPL") == ["after abandonment"]
-    });
-}
-
-#[test]
 fn deferred_nudges_coalesce_while_relays_preserve_order() {
     let (router, injector, log, _dir) = fixture(
         vec![
@@ -1295,6 +1246,83 @@ fn broadcast_message_nudges_every_slot_except_sender() {
     assert_eq!(injector.pushes_for("S-IMPL").len(), 1);
     assert_eq!(injector.pushes_for("S-REV").len(), 1);
     assert!(injector.pushes_for("S-LEAD").is_empty());
+}
+
+#[test]
+fn human_messages_nudge_the_broadcast_roster_or_target_only() {
+    let roster = || {
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+            slot_with_runner("reviewer", false),
+        ]
+    };
+    let sessions = &[
+        ("lead", "S-LEAD"),
+        ("impl", "S-IMPL"),
+        ("reviewer", "S-REV"),
+    ];
+
+    {
+        let (router, injector, log, _dir) = fixture(roster(), sessions);
+        let broadcast = log
+            .append(message("human", None, "Message the crew"))
+            .unwrap();
+        router.handle_event(&broadcast);
+        assert_eq!(injector.pushes_for("S-LEAD").len(), 1);
+        assert_eq!(injector.pushes_for("S-IMPL").len(), 1);
+        assert_eq!(injector.pushes_for("S-REV").len(), 1);
+    }
+
+    let (router, injector, log, _dir) = fixture(roster(), sessions);
+    let targeted = log
+        .append(message("human", Some("reviewer"), "Please review"))
+        .unwrap();
+    router.handle_event(&targeted);
+    assert!(injector.pushes_for("S-LEAD").is_empty());
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+    assert_eq!(injector.pushes_for("S-REV").len(), 1);
+}
+
+#[test]
+fn human_broadcast_waits_for_sessions_still_starting() {
+    let sessions = &[
+        ("lead", "S-LEAD"),
+        ("impl", "S-IMPL"),
+        ("reviewer", "S-REV"),
+    ];
+    let (router, injector, log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+            slot_with_runner("reviewer", false),
+        ],
+        sessions,
+    );
+    let pending: Vec<(String, String)> = sessions
+        .iter()
+        .map(|(handle, session)| (handle.to_string(), session.to_string()))
+        .collect();
+    router.register_pending_sessions(&pending);
+
+    let broadcast = log
+        .append(message("human", None, "Message the crew"))
+        .unwrap();
+    router.handle_event(&broadcast);
+    assert!(injector.all_pushes().is_empty());
+    assert!(!read_signals(&log).iter().any(|event| {
+        event
+            .signal_type
+            .as_ref()
+            .is_some_and(|signal| signal.as_str() == "mission_warning")
+    }));
+
+    for (_, session_id) in sessions {
+        injector.respawn(session_id);
+        wait_until(Duration::from_millis(100), || {
+            injector.submitted_bodies_for(session_id).len() == 1
+        });
+    }
 }
 
 #[test]

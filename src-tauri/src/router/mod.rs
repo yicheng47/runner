@@ -139,7 +139,7 @@ impl StdinInjector for SessionManager {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryReservation {
     Ready(u64),
-    PendingInput(Duration),
+    PendingInput,
     RecentlyTyping(Duration),
     InFlight,
 }
@@ -279,6 +279,10 @@ struct RouterState {
     replay_high_water: Option<String>,
     outbox_by_session: HashMap<String, SessionOutbox>,
     blocked_unread_by_session: HashMap<String, usize>,
+    /// Fresh mission rows registered before their background PTY spawn.
+    /// Deliveries wait in the normal outbox until `Respawned` marks the
+    /// session live; stopped/crashed reopen sessions are not added here.
+    pending_sessions: HashSet<String>,
     live_sessions: HashSet<String>,
     unread_by_handle: HashMap<String, usize>,
     last_reconciliation_nudge: HashMap<String, Instant>,
@@ -371,21 +375,31 @@ impl Router {
         }))
     }
 
-    /// Register the spawned session ids so handlers can find which PTY
-    /// owns each handle. Called once after `mission_start`'s spawn loop
-    /// succeeds. Live `mission_start` calls `register_sessions` *before*
-    /// the bus mounts so the initial replay's `mission_goal` lands on a
-    /// fully-wired router; reopen paths register against existing live
-    /// PTYs (when reattach lands) or skip injection (the workspace
-    /// surfaces `mission_warning` from `inject_to_handle` either way).
+    /// Register existing session ids so handlers can find which PTY owns
+    /// each handle. Reopen paths use this for already-live sessions; a
+    /// stopped/crashed row remains non-live so injection still warns.
     pub fn register_sessions(&self, sessions: &[(String, String)]) {
+        self.register_sessions_inner(sessions, false);
+    }
+
+    /// Fresh-start/reset path. Session rows and router handles exist before
+    /// the sequential background PTY spawns begin, so an early channel post
+    /// must queue its nudge instead of warning that the later slot is absent.
+    pub fn register_pending_sessions(&self, sessions: &[(String, String)]) {
+        self.register_sessions_inner(sessions, true);
+    }
+
+    fn register_sessions_inner(&self, sessions: &[(String, String)], pending: bool) {
         {
             let mut state = self.state.lock().unwrap();
             for (handle, session_id) in sessions {
                 state
                     .session_by_handle
                     .insert(handle.clone(), session_id.clone());
-                if self.injector.session_live(session_id) {
+                if pending {
+                    state.pending_sessions.insert(session_id.clone());
+                    state.live_sessions.remove(session_id);
+                } else if self.injector.session_live(session_id) {
                     state.live_sessions.insert(session_id.clone());
                 }
             }
@@ -664,6 +678,19 @@ impl Router {
                     return Ok(true);
                 }
             }
+            if state.pending_sessions.contains(&session_id) {
+                if reconciliation.is_some() || !deferable {
+                    return Ok(false);
+                }
+                let outbox = state
+                    .outbox_by_session
+                    .entry(session_id.clone())
+                    .or_default();
+                outbox.handle = handle.to_string();
+                outbox.enqueue(delivery);
+                self.blocked_transition(&mut state, &session_id);
+                return Ok(true);
+            }
             match self.injector.reserve_delivery(&session_id)? {
                 DeliveryReservation::Ready(token) => {
                     if let Some((now, _)) = reconciliation {
@@ -698,7 +725,7 @@ impl Router {
                     }
                     (session_id, None)
                 }
-                DeliveryReservation::PendingInput(delay) => {
+                DeliveryReservation::PendingInput => {
                     if reconciliation.is_some() {
                         return Ok(false);
                     }
@@ -710,7 +737,6 @@ impl Router {
                         outbox.handle = handle.to_string();
                         outbox.pending_input_blocked = true;
                         outbox.enqueue(delivery);
-                        retry = Some((session_id.clone(), delay));
                         self.blocked_transition(&mut state, &session_id);
                     }
                     (session_id, None)
@@ -1036,16 +1062,13 @@ impl Router {
                 }
                 self.schedule_outbox_retry(session_id.to_string(), delay);
             }
-            DeliveryReservation::PendingInput(delay) => {
-                {
-                    let mut state = self.state.lock().unwrap();
-                    let Some(outbox) = state.outbox_by_session.get_mut(session_id) else {
-                        return;
-                    };
-                    outbox.pending_input_blocked = true;
-                    self.blocked_transition(&mut state, session_id);
-                }
-                self.schedule_outbox_retry(session_id.to_string(), delay);
+            DeliveryReservation::PendingInput => {
+                let mut state = self.state.lock().unwrap();
+                let Some(outbox) = state.outbox_by_session.get_mut(session_id) else {
+                    return;
+                };
+                outbox.pending_input_blocked = true;
+                self.blocked_transition(&mut state, session_id);
             }
             DeliveryReservation::InFlight => {
                 let mut state = self.state.lock().unwrap();
@@ -1420,6 +1443,7 @@ impl SessionDeliveryListener for Router {
             }
             SessionDeliveryEvent::Respawned => {
                 let mut state = self.state.lock().unwrap();
+                state.pending_sessions.remove(session_id);
                 state.live_sessions.insert(session_id.to_string());
                 if let Some(outbox) = state.outbox_by_session.get_mut(session_id) {
                     outbox.submit_in_flight = false;
@@ -1432,6 +1456,7 @@ impl SessionDeliveryListener for Router {
             SessionDeliveryEvent::Exited => {
                 let dropped = {
                     let mut state = self.state.lock().unwrap();
+                    state.pending_sessions.remove(session_id);
                     state.live_sessions.remove(session_id);
                     let dropped = state
                         .outbox_by_session

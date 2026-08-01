@@ -62,7 +62,6 @@ fn inert_runtime() -> Arc<dyn SessionRuntime> {
 struct FakeRuntime {
     spawns: std::sync::Mutex<Vec<FakeSpawn>>,
     inputs: std::sync::Mutex<Vec<FakeInput>>,
-    input_failures: std::sync::Mutex<HashSet<String>>,
     stops: std::sync::Mutex<Vec<String>>,
     stop_failures: std::sync::Mutex<HashSet<String>>,
     resizes: std::sync::Mutex<Vec<(String, u16, u16)>>,
@@ -158,13 +157,6 @@ impl FakeRuntime {
 
     fn fail_stop_for(&self, session_id: &str) {
         self.stop_failures
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string());
-    }
-
-    fn fail_input_for(&self, session_id: &str) {
-        self.input_failures
             .lock()
             .unwrap()
             .insert(session_id.to_string());
@@ -273,17 +265,6 @@ impl SessionRuntime for FakeRuntime {
     }
 
     fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
-        if self
-            .input_failures
-            .lock()
-            .unwrap()
-            .contains(&session.session_id)
-        {
-            return Err(RuntimeError::Msg(format!(
-                "injected input failure for {}",
-                session.session_id
-            )));
-        }
         self.inputs.lock().unwrap().push(FakeInput::Bytes {
             session_id: session.session_id.clone(),
             bytes: bytes.to_vec(),
@@ -292,17 +273,6 @@ impl SessionRuntime for FakeRuntime {
     }
 
     fn send_key(&self, session: &RuntimeSession, key: &str) -> RuntimeResult<()> {
-        if self
-            .input_failures
-            .lock()
-            .unwrap()
-            .contains(&session.session_id)
-        {
-            return Err(RuntimeError::Msg(format!(
-                "injected input failure for {}",
-                session.session_id
-            )));
-        }
         self.inputs.lock().unwrap().push(FakeInput::Key {
             session_id: session.session_id.clone(),
             key: key.to_string(),
@@ -363,26 +333,6 @@ fn mgr_with_fake(shell: Option<String>, fake: Arc<FakeRuntime>) -> Arc<SessionMa
         },
         fake,
     )
-}
-
-fn install_fake_session(mgr: &SessionManager, session_id: &str) {
-    mgr.install_handle(
-        session_id,
-        SessionHandle {
-            id: session_id.to_string(),
-            mission_id: None,
-            runner_id: None,
-            runtime_session: RuntimeSession {
-                runtime: "fake".into(),
-                session_id: session_id.to_string(),
-            },
-            codex_capture: None,
-            forwarder: None,
-            stop: Arc::new(AtomicBool::new(false)),
-        },
-        None,
-        Some(DEFAULT_PTY_SIZE),
-    );
 }
 
 /// Test emitter that just records every event. Replaces the Tauri
@@ -1187,229 +1137,63 @@ fn inject_stdin_on_unknown_session_errors_cleanly() {
 }
 
 #[test]
-fn local_input_byte_sequences_drive_draft_state_fail_closed() {
-    use super::output::{classify_local_input, update_local_input_state, LocalInputUpdate};
+fn local_input_byte_classes_drive_pending_state() {
+    use super::output::{classify_local_input, update_local_input_state, LocalInputClass};
 
-    fn apply(state: &mut SessionState, bytes: &[u8], now: Instant) -> LocalInputUpdate {
-        let operations = classify_local_input(bytes);
-        update_local_input_state(state, &operations, now)
+    assert_eq!(
+        classify_local_input(b"x"),
+        Some(LocalInputClass::SetPending)
+    );
+    assert_eq!(
+        classify_local_input("界".as_bytes()),
+        Some(LocalInputClass::SetPending)
+    );
+    for protocol in [
+        b"\x1b[A".as_slice(),
+        b"\x1b]10;rgb:dcdc/dcdc/e0e0\x1b\\",
+        b"\x1b]11;rgb:1515/1616/1b1b\x1b\\",
+    ] {
+        assert_eq!(
+            classify_local_input(protocol),
+            Some(LocalInputClass::ActivityOnly),
+            "terminal protocol traffic must not mark local input pending"
+        );
     }
+    assert_eq!(
+        classify_local_input(b"\x1b[200~pasted text\x1b[201~"),
+        Some(LocalInputClass::SetPending)
+    );
+    assert_eq!(
+        classify_local_input(b"\x16"),
+        Some(LocalInputClass::SetPending)
+    );
+    assert_eq!(
+        classify_local_input(b"\r"),
+        Some(LocalInputClass::ClearPending)
+    );
+    assert_eq!(
+        classify_local_input(b"\x03"),
+        Some(LocalInputClass::ClearPending)
+    );
 
     let now = Instant::now();
     let mut state = SessionState::default();
-    let typed = apply(&mut state, b"a", now);
-    assert!(!state.draft.is_empty());
+    update_local_input_state(&mut state, classify_local_input(b"draft"), now);
+    assert!(state.local_input_pending);
     assert_eq!(state.last_local_input_at, Some(now));
-    assert_eq!(
-        typed.events,
-        [DraftGateEvent {
-            blocked: true,
-            cause: DraftGateCause::Printable,
-        }]
-    );
 
-    let erased = apply(&mut state, b"\x7f", now);
-    assert!(state.draft.is_empty());
+    update_local_input_state(&mut state, classify_local_input(b"\r"), now);
+    assert!(!state.local_input_pending);
+    assert!(state.last_local_input_at.is_none());
+
+    update_local_input_state(&mut state, classify_local_input(b"\x1b[D"), now);
+    assert!(!state.local_input_pending);
     assert_eq!(state.last_local_input_at, Some(now));
-    assert!(erased.input_cleared);
-    assert_eq!(
-        erased.events,
-        [DraftGateEvent {
-            blocked: false,
-            cause: DraftGateCause::BackspaceEmptied,
-        }]
-    );
 
-    apply(&mut state, "界".as_bytes(), now);
-    apply(&mut state, b"\x08", now);
-    assert!(state.draft.is_empty(), "backspace removes one UTF-8 char");
-
-    apply(&mut state, b"one-word", now);
-    apply(&mut state, b"\x17", now);
-    assert!(state.draft.is_empty(), "Ctrl-W removes the pending word");
-
-    for clear in [b"\x15".as_slice(), b"\x1b", b"\x03"] {
-        apply(&mut state, b"draft", now);
-        assert!(!state.draft.is_empty());
-        assert!(apply(&mut state, clear, now).input_cleared);
-        assert!(state.draft.is_empty());
-    }
-
-    for arrow in [b"\x1b[A".as_slice(), b"\x1b[B", b"\x1bOA", b"\x1bOB"] {
-        let mut arrow_state = SessionState::default();
-        let update = apply(&mut arrow_state, arrow, now);
-        assert!(!arrow_state.draft.is_empty());
-        assert_eq!(
-            update.events,
-            [DraftGateEvent {
-                blocked: true,
-                cause: DraftGateCause::HistoryRecall,
-            }]
-        );
-        apply(&mut arrow_state, b"\x7f", now);
-        apply(&mut arrow_state, b"\x17", now);
-        assert!(
-            !arrow_state.draft.is_empty(),
-            "unknown recalled content must stay fail-closed under editing"
-        );
-        apply(&mut arrow_state, b"\x15", now);
-        assert!(arrow_state.draft.is_empty());
-    }
-
-    for neutral in [
-        b"\x1b[D".as_slice(),
-        b"\x1b[C",
-        b"\x1b[H",
-        b"\x1b[F",
-        b"\x1b[1~",
-        b"\x1b[4~",
-        b"\x1b[3~",
-        b"\x1bOC",
-        b"\x1bOD",
-        b"\x1bOP",
-        b"\x1bOQ",
-        b"\x1bOR",
-        b"\x1bOS",
-        b"\x1bx",
-        b"\x1b\x7f",
-    ] {
-        let mut empty = SessionState::default();
-        apply(&mut empty, neutral, now);
-        assert!(
-            empty.draft.is_empty(),
-            "{neutral:?} must not invent content"
-        );
-        assert_eq!(empty.last_local_input_at, Some(now));
-
-        apply(&mut empty, b"draft", now);
-        let before = empty.draft.clone();
-        apply(&mut empty, neutral, now);
-        assert_eq!(empty.draft, before, "{neutral:?} must preserve a draft");
-    }
-
-    let mut multiline = SessionState::default();
-    apply(&mut multiline, b"\x1b\r", now);
-    assert!(!multiline.draft.is_empty());
-
-    let mut pasted = SessionState::default();
-    let paste_update = apply(&mut pasted, b"\x1b[200~first\r\nsecond\x1b[201~", now);
-    assert!(!pasted.draft.is_empty());
-    assert_eq!(paste_update.events[0].cause, DraftGateCause::Paste);
-    apply(&mut pasted, b"\r", now);
-    assert!(pasted.draft.is_empty());
-
-    let mut image = SessionState::default();
-    apply(&mut image, b"\x16", now);
-    assert!(!image.draft.is_empty());
-
-    let mut unknown = SessionState::default();
-    apply(&mut unknown, b"draft", now);
-    let before = unknown.draft.clone();
-    apply(&mut unknown, b"\x01", now);
-    assert_eq!(unknown.draft, before);
-    let mut unknown_empty = SessionState::default();
-    apply(&mut unknown_empty, b"\x01", now);
-    assert!(unknown_empty.draft.is_empty());
-
-    let mut saturated = SessionState::default();
-    apply(&mut saturated, &vec![b'x'; DRAFT_MAX_BYTES], now);
-    assert!(saturated.draft.saturated);
-    assert_eq!(saturated.draft.bytes.len(), DRAFT_MAX_BYTES);
-    apply(&mut saturated, b"\x7f", now);
-    apply(&mut saturated, b"\x17", now);
-    assert!(
-        !saturated.draft.is_empty(),
-        "editing cannot fail open after the bounded model saturates"
-    );
-    apply(&mut saturated, b"\x15", now);
-    assert!(saturated.draft.is_empty());
-    assert!(!saturated.draft.saturated);
-
-    let mut interrupted = SessionState::default();
-    apply(&mut interrupted, b"draft", now);
-    apply(&mut interrupted, b"\x03", now);
-    assert!(interrupted.draft.is_empty());
-}
-
-#[test]
-fn reserve_delivery_distinguishes_draft_recency_and_abandonment() {
-    let fake = fake_runtime();
-    let mgr = mgr_with_fake(None, Arc::clone(&fake));
-    let cap = capture();
-
-    install_fake_session(&mgr, "draft-blocked");
-    mgr.inject_direct_stdin("draft-blocked", b"unsent", cap.as_ref())
-        .unwrap();
-    match mgr.reserve_delivery("draft-blocked").unwrap() {
-        router::DeliveryReservation::PendingInput(remaining) => {
-            assert!(remaining > Duration::from_secs(9 * 60));
-            assert!(remaining <= DRAFT_ABANDON_WINDOW);
-        }
-        other => panic!("a live draft must block delivery, got {other:?}"),
-    }
-    assert!(!mgr.input_quiescent("draft-blocked"));
-
-    install_fake_session(&mgr, "backspace-cleared");
-    mgr.inject_direct_stdin("backspace-cleared", b"x", cap.as_ref())
-        .unwrap();
-    mgr.inject_direct_stdin("backspace-cleared", b"\x7f", cap.as_ref())
-        .unwrap();
-    assert!(!mgr.input_quiescent("backspace-cleared"));
-    assert!(matches!(
-        mgr.reserve_delivery("backspace-cleared").unwrap(),
-        router::DeliveryReservation::RecentlyTyping(_)
-    ));
-
-    install_fake_session(&mgr, "recent-activity");
-    mgr.inject_direct_stdin("recent-activity", b"\x1b[D", cap.as_ref())
-        .unwrap();
-    assert!(matches!(
-        mgr.reserve_delivery("recent-activity").unwrap(),
-        router::DeliveryReservation::RecentlyTyping(_)
-    ));
-
-    install_fake_session(&mgr, "abandoned-draft");
-    mgr.inject_direct_stdin("abandoned-draft", b"forgotten", cap.as_ref())
-        .unwrap();
-    mgr.set_draft_abandon_ms(0);
-    let abandoned_token = match mgr.reserve_delivery("abandoned-draft").unwrap() {
-        router::DeliveryReservation::Ready(token) => token,
-        other => panic!("an abandoned draft must stop gating, got {other:?}"),
-    };
-    assert!(mgr
-        .session_state("abandoned-draft")
-        .unwrap()
-        .lock()
-        .unwrap()
-        .draft
-        .is_empty());
-    mgr.finish_delivery("abandoned-draft", abandoned_token);
-}
-
-#[test]
-fn failed_direct_stdin_write_restores_the_whole_draft() {
-    let fake = fake_runtime();
-    let mgr = mgr_with_fake(None, Arc::clone(&fake));
-    let cap = capture();
-    let session_id = "draft-rollback";
-    install_fake_session(&mgr, session_id);
-
-    mgr.inject_direct_stdin(session_id, b"original", cap.as_ref())
-        .unwrap();
-    let (draft_before, input_at_before) = {
-        let state = mgr.session_state(session_id).unwrap();
-        let state = state.lock().unwrap();
-        (state.draft.clone(), state.last_local_input_at)
-    };
-
-    fake.fail_input_for(session_id);
-    assert!(mgr
-        .inject_direct_stdin(session_id, b"\x7f", cap.as_ref())
-        .is_err());
-    let state = mgr.session_state(session_id).unwrap();
-    let state = state.lock().unwrap();
-    assert_eq!(state.draft, draft_before);
-    assert_eq!(state.last_local_input_at, input_at_before);
+    state.local_input_pending = true;
+    update_local_input_state(&mut state, classify_local_input(b"\x03"), now);
+    assert!(!state.local_input_pending);
+    assert!(state.last_local_input_at.is_none());
 }
 
 // `await_pty_output` was deleted in the Step 9 cutover. Tests

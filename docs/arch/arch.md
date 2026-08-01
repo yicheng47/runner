@@ -265,7 +265,8 @@ A signal carries an optional `payload` (JSON) for the router and UI. Human-reada
 Prose, addressed either to the mission (broadcast) or to a specific crewmate (direct).
 
 Two shapes:
-- **Broadcast** — `runner msg post "<text>"`. Goes to everyone's inbox.
+
+- **Broadcast** — `runner msg post "<text>"`. Goes to every other runner's inbox; a human-authored broadcast goes to every runner.
 - **Direct** — `runner msg post --to <slot_handle> "<text>"`. Goes to that slot's inbox only.
 
 Messages are **flat by design** — one stream per mission, no message-thread scoping, and no separate fact primitive. Each runner consumes messages through their **inbox** (§4.3). Durable conclusions belong in project files, code, commits, or normal message prose instead of a second coordination object model.
@@ -281,7 +282,7 @@ Every slot has an **inbox**: the subset of the mission's messages relevant to it
 
 ```
 inbox(h) = all events in the mission where
-          kind = "message" AND (to = null OR to = h)
+          kind = "message" AND from != h AND (to = null OR to = h)
 ```
 
 `runner msg read` returns the calling slot's inbox, sorted by ULID (chronological). `--since <ts>` restricts to messages newer than a given ULID/timestamp so agents can poll without re-reading history.

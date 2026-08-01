@@ -49,8 +49,6 @@ mod tests;
 
 const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
 const RECENT_LOCAL_INPUT_WINDOW: Duration = Duration::from_secs(2);
-const DRAFT_MAX_BYTES: usize = 4 * 1024;
-const DRAFT_ABANDON_WINDOW: Duration = Duration::from_secs(10 * 60);
 pub(crate) const DEFAULT_PTY_SIZE: (u16, u16) = (80, 24);
 
 /// How long a cols-change resize storm must stay quiet before the
@@ -559,130 +557,12 @@ struct PendingResize {
     events: Arc<dyn SessionEvents>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct DraftState {
-    bytes: Vec<u8>,
-    /// Once the cap is reached, deletion cannot prove what remains beyond it.
-    saturated: bool,
-    /// History recall materializes unknown text, so only an explicit clear can reopen the gate.
-    opaque: bool,
-}
-
-impl DraftState {
-    fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
-    }
-
-    fn append(&mut self, bytes: &[u8]) -> bool {
-        if self.saturated || bytes.is_empty() {
-            return false;
-        }
-        let available = DRAFT_MAX_BYTES - self.bytes.len();
-        self.bytes
-            .extend_from_slice(&bytes[..bytes.len().min(available)]);
-        if self.bytes.len() == DRAFT_MAX_BYTES {
-            self.saturated = true;
-            return true;
-        }
-        false
-    }
-
-    fn pop_char(&mut self) {
-        if self.saturated || self.opaque || self.bytes.is_empty() {
-            return;
-        }
-        let mut new_len = self.bytes.len() - 1;
-        while new_len > 0 && self.bytes[new_len] & 0b1100_0000 == 0b1000_0000 {
-            new_len -= 1;
-        }
-        self.bytes.truncate(new_len);
-    }
-
-    fn pop_word(&mut self) {
-        if self.saturated || self.opaque {
-            return;
-        }
-        while self
-            .bytes
-            .last()
-            .is_some_and(|byte| byte.is_ascii_whitespace())
-        {
-            self.pop_char();
-        }
-        while self
-            .bytes
-            .last()
-            .is_some_and(|byte| !byte.is_ascii_whitespace())
-        {
-            self.pop_char();
-        }
-    }
-
-    fn clear(&mut self) {
-        self.bytes.clear();
-        self.saturated = false;
-        self.opaque = false;
-    }
-
-    fn mark_opaque(&mut self, marker: &[u8]) {
-        if self.bytes.is_empty() {
-            self.append(marker);
-        }
-        self.opaque = true;
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DraftGateCause {
-    Printable,
-    Paste,
-    HistoryRecall,
-    BackspaceEmptied,
-    Esc,
-    Submit,
-    Interrupt,
-    Abandoned,
-    ManualClear,
-    Saturated,
-}
-
-impl DraftGateCause {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Printable => "printable",
-            Self::Paste => "paste",
-            Self::HistoryRecall => "history-recall",
-            Self::BackspaceEmptied => "backspace-emptied",
-            Self::Esc => "esc",
-            Self::Submit => "submit",
-            Self::Interrupt => "interrupt",
-            Self::Abandoned => "abandoned",
-            Self::ManualClear => "manual-clear",
-            Self::Saturated => "saturated",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DraftGateEvent {
-    blocked: bool,
-    cause: DraftGateCause,
-}
-
-fn log_draft_gate_event(session_id: &str, event: DraftGateEvent) {
-    let state = if event.blocked { "blocked" } else { "open" };
-    log::info!(
-        "[draft-gate] session={session_id} state={state} cause={}",
-        event.cause.as_str()
-    );
-}
-
 #[derive(Default)]
 struct SessionState {
     handle: Option<SessionHandle>,
     activity: Option<SessionActivityState>,
     suppress_local_input_busy: bool,
-    draft: DraftState,
+    local_input_pending: bool,
     last_local_input_at: Option<Instant>,
     delivery_gate: Arc<DeliveryGate>,
     mission_status_sink: Option<ForwarderEmitCtx>,
@@ -725,7 +605,7 @@ impl SessionState {
         self.handle.is_none()
             && self.activity.is_none()
             && !self.suppress_local_input_busy
-            && self.draft.is_empty()
+            && !self.local_input_pending
             && self.last_local_input_at.is_none()
             && self.mission_status_sink.is_none()
             && !self.completion_armed
@@ -789,10 +669,6 @@ pub struct SessionManager {
     /// in milliseconds. A field rather than a const so tests can pin
     /// it high (deterministic manual settle) or low (thread wiring).
     resize_settle_ms: AtomicU64,
-    /// How long an untouched draft blocks delivery. Production uses
-    /// `DRAFT_ABANDON_WINDOW`; tests pin this low to exercise the lazy
-    /// reserve-time backstop without waiting ten minutes.
-    draft_abandon_ms: AtomicU64,
 }
 
 /// RAII guard that releases a session state's `resuming` flag on drop. The
@@ -896,18 +772,12 @@ impl SessionManager {
             pending_mission_cancels: Mutex::new(HashMap::new()),
             runtime,
             resize_settle_ms: AtomicU64::new(RESIZE_SETTLE_MS),
-            draft_abandon_ms: AtomicU64::new(DRAFT_ABANDON_WINDOW.as_millis() as u64),
         })
     }
 
     #[cfg(test)]
     pub(crate) fn set_resize_settle_ms(&self, ms: u64) {
         self.resize_settle_ms.store(ms, Ordering::Relaxed);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_draft_abandon_ms(&self, ms: u64) {
-        self.draft_abandon_ms.store(ms, Ordering::Relaxed);
     }
 
     fn session_state(&self, session_id: &str) -> Option<Arc<Mutex<SessionState>>> {
@@ -973,7 +843,7 @@ impl SessionManager {
         session.handle.is_some()
             && !delivery.in_flight
             && delivery.next_ticket == delivery.next_served
-            && session.draft.is_empty()
+            && !session.local_input_pending
             && session
                 .last_local_input_at
                 .is_none_or(|last| last.elapsed() >= RECENT_LOCAL_INPUT_WINDOW)
@@ -990,7 +860,7 @@ impl SessionManager {
             .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
         let gate = session.lock().unwrap().delivery_gate.clone();
         let mut delivery = gate.state.lock().unwrap();
-        let mut session = session.lock().unwrap();
+        let session = session.lock().unwrap();
         if session.handle.is_none() {
             return Err(Error::msg(format!("session not found: {session_id}")));
         }
@@ -1000,28 +870,8 @@ impl SessionManager {
         if delivery.next_ticket != delivery.next_served {
             return Ok(router::DeliveryReservation::InFlight);
         }
-        if !session.draft.is_empty() {
-            let abandon_window =
-                Duration::from_millis(self.draft_abandon_ms.load(Ordering::Relaxed));
-            let Some(last) = session.last_local_input_at else {
-                session.last_local_input_at = Some(Instant::now());
-                return Ok(router::DeliveryReservation::PendingInput(abandon_window));
-            };
-            let elapsed = last.elapsed();
-            if elapsed < abandon_window {
-                return Ok(router::DeliveryReservation::PendingInput(
-                    abandon_window - elapsed,
-                ));
-            }
-            session.draft.clear();
-            session.last_local_input_at = None;
-            log_draft_gate_event(
-                session_id,
-                DraftGateEvent {
-                    blocked: false,
-                    cause: DraftGateCause::Abandoned,
-                },
-            );
+        if session.local_input_pending {
+            return Ok(router::DeliveryReservation::PendingInput);
         }
         if let Some(last) = session.last_local_input_at {
             let elapsed = last.elapsed();
@@ -1083,7 +933,7 @@ impl SessionManager {
             delivery.next_ticket = 0;
             delivery.next_served = 0;
             gate.ready.notify_all();
-            state.draft.clear();
+            state.local_input_pending = false;
             state.last_local_input_at = None;
             state.handle = Some(handle);
             state.mission_status_sink = mission_status_sink;

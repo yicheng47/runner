@@ -170,7 +170,7 @@ fn i2_4_msg_post_to_unknown_handle_is_rejected() {
 }
 
 #[test]
-fn msg_post_to_human_is_rejected_with_terminal_guidance() {
+fn msg_post_to_human_is_rejected_with_channel_guidance() {
     let f = Fixture::new("C", "M");
     f.write_roster(&[("lead", true), ("impl", false)]);
 
@@ -181,9 +181,10 @@ fn msg_post_to_human_is_rejected_with_terminal_guidance() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("operator reads your terminal")
-            && stderr.contains("answer in your TUI output"),
-        "stderr should teach the agent to answer in its terminal; got: {stderr}",
+        stderr.contains("human is not a message recipient")
+            && stderr.contains("runner msg post \"<text>\"")
+            && stderr.contains("omit --to"),
+        "stderr should teach the agent to broadcast into the channel; got: {stderr}",
     );
     assert_eq!(f.line_count(), 0);
 }
@@ -193,7 +194,8 @@ fn i2_5_msg_read_prints_inbox_in_order_and_emits_inbox_read() {
     let f = Fixture::new("C", "M");
     f.write_roster(&[("lead", true), ("impl", false)]);
 
-    // Pre-populate two directed messages to @impl from @lead.
+    // Pre-populate two directed messages to @impl from @lead with the
+    // caller's own broadcast between them.
     let log = EventLog::open(&f.mission_dir).unwrap();
     use runner_core::model::EventDraft;
     let m1 = log
@@ -205,6 +207,14 @@ fn i2_5_msg_read_prints_inbox_in_order_and_emits_inbox_read() {
             "first",
         ))
         .unwrap();
+    log.append(EventDraft::message(
+        "C",
+        "M",
+        "impl",
+        None,
+        "own broadcast must be excluded",
+    ))
+    .unwrap();
     let m2 = log
         .append(EventDraft::message(
             "C",
@@ -223,6 +233,7 @@ fn i2_5_msg_read_prints_inbox_in_order_and_emits_inbox_read() {
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("own broadcast must be excluded"));
     let first_pos = stdout.find("first").expect("first message in stdout");
     let second_pos = stdout.find("second").expect("second message in stdout");
     assert!(

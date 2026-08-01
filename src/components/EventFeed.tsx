@@ -19,22 +19,13 @@ import { useEffect, useRef, useState } from "react";
 
 import { AskHumanCard } from "./AskHumanCard";
 import { MessageBody } from "./MessageBody";
+import { isHumanAuthored } from "../lib/eventFeed";
 import type {
   Event,
   HumanQuestionPayload,
   HumanResponsePayload,
   HumanSaidPayload,
 } from "../lib/types";
-
-// Events authored by the human via MCP / AskHumanCard. When one appends
-// we always commit to the bottom so the operator sees the newly relayed
-// instruction or selected response regardless of where they'd scrolled.
-function isHumanAuthored(ev: Event): boolean {
-  return (
-    ev.kind === "signal" &&
-    (ev.type === "human_said" || ev.type === "human_response")
-  );
-}
 
 // Router-internal plumbing rows that the reader never needs to see in
 // the feed. `runner_status` is already projected onto the RunnersRail
@@ -219,18 +210,22 @@ function EventRow({
 
   if (event.kind === "message") {
     const text = (event.payload as { text?: string })?.text ?? "";
+    const human = event.from === "human";
     return (
       <div className="flex flex-col gap-1">
         <div className="flex items-baseline gap-2 text-[11px] text-fg-3">
-          <span className="font-mono text-[12px] font-semibold text-accent">
-            @{event.from}
+          <span
+            className={`font-mono text-[12px] font-semibold ${
+              human ? "text-warn" : "text-accent"
+            }`}
+          >
+            {human ? "you" : `@${event.from}`}
           </span>
           <span>message</span>
           {event.to ? (
-            <>
-              <span>→</span>
-              <span className="font-mono text-fg-2">@{event.to}</span>
-            </>
+            <span className="font-mono text-[12px] text-fg-2">
+              → @{event.to}
+            </span>
           ) : null}
           <span>·</span>
           <span>{formatTs(event.ts)}</span>
@@ -266,15 +261,18 @@ function EventRow({
     return (
       <div className="flex flex-col gap-1">
         <div className="flex items-baseline gap-2 text-[11px] text-fg-3">
-          <span className="font-mono text-[12px] font-semibold text-accent">
-            @{event.from}
+          <span
+            className={`font-mono text-[12px] font-semibold ${
+              event.from === "human" ? "text-warn" : "text-accent"
+            }`}
+          >
+            {event.from === "human" ? "you" : `@${event.from}`}
           </span>
           <span>message</span>
           {target ? (
-            <>
-              <span>→</span>
-              <span className="font-mono text-fg-2">@{target}</span>
-            </>
+            <span className="font-mono text-[12px] text-fg-2">
+              → @{target}
+            </span>
           ) : null}
           <span>·</span>
           <span>{formatTs(event.ts)}</span>

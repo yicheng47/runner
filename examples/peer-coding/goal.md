@@ -9,9 +9,7 @@ A two-runner coder/reviewer loop for a single implementation task. The coder shi
 
 ## Team conventions
 
-Paste these into the Crew's team-conventions field:
-
-The Runner CLI is the sole coordination and review record — every handoff (implementation ready, review findings, fixes applied, clean review) is a Runner message, never a PR comment or other remote channel. The coder creates a task-specific feature branch before editing and never implements on `main` or another long-lived branch. Review happens on the local working-tree diff: the reviewer never expects, requests, or waits for a commit, push, or PR. All changes stay in the working tree unless the mission goal explicitly authorizes a specific git side effect. Definition of done: implemented, relevant checks passed, reviewer reports no remaining must-fix issues.
+Use the contents of [`team-conventions.md`](team-conventions.md) as the Crew's team-conventions prompt.
 
 ## Goal (replace this)
 
