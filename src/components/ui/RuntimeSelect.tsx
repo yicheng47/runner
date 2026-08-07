@@ -13,28 +13,38 @@ export function RuntimeSelect({
   value,
   onChange,
   options = RUNTIME_OPTIONS,
+  currentOption,
+  disabled = false,
+  placeholder = "No agents available",
 }: {
   id?: string;
   value: string;
   onChange: (option: RuntimeOption) => void;
   options?: RuntimeOption[];
+  currentOption?: RuntimeOption;
+  disabled?: boolean;
+  placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
-  const current = options.find((o) => o.value === value) ?? options[0];
+  const current =
+    options.find((o) => o.value === value) ?? currentOption ?? options[0];
 
   return (
     <div ref={rootRef}>
       <button
         id={id}
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
+        onClick={() => {
+          if (!disabled) setOpen((v) => !v);
+        }}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex w-full cursor-pointer items-center justify-between rounded border border-line-strong bg-bg px-2.5 py-1.5 text-left text-sm text-fg transition-colors hover:border-fg-3 focus:border-fg-3 focus:outline-none"
+        className="flex w-full cursor-pointer items-center justify-between rounded border border-line-strong bg-bg px-2.5 py-1.5 text-left text-sm text-fg transition-colors hover:border-fg-3 focus:border-fg-3 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
       >
-        <span className="font-mono">{current.label}</span>
+        <span className="font-mono">{current?.label ?? placeholder}</span>
         <span
           aria-hidden
           className={`ml-2 text-fg-3 transition-transform ${open ? "rotate-180" : ""}`}

@@ -107,6 +107,8 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // 0018: adds nullable `slots.model_override` so a slot that selects a
 // different runtime can pin that runtime's model without mutating the
 // reusable runner template.
+// 0019: persists model/effort on runtime-only direct chats so resume
+// keeps the session's selected agent configuration.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -152,6 +154,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         18,
         include_str!("../migrations/0018_slot_model_override.sql"),
+    ),
+    (
+        19,
+        include_str!("../migrations/0019_session_agent_options.sql"),
     ),
 ];
 
@@ -1666,6 +1672,8 @@ Talking to the human:
             "runtime_window",
             "runtime_pane",
             "runtime_cursor",
+            "agent_model",
+            "agent_effort",
             "last_cols",
             "last_rows",
             "resume_on_launch",

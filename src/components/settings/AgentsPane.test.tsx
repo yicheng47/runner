@@ -102,8 +102,9 @@ describe("AgentsPane", () => {
     );
   });
 
-  it("owns and persists the direct chat default runtime", async () => {
+  it("owns and persists the direct chat default agent", async () => {
     localStorage.setItem("settings.defaultChatRuntime", "qoder");
+    localStorage.setItem("settings.enabledAgents", '["qoder"]');
     await act(async () => {
       root.render(<AgentsPane />);
     });
@@ -122,6 +123,38 @@ describe("AgentsPane", () => {
     await act(async () => codexOption?.click());
     expect(localStorage.getItem("settings.defaultChatRuntime")).toBe("codex");
     expect(trigger?.textContent).toContain("Codex");
+  });
+
+  it("enables agents by default and persists a disabled agent", async () => {
+    localStorage.setItem("settings.defaultChatRuntime", "codex");
+    localStorage.setItem("settings.enabledAgents", '["qoder"]');
+    await act(async () => {
+      root.render(<AgentsPane />);
+    });
+
+    const toggle = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Disable Codex"]',
+    );
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => toggle?.click());
+    expect(localStorage.getItem("settings.disabledAgents")).toBe('["codex"]');
+    expect(localStorage.getItem("settings.defaultChatRuntime")).toBeNull();
+    expect(
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Enable Codex"]')
+        ?.getAttribute("aria-checked"),
+    ).toBe("false");
+
+    const defaultAgent = container.querySelector<HTMLButtonElement>(
+      "#agents-default-runtime",
+    );
+    await act(async () => defaultAgent?.click());
+    const options = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="option"]'),
+    ).map((option) => option.textContent);
+    expect(options.join(" ")).not.toContain("Codex");
+    expect(options.join(" ")).toContain("Qoder");
   });
 
   it("discards an edited override on Escape without saving it on blur", async () => {

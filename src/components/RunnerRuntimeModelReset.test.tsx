@@ -9,6 +9,36 @@ import type { Runner } from "../lib/types";
 const mocks = vi.hoisted(() => ({
   runnerCreate: vi.fn(),
   runnerUpdate: vi.fn(),
+  runtimeStatus: vi.fn(async () => ({
+    shell: {
+      shell: "/bin/zsh",
+      outcome: "ok",
+      duration_ms: 10,
+      checking: false,
+      using_last_known_good: false,
+      last_known_good_captured_at: null,
+    },
+    runtimes: [
+      ["codex", "Codex", "codex"],
+      ["claude-code", "Claude Code", "claude"],
+      ["qoder", "Qoder", "qodercli"],
+      ["trae", "TRAE CLI", "traecli"],
+    ].map(([name, display_name, command]) => ({
+      name,
+      display_name,
+      command,
+      detected_path: `/usr/local/bin/${command}`,
+      override_path: null,
+      effective_command: `/usr/local/bin/${command}`,
+      effective_source: "detected",
+      state: "detected",
+      invalid_reason: null,
+    })),
+  })),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -21,6 +51,7 @@ vi.mock("../lib/api", () => ({
       create: mocks.runnerCreate,
       update: mocks.runnerUpdate,
     },
+    runtime: { status: mocks.runtimeStatus },
   },
 }));
 
@@ -39,7 +70,7 @@ async function selectRuntime(trigger: HTMLButtonElement, runtime: string) {
   await act(async () => trigger.click());
   const option = Array.from(
     document.querySelectorAll<HTMLButtonElement>('[role="option"] button'),
-  ).find((button) => button.textContent?.includes(runtime));
+  ).find((button) => button.textContent?.toLowerCase().includes(runtime));
   expect(option).toBeDefined();
   await act(async () => option?.click());
 }
@@ -66,12 +97,19 @@ describe("runner runtime model reset", () => {
 
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const storage = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    });
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
     mocks.runnerCreate.mockReset();
     mocks.runnerUpdate.mockReset();
     mocks.runnerUpdate.mockResolvedValue(runner);
+    mocks.runtimeStatus.mockClear();
   });
 
   afterEach(async () => {
@@ -81,6 +119,7 @@ describe("runner runtime model reset", () => {
   });
 
   it("resets a new runner's model when its runtime changes", async () => {
+    localStorage.setItem("settings.enabledAgents", '["trae"]');
     await act(async () => {
       root.render(
         <CreateRunnerModal
@@ -105,6 +144,7 @@ describe("runner runtime model reset", () => {
   });
 
   it("resets an existing runner's model when its runtime changes", async () => {
+    localStorage.setItem("settings.enabledAgents", '["trae"]');
     await act(async () => {
       root.render(
         <RunnerEditDrawer
@@ -128,6 +168,81 @@ describe("runner runtime model reset", () => {
     expect(model?.placeholder).toBe("default");
   });
 
+  it("omits disabled agents when creating a runner", async () => {
+    localStorage.setItem("settings.disabledAgents", '["qoder"]');
+    await act(async () => {
+      root.render(
+        <CreateRunnerModal
+          open
+          onClose={() => {}}
+          onCreated={() => {}}
+        />,
+      );
+    });
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      "#new-runner-runtime",
+    );
+    await act(async () => trigger?.click());
+    const options = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="option"]'),
+    ).map((option) => option.textContent);
+    expect(options.join(" ")).toContain("Codex");
+    expect(options.join(" ")).not.toContain("Qoder");
+  });
+
+  it("shows a disabled current agent without offering it again", async () => {
+    localStorage.setItem("settings.disabledAgents", '["codex"]');
+    await act(async () => {
+      root.render(
+        <RunnerEditDrawer
+          open
+          runner={runner}
+          onClose={() => {}}
+          onSaved={() => {}}
+        />,
+      );
+    });
+
+    const trigger = container.querySelector<HTMLButtonElement>("#edit-runtime");
+    expect(trigger?.textContent).toContain("Codex");
+    await act(async () => trigger?.click());
+    const options = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="option"]'),
+    ).map((option) => option.textContent);
+    expect(options.join(" ")).not.toContain("Codex");
+  });
+
+  it("preserves a stored max effort for codex", async () => {
+    await act(async () => {
+      root.render(
+        <RunnerEditDrawer
+          open
+          runner={{ ...runner, effort: "max" }}
+          onClose={() => {}}
+          onSaved={() => {}}
+        />,
+      );
+    });
+
+    const effort = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(
+        'button[aria-haspopup="listbox"]',
+      ),
+    ).find((button) => button.textContent?.includes("Max"));
+    expect(effort).toBeDefined();
+
+    const save = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("button"),
+    ).find((button) => button.textContent === "Save");
+    await act(async () => save?.click());
+
+    expect(mocks.runnerUpdate).toHaveBeenCalledWith(
+      "runner-1",
+      expect.objectContaining({ effort: "max" }),
+    );
+  });
+
   it("shows a crew slot's effective engine without overwriting the runner engine", async () => {
     await act(async () => {
       root.render(
@@ -144,7 +259,7 @@ describe("runner runtime model reset", () => {
 
     const runtime = container.querySelector<HTMLInputElement>("#edit-runtime");
     const model = container.querySelector<HTMLInputElement>("#edit-model");
-    expect(runtime?.value).toBe("trae");
+    expect(runtime?.value).toBe("TRAE CLI");
     expect(model?.value).toBe("default");
     expect(container.querySelector("#edit-args")).toBeNull();
 

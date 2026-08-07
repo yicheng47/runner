@@ -23,6 +23,8 @@ impl SessionManager {
         &self,
         runtime: &str,
         recorded_command: Option<&str>,
+        model: Option<&str>,
+        effort: Option<&str>,
         pool: &DbPool,
     ) -> Result<Runner> {
         let definition = router::runtime::runtime_definition(runtime)
@@ -33,13 +35,13 @@ impl SessionManager {
         if let Some(command) = recorded {
             let path = Path::new(command);
             if path.is_absolute() && crate::runtime_status::executable_path_is_valid(path) {
-                return runtime_direct_runner(runtime, Some(command));
+                return runtime_direct_runner(runtime, Some(command), model, effort);
             }
             if !path.is_absolute() && command != definition.command {
-                return runtime_direct_runner(runtime, Some(command));
+                return runtime_direct_runner(runtime, Some(command), model, effort);
             }
         }
-        let runner = runtime_direct_runner(runtime, None)?;
+        let runner = runtime_direct_runner(runtime, None, model, effort)?;
         self.resolve_runner_executable(&runner, pool)
     }
 
@@ -243,6 +245,7 @@ impl SessionManager {
             runner,
             slot.runtime_override.as_deref(),
             slot.model_override.as_deref(),
+            None,
         )?;
         let pinned = resolution.pinned;
         let runner =
@@ -703,11 +706,16 @@ impl SessionManager {
     /// `None` spawns the runner's own runtime unchanged; a differing
     /// registry runtime spawns that engine with registry command /
     /// default args while the runner's persona fields carry over.
+    /// `model_override` / `effort_override` ride along with an explicit
+    /// runtime override so the replacement engine can be configured
+    /// instead of always spawning on its default flags.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_direct(
         self: &Arc<Self>,
         runner: &Runner,
         runtime_override: Option<&str>,
+        model_override: Option<&str>,
+        effort_override: Option<&str>,
         project_id: Option<&str>,
         cwd: Option<&str>,
         cols: Option<u16>,
@@ -720,6 +728,8 @@ impl SessionManager {
         self.spawn_direct_inner(
             runner,
             runtime_override,
+            model_override,
+            effort_override,
             Some(runner.id.as_str()),
             project_id,
             cwd,
@@ -749,6 +759,8 @@ impl SessionManager {
             runner,
             None,
             None,
+            None,
+            None,
             project_id,
             cwd,
             cols,
@@ -766,6 +778,8 @@ impl SessionManager {
         self: &Arc<Self>,
         runner: &Runner,
         runtime_override: Option<&str>,
+        model_override: Option<&str>,
+        effort_override: Option<&str>,
         persisted_runner_id: Option<&str>,
         project_id: Option<&str>,
         cwd: Option<&str>,
@@ -781,7 +795,8 @@ impl SessionManager {
 
         // Chat-level runtime override (feature 41) — same resolution
         // rule as mission spawns.
-        let resolution = resolve_runtime_override(runner, runtime_override, None)?;
+        let resolution =
+            resolve_runtime_override(runner, runtime_override, model_override, effort_override)?;
         let pinned = resolution.pinned;
         let runner =
             self.resolve_runner_executable(resolution.effective.as_ref().unwrap_or(runner), &pool)?;
@@ -841,8 +856,13 @@ impl SessionManager {
             row.last_cols = initial_size.map(|(cols, _)| cols);
             row.last_rows = initial_size.map(|(_, rows)| rows);
             if persisted_runner_id.is_none() || pinned {
+                // Pinned runner-backed rows also record the effective
+                // model/effort so resume replays the override instead
+                // of the replacement engine's defaults.
                 row.agent_runtime = Some(runner.runtime.clone());
                 row.agent_command = Some(runner.command.clone());
+                row.agent_model = runner.model.clone();
+                row.agent_effort = runner.effort.clone();
             }
             crate::repo::session::insert(&conn, &row)?;
         }
@@ -1185,13 +1205,17 @@ impl SessionManager {
         let runner = if let Some(runner_id) = snap.runner_id.as_deref() {
             let conn = pool.get()?;
             let runner = crate::commands::runner::get(&conn, runner_id)?;
-            let runner =
-                match resolve_runtime_override(&runner, snap.agent_runtime.as_deref(), None)?
-                    .effective
-                {
-                    Some(effective) => effective,
-                    None => runner,
-                };
+            let runner = match resolve_runtime_override(
+                &runner,
+                snap.agent_runtime.as_deref(),
+                snap.agent_model.as_deref(),
+                snap.agent_effort.as_deref(),
+            )?
+            .effective
+            {
+                Some(effective) => effective,
+                None => runner,
+            };
             self.resolve_runner_executable(&runner, &pool)?
         } else {
             let runtime = snap.agent_runtime.as_deref().ok_or_else(|| {
@@ -1199,7 +1223,13 @@ impl SessionManager {
                     "runtime-only session {session_id} missing agent_runtime"
                 ))
             })?;
-            self.resolve_runtime_only_resume_runner(runtime, snap.agent_command.as_deref(), &pool)?
+            self.resolve_runtime_only_resume_runner(
+                runtime,
+                snap.agent_command.as_deref(),
+                snap.agent_model.as_deref(),
+                snap.agent_effort.as_deref(),
+                &pool,
+            )?
         };
 
         // Resume plan: hand the prior agent_session_key back to the

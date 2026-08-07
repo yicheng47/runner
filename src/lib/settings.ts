@@ -24,6 +24,9 @@ export const STORAGE_DEFAULT_WORKING_DIR = "settings.defaultWorkingDir";
 // Preserve the key used by the former Chat pane so existing selections
 // survive the control's move to Agents.
 export const STORAGE_DEFAULT_RUNTIME = "settings.defaultChatRuntime";
+export const STORAGE_DISABLED_AGENTS = "settings.disabledAgents";
+export const STORAGE_ENABLED_AGENTS = "settings.enabledAgents";
+export const AGENT_ENABLED_CHANGED_EVENT = "runner:agent-enabled-changed";
 export const STORAGE_APP_THEME = "settings.appTheme";
 export const STORAGE_APP_LIGHT_VARIANT = "settings.appLightVariant";
 export const STORAGE_APP_DARK_VARIANT = "settings.appDarkVariant";
@@ -566,6 +569,69 @@ export function writeDefaultRuntime(value: string): void {
   } catch {
     // best-effort
   }
+}
+
+// Only the daily-driver agents ship enabled; the rest stay hidden from
+// pickers until explicitly switched on in Settings → Agents. An explicit
+// enable is recorded separately so it survives being outside the stored
+// disabled-set.
+const DEFAULT_DISABLED_AGENTS: readonly string[] = ["qoder", "trae"];
+
+function readStoredAgentSet(key: string): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(
+      parsed
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function writeStoredAgentSet(key: string, agents: Set<string>): void {
+  if (agents.size === 0) {
+    localStorage.removeItem(key);
+  } else {
+    localStorage.setItem(key, JSON.stringify([...agents].sort()));
+  }
+}
+
+// Effective disabled set: explicit disables plus default-disabled
+// agents the user hasn't explicitly enabled.
+export function readDisabledAgents(): Set<string> {
+  const disabled = readStoredAgentSet(STORAGE_DISABLED_AGENTS);
+  const enabled = readStoredAgentSet(STORAGE_ENABLED_AGENTS);
+  for (const agent of DEFAULT_DISABLED_AGENTS) {
+    if (!enabled.has(agent)) disabled.add(agent);
+  }
+  return disabled;
+}
+
+export function isAgentEnabled(agent: string): boolean {
+  return !readDisabledAgents().has(agent);
+}
+
+export function writeAgentEnabled(agent: string, enabled: boolean): void {
+  try {
+    const disabled = readStoredAgentSet(STORAGE_DISABLED_AGENTS);
+    const explicitlyEnabled = readStoredAgentSet(STORAGE_ENABLED_AGENTS);
+    if (enabled) {
+      disabled.delete(agent);
+      explicitlyEnabled.add(agent);
+    } else {
+      disabled.add(agent);
+      explicitlyEnabled.delete(agent);
+    }
+    writeStoredAgentSet(STORAGE_DISABLED_AGENTS, disabled);
+    writeStoredAgentSet(STORAGE_ENABLED_AGENTS, explicitlyEnabled);
+  } catch {
+    // best-effort
+  }
+  window.dispatchEvent(new Event(AGENT_ENABLED_CHANGED_EVENT));
 }
 
 export function readAppTheme(): AppTheme {

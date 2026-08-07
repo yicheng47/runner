@@ -22,10 +22,73 @@ const mocks = vi.hoisted(() => ({
       working_dir: null,
     },
   ]),
+  startRuntime: vi.fn(async () => ({
+    id: "session-1",
+    mission_id: null,
+    runner_id: null,
+    handle: "codex",
+    pid: 123,
+  })),
+  renameSession: vi.fn(async () => {}),
+  runtimeChanged: null as ((event: unknown) => void) | null,
+  runtimeStatus: vi.fn(async () => ({
+    shell: {
+      shell: "/bin/zsh",
+      outcome: "ok",
+      duration_ms: 10,
+      checking: false,
+      using_last_known_good: false,
+      last_known_good_captured_at: null,
+    },
+    runtimes: [
+      {
+        name: "codex",
+        display_name: "Codex",
+        command: "codex",
+        detected_path: "/usr/local/bin/codex",
+        override_path: null,
+        effective_command: "/usr/local/bin/codex",
+        effective_source: "detected",
+        state: "detected",
+        invalid_reason: null,
+      },
+      {
+        name: "qoder",
+        display_name: "Qoder",
+        command: "qodercli",
+        detected_path: null,
+        override_path: "/opt/qoder/bin/qodercli",
+        effective_command: "/opt/qoder/bin/qodercli",
+        effective_source: "override",
+        state: "override",
+        invalid_reason: null,
+      },
+      {
+        name: "trae",
+        display_name: "Trae",
+        command: "trae-agent",
+        detected_path: null,
+        override_path: null,
+        effective_command: "trae-agent",
+        effective_source: "catalog",
+        state: "not_found",
+        invalid_reason: null,
+      },
+    ],
+  })),
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(async () => null),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (_event: string, callback: (event: unknown) => void) => {
+    mocks.runtimeChanged = callback;
+    return () => {
+      mocks.runtimeChanged = null;
+    };
+  }),
 }));
 
 vi.mock("../lib/api", () => ({
@@ -35,20 +98,25 @@ vi.mock("../lib/api", () => ({
     mission: { start: vi.fn() },
     runner: { list: mocks.runnerList },
     runtime: {
-      list: vi.fn(async () => [
-        { name: "codex", display_name: "Codex", command: "codex" },
-        { name: "qoder", display_name: "Qoder", command: "qodercli" },
-      ]),
+      status: mocks.runtimeStatus,
     },
     session: {
       startDirect: vi.fn(),
-      startRuntime: vi.fn(),
-      rename: vi.fn(),
+      startRuntime: mocks.startRuntime,
+      rename: mocks.renameSession,
     },
   },
 }));
 
 vi.mock("../lib/settings", () => ({
+  AGENT_ENABLED_CHANGED_EVENT: "runner:agent-enabled-changed",
+  STORAGE_DISABLED_AGENTS: "settings.disabledAgents",
+  isAgentEnabled: (agent: string) => {
+    const disabled = JSON.parse(
+      localStorage.getItem("settings.disabledAgents") ?? "[]",
+    ) as string[];
+    return !disabled.includes(agent);
+  },
   readDefaultRuntime: () =>
     localStorage.getItem("settings.defaultChatRuntime") ?? "",
   readDefaultWorkingDir: () => "/default",
@@ -109,6 +177,10 @@ describe("project-scoped chat and mission start modals", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
+    mocks.startRuntime.mockClear();
+    mocks.renameSession.mockClear();
+    mocks.runtimeStatus.mockClear();
+    mocks.runtimeChanged = null;
   });
 
   afterEach(async () => {
@@ -183,5 +255,179 @@ describe("project-scoped chat and mission start modals", () => {
     );
     expect(runtimePicker?.textContent).toContain("Qoder");
     expect(field(container, "title").value).toBe("Qoder");
+  });
+
+  it("only offers detected runtimes and valid overrides", async () => {
+    localStorage.setItem("runner.startChat.mode", "runtime");
+
+    await act(async () => {
+      root.render(
+        createElement(StartChatModal, {
+          open: true,
+          project,
+          onClose: () => {},
+          onStarted: () => {},
+        }),
+      );
+    });
+
+    const runtimePicker = container.querySelector<HTMLButtonElement>(
+      '[id$="-runtime"]',
+    );
+    await act(async () => runtimePicker?.click());
+    const options = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="option"]'),
+    ).map((option) => option.textContent);
+
+    expect(options).toEqual([
+      expect.stringContaining("Codex"),
+      expect.stringContaining("Qoder"),
+    ]);
+    expect(options.join(" ")).not.toContain("Trae");
+  });
+
+  it("omits disabled agents from the runtime picker", async () => {
+    localStorage.setItem("runner.startChat.mode", "runtime");
+    localStorage.setItem("settings.disabledAgents", '["qoder"]');
+
+    await act(async () => {
+      root.render(
+        createElement(StartChatModal, {
+          open: true,
+          project,
+          onClose: () => {},
+          onStarted: () => {},
+        }),
+      );
+    });
+
+    const runtimePicker = container.querySelector<HTMLButtonElement>(
+      '[id$="-runtime"]',
+    );
+    await act(async () => runtimePicker?.click());
+    const options = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="option"]'),
+    ).map((option) => option.textContent);
+
+    expect(options).toEqual([expect.stringContaining("Codex")]);
+    expect(options.join(" ")).not.toContain("Qoder");
+  });
+
+  it("refreshes the agent picker when executable discovery completes", async () => {
+    localStorage.setItem("runner.startChat.mode", "runtime");
+    const checking = await mocks.runtimeStatus();
+    mocks.runtimeStatus
+      .mockResolvedValueOnce({
+        ...checking,
+        shell: { ...checking.shell, checking: true },
+        runtimes: checking.runtimes.map((runtime) => ({
+          ...runtime,
+          detected_path: null,
+          effective_command: runtime.command,
+          effective_source: "catalog",
+          state: "checking",
+        })),
+      });
+
+    await act(async () => {
+      root.render(
+        createElement(StartChatModal, {
+          open: true,
+          project,
+          onClose: () => {},
+          onStarted: () => {},
+        }),
+      );
+    });
+    expect(container.textContent).toContain("Detecting agents…");
+
+    await act(async () => mocks.runtimeChanged?.({}));
+    expect(container.textContent).not.toContain("Detecting agents…");
+    expect(
+      container.querySelector<HTMLButtonElement>('[id$="-runtime"]')
+        ?.textContent,
+    ).toContain("Codex");
+  });
+
+  it("starts a runtime chat with default model and effort overrides", async () => {
+    localStorage.setItem("runner.startChat.mode", "runtime");
+
+    await act(async () => {
+      root.render(
+        createElement(StartChatModal, {
+          open: true,
+          project,
+          onClose: () => {},
+          onStarted: () => {},
+        }),
+      );
+    });
+
+    const model = field<HTMLInputElement>(container, "model");
+    const effort = container.querySelector<HTMLButtonElement>(
+      '[id$="-effort"]',
+    );
+    expect(model.value).toBe("");
+    expect(model.placeholder).toBe("default");
+    expect(effort?.textContent).toContain("default");
+
+    const start = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("button"),
+    ).find((button) => button.textContent === "Start chat");
+    await act(async () => start?.click());
+
+    expect(mocks.startRuntime).toHaveBeenCalledWith(
+      "codex",
+      "/projects/runner",
+      null,
+      null,
+      "project-1",
+      null,
+      null,
+    );
+  });
+
+  it("passes selected model and effort to a runtime chat", async () => {
+    localStorage.setItem("runner.startChat.mode", "runtime");
+
+    await act(async () => {
+      root.render(
+        createElement(StartChatModal, {
+          open: true,
+          project,
+          onClose: () => {},
+          onStarted: () => {},
+        }),
+      );
+    });
+
+    await changeField(
+      field<HTMLInputElement>(container, "model"),
+      "gpt-5.6-sol",
+    );
+    const effort = container.querySelector<HTMLButtonElement>(
+      '[id$="-effort"]',
+    );
+    await act(async () => effort?.click());
+    const max = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[role="option"] button'),
+    ).find((button) => button.textContent?.includes("Max"));
+    expect(max).toBeDefined();
+    await act(async () => max?.click());
+
+    const start = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("button"),
+    ).find((button) => button.textContent === "Start chat");
+    await act(async () => start?.click());
+
+    expect(mocks.startRuntime).toHaveBeenCalledWith(
+      "codex",
+      "/projects/runner",
+      null,
+      null,
+      "project-1",
+      "gpt-5.6-sol",
+      "max",
+    );
   });
 });

@@ -12,15 +12,22 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, X } from "lucide-react";
 
-import { api, type ProjectRow, type RuntimeDefinition } from "../lib/api";
+import { api, type ProjectRow } from "../lib/api";
 import {
   readDefaultRuntime,
   readDefaultWorkingDir,
 } from "../lib/settings";
 import type { Runner, SpawnedSession } from "../lib/types";
 import { Button } from "./ui/Button";
+import { ModelField } from "./ui/ModelField";
 import { Modal } from "./ui/Overlay";
 import { StyledSelect } from "./ui/StyledSelect";
+import {
+  EFFORT_OPTIONS_BY_RUNTIME,
+  RUNTIME_OPTIONS,
+  type RuntimeOption,
+} from "./ui/runtimes";
+import { useSelectableAgentOptions } from "./ui/useSelectableAgentOptions";
 
 interface StartChatModalProps {
   open: boolean;
@@ -52,16 +59,19 @@ export function StartChatModal({
   const runnerPickerButtonId = `${formId}-runner`;
   const runtimePickerButtonId = `${formId}-runtime`;
   const runnerRuntimeOverrideId = `${formId}-runner-runtime-override`;
+  const modelInputId = `${formId}-model`;
+  const effortPickerId = `${formId}-effort`;
   const titleInputId = `${formId}-title`;
   const cwdInputId = `${formId}-cwd`;
   const [runners, setRunners] = useState<Runner[]>([]);
-  const [runtimes, setRuntimes] = useState<RuntimeDefinition[]>([]);
   const [mode, setModeState] = useState<ChatMode>(() => readStartChatMode());
   const [runnerId, setRunnerId] = useState<string>("");
   const [runtimeName, setRuntimeName] = useState<string>("");
   // Runner mode's optional engine override (feature 41). "" is the
   // "Runner default" sentinel — spawn with the runner's own runtime.
   const [runnerRuntimeOverride, setRunnerRuntimeOverride] = useState("");
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
   const [runnerPickerOpen, setRunnerPickerOpen] = useState(false);
   const [title, setTitle] = useState("");
   // Tracks whether the user has typed in the title field. While false
@@ -78,6 +88,13 @@ export function StartChatModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const runnerPickerRef = useRef<HTMLDivElement | null>(null);
+  const {
+    options: runtimes,
+    loaded: agentsLoaded,
+    loading: agentsLoading,
+    checking: agentsChecking,
+    error: agentsError,
+  } = useSelectableAgentOptions(open);
 
   // Reset on **close**, not open — so the *first* render after `open`
   // flips back to true already paints clean state instead of flashing
@@ -86,10 +103,11 @@ export function StartChatModal({
   useEffect(() => {
     if (open) return;
     setRunners([]);
-    setRuntimes([]);
     setRunnerId("");
     setRuntimeName("");
     setRunnerRuntimeOverride("");
+    setModel("");
+    setEffort("");
     setRunnerPickerOpen(false);
     setModeState(readStartChatMode());
     setTitle("");
@@ -148,28 +166,28 @@ export function StartChatModal({
 
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
-    void api.runtime
-      .list()
-      .then((rows) => {
-        if (cancelled) return;
-        const preferred = readDefaultRuntime();
-        const selected =
-          rows.find((runtime) => runtime.name === preferred) ?? rows[0] ?? null;
-        setRuntimes(rows);
-        setRuntimeName(selected?.name ?? "");
-        if (selected && !titleEditedRef.current && mode === "runtime") {
-          setTitle(defaultTitleForRuntime(selected));
-        }
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setError(String(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, mode]);
+    if (
+      runnerRuntimeOverride &&
+      !runtimes.some((runtime) => runtime.value === runnerRuntimeOverride)
+    ) {
+      setRunnerRuntimeOverride("");
+    }
+    const preferred = readDefaultRuntime();
+    const selected =
+      runtimes.find((runtime) => runtime.value === runtimeName) ??
+      runtimes.find((runtime) => runtime.value === preferred) ??
+      runtimes[0] ??
+      null;
+    const nextRuntime = selected?.value ?? "";
+    if (nextRuntime !== runtimeName) {
+      setRuntimeName(nextRuntime);
+      setModel("");
+      setEffort("");
+    }
+    if (selected && !titleEditedRef.current && mode === "runtime") {
+      setTitle(defaultTitleForRuntime(selected));
+    }
+  }, [open, mode, runnerRuntimeOverride, runtimeName, runtimes]);
 
   // Inner dropdown's own dismiss handlers. The Modal shell handles
   // Escape/backdrop for the dialog itself; this scopes to the
@@ -197,13 +215,20 @@ export function StartChatModal({
     [runners, runnerId],
   );
   const selectedRuntime = useMemo(
-    () => runtimes.find((runtime) => runtime.name === runtimeName) ?? null,
+    () => runtimes.find((runtime) => runtime.value === runtimeName) ?? null,
     [runtimes, runtimeName],
   );
+  const effortOptions = EFFORT_OPTIONS_BY_RUNTIME[runtimeName] ?? [];
+  const overrideEffortOptions =
+    EFFORT_OPTIONS_BY_RUNTIME[runnerRuntimeOverride] ?? [];
 
   const setMode = (next: ChatMode) => {
     setModeState(next);
     writeStartChatMode(next);
+    // Model/effort are shared state between the two modes' pickers but
+    // are scoped to different runtimes — never carry a value across.
+    setModel("");
+    setEffort("");
     if (titleEditedRef.current) return;
     if (next === "runner") setTitle(defaultTitleFor(selectedRunner));
     else setTitle(defaultTitleForRuntime(selectedRuntime));
@@ -263,13 +288,17 @@ export function StartChatModal({
               null,
               projectId,
               runnerRuntimeOverride || null,
+              runnerRuntimeOverride ? model.trim() || null : null,
+              runnerRuntimeOverride ? effort || null : null,
             )
           : await api.session.startRuntime(
-              selectedRuntime!.name,
+              selectedRuntime!.value,
               trimmedCwd.length > 0 ? trimmedCwd : (readDefaultWorkingDir() || null),
               null,
               null,
               projectId,
+              model.trim() || null,
+              effort || null,
             );
       const trimmedTitle = title.trim();
       if (trimmedTitle.length > 0) {
@@ -423,8 +452,8 @@ export function StartChatModal({
             ) : null}
           </Field>
           <Field
-            label="Agent runtime"
-            subtitle="Overriding runs this persona on another engine with that runtime's default flags."
+            label="Agent"
+            subtitle="Overriding runs this persona on another agent; its model and effort become configurable below."
             htmlFor={runnerRuntimeOverrideId}
           >
             <StyledSelect
@@ -441,26 +470,118 @@ export function StartChatModal({
                   }`,
                 },
                 ...runtimes.map((runtime) => ({
-                  value: runtime.name,
-                  label: runtime.display_name,
+                  value: runtime.value,
+                  label: runtime.label,
                 })),
               ]}
-              onChange={setRunnerRuntimeOverride}
+              onChange={(next) => {
+                setRunnerRuntimeOverride(next);
+                // Same scoping rule as the Direct-mode agent switch:
+                // model/effort belong to the picked runtime.
+                setModel("");
+                setEffort("");
+              }}
+              disabled={submitting}
             />
           </Field>
+          {runnerRuntimeOverride ? (
+            <div
+              className={`grid gap-3 ${
+                overrideEffortOptions.length > 0 ? "grid-cols-2" : "grid-cols-1"
+              }`}
+            >
+              <Field label="Model" htmlFor={modelInputId}>
+                <ModelField
+                  id={modelInputId}
+                  runtime={runnerRuntimeOverride}
+                  model={model}
+                  onModelChange={setModel}
+                  disabled={submitting}
+                />
+              </Field>
+
+              {overrideEffortOptions.length > 0 ? (
+                <Field label="Thinking effort" htmlFor={effortPickerId}>
+                  <StyledSelect
+                    id={effortPickerId}
+                    className="w-full"
+                    value={effort}
+                    options={overrideEffortOptions.map((option) => ({
+                      value: option.value,
+                      label: option.value ? option.label : "default",
+                      description: option.description,
+                    }))}
+                    onChange={setEffort}
+                    disabled={submitting}
+                  />
+                </Field>
+              ) : null}
+            </div>
+          ) : null}
           </>
         ) : (
-          <Field label="Agent runtime" htmlFor={runtimePickerButtonId}>
-            <StyledSelect
-              id={runtimePickerButtonId}
-              value={runtimeName}
-              options={runtimes.map((runtime) => ({
-                value: runtime.name,
-                label: runtime.display_name,
-              }))}
-              onChange={(next) => setRuntimeName(next)}
-            />
-          </Field>
+          <>
+            <Field label="Agent" htmlFor={runtimePickerButtonId}>
+              <StyledSelect
+                id={runtimePickerButtonId}
+                className="w-full"
+                value={runtimeName}
+                options={runtimes.map((runtime) => ({
+                  value: runtime.value,
+                  label: runtime.label,
+                }))}
+                onChange={(next) => {
+                  setRuntimeName(next);
+                  setModel("");
+                  setEffort("");
+                }}
+                disabled={submitting || runtimes.length === 0}
+              />
+              {runtimes.length === 0 ? (
+                <p className="text-[11px] text-warn">
+                  {!agentsLoaded || agentsLoading || agentsChecking
+                    ? "Detecting agents…"
+                    : "No enabled agents detected. Configure one in Settings → Agents."}
+                </p>
+              ) : null}
+              {agentsError ? (
+                <p className="text-[11px] text-danger">{agentsError}</p>
+              ) : null}
+            </Field>
+
+            <div
+              className={`grid gap-3 ${
+                effortOptions.length > 0 ? "grid-cols-2" : "grid-cols-1"
+              }`}
+            >
+              <Field label="Model" htmlFor={modelInputId}>
+                <ModelField
+                  id={modelInputId}
+                  runtime={runtimeName}
+                  model={model}
+                  onModelChange={setModel}
+                  disabled={submitting || !runtimeName}
+                />
+              </Field>
+
+              {effortOptions.length > 0 ? (
+                <Field label="Thinking effort" htmlFor={effortPickerId}>
+                  <StyledSelect
+                    id={effortPickerId}
+                    className="w-full"
+                    value={effort}
+                    options={effortOptions.map((option) => ({
+                      value: option.value,
+                      label: option.value ? option.label : "default",
+                      description: option.description,
+                    }))}
+                    onChange={setEffort}
+                    disabled={submitting}
+                  />
+                </Field>
+              ) : null}
+            </div>
+          </>
         )}
 
         <Field
@@ -544,10 +665,14 @@ function summarizeRunner(runner: Runner | null): string {
 }
 
 function runtimeDisplayName(
-  runtimes: RuntimeDefinition[],
+  runtimes: RuntimeOption[],
   name: string,
 ): string {
-  return runtimes.find((r) => r.name === name)?.display_name ?? name;
+  return (
+    runtimes.find((runtime) => runtime.value === name)?.label ??
+    RUNTIME_OPTIONS.find((runtime) => runtime.value === name)?.label ??
+    name
+  );
 }
 
 // Default Chat name when the user hasn't typed anything. Uses the
@@ -558,9 +683,11 @@ function defaultTitleFor(runner: Runner | null): string {
   return `Chat with @${runner.handle}`;
 }
 
-function defaultTitleForRuntime(runtime: RuntimeDefinition | null): string {
+function defaultTitleForRuntime(
+  runtime: RuntimeOption | null,
+): string {
   if (!runtime) return "";
-  return runtime.display_name;
+  return runtime.label;
 }
 
 // Dynamic placeholder for the working-directory input. Shows what

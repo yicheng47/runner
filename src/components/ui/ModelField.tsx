@@ -17,11 +17,13 @@ export function ModelField({
   runtime,
   model,
   onModelChange,
+  disabled = false,
 }: {
   id: string;
   runtime: string;
   model: string;
   onModelChange: (model: string) => void;
+  disabled?: boolean;
 }) {
   const suggestions = modelSuggestions(runtime);
   const [open, setOpen] = useState(false);
@@ -35,17 +37,22 @@ export function ModelField({
         id={id}
         type="text"
         value={model}
+        disabled={disabled}
         placeholder="default"
         onChange={(e) => onModelChange(e.target.value)}
         // Clicking the field toggles the suggestion list — so clicking
         // it again closes rather than re-opening (matches the other
         // selectors' trigger behaviour). The field stays freely
         // editable; Escape / click-outside / picking an option close it.
-        onMouseDown={() => hasSuggestions && setOpen((v) => !v)}
+        onMouseDown={() =>
+          !disabled && hasSuggestions && setOpen((v) => !v)
+        }
         // Styled to match the form's other selectors (RuntimeSelect /
         // StyledSelect) so the editable combobox reads as the same
-        // family of control.
-        className={`w-full rounded border border-line-strong bg-bg px-2.5 py-1.5 text-sm text-fg transition-colors placeholder:text-fg-3 hover:border-fg-3 focus:border-fg-3 focus:outline-none ${
+        // family of control. The "default" placeholder is the current
+        // selection (empty value == runtime default), not a hint, so it
+        // renders in the value color like the sibling effort select.
+        className={`w-full rounded border border-line-strong bg-bg px-2.5 py-1.5 text-sm text-fg transition-colors placeholder:text-fg hover:border-fg-3 focus:border-fg-3 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
           hasSuggestions ? "pr-8" : ""
         }`}
       />
@@ -56,8 +63,9 @@ export function ModelField({
           aria-haspopup="listbox"
           aria-expanded={open}
           tabIndex={-1}
+          disabled={disabled}
           onClick={() => setOpen((v) => !v)}
-          className="absolute inset-y-0 right-0 flex items-center px-2.5 text-fg-3 transition-colors hover:text-fg-2"
+          className="absolute inset-y-0 right-0 flex items-center px-2.5 text-fg-3 transition-colors hover:text-fg-2 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <span
             aria-hidden
@@ -68,7 +76,7 @@ export function ModelField({
         </button>
       ) : null}
       <PopoverMenu
-        open={open && hasSuggestions}
+        open={open && hasSuggestions && !disabled}
         anchorRef={rootRef}
         onClose={() => setOpen(false)}
       >

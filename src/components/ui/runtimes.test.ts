@@ -78,8 +78,8 @@ describe("runtime metadata", () => {
       ]),
     ).toEqual(["--debug"]);
     expect(runtimeSupportsEffort("trae")).toBe(true);
-    expect(EFFORT_OPTIONS_BY_RUNTIME.trae).toEqual(
-      EFFORT_OPTIONS_BY_RUNTIME.codex,
+    expect(EFFORT_OPTIONS_BY_RUNTIME.trae.map((effort) => effort.value)).toEqual(
+      ["", "low", "medium", "high", "xhigh"],
     );
     expect(modelSuggestions("trae")).toEqual([
       expect.objectContaining({ value: "", label: "default" }),
@@ -93,5 +93,30 @@ describe("runtime metadata", () => {
         label: "default",
       });
     }
+  });
+
+  it("offers the current codex model seed", () => {
+    expect(modelSuggestions("codex").map((model) => model.value)).toEqual([
+      "",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex-spark",
+    ]);
+  });
+
+  it("includes the fable alias for claude-code", () => {
+    expect(modelSuggestions("claude-code").map((model) => model.value)).toContain(
+      "fable",
+    );
+  });
+
+  it("includes max and ultra effort for codex", () => {
+    expect(
+      EFFORT_OPTIONS_BY_RUNTIME.codex.map((effort) => effort.value),
+    ).toEqual(["", "low", "medium", "high", "xhigh", "max", "ultra"]);
   });
 });
