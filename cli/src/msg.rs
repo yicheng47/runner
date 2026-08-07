@@ -16,10 +16,21 @@ use runner_core::model::{Event, EventDraft, EventKind, SignalType};
 
 use crate::{env, roster};
 
+const MAX_MESSAGE_BYTES: usize = 32 * 1024;
+
 pub fn post(text: &str, to: Option<&str>) -> i32 {
     let Some(env) = env::require_mission_or_handle_offbus("msg post") else {
         return 0;
     };
+
+    if text.len() > MAX_MESSAGE_BYTES {
+        let size_kb = text.len().div_ceil(1024);
+        eprintln!(
+            "runner msg post: message is {size_kb}KB, limit is 32KB. \
+             Write large content to a file and reference its path instead."
+        );
+        return 1;
+    }
 
     if let Some(handle) = to {
         if handle == "human" {
