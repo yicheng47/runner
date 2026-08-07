@@ -170,6 +170,74 @@ fn i2_4_msg_post_to_unknown_handle_is_rejected() {
 }
 
 #[test]
+fn msg_post_rejects_over_cap_for_broadcast_and_directed() {
+    const MESSAGE_LIMIT_BYTES: usize = 32 * 1024;
+
+    let f = Fixture::new("C", "M");
+    f.write_roster(&[("lead", true), ("impl", false)]);
+    let oversized = "x".repeat(MESSAGE_LIMIT_BYTES + 1);
+
+    for recipient in [None, Some("impl")] {
+        let mut args = vec!["msg", "post", oversized.as_str()];
+        if let Some(handle) = recipient {
+            args.extend(["--to", handle]);
+        }
+
+        let out = f.cmd("lead", &args).output().unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            stderr.trim(),
+            "runner msg post: message is 33KB, limit is 32KB. \
+             Write large content to a file and reference its path instead."
+        );
+    }
+
+    assert_eq!(f.line_count(), 0);
+}
+
+#[test]
+fn msg_post_accepts_messages_at_and_under_cap() {
+    const MESSAGE_LIMIT_BYTES: usize = 32 * 1024;
+
+    let f = Fixture::new("C", "M");
+    f.write_roster(&[("lead", true), ("impl", false)]);
+    let at_limit = "é".repeat(MESSAGE_LIMIT_BYTES / "é".len());
+    let under_limit = "x".repeat(MESSAGE_LIMIT_BYTES - 1);
+    assert_eq!(at_limit.len(), MESSAGE_LIMIT_BYTES);
+
+    let broadcast = f
+        .cmd("lead", &["msg", "post", at_limit.as_str()])
+        .output()
+        .unwrap();
+    assert!(
+        broadcast.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&broadcast.stderr)
+    );
+
+    let directed = f
+        .cmd(
+            "lead",
+            &["msg", "post", under_limit.as_str(), "--to", "impl"],
+        )
+        .output()
+        .unwrap();
+    assert!(
+        directed.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&directed.stderr)
+    );
+
+    let events = f.read_log();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].to, None);
+    assert_eq!(events[0].payload["text"].as_str().unwrap(), at_limit);
+    assert_eq!(events[1].to.as_deref(), Some("impl"));
+    assert_eq!(events[1].payload["text"].as_str().unwrap(), under_limit);
+}
+
+#[test]
 fn msg_post_to_human_is_rejected_with_channel_guidance() {
     let f = Fixture::new("C", "M");
     f.write_roster(&[("lead", true), ("impl", false)]);
