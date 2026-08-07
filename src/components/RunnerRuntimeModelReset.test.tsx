@@ -119,6 +119,7 @@ describe("runner runtime model reset", () => {
   });
 
   it("resets a new runner's model when its runtime changes", async () => {
+    localStorage.setItem("settings.enabledAgents", '["trae"]');
     await act(async () => {
       root.render(
         <CreateRunnerModal
@@ -143,6 +144,7 @@ describe("runner runtime model reset", () => {
   });
 
   it("resets an existing runner's model when its runtime changes", async () => {
+    localStorage.setItem("settings.enabledAgents", '["trae"]');
     await act(async () => {
       root.render(
         <RunnerEditDrawer

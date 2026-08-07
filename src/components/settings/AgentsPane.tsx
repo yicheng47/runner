@@ -337,9 +337,6 @@ function RuntimeRow({
           saving={saving}
         />
         <span className="min-w-0 flex-1" />
-        <span className="font-mono text-[11px] text-fg-3">
-          {runtime.command}
-        </span>
         <span className="text-[11px] text-fg-3">
           {enabled ? "Enabled" : "Disabled"}
         </span>

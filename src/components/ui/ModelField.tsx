@@ -49,8 +49,10 @@ export function ModelField({
         }
         // Styled to match the form's other selectors (RuntimeSelect /
         // StyledSelect) so the editable combobox reads as the same
-        // family of control.
-        className={`w-full rounded border border-line-strong bg-bg px-2.5 py-1.5 text-sm text-fg transition-colors placeholder:text-fg-3 hover:border-fg-3 focus:border-fg-3 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
+        // family of control. The "default" placeholder is the current
+        // selection (empty value == runtime default), not a hint, so it
+        // renders in the value color like the sibling effort select.
+        className={`w-full rounded border border-line-strong bg-bg px-2.5 py-1.5 text-sm text-fg transition-colors placeholder:text-fg hover:border-fg-3 focus:border-fg-3 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
           hasSuggestions ? "pr-8" : ""
         }`}
       />

@@ -1182,6 +1182,7 @@ pub(crate) fn resolve_runtime_override(
     runner: &Runner,
     runtime_override: Option<&str>,
     model_override: Option<&str>,
+    effort_override: Option<&str>,
 ) -> Result<RuntimeOverrideResolution> {
     let Some(name) = runtime_override.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(RuntimeOverrideResolution {
@@ -1192,32 +1193,37 @@ pub(crate) fn resolve_runtime_override(
     let model_override = model_override
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    if name == runner.runtime && model_override.is_none() {
+    let effort_override = effort_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if name == runner.runtime && model_override.is_none() && effort_override.is_none() {
         return Ok(RuntimeOverrideResolution {
             effective: None,
             pinned: true,
         });
     }
-    if name == runner.runtime {
-        let mut effective = runner.clone();
-        effective.model = model_override.map(ToOwned::to_owned);
-        return Ok(RuntimeOverrideResolution {
-            effective: Some(effective),
-            pinned: true,
-        });
-    }
-    let def = router::runtime::runtime_definition(name)
-        .ok_or_else(|| Error::msg(format!("unknown runtime: {name}")))?;
     let mut effective = runner.clone();
-    effective.runtime = def.name.to_string();
-    effective.command = def.command.to_string();
-    effective.args = router::runtime::apply_permission_mode(
-        def.name,
-        &[],
-        crate::commands::runner::default_permission_mode(),
-    );
-    effective.model = model_override.map(ToOwned::to_owned);
-    effective.effort = None;
+    if name != runner.runtime {
+        let def = router::runtime::runtime_definition(name)
+            .ok_or_else(|| Error::msg(format!("unknown runtime: {name}")))?;
+        effective.runtime = def.name.to_string();
+        effective.command = def.command.to_string();
+        effective.args = router::runtime::apply_permission_mode(
+            def.name,
+            &[],
+            crate::commands::runner::default_permission_mode(),
+        );
+        // A differing engine starts from its own defaults; the
+        // runner's model/effort belong to the original runtime.
+        effective.model = None;
+        effective.effort = None;
+    }
+    if model_override.is_some() {
+        effective.model = model_override.map(ToOwned::to_owned);
+    }
+    if effort_override.is_some() {
+        effective.effort = effort_override.map(ToOwned::to_owned);
+    }
     Ok(RuntimeOverrideResolution {
         effective: Some(effective),
         pinned: true,

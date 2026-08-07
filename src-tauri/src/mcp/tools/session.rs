@@ -19,6 +19,14 @@ pub struct StartDirectSessionArgs {
     /// carries over.
     #[serde(default)]
     pub runtime: Option<String>,
+    /// Optional model for the overridden runtime. Only meaningful with
+    /// `runtime`; omit for the engine's own default.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Optional reasoning-effort for the overridden runtime. Only
+    /// meaningful with `runtime`; omit for the engine's own default.
+    #[serde(default)]
+    pub effort: Option<String>,
     /// Optional project membership. Its cwd is used when cwd is omitted.
     #[serde(default)]
     pub project_id: Option<String>,
@@ -49,6 +57,8 @@ impl RunnerMcpHandler {
             &self.state.app_handle,
             args.runner_id,
             args.runtime,
+            args.model,
+            args.effort,
             args.project_id,
             args.cwd,
             None,

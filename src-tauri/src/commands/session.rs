@@ -762,6 +762,8 @@ pub(crate) fn session_start_direct_impl(
     app: &tauri::AppHandle,
     runner_id: String,
     runtime: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
     project_id: Option<String>,
     cwd: Option<String>,
     cols: Option<u16>,
@@ -779,6 +781,8 @@ pub(crate) fn session_start_direct_impl(
         .spawn_direct(
             &runner,
             runtime.as_deref(),
+            model.as_deref(),
+            effort.as_deref(),
             project_id.as_deref(),
             effective_cwd.as_deref(),
             cols,
@@ -803,13 +807,15 @@ pub async fn session_start_direct(
     app: tauri::AppHandle,
     runner_id: String,
     runtime: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
     project_id: Option<String>,
     cwd: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
     Ok(session_start_direct_impl(
-        &state, &app, runner_id, runtime, project_id, cwd, cols, rows,
+        &state, &app, runner_id, runtime, model, effort, project_id, cwd, cols, rows,
     )?
     .session)
 }

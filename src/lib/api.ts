@@ -456,10 +456,14 @@ export const api = {
       rows: number | null,
       projectId: string | null = null,
       runtime: string | null = null,
+      model: string | null = null,
+      effort: string | null = null,
     ) =>
       invoke<SpawnedSession>("session_start_direct", {
         runnerId,
         runtime,
+        model,
+        effort,
         projectId,
         cwd,
         cols,

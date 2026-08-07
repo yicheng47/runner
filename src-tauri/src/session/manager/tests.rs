@@ -1259,6 +1259,8 @@ fn direct_chat_persona_lands_as_trailing_positional_argv_without_worker_preamble
             &runner,
             None,
             None,
+            None,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -2088,6 +2090,8 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
         .spawn_direct(
             &runner,
             None,
+            None,
+            None,
             Some(&project.id),
             Some(&project.cwd),
             None,
@@ -2243,6 +2247,8 @@ fn direct_chat_status_transition_emits_session_status_busy() {
             &runner,
             None,
             None,
+            None,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -2306,6 +2312,8 @@ fn direct_chat_status_transition_emits_session_status_idle() {
             &runner,
             None,
             None,
+            None,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -2364,6 +2372,8 @@ fn direct_chat_typing_stays_idle_until_submit() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -2778,6 +2788,8 @@ fn login_shell_proxy_env_reaches_spawn_with_runner_env_taking_precedence() {
         &runner,
         None,
         None,
+        None,
+        None,
         Some("/tmp"),
         None,
         None,
@@ -2834,6 +2846,8 @@ fn output_snapshot_replays_live_session_and_clears_after_forget() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -2919,6 +2933,8 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -3108,6 +3124,8 @@ fn assert_resume_keeps_scrollback(runtime: &str) {
             &runner,
             None,
             None,
+            None,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -3256,6 +3274,8 @@ fn assert_resume_purges_scrollback(runtime: &str) {
             &runner,
             None,
             None,
+            None,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -3353,6 +3373,8 @@ fn first_spawn_without_dims_uses_and_persists_default_size() {
             &runner,
             None,
             None,
+            None,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -3406,6 +3428,8 @@ fn resume_size_resolution_prefers_explicit_then_persisted_after_manager_restart(
     let spawned = first_mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -3959,6 +3983,8 @@ fn output_snapshot_prepends_alt_screen_enter_when_session_in_alt_screen() {
             &runner,
             None,
             None,
+            None,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -4026,6 +4052,8 @@ fn output_snapshot_prepends_bracketed_paste_enable_when_session_has_it_enabled()
             &runner,
             None,
             None,
+            None,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -4084,6 +4112,8 @@ fn output_snapshot_combines_alt_screen_and_bracketed_paste_prefixes() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -4336,6 +4366,8 @@ fn resize_purges_ring_only_on_cols_change() {
             &runner,
             None,
             None,
+            None,
+            None,
             Some("/tmp"),
             Some(120),
             Some(30),
@@ -4449,6 +4481,8 @@ fn spawn_claude_for_resize(
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -4793,13 +4827,71 @@ fn runtime_direct_spawn_persists_model_and_effort() {
 }
 
 #[test]
+fn pinned_direct_spawn_records_override_model_and_effort() {
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'pin-me', 'Pin', 'codex', '/bin/sh',
+                         '[]', NULL, NULL, NULL, ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+    }
+    let mut r = runner("/bin/sh", &[]);
+    r.id = runner_id;
+    r.runtime = "codex".into();
+    r.model = Some("runner-model".into());
+    r.effort = Some("runner-effort".into());
+    let mgr = mgr_with_fake(None, fake_runtime());
+    let spawned = mgr
+        .spawn_direct(
+            &r,
+            Some("codex"),
+            Some("gpt-5.6-sol"),
+            Some("ultra"),
+            None,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+
+    let stored: (Option<String>, Option<String>, Option<String>) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT agent_runtime, agent_model, agent_effort
+               FROM sessions WHERE id = ?1",
+            params![spawned.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(stored.0.as_deref(), Some("codex"));
+    assert_eq!(stored.1.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(stored.2.as_deref(), Some("ultra"));
+
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
 fn runtime_override_helper_distinguishes_absent_matching_and_differing() {
     let mut r = runner("codex-custom", &["--custom"]);
     r.runtime = "codex".into();
 
     // Absent / blank: no rebuild, no pin.
     for value in [None, Some("  ")] {
-        let res = resolve_runtime_override(&r, value, None).unwrap();
+        let res = resolve_runtime_override(&r, value, None, None).unwrap();
         assert!(res.effective.is_none());
         assert!(!res.pinned, "absent/blank override must not pin");
     }
@@ -4807,13 +4899,13 @@ fn runtime_override_helper_distinguishes_absent_matching_and_differing() {
     // Matching: no rebuild (spawn stays byte-identical), but pinned —
     // the session row must record the engine so a later runner-
     // template edit can't re-engine its resume.
-    let matching = resolve_runtime_override(&r, Some("codex"), None).unwrap();
+    let matching = resolve_runtime_override(&r, Some("codex"), None, None).unwrap();
     assert!(matching.effective.is_none());
     assert!(matching.pinned, "explicit matching override must pin");
 
     // Differing: rebuild + pin for every other catalog runtime.
     for runtime in ["claude-code", "qoder", "trae"] {
-        let differing = resolve_runtime_override(&r, Some(runtime), None).unwrap();
+        let differing = resolve_runtime_override(&r, Some(runtime), None, None).unwrap();
         assert_eq!(
             differing.effective.as_ref().map(|r| r.runtime.as_str()),
             Some(runtime),
@@ -4832,7 +4924,7 @@ fn runtime_override_helper_resets_engine_fields_and_keeps_persona() {
     r.working_dir = Some("/work".into());
     r.env.insert("FOO".into(), "bar".into());
 
-    let effective = resolve_runtime_override(&r, Some("claude-code"), None)
+    let effective = resolve_runtime_override(&r, Some("claude-code"), None, None)
         .unwrap()
         .effective
         .expect("differing runtime must produce an effective runner");
@@ -4865,14 +4957,14 @@ fn runtime_override_helper_applies_slot_model_to_selected_runtime() {
     r.runtime = "codex".into();
     r.model = Some("runner-model".into());
 
-    let differing = resolve_runtime_override(&r, Some("trae"), Some("trae-slot-model"))
+    let differing = resolve_runtime_override(&r, Some("trae"), Some("trae-slot-model"), None)
         .unwrap()
         .effective
         .expect("differing runtime must produce an effective runner");
     assert_eq!(differing.runtime, "trae");
     assert_eq!(differing.model.as_deref(), Some("trae-slot-model"));
 
-    let matching = resolve_runtime_override(&r, Some("codex"), Some("codex-slot-model"))
+    let matching = resolve_runtime_override(&r, Some("codex"), Some("codex-slot-model"), None)
         .unwrap()
         .effective
         .expect("a model override must rebuild even for a matching runtime");
@@ -4882,9 +4974,47 @@ fn runtime_override_helper_applies_slot_model_to_selected_runtime() {
 }
 
 #[test]
+fn runtime_override_helper_applies_effort_to_selected_runtime() {
+    let mut r = runner("codex-custom", &["--custom"]);
+    r.runtime = "codex".into();
+    r.model = Some("runner-model".into());
+    r.effort = Some("runner-effort".into());
+
+    // Differing runtime: engine defaults, then the explicit overrides.
+    let differing = resolve_runtime_override(&r, Some("claude-code"), Some("fable"), Some("max"))
+        .unwrap()
+        .effective
+        .expect("differing runtime must produce an effective runner");
+    assert_eq!(differing.runtime, "claude-code");
+    assert_eq!(differing.model.as_deref(), Some("fable"));
+    assert_eq!(differing.effort.as_deref(), Some("max"));
+
+    // Differing runtime without overrides clears both.
+    let cleared = resolve_runtime_override(&r, Some("claude-code"), None, None)
+        .unwrap()
+        .effective
+        .expect("differing runtime must produce an effective runner");
+    assert_eq!(cleared.model, None);
+    assert_eq!(cleared.effort, None);
+
+    // Matching runtime + effort-only override keeps the runner's model.
+    let matching = resolve_runtime_override(&r, Some("codex"), None, Some("xhigh"))
+        .unwrap()
+        .effective
+        .expect("an effort override must rebuild even for a matching runtime");
+    assert_eq!(matching.model.as_deref(), Some("runner-model"));
+    assert_eq!(matching.effort.as_deref(), Some("xhigh"));
+
+    // Blank overrides are ignored: matching runtime stays byte-identical.
+    let blank = resolve_runtime_override(&r, Some("codex"), Some("  "), Some("")).unwrap();
+    assert!(blank.effective.is_none());
+    assert!(blank.pinned);
+}
+
+#[test]
 fn runtime_override_helper_rejects_unknown_runtime() {
     let r = runner("/bin/sh", &[]);
-    let err = resolve_runtime_override(&r, Some("aider-future"), None).unwrap_err();
+    let err = resolve_runtime_override(&r, Some("aider-future"), None, None).unwrap_err();
     assert!(err.to_string().contains("unknown runtime"), "got: {err}",);
 }
 
@@ -5146,6 +5276,8 @@ fn direct_spawn_with_override_uses_registry_engine_and_records_runtime() {
             &runner,
             Some("claude-code"),
             None,
+            None,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -5287,6 +5419,8 @@ fn catalog_default_runner_uses_detected_command_while_custom_command_stays_untou
             &default_runner,
             None,
             None,
+            None,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -5310,6 +5444,8 @@ fn catalog_default_runner_uses_detected_command_while_custom_command_stays_untou
             &custom_runner,
             None,
             None,
+            None,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -5325,6 +5461,8 @@ fn catalog_default_runner_uses_detected_command_while_custom_command_stays_untou
     let swapped_session = mgr
         .spawn_direct(
             &custom_runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),

@@ -309,8 +309,8 @@ export function RunnerEditDrawer({
           // Effort enums differ per runtime — claude-code's `max` is
           // not in codex's enum; codex's `none / minimal` aren't in
           // claude-code's. Coerce out-of-set values to the empty
-          // sentinel ("Inherit CLI default") so the dropdown can't
-          // render an unknown trigger.
+          // sentinel ("default") so the dropdown can't render an
+          // unknown trigger.
           const safeEffort = effortOptions.some((o) => o.value === effort)
             ? effort
             : "";

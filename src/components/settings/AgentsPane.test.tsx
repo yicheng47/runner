@@ -104,6 +104,7 @@ describe("AgentsPane", () => {
 
   it("owns and persists the direct chat default agent", async () => {
     localStorage.setItem("settings.defaultChatRuntime", "qoder");
+    localStorage.setItem("settings.enabledAgents", '["qoder"]');
     await act(async () => {
       root.render(<AgentsPane />);
     });
@@ -126,6 +127,7 @@ describe("AgentsPane", () => {
 
   it("enables agents by default and persists a disabled agent", async () => {
     localStorage.setItem("settings.defaultChatRuntime", "codex");
+    localStorage.setItem("settings.enabledAgents", '["qoder"]');
     await act(async () => {
       root.render(<AgentsPane />);
     });

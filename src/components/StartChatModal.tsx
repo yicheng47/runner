@@ -219,10 +219,16 @@ export function StartChatModal({
     [runtimes, runtimeName],
   );
   const effortOptions = EFFORT_OPTIONS_BY_RUNTIME[runtimeName] ?? [];
+  const overrideEffortOptions =
+    EFFORT_OPTIONS_BY_RUNTIME[runnerRuntimeOverride] ?? [];
 
   const setMode = (next: ChatMode) => {
     setModeState(next);
     writeStartChatMode(next);
+    // Model/effort are shared state between the two modes' pickers but
+    // are scoped to different runtimes — never carry a value across.
+    setModel("");
+    setEffort("");
     if (titleEditedRef.current) return;
     if (next === "runner") setTitle(defaultTitleFor(selectedRunner));
     else setTitle(defaultTitleForRuntime(selectedRuntime));
@@ -282,6 +288,8 @@ export function StartChatModal({
               null,
               projectId,
               runnerRuntimeOverride || null,
+              runnerRuntimeOverride ? model.trim() || null : null,
+              runnerRuntimeOverride ? effort || null : null,
             )
           : await api.session.startRuntime(
               selectedRuntime!.value,
@@ -445,7 +453,7 @@ export function StartChatModal({
           </Field>
           <Field
             label="Agent"
-            subtitle="Overriding runs this persona on another agent with that agent's default flags."
+            subtitle="Overriding runs this persona on another agent; its model and effort become configurable below."
             htmlFor={runnerRuntimeOverrideId}
           >
             <StyledSelect
@@ -466,10 +474,50 @@ export function StartChatModal({
                   label: runtime.label,
                 })),
               ]}
-              onChange={setRunnerRuntimeOverride}
+              onChange={(next) => {
+                setRunnerRuntimeOverride(next);
+                // Same scoping rule as the Direct-mode agent switch:
+                // model/effort belong to the picked runtime.
+                setModel("");
+                setEffort("");
+              }}
               disabled={submitting}
             />
           </Field>
+          {runnerRuntimeOverride ? (
+            <div
+              className={`grid gap-3 ${
+                overrideEffortOptions.length > 0 ? "grid-cols-2" : "grid-cols-1"
+              }`}
+            >
+              <Field label="Model" htmlFor={modelInputId}>
+                <ModelField
+                  id={modelInputId}
+                  runtime={runnerRuntimeOverride}
+                  model={model}
+                  onModelChange={setModel}
+                  disabled={submitting}
+                />
+              </Field>
+
+              {overrideEffortOptions.length > 0 ? (
+                <Field label="Thinking effort" htmlFor={effortPickerId}>
+                  <StyledSelect
+                    id={effortPickerId}
+                    className="w-full"
+                    value={effort}
+                    options={overrideEffortOptions.map((option) => ({
+                      value: option.value,
+                      label: option.value ? option.label : "default",
+                      description: option.description,
+                    }))}
+                    onChange={setEffort}
+                    disabled={submitting}
+                  />
+                </Field>
+              ) : null}
+            </div>
+          ) : null}
           </>
         ) : (
           <>

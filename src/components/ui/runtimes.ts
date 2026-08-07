@@ -85,10 +85,12 @@ export interface EffortOption {
   description?: string;
 }
 
+// Labeled "default" to mirror MODEL_DEFAULT — the two fields sit side
+// by side and should read identically when nothing is overridden.
 const EFFORT_INHERIT: EffortOption = {
   value: "",
-  label: "Inherit CLI default",
-  description: "Don't pass the agent's effort flag.",
+  label: "default",
+  description: "Use the agent's own default effort; no flag passed.",
 };
 
 export const EFFORT_OPTIONS_BY_RUNTIME: Record<
@@ -109,7 +111,7 @@ export const EFFORT_OPTIONS_BY_RUNTIME: Record<
   // `xhigh`. Unlike 0.130.0, passing an unknown effort to a
   // config-loading command no longer reports the enum variants, so
   // Runner exposes the catalog union. Historically stored `none` /
-  // `minimal` values coerce to "Inherit CLI default" via the edit
+  // `minimal` values coerce to the "default" sentinel via the edit
   // drawer's safe-value guard.
   codex: [
     EFFORT_INHERIT,
