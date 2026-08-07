@@ -722,6 +722,14 @@ export const RunnerTerminal = forwardRef<
           return false;
         }
       }
+      // Opt+C on keyboards with swapped Cmd/Opt (external boards in the
+      // wrong mode) is almost always an intended copy: without this,
+      // xterm's third-level shift types "ç" into the PTY and the
+      // resulting data event yanks the viewport to the last row (#387).
+      // Swallow keydown and keypress both, same as Shift+Enter below.
+      if (e.altKey && !e.metaKey && !e.ctrlKey && e.code === "KeyC") {
+        return false;
+      }
       if (
         e.key === "Enter" &&
         e.shiftKey &&
