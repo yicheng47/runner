@@ -98,13 +98,16 @@ pub fn runtime_display_name(name: &str) -> String {
 ///     used in `~/.codex/config.toml`. The value is parsed as TOML
 ///     with a raw-string fallback, so passing the level unquoted is
 ///     fine. The level is lowercased before being formatted in:
-///     codex's TOML enum is case-sensitive and rejects e.g. `High`
-///     with `unknown variant 'High', expected one of 'none',
-///     'minimal', 'low', 'medium', 'high', 'xhigh'`, but rows often
-///     store the level title-cased ("High"). claude-code's
-///     `--effort` is *not* case-sensitive (accepts `High`), so the
-///     claude-code branch deliberately forwards the value verbatim
-///     to avoid a regression on already-shipped behavior.
+///     codex-cli 0.130.0's TOML enum was case-sensitive and rejected
+///     e.g. `High` with `unknown variant 'High', expected one of
+///     'none', 'minimal', 'low', 'medium', 'high', 'xhigh'`, while
+///     rows often store the level title-cased ("High"). On 0.146.0,
+///     config-loading commands accept unknown values without that
+///     enum error, and the refreshed model catalog includes `max` and
+///     `ultra` for current models. claude-code's `--effort` is *not*
+///     case-sensitive (accepts `High`), so the claude-code branch
+///     deliberately forwards the value verbatim to avoid a regression
+///     on already-shipped behavior.
 ///
 /// shell / unknown runtimes: no equivalent flags — degrade silently
 /// so the runner row's preference is recorded but the spawn

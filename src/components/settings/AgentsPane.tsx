@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 
 import { listen } from "@tauri-apps/api/event";
@@ -14,10 +14,13 @@ import {
   type RuntimeStatusResponse,
 } from "../../lib/api";
 import {
+  readDisabledAgents,
   readDefaultRuntime,
+  writeAgentEnabled,
   writeDefaultRuntime,
 } from "../../lib/settings";
 import { StyledSelect } from "../ui/StyledSelect";
+import { Toggle } from "../ui/Toggle";
 import { RUNTIME_OPTIONS } from "../ui/runtimes";
 import { PaneHeader, SettingsCard, SettingsRow } from "./shared";
 
@@ -27,6 +30,19 @@ export function AgentsPane() {
   const [refreshing, setRefreshing] = useState(false);
   const [defaultRuntime, setDefaultRuntimeState] = useState(() =>
     readDefaultRuntime(),
+  );
+  const [disabledAgents, setDisabledAgents] = useState(() =>
+    readDisabledAgents(),
+  );
+  const availableAgents = useMemo(
+    () =>
+      (status?.runtimes ?? []).filter(
+        (runtime) =>
+          (runtime.effective_source === "detected" ||
+            runtime.effective_source === "override") &&
+          !disabledAgents.has(runtime.name),
+      ),
+    [disabledAgents, status],
   );
 
   const load = useCallback(async () => {
@@ -57,15 +73,33 @@ export function AgentsPane() {
   useEffect(() => {
     if (!status) return;
     const stored = readDefaultRuntime();
-    if (stored && !status.runtimes.some((runtime) => runtime.name === stored)) {
+    const disabled = disabledAgents.has(stored);
+    const unavailable =
+      !status.shell.checking &&
+      !availableAgents.some((runtime) => runtime.name === stored);
+    if (stored && (disabled || unavailable)) {
       setDefaultRuntimeState("");
       writeDefaultRuntime("");
     }
-  }, [status]);
+  }, [availableAgents, disabledAgents, status]);
 
   const setDefaultRuntime = (runtime: string) => {
     setDefaultRuntimeState(runtime);
     writeDefaultRuntime(runtime);
+  };
+
+  const setAgentEnabled = (agent: string, enabled: boolean) => {
+    writeAgentEnabled(agent, enabled);
+    setDisabledAgents((current) => {
+      const next = new Set(current);
+      if (enabled) next.delete(agent);
+      else next.add(agent);
+      return next;
+    });
+    if (!enabled && defaultRuntime === agent) {
+      setDefaultRuntimeState("");
+      writeDefaultRuntime("");
+    }
   };
 
   const refresh = async () => {
@@ -85,11 +119,11 @@ export function AgentsPane() {
     <>
       <PaneHeader
         title="Agents"
-        subtitle="Discover and override built-in agent executables."
+        subtitle="Discover, enable, and override built-in agent executables."
       />
       <SettingsCard>
         <SettingsRow
-          label="Default runtime"
+          label="Default agent"
           sub="Pre-selected when starting a direct chat in Direct mode."
         >
           <StyledSelect
@@ -97,7 +131,7 @@ export function AgentsPane() {
             value={defaultRuntime}
             options={[
               { value: "", label: "First available" },
-              ...(status?.runtimes ?? []).map((runtime) => ({
+              ...availableAgents.map((runtime) => ({
                 value: runtime.name,
                 label: runtime.display_name,
               })),
@@ -116,8 +150,12 @@ export function AgentsPane() {
           <RuntimeRow
             key={runtime.name}
             runtime={runtime}
+            enabled={!disabledAgents.has(runtime.name)}
             probeOutcome={status.shell.outcome}
             onStatus={setStatus}
+            onEnabledChange={(enabled) =>
+              setAgentEnabled(runtime.name, enabled)
+            }
           />
         )) ??
           RUNTIME_OPTIONS.map((runtime) => (
@@ -128,9 +166,9 @@ export function AgentsPane() {
           ))}
       </div>
       <p className="text-[12px] leading-[1.5] text-fg-3">
-        Overrides apply to new sessions in direct chats, runners, and missions
-        that use the runtime&apos;s default command. Runners with a custom
-        command keep it.
+        Disabled agents stay configured but are hidden from agent pickers.
+        Overrides apply to new sessions that use the agent&apos;s default command;
+        runners with a custom command keep it.
       </p>
       {error ? (
         <div className="flex items-start justify-between gap-3 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3">
@@ -190,12 +228,16 @@ function ShellEnvironmentCard({
 
 function RuntimeRow({
   runtime,
+  enabled,
   probeOutcome,
   onStatus,
+  onEnabledChange,
 }: {
   runtime: RuntimeExecutableStatus;
+  enabled: boolean;
   probeOutcome: RuntimeDiscoveryOutcome | null;
   onStatus: (status: RuntimeStatusResponse) => void;
+  onEnabledChange: (enabled: boolean) => void;
 }) {
   const [draft, setDraft] = useState(runtime.override_path ?? "");
   const [validation, setValidation] = useState<string | null>(
@@ -298,6 +340,14 @@ function RuntimeRow({
         <span className="font-mono text-[11px] text-fg-3">
           {runtime.command}
         </span>
+        <span className="text-[11px] text-fg-3">
+          {enabled ? "Enabled" : "Disabled"}
+        </span>
+        <Toggle
+          on={enabled}
+          onChange={onEnabledChange}
+          ariaLabel={`${enabled ? "Disable" : "Enable"} ${runtime.display_name}`}
+        />
       </div>
       <div className="flex items-center gap-2">
         <input

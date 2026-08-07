@@ -1224,7 +1224,12 @@ pub(crate) fn resolve_runtime_override(
     })
 }
 
-pub(crate) fn runtime_direct_runner(runtime: &str, command: Option<&str>) -> Result<Runner> {
+pub(crate) fn runtime_direct_runner(
+    runtime: &str,
+    command: Option<&str>,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Result<Runner> {
     let runtime = runtime.trim();
     if runtime.is_empty() {
         return Err(Error::msg("runtime is required"));
@@ -1252,8 +1257,14 @@ pub(crate) fn runtime_direct_runner(runtime: &str, command: Option<&str>) -> Res
         working_dir: None,
         system_prompt: None,
         env: HashMap::new(),
-        model: None,
-        effort: None,
+        model: model
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        effort: effort
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
         created_at: now,
         updated_at: now,
     })

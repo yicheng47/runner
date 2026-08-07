@@ -18,25 +18,25 @@ export interface RuntimeOption {
 export const RUNTIME_OPTIONS: RuntimeOption[] = [
   {
     value: "codex",
-    label: "codex",
+    label: "Codex",
     defaultCommand: "codex",
     description: "OpenAI Codex CLI",
   },
   {
     value: "claude-code",
-    label: "claude-code",
+    label: "Claude Code",
     defaultCommand: "claude",
     description: "Anthropic Claude Code CLI",
   },
   {
     value: "qoder",
-    label: "qoder",
+    label: "Qoder",
     defaultCommand: "qodercli",
     description: "Qoder CLI",
   },
   {
     value: "trae",
-    label: "trae",
+    label: "TRAE CLI",
     defaultCommand: "traecli",
     description: "TRAE CLI",
   },
@@ -74,8 +74,9 @@ export function runtimeSupportsPermissionMode(runtime: string): boolean {
 // `router::runtime::model_effort_args`, which maps:
 //   - claude-code → `--effort <level>` (case-insensitive,
 //     `low / medium / high / xhigh / max` per `claude --help`).
-//   - codex → `-c model_reasoning_effort=<lowercased>` (case-sensitive
-//     enum: `none / minimal / low / medium / high / xhigh`).
+//   - codex → `-c model_reasoning_effort=<lowercased>`; options below
+//     are the refreshed per-model catalog union verified with
+//     codex-cli 0.146.0.
 // An empty value means "inherit the CLI default" — the runner row
 // stores NULL and `model_effort_args` emits no flag.
 export interface EffortOption {
@@ -87,7 +88,7 @@ export interface EffortOption {
 const EFFORT_INHERIT: EffortOption = {
   value: "",
   label: "Inherit CLI default",
-  description: "Don't pass the runtime's effort flag.",
+  description: "Don't pass the agent's effort flag.",
 };
 
 export const EFFORT_OPTIONS_BY_RUNTIME: Record<
@@ -102,20 +103,22 @@ export const EFFORT_OPTIONS_BY_RUNTIME: Record<
     { value: "xhigh", label: "xhigh" },
     { value: "max", label: "max" },
   ],
-  // Codex's underlying TOML enum (verified against codex-cli 0.130.0
-  // via `unknown variant 'xxx', expected one of 'none', 'minimal',
-  // 'low', 'medium', 'high', 'xhigh'`) accepts six values, but
-  // codex's own in-CLI `/reasoning` picker only surfaces four. We
-  // mirror the picker so the Runner UI matches what codex users
-  // already see. Rows that previously stored `none` / `minimal`
-  // coerce to "Inherit CLI default" via the safe-value guard in the
-  // edit drawer.
+  // codex-cli 0.146.0's refreshed catalog lists `low / medium / high /
+  // xhigh / max / ultra` for gpt-5.6-sol and gpt-5.6-terra;
+  // gpt-5.6-luna stops at `max`, and the other visible models stop at
+  // `xhigh`. Unlike 0.130.0, passing an unknown effort to a
+  // config-loading command no longer reports the enum variants, so
+  // Runner exposes the catalog union. Historically stored `none` /
+  // `minimal` values coerce to "Inherit CLI default" via the edit
+  // drawer's safe-value guard.
   codex: [
     EFFORT_INHERIT,
     { value: "low", label: "Low", description: "Fast responses with lighter reasoning." },
     { value: "medium", label: "Medium", description: "Balances speed and reasoning depth." },
     { value: "high", label: "High", description: "Greater reasoning depth for complex problems." },
     { value: "xhigh", label: "Extra high", description: "Extra reasoning depth for complex problems." },
+    { value: "max", label: "Max", description: "Maximum reasoning depth for the hardest problems." },
+    { value: "ultra", label: "Ultra", description: "Maximum reasoning with automatic task delegation." },
   ],
   trae: [
     EFFORT_INHERIT,
@@ -143,7 +146,7 @@ export interface ModelOption {
 const MODEL_DEFAULT: ModelOption = {
   value: "",
   label: "default",
-  description: "Use the runtime's own default model.",
+  description: "Use the agent's own default model.",
 };
 
 // Curated model suggestions surfaced in the Model combobox's dropdown.
@@ -152,21 +155,62 @@ const MODEL_DEFAULT: ModelOption = {
 //
 // claude-code's `--model` accepts version-stable aliases (`opus` always
 // resolves to the latest Opus), so suggesting them never goes stale.
-// codex has no alias scheme — it takes full names like `gpt-5-codex`
-// that rot every release — and qoder/trae expose runtime-specific
-// catalogs. Those runtimes offer only `default` here and let the user
-// type any full name.
+// Following the Orca precedent, codex mirrors the current visible
+// entries from its refreshed catalog while free-text passthrough handles
+// every persisted or newly released model between refreshes. qoder/trae
+// expose runtime-specific catalogs, so they offer only `default` here
+// and let the user type any full name.
 export const MODEL_SUGGESTIONS_BY_RUNTIME: Record<
   string,
   ReadonlyArray<ModelOption>
 > = {
   "claude-code": [
     MODEL_DEFAULT,
+    { value: "fable", label: "fable", description: "Latest Claude Fable." },
     { value: "opus", label: "opus", description: "Latest Claude Opus." },
     { value: "sonnet", label: "sonnet", description: "Latest Claude Sonnet." },
     { value: "haiku", label: "haiku", description: "Latest Claude Haiku." },
   ],
-  codex: [MODEL_DEFAULT],
+  codex: [
+    MODEL_DEFAULT,
+    {
+      value: "gpt-5.6-sol",
+      label: "gpt-5.6-sol",
+      description: "Latest frontier agentic coding model.",
+    },
+    {
+      value: "gpt-5.6-terra",
+      label: "gpt-5.6-terra",
+      description: "Balanced agentic coding model for everyday work.",
+    },
+    {
+      value: "gpt-5.6-luna",
+      label: "gpt-5.6-luna",
+      description: "Fast and affordable agentic coding model.",
+    },
+    {
+      value: "gpt-5.5",
+      label: "gpt-5.5",
+      description:
+        "Frontier model for complex coding, research, and real-world work.",
+    },
+    {
+      value: "gpt-5.4",
+      label: "gpt-5.4",
+      description: "Strong model for everyday coding.",
+    },
+    {
+      value: "gpt-5.4-mini",
+      label: "gpt-5.4-mini",
+      description:
+        "Small, fast, and cost-efficient model for simpler coding tasks.",
+    },
+    {
+      value: "gpt-5.3-codex-spark",
+      label: "gpt-5.3-codex-spark",
+      description: "Ultra-fast coding model.",
+    },
+  ],
   qoder: [MODEL_DEFAULT],
   trae: [MODEL_DEFAULT],
 };

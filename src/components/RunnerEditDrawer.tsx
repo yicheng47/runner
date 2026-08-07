@@ -29,6 +29,7 @@ import {
   runtimeSupportsPermissionMode,
   stripPermissionFlags,
 } from "./ui/runtimes";
+import { useSelectableAgentOptions } from "./ui/useSelectableAgentOptions";
 
 export function RunnerEditDrawer({
   open,
@@ -71,6 +72,13 @@ export function RunnerEditDrawer({
     useState<PermissionMode>("accept_edits");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const {
+    options: agentOptions,
+    loaded: agentsLoaded,
+    loading: agentsLoading,
+    checking: agentsChecking,
+    error: agentsError,
+  } = useSelectableAgentOptions(open && !previewsSlotEngine);
 
   useEffect(() => {
     if (open && runner) {
@@ -123,7 +131,9 @@ export function RunnerEditDrawer({
     runner !== null &&
     displayName.trim().length > 0 &&
     !submitting;
-
+  const currentAgentOption = RUNTIME_OPTIONS.find(
+    (option) => option.value === runtime,
+  );
 
   const submit = async () => {
     if (!runner || !canSubmit) return;
@@ -200,7 +210,7 @@ export function RunnerEditDrawer({
 
         <Field
           id="edit-runtime"
-          label="Runtime"
+          label="Agent"
           hint={
             previewsSlotEngine
               ? "effective crew-slot override · change it from the crew row"
@@ -208,11 +218,24 @@ export function RunnerEditDrawer({
           }
         >
           {previewsSlotEngine ? (
-            <Input id="edit-runtime" value={runtime} disabled readOnly />
+            <Input
+              id="edit-runtime"
+              value={currentAgentOption?.label ?? runtime}
+              disabled
+              readOnly
+            />
           ) : (
             <RuntimeSelect
               id="edit-runtime"
               value={runtime}
+              options={agentOptions}
+              currentOption={currentAgentOption}
+              disabled={submitting || agentOptions.length === 0}
+              placeholder={
+                !agentsLoaded || agentsLoading || agentsChecking
+                  ? "Detecting agents…"
+                  : "No enabled agents detected"
+              }
               onChange={(opt) => {
                 setRuntime(opt.value);
                 setModel("");
@@ -234,6 +257,9 @@ export function RunnerEditDrawer({
               }}
             />
           )}
+          {!previewsSlotEngine && agentsError ? (
+            <p className="text-[11px] text-danger">{agentsError}</p>
+          ) : null}
         </Field>
 
         <Field id="edit-command" label="Command">
@@ -258,7 +284,7 @@ export function RunnerEditDrawer({
         <Field
           id="edit-model"
           label="Model"
-          hint="optional · blank uses the runtime's own model · type a name or pick an alias"
+          hint="optional · blank uses the agent's own model · type a name or pick an alias"
         >
           {previewsSlotEngine ? (
             <Input
@@ -273,6 +299,7 @@ export function RunnerEditDrawer({
               runtime={runtime}
               model={model}
               onModelChange={setModel}
+              disabled={submitting}
             />
           )}
         </Field>
@@ -291,7 +318,7 @@ export function RunnerEditDrawer({
             <Field
               id="edit-effort"
               label="Thinking effort"
-              hint="optional · resolves to the runtime's native effort flag"
+              hint="optional · resolves to the agent's native effort flag"
             >
               <StyledSelect
                 className="w-full"

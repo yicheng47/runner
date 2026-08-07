@@ -4739,6 +4739,60 @@ fn resize_settle_thread_applies_without_manual_nudge() {
 // ---------------------------------------------------------------------
 
 #[test]
+fn runtime_direct_runner_applies_model_and_effort() {
+    let configured =
+        runtime_direct_runner("codex", None, Some(" gpt-5.6-sol "), Some(" max ")).unwrap();
+    assert_eq!(configured.model.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(configured.effort.as_deref(), Some("max"));
+
+    let defaults = runtime_direct_runner("codex", None, Some(" "), Some("")).unwrap();
+    assert_eq!(defaults.model, None);
+    assert_eq!(defaults.effort, None);
+}
+
+#[test]
+fn runtime_direct_spawn_persists_model_and_effort() {
+    let pool = pool_with_schema();
+    let configured =
+        runtime_direct_runner("codex", Some("/bin/sh"), Some("gpt-5.6-sol"), Some("max")).unwrap();
+    let mgr = mgr_with_fake(None, fake_runtime());
+    let spawned = mgr
+        .spawn_runtime_direct(
+            &configured,
+            None,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+        )
+        .unwrap();
+
+    let stored: (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT agent_runtime, agent_command, agent_model, agent_effort
+               FROM sessions WHERE id = ?1",
+            params![spawned.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(stored.0.as_deref(), Some("codex"));
+    assert_eq!(stored.1.as_deref(), Some("/bin/sh"));
+    assert_eq!(stored.2.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(stored.3.as_deref(), Some("max"));
+
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
 fn runtime_override_helper_distinguishes_absent_matching_and_differing() {
     let mut r = runner("codex-custom", &["--custom"]);
     r.runtime = "codex".into();
@@ -5320,8 +5374,10 @@ fn runtime_only_resume_keeps_live_recorded_path_and_reresolves_dead_path() {
         ] {
             conn.execute(
                 "INSERT INTO sessions
-                    (id, status, started_at, agent_runtime, agent_command)
-                 VALUES (?1, 'stopped', ?2, 'codex', ?3)",
+                    (id, status, started_at, agent_runtime, agent_command,
+                     agent_model, agent_effort)
+                 VALUES (?1, 'stopped', ?2, 'codex', ?3,
+                         'gpt-5.6-sol', 'max')",
                 params![id, now, command],
             )
             .unwrap();
@@ -5346,6 +5402,18 @@ fn runtime_only_resume_keeps_live_recorded_path_and_reresolves_dead_path() {
         fake.last_spawn_spec().unwrap().command,
         recorded.display().to_string()
     );
+    assert!(fake
+        .last_spawn_spec()
+        .unwrap()
+        .args
+        .windows(2)
+        .any(|args| args[0] == "--model" && args[1] == "gpt-5.6-sol"));
+    assert!(fake
+        .last_spawn_spec()
+        .unwrap()
+        .args
+        .windows(2)
+        .any(|args| args[0] == "-c" && args[1] == "model_reasoning_effort=max"));
 
     mgr.resume(
         "runtime-dead-path",

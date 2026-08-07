@@ -815,6 +815,7 @@ pub async fn session_start_direct(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn session_start_runtime(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
@@ -823,8 +824,10 @@ pub async fn session_start_runtime(
     cwd: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
+    model: Option<String>,
+    effort: Option<String>,
 ) -> Result<SpawnedSession> {
-    let runner = runtime_direct_runner(&runtime, None)?;
+    let runner = runtime_direct_runner(&runtime, None, model.as_deref(), effort.as_deref())?;
     let emitter: Arc<dyn SessionEvents> = Arc::new(TauriSessionEvents(app.clone()));
     let spawned = state
         .sessions

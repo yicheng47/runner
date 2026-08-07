@@ -23,6 +23,8 @@ impl SessionManager {
         &self,
         runtime: &str,
         recorded_command: Option<&str>,
+        model: Option<&str>,
+        effort: Option<&str>,
         pool: &DbPool,
     ) -> Result<Runner> {
         let definition = router::runtime::runtime_definition(runtime)
@@ -33,13 +35,13 @@ impl SessionManager {
         if let Some(command) = recorded {
             let path = Path::new(command);
             if path.is_absolute() && crate::runtime_status::executable_path_is_valid(path) {
-                return runtime_direct_runner(runtime, Some(command));
+                return runtime_direct_runner(runtime, Some(command), model, effort);
             }
             if !path.is_absolute() && command != definition.command {
-                return runtime_direct_runner(runtime, Some(command));
+                return runtime_direct_runner(runtime, Some(command), model, effort);
             }
         }
-        let runner = runtime_direct_runner(runtime, None)?;
+        let runner = runtime_direct_runner(runtime, None, model, effort)?;
         self.resolve_runner_executable(&runner, pool)
     }
 
@@ -844,6 +846,10 @@ impl SessionManager {
                 row.agent_runtime = Some(runner.runtime.clone());
                 row.agent_command = Some(runner.command.clone());
             }
+            if persisted_runner_id.is_none() {
+                row.agent_model = runner.model.clone();
+                row.agent_effort = runner.effort.clone();
+            }
             crate::repo::session::insert(&conn, &row)?;
         }
 
@@ -1199,7 +1205,13 @@ impl SessionManager {
                     "runtime-only session {session_id} missing agent_runtime"
                 ))
             })?;
-            self.resolve_runtime_only_resume_runner(runtime, snap.agent_command.as_deref(), &pool)?
+            self.resolve_runtime_only_resume_runner(
+                runtime,
+                snap.agent_command.as_deref(),
+                snap.agent_model.as_deref(),
+                snap.agent_effort.as_deref(),
+                &pool,
+            )?
         };
 
         // Resume plan: hand the prior agent_session_key back to the

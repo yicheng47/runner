@@ -24,6 +24,8 @@ export const STORAGE_DEFAULT_WORKING_DIR = "settings.defaultWorkingDir";
 // Preserve the key used by the former Chat pane so existing selections
 // survive the control's move to Agents.
 export const STORAGE_DEFAULT_RUNTIME = "settings.defaultChatRuntime";
+export const STORAGE_DISABLED_AGENTS = "settings.disabledAgents";
+export const AGENT_ENABLED_CHANGED_EVENT = "runner:agent-enabled-changed";
 export const STORAGE_APP_THEME = "settings.appTheme";
 export const STORAGE_APP_LIGHT_VARIANT = "settings.appLightVariant";
 export const STORAGE_APP_DARK_VARIANT = "settings.appDarkVariant";
@@ -566,6 +568,46 @@ export function writeDefaultRuntime(value: string): void {
   } catch {
     // best-effort
   }
+}
+
+export function readDisabledAgents(): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(
+      localStorage.getItem(STORAGE_DISABLED_AGENTS) ?? "[]",
+    );
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(
+      parsed
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+export function isAgentEnabled(agent: string): boolean {
+  return !readDisabledAgents().has(agent);
+}
+
+export function writeAgentEnabled(agent: string, enabled: boolean): void {
+  try {
+    const disabled = readDisabledAgents();
+    if (enabled) disabled.delete(agent);
+    else disabled.add(agent);
+    if (disabled.size === 0) {
+      localStorage.removeItem(STORAGE_DISABLED_AGENTS);
+    } else {
+      localStorage.setItem(
+        STORAGE_DISABLED_AGENTS,
+        JSON.stringify([...disabled].sort()),
+      );
+    }
+  } catch {
+    // best-effort
+  }
+  window.dispatchEvent(new Event(AGENT_ENABLED_CHANGED_EVENT));
 }
 
 export function readAppTheme(): AppTheme {

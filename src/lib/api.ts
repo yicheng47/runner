@@ -471,6 +471,8 @@ export const api = {
       cols: number | null,
       rows: number | null,
       projectId: string | null = null,
+      model: string | null = null,
+      effort: string | null = null,
     ) =>
       invoke<SpawnedSession>("session_start_runtime", {
         runtime,
@@ -478,6 +480,8 @@ export const api = {
         cwd,
         cols,
         rows,
+        model,
+        effort,
       }),
   },
   window: {

@@ -22,9 +22,9 @@ import { StyledSelect } from "./ui/StyledSelect";
 import { WorkingDirField } from "./ui/WorkingDirField";
 import {
   PERMISSION_MODES_BY_RUNTIME,
-  RUNTIME_OPTIONS,
   runtimeSupportsPermissionMode,
 } from "./ui/runtimes";
+import { useSelectableAgentOptions } from "./ui/useSelectableAgentOptions";
 
 // Mirrors src-tauri/src/commands/runner.rs::validate_handle.
 const HANDLE_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
@@ -40,7 +40,7 @@ export function CreateRunnerModal({
 }) {
   const [handle, setHandle] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [runtime, setRuntime] = useState<string>(RUNTIME_OPTIONS[0].value);
+  const [runtime, setRuntime] = useState("");
   const [argsText, setArgsText] = useState("");
   const [model, setModel] = useState("");
   const [workingDir, setWorkingDir] = useState("");
@@ -54,12 +54,19 @@ export function CreateRunnerModal({
     useState<PermissionMode>("auto");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const {
+    options: agentOptions,
+    loaded: agentsLoaded,
+    loading: agentsLoading,
+    checking: agentsChecking,
+    error: agentsError,
+  } = useSelectableAgentOptions(open);
 
   useEffect(() => {
     if (open) {
       setHandle("");
       setDisplayName("");
-      setRuntime(RUNTIME_OPTIONS[0].value);
+      setRuntime("");
       setArgsText("");
       setModel("");
       setWorkingDir(readDefaultWorkingDir());
@@ -69,12 +76,22 @@ export function CreateRunnerModal({
     }
   }, [open]);
 
+  useEffect(() => {
+    if (!open || agentOptions.some((option) => option.value === runtime)) {
+      return;
+    }
+    const nextRuntime = agentOptions[0]?.value ?? "";
+    if (nextRuntime !== runtime) {
+      setRuntime(nextRuntime);
+      setModel("");
+    }
+  }, [agentOptions, open, runtime]);
+
   // Command is bound to runtime — each runtime's `defaultCommand` is
   // the binary we actually spawn. The Command field below is read-only
   // confirmation of what `claude-code` / `codex` resolves to on PATH.
-  const command =
-    RUNTIME_OPTIONS.find((o) => o.value === runtime)?.defaultCommand ??
-    RUNTIME_OPTIONS[0].defaultCommand;
+  const selectedAgent = agentOptions.find((option) => option.value === runtime);
+  const command = selectedAgent?.defaultCommand ?? "";
 
   const handleError = (() => {
     if (!handle) return null;
@@ -87,6 +104,7 @@ export function CreateRunnerModal({
     handle.length > 0 &&
     handleError === null &&
     displayName.trim().length > 0 &&
+    selectedAgent !== undefined &&
     !submitting;
 
   const submit = async () => {
@@ -175,15 +193,25 @@ export function CreateRunnerModal({
           />
         </Field>
 
-        <Field id="new-runner-runtime" label="Runtime">
+        <Field id="new-runner-runtime" label="Agent">
           <RuntimeSelect
             id="new-runner-runtime"
             value={runtime}
+            options={agentOptions}
+            disabled={submitting || agentOptions.length === 0}
+            placeholder={
+              !agentsLoaded || agentsLoading || agentsChecking
+                ? "Detecting agents…"
+                : "No enabled agents detected"
+            }
             onChange={(opt) => {
               setRuntime(opt.value);
               setModel("");
             }}
           />
+          {agentsError ? (
+            <p className="text-[11px] text-danger">{agentsError}</p>
+          ) : null}
         </Field>
 
         <Field id="new-runner-command" label="Command">
@@ -211,13 +239,14 @@ export function CreateRunnerModal({
         <Field
           id="new-runner-model"
           label="Model"
-          hint="optional · blank uses the runtime's own model · type a name or pick an alias"
+          hint="optional · blank uses the agent's own model · type a name or pick an alias"
         >
           <ModelField
             id="new-runner-model"
             runtime={runtime}
             model={model}
             onModelChange={setModel}
+            disabled={submitting || !runtime}
           />
         </Field>
 
