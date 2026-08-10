@@ -7,6 +7,11 @@
 import { Terminal } from "lucide-react";
 
 import { CopyValueButton } from "./ui/CopyValueButton";
+import {
+  RunnerAvatar,
+  hueForSeed,
+  type RunnerPresence,
+} from "./ui/RunnerAvatar";
 import type { SessionRow } from "../lib/api";
 
 interface RunnersRailProps {
@@ -40,17 +45,14 @@ export function RunnersRail({
           const isLead = s.handle === leadHandle;
           const ptyStatus = s.status;
           const runnerStatus = status[s.handle];
-          // Dot priority: crashed (red) > stopped (gray) > runner busy (green)
-          // > runner idle (dim green). Default to "busy" when no runner_status
-          // has landed yet — a freshly-started PTY is producing startup output.
-          const dotClass =
+          const presence: RunnerPresence =
             ptyStatus === "crashed"
-              ? "bg-danger"
+              ? "crashed"
               : ptyStatus !== "running"
-                ? "bg-fg-3"
+                ? "stopped"
                 : runnerStatus === "idle"
-                  ? "bg-accent/40"
-                  : "bg-accent";
+                  ? "idle"
+                  : "busy";
           const subtitle =
             ptyStatus === "running"
               ? runnerStatus
@@ -78,12 +80,16 @@ export function RunnersRail({
               }`}
             >
               <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <span
-                    className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`}
-                    title={ptyStatus}
+                <div className="flex min-w-0 items-center gap-2">
+                  <RunnerAvatar
+                    seed={s.handle}
+                    size={25}
+                    presence={presence}
                   />
-                  <span className="truncate font-mono text-[13px] font-semibold text-fg">
+                  <span
+                    className="truncate font-mono text-[13px] font-semibold"
+                    style={{ color: hueForSeed(s.handle) }}
+                  >
                     @{s.handle}
                   </span>
                   {isLead ? (

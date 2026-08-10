@@ -4,7 +4,7 @@
 // codex is markdown by convention. Plain-text rendering loses that
 // structure (lists collapse into one line, code becomes prose, etc.).
 //
-// Styling tuned for a chat-log feel: tight line-height, generous
+// Styling tuned for a chat-log feel: relaxed line-height, generous
 // monospace blocks, accent green for inline code so it pops against
 // the carbon background. Lists keep their bullets and indentation.
 
@@ -54,13 +54,16 @@ export function MessageBody({ text }: { text: string }) {
             );
           },
           pre: ({ children }) => <pre className="my-2">{children}</pre>,
+          // pl-* (not ml-*): outside-positioned markers draw in the
+          // list's own padding gutter, so numbers stay inside the
+          // message block instead of hanging past its left edge (#392).
           ul: ({ children }) => (
-            <ul className="my-1 ml-5 list-disc space-y-0.5">{children}</ul>
+            <ul className="my-1.5 list-disc pl-6 space-y-1">{children}</ul>
           ),
           ol: ({ children }) => (
-            <ol className="my-1 ml-5 list-decimal space-y-0.5">{children}</ol>
+            <ol className="my-1.5 list-decimal pl-6 space-y-1">{children}</ol>
           ),
-          li: ({ children }) => <li className="leading-snug">{children}</li>,
+          li: ({ children }) => <li className="leading-relaxed">{children}</li>,
           h1: ({ children }) => (
             <h1 className="mt-3 mb-1.5 text-[14px] font-semibold text-fg">
               {children}
@@ -77,7 +80,7 @@ export function MessageBody({ text }: { text: string }) {
             </h3>
           ),
           p: ({ children }) => (
-            <p className="my-1 leading-relaxed">{children}</p>
+            <p className="my-1.5 leading-relaxed">{children}</p>
           ),
           blockquote: ({ children }) => (
             <blockquote className="my-2 border-l-2 border-line pl-3 text-fg-2">

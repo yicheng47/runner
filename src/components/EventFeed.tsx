@@ -1,44 +1,20 @@
-// Scrollable feed that renders one row per appended event. Three variants
-// align with arch §5.2 + design frame `5DIkl`:
-//   - message rows (kind: message): from / to / payload.text
-//   - signal rows (kind: signal): from / signal type, JSON-ish payload
-//   - ask-human cards (signal type: human_question): rich card variant
-//     consumed by AskHumanCard
-//
-// User-authored signals (`human_said`, `human_response`) render as
-// message rows so they look like normal chat turns in the feed.
-//
-// Router-internal plumbing (`inbox_read`, `runner_status`) is hidden by
-// default — the audit trail lives in `<mission_dir>/events.ndjson`, and
-// the feed is a reading surface for humans collaborating with runners.
-// `mission_warning` is intentionally kept (and rendered at full strength):
-// it's a diagnostic the user should see. See spec
-// `docs/features/archive/08-hide-system-signals-from-feed.md`.
-
-import { useEffect, useRef, useState } from "react";
+import { ChevronDown, Zap } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { AskHumanCard } from "./AskHumanCard";
 import { MessageBody } from "./MessageBody";
-import { isHumanAuthored } from "../lib/eventFeed";
+import { RunnerAvatar, hueForSeed } from "./ui/RunnerAvatar";
+import {
+  groupFeedBlocks,
+  isHumanAuthored,
+  type FeedBlock,
+} from "../lib/eventFeed";
 import type {
   Event,
   HumanQuestionPayload,
   HumanResponsePayload,
   HumanSaidPayload,
 } from "../lib/types";
-
-// Router-internal plumbing rows that the reader never needs to see in
-// the feed. `runner_status` is already projected onto the RunnersRail
-// busy/idle badge; `inbox_read` is just a watermark advance. The full
-// stream still lives in NDJSON on disk, and the parent workspace keeps
-// receiving every event so projections (status map, watermark) stay
-// intact.
-function isHiddenSystemSignal(ev: Event): boolean {
-  return (
-    ev.kind === "signal" &&
-    (ev.type === "inbox_read" || ev.type === "runner_status")
-  );
-}
 
 interface EventFeedProps {
   missionId: string;
@@ -67,6 +43,7 @@ export function EventFeed({
 }: EventFeedProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const wasNearBottomRef = useRef(true);
+  const blocks = useMemo(() => groupFeedBlocks(events), [events]);
   // Tail id of the last event we processed in the append effect. Without
   // this we can't distinguish a true append from a re-render with the
   // same events array — both fire the effect under StrictMode.
@@ -143,23 +120,25 @@ export function EventFeed({
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-10 py-6"
+        className="flex min-h-0 flex-1 flex-col gap-[18px] overflow-y-auto px-6 py-6"
       >
-        {events.length === 0 ? (
-          <p className="text-[12px] text-fg-3">No events yet.</p>
+        {blocks.length === 0 ? (
+          <p className="px-4 text-[12px] text-fg-3">No events yet.</p>
         ) : (
-          events
-            .filter((ev) => !isHiddenSystemSignal(ev))
-            .map((ev) => (
-              <EventRow
-                key={ev.id}
-                event={ev}
-                missionId={missionId}
-                resolvedAsks={resolvedAsks}
-                askersByQuestion={askersByQuestion}
-                onError={onError}
-              />
-            ))
+          blocks.map((block) => (
+            <FeedBlockRow
+              key={
+                block.kind === "message-group"
+                  ? block.events[0].id
+                  : block.event.id
+              }
+              block={block}
+              missionId={missionId}
+              resolvedAsks={resolvedAsks}
+              askersByQuestion={askersByQuestion}
+              onError={onError}
+            />
+          ))
         )}
       </div>
       {hasNewSinceLeftBottom ? (
@@ -175,154 +154,190 @@ export function EventFeed({
   );
 }
 
-function EventRow({
-  event,
+function FeedBlockRow({
+  block,
   missionId,
   resolvedAsks,
   askersByQuestion,
   onError,
 }: {
-  event: Event;
+  block: FeedBlock;
   missionId: string;
   resolvedAsks: Record<string, string>;
   askersByQuestion: Record<string, string>;
   onError?: (msg: string) => void;
 }) {
-  // human_question — render the rich card. Asker derived from the
-  // originating ask_human (via askersByQuestion). Fall back to the
-  // event's `from` (which is "router") if we haven't paired it yet.
-  if (event.kind === "signal" && event.type === "human_question") {
-    const payload = event.payload as HumanQuestionPayload;
-    const asker = askersByQuestion[event.id] ?? "?";
-    const resolvedChoice = resolvedAsks[event.id] ?? null;
+  if (block.kind === "divider") {
+    return <MissionDivider event={block.event} />;
+  }
+
+  if (block.kind === "message-group") {
+    return (
+      <MessageGroup block={block} askersByQuestion={askersByQuestion} />
+    );
+  }
+
+  if (block.kind === "ask-card") {
+    const event = block.event;
     return (
       <AskHumanCard
         missionId={missionId}
         questionId={event.id}
-        asker={asker}
-        payload={payload}
+        asker={askersByQuestion[event.id] ?? "?"}
+        payload={event.payload as HumanQuestionPayload}
         ts={event.ts}
-        resolvedChoice={resolvedChoice}
+        resolvedChoice={resolvedAsks[event.id] ?? null}
         onError={onError}
       />
     );
   }
 
-  if (event.kind === "message") {
-    const text = (event.payload as { text?: string })?.text ?? "";
-    const human = event.from === "human";
-    return (
-      <div className="flex flex-col gap-1">
-        <div className="flex items-baseline gap-2 text-[11px] text-fg-3">
+  return <SignalRow event={block.event} />;
+}
+
+function MissionDivider({ event }: { event: Event }) {
+  return (
+    <div className="flex items-center gap-2.5 px-4">
+      <span className="h-px min-w-0 flex-1 bg-line" />
+      <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-fg-3">
+        Mission started · {formatTs(event.ts)}
+      </span>
+      <span className="h-px min-w-0 flex-1 bg-line" />
+    </div>
+  );
+}
+
+function MessageGroup({
+  block,
+  askersByQuestion,
+}: {
+  block: Extract<FeedBlock, { kind: "message-group" }>;
+  askersByQuestion: Record<string, string>;
+}) {
+  const first = block.events[0];
+  const human = block.author === "human";
+  const target = messageTarget(first, askersByQuestion);
+  const goal = first.kind === "signal" && first.type === "mission_goal";
+
+  return (
+    <div className="flex gap-3 px-4">
+      <RunnerAvatar seed={block.author} size={35} />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2 text-[11px] text-fg-3">
           <span
-            className={`font-mono text-[12px] font-semibold ${
-              human ? "text-warn" : "text-accent"
-            }`}
+            className="truncate font-mono text-[13px] font-semibold"
+            style={{ color: hueForSeed(block.author) }}
           >
-            {human ? "you" : `@${event.from}`}
+            {human ? "you" : `@${block.author}`}
           </span>
-          <span>message</span>
-          {event.to ? (
-            <span className="font-mono text-[12px] text-fg-2">
-              → @{event.to}
+          {goal ? (
+            <span className="rounded bg-raised px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.06em] text-fg-2">
+              Goal
             </span>
           ) : null}
-          <span>·</span>
-          <span>{formatTs(event.ts)}</span>
-        </div>
-        <div className="text-[13px] leading-relaxed text-fg">
-          <MessageBody text={text} />
-        </div>
-      </div>
-    );
-  }
-
-  // User-authored signals render as message rows (header + plain text
-  // body via MessageBody), so an MCP or historical `human_said` and a
-  // `human_response` from AskHumanCard look like normal chat turns
-  // instead of a JSON-y signal box. Target derivation differs by type:
-  // human_said carries `payload.target`; human_response is paired back
-  // to the original asker via askersByQuestion[question_id].
-  if (
-    event.kind === "signal" &&
-    (event.type === "human_said" || event.type === "human_response")
-  ) {
-    let target: string | null;
-    let text: string;
-    if (event.type === "human_said") {
-      const p = (event.payload ?? {}) as Partial<HumanSaidPayload>;
-      text = p.text ?? "";
-      target = p.target ?? null;
-    } else {
-      const p = (event.payload ?? {}) as Partial<HumanResponsePayload>;
-      text = p.choice ?? "";
-      target = p.question_id ? askersByQuestion[p.question_id] ?? "?" : "?";
-    }
-    return (
-      <div className="flex flex-col gap-1">
-        <div className="flex items-baseline gap-2 text-[11px] text-fg-3">
-          <span
-            className={`font-mono text-[12px] font-semibold ${
-              event.from === "human" ? "text-warn" : "text-accent"
-            }`}
-          >
-            {event.from === "human" ? "you" : `@${event.from}`}
-          </span>
-          <span>message</span>
           {target ? (
-            <span className="font-mono text-[12px] text-fg-2">
+            <span className="truncate font-mono text-[11px] text-fg-2">
               → @{target}
             </span>
           ) : null}
-          <span>·</span>
-          <span>{formatTs(event.ts)}</span>
+          <span className="shrink-0">{formatTs(first.ts)}</span>
         </div>
-        <div className="text-[13px] leading-relaxed text-fg">
-          <MessageBody text={text} />
+        <div className="space-y-1.5 text-[13px] leading-relaxed text-fg">
+          {block.events.map((event) => {
+            const text = messageText(event);
+            return (
+              <div key={event.id}>
+                {text ? (
+                  <MessageBody text={text} />
+                ) : event.kind === "signal" && event.type === "mission_goal" ? (
+                  <span className="text-fg-3">(no text)</span>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
-      </div>
-    );
-  }
-
-  // Default signal row. `inbox_read` / `runner_status` are filtered out
-  // upstream (see isHiddenSystemSignal); `mission_warning` reaches here
-  // and renders at full strength so the diagnostic stands out.
-  return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-baseline gap-2 text-[11px] text-fg-3">
-        <span className="font-mono text-[12px] font-semibold text-accent">
-          @{event.from}
-        </span>
-        <span>signal · {event.type ?? "?"}</span>
-        <span>·</span>
-        <span>{formatTs(event.ts)}</span>
-      </div>
-      <div className="rounded-md border border-line bg-bg p-3 font-mono text-[12px] leading-snug text-fg-2">
-        {renderPayload(event)}
       </div>
     </div>
   );
 }
 
-function renderPayload(event: Event): React.ReactNode {
-  // Common signal shapes get shorter inline renderings; everything else
-  // falls back to formatted JSON. The v0 router never emits opaque blobs
-  // so this stays readable.
+function messageText(event: Event): string {
+  if (event.kind === "message") {
+    return (event.payload as { text?: string } | null)?.text ?? "";
+  }
+  if (event.type === "human_said") {
+    return ((event.payload ?? {}) as Partial<HumanSaidPayload>).text ?? "";
+  }
+  if (event.type === "human_response") {
+    return ((event.payload ?? {}) as Partial<HumanResponsePayload>).choice ?? "";
+  }
+  const payload = (event.payload ?? {}) as { text?: string };
+  return typeof payload.text === "string" ? payload.text : "";
+}
+
+function messageTarget(
+  event: Event,
+  askersByQuestion: Record<string, string>,
+): string | null {
+  if (event.kind === "message") return event.to;
+  if (event.type === "human_said") {
+    return ((event.payload ?? {}) as Partial<HumanSaidPayload>).target ?? null;
+  }
+  if (event.type === "human_response") {
+    const payload = (event.payload ?? {}) as Partial<HumanResponsePayload>;
+    return payload.question_id
+      ? askersByQuestion[payload.question_id] ?? "?"
+      : "?";
+  }
+  const payload = (event.payload ?? {}) as { target?: string };
+  return typeof payload.target === "string" ? payload.target : null;
+}
+
+function SignalRow({ event }: { event: Event }) {
+  const warning = event.type === "mission_warning";
+  const tone = warning ? "text-danger" : "text-fg-3";
+
+  return (
+    <details className="group pr-4 pl-[63px]">
+      <summary className="flex min-w-0 cursor-pointer list-none items-center gap-1.5 text-[11px] [&::-webkit-details-marker]:hidden">
+        <Zap aria-hidden className={`h-3 w-3 shrink-0 ${tone}`} />
+        <span
+          className="shrink-0 font-mono font-semibold"
+          style={{ color: hueForSeed(event.from) }}
+        >
+          @{event.from}
+        </span>
+        <span className={`min-w-0 truncate ${tone}`}>
+          signal · {event.type ?? "?"}
+          {event.to ? ` → @${event.to}` : ""} · {formatTs(event.ts)}
+        </span>
+        <span
+          className={`ml-auto inline-flex shrink-0 items-center gap-0.5 text-[10px] ${tone}`}
+        >
+          payload
+          <ChevronDown
+            aria-hidden
+            className="h-3 w-3 transition-transform group-open:rotate-180"
+          />
+        </span>
+      </summary>
+      <div
+        className={`mt-2 ml-[18px] rounded-md border p-3 font-mono text-[12px] leading-snug ${
+          warning
+            ? "border-danger/30 bg-danger/5 text-danger"
+            : "border-line bg-bg text-fg-2"
+        }`}
+      >
+        {renderPayload(event)}
+      </div>
+    </details>
+  );
+}
+
+function renderPayload(event: Event): ReactNode {
   const p = event.payload as Record<string, unknown> | null | undefined;
   if (!p || typeof p !== "object") {
     return <span>{String(p ?? "")}</span>;
-  }
-  if (event.type === "mission_goal") {
-    const text = typeof p.text === "string" ? p.text : "";
-    const target = typeof p.target === "string" ? p.target : null;
-    return (
-      <div className="text-fg">
-        {text ? <MessageBody text={text} /> : <span>(no text)</span>}
-        {target ? (
-          <div className="mt-1 text-fg-3">→ @{target}</div>
-        ) : null}
-      </div>
-    );
   }
   if (event.type === "ask_lead") {
     const q = typeof p.question === "string" ? p.question : "";
@@ -338,14 +353,15 @@ function renderPayload(event: Event): React.ReactNode {
       </span>
     );
   }
-  return <pre className="whitespace-pre-wrap break-all">{JSON.stringify(p, null, 2)}</pre>;
+  return (
+    <pre className="whitespace-pre-wrap break-all">
+      {JSON.stringify(p, null, 2)}
+    </pre>
+  );
 }
 
 function formatTs(ts: string): string {
-  try {
-    const d = new Date(ts);
-    return d.toLocaleTimeString();
-  } catch {
-    return ts;
-  }
+  const date = new Date(ts);
+  if (Number.isNaN(date.getTime())) return ts;
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
