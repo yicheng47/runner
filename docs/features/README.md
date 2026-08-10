@@ -21,6 +21,7 @@ links to its tracking issue.
 - [56 — Backend list pagination](./56-backend-list-pagination.md) — Runners/Crews pagination moves into SQL (`page`/`page_size`/`query` with LIMIT/OFFSET and the search filter server-side); the pager becomes one slim row flush under the cards, hidden at a single page, with no half-clipped card above it ([#377](https://github.com/yicheng47/runner/issues/377)).
 - [57 — Start Project modal](./57-start-project-modal.md) — replace the bare directory-picker "Add project" flow with a modal mirroring the chat/mission start modals: directory field prefilled from `settings.defaultWorkingDir`, name field defaulting to the directory basename and following it until manually edited ([#383](https://github.com/yicheng47/runner/issues/383)).
 - [58 — Runner & crew detail redesign](./58-runner-crew-detail-redesign.md) — Pencil-first redesign of both MVP-draft detail pages: crew detail puts the slot roster above the prose config sections instead of below them, runner detail clamps the system-prompt dump and consolidates redundant cards ([#393](https://github.com/yicheng47/runner/issues/393)).
+- [59 — Per-slot model and effort overrides](./59-slot-model-effort-overrides.md) — complete the slot-as-agent-config model: model and effort overridable per slot without requiring a runtime override first (new `effort_override` column, resolver rework, ungated chips in the crew editor) ([#397](https://github.com/yicheng47/runner/issues/397)).
 
 ## Archive
 
