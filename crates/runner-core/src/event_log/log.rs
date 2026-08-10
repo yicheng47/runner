@@ -141,9 +141,9 @@ impl EventLog {
     /// processing flow through the same channel, so a stuck flock
     /// would freeze them all.
     ///
-    /// On contention the caller is expected to drop the event (status
-    /// transitions are observability, not load-bearing) and bump a
-    /// streak counter for visibility.
+    /// On contention the caller decides whether to drop or retry. The
+    /// session forwarder uses a short bounded retry because its status
+    /// transitions feed the router's reconciliation gate.
     pub fn try_append(&self, draft: EventDraft) -> std::result::Result<Event, TryAppendError> {
         let file = OpenOptions::new()
             .create(true)
@@ -493,8 +493,8 @@ fn parse_id(line: &[u8]) -> Result<String> {
 #[derive(Debug)]
 pub enum TryAppendError {
     /// Another writer holds the file lock right now. Caller should
-    /// drop the event and try again on the next transition rather
-    /// than blocking the producer thread.
+    /// either drop the event or retry with its own bounded policy
+    /// rather than blocking the producer thread.
     Contended,
     /// I/O error opening the file or any other append failure.
     Failed(Error),

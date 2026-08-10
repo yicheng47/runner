@@ -34,8 +34,9 @@ enum InjectKind {
 
 /// Records every `inject` / `inject_paste_with_verify` call so
 /// handler outputs can be asserted.
-#[derive(Default)]
 struct RecordingInjector {
+    status_log: Arc<EventLog>,
+    activity: Mutex<HashMap<String, super::RunnerStatus>>,
     pushes: Mutex<Vec<(String, InjectKind, Vec<u8>)>>,
     blocked_events: Mutex<Vec<DeliveryBlockedEvent>>,
     /// Optional `dead_session` set — `inject` errors when called with one
@@ -54,6 +55,22 @@ struct RecordingInputState {
 }
 
 impl RecordingInjector {
+    fn new(status_log: Arc<EventLog>) -> Self {
+        Self {
+            status_log,
+            activity: Mutex::new(HashMap::new()),
+            pushes: Mutex::new(Vec::new()),
+            blocked_events: Mutex::new(Vec::new()),
+            dead: Mutex::new(Vec::new()),
+            input: Mutex::new(HashMap::new()),
+            listeners: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn activity_for(&self, session_id: &str) -> Option<super::RunnerStatus> {
+        self.activity.lock().unwrap().get(session_id).copied()
+    }
+
     fn pushes_for(&self, session_id: &str) -> Vec<String> {
         self.pushes
             .lock()
@@ -333,6 +350,15 @@ impl StdinInjector for RecordingInjector {
         }
     }
 
+    fn synthesize_wake_busy(&self, session_id: &str, draft: EventDraft) -> Result<()> {
+        self.status_log.append(draft)?;
+        self.activity
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), super::RunnerStatus::Busy);
+        Ok(())
+    }
+
     fn register_delivery_listener(
         &self,
         session_id: &str,
@@ -403,7 +429,7 @@ fn fixture(
 ) {
     let dir = tempfile::tempdir().unwrap();
     let log = Arc::new(EventLog::open(dir.path()).unwrap());
-    let injector = Arc::new(RecordingInjector::default());
+    let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
     let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
     let notifier: Arc<dyn RouterUiNotifier> = injector.clone();
     let router = Router::new(
@@ -1745,7 +1771,7 @@ fn pending_ask_map_reconstructs_from_log_on_reopen() {
 
     // First mount handles the ask live (appends human_question).
     {
-        let injector = Arc::new(RecordingInjector::default());
+        let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
         let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
         let router = Router::new(
             "mission-1".into(),
@@ -1782,7 +1808,7 @@ fn pending_ask_map_reconstructs_from_log_on_reopen() {
 
     // Reopen: build router #2, fold projection state from history. This
     // is the path mission_resume / mount-on-app-restart will follow.
-    let injector = Arc::new(RecordingInjector::default());
+    let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
     let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
     let router2 = Router::new(
         "mission-1".into(),
@@ -1889,7 +1915,7 @@ fn reconstruct_recovers_latest_runner_status_only() {
     ))
     .unwrap();
 
-    let injector = Arc::new(RecordingInjector::default());
+    let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
     let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
     let router = Router::new(
         "mission-1".into(),
@@ -1979,7 +2005,7 @@ fn fresh_mission_start_does_not_call_reconstruct() {
     ))
     .unwrap();
 
-    let injector = Arc::new(RecordingInjector::default());
+    let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
     let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
     let router = Router::new(
         "mission-1".into(),
@@ -2077,7 +2103,7 @@ fn reconstruct_tolerates_malformed_lines_like_the_bus() {
     let roster = vec![slot_with_runner("lead", true)];
     // First mount handles the ask live — appends human_question.
     {
-        let injector = Arc::new(RecordingInjector::default());
+        let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
         let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
         let router = Router::new(
             "mission-1".into(),
@@ -2106,7 +2132,7 @@ fn reconstruct_tolerates_malformed_lines_like_the_bus() {
         .id;
 
     // Reopen + reconstruct: must not fail despite the malformed middle line.
-    let injector = Arc::new(RecordingInjector::default());
+    let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
     let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
     let router2 = Router::new(
         "mission-1".into(),
@@ -2151,7 +2177,7 @@ fn directed_wake_synthesizes_busy_and_idle_clears_it() {
     // `idle` was emitted. The router now synthesizes `runner_status busy`
     // (with `from = recipient`) for any wake nudge, and the existing
     // worker-emitted `idle` clears it.
-    let (router, _injector, log, _dir) = fixture(
+    let (router, injector, log, _dir) = fixture(
         vec![
             slot_with_runner("lead", true),
             slot_with_runner("impl", false),
@@ -2186,6 +2212,11 @@ fn directed_wake_synthesizes_busy_and_idle_clears_it() {
         router.state.lock().unwrap().status.get("impl"),
         Some(super::RunnerStatus::Busy),
     ));
+    assert_eq!(
+        injector.activity_for("S-IMPL"),
+        Some(super::RunnerStatus::Busy),
+        "synthetic busy must update the session-side activity store",
+    );
 
     // A second directed wake while still busy must not churn another
     // busy event into the log — the dedupe guard suppresses it.
@@ -2245,7 +2276,7 @@ fn synthetic_busy_replays_through_existing_runner_status_projection() {
 
     // First mount: drive a directed message to synthesize busy.
     {
-        let injector = Arc::new(RecordingInjector::default());
+        let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
         let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
         let router = Router::new(
             "mission-1".into(),
@@ -2268,7 +2299,7 @@ fn synthetic_busy_replays_through_existing_runner_status_projection() {
     }
 
     // Reopen + reconstruct.
-    let injector = Arc::new(RecordingInjector::default());
+    let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
     let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
     let router2 = Router::new(
         "mission-1".into(),
