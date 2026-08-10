@@ -29,7 +29,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use runner_core::event_log::EventLog;
-use runner_core::model::{Event, EventKind, SignalType};
+use runner_core::model::{Event, EventDraft, EventKind, SignalType};
 use serde::Serialize;
 use tauri::Emitter;
 
@@ -68,6 +68,8 @@ pub trait StdinInjector: Send + Sync + 'static {
     fn inject_reserved(&self, session_id: &str, token: u64, bytes: &[u8]) -> Result<bool>;
 
     fn finish_delivery(&self, session_id: &str, token: u64);
+
+    fn synthesize_wake_busy(&self, session_id: &str, draft: EventDraft) -> Result<()>;
 
     fn register_delivery_listener(
         &self,
@@ -125,6 +127,10 @@ impl StdinInjector for SessionManager {
 
     fn finish_delivery(&self, session_id: &str, token: u64) {
         SessionManager::finish_delivery(self, session_id, token)
+    }
+
+    fn synthesize_wake_busy(&self, session_id: &str, draft: EventDraft) -> Result<()> {
+        SessionManager::synthesize_wake_busy(self, session_id, draft)
     }
 
     fn register_delivery_listener(
@@ -587,26 +593,40 @@ impl Router {
     /// without this, a slow-to-respond agent could appear `idle` to the
     /// user immediately after a nudge. Latest-wins absorbs the
     /// follow-up forwarder event without churn.
+    ///
+    /// Post-issue-#385: the append routes through the SessionManager
+    /// (not `log.append`) so the forwarder dedup key
+    /// (`session.activity`) updates atomically with the event — a
+    /// direct append left the key stale and the paired end-of-turn
+    /// idle was deduped away, sticking the rail on busy.
     fn synthesize_wake_busy(&self, handle: &str) {
         if handle == "human" {
             return;
         }
-        {
+        let session_id = {
             let state = self.state.lock().unwrap();
             if matches!(state.status.get(handle), Some(RunnerStatus::Busy)) {
                 return;
             }
-        }
-        let draft = runner_core::model::EventDraft::signal(
+            state.session_by_handle.get(handle).cloned()
+        };
+        let Some(session_id) = session_id else {
+            log::error!(
+                "cannot synthesize runner_status busy for @{handle} on mission {}: no session",
+                self.mission_id,
+            );
+            return;
+        };
+        let draft = EventDraft::signal(
             self.crew_id.clone(),
             self.mission_id.clone(),
             handle,
             SignalType::new("runner_status"),
             serde_json::json!({ "state": "busy" }),
         );
-        if let Err(e) = self.log.append(draft) {
+        if let Err(e) = self.injector.synthesize_wake_busy(&session_id, draft) {
             log::error!(
-                "failed to append synthetic runner_status busy for @{handle} on mission {}: {e}",
+                "failed to synthesize runner_status busy for @{handle} on mission {}: {e}",
                 self.mission_id,
             );
             return;

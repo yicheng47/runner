@@ -2574,6 +2574,217 @@ fn mission_status_transition_appends_once_without_session_status_event() {
 }
 
 #[test]
+fn synthetic_wake_busy_updates_activity_and_allows_final_idle() {
+    let pool = pool_with_schema();
+    let mission = Mission {
+        crew_id: "c".into(),
+        ..mission()
+    };
+    let runner = runner("/bin/cat", &[]);
+    let slot_id = insert_crew_runner(&pool, &mission.id, &runner.id);
+    let mut slot = slot_for(&runner);
+    slot.id = slot_id;
+    slot.crew_id = mission.crew_id.clone();
+
+    let app_data = tempfile::tempdir().unwrap();
+    let events_log_path =
+        runner_core::event_log::path::events_path(app_data.path(), &mission.crew_id, &mission.id);
+    let mission_dir =
+        runner_core::event_log::path::mission_dir(app_data.path(), &mission.crew_id, &mission.id);
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture();
+    let spawned = mgr
+        .spawn(
+            &mission,
+            &runner,
+            &slot,
+            app_data.path(),
+            events_log_path,
+            Arc::clone(&pool),
+            Arc::clone(&cap) as Arc<dyn SessionEvents>,
+            None,
+        )
+        .unwrap();
+
+    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_output(0, b"initial-idle-synced");
+    wait_for_output_event(&cap, &spawned.id);
+    cap.output.lock().unwrap().clear();
+
+    let log = EventLog::open(&mission_dir).unwrap();
+    mgr.synthesize_wake_busy(
+        &spawned.id,
+        EventDraft::signal(
+            mission.crew_id.clone(),
+            mission.id.clone(),
+            runner.handle.clone(),
+            SignalType::new("runner_status"),
+            serde_json::json!({ "state": "busy" }),
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(
+        mgr.activity_snapshot().get(&spawned.id),
+        Some(&SessionActivityState::Busy),
+        "synthetic busy must update the session-side dedup key",
+    );
+    let after_busy: Vec<_> = log
+        .read_from(0)
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.event)
+        .filter(|event| {
+            event
+                .signal_type
+                .as_ref()
+                .is_some_and(|ty| ty.as_str() == "runner_status")
+        })
+        .collect();
+    assert_eq!(after_busy.len(), 2);
+    assert_eq!(after_busy[1].payload["state"], "busy");
+
+    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_output(0, b"final-idle-drained");
+    wait_for_output_event(&cap, &spawned.id);
+
+    let statuses: Vec<_> = log
+        .read_from(0)
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.event)
+        .filter(|event| {
+            event
+                .signal_type
+                .as_ref()
+                .is_some_and(|ty| ty.as_str() == "runner_status")
+        })
+        .collect();
+    assert_eq!(statuses.len(), 3);
+    assert_eq!(statuses[2].payload["state"], "idle");
+    assert_eq!(statuses[2].payload["source"], "forwarder");
+    assert_eq!(
+        mgr.activity_snapshot().get(&spawned.id),
+        Some(&SessionActivityState::Idle),
+    );
+
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn suppressed_busy_then_agent_output_and_quiet_appends_final_idle() {
+    let pool = pool_with_schema();
+    let mission = Mission {
+        crew_id: "c".into(),
+        ..mission()
+    };
+    let runner = runner("/bin/cat", &[]);
+    let slot_id = insert_crew_runner(&pool, &mission.id, &runner.id);
+    let mut slot = slot_for(&runner);
+    slot.id = slot_id;
+    slot.crew_id = mission.crew_id.clone();
+
+    let app_data = tempfile::tempdir().unwrap();
+    let events_log_path =
+        runner_core::event_log::path::events_path(app_data.path(), &mission.crew_id, &mission.id);
+    let mission_dir =
+        runner_core::event_log::path::mission_dir(app_data.path(), &mission.crew_id, &mission.id);
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture();
+    let spawned = mgr
+        .spawn(
+            &mission,
+            &runner,
+            &slot,
+            app_data.path(),
+            events_log_path,
+            Arc::clone(&pool),
+            Arc::clone(&cap) as Arc<dyn SessionEvents>,
+            None,
+        )
+        .unwrap();
+
+    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_output(0, b"initial-idle-synced");
+    wait_for_output_event(&cap, &spawned.id);
+    cap.output.lock().unwrap().clear();
+
+    mgr.inject_direct_stdin(&spawned.id, b"router nudge", cap.as_ref())
+        .unwrap();
+    assert!(
+        mgr.session_state(&spawned.id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .suppress_local_input_busy,
+        "unsubmitted nudge body must open the suppressed-busy window",
+    );
+
+    let log = EventLog::open(&mission_dir).unwrap();
+    mgr.synthesize_wake_busy(
+        &spawned.id,
+        EventDraft::signal(
+            mission.crew_id.clone(),
+            mission.id.clone(),
+            runner.handle.clone(),
+            SignalType::new("runner_status"),
+            serde_json::json!({ "state": "busy" }),
+        ),
+    )
+    .unwrap();
+
+    fake.push_status(0, RunnerStatus::Busy);
+    fake.push_output(0, b"agent output");
+    fake.push_status(0, RunnerStatus::Idle);
+    fake.push_output(0, b"quiet-transition-drained");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let statuses = loop {
+        let statuses: Vec<_> = log
+            .read_from(0)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.event)
+            .filter(|event| {
+                event
+                    .signal_type
+                    .as_ref()
+                    .is_some_and(|ty| ty.as_str() == "runner_status")
+            })
+            .collect();
+        if statuses.last().is_some_and(|event| {
+            event.payload.get("state").and_then(|state| state.as_str()) == Some("idle")
+        }) && statuses.len() >= 3
+        {
+            break statuses;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "final idle was not appended after the suppressed busy"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    assert_eq!(
+        statuses
+            .iter()
+            .map(|event| event.payload["state"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["idle", "busy", "idle"],
+        "the suppressed forwarder busy must not swallow the paired idle",
+    );
+    assert_eq!(statuses[2].payload["source"], "forwarder");
+    assert_eq!(
+        mgr.activity_snapshot().get(&spawned.id),
+        Some(&SessionActivityState::Idle),
+    );
+
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
 fn mission_typing_stays_idle_until_submit() {
     let pool = pool_with_schema();
     let mission_base = Mission {
@@ -3818,7 +4029,7 @@ fn codex_mission_resume_grants_event_log_dir_to_sandbox() {
 // a FakeRuntime SessionHandle for those tests is gone too.
 
 #[test]
-fn forwarder_status_emit_does_not_block_under_event_log_contention() {
+fn forwarder_status_emit_stays_bounded_under_event_log_contention() {
     // Issue #124 / @reviewer P1: the forwarder consumer drains
     // terminal output, exit-event reap, AND `runner_status`
     // emission through the same thread. If `try_append_runner_status`
@@ -3828,8 +4039,8 @@ fn forwarder_status_emit_does_not_block_under_event_log_contention() {
     // Construct a real ForwarderEmitCtx against a tempdir,
     // steal the flock from another "process" (a parallel fd
     // holding LOCK_EX), and assert that
-    // `try_append_runner_status` returns `Contended` within a
-    // hard 100ms bound.
+    // `try_append_runner_status` exhausts its bounded retries and
+    // returns `Contended` within a hard 100ms bound.
     use fs2::FileExt;
     use std::fs::OpenOptions;
     let dir = tempfile::tempdir().unwrap();
@@ -3883,6 +4094,61 @@ fn forwarder_status_emit_does_not_block_under_event_log_contention() {
     blocker.unlock().unwrap();
     let outcome = ctx.try_append_runner_status(RunnerStatus::Busy, "forwarder");
     assert!(matches!(outcome, AppendOutcome::Ok));
+}
+
+#[test]
+fn forwarder_status_emit_retries_brief_event_log_contention() {
+    use fs2::FileExt;
+    use std::fs::OpenOptions;
+
+    let dir = tempfile::tempdir().unwrap();
+    let event_log = Arc::new(EventLog::open(dir.path()).unwrap());
+    let blocker = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(event_log.path())
+        .unwrap();
+    blocker.lock_exclusive().unwrap();
+
+    let ctx = ForwarderEmitCtx {
+        crew_id: "test-crew".into(),
+        mission_id: "test-mission".into(),
+        handle: "tester".into(),
+        event_log: Arc::clone(&event_log),
+    };
+    assert!(matches!(
+        event_log.try_append(ctx.runner_status_draft(RunnerStatus::Idle, "forwarder")),
+        Err(TryAppendError::Contended),
+    ));
+
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let retry_ctx = ctx.clone();
+    let append = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        retry_ctx.try_append_runner_status(RunnerStatus::Idle, "forwarder")
+    });
+    started_rx.recv().unwrap();
+    // Keep the unlock well inside the ~35ms retry budget so a loaded CI
+    // machine can't slip it past the last attempt.
+    std::thread::sleep(Duration::from_millis(5));
+    blocker.unlock().unwrap();
+
+    assert!(matches!(append.join().unwrap(), AppendOutcome::Ok));
+    let statuses: Vec<_> = event_log
+        .read_from(0)
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.event)
+        .filter(|event| {
+            event
+                .signal_type
+                .as_ref()
+                .is_some_and(|ty| ty.as_str() == "runner_status")
+        })
+        .collect();
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].payload["state"], "idle");
 }
 
 #[test]

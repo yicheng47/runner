@@ -49,6 +49,8 @@ mod tests;
 
 const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
 const RECENT_LOCAL_INPUT_WINDOW: Duration = Duration::from_secs(2);
+const RUNNER_STATUS_APPEND_MAX_ATTEMPTS: usize = 8;
+const RUNNER_STATUS_APPEND_RETRY_DELAY: Duration = Duration::from_millis(5);
 pub(crate) const DEFAULT_PTY_SIZE: (u16, u16) = (80, 24);
 
 /// How long a cols-change resize storm must stay quiet before the
@@ -257,22 +259,30 @@ impl ForwarderEmitCtx {
         )
     }
 
-    /// Non-blocking append of a forwarder-emitted `runner_status`
-    /// row. The consumer thread runs this on every status
-    /// transition; it must not block (it shares the mpsc receiver
-    /// with the terminal output stream and the exit-event reap, so
-    /// a stuck flock would freeze them too). Wire shape mirrors
-    /// `cli/src/signal.rs::run_status` so router / UI projections
-    /// can't tell the two apart except by `payload.source`.
+    /// Bounded append of a forwarder-emitted `runner_status` row.
+    /// Each flock attempt is non-blocking; brief contention is retried
+    /// because the router's reconciliation gate now depends on these
+    /// events, while persistent contention still gives up quickly so
+    /// terminal output and exit-event reap cannot freeze behind it.
     fn try_append_runner_status(&self, state: RunnerStatus, source: &'static str) -> AppendOutcome {
-        match self
-            .event_log
-            .try_append(self.runner_status_draft(state, source))
-        {
-            Ok(_) => AppendOutcome::Ok,
+        match self.try_append_with_retry(self.runner_status_draft(state, source)) {
+            Ok(()) => AppendOutcome::Ok,
             Err(TryAppendError::Contended) => AppendOutcome::Contended,
             Err(TryAppendError::Failed(_)) => AppendOutcome::Failed,
         }
+    }
+
+    fn try_append_with_retry(&self, draft: EventDraft) -> std::result::Result<(), TryAppendError> {
+        for attempt in 1..=RUNNER_STATUS_APPEND_MAX_ATTEMPTS {
+            match self.event_log.try_append(draft.clone()) {
+                Ok(_) => return Ok(()),
+                Err(TryAppendError::Contended) if attempt < RUNNER_STATUS_APPEND_MAX_ATTEMPTS => {
+                    thread::sleep(RUNNER_STATUS_APPEND_RETRY_DELAY);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("bounded append loop always returns")
     }
 
     fn append_runner_status(
@@ -986,6 +996,23 @@ impl SessionManager {
         }
         session.activity = Some(state);
         true
+    }
+
+    pub(crate) fn synthesize_wake_busy(&self, session_id: &str, draft: EventDraft) -> Result<()> {
+        let session = self
+            .session_state(session_id)
+            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+        let mut session = session.lock().unwrap();
+        let sink = session.mission_status_sink.as_ref().ok_or_else(|| {
+            Error::msg(format!("session has no mission status sink: {session_id}"))
+        })?;
+        match sink.try_append_with_retry(draft) {
+            Ok(()) => {}
+            Err(TryAppendError::Contended) => return Err(Error::msg("event log busy")),
+            Err(TryAppendError::Failed(error)) => return Err(error.into()),
+        }
+        session.activity = Some(SessionActivityState::Busy);
+        Ok(())
     }
 
     pub(crate) fn publish_direct_activity(
