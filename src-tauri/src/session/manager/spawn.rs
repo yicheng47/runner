@@ -1079,6 +1079,8 @@ impl SessionManager {
             let state = self.session_state_or_insert(session_id);
             let mut state = state.lock().unwrap();
             if state.resuming {
+                // Frontend benign-race handling matches this fragment in
+                // src/lib/missionResume.ts; keep the wording synchronized.
                 return Err(Error::msg(format!(
                     "session {session_id} is already being resumed"
                 )));
@@ -1099,6 +1101,8 @@ impl SessionManager {
             let row = crate::repo::session::get_row(&conn, session_id)?
                 .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
             if matches!(row.status, crate::model::SessionStatus::Running) {
+                // Frontend benign-race handling matches this fragment in
+                // src/lib/missionResume.ts; keep the wording synchronized.
                 return Err(Error::msg(format!(
                     "session {session_id} is already running — attach instead"
                 )));

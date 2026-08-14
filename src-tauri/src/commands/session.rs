@@ -22,8 +22,8 @@ use crate::{
     model::{Runner, Session, SessionStatus, Timestamp},
     repo,
     session::manager::{
-        runtime_direct_runner, OutputEvent, SessionActivityState, SessionEvents, SpawnedSession,
-        TauriSessionEvents,
+        runtime_direct_runner, OutputEvent, SessionActivityState, SessionEvents,
+        SessionUpdatedEvent, SpawnedSession, TauriSessionEvents,
     },
     AppState,
 };
@@ -732,7 +732,10 @@ pub async fn session_resume(
     }
     let _ = app.emit(
         "session/updated",
-        serde_json::json!({ "session_id": session_id }),
+        SessionUpdatedEvent {
+            session_id,
+            mission_id: spawned.mission_id.clone(),
+        },
     );
     Ok(spawned)
 }
