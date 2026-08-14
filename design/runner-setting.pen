@@ -1,5 +1,5 @@
 {
-  "version": "2.14",
+  "version": "2.17",
   "children": [
     {
       "type": "frame",
@@ -24,6 +24,7 @@
             "right": 1
           },
           "strokeAlignment": "inner",
+          "strokeLinejoin": "round",
           "layout": "vertical",
           "padding": [
             14,
@@ -1001,6 +1002,7 @@
                             "left": 1
                           },
                           "strokeAlignment": "inner",
+                          "strokeLinejoin": "round",
                           "justifyContent": "center",
                           "alignItems": "center",
                           "children": [
@@ -1147,6 +1149,7 @@
             "right": 1
           },
           "strokeAlignment": "inner",
+          "strokeLinejoin": "round",
           "layout": "vertical",
           "padding": [
             14,
@@ -2992,6 +2995,7 @@
             "right": 1
           },
           "strokeAlignment": "inner",
+          "strokeLinejoin": "round",
           "layout": "vertical",
           "padding": [
             14,
@@ -3767,6 +3771,7 @@
             "right": 1
           },
           "strokeAlignment": "inner",
+          "strokeLinejoin": "round",
           "layout": "vertical",
           "padding": [
             14,
@@ -4860,6 +4865,7 @@
             "right": 1
           },
           "strokeAlignment": "inner",
+          "strokeLinejoin": "round",
           "layout": "vertical",
           "padding": [
             14,
@@ -5792,6 +5798,7 @@
                             "left": 1
                           },
                           "strokeAlignment": "inner",
+                          "strokeLinejoin": "round",
                           "justifyContent": "center",
                           "alignItems": "center",
                           "children": [
@@ -6041,6 +6048,7 @@
             "right": 1
           },
           "strokeAlignment": "inner",
+          "strokeLinejoin": "round",
           "layout": "vertical",
           "padding": [
             14,
@@ -6999,6 +7007,7 @@
             "right": 1
           },
           "strokeAlignment": "inner",
+          "strokeLinejoin": "round",
           "layout": "vertical",
           "padding": [
             14,
@@ -7774,6 +7783,7 @@
             "right": 1
           },
           "strokeAlignment": "inner",
+          "strokeLinejoin": "round",
           "layout": "vertical",
           "padding": [
             14,
@@ -9320,6 +9330,7 @@
             "right": 1
           },
           "strokeAlignment": "inner",
+          "strokeLinejoin": "round",
           "layout": "vertical",
           "gap": 8,
           "padding": 12,
@@ -9397,6 +9408,7 @@
             "right": 1
           },
           "strokeAlignment": "inner",
+          "strokeLinejoin": "round",
           "layout": "vertical",
           "gap": 8,
           "padding": 12,
@@ -9671,6 +9683,7 @@
             "right": 1
           },
           "strokeAlignment": "inner",
+          "strokeLinejoin": "round",
           "layout": "vertical",
           "padding": [
             14,
@@ -11414,6 +11427,7 @@
             "right": 1
           },
           "strokeAlignment": "inner",
+          "strokeLinejoin": "round",
           "layout": "vertical",
           "padding": [
             14,
