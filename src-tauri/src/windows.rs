@@ -50,12 +50,16 @@ pub struct WindowEntry {
 /// other in-memory registries in this crate (`BusRegistry`, `RouterRegistry`).
 pub struct WindowRegistry {
     entries: Mutex<HashMap<String, WindowEntry>>,
+    #[cfg(target_os = "macos")]
+    titlebar_zooms: Mutex<HashMap<String, f64>>,
 }
 
 impl WindowRegistry {
     pub fn new() -> Self {
         WindowRegistry {
             entries: Mutex::new(HashMap::new()),
+            #[cfg(target_os = "macos")]
+            titlebar_zooms: Mutex::new(HashMap::new()),
         }
     }
 
@@ -71,6 +75,21 @@ impl WindowRegistry {
     /// of that subject (if any) becomes primary automatically.
     pub fn unregister(&self, label: &str) {
         self.entries.lock().unwrap().remove(label);
+        #[cfg(target_os = "macos")]
+        self.titlebar_zooms.lock().unwrap().remove(label);
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn set_titlebar_zoom(&self, label: &str, zoom: f64) {
+        self.titlebar_zooms
+            .lock()
+            .unwrap()
+            .insert(label.to_string(), zoom);
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn titlebar_zoom(&self, label: &str) -> Option<f64> {
+        self.titlebar_zooms.lock().unwrap().get(label).copied()
     }
 
     /// Update a window's subjects without touching `focused_at` — navigating
@@ -234,6 +253,24 @@ mod tests {
 
         reg.unregister("main");
         assert!(reg.snapshot().is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn titlebar_zoom_is_window_scoped_and_removed_on_unregister() {
+        let reg = WindowRegistry::new();
+        reg.register("main");
+        reg.register("window-a");
+
+        reg.set_titlebar_zoom("main", 0.8);
+        reg.set_titlebar_zoom("window-a", 1.5);
+
+        assert_eq!(reg.titlebar_zoom("main"), Some(0.8));
+        assert_eq!(reg.titlebar_zoom("window-a"), Some(1.5));
+
+        reg.unregister("window-a");
+        assert_eq!(reg.titlebar_zoom("window-a"), None);
+        assert_eq!(reg.titlebar_zoom("main"), Some(0.8));
     }
 
     #[test]
