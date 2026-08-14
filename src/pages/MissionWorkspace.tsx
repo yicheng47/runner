@@ -97,6 +97,7 @@ import {
 } from "../lib/archivingState";
 import { eventMatchesShortcut } from "../lib/keymap";
 import { useMissionDeliveryBlocked } from "../lib/deliveryBlocked";
+import { resumeStoppedMissionSessions } from "../lib/missionResume";
 
 const RAIL_STORAGE_WIDTH = "runner.mission.rail.width";
 const RAIL_MIN = 200;
@@ -121,6 +122,12 @@ function workspaceDimsFromContainer(
   container: HTMLElement,
 ): { cols: number; rows: number } | null {
   return terminalGridFromElement(container);
+}
+
+function actionFailureMessage(action: string, error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const detail = raw.replace(/^[a-z][a-z0-9_]*:\s*/i, "");
+  return `Couldn't ${action}: ${detail}`;
 }
 
 // Rendered by PersistentSurfaces (not a route element), which passes the
@@ -328,7 +335,7 @@ export default function MissionWorkspace({
         }
         ingest(evs);
       } catch (e) {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) setError(actionFailureMessage("load the mission", e));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -552,8 +559,9 @@ export default function MissionWorkspace({
       setMission(next);
       const rows = await api.session.list(mission.id);
       setSessions(rows);
+      setError(null);
     } catch (e) {
-      setError(String(e));
+      setError(actionFailureMessage("stop the mission", e));
     }
   }, [mission]);
 
@@ -562,8 +570,9 @@ export default function MissionWorkspace({
     try {
       const next = await api.mission.pin(mission.id, !mission.pinned_at);
       setMission(next);
+      setError(null);
     } catch (e) {
-      setError(String(e));
+      setError(actionFailureMessage("update the mission pin", e));
     }
   }, [mission]);
 
@@ -580,8 +589,9 @@ export default function MissionWorkspace({
     try {
       const updated = await api.mission.rename(mission.id, trimmed);
       setMission(updated);
+      setError(null);
     } catch (e) {
-      setError(String(e));
+      setError(actionFailureMessage("rename the mission", e));
     }
   }, [mission]);
 
@@ -600,9 +610,10 @@ export default function MissionWorkspace({
     try {
       clearLastMissionTerminalId(mission.id);
       await api.mission.archive(mission.id);
+      setError(null);
       navigate("/runners");
     } catch (e) {
-      setError(String(e));
+      setError(actionFailureMessage("archive the mission", e));
     } finally {
       setTimeout(() => unmarkArchivingMission(mission.id), 0);
     }
@@ -685,8 +696,9 @@ export default function MissionWorkspace({
       setOpenTabs(rows.map((s) => s.id));
       setActiveTab("feed");
       setResetConfirmOpen(false);
+      setError(null);
     } catch (e) {
-      setError(String(e));
+      setError(actionFailureMessage("reset the mission", e));
     }
   }, [mission, setResetConfirmOpen, measureSlotDims]);
 
@@ -697,7 +709,6 @@ export default function MissionWorkspace({
   const resumeMission = useCallback(async () => {
     if (!mission) return;
     setResumingAll(true);
-    let firstErr: string | null = null;
     try {
       // ONE current measurement for every stopped slot (see
       // `measureSlotDims` for the freshness priority). All panes share
@@ -709,46 +720,30 @@ export default function MissionWorkspace({
       // conversation history at 80 cols — for main-screen TUIs those
       // hard-wrapped narrow lines stick in scrollback.
       const sharedDims = measureSlotDims();
-      // Best-effort over every stopped slot. Don't bail on the first
-      // failure — earlier slots may have already resumed, and the
-      // user wants the UI to reflect whatever actually came up.
-      // Errors are collected and surfaced after the refresh.
-      for (const s of sessions) {
-        if (s.status === "running") continue;
-        try {
-          await api.session.resume(
-            s.id,
-            sharedDims?.cols ?? null,
-            sharedDims?.rows ?? null,
-          );
-        } catch (e) {
-          if (firstErr == null) firstErr = String(e);
-        }
-      }
+      const result = await resumeStoppedMissionSessions(
+        mission.id,
+        sharedDims,
+        api.session,
+      );
+      setSessions(result.sessions);
+      // Mission Resume implies the user wants to see the slots come
+      // back to life. Reopen any tabs they'd previously closed.
+      setOpenTabs((prev) => {
+        const next = new Set(prev);
+        for (const row of result.sessions) next.add(row.id);
+        return Array.from(next);
+      });
+      setError(
+        result.error == null
+          ? null
+          : actionFailureMessage("resume the mission", result.error),
+      );
+    } catch (e) {
+      setError(actionFailureMessage("resume the mission", e));
     } finally {
-      // Refresh in finally so a partial failure (one slot resumed,
-      // a later one threw) still updates the row list + opens tabs
-      // for the slots that did come back. Without this the UI stays
-      // stuck reading "paused" while the resumed PTYs are live.
-      try {
-        const rows = await api.session.list(mission.id);
-        setSessions(rows);
-        // Mission Resume implies the user wants to see the slots
-        // come back to life. Reopen any tabs they'd previously
-        // closed — resume isn't a useful action if the panes are
-        // hidden.
-        setOpenTabs((prev) => {
-          const next = new Set(prev);
-          for (const r of rows) next.add(r.id);
-          return Array.from(next);
-        });
-      } catch (e) {
-        if (firstErr == null) firstErr = String(e);
-      }
-      if (firstErr != null) setError(firstErr);
       setResumingAll(false);
     }
-  }, [mission, sessions, measureSlotDims]);
+  }, [mission, measureSlotDims]);
 
   const archivingMission = useArchivingMission(mission?.id);
 
@@ -1126,8 +1121,18 @@ export default function MissionWorkspace({
         </header>
 
       {error ? (
-        <div className="mx-8 mt-3 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-          {error}
+        <div
+          role="alert"
+          className="mx-8 mt-3 flex items-start justify-between gap-3 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger"
+        >
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            className="cursor-pointer text-xs text-danger/80 hover:text-danger"
+          >
+            Dismiss
+          </button>
         </div>
       ) : null}
 
