@@ -6,6 +6,15 @@
 // mounts the same React bundle; an optional initial route rides as a URL hash
 // fragment that a tiny frontend bootstrap consumes on mount.
 
+#[cfg(target_os = "macos")]
+use std::{cell::RefCell, collections::HashMap, ptr::NonNull, sync::Arc};
+
+#[cfg(target_os = "macos")]
+use block2::RcBlock;
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSWindow, NSWindowButton, NSWindowDidResizeNotification, NSWindowStyleMask};
+#[cfg(target_os = "macos")]
+use objc2_foundation::{NSNotification, NSNotificationCenter};
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 use crate::error::{Error, Result};
@@ -145,10 +154,27 @@ const TITLEBAR_HEIGHT: f64 = 44.0;
 #[cfg(target_os = "macos")]
 const TRAFFIC_LIGHT_X: f64 = 16.0;
 
+#[cfg(target_os = "macos")]
+type ObserverCleanup = Box<dyn FnOnce()>;
+
+// objc2 observer tokens are !Send. Both `with_webview` and Tauri's window
+// lifecycle callback run on the macOS main thread, so the token stays there.
+#[cfg(target_os = "macos")]
+thread_local! {
+    static TITLEBAR_RESIZE_OBSERVERS: RefCell<HashMap<String, ObserverCleanup>> =
+        RefCell::new(HashMap::new());
+}
+
 #[tauri::command]
-pub fn window_set_titlebar_zoom(window: tauri::WebviewWindow, zoom: f64) -> Result<()> {
+pub fn window_set_titlebar_zoom(
+    window: tauri::WebviewWindow,
+    state: State<AppState>,
+    zoom: f64,
+) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
+        state.windows.set_titlebar_zoom(window.label(), zoom);
+
         if window
             .is_fullscreen()
             .map_err(|e| Error::msg(e.to_string()))?
@@ -156,55 +182,115 @@ pub fn window_set_titlebar_zoom(window: tauri::WebviewWindow, zoom: f64) -> Resu
             return Ok(());
         }
 
-        let titlebar_height = TITLEBAR_HEIGHT * zoom;
+        let label = window.label().to_string();
+        let windows = Arc::clone(&state.windows);
         window
             .with_webview(move |webview| {
-                use objc2_app_kit::{NSWindow, NSWindowButton};
-
                 let ns_window: &NSWindow = unsafe { &*webview.ns_window().cast() };
-                let Some(close) = ns_window.standardWindowButton(NSWindowButton::CloseButton)
-                else {
-                    return;
-                };
-                let Some(minimize) =
-                    ns_window.standardWindowButton(NSWindowButton::MiniaturizeButton)
-                else {
-                    return;
-                };
-                let Some(maximize) = ns_window.standardWindowButton(NSWindowButton::ZoomButton)
-                else {
-                    return;
-                };
-                let Some(button_group) = (unsafe { close.superview() }) else {
-                    return;
-                };
-                let Some(titlebar_container) = (unsafe { button_group.superview() }) else {
-                    return;
-                };
-
-                let close_rect = close.frame();
-                let button_height = close_rect.size.height;
-                let spacing = minimize.frame().origin.x - close_rect.origin.x;
-
-                let mut titlebar_rect = titlebar_container.frame();
-                titlebar_rect.size.height = titlebar_height;
-                titlebar_rect.origin.y = ns_window.frame().size.height - titlebar_height;
-                titlebar_container.setFrame(titlebar_rect);
-
-                for (index, button) in [close, minimize, maximize].into_iter().enumerate() {
-                    let mut rect = button.frame();
-                    rect.origin.x = TRAFFIC_LIGHT_X + index as f64 * spacing;
-                    rect.origin.y = (titlebar_height - button_height) / 2.0;
-                    button.setFrameOrigin(rect.origin);
-                }
+                apply_titlebar_frames(ns_window, zoom);
+                install_titlebar_resize_observer(label, ns_window, windows);
             })
             .map_err(|e| Error::msg(e.to_string()))?;
     }
 
     #[cfg(not(target_os = "macos"))]
-    let _ = (window, zoom);
+    let _ = (window, state, zoom);
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn apply_titlebar_frames(ns_window: &NSWindow, zoom: f64) {
+    if ns_window
+        .styleMask()
+        .contains(NSWindowStyleMask::FullScreen)
+    {
+        return;
+    }
+
+    let Some(close) = ns_window.standardWindowButton(NSWindowButton::CloseButton) else {
+        return;
+    };
+    let Some(minimize) = ns_window.standardWindowButton(NSWindowButton::MiniaturizeButton) else {
+        return;
+    };
+    let Some(maximize) = ns_window.standardWindowButton(NSWindowButton::ZoomButton) else {
+        return;
+    };
+    let Some(button_group) = (unsafe { close.superview() }) else {
+        return;
+    };
+    let Some(titlebar_container) = (unsafe { button_group.superview() }) else {
+        return;
+    };
+
+    let titlebar_height = TITLEBAR_HEIGHT * zoom;
+    let close_rect = close.frame();
+    let button_height = close_rect.size.height;
+    let spacing = minimize.frame().origin.x - close_rect.origin.x;
+
+    let mut titlebar_rect = titlebar_container.frame();
+    titlebar_rect.size.height = titlebar_height;
+    titlebar_rect.origin.y = ns_window.frame().size.height - titlebar_height;
+    titlebar_container.setFrame(titlebar_rect);
+
+    for (index, button) in [close, minimize, maximize].into_iter().enumerate() {
+        let mut rect = button.frame();
+        rect.origin.x = TRAFFIC_LIGHT_X + index as f64 * spacing;
+        rect.origin.y = (titlebar_height - button_height) / 2.0;
+        button.setFrameOrigin(rect.origin);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn install_titlebar_resize_observer(
+    label: String,
+    ns_window: &NSWindow,
+    windows: Arc<crate::windows::WindowRegistry>,
+) {
+    TITLEBAR_RESIZE_OBSERVERS.with(|observers| {
+        let mut observers = observers.borrow_mut();
+        if observers.contains_key(&label) {
+            return;
+        }
+
+        let observed_label = label.clone();
+        let block = RcBlock::new(move |notification: NonNull<NSNotification>| {
+            let Some(zoom) = windows.titlebar_zoom(&observed_label) else {
+                return;
+            };
+            let Some(object) = (unsafe { notification.as_ref() }).object() else {
+                return;
+            };
+            let ns_window = unsafe { &*std::ptr::from_ref(&*object).cast::<NSWindow>() };
+            apply_titlebar_frames(ns_window, zoom);
+        });
+        let center = NSNotificationCenter::defaultCenter();
+        let observer = unsafe {
+            center.addObserverForName_object_queue_usingBlock(
+                Some(NSWindowDidResizeNotification),
+                Some(ns_window),
+                None,
+                &block,
+            )
+        };
+
+        observers.insert(
+            label,
+            Box::new(move || {
+                let center = NSNotificationCenter::defaultCenter();
+                unsafe { center.removeObserver((*observer).as_ref()) };
+            }),
+        );
+    });
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn uninstall_titlebar_resize_observer(label: &str) {
+    let cleanup = TITLEBAR_RESIZE_OBSERVERS.with(|observers| observers.borrow_mut().remove(label));
+    if let Some(cleanup) = cleanup {
+        cleanup();
+    }
 }
 
 #[cfg(test)]

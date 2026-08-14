@@ -535,6 +535,8 @@ pub fn run() {
                     event: tauri::WindowEvent::Destroyed,
                     ..
                 } => {
+                    #[cfg(target_os = "macos")]
+                    commands::window::uninstall_titlebar_resize_observer(&label);
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         state.windows.unregister(&label);
                     }
