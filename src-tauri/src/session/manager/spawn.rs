@@ -86,6 +86,23 @@ impl SessionManager {
         }
         *last = Some(Instant::now());
     }
+
+    fn seed_codex_project_trust(&self, session_id: &str, runtime: &str, cwd: Option<&Path>) {
+        if runtime != "codex" {
+            return;
+        }
+        let Some(cwd) = cwd else {
+            log::debug!("skipping codex project trust seed without cwd: session={session_id}");
+            return;
+        };
+        if let Err(e) = crate::session::codex_trust::seed_project_trust(cwd) {
+            log::warn!(
+                "failed to seed codex project trust: session={session_id} cwd={} error={e}",
+                cwd.display()
+            );
+        }
+    }
+
     /// Build a `SpawnSpec` skeleton with the manager's stable inputs
     /// (shell PATH, runner env after merging system vars). The
     /// runtime adapter argv (resume_plan + trailing_runtime_args)
@@ -459,6 +476,7 @@ impl SessionManager {
 
         let spawn_started_at_dt = Utc::now();
         let initial_size = spec.initial_size;
+        self.seed_codex_project_trust(&session_id, &runner.runtime, spec.cwd.as_deref());
         let (rt_session, output) = self
             .runtime
             .spawn(spec)
@@ -892,6 +910,7 @@ impl SessionManager {
         }
 
         let spawn_started_at_dt = Utc::now();
+        self.seed_codex_project_trust(&session_id, &runner.runtime, spec.cwd.as_deref());
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -1388,6 +1407,7 @@ impl SessionManager {
         // N stopped slots can spawn as fast as the runtime allows.
         // See issue #171.
         let spawn_started_at_dt = Utc::now();
+        self.seed_codex_project_trust(session_id, &runner.runtime, spec.cwd.as_deref());
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
