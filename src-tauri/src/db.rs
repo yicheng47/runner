@@ -109,6 +109,8 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // reusable runner template.
 // 0019: persists model/effort on runtime-only direct chats so resume
 // keeps the session's selected agent configuration.
+// 0020: adds nullable `slots.effort_override` so a crew slot can
+// override thinking effort independently of its runtime and model.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -158,6 +160,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         19,
         include_str!("../migrations/0019_session_agent_options.sql"),
+    ),
+    (
+        20,
+        include_str!("../migrations/0020_slot_effort_override.sql"),
     ),
 ];
 
@@ -1645,6 +1651,49 @@ Talking to the human:
             MIGRATIONS.len() as i64,
             "each migration should apply exactly once"
         );
+    }
+
+    #[test]
+    fn migration_0020_adds_nullable_slot_effort_override() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations_up_to(&mut conn, 19).unwrap();
+        insert_crew(&conn, "c1");
+        insert_runner(&conn, "r1", "alpha").unwrap();
+        insert_slot(&conn, "s1", "c1", "r1", "alpha", 0, 1).unwrap();
+
+        let columns_before: Vec<String> = conn
+            .prepare("PRAGMA table_info(slots)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>("name"))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(!columns_before.iter().any(|c| c == "effort_override"));
+
+        run_migrations(&mut conn).unwrap();
+        let inherited: Option<String> = conn
+            .query_row(
+                "SELECT effort_override FROM slots WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(inherited, None);
+
+        conn.execute(
+            "UPDATE slots SET effort_override = 'xhigh' WHERE id = 's1'",
+            [],
+        )
+        .unwrap();
+        let overridden: Option<String> = conn
+            .query_row(
+                "SELECT effort_override FROM slots WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(overridden.as_deref(), Some("xhigh"));
     }
 
     #[test]

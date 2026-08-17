@@ -1200,37 +1200,41 @@ pub(crate) struct RuntimeOverrideResolution {
     pub pinned: bool,
 }
 
-/// Resolve the runner config a spawn should actually use when a
-/// runtime override is in play (feature 41). Effective runtime =
-/// `override ?? runner.runtime`; a matching override keeps the spawn
-/// byte-identical but still pins. Unknown differing runtime names
-/// error.
+/// Resolve the runner config a spawn should actually use. Layering is
+/// runner template, then runtime override, then model/effort overrides.
+/// A matching runtime override keeps an otherwise unchanged spawn
+/// byte-identical but still pins. Model/effort-only overrides never pin.
 pub(crate) fn resolve_runtime_override(
     runner: &Runner,
     runtime_override: Option<&str>,
     model_override: Option<&str>,
     effort_override: Option<&str>,
 ) -> Result<RuntimeOverrideResolution> {
-    let Some(name) = runtime_override.map(str::trim).filter(|s| !s.is_empty()) else {
-        return Ok(RuntimeOverrideResolution {
-            effective: None,
-            pinned: false,
-        });
-    };
+    let runtime_override = runtime_override.map(str::trim).filter(|s| !s.is_empty());
     let model_override = model_override
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let effort_override = effort_override
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    if name == runner.runtime && model_override.is_none() && effort_override.is_none() {
+    let pinned = runtime_override.is_some();
+    if runtime_override.is_none() && model_override.is_none() && effort_override.is_none() {
+        return Ok(RuntimeOverrideResolution {
+            effective: None,
+            pinned: false,
+        });
+    }
+    if runtime_override == Some(runner.runtime.as_str())
+        && model_override.is_none()
+        && effort_override.is_none()
+    {
         return Ok(RuntimeOverrideResolution {
             effective: None,
             pinned: true,
         });
     }
     let mut effective = runner.clone();
-    if name != runner.runtime {
+    if let Some(name) = runtime_override.filter(|name| *name != runner.runtime.as_str()) {
         let def = router::runtime::runtime_definition(name)
             .ok_or_else(|| Error::msg(format!("unknown runtime: {name}")))?;
         effective.runtime = def.name.to_string();
@@ -1253,7 +1257,7 @@ pub(crate) fn resolve_runtime_override(
     }
     Ok(RuntimeOverrideResolution {
         effective: Some(effective),
-        pinned: true,
+        pinned,
     })
 }
 

@@ -23,7 +23,6 @@ import { AddSlotModal } from "../components/AddSlotModal";
 import { RunnerEditDrawer } from "../components/RunnerEditDrawer";
 import { StartMissionModal } from "../components/StartMissionModal";
 import { Button } from "../components/ui/Button";
-import { ModelField } from "../components/ui/ModelField";
 import { PopoverMenu } from "../components/ui/PopoverMenu";
 import { RUNTIME_OPTIONS } from "../components/ui/runtimes";
 
@@ -203,22 +202,7 @@ export default function CrewEditor() {
     runtimeOverride: string | null,
   ) => {
     try {
-      await api.slot.update(slotId, {
-        runtime_override: runtimeOverride,
-        model_override: null,
-      });
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
-  const onSetModelOverride = async (
-    slotId: string,
-    modelOverride: string | null,
-  ) => {
-    try {
-      await api.slot.update(slotId, { model_override: modelOverride });
+      await api.slot.update(slotId, { runtime_override: runtimeOverride });
       await refresh();
     } catch (e) {
       setError(String(e));
@@ -512,7 +496,6 @@ export default function CrewEditor() {
                 reordering={reordering}
                 onSetLead={onSetLead}
                 onSetRuntimeOverride={onSetRuntimeOverride}
-                onSetModelOverride={onSetModelOverride}
                 onEdit={setEditing}
                 onRemove={onRemoveSlot}
                 onReorder={onCommitReorder}
@@ -537,8 +520,17 @@ export default function CrewEditor() {
       <RunnerEditDrawer
         open={editing !== null}
         runner={editing?.runner ?? null}
-        effectiveRuntime={editing?.runtime_override ?? undefined}
+        effectiveRuntime={
+          editing
+            ? (editing.runtime_override ?? editing.runner.runtime)
+            : undefined
+        }
         effectiveModel={editing?.model_override}
+        effectiveEffort={editing?.effort_override}
+        onSaveSlotOverrides={async (input) => {
+          if (!editing) return;
+          await api.slot.update(editing.id, input);
+        }}
         onClose={() => setEditing(null)}
         onSaved={async () => {
           setEditing(null);
@@ -564,7 +556,6 @@ function SlotList({
   reordering,
   onSetLead,
   onSetRuntimeOverride,
-  onSetModelOverride,
   onEdit,
   onRemove,
   onReorder,
@@ -573,7 +564,6 @@ function SlotList({
   reordering: boolean;
   onSetLead: (slotId: string) => void;
   onSetRuntimeOverride: (slotId: string, runtimeOverride: string | null) => void;
-  onSetModelOverride: (slotId: string, modelOverride: string | null) => void;
   onEdit: (s: SlotWithRunner) => void;
   onRemove: (s: SlotWithRunner) => void;
   onReorder: (newOrder: SlotWithRunner[]) => void;
@@ -600,7 +590,6 @@ function SlotList({
           dragDisabled={reordering}
           onSetLead={() => onSetLead(s.id)}
           onSetRuntimeOverride={(runtime) => onSetRuntimeOverride(s.id, runtime)}
-          onSetModelOverride={(model) => onSetModelOverride(s.id, model)}
           onEdit={() => onEdit(s)}
           onRemove={() => onRemove(s)}
           onReorderDrop={(fromIndex) => {
@@ -628,7 +617,6 @@ function SlotRow({
   dragDisabled,
   onSetLead,
   onSetRuntimeOverride,
-  onSetModelOverride,
   onEdit,
   onRemove,
   onReorderDrop,
@@ -639,7 +627,6 @@ function SlotRow({
   dragDisabled: boolean;
   onSetLead: () => void;
   onSetRuntimeOverride: (runtimeOverride: string | null) => void;
-  onSetModelOverride: (modelOverride: string | null) => void;
   onEdit: () => void;
   onRemove: () => void;
   onReorderDrop: (fromIndex: number) => void;
@@ -676,18 +663,27 @@ function SlotRow({
       const cmd =
         RUNTIME_OPTIONS.find((o) => o.value === override)?.defaultCommand ??
         override;
-      return slot.model_override
-        ? `${cmd} (runtime defaults · model ${slot.model_override})`
-        : `${cmd} (runtime defaults)`;
+      const overrides = [
+        slot.model_override ? `model ${slot.model_override}` : null,
+        slot.effort_override ? `effort ${slot.effort_override}` : null,
+      ].filter(Boolean);
+      return `${cmd} (runtime defaults${
+        overrides.length > 0 ? ` · ${overrides.join(" · ")}` : ""
+      })`;
     }
     const parts = [runner.command, ...runner.args];
     const command = parts.filter(Boolean).join(" ");
-    return slot.model_override
-      ? `${command} (model ${slot.model_override})`
+    const overrides = [
+      slot.model_override ? `model ${slot.model_override}` : null,
+      slot.effort_override ? `effort ${slot.effort_override}` : null,
+    ].filter(Boolean);
+    return overrides.length > 0
+      ? `${command} (${overrides.join(" · ")})`
       : command;
   }, [
     slot.runtime_override,
     slot.model_override,
+    slot.effort_override,
     runner.runtime,
     runner.command,
     runner.args,
@@ -726,12 +722,6 @@ function SlotRow({
             </span>
           ) : null}
           <SlotRuntimeSelect slot={slot} onChange={onSetRuntimeOverride} />
-          {slot.runtime_override ? (
-            <SlotModelOverrideEditor
-              slot={slot}
-              onChange={onSetModelOverride}
-            />
-          ) : null}
           <span className="font-mono text-[11px] text-fg-3">
             from @{runner.handle}
           </span>
@@ -845,88 +835,6 @@ function SlotRuntimeSelect({
             );
           })}
         </ul>
-      </PopoverMenu>
-    </div>
-  );
-}
-
-function SlotModelOverrideEditor({
-  slot,
-  onChange,
-}: {
-  slot: SlotWithRunner;
-  onChange: (modelOverride: string | null) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState(slot.model_override ?? "");
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const runtime = slot.runtime_override ?? slot.runner.runtime;
-
-  useEffect(() => {
-    if (!open) setDraft(slot.model_override ?? "");
-  }, [open, slot.model_override]);
-
-  const save = () => {
-    const model = draft.trim();
-    setOpen(false);
-    if (model !== (slot.model_override ?? "")) onChange(model || null);
-  };
-
-  return (
-    <div ref={rootRef} className="relative">
-      <button
-        type="button"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-        onMouseDown={(e) => e.stopPropagation()}
-        className="inline-flex cursor-pointer items-center gap-1 rounded bg-raised px-1.5 py-0.5 font-mono text-[10px] text-fg-2 transition-colors hover:text-fg"
-        title="Model override"
-      >
-        model: {slot.model_override ?? "default"}
-        <span aria-hidden className={open ? "rotate-180" : ""}>
-          ▾
-        </span>
-      </button>
-      <PopoverMenu
-        open={open}
-        anchorRef={rootRef}
-        onClose={() => setOpen(false)}
-        minWidth={280}
-      >
-        <form
-          className="flex w-full flex-col gap-3 rounded border border-line-strong bg-panel p-3 shadow-xl"
-          onSubmit={(e) => {
-            e.preventDefault();
-            save();
-          }}
-        >
-          <div className="flex flex-col gap-1.5">
-            <label
-              htmlFor={`slot-model-${slot.id}`}
-              className="text-xs font-semibold text-fg"
-            >
-              Model override
-            </label>
-            <ModelField
-              id={`slot-model-${slot.id}`}
-              runtime={runtime}
-              model={draft}
-              onModelChange={setDraft}
-            />
-            <p className="text-[11px] text-fg-3">
-              Blank uses {runtime}&apos;s CLI default.
-            </p>
-          </div>
-          <div className="flex justify-end gap-2">
-            <Button type="button" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" variant="primary">
-              Save
-            </Button>
-          </div>
-        </form>
       </PopoverMenu>
     </div>
   );

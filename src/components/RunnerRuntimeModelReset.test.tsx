@@ -243,7 +243,8 @@ describe("runner runtime model reset", () => {
     );
   });
 
-  it("shows a crew slot's effective engine without overwriting the runner engine", async () => {
+  it("saves crew-slot model and effort overrides without overwriting the runner engine", async () => {
+    const saveSlotOverrides = vi.fn();
     await act(async () => {
       root.render(
         <RunnerEditDrawer
@@ -251,6 +252,8 @@ describe("runner runtime model reset", () => {
           runner={runner}
           effectiveRuntime="trae"
           effectiveModel={null}
+          effectiveEffort={null}
+          onSaveSlotOverrides={saveSlotOverrides}
           onClose={() => {}}
           onSaved={() => {}}
         />,
@@ -260,8 +263,14 @@ describe("runner runtime model reset", () => {
     const runtime = container.querySelector<HTMLInputElement>("#edit-runtime");
     const model = container.querySelector<HTMLInputElement>("#edit-model");
     expect(runtime?.value).toBe("TRAE CLI");
-    expect(model?.value).toBe("default");
+    expect(model?.value).toBe("");
+    expect(model?.placeholder).toBe("default");
     expect(container.querySelector("#edit-args")).toBeNull();
+
+    await changeInput(model!, "trae-model");
+    const effort = container.querySelector<HTMLButtonElement>("#edit-effort");
+    expect(effort?.textContent).toContain("Runtime default");
+    await selectRuntime(effort!, "high");
 
     const save = Array.from(
       container.querySelectorAll<HTMLButtonElement>("button"),
@@ -273,5 +282,30 @@ describe("runner runtime model reset", () => {
       working_dir: null,
       system_prompt: null,
     });
+    expect(saveSlotOverrides).toHaveBeenCalledWith({
+      model_override: "trae-model",
+      effort_override: "high",
+    });
+  });
+
+  it("shows the runner command when a crew slot inherits its engine", async () => {
+    await act(async () => {
+      root.render(
+        <RunnerEditDrawer
+          open
+          runner={{ ...runner, command: "/opt/custom/codex-nightly" }}
+          effectiveRuntime="codex"
+          effectiveModel={null}
+          effectiveEffort={null}
+          onSaveSlotOverrides={() => {}}
+          onClose={() => {}}
+          onSaved={() => {}}
+        />,
+      );
+    });
+
+    expect(
+      container.querySelector<HTMLInputElement>("#edit-command")?.value,
+    ).toBe("/opt/custom/codex-nightly");
   });
 });

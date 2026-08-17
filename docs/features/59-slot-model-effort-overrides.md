@@ -13,7 +13,7 @@ Make model and effort independently overridable per slot, with the runner templa
 - **Schema**: add `effort_override TEXT NULL` to `slots`; expose on `Slot`/`SlotWithRunner` (`src/lib/types.ts`), `slot_update`, and the `slot_update` MCP tool alongside `model_override`.
 - **Resolution**: rework `resolve_runtime_override` so model/effort overrides apply without a runtime override — effective config = runner template, then runtime override (which resets model/effort to the new engine's defaults, as today), then model/effort overrides on top. `pinned` semantics unchanged: only a set `runtime_override` pins the session's engine; model/effort-only overrides don't pin.
 - **Spawn**: mission spawn passes `slot.effort_override`; `model_effort_args` already emits per-runtime flags and ignores what a runtime doesn't support.
-- **UI** (`CrewEditor.tsx` slot rows): model and effort chips always visible, no runtime-override gate. Model keeps `ModelField` with the effective runtime's catalog; effort is a small select (runtime default / the runtime's effort steps, mirroring the chat-level override control). Chips render dim when inheriting, accent when overridden — same pattern as the runtime chip. Clearing the runtime override keeps model/effort overrides only if they are valid for the runner's own runtime; on engine change, model resets (today's behavior) and effort resets with it.
+- **UI** (`CrewEditor.tsx`): slot rows keep only the runtime chip so the roster remains compact. Model and effort overrides live in the existing edit drawer: model uses `ModelField` with the effective runtime's catalog, and effort mirrors the chat-level override control (runner/runtime default plus the runtime's effort steps). Clearing the runtime override keeps model/effort overrides only if they are valid for the runner's own runtime; on engine change, model resets (today's behavior) and effort resets with it.
 
 ## Non-Goals
 
@@ -24,11 +24,11 @@ Make model and effort independently overridable per slot, with the runner templa
 ## Implementation Phases
 
 1. **Backend** — migration, repo/commands/MCP plumbing for `effort_override`, resolver rework + spawn wiring, rust tests (model-only override without runtime override; effort flows to spawn args; engine-change reset semantics; pinning unchanged).
-2. **Frontend** — ungated model chip + new effort chip on slot rows, reset-on-engine-change behavior, vitest coverage (extend `RunnerRuntimeModelReset.test.tsx` patterns).
+2. **Frontend** — move per-slot model and effort controls into the edit drawer, keep slot rows compact, preserve reset-on-engine-change behavior, and add vitest coverage (extend `RunnerRuntimeModelReset.test.tsx` patterns).
 3. **Docs** — refresh feature 41's archived assumptions if referenced by arch docs.
 
 ## Verification
 
 - `cargo test --workspace`: resolver and spawn-arg tests above.
-- Vitest: chip visibility ungated, override reset on runtime change, dim/accent state mapping.
+- Vitest: row selectors absent, drawer model/effort round-trip, override reset on runtime change.
 - Manual: crew with one runner template and two slots — slot A default, slot B model+effort overridden, no runtime override; mission spawn shows the flag difference in the PTY command lines; overriding runtime resets both; clearing runtime override restores template inheritance.
