@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use runner_app::ops::runner::CreateRunnerInput;
 use runner_app::router::runtime::PermissionMode;
 use runner_native::bootstrap::{boot_core, NativePaths};
-use runner_native::replay::visible_lines;
-use runner_native::terminal::{TerminalBridge, TerminalSession};
+use runner_terminal::replay::visible_lines;
+use runner_terminal::terminal::{TerminalBridge, TerminalSession};
 
 fn wait_for_text(terminal: &TerminalSession, expected: &str) -> bool {
     let deadline = Instant::now() + Duration::from_secs(3);

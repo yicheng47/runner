@@ -1,27 +1,18 @@
 [package]
-name = "runner-native"
+name = "runner-terminal"
 version = "0.3.17"
 edition.workspace = true
 authors.workspace = true
 publish = false
-default-run = "runner-native"
-
-[[bin]]
-name = "runner-native"
-path = "src/main.rs"
 
 [dependencies]
 alacritty_terminal = "0.26"
 anyhow = "1"
 base64 = "0.22"
-futures = "0.3"
-gpui = { package = "gpui-ce", version = "0.3" }
 runner-app = { path = "../runner-app" }
-runner-terminal = { path = "../runner-terminal" }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1", features = ["sync"] }
-unicode-segmentation = "1"
 
 [dev-dependencies]
 tempfile = "3"

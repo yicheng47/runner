@@ -221,54 +221,13 @@ impl TerminalSession {
             .lock_unfair()
             .mode()
             .contains(TermMode::APP_CURSOR);
-        let mut bytes: Vec<u8> = Vec::new();
-        if ctrl {
-            let encoded = match key {
-                k if k.len() == 1 && k.as_bytes()[0].is_ascii_alphabetic() => {
-                    Some(k.as_bytes()[0].to_ascii_uppercase() - b'@')
-                }
-                "space" | "@" => Some(0),
-                "[" => Some(0x1b),
-                "\\" => Some(0x1c),
-                "]" => Some(0x1d),
-                _ => None,
-            };
-            match encoded {
-                Some(byte) => bytes.push(byte),
-                None => return Ok(false),
+        match crate::mappings::encode_key(key, ctrl, alt, key_char, app_cursor) {
+            Some(bytes) => {
+                self.write_user_bytes(&bytes)?;
+                Ok(true)
             }
-        } else {
-            let sequence: &[u8] = match key {
-                "enter" => b"\r",
-                "backspace" => b"\x7f",
-                "tab" => b"\t",
-                "escape" => b"\x1b",
-                "up" if app_cursor => b"\x1bOA",
-                "down" if app_cursor => b"\x1bOB",
-                "right" if app_cursor => b"\x1bOC",
-                "left" if app_cursor => b"\x1bOD",
-                "up" => b"\x1b[A",
-                "down" => b"\x1b[B",
-                "right" => b"\x1b[C",
-                "left" => b"\x1b[D",
-                "home" => b"\x1b[H",
-                "end" => b"\x1b[F",
-                "pageup" => b"\x1b[5~",
-                "pagedown" => b"\x1b[6~",
-                "delete" => b"\x1b[3~",
-                "space" => b" ",
-                _ => match key_char {
-                    Some(text) if !text.is_empty() => text.as_bytes(),
-                    _ => return Ok(false),
-                },
-            };
-            bytes.extend_from_slice(sequence);
+            None => Ok(false),
         }
-        if alt {
-            bytes.insert(0, 0x1b);
-        }
-        self.write_user_bytes(&bytes)?;
-        Ok(true)
     }
 
     pub fn paste(&self, text: &str) -> runner_app::error::Result<()> {
@@ -277,15 +236,7 @@ impl TerminalSession {
             .lock_unfair()
             .mode()
             .contains(TermMode::BRACKETED_PASTE);
-        let sanitized = text.replace('\x1b', "");
-        if bracketed {
-            let mut bytes = b"\x1b[200~".to_vec();
-            bytes.extend_from_slice(sanitized.as_bytes());
-            bytes.extend_from_slice(b"\x1b[201~");
-            self.write_user_bytes(&bytes)
-        } else {
-            self.write_user_bytes(sanitized.as_bytes())
-        }
+        self.write_user_bytes(&crate::mappings::encode_paste(text, bracketed))
     }
 
     pub fn resize(&self, cols: u16, rows: u16) {
@@ -442,8 +393,34 @@ mod tests {
     use runner_app::session::manager::OutputEvent;
 
     use super::TerminalSession;
-    use crate::bootstrap::{boot_core, NativePaths};
     use crate::replay::visible_lines;
+    use runner_app::AppCore;
+
+    /// Minimal `AppCore` over a temp dir — the pieces `boot_core` wires
+    /// in runner-native, minus login-shell discovery and startup cleanup.
+    fn test_core(root: &std::path::Path) -> AppCore {
+        let app_data_dir = root.join("app-data");
+        std::fs::create_dir_all(&app_data_dir).unwrap();
+        let pool = Arc::new(runner_app::db::open_pool(&app_data_dir.join("runner.db")).unwrap());
+        let runtime: Arc<dyn runner_app::session::runtime::SessionRuntime> =
+            Arc::new(runner_app::session::pty_runtime::PtyRuntime::new());
+        let windows = Arc::new(runner_app::windows::WindowRegistry::new());
+        windows.register("main");
+        AppCore {
+            db: pool,
+            app_data_dir,
+            sessions: runner_app::session::SessionManager::new(
+                runner_app::shell_path::LoginShellEnv::default(),
+                runtime,
+            ),
+            buses: runner_app::event_bus::BusRegistry::new(),
+            routers: runner_app::router::RouterRegistry::new(),
+            mcp: Arc::new(runner_app::mcp::McpHandle::new()),
+            windows,
+            events: runner_app::events::EventChannel::new(),
+            app_version: "0.0.0-test".into(),
+        }
+    }
 
     fn output(seq: u64, text: &str) -> OutputEvent {
         OutputEvent {
@@ -457,11 +434,7 @@ mod tests {
     #[test]
     fn snapshot_batch_blocks_newer_live_output_until_replay_finishes() {
         let temp = tempfile::tempdir().unwrap();
-        let core = boot_core(&NativePaths::new(
-            temp.path().join("app-data"),
-            temp.path().join("logs"),
-        ))
-        .unwrap();
+        let core = test_core(temp.path());
         let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
         let terminal = TerminalSession::attach(core, "replay-race".into(), 80, 24, waker).unwrap();
         let gate_held = Arc::new(Barrier::new(2));
