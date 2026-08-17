@@ -4,6 +4,7 @@ members = [
     "crates/runner-app",
     "crates/runner-core",
     "crates/runner-native",
+    "crates/runner-terminal",
     "cli",
 ]
 

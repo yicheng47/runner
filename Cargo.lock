@@ -4937,11 +4937,26 @@ dependencies = [
  "futures",
  "gpui-ce",
  "runner-app",
+ "runner-terminal",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "runner-terminal"
+version = "0.3.17"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "base64",
+ "runner-app",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

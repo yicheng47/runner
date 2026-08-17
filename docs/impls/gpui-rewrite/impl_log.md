@@ -4,9 +4,9 @@ Progress record for the whole gpui-rewrite program ([README](README.md)), from t
 
 ## Current state (update with each entry)
 
-- **Branch**: `gpui-nightly` (0046 M0+M1 merged 2026-08-17 via the `feat/0046-main-parity-catchup` PR).
+- **Branch**: `gpui-nightly` (M0+M1 merged via PR #407, M2 via the `feat/0046-m2-terminal-split` PR, both 2026-08-17).
 - **Done**: 0046 M0 (gpui-ce swap) + M1 (repo-and-below at `main` parity, node tree adopted, protocol crates wholesale). Human-verified 2026-08-17: the app opens the `main`-written dev DB and chats work. 498 workspace tests green, clippy clean, fixture corpus green. `design/` synced from `main`.
-- **Next**: M2 (terminal split) and M3 (UI parity slices — the current UI is still the Phase 3 skeleton; parity references are `main`'s React frontend (`src/`) and the `design/*.pen` files via the pencil MCP) → M4 (sweep + watermark).
+- **Next**: merge M2, then M3 (UI parity slices — the current UI is still the Phase 3 skeleton; parity references are `main`'s React frontend (`src/`) and the `design/*.pen` files via the pencil MCP) → M4 (sweep + watermark).
 - **Parity watermark**: `origin/main` fully ported for repo-and-below as of `1b7ee92` (v0.5.2 line, 2026-08-17); feature-logic lag is M3 scope.
 
 ## 2026-07-18 — Phase 1 kickoff
@@ -125,3 +125,9 @@ Progress record for the whole gpui-rewrite program ([README](README.md)), from t
 - Studied pulse (`~/repos/yicheng47/pulse`, pure gpui-ce at a pinned git rev): `SPUStandardUpdaterController` via ~130 lines of `objc2` bindings behind an `updater` feature with a no-op dev fallback; `Sparkle.framework` embedded by `script/bundle-mac` (pinned + SHA-256 checked); appcast on GitHub Releases (`SUFeedURL`, `SUPublicEDKey`).
 - Zed's hand-rolled `auto_update` (~2k lines: dmg mount/replace/relaunch, own release API, per-OS helpers) reviewed and rejected — its complexity pays for multi-platform + own-server needs Runner doesn't have.
 - Cutover bridge stands: last Tauri release updates users into the first native release via `tauri-plugin-updater`'s artifact format (same minisign keypair + bundle id); Sparkle owns native→native after. Recorded in 0031 Phase 5.
+
+## 2026-08-17 — M2: terminal split + main.rs modularization
+
+- New `crates/runner-terminal` — the `terminal` half of the Zed-style split: `terminal.rs` (`TerminalSession` + `TerminalBridge`), `palette.rs`, `fixtures.rs`, `replay.rs`, and a new `mappings.rs` consolidating keystroke/paste encoding as pure functions (mode state in, bytes out). The fixture corpus (data + `fixture_replay.rs` + `osc_color_query.rs` tests) moved with the model; the replay-race unit test now builds its own minimal `AppCore` instead of borrowing runner-native's bootstrap. No gpui dependency — the crate stays UI-agnostic; the PTY remains `SessionManager`'s (the documented deviation from Zed). The `alacritty.rs` API-isolation module from the 0046 mapping table is deferred until the view side needs it.
+- `runner-native/src/main.rs` (1,405 lines) split for M3's parallel lanes: `chat.rs` (session attach/lifecycle, tab activation, key/scroll/paste routing, chat start/resume, split resize), `sidebar.rs` (tab list rendering + labels), `panes.rs` (active-tab surface, layout picker, pane tree). `main.rs` is down to 291 lines of app shell (structs, boot, render root).
+- Gates: `make verify` green (check + 498-scale test suite + clippy `-D warnings` + fmt), corpus green in its new crate, binary links.

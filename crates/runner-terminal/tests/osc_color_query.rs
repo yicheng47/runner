@@ -13,8 +13,8 @@ use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::vte::ansi::Processor;
 
-use runner_native::palette;
-use runner_native::terminal::query_color;
+use runner_terminal::palette;
+use runner_terminal::terminal::query_color;
 
 struct Proxy(Sender<Event>);
 

@@ -14,8 +14,8 @@ use gpui::{
     Styled as _, TextRun, UTF16Selection, UnderlineStyle, Window,
 };
 
-use runner_native::terminal::TerminalSession;
 use runner_native::text_util;
+use runner_terminal::terminal::TerminalSession;
 
 use crate::theme;
 

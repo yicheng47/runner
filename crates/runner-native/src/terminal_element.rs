@@ -21,8 +21,8 @@ use gpui::{
     Style, TextRun, Window,
 };
 
-use runner_native::palette;
-use runner_native::terminal::TerminalSession;
+use runner_terminal::palette;
+use runner_terminal::terminal::TerminalSession;
 
 pub const FONT_FAMILY: &str = "Menlo";
 pub const FONT_SIZE: f32 = 13.0;
