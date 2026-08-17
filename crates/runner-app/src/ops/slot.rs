@@ -228,6 +228,8 @@ pub fn create(
             position: next_position,
             lead: is_first,
             runtime_override,
+            model_override: None,
+            effort_override: None,
             added_at,
         },
     )

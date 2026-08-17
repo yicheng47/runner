@@ -7,11 +7,9 @@
 #
 # This shell script seeds against any DB you point it at and is the
 # fixture used by manual testing. The Rust production seed
-# (`db::seed_default_crew`) currently writes the smaller 3-runner
-# shape (architect / impl / reviewer); this fixture is intentionally
-# ahead of it on the designer slot so we can exercise the
-# Pencil-driven design workflow before promoting the shape to the
-# production seed.
+# (`db::seed_default_crew`) writes the two-runner Peer coding example;
+# this fixture intentionally keeps the richer Build squad shape for
+# manual routing and fan-out tests.
 #
 # Usage:
 #   ./tests/fixtures/crews/build-squad.seed.sh           # default (prod) app db

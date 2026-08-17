@@ -11,6 +11,7 @@ Planned. This is the big migration phase for the `gpui-nightly` line: adopt ever
 3. **Product UI never changes; only the tech stack changes.** The GPUI app renders the same surfaces, flows, and copy as `main`'s current React app. Divergence is a bug, not a design opportunity.
 4. **Terminal architecture mimics Zed's `terminal` / `terminal_view` crate split** (studied from the local checkout at `~/repos/gui/zed`, tree of 2026-08-17), but on **upstream `alacritty_terminal`** from crates.io — not Zed's fork.
 5. **Framework: `gpui-ce`**, the community edition, replaces the stale `gpui` crates.io line. See Workstream D for the evidence.
+6. **Updater (Phase 5, decided while this spec was in flight): Sparkle via the pulse pattern** — see the updated Phase 5 bullet in [impl 0031](../0031-rust-native-ui-rewrite/plan.md). Not part of this spec's workstreams; recorded here because pulse also validates gpui-ce at a pinned git rev in production, which de-risks Workstream D's fallback path.
 
 ## Ground rules
 

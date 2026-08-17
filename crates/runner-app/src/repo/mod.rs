@@ -18,14 +18,13 @@
 //     columns; `#[serde(flatten)]` is not used for row deserialization.
 
 pub mod crew;
-pub mod folder;
 pub mod mission;
+pub mod node;
 pub mod project;
 pub mod runner;
 pub mod serde;
 pub mod session;
 pub mod slot;
-pub mod tab;
 
 /// Map a serde_rusqlite deserialization error into the same rusqlite error
 /// shape the legacy hand-written mappers produced on bad column data.

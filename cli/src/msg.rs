@@ -4,24 +4,43 @@
 // directed otherwise). The recipient must be in the per-mission roster
 // sidecar so typos can't silently land in nobody's inbox.
 //
-// Read: project the caller's inbox — `kind = "message" AND (to == null
-// OR to == handle)` — apply the optional `--since` / `--from` filters,
-// print in append order, and (only on success with at least one message
-// printed) emit a single `signal inbox_read` with `payload.up_to = max
-// printed ULID`. The watermark advance is what C7's `EventBus` consumes
-// to clear unread badges.
+// Read: project the caller's inbox — incoming `kind = "message"` events
+// where `to == null OR to == handle` — apply the optional `--since` /
+// `--from` filters, print in append order, and (only on success with at
+// least one message printed) emit a single `signal inbox_read` with
+// `payload.up_to = max printed ULID`. The watermark advance is what C7's
+// `EventBus` consumes to clear unread badges.
 
 use runner_core::event_log::EventLog;
 use runner_core::model::{Event, EventDraft, EventKind, SignalType};
 
 use crate::{env, roster};
 
+const MAX_MESSAGE_BYTES: usize = 32 * 1024;
+
 pub fn post(text: &str, to: Option<&str>) -> i32 {
     let Some(env) = env::require_mission_or_handle_offbus("msg post") else {
         return 0;
     };
 
+    if text.len() > MAX_MESSAGE_BYTES {
+        let size_kb = text.len().div_ceil(1024);
+        eprintln!(
+            "runner msg post: message is {size_kb}KB, limit is 32KB. \
+             Write large content to a file and reference its path instead."
+        );
+        return 1;
+    }
+
     if let Some(handle) = to {
+        if handle == "human" {
+            eprintln!(
+                "runner msg post: human is not a message recipient. \
+                 To reply in the crew channel, broadcast with \
+                 `runner msg post \"<text>\"` (omit --to)."
+            );
+            return 1;
+        }
         if !roster::is_known(&env.event_log, handle) {
             eprintln!(
                 "runner msg post: --to @{handle} is not in this mission's roster. \
@@ -165,7 +184,7 @@ pub fn read(since: Option<&str>, from: Option<&str>) -> i32 {
 }
 
 fn is_inbox(ev: &Event, handle: &str) -> bool {
-    if !matches!(ev.kind, EventKind::Message) {
+    if !matches!(ev.kind, EventKind::Message) || ev.from == handle {
         return false;
     }
     match ev.to.as_deref() {
@@ -213,6 +232,8 @@ mod tests {
         assert!(is_inbox(&msg("1", "lead", None), "impl"));
         assert!(is_inbox(&msg("1", "lead", Some("impl")), "impl"));
         assert!(!is_inbox(&msg("1", "lead", Some("reviewer")), "impl"));
+        assert!(!is_inbox(&msg("1", "impl", None), "impl"));
+        assert!(!is_inbox(&msg("1", "impl", Some("impl")), "impl"));
     }
 
     #[test]

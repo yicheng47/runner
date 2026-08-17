@@ -110,7 +110,7 @@ impl NativeRoot {
                 Vec::new()
             }
         };
-        let tabs = match runner_app::ops::tab::tab_list(&core)
+        let tabs = match runner_app::ops::node::node_list(&core)
             .map_err(anyhow::Error::from)
             .and_then(|rows| TabSet::from_rows(&rows))
         {
@@ -151,7 +151,7 @@ impl NativeRoot {
     }
 
     fn reload_tabs(&mut self) -> Result<()> {
-        let rows = runner_app::ops::tab::tab_list(&self.core)?;
+        let rows = runner_app::ops::node::node_list(&self.core)?;
         self.tabs.replace_rows(&rows)
     }
 
@@ -547,7 +547,7 @@ impl NativeRoot {
             .active()
             .context("active tab is missing")?
             .upsert_input()?;
-        runner_app::ops::tab::tab_upsert(&self.core, input)?;
+        runner_app::ops::node::node_tab_upsert(&self.core, input)?;
         Ok(())
     }
 

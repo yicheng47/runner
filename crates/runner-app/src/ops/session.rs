@@ -369,7 +369,7 @@ pub fn session_archive(state: &AppCore, session_id: &str) -> Result<()> {
             "session not found or still running (kill before archiving)".to_string(),
         ));
     }
-    repo::tab::remove_session(&tx, session_id)?;
+    repo::node::remove_session(&tx, session_id)?;
     tx.commit()?;
     // Drop the in-memory output buffer for this row. Forget intentionally
     // keeps the buffer alive across PTY exits so the chat can be reopened
@@ -487,28 +487,48 @@ pub fn session_rename(state: &AppCore, session_id: &str, title: Option<String>) 
 }
 
 /// Pin or unpin a direct-chat session in the SESSION sidebar tray.
-/// Pinned sessions sort above running sessions in
-/// `session_list_recent_direct` regardless of last activity. Setting
-/// `pinned = false` clears `pinned_at`.
-///
-/// Emits a `session/updated` Tauri event after the row flips so the
-/// sidebar's CHAT list can refresh — same rationale as
-/// `session_rename` above.
-pub fn session_pin(state: &AppCore, session_id: &str, pinned: bool) -> Result<()> {
-    let conn = state.db.get()?;
-    let pinned_at = if pinned {
-        Some(chrono::Utc::now())
-    } else {
-        None
-    };
-    let updated = repo::session::set_pinned_at(&conn, session_id, pinned_at)?;
+/// Pin a session and its tab node together: the whole tab pins (every
+/// member session's `pinned_at` writes through) because the sidebar
+/// renders pin state from the node (feature 44).
+pub(crate) fn pin_session_and_tab(
+    conn: &mut rusqlite::Connection,
+    session_id: &str,
+    pinned: bool,
+) -> Result<Option<String>> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let pinned_at = pinned.then(chrono::Utc::now);
+    let updated = repo::session::set_pinned_at(&tx, session_id, pinned_at)?;
     if updated == 0 {
         return Err(Error::msg(format!("session not found: {session_id}")));
     }
+    repo::node::ensure_active_sessions(&tx)?;
+    let tab = repo::node::find_for_session(&tx, session_id)?;
+    if let Some(tab) = tab.as_ref() {
+        for member in repo::node::session_ids(tab) {
+            if member != session_id {
+                repo::session::set_pinned_at(&tx, &member, pinned_at)?;
+            }
+        }
+        repo::node::set_pinned(&tx, &tab.id, pinned)?;
+    }
+    tx.commit()?;
+    Ok(tab.map(|tab| tab.id))
+}
+
+/// `pinned = false` clears the pin.
+///
+/// Emits `session/updated` (row content) and `chat/layout-changed`
+/// (the tab node's pin drives sidebar ordering) after the flip.
+pub fn session_pin(state: &AppCore, session_id: &str, pinned: bool) -> Result<()> {
+    let mut conn = state.db.get()?;
+    pin_session_and_tab(&mut conn, session_id, pinned)?;
     state.events.emit(
         "session/updated",
         &serde_json::json!({ "session_id": session_id }),
     );
+    state
+        .events
+        .emit("chat/layout-changed", &serde_json::json!({}));
     Ok(())
 }
 
@@ -661,25 +681,54 @@ pub fn session_start_runtime(
     Ok(spawned)
 }
 
+/// Rewrite the project pointer for a set of direct sessions and
+/// reconcile each affected tab node's placement in the same
+/// transaction, so the tree never disagrees with the domain pointers.
+pub(crate) fn set_project_and_reconcile(
+    conn: &mut rusqlite::Connection,
+    session_ids: &[String],
+    project_id: Option<&str>,
+) -> Result<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    repo::session::set_project_for_direct_sessions(&tx, session_ids, project_id).map_err(
+        |error| match error {
+            rusqlite::Error::QueryReturnedNoRows => {
+                Error::msg("one or more direct sessions were not found or are archived")
+            }
+            error => error.into(),
+        },
+    )?;
+    let mut reconciled: Vec<String> = Vec::new();
+    for session_id in session_ids {
+        let Some(tab) = repo::node::find_for_session(&tx, session_id)? else {
+            continue;
+        };
+        if reconciled.contains(&tab.id) {
+            continue;
+        }
+        repo::node::reconcile_tab_placement(&tx, &tab.id)?;
+        reconciled.push(tab.id);
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn session_set_project(
     state: &AppCore,
     session_ids: Vec<String>,
     project_id: Option<String>,
 ) -> Result<()> {
     let mut conn = state.db.get()?;
-    repo::session::set_project_for_direct_sessions(&mut conn, &session_ids, project_id.as_deref())
-        .map_err(|error| match error {
-            rusqlite::Error::QueryReturnedNoRows => {
-                Error::msg("one or more direct sessions were not found or are archived")
-            }
-            error => error.into(),
-        })?;
+    set_project_and_reconcile(&mut conn, &session_ids, project_id.as_deref())?;
     if let Some(session_id) = session_ids.first() {
         state.events.emit(
             "session/updated",
             &serde_json::json!({ "session_id": session_id }),
         );
     }
+    state
+        .events
+        .emit("chat/layout-changed", &serde_json::json!({}));
     Ok(())
 }
 

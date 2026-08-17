@@ -49,6 +49,8 @@ mod tests;
 
 const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
 
+pub(crate) const DEFAULT_PTY_SIZE: (u16, u16) = (80, 24);
+
 /// Minimum spacing between consecutive `claude-code` PTY launches.
 /// Long enough for one claude's OAuth refresh round-trip (network
 /// POST to api.anthropic.com plus keychain write) to land before a
@@ -349,7 +351,7 @@ impl SessionEvents for CoreSessionEvents {
     fn status(&self, ev: &SessionActivityEvent) {
         if ev.state == SessionActivityState::Idle {
             if let Some(sessions) = self.sessions.upgrade() {
-                if let Err(error) = crate::ops::tab::record_session_completion(
+                if let Err(error) = crate::ops::node::record_session_completion(
                     &self.db,
                     &sessions,
                     &self.windows,

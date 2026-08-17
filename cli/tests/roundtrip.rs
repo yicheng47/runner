@@ -170,11 +170,100 @@ fn i2_4_msg_post_to_unknown_handle_is_rejected() {
 }
 
 #[test]
+fn msg_post_rejects_over_cap_for_broadcast_and_directed() {
+    const MESSAGE_LIMIT_BYTES: usize = 32 * 1024;
+
+    let f = Fixture::new("C", "M");
+    f.write_roster(&[("lead", true), ("impl", false)]);
+    let oversized = "x".repeat(MESSAGE_LIMIT_BYTES + 1);
+
+    for recipient in [None, Some("impl")] {
+        let mut args = vec!["msg", "post", oversized.as_str()];
+        if let Some(handle) = recipient {
+            args.extend(["--to", handle]);
+        }
+
+        let out = f.cmd("lead", &args).output().unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            stderr.trim(),
+            "runner msg post: message is 33KB, limit is 32KB. \
+             Write large content to a file and reference its path instead."
+        );
+    }
+
+    assert_eq!(f.line_count(), 0);
+}
+
+#[test]
+fn msg_post_accepts_messages_at_and_under_cap() {
+    const MESSAGE_LIMIT_BYTES: usize = 32 * 1024;
+
+    let f = Fixture::new("C", "M");
+    f.write_roster(&[("lead", true), ("impl", false)]);
+    let at_limit = "é".repeat(MESSAGE_LIMIT_BYTES / "é".len());
+    let under_limit = "x".repeat(MESSAGE_LIMIT_BYTES - 1);
+    assert_eq!(at_limit.len(), MESSAGE_LIMIT_BYTES);
+
+    let broadcast = f
+        .cmd("lead", &["msg", "post", at_limit.as_str()])
+        .output()
+        .unwrap();
+    assert!(
+        broadcast.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&broadcast.stderr)
+    );
+
+    let directed = f
+        .cmd(
+            "lead",
+            &["msg", "post", under_limit.as_str(), "--to", "impl"],
+        )
+        .output()
+        .unwrap();
+    assert!(
+        directed.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&directed.stderr)
+    );
+
+    let events = f.read_log();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].to, None);
+    assert_eq!(events[0].payload["text"].as_str().unwrap(), at_limit);
+    assert_eq!(events[1].to.as_deref(), Some("impl"));
+    assert_eq!(events[1].payload["text"].as_str().unwrap(), under_limit);
+}
+
+#[test]
+fn msg_post_to_human_is_rejected_with_channel_guidance() {
+    let f = Fixture::new("C", "M");
+    f.write_roster(&[("lead", true), ("impl", false)]);
+
+    let out = f
+        .cmd("lead", &["msg", "post", "hi", "--to", "human"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("human is not a message recipient")
+            && stderr.contains("runner msg post \"<text>\"")
+            && stderr.contains("omit --to"),
+        "stderr should teach the agent to broadcast into the channel; got: {stderr}",
+    );
+    assert_eq!(f.line_count(), 0);
+}
+
+#[test]
 fn i2_5_msg_read_prints_inbox_in_order_and_emits_inbox_read() {
     let f = Fixture::new("C", "M");
     f.write_roster(&[("lead", true), ("impl", false)]);
 
-    // Pre-populate two directed messages to @impl from @lead.
+    // Pre-populate two directed messages to @impl from @lead with the
+    // caller's own broadcast between them.
     let log = EventLog::open(&f.mission_dir).unwrap();
     use runner_core::model::EventDraft;
     let m1 = log
@@ -186,6 +275,14 @@ fn i2_5_msg_read_prints_inbox_in_order_and_emits_inbox_read() {
             "first",
         ))
         .unwrap();
+    log.append(EventDraft::message(
+        "C",
+        "M",
+        "impl",
+        None,
+        "own broadcast must be excluded",
+    ))
+    .unwrap();
     let m2 = log
         .append(EventDraft::message(
             "C",
@@ -204,6 +301,7 @@ fn i2_5_msg_read_prints_inbox_in_order_and_emits_inbox_read() {
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("own broadcast must be excluded"));
     let first_pos = stdout.find("first").expect("first message in stdout");
     let second_pos = stdout.find("second").expect("second message in stdout");
     assert!(

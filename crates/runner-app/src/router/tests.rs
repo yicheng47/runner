@@ -149,6 +149,8 @@ fn slot_with_runner(handle: &str, lead: bool) -> SlotWithRunner {
             position: 0,
             lead,
             runtime_override: None,
+            model_override: None,
+            effort_override: None,
             added_at: Utc::now(),
         },
         runner,

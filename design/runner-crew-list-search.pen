@@ -2657,6 +2657,375 @@
           ]
         }
       ]
+    },
+    {
+      "type": "text",
+      "id": "wSsew",
+      "x": 40,
+      "y": 3060,
+      "name": "f56Lbl",
+      "fill": "#00FF9C",
+      "content": "56 · BACKEND PAGINATION — FLUSH PAGER",
+      "fontFamily": "JetBrains Mono",
+      "fontSize": 18,
+      "fontWeight": "700",
+      "letterSpacing": 2
+    },
+    {
+      "type": "frame",
+      "id": "csK4O",
+      "x": 40,
+      "y": 3120,
+      "name": "Runners — 56 · bottom pager, honest scroll (page 1 of 3)",
+      "clip": true,
+      "width": 1440,
+      "height": 900,
+      "fill": "$bg",
+      "cornerRadius": 12,
+      "children": [
+        {
+          "id": "OScGL",
+          "type": "ref",
+          "ref": "G5hkMw",
+          "name": "Sidebar",
+          "height": "fill_container"
+        },
+        {
+          "type": "frame",
+          "id": "DZgOt",
+          "name": "Main",
+          "width": "fill_container",
+          "height": "fill_container",
+          "layout": "vertical",
+          "gap": 24,
+          "padding": [
+            32,
+            32,
+            18,
+            32
+          ],
+          "children": [
+            {
+              "type": "frame",
+              "id": "bhXSU",
+              "name": "Header",
+              "width": "fill_container",
+              "gap": 16,
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "CRbGT",
+                  "name": "Titles",
+                  "layout": "vertical",
+                  "gap": 4,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "RzGps",
+                      "name": "Title",
+                      "fill": "$text-hi",
+                      "content": "Runners",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 24,
+                      "fontWeight": "700"
+                    },
+                    {
+                      "type": "text",
+                      "id": "jTdr8",
+                      "name": "Subtitle",
+                      "fill": "$text-mid",
+                      "content": "Reusable CLI agents — pick one for a crew slot or chat directly.",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "CcTLJ",
+                  "name": "NewBtn",
+                  "fill": "$accent",
+                  "cornerRadius": 4,
+                  "padding": [
+                    6,
+                    12
+                  ],
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "QaiTx",
+                      "name": "NewBtnTxt",
+                      "fill": "$accent-ink",
+                      "content": "+ New runner",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 14,
+                      "fontWeight": "500"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "jeqUm",
+              "name": "Toolbar",
+              "width": "fill_container",
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "id": "B56Hi",
+                  "type": "ref",
+                  "ref": "IvHzh",
+                  "name": "Search",
+                  "descendants": {
+                    "o190o": {
+                      "enabled": false
+                    }
+                  }
+                },
+                {
+                  "type": "text",
+                  "id": "mmfJj",
+                  "name": "Count",
+                  "fill": "$text-mid",
+                  "content": "8 of 23 runners",
+                  "fontFamily": "$font-mono",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "a4g8l",
+              "name": "List",
+              "clip": true,
+              "width": "fill_container",
+              "height": "fill_container",
+              "layout": "vertical",
+              "gap": 12,
+              "children": [
+                {
+                  "id": "vl2T3",
+                  "type": "ref",
+                  "ref": "srLSJ",
+                  "name": "Card @coding-tutor",
+                  "width": "fill_container",
+                  "descendants": {
+                    "Ou0Kv": {
+                      "content": "@coding-tutor"
+                    },
+                    "uM8jW": {
+                      "content": "claude-code"
+                    },
+                    "uCKAt": {
+                      "content": "Coding Tutor"
+                    },
+                    "rLsbU": {
+                      "content": "$ claude --permission-mode auto"
+                    },
+                    "NAIE1": {
+                      "content": "in 0 crews"
+                    }
+                  }
+                },
+                {
+                  "id": "FzBbN",
+                  "type": "ref",
+                  "ref": "srLSJ",
+                  "name": "Card @housekeeper",
+                  "width": "fill_container",
+                  "descendants": {
+                    "Ou0Kv": {
+                      "content": "@housekeeper"
+                    },
+                    "uM8jW": {
+                      "content": "claude-code"
+                    },
+                    "uCKAt": {
+                      "content": "Housekeeper"
+                    },
+                    "rLsbU": {
+                      "content": "$ claude --permission-mode auto"
+                    },
+                    "NAIE1": {
+                      "content": "in 0 crews"
+                    }
+                  }
+                },
+                {
+                  "id": "frn2g",
+                  "type": "ref",
+                  "ref": "srLSJ",
+                  "name": "Card @impl-claude",
+                  "width": "fill_container",
+                  "descendants": {
+                    "Ou0Kv": {
+                      "content": "@impl-claude"
+                    },
+                    "uM8jW": {
+                      "content": "claude-code"
+                    },
+                    "uCKAt": {
+                      "content": "Implementation (Claude)"
+                    },
+                    "rLsbU": {
+                      "content": "$ claude --permission-mode auto"
+                    },
+                    "NAIE1": {
+                      "content": "2 sessions",
+                      "fill": "$accent"
+                    }
+                  }
+                },
+                {
+                  "id": "q05dd",
+                  "type": "ref",
+                  "ref": "srLSJ",
+                  "name": "Card @impl-codex",
+                  "width": "fill_container",
+                  "descendants": {
+                    "Ou0Kv": {
+                      "content": "@impl-codex"
+                    },
+                    "uM8jW": {
+                      "content": "codex"
+                    },
+                    "uCKAt": {
+                      "content": "Implementation (Codex)"
+                    },
+                    "rLsbU": {
+                      "content": "$ codex --ask-for-approval on-request --sandbox workspace-write"
+                    },
+                    "NAIE1": {
+                      "content": "in 1 crew"
+                    }
+                  }
+                },
+                {
+                  "id": "fQdMg",
+                  "type": "ref",
+                  "ref": "srLSJ",
+                  "name": "Card @investing-counselor",
+                  "width": "fill_container",
+                  "descendants": {
+                    "Ou0Kv": {
+                      "content": "@investing-counselor"
+                    },
+                    "uM8jW": {
+                      "content": "claude-code"
+                    },
+                    "uCKAt": {
+                      "content": "Investing Counselor"
+                    },
+                    "rLsbU": {
+                      "content": "$ claude --permission-mode auto"
+                    },
+                    "NAIE1": {
+                      "content": "in 0 crews"
+                    }
+                  }
+                },
+                {
+                  "id": "F0qvXL",
+                  "type": "ref",
+                  "ref": "srLSJ",
+                  "name": "Card @music-curator (clipped at fold)",
+                  "width": "fill_container",
+                  "descendants": {
+                    "Ou0Kv": {
+                      "content": "@music-curator"
+                    },
+                    "uM8jW": {
+                      "content": "claude-code"
+                    },
+                    "uCKAt": {
+                      "content": "Music Curator"
+                    },
+                    "rLsbU": {
+                      "content": "$ claude --permission-mode auto"
+                    },
+                    "NAIE1": {
+                      "content": "in 0 crews"
+                    }
+                  }
+                },
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 2,
+                  "id": "iTxCy",
+                  "layoutPosition": "absolute",
+                  "x": 1128,
+                  "y": 8,
+                  "name": "Scrollbar (visible affordance)",
+                  "fill": "$line-strong",
+                  "width": 4,
+                  "height": 150
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "O01zXc",
+              "x": 32,
+              "y": 496.5,
+              "name": "(removed)",
+              "enabled": false,
+              "width": "fill_container(1136)",
+              "height": "fill_container(309.5)"
+            },
+            {
+              "type": "frame",
+              "id": "tRpMk",
+              "name": "Footer (bottom-pinned)",
+              "width": "fill_container",
+              "stroke": "$border",
+              "strokeWidth": {
+                "top": 1
+              },
+              "strokeAlignment": "inner",
+              "padding": [
+                10,
+                0,
+                0,
+                0
+              ],
+              "justifyContent": "center",
+              "alignItems": "center",
+              "children": [
+                {
+                  "id": "axZa6",
+                  "type": "ref",
+                  "ref": "W6UgL",
+                  "name": "Pager",
+                  "descendants": {
+                    "JvXkQ": {
+                      "enabled": false
+                    },
+                    "FKueJ": {
+                      "enabled": false
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "note",
+      "id": "nmAx8",
+      "x": 3160,
+      "y": 3120,
+      "name": "56 notes",
+      "width": 720,
+      "height": 0,
+      "content": "Feature 56 / #377 — backend pagination + honest bottom pager\n\n• Paging moves into SQL: list commands take page / page_size / query (LIMIT/OFFSET, LIKE over the fields client search covered) and return items + filtered_count + total_count. Counter = page items of filtered.\n• Pager STAYS bottom-pinned and centered, unchanged position. What changes: a 1px hairline ($border) separates it from the list, and the list region above scrolls with a VISIBLE auto-hiding scrollbar — a card cut at the fold reads as a scrollable region above a fixed footer, not as content swallowed by a black block; its hairline aligns with the sidebar footer's divider (one continuous line) (left frame: 6th card at the fold + scrollbar thumb).\n• Single page: the pager STAYS visible — page 1 selected, both arrows disabled — so the footer and its aligned divider persist; the disabled arrows say \"nothing more\" without implying hidden pages. No separate frame needed.\n• cmp/Pager unchanged — 28px controls were already slim.\n"
     }
   ],
   "variables": {
