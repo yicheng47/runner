@@ -4,7 +4,7 @@ Progress record for the whole gpui-rewrite program ([README](README.md)), from t
 
 ## Current state (update with each entry)
 
-- **Branch**: `feat/0046-main-parity-catchup` off `gpui-nightly`, committed, awaiting merge to `gpui-nightly` + push.
+- **Branch**: `gpui-nightly` (0046 M0+M1 merged 2026-08-17 via the `feat/0046-main-parity-catchup` PR).
 - **Done**: 0046 M0 (gpui-ce swap) + M1 (repo-and-below at `main` parity, node tree adopted, protocol crates wholesale). Human-verified 2026-08-17: the app opens the `main`-written dev DB and chats work. 498 workspace tests green, clippy clean, fixture corpus green. `design/` synced from `main`.
 - **Next**: M2 (terminal split) and M3 (UI parity slices — the current UI is still the Phase 3 skeleton; parity references are `main`'s React frontend (`src/`) and the `design/*.pen` files via the pencil MCP) → M4 (sweep + watermark).
 - **Parity watermark**: `origin/main` fully ported for repo-and-below as of `1b7ee92` (v0.5.2 line, 2026-08-17); feature-logic lag is M3 scope.
