@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress. Phases 1–3 are complete, and the pioneer line now lives in its own repository — [yicheng47/runner-gpui](https://github.com/yicheng47/runner-gpui), this repo — split from the `runner` repo's `gpui-nightly` branch on 2026-07-19. Phase 4 parity slices are next. Tracking issue: [runner#307](https://github.com/yicheng47/runner/issues/307). See [Branch strategy](#branch-strategy).
+In progress. Phases 1–3 are complete. The pioneer line lives on the `runner` repo's long-lived `gpui-nightly` branch — one repo, two branches; the 2026-07-19 split into a separate `runner-gpui` repository was reverted on 2026-08-17. Phase 4 is superseded as a working plan by [impl 0046](../0046-main-parity-catchup/plan.md) (main-parity catchup: backend sync, node tree, terminal split, gpui-ce). Tracking issue: [runner#307](https://github.com/yicheng47/runner/issues/307). See [Branch strategy](#branch-strategy).
 
 ## End state
 
@@ -52,7 +52,13 @@ Revised again 2026-07-19 (repo split, superseding the branch model above for eve
 - **Phase work** happens on task branches off this repo's `main` (e.g. `phase4-direct-chats`), merged back only after human verification — the same convention the nightly branch used.
 - **Cutover (Phase 6)** becomes a rebrand: archive the `runner` repo, rename `runner-gpui`. No tree-swap merge. The name says the framework on purpose; "runner-native" was rejected because "native" implies multi-platform, and this line is macOS-only by plan.
 
-Build decision: the pioneer line has Rust-only `fmt`, `clippy`, `test`, and `run-native` Make targets. CI is one macOS Rust-workspace job for pushes and pull requests (originally scoped to `gpui-nightly`; now this repo's `main` and PRs), including the GPUI Metal Toolchain component; native release packaging remains deferred to Phase 5.
+Revised again 2026-08-17 (single repo, superseding the repo split): the pioneer line moved back into the `runner` repo as a long-lived `gpui-nightly` branch, pushed at `774aa35` with the standalone repo's full history (including its Phase 4 direct-chats merge, PR #1 there). The separate **runner-gpui** GitHub repository is retired and slated for removal; locally the branch lives in the `runner-gpui` worktree. Rationale: most of the tree differs between the lines anyway, and the shared part (backend, `crates/runner-core`, `cli/`) is ported by hand either way — one repo keeps issues, CI, and history together without cross-repo remote juggling.
+
+- **Cross-branch flow** replaces cross-repo cherry-picks: backend changes on `main` are ported onto `gpui-nightly` by conscious cherry-pick, hand-relocated from `src-tauri/src/*` into `crates/runner-app/*` paths. Nothing flows automatically in either direction. Schema- and protocol-affecting changes (`db.rs` migrations, the `runner-core` event log, `cli` message shapes) port promptly — both apps must keep reading the same `runner.db` and event logs; feature logic ports when a parity slice needs it.
+- **Phase work** happens on task branches off `gpui-nightly` (e.g. `phase4-direct-chats`), merged back only after human verification — unchanged.
+- **Cutover (Phase 6)** becomes a branch promotion: `gpui-nightly`'s tree replaces `main` in this repo. No repo rename.
+
+Build decision: the pioneer line has Rust-only `fmt`, `clippy`, `test`, and `run-native` Make targets. CI is one macOS Rust-workspace job for pushes and pull requests (scoped to `gpui-nightly` again after the split revert; it briefly targeted the standalone repo's `main`), including the GPUI Metal Toolchain component; native release packaging remains deferred to Phase 5.
 
 ## Phases
 
