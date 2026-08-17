@@ -85,12 +85,14 @@ fn home_dir() -> Result<PathBuf> {
         .ok_or_else(|| Error::msg("HOME env var not set"))
 }
 
+const CODEX_CONFIG_RELATIVE_PATH: &str = ".codex/config.toml";
+
 fn claude_code_path() -> Result<PathBuf> {
     Ok(home_dir()?.join(".claude.json"))
 }
 
-fn codex_path() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".codex").join("config.toml"))
+pub(crate) fn codex_path() -> Result<PathBuf> {
+    Ok(home_dir()?.join(CODEX_CONFIG_RELATIVE_PATH))
 }
 
 fn qoder_path() -> Result<PathBuf> {
