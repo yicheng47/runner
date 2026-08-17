@@ -4,11 +4,13 @@
 // The pool is opened once at app start with WAL mode + foreign keys; later
 // chunks pull connections from it via Tauri state.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
@@ -31,6 +33,7 @@ fn build_pool(manager: SqliteConnectionManager, max_size: u32, seed: bool) -> Re
     let pool = Pool::builder().max_size(max_size).build(manager)?;
     let mut conn = pool.get()?;
     run_migrations(&mut conn)?;
+    ensure_app_state_table(&conn)?;
     if seed {
         seed_defaults(&mut conn)?;
     }
@@ -87,6 +90,27 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 // 0013: adds nullable `slots.runtime_override` — per-slot engine choice
 // resolved as `slot.runtime_override ?? runner.runtime` at spawn.
 // Validated against the runtime registry on write (feature 41).
+// 0014: feature 44 — one `nodes` table replaces folders/tabs/pointer
+// grouping/pin flags as the sidebar tree (`parent_id` + `position`).
+// The SQL copies rows and renames the source tables to `*_legacy`;
+// `backfill_0014_nodes` (same transaction) resolves every tab's
+// project parent from its layout's member sessions, seeds
+// `pinned_position` from the pin flags, and re-seeds `position` per
+// parent scope over the pre-migration visual sort.
+// 0015: retires folder nodes. Their children are promoted to root and
+// spliced into the folder's root position; the 0014 legacy tables are
+// dropped in the same transaction.
+// 0016: persists the last applied PTY size per session so an unsized
+// resume can fork at the prior width before any frontend pane is measurable.
+// 0017: records sessions that were running at graceful quit so the next
+// launch can resume them without treating crash-demoted rows the same way.
+// 0018: adds nullable `slots.model_override` so a slot that selects a
+// different runtime can pin that runtime's model without mutating the
+// reusable runner template.
+// 0019: persists model/effort on runtime-only direct chats so resume
+// keeps the session's selected agent configuration.
+// 0020: adds nullable `slots.effort_override` so a crew slot can
+// override thinking effort independently of its runtime and model.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_persona_only_seeds.sql")),
@@ -122,37 +146,141 @@ const MIGRATIONS: &[(i64, &str)] = &[
         13,
         include_str!("../migrations/0013_slot_runtime_override.sql"),
     ),
+    (14, include_str!("../migrations/0014_nodes.sql")),
+    (15, include_str!("../migrations/0015_retire_folders.sql")),
+    (16, include_str!("../migrations/0016_session_last_size.sql")),
+    (
+        17,
+        include_str!("../migrations/0017_session_resume_on_launch.sql"),
+    ),
+    (
+        18,
+        include_str!("../migrations/0018_slot_model_override.sql"),
+    ),
+    (
+        19,
+        include_str!("../migrations/0019_session_agent_options.sql"),
+    ),
+    (
+        20,
+        include_str!("../migrations/0020_slot_effort_override.sql"),
+    ),
 ];
 
-// Default-data seed: ships the Build squad starter crew on first launch.
+// Default-data seed: ships the Peer coding starter crew on first launch.
 //
 // Runs at most once per database. The marker
 // `_app_state.default_crew_seeded` records that the seed step has been
-// considered for this DB so we don't recreate Build squad if the user
+// considered for this DB so we don't recreate Peer coding if the user
 // later deletes everything ("first launch" must mean *first* launch,
 // not "any future launch where you happen to have zero crews").
 //
 // Even on first launch we only apply the seed when the DB has zero
 // crews AND zero runners. If the user has *any* prior data — e.g.
-// they ran the build-squad.seed.sh fixture against this DB before
+// they loaded another fixture into this DB before
 // opening the app — we skip cleanly and still set the marker. This
 // avoids the partial-crew failure mode where a colliding runner
-// handle would leave Build squad missing its lead, while the start-
+// handle would leave Peer coding missing its lead, while the start-
 // mission UI still treated it as launchable.
 //
 // Tests skip this entire path so command tests can assume an empty
 // starting state.
 
 const SEED_MARKER_KEY: &str = "default_crew_seeded";
+const LOGIN_SHELL_ENV_LKG_KEY: &str = "login_shell_env_lkg";
+const RUNTIME_OVERRIDES_KEY: &str = "runtime_overrides";
 
-// Pinned IDs for the seeded rows. These are referenced by
-// `0002_persona_only_seeds.sql`'s WHERE clauses, so they must match
-// the values that migration's UPDATEs key on.
-const SEED_CREW_ID: &str = "01K000DEFAULT000BUILDSQUAD01";
-const SEED_ARCHITECT_RUNNER_ID: &str = "01K000DEFAULT000RUNNERARCH01";
-const SEED_IMPL_RUNNER_ID: &str = "01K000DEFAULT000RUNNERIMPL01";
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoginShellEnvLkg {
+    pub env: crate::shell_path::LoginShellEnv,
+    pub shell: String,
+    pub captured_at: String,
+}
+
+fn ensure_app_state_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS _app_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+         )",
+    )?;
+    Ok(())
+}
+
+fn app_state_get(conn: &Connection, key: &str) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT value FROM _app_state WHERE key = ?1",
+        params![key],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn app_state_set(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO _app_state (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+pub fn login_shell_env_lkg(pool: &DbPool) -> Result<Option<LoginShellEnvLkg>> {
+    let conn = pool.get()?;
+    app_state_get(&conn, LOGIN_SHELL_ENV_LKG_KEY)?
+        .map(|value| serde_json::from_str(&value).map_err(Into::into))
+        .transpose()
+}
+
+pub fn set_login_shell_env_lkg(pool: &DbPool, snapshot: &LoginShellEnvLkg) -> Result<()> {
+    let conn = pool.get()?;
+    app_state_set(
+        &conn,
+        LOGIN_SHELL_ENV_LKG_KEY,
+        &serde_json::to_string(snapshot)?,
+    )
+}
+
+pub fn runtime_overrides(pool: &DbPool) -> Result<BTreeMap<String, String>> {
+    let conn = pool.get()?;
+    Ok(app_state_get(&conn, RUNTIME_OVERRIDES_KEY)?
+        .map(|value| serde_json::from_str(&value))
+        .transpose()?
+        .unwrap_or_default())
+}
+
+pub fn set_runtime_override(pool: &DbPool, runtime: &str, path: Option<&str>) -> Result<()> {
+    let mut conn = pool.get()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let mut overrides: BTreeMap<String, String> = app_state_get(&tx, RUNTIME_OVERRIDES_KEY)?
+        .map(|value| serde_json::from_str(&value))
+        .transpose()?
+        .unwrap_or_default();
+    match path {
+        Some(path) => {
+            overrides.insert(runtime.to_string(), path.to_string());
+        }
+        None => {
+            overrides.remove(runtime);
+        }
+    }
+    app_state_set(
+        &tx,
+        RUNTIME_OVERRIDES_KEY,
+        &serde_json::to_string(&overrides)?,
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+// Pinned IDs keep first-launch fixtures deterministic. Migration 0002
+// still owns the legacy Build squad IDs for historical upgrades; fresh
+// databases run migrations before this peer-coding seed is inserted.
+const SEED_CREW_ID: &str = "01K000DEFAULT000PEERCODING01";
+const SEED_CODER_RUNNER_ID: &str = "01K000DEFAULT000RUNNERCODER01";
 const SEED_REVIEWER_RUNNER_ID: &str = "01K000DEFAULT000RUNNERREVW01";
-const SEED_TIMESTAMP: &str = "2026-05-03T00:00:00Z";
+const SEED_TIMESTAMP: &str = "2026-08-01T00:00:00Z";
 
 // Auto permission mode args for the default Codex seed:
 // `codex --ask-for-approval on-request --sandbox workspace-write`.
@@ -161,16 +289,12 @@ const SEED_TIMESTAMP: &str = "2026-05-03T00:00:00Z";
 const SEED_RUNNER_ARGS_JSON: &str =
     r#"["--ask-for-approval","on-request","--sandbox","workspace-write"]"#;
 
-// Persona-only system prompts shared with `tests/fixtures/system-prompts/*.md`.
-// Keeping a single source of truth means the migration 0002 UPDATE
-// pin (which targets the *pre*-rewrite text) and the seed (which
-// writes the *current* text) can never disagree about what the
-// "current" persona looks like.
-const SEED_ARCHITECT_PROMPT: &str =
-    include_str!("../../../tests/fixtures/system-prompts/architect.md");
-const SEED_IMPL_PROMPT: &str = include_str!("../../../tests/fixtures/system-prompts/impl.md");
-const SEED_REVIEWER_PROMPT: &str =
-    include_str!("../../../tests/fixtures/system-prompts/reviewer.md");
+// The shipped crew and the copyable example share one source of truth.
+// Runner prompts stay persona-only so the templates also work in direct
+// chat; mission workflow and channel guidance live in the crew addendum.
+const SEED_CODER_PROMPT: &str = include_str!("../../../examples/peer-coding/coder.md");
+const SEED_REVIEWER_PROMPT: &str = include_str!("../../../examples/peer-coding/reviewer.md");
+const SEED_CREW_ADDENDUM: &str = include_str!("../../../examples/peer-coding/team-conventions.md");
 
 fn seed_defaults(conn: &mut Connection) -> Result<()> {
     conn.execute_batch(
@@ -205,43 +329,34 @@ fn seed_defaults(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-/// Insert the Build squad crew, three runners (architect / impl /
-/// reviewer), and three slots inside the caller's transaction.
-/// Replaces the legacy `0002_default_crew.sql` seed file: the same
-/// shape, but written in Rust so the column layout is owned by the
-/// same code that handles user-driven runner creates and so
-/// permission-mode args flow through as a single string constant
-/// (`SEED_RUNNER_ARGS_JSON`) instead of a hand-encoded JSON literal
-/// scattered across three INSERT statements.
+/// Insert the two-runner Peer coding example inside the caller's
+/// transaction. The Rust seed owns the same fields as user-driven
+/// creates and reads the copyable example prompts directly.
 fn seed_default_crew(tx: &rusqlite::Transaction) -> Result<()> {
+    let addendum = SEED_CREW_ADDENDUM.trim_end_matches('\n');
     tx.execute(
-        "INSERT INTO crews (id, name, purpose, goal, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+        "INSERT INTO crews (
+            id, name, purpose, goal, system_prompt_addendum, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
         params![
             SEED_CREW_ID,
-            "Build squad",
-            "Plan, build, and review a single feature end-to-end. \
-             Architect dispatches, implementer ships, reviewer gates merge.",
-            "Definition of done = code merged behind a green test suite and a clean \
-             review pass, with a one-paragraph human-readable summary posted as a \
-             broadcast.",
+            "Peer coding crew",
+            "A two-runner coder/reviewer loop for a single implementation task. \
+             The coder ships the change; the reviewer audits it; the coder fixes \
+             findings until review is clean.",
+            "Definition of done: implemented, relevant checks passed, and reviewer \
+             reports no remaining must-fix issues.",
+            addendum,
             SEED_TIMESTAMP,
         ],
     )?;
 
     insert_seed_runner(
         tx,
-        SEED_ARCHITECT_RUNNER_ID,
-        "architect",
-        "Architect",
-        SEED_ARCHITECT_PROMPT,
-    )?;
-    insert_seed_runner(
-        tx,
-        SEED_IMPL_RUNNER_ID,
-        "impl",
-        "Implementation",
-        SEED_IMPL_PROMPT,
+        SEED_CODER_RUNNER_ID,
+        "coder",
+        "Coder",
+        SEED_CODER_PROMPT,
     )?;
     insert_seed_runner(
         tx,
@@ -253,26 +368,18 @@ fn seed_default_crew(tx: &rusqlite::Transaction) -> Result<()> {
 
     insert_seed_slot(
         tx,
-        "01K000DEFAULT000SLOTARCH0001",
-        SEED_ARCHITECT_RUNNER_ID,
-        "architect",
+        "01K000DEFAULT000SLOTCODER001",
+        SEED_CODER_RUNNER_ID,
+        "coder",
         0,
         true,
-    )?;
-    insert_seed_slot(
-        tx,
-        "01K000DEFAULT000SLOTIMPL0001",
-        SEED_IMPL_RUNNER_ID,
-        "impl",
-        1,
-        false,
     )?;
     insert_seed_slot(
         tx,
         "01K000DEFAULT000SLOTREVW0001",
         SEED_REVIEWER_RUNNER_ID,
         "reviewer",
-        2,
+        1,
         false,
     )?;
 
@@ -333,6 +440,12 @@ fn insert_seed_slot(
 }
 
 fn run_migrations(conn: &mut Connection) -> Result<()> {
+    run_migrations_up_to(conn, i64::MAX)
+}
+
+/// Apply pending migrations up to and including `max_version`. Only the
+/// migration tests cap this — production always runs the full set.
+fn run_migrations_up_to(conn: &mut Connection, max_version: i64) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS _migrations (
             version INTEGER PRIMARY KEY,
@@ -349,14 +462,266 @@ fn run_migrations(conn: &mut Connection) -> Result<()> {
     // startup retries the same version instead of replaying it onto a
     // partially-migrated schema (which would fail on `CREATE TABLE crews`).
     for (version, sql) in MIGRATIONS {
-        if *version > current {
+        if *version > current && *version <= max_version {
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             tx.execute_batch(sql)?;
+            // Data backfills that need Rust (JSON parsing, cross-table
+            // resolution) run inside the migration's transaction.
+            if *version == 14 {
+                backfill_0014_nodes(&tx)?;
+            }
+            if *version == 15 {
+                backfill_0015_retire_folders(&tx)?;
+            }
             tx.execute(
                 "INSERT INTO _migrations (version, applied_at) VALUES (?1, ?2)",
                 params![version, chrono::Utc::now().to_rfc3339()],
             )?;
             tx.commit()?;
+        }
+    }
+    Ok(())
+}
+
+/// Replace each root folder with its children while preserving the
+/// root order and each folder scope's order. Folder nodes were root-only
+/// by invariant, so a single display-order walk produces the flattened
+/// root sequence without fabricating project bindings.
+fn backfill_0015_retire_folders(tx: &rusqlite::Transaction) -> rusqlite::Result<()> {
+    let roots: Vec<(String, String)> = tx
+        .prepare(
+            "SELECT id, type FROM nodes WHERE parent_id IS NULL
+             ORDER BY position, created_at",
+        )?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut flattened = Vec::new();
+    for (id, node_type) in roots {
+        if node_type != "folder" {
+            flattened.push(id);
+            continue;
+        }
+        let children: Vec<String> = tx
+            .prepare(
+                "SELECT id FROM nodes WHERE parent_id = ?1
+                 ORDER BY pinned_position IS NULL, pinned_position,
+                          position, created_at",
+            )?
+            .query_map([&id], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        tx.execute(
+            "UPDATE nodes SET parent_id = NULL WHERE parent_id = ?1",
+            [&id],
+        )?;
+        tx.execute("DELETE FROM nodes WHERE id = ?1 AND type = 'folder'", [&id])?;
+        flattened.extend(children);
+    }
+    for (position, id) in flattened.iter().enumerate() {
+        tx.execute(
+            "UPDATE nodes SET position = ?2 WHERE id = ?1",
+            params![id, position as i64],
+        )?;
+    }
+    Ok(())
+}
+
+/// Rust half of migration 0014 (feature 44), run in the same
+/// transaction as the SQL copy. Three steps the SQL can't do:
+///
+/// 1. Tabs whose member sessions (from the layout JSON) all share one
+///    `project_id` move under that project's node — the grouping the
+///    sidebar used to derive at render time. Every tab is examined,
+///    foldered ones included: the old sidebar's project partition ran
+///    on members alone, so a foldered tab with a unanimous project
+///    rendered under the project, never under its folder.
+/// 2. `position` re-seeds per parent scope with a row number over the
+///    pre-migration visual sort, so the migrated sidebar renders in
+///    exactly the same order as before: root = projects, then
+///    ungrouped missions (pinned first, newest started), then folders,
+///    then loose tabs; inside a project = ex-foldered tabs before
+///    ex-root tabs (the old tab query's folder-first key), after its
+///    missions; inside a folder = tabs by stored order.
+/// 3. Pin flags seed `pinned_position`: a tab is pinned when every
+///    member session is pinned (the sidebar's rule), a mission when
+///    `pinned_at` is set; positions are assigned in the display-order
+///    walk of the tree from step 2.
+fn backfill_0014_nodes(tx: &rusqlite::Transaction) -> rusqlite::Result<()> {
+    use crate::repo::node::session_ids_from_layout;
+    use rusqlite::OptionalExtension;
+
+    // Step 1: project parents for tabs with a unanimous member project.
+    let all_tabs: Vec<(String, Option<String>)> = tx
+        .prepare("SELECT id, layout FROM nodes WHERE type = 'tab'")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (tab_id, layout) in &all_tabs {
+        let members = layout
+            .as_deref()
+            .map(session_ids_from_layout)
+            .unwrap_or_default();
+        if members.is_empty() {
+            continue;
+        }
+        let mut shared_project: Option<String> = None;
+        let mut all_share = true;
+        for (index, session_id) in members.iter().enumerate() {
+            let project_id: Option<Option<String>> = tx
+                .query_row(
+                    "SELECT project_id FROM sessions WHERE id = ?1",
+                    [session_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let project_id = project_id.flatten();
+            if project_id.is_none() || (index > 0 && project_id != shared_project) {
+                all_share = false;
+                break;
+            }
+            shared_project = project_id;
+        }
+        if !all_share {
+            continue;
+        }
+        if let Some(project_id) = shared_project {
+            // The project node's id is the project's id (1:1 copy).
+            tx.execute(
+                "UPDATE nodes SET parent_id = ?2 WHERE id = ?1",
+                params![tab_id, project_id],
+            )?;
+        }
+    }
+
+    // Orderings mirroring the pre-migration sidebar. Missions:
+    // repo::mission::list — pinned first (newest pin first), then
+    // newest started. Tabs/folders/projects: stored position order.
+    let ids = |sql: &str, scope: &[&dyn rusqlite::ToSql]| -> rusqlite::Result<Vec<String>> {
+        tx.prepare(sql)?
+            .query_map(scope, |row| row.get(0))?
+            .collect()
+    };
+    let mission_order = "SELECT n.id FROM nodes n
+                          JOIN missions m ON m.id = n.ref_id
+                         WHERE n.type = 'mission' AND n.parent_id IS ?1
+                         ORDER BY m.pinned_at IS NULL, m.pinned_at DESC, m.started_at DESC";
+    // The extra folder-provenance key only bites inside project scopes,
+    // where ex-foldered and ex-root tabs mix: the old tab query listed
+    // foldered tabs first, so they keep leading here.
+    let tab_order = "SELECT id FROM nodes
+                     WHERE type = 'tab' AND parent_id IS ?1
+                     ORDER BY (SELECT t.folder_id FROM tabs_legacy t
+                                WHERE t.id = nodes.id) IS NULL,
+                              position, created_at";
+
+    // Step 2: display-order walk — roots first, each container's
+    // children right after it — assigning positions per scope.
+    let projects = ids(
+        "SELECT id FROM nodes WHERE type = 'project'
+         ORDER BY position, created_at",
+        &[],
+    )?;
+    let folders = ids(
+        "SELECT id FROM nodes WHERE type = 'folder'
+         ORDER BY position, created_at",
+        &[],
+    )?;
+    let none: Option<String> = None;
+    let root_missions = ids(mission_order, &[&none])?;
+    let loose_tabs = ids(tab_order, &[&none])?;
+
+    let mut display_order: Vec<String> = Vec::new();
+    let mut root: Vec<String> = Vec::new();
+    for project_id in &projects {
+        root.push(project_id.clone());
+        display_order.push(project_id.clone());
+        let mut children = ids(mission_order, &[project_id])?;
+        children.extend(ids(tab_order, &[project_id])?);
+        for (position, id) in children.iter().enumerate() {
+            tx.execute(
+                "UPDATE nodes SET position = ?2 WHERE id = ?1",
+                params![id, position as i64],
+            )?;
+        }
+        display_order.extend(children);
+    }
+    root.extend(root_missions);
+    for folder_id in &folders {
+        root.push(folder_id.clone());
+        let children = ids(tab_order, &[folder_id])?;
+        for (position, id) in children.iter().enumerate() {
+            tx.execute(
+                "UPDATE nodes SET position = ?2 WHERE id = ?1",
+                params![id, position as i64],
+            )?;
+        }
+    }
+    root.extend(loose_tabs);
+    for (position, id) in root.iter().enumerate() {
+        tx.execute(
+            "UPDATE nodes SET position = ?2 WHERE id = ?1",
+            params![id, position as i64],
+        )?;
+    }
+    // Non-project roots and their children join the walk after the
+    // project blocks, in root order.
+    for id in root.iter().filter(|id| !projects.contains(id)) {
+        display_order.push(id.clone());
+        let children = ids(
+            "SELECT id FROM nodes WHERE parent_id = ?1
+             ORDER BY position, created_at",
+            &[id],
+        )?;
+        display_order.extend(children);
+    }
+
+    // Step 3: pinned_position over the display order.
+    let mut pinned_position: i64 = 0;
+    for id in &display_order {
+        let (node_type, ref_id, layout): (String, Option<String>, Option<String>) = tx.query_row(
+            "SELECT type, ref_id, layout FROM nodes WHERE id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let pinned = match node_type.as_str() {
+            "mission" => {
+                let Some(mission_id) = ref_id else {
+                    continue;
+                };
+                tx.query_row(
+                    "SELECT pinned_at IS NOT NULL FROM missions WHERE id = ?1",
+                    [&mission_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or(false)
+            }
+            "tab" => {
+                let members = layout
+                    .as_deref()
+                    .map(session_ids_from_layout)
+                    .unwrap_or_default();
+                !members.is_empty()
+                    && members.iter().try_fold(
+                        true,
+                        |all, session_id| -> rusqlite::Result<bool> {
+                            let pinned: Option<bool> = tx
+                                .query_row(
+                                    "SELECT pinned_at IS NOT NULL FROM sessions WHERE id = ?1",
+                                    [session_id],
+                                    |row| row.get(0),
+                                )
+                                .optional()?;
+                            Ok(all && pinned.unwrap_or(false))
+                        },
+                    )?
+            }
+            _ => false,
+        };
+        if pinned {
+            tx.execute(
+                "UPDATE nodes SET pinned_position = ?2 WHERE id = ?1",
+                params![id, pinned_position],
+            )?;
+            pinned_position += 1;
         }
     }
     Ok(())
@@ -433,11 +798,46 @@ mod tests {
     }
 
     #[test]
+    fn login_shell_lkg_round_trips_through_app_state() {
+        let pool = open_in_memory().unwrap();
+        let snapshot = LoginShellEnvLkg {
+            env: crate::shell_path::LoginShellEnv {
+                path: Some("/custom/bin:/usr/bin".into()),
+                vars: BTreeMap::from([("HTTPS_PROXY".into(), "http://proxy".into())]),
+            },
+            shell: "/bin/zsh".into(),
+            captured_at: "2026-07-25T00:00:00Z".into(),
+        };
+        assert_eq!(login_shell_env_lkg(&pool).unwrap(), None);
+        set_login_shell_env_lkg(&pool, &snapshot).unwrap();
+        assert_eq!(login_shell_env_lkg(&pool).unwrap(), Some(snapshot));
+    }
+
+    #[test]
+    fn runtime_overrides_set_clear_as_one_json_value() {
+        let pool = open_in_memory().unwrap();
+        set_runtime_override(&pool, "codex", Some("/opt/codex")).unwrap();
+        set_runtime_override(&pool, "claude-code", Some("/opt/claude")).unwrap();
+        assert_eq!(
+            runtime_overrides(&pool).unwrap(),
+            BTreeMap::from([
+                ("claude-code".into(), "/opt/claude".into()),
+                ("codex".into(), "/opt/codex".into()),
+            ])
+        );
+        set_runtime_override(&pool, "codex", None).unwrap();
+        assert_eq!(
+            runtime_overrides(&pool).unwrap(),
+            BTreeMap::from([("claude-code".into(), "/opt/claude".into())])
+        );
+    }
+
+    #[test]
     fn container_collapse_state_is_not_in_the_database() {
         let pool = open_in_memory().unwrap();
         let conn = pool.get().unwrap();
 
-        for table in ["folders", "projects"] {
+        for table in ["nodes", "projects"] {
             let mut stmt = conn
                 .prepare(&format!("PRAGMA table_info({table})"))
                 .unwrap();
@@ -586,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn seed_defaults_inserts_build_squad_on_empty_db() {
+    fn seed_defaults_inserts_peer_coding_crew_on_empty_db() {
         let pool = open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
         seed_defaults(&mut conn).unwrap();
@@ -601,15 +1001,28 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM slots", [], |r| r.get(0))
             .unwrap();
         assert_eq!(crew_count, 1);
-        assert_eq!(runner_count, 3);
-        assert_eq!(slot_count, 3);
+        assert_eq!(runner_count, 2);
+        assert_eq!(slot_count, 2);
 
         let lead_handle: String = conn
             .query_row("SELECT slot_handle FROM slots WHERE lead = 1", [], |r| {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(lead_handle, "architect");
+        assert_eq!(lead_handle, "coder");
+
+        let (name, addendum): (String, Option<String>) = conn
+            .query_row(
+                "SELECT name, system_prompt_addendum FROM crews WHERE id = ?1",
+                params![SEED_CREW_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "Peer coding crew");
+        assert_eq!(
+            addendum.as_deref(),
+            Some(SEED_CREW_ADDENDUM.trim_end_matches('\n'))
+        );
 
         let codex_seed_count: i64 = conn
             .query_row(
@@ -624,9 +1037,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            codex_seed_count, 3,
+            codex_seed_count, 2,
             "all seeded runners should use codex Auto with inherited model/effort",
         );
+
+        for (handle, prompt) in [
+            ("coder", SEED_CODER_PROMPT),
+            ("reviewer", SEED_REVIEWER_PROMPT),
+        ] {
+            let stored: String = conn
+                .query_row(
+                    "SELECT system_prompt FROM runners WHERE handle = ?1",
+                    params![handle],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, prompt.trim_end_matches('\n'));
+        }
     }
 
     /// Verbatim copy of the pre-#51 architect `system_prompt`
@@ -797,10 +1224,9 @@ Talking to the human:
         // (RUNNER_CREW_ID / RUNNER_MISSION_ID / RUNNER_EVENT_LOG are
         // unset off-bus, the bundled `runner` CLI is not on PATH).
         //
-        // Post-renumber the seed lives in `seed_default_crew` (Rust)
-        // and reads the .md files via `include_str!` — so checking
-        // the .md fixtures is checking the seed, no separate SQL
-        // pin needed.
+        // The seed reads the copyable peer-coding example via
+        // `include_str!`, so checking these sources checks the stored
+        // runner prompts too. Mission verbs belong in the crew addendum.
         let banned_substrings = [
             "runner msg post",
             "runner msg read",
@@ -809,8 +1235,7 @@ Talking to the human:
             "ask_human",
         ];
         for (name, md) in [
-            ("architect.md", SEED_ARCHITECT_PROMPT),
-            ("impl.md", SEED_IMPL_PROMPT),
+            ("coder.md", SEED_CODER_PROMPT),
             ("reviewer.md", SEED_REVIEWER_PROMPT),
         ] {
             for needle in banned_substrings {
@@ -848,20 +1273,12 @@ Talking to the human:
 
     #[test]
     fn seed_defaults_skips_when_user_has_a_runner_but_no_crew() {
-        // The partial-crew failure mode: a user manually created an
-        // `architect` runner template (or ran the seed.sh fixture
-        // directly into this DB), then opened the app for the first
-        // time. Pre-fix, the migration inserted the Build squad crew
-        // and inserted only impl + reviewer runners (architect skipped
-        // by the per-handle NOT EXISTS guard), then the slot insert
-        // for the architect slot couldn't find our runner ID and
-        // skipped — leaving Build squad with two slots and no lead.
-        // The start-mission UI treated that as launchable, then the
-        // backend rejected it. Now the whole seed bails, marker is
-        // still set, and we never produce a partial crew.
+        // Any existing runner means this is not a first-launch-empty DB.
+        // The seed must bail as one unit instead of colliding on a handle
+        // and leaving a partial crew without its lead.
         let pool = open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
-        insert_runner(&conn, "user-r1", "architect").unwrap();
+        insert_runner(&conn, "user-r1", "coder").unwrap();
         seed_defaults(&mut conn).unwrap();
 
         let crew_count: i64 = conn
@@ -870,7 +1287,7 @@ Talking to the human:
         let runner_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM runners", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(crew_count, 0, "should not create Build squad");
+        assert_eq!(crew_count, 0, "should not create Peer coding crew");
         assert_eq!(runner_count, 1, "user's runner stays untouched");
     }
 
@@ -915,8 +1332,304 @@ Talking to the human:
         let slot_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM slots", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(runner_count, 3);
-        assert_eq!(slot_count, 3);
+        assert_eq!(runner_count, 2);
+        assert_eq!(slot_count, 2);
+    }
+
+    /// Migration 0014: seed a pre-migration-shaped DB (schema 13),
+    /// run the cutover, and assert the resulting tree — parentage,
+    /// per-scope positions over the old visual sort, pin seeding,
+    /// watermark/layout carry-over, and the `*_legacy` renames.
+    #[test]
+    fn migration_0014_builds_the_node_tree_in_the_old_visual_order() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations_up_to(&mut conn, 13).unwrap();
+
+        // Two projects (positions 1, 0 — stored order differs from
+        // insert order on purpose).
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, cwd, position, created_at) VALUES
+                 ('proj-a', 'A', '/tmp/a', 1, '2026-07-01T00:00:00Z'),
+                 ('proj-b', 'B', '/tmp/b', 0, '2026-07-01T00:00:00Z');",
+        )
+        .unwrap();
+        // Two folders.
+        conn.execute_batch(
+            "INSERT INTO folders (id, name, position, created_at) VALUES
+                 ('fold-1', 'Work', 0, '2026-07-01T00:00:00Z'),
+                 ('fold-2', 'Play', 1, '2026-07-01T00:00:00Z');",
+        )
+        .unwrap();
+        // Sessions: s1/s2 in folder tabs; s3+s4 share proj-a (s4
+        // pinned); s5 pinned loose chat; s6/s7 split across projects;
+        // s8/s9 share proj-b from inside a folder tab.
+        conn.execute_batch(
+            "INSERT INTO sessions (id, status, project_id, pinned_at, started_at) VALUES
+                 ('s1', 'stopped', NULL, NULL, '2026-07-01T00:00:00Z'),
+                 ('s2', 'stopped', NULL, NULL, '2026-07-01T00:00:00Z'),
+                 ('s3', 'stopped', 'proj-a', NULL, '2026-07-01T00:00:00Z'),
+                 ('s4', 'stopped', 'proj-a', '2026-07-02T00:00:00Z', '2026-07-01T00:00:00Z'),
+                 ('s5', 'stopped', NULL, '2026-07-03T00:00:00Z', '2026-07-01T00:00:00Z'),
+                 ('s6', 'stopped', 'proj-a', NULL, '2026-07-01T00:00:00Z'),
+                 ('s7', 'stopped', 'proj-b', NULL, '2026-07-01T00:00:00Z'),
+                 ('s8', 'stopped', 'proj-b', NULL, '2026-07-01T00:00:00Z'),
+                 ('s9', 'stopped', 'proj-b', NULL, '2026-07-01T00:00:00Z');",
+        )
+        .unwrap();
+        // Tabs: two foldered (positions 1, 0), one two-member proj-a
+        // tab, one pinned loose tab (all members pinned), one
+        // mixed-project tab that must stay at root, and one FOLDERED
+        // tab whose members unanimously share proj-b — the old sidebar
+        // rendered that one under the project, not its folder, so the
+        // migration must too. tab-w carries attention watermarks.
+        conn.execute_batch(
+            r#"INSERT INTO tabs (id, folder_id, name, position, layout, created_at,
+                                 last_completed_at, last_viewed_at) VALUES
+                 ('tab-w', 'fold-1', 'w', 1,
+                  '{"preset":"single","slots":["s1"],"sizes":{}}',
+                  '2026-07-01T00:00:00Z', '2026-07-05T00:00:00Z', '2026-07-04T00:00:00Z'),
+                 ('tab-x', 'fold-1', 'x', 0,
+                  '{"preset":"single","slots":["s2"],"sizes":{}}',
+                  '2026-07-01T00:00:00Z', NULL, NULL),
+                 ('tab-proj', NULL, 'proj tab', 0,
+                  '{"preset":"cols-2","slots":["s3","s4"],"sizes":{}}',
+                  '2026-07-01T00:00:00Z', NULL, NULL),
+                 ('tab-pin', NULL, 'pinned', 1,
+                  '{"preset":"single","slots":["s5"],"sizes":{}}',
+                  '2026-07-01T00:00:00Z', NULL, NULL),
+                 ('tab-mixed', NULL, 'mixed', 2,
+                  '{"preset":"cols-2","slots":["s6","s7"],"sizes":{}}',
+                  '2026-07-01T00:00:00Z', NULL, NULL),
+                 ('tab-fold-proj', 'fold-1', 'foldered proj tab', 2,
+                  '{"preset":"cols-2","slots":["s8","s9"],"sizes":{}}',
+                  '2026-07-01T00:00:00Z', NULL, NULL);"#,
+        )
+        .unwrap();
+        // Missions: one bound to proj-a, one pinned at root, one
+        // unpinned at root started later, one archived (no node).
+        conn.execute_batch(
+            "INSERT INTO crews (id, name, created_at, updated_at)
+                 VALUES ('c1', 'Crew', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z');
+             INSERT INTO missions (id, crew_id, title, status, started_at,
+                                   project_id, pinned_at, archived_at) VALUES
+                 ('m-proj', 'c1', 'In project', 'running',
+                  '2026-07-01T01:00:00Z', 'proj-a', NULL, NULL),
+                 ('m-pin', 'c1', 'Pinned', 'running',
+                  '2026-07-01T01:00:00Z', NULL, '2026-07-01T02:00:00Z', NULL),
+                 ('m-new', 'c1', 'Newest', 'running',
+                  '2026-07-02T01:00:00Z', NULL, NULL, NULL),
+                 ('m-arch', 'c1', 'Archived', 'completed',
+                  '2026-07-01T01:00:00Z', NULL, NULL, '2026-07-03T00:00:00Z');",
+        )
+        .unwrap();
+
+        run_migrations_up_to(&mut conn, 14).unwrap();
+
+        let node = |id: &str| -> (Option<String>, i64, String, Option<i64>) {
+            conn.query_row(
+                "SELECT parent_id, position, type, pinned_position
+                   FROM nodes WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+        };
+
+        // Parentage: foldered tabs with no unanimous project keep
+        // their folder; unanimous-project tabs move under the project
+        // node whether they were loose OR foldered (the old sidebar's
+        // project partition ignored folder membership); the mixed tab
+        // stayed at root; the bound mission nests under proj-a.
+        assert_eq!(node("tab-w").0.as_deref(), Some("fold-1"));
+        assert_eq!(node("tab-x").0.as_deref(), Some("fold-1"));
+        assert_eq!(node("tab-proj").0.as_deref(), Some("proj-a"));
+        assert_eq!(node("tab-fold-proj").0.as_deref(), Some("proj-b"));
+        assert_eq!(node("tab-pin").0, None);
+        assert_eq!(node("tab-mixed").0, None);
+        assert_eq!(node("m-proj").0.as_deref(), Some("proj-a"));
+        assert_eq!(node("m-pin").0, None);
+        assert_eq!(node("m-new").0, None);
+
+        // Archived mission gets no node.
+        let arch_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM nodes WHERE ref_id = 'm-arch'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(arch_count, 0);
+
+        // Root order = the old sidebar top-to-bottom: PROJECT section
+        // (stored project order: B before A), MISSION section (pinned
+        // first, then newest started), CHAT section (folders, then
+        // loose tabs by stored position).
+        let roots: Vec<String> = conn
+            .prepare("SELECT id FROM nodes WHERE parent_id IS NULL ORDER BY position")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            roots,
+            [
+                "proj-b",
+                "proj-a",
+                "m-pin",
+                "m-new",
+                "fold-1",
+                "fold-2",
+                "tab-pin",
+                "tab-mixed"
+            ]
+        );
+
+        // Folder scope keeps stored tab order (position, created_at).
+        let folder_children: Vec<String> = conn
+            .prepare("SELECT id FROM nodes WHERE parent_id = 'fold-1' ORDER BY position")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(folder_children, ["tab-x", "tab-w"]);
+
+        // Project scope: missions first, then tabs — the old nested
+        // rendering order.
+        let project_children: Vec<String> = conn
+            .prepare("SELECT id FROM nodes WHERE parent_id = 'proj-a' ORDER BY position")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(project_children, ["m-proj", "tab-proj"]);
+        let project_b_children: Vec<String> = conn
+            .prepare("SELECT id FROM nodes WHERE parent_id = 'proj-b' ORDER BY position")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(project_b_children, ["tab-fold-proj"]);
+
+        // Pin seeding: the pinned mission and the all-members-pinned
+        // loose tab carry pinned_position in display order; the
+        // proj-a tab (one unpinned member) does not.
+        assert_eq!(node("tab-proj").3, None);
+        let m_pin_slot = node("m-pin").3.expect("pinned mission seeded");
+        let tab_pin_slot = node("tab-pin").3.expect("pinned tab seeded");
+        assert!(m_pin_slot < tab_pin_slot, "display order: mission first");
+        assert_eq!(node("m-new").3, None);
+        assert_eq!(node("tab-mixed").3, None);
+
+        // Layout and watermarks carry over byte-for-byte.
+        let (layout, completed, viewed): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT layout, last_completed_at, last_viewed_at
+                   FROM nodes WHERE id = 'tab-w'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(layout, r#"{"preset":"single","slots":["s1"],"sizes":{}}"#);
+        assert_eq!(completed.as_deref(), Some("2026-07-05T00:00:00Z"));
+        assert_eq!(viewed.as_deref(), Some("2026-07-04T00:00:00Z"));
+
+        // Folder nodes own their names; source tables are renamed,
+        // not dropped.
+        let folder_name: Option<String> = conn
+            .query_row("SELECT name FROM nodes WHERE id = 'fold-1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(folder_name.as_deref(), Some("Work"));
+        for (gone, kept) in [("folders", "folders_legacy"), ("tabs", "tabs_legacy")] {
+            let count = |table: &str| -> i64 {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap()
+            };
+            assert_eq!(count(gone), 0, "{gone} should be renamed away");
+            assert_eq!(count(kept), 1, "{kept} should survive the cutover");
+        }
+        let legacy_tabs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tabs_legacy", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(legacy_tabs, 6);
+    }
+
+    #[test]
+    fn migration_0015_promotes_folder_children_in_place_and_drops_legacy_tables() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations_up_to(&mut conn, 14).unwrap();
+
+        conn.execute_batch(
+            "INSERT INTO nodes
+                 (id, parent_id, position, type, name, created_at, pinned_position)
+             VALUES
+                 ('root-a', NULL, 0, 'tab', 'A', '2026-07-01T00:00:00Z', NULL),
+                 ('folder-a', NULL, 1, 'folder', 'Folder A', '2026-07-01T00:00:01Z', NULL),
+                 ('root-b', NULL, 2, 'mission', NULL, '2026-07-01T00:00:02Z', NULL),
+                 ('folder-empty', NULL, 3, 'folder', 'Empty', '2026-07-01T00:00:03Z', NULL),
+                 ('folder-b', NULL, 4, 'folder', 'Folder B', '2026-07-01T00:00:04Z', NULL),
+                 ('root-c', NULL, 5, 'project', NULL, '2026-07-01T00:00:05Z', NULL),
+                 ('child-a-later', 'folder-a', 7, 'tab', 'Later', '2026-07-01T00:00:07Z', NULL),
+                 ('child-a-first', 'folder-a', 2, 'tab', 'First', '2026-07-01T00:00:06Z', 7),
+                 ('child-b', 'folder-b', 9, 'mission', NULL, '2026-07-01T00:00:08Z', NULL);",
+        )
+        .unwrap();
+
+        run_migrations(&mut conn).unwrap();
+
+        let roots: Vec<(String, Option<String>, i64, Option<i64>)> = conn
+            .prepare(
+                "SELECT id, parent_id, position, pinned_position FROM nodes
+                 ORDER BY position, created_at",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            roots,
+            [
+                ("root-a".to_owned(), None, 0, None),
+                ("child-a-first".to_owned(), None, 1, Some(7)),
+                ("child-a-later".to_owned(), None, 2, None),
+                ("root-b".to_owned(), None, 3, None),
+                ("child-b".to_owned(), None, 4, None),
+                ("root-c".to_owned(), None, 5, None),
+            ]
+        );
+        let folder_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM nodes WHERE type = 'folder'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(folder_count, 0);
+        for table in ["folders_legacy", "tabs_legacy"] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "{table} should be dropped");
+        }
     }
 
     #[test]
@@ -941,7 +1654,50 @@ Talking to the human:
     }
 
     #[test]
-    fn sessions_has_runtime_columns_after_migration() {
+    fn migration_0020_adds_nullable_slot_effort_override() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations_up_to(&mut conn, 19).unwrap();
+        insert_crew(&conn, "c1");
+        insert_runner(&conn, "r1", "alpha").unwrap();
+        insert_slot(&conn, "s1", "c1", "r1", "alpha", 0, 1).unwrap();
+
+        let columns_before: Vec<String> = conn
+            .prepare("PRAGMA table_info(slots)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>("name"))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(!columns_before.iter().any(|c| c == "effort_override"));
+
+        run_migrations(&mut conn).unwrap();
+        let inherited: Option<String> = conn
+            .query_row(
+                "SELECT effort_override FROM slots WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(inherited, None);
+
+        conn.execute(
+            "UPDATE slots SET effort_override = 'xhigh' WHERE id = 's1'",
+            [],
+        )
+        .unwrap();
+        let overridden: Option<String> = conn
+            .query_row(
+                "SELECT effort_override FROM slots WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(overridden.as_deref(), Some("xhigh"));
+    }
+
+    #[test]
+    fn sessions_has_runtime_size_and_resume_columns_after_migration() {
         // Defensive: keep the legacy runtime columns present for
         // existing databases. New PTY-runtime writes use only
         // `runtime` + `runtime_session`; socket/window/pane are
@@ -965,6 +1721,11 @@ Talking to the human:
             "runtime_window",
             "runtime_pane",
             "runtime_cursor",
+            "agent_model",
+            "agent_effort",
+            "last_cols",
+            "last_rows",
+            "resume_on_launch",
         ] {
             assert!(
                 columns.iter().any(|c| c == required),

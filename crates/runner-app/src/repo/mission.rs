@@ -167,9 +167,10 @@ pub fn list_archived(conn: &Connection, crew_id: Option<&str>) -> rusqlite::Resu
 }
 
 /// Terminal stop: flip `running` -> `completed` and stamp `archived_at`
-/// atomically with the status (a terminal stop is by definition an
-/// archive). The `WHERE status = 'running'` guard makes racing stops
-/// mutually exclusive — the loser updates 0 rows.
+/// atomically with the status (stopping through `mission_archive` always
+/// archives). The `WHERE status = 'running'` guard makes racing stops
+/// mutually exclusive — the loser updates 0 rows. Missions already out
+/// of `running` archive through `archive_if_stopped` instead.
 pub fn complete_and_archive_if_running(
     conn: &Connection,
     id: &str,
@@ -180,6 +181,25 @@ pub fn complete_and_archive_if_running(
             SET status = 'completed', stopped_at = ?1, archived_at = ?1
           WHERE id = ?2 AND status = 'running'",
         rusqlite::params![stopped_at.to_rfc3339(), id],
+    )
+}
+
+/// Visibility-only archive for missions already out of `running` (#376):
+/// restored rows (completed + unarchived, impl 0026) and aborted spawns.
+/// Stamps `archived_at` and leaves the lifecycle columns alone — their
+/// terminal stop already happened. The `archived_at IS NULL` guard makes
+/// racing archives mutually exclusive; the status guard keeps running
+/// missions on the stop-and-archive path above.
+pub fn archive_if_stopped(
+    conn: &Connection,
+    id: &str,
+    archived_at: Timestamp,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE missions
+            SET archived_at = ?1
+          WHERE id = ?2 AND status != 'running' AND archived_at IS NULL",
+        rusqlite::params![archived_at.to_rfc3339(), id],
     )
 }
 

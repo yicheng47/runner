@@ -6,12 +6,11 @@
 // to. See docs/impls/archive/0001-v0-mvp.md §C2 and impl 0031 Phase 2.
 
 pub mod crew;
-pub mod folder;
 pub mod mcp;
 pub mod mission;
+pub mod node;
 pub mod project;
 pub mod runner;
 pub mod runtime;
 pub mod session;
 pub mod slot;
-pub mod tab;

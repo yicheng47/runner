@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Context as _, Result};
-use runner_app::ops::tab::TabUpsertInput;
-use runner_app::repo::tab::TabRow;
+use runner_app::ops::node::NodeTabUpsertInput;
+use runner_app::repo::node::{NodeRow, NodeType};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,7 +144,7 @@ impl PaneNode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PaneLayout {
     pub id: String,
-    pub folder_id: Option<String>,
+    pub parent_id: Option<String>,
     pub name: Option<String>,
     pub position: i64,
     pub preset: PresetKind,
@@ -162,9 +162,13 @@ struct PersistedLayout {
 }
 
 impl PaneLayout {
-    pub fn from_tab_row(row: &TabRow) -> Result<Self> {
-        let persisted: PersistedLayout = serde_json::from_str(&row.layout)
-            .with_context(|| format!("parse tab {} layout", row.id))?;
+    pub fn from_node_row(row: &NodeRow) -> Result<Self> {
+        let layout = row
+            .layout
+            .as_deref()
+            .with_context(|| format!("tab node {} has no layout", row.id))?;
+        let persisted: PersistedLayout =
+            serde_json::from_str(layout).with_context(|| format!("parse tab {} layout", row.id))?;
         let mut root = build_preset_tree(persisted.preset, &persisted.slots);
         root.apply_split_sizes(&persisted.sizes);
         let focused_pane_id = root
@@ -175,8 +179,13 @@ impl PaneLayout {
             .clone();
         Ok(Self {
             id: row.id.clone(),
-            folder_id: row.folder_id.clone(),
-            name: (!row.name.trim().is_empty()).then(|| row.name.trim().to_owned()),
+            parent_id: row.parent_id.clone(),
+            name: row
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
             position: row.position,
             preset: persisted.preset,
             root,
@@ -214,7 +223,7 @@ impl PaneLayout {
             .clone();
         Self {
             id: String::new(),
-            folder_id: None,
+            parent_id: None,
             name: None,
             position: 0,
             preset,
@@ -325,12 +334,11 @@ impl PaneLayout {
         })?)
     }
 
-    pub fn upsert_input(&self) -> Result<TabUpsertInput> {
-        Ok(TabUpsertInput {
+    pub fn upsert_input(&self) -> Result<NodeTabUpsertInput> {
+        Ok(NodeTabUpsertInput {
             id: self.id.clone(),
-            folder_id: self.folder_id.clone(),
+            parent_id: self.parent_id.clone(),
             name: self.name.clone().unwrap_or_default(),
-            position: self.position,
             layout: self.serialize()?,
         })
     }
@@ -343,10 +351,11 @@ pub struct TabSet {
 }
 
 impl TabSet {
-    pub fn from_rows(rows: &[TabRow]) -> Result<Self> {
+    pub fn from_rows(rows: &[NodeRow]) -> Result<Self> {
         let tabs = rows
             .iter()
-            .map(PaneLayout::from_tab_row)
+            .filter(|row| row.node_type == NodeType::Tab)
+            .map(PaneLayout::from_node_row)
             .collect::<Result<Vec<_>>>()?;
         let active_tab_id = tabs.first().map(|tab| tab.id.clone());
         Ok(Self {
@@ -409,7 +418,7 @@ impl TabSet {
         Ok(())
     }
 
-    pub fn replace_rows(&mut self, rows: &[TabRow]) -> Result<()> {
+    pub fn replace_rows(&mut self, rows: &[NodeRow]) -> Result<()> {
         let active_id = self.active_tab_id.clone();
         let focused_pane_id = self.active().map(|tab| tab.focused_pane_id.clone());
         let focused_session = self

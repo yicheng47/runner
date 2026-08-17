@@ -237,6 +237,8 @@ pub fn start(
             archived_at: None,
         },
     )?;
+    // Sidebar node, under the project's node when bound (feature 44).
+    repo::node::ensure_mission_node(&tx, &id, input.project_id.as_deref())?;
 
     let mission_dir = event_log::mission_dir(app_data_dir, &crew.id, &id);
     std::fs::create_dir_all(&mission_dir)?;
@@ -320,6 +322,10 @@ pub fn stop(conn: &mut Connection, app_data_dir: &Path, id: &str) -> Result<Miss
             mission.status
         )));
     }
+
+    // Archiving removes the mission from the sidebar tree; unarchive
+    // re-creates the node (feature 44).
+    repo::node::delete_mission_node(&tx, id)?;
 
     // Fetch crew_id now that we know the row exists and we own the
     // transition; used for the mission-dir path below.
@@ -1036,6 +1042,11 @@ pub async fn mission_pin_impl(state: &AppCore, id: String, pinned: bool) -> Resu
     if n != 1 {
         return Err(Error::msg(format!("mission not found: {id}")));
     }
+    // The sidebar renders pin state from the node (feature 44); the
+    // row's pinned_at stays for non-sidebar consumers.
+    if let Some(node) = repo::node::find_by_ref(&conn, repo::node::NodeType::Mission, &id)? {
+        repo::node::set_pinned(&conn, &node.id, pinned)?;
+    }
     get(&conn, &id)
 }
 
@@ -1064,10 +1075,22 @@ pub fn mission_set_project(
     if repo::mission::set_project(&mut conn, id, project_id.as_deref())? == 0 {
         return Err(Error::msg(format!("mission not found: {id}")));
     }
+    // Keep the tree in step with the pointer: reparent the mission's
+    // node under the new project's node (or root), appended at the end.
+    if let Some(node) = repo::node::find_by_ref(&conn, repo::node::NodeType::Mission, id)? {
+        let parent = match project_id.as_deref() {
+            Some(project_id) => Some(repo::node::ensure_project_node(&conn, project_id)?.id),
+            None => None,
+        };
+        repo::node::reparent_append(&conn, &node.id, parent.as_deref())?;
+    }
     let mission = get(&conn, id)?;
     state
         .events
         .emit("mission/changed", &serde_json::json!({ "mission_id": id }));
+    state
+        .events
+        .emit("chat/layout-changed", &serde_json::json!({}));
     Ok(mission)
 }
 
@@ -1162,6 +1185,9 @@ pub async fn mission_reset_impl(state: &AppCore, id: String) -> Result<Mission> 
         if n != 1 {
             return Err(Error::msg(format!("mission not found: {id}")));
         }
+        // A reset returns the mission to the sidebar; re-create its
+        // node if the archive removed it (feature 44).
+        repo::node::ensure_mission_node(&conn, &id, mission_snap.project_id.as_deref())?;
     }
 
     // 6. Re-emit the opening events so router can replay the launch
@@ -1430,7 +1456,11 @@ pub async fn mission_archive_impl(state: &AppCore, id: String) -> Result<Mission
 pub async fn mission_unarchive_impl(state: &AppCore, id: String) -> Result<Mission> {
     let conn = state.db.get()?;
     repo::mission::unarchive(&conn, &id)?;
-    get(&conn, &id)
+    let mission = get(&conn, &id)?;
+    // Restore the sidebar node, appended at its parent's end (original
+    // position not remembered, matching chat restore).
+    repo::node::ensure_mission_node(&conn, &id, mission.project_id.as_deref())?;
+    Ok(mission)
 }
 
 /// Emits `mission/changed` after the flip — the sidebar's MISSION list

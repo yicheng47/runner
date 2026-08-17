@@ -1,16 +1,19 @@
-use runner_app::repo::tab::TabRow;
+use runner_app::repo::node::{NodeRow, NodeType};
 use runner_native::pane_layout::{PaneLayout, PaneNode, PresetKind, SplitOrientation, TabSet};
 
-fn row(id: &str, position: i64, layout: &PaneLayout) -> TabRow {
-    TabRow {
+fn row(id: &str, position: i64, layout: &PaneLayout) -> NodeRow {
+    NodeRow {
         id: id.to_owned(),
-        folder_id: None,
-        name: String::new(),
+        parent_id: None,
         position,
-        layout: layout.serialize().unwrap(),
-        created_at: "2026-07-19T00:00:00Z".into(),
+        node_type: NodeType::Tab,
+        name: None,
+        ref_id: None,
+        layout: Some(layout.serialize().unwrap()),
+        pinned_position: None,
         last_completed_at: None,
         last_viewed_at: None,
+        created_at: "2026-07-19T00:00:00Z".into(),
     }
 }
 
@@ -76,7 +79,7 @@ fn persisted_layout_round_trips_slots_and_per_split_sizes() {
     let mut layout = PaneLayout::fresh(PresetKind::Main2, Some("B"), &["A".into(), "B".into()]);
     assert!(layout.set_split_sizes("main-2:outer", [70., 30.]));
     let restored =
-        PaneLayout::from_tab_row(&row("01K00000000000000000000000", 0, &layout)).unwrap();
+        PaneLayout::from_node_row(&row("01K00000000000000000000000", 0, &layout)).unwrap();
 
     assert_eq!(restored.preset, PresetKind::Main2);
     assert_eq!(restored.session_ids(), ["B", "A"]);
@@ -128,15 +131,23 @@ fn rehydration_keeps_the_active_tab_by_stable_id() {
 }
 
 #[test]
-fn structural_writes_preserve_folder_local_positions() {
-    let folder_tab = PaneLayout::fresh(PresetKind::Single, Some("A"), &["A".into()]);
+fn structural_writes_preserve_parent_scope() {
+    // Node model: a layout/name upsert carries the parent scope but no
+    // position — placement changes go exclusively through `node_move`,
+    // so a structural write can never scramble sibling ordering.
+    let filed_tab = PaneLayout::fresh(PresetKind::Single, Some("A"), &["A".into()]);
     let loose_tab = PaneLayout::fresh(PresetKind::Cols2, Some("B"), &["B".into()]);
-    let mut folder_row = row("01K00000000000000000000000", 7, &folder_tab);
-    folder_row.folder_id = Some("folder-1".into());
+    let mut filed_row = row("01K00000000000000000000000", 7, &filed_tab);
+    filed_row.parent_id = Some("folder-1".into());
     let loose_row = row("01K00000000000000000000001", 2, &loose_tab);
-    let tabs = TabSet::from_rows(&[folder_row, loose_row]).unwrap();
-    let loose = &tabs.tabs()[1];
+    let tabs = TabSet::from_rows(&[filed_row, loose_row]).unwrap();
 
+    let filed = &tabs.tabs()[0];
+    assert_eq!(filed.parent_id.as_deref(), Some("folder-1"));
+    assert_eq!(
+        filed.upsert_input().unwrap().parent_id.as_deref(),
+        Some("folder-1")
+    );
+    let loose = &tabs.tabs()[1];
     assert_eq!(loose.position, 2);
-    assert_eq!(loose.upsert_input().unwrap().position, 2);
 }

@@ -297,6 +297,8 @@ fn slot_for(runner: &Runner) -> crate::model::Slot {
         position: 0,
         lead: true,
         runtime_override: None,
+        model_override: None,
+        effort_override: None,
         added_at: Utc::now(),
     }
 }

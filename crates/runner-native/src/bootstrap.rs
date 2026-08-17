@@ -50,7 +50,7 @@ pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
     let pool = Arc::new(
         db::open_pool(&paths.app_data_dir.join("runner.db")).context("open Runner database")?,
     );
-    let login_shell_env = shell_path::resolve_login_shell_env();
+    let login_shell_env = shell_path::resolve_login_shell_env().env;
     let runtime: Arc<dyn session::runtime::SessionRuntime> =
         Arc::new(session::pty_runtime::PtyRuntime::new());
     let sessions = session::SessionManager::new(login_shell_env, runtime);

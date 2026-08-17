@@ -47,7 +47,11 @@ pub fn project_create(state: &AppCore, name: String, cwd: String) -> Result<Proj
         &clean_value(name, "name")?,
         &clean_value(cwd, "cwd")?,
     )?;
+    repo::node::ensure_project_node(&conn, &row.id)?;
     emit_changed(state);
+    state
+        .events
+        .emit("chat/layout-changed", &serde_json::json!({}));
     Ok(row)
 }
 
@@ -79,14 +83,79 @@ pub fn project_reorder(state: &AppCore, ordered_ids: Vec<String>) -> Result<Vec<
     Ok(rows)
 }
 
-pub fn project_delete(state: &AppCore, id: String) -> Result<()> {
-    let conn = state.db.get()?;
-    if repo::project::delete(&conn, &id)? == 0 {
-        return Err(Error::msg(format!("project not found: {id}")));
+/// Delete a project, archiving every node below it: member missions
+/// archive first (each a complete self-consistent operation), then
+/// member tabs' chats archive with the project node and row in one transaction. The
+/// project row's ON DELETE SET NULL then unbinds the archived rows'
+/// pointers, so restored items come back unfiled. Returns the
+/// archived chat session ids for buffer purge + event fanout.
+pub(crate) async fn project_delete_impl(state: &AppCore, id: &str) -> Result<Vec<String>> {
+    let (project_node, children) = {
+        let conn = state.db.get()?;
+        if repo::project::get(&conn, id)?.is_none() {
+            return Err(Error::msg(format!("project not found: {id}")));
+        }
+        let node = repo::node::find_by_ref(&conn, repo::node::NodeType::Project, id)?;
+        let children = match node.as_ref() {
+            Some(node) => crate::ops::node::container_children(&conn, &node.id)?,
+            None => crate::ops::node::ContainerChildren {
+                session_ids: Vec::new(),
+                missions: Vec::new(),
+            },
+        };
+        (node, children)
+    };
+
+    crate::ops::node::archive_child_missions(state, &children.missions).await?;
+    crate::ops::node::kill_running_children(state, &children.session_ids)?;
+
+    let archived_ids = {
+        let mut conn = state.db.get()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        // Tabs are re-queried inside the transaction (not the earlier
+        // snapshot), so late arrivals archive too — or fail the guard
+        // if their sessions are still running.
+        let archived = match project_node.as_ref() {
+            Some(node) => repo::node::delete_container_tabs_and_archive(&tx, &node.id)?,
+            None => Vec::new(),
+        };
+        // A plain RESTRICT-guarded delete: a child that arrived during
+        // the archive gap (another window moving a mission in) fails
+        // the whole transaction loudly instead of being silently
+        // reparented and unbound.
+        if let Some(node) = project_node.as_ref() {
+            repo::node::delete(&tx, &node.id)?;
+        }
+        if repo::project::delete(&tx, id)? == 0 {
+            return Err(Error::msg(format!("project not found: {id}")));
+        }
+        tx.commit()?;
+        archived
+    };
+    for session_id in &archived_ids {
+        state.sessions.purge_session_buffers(session_id);
     }
+    Ok(archived_ids)
+}
+
+pub async fn project_delete(state: &AppCore, id: String) -> Result<()> {
+    let result = project_delete_impl(state, &id).await;
+    // Mission archives commit one by one BEFORE the final transaction,
+    // so even a failed delete may have durably archived children —
+    // invalidate every consuming surface regardless of outcome.
     emit_changed(state);
     state.events.emit("mission/changed", &serde_json::json!({}));
     state.events.emit("session/updated", &serde_json::json!({}));
+    state
+        .events
+        .emit("chat/layout-changed", &serde_json::json!({}));
+    let archived_ids = result?;
+    for session_id in &archived_ids {
+        state.events.emit(
+            "session/archived",
+            &serde_json::json!({ "session_id": session_id }),
+        );
+    }
     Ok(())
 }
 

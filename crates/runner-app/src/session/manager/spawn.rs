@@ -1143,7 +1143,14 @@ impl SessionManager {
             env_extra.insert("RUNNER_HANDLE".into(), runner.handle.clone());
         }
 
-        let initial_size = cols.zip(rows);
+        // Caller-supplied size wins; else the row's persisted last size
+        // (migration 0016); else the default. Resuming at the pane's
+        // real width keeps full-frame TUIs from repainting at 80 cols.
+        let initial_size = match (cols.zip(rows), snap.last_cols.zip(snap.last_rows)) {
+            (Some(size), _) => size,
+            (None, Some(size)) => size,
+            (None, None) => super::DEFAULT_PTY_SIZE,
+        };
         let mut spec = self.base_spawn_spec(
             session_id.to_string(),
             &runner,
@@ -1151,7 +1158,7 @@ impl SessionManager {
             mission_ctx.is_some(),
             shim_dir,
             bundled_bin_dir,
-            initial_size,
+            Some(initial_size),
             env_extra,
         );
         let mission_bus_dir = mission_ctx.as_ref().map(|ctx| {
@@ -1177,6 +1184,8 @@ impl SessionManager {
                 session_id,
                 started_at_dt,
                 plan.assigned_key.as_deref(),
+                initial_size.0,
+                initial_size.1,
             )?;
         }
 
@@ -1253,7 +1262,7 @@ impl SessionManager {
                 stop: output.stop_flag(),
             },
             resume_emit_ctx.clone(),
-            initial_size,
+            Some(initial_size),
         );
         if snap.mission_id.is_none() {
             self.publish_direct_activity(
