@@ -250,7 +250,7 @@ describe("runner runtime model reset", () => {
         <RunnerEditDrawer
           open
           runner={runner}
-          effectiveRuntime="trae"
+          runtimeOverride="trae"
           effectiveModel={null}
           effectiveEffort={null}
           onSaveSlotOverrides={saveSlotOverrides}
@@ -260,9 +260,9 @@ describe("runner runtime model reset", () => {
       );
     });
 
-    const runtime = container.querySelector<HTMLInputElement>("#edit-runtime");
+    const runtime = container.querySelector<HTMLButtonElement>("#edit-runtime");
     const model = container.querySelector<HTMLInputElement>("#edit-model");
-    expect(runtime?.value).toBe("TRAE CLI");
+    expect(runtime?.textContent).toContain("TRAE CLI");
     expect(model?.value).toBe("");
     expect(model?.placeholder).toBe("default");
     expect(container.querySelector("#edit-args")).toBeNull();
@@ -283,7 +283,79 @@ describe("runner runtime model reset", () => {
       system_prompt: null,
     });
     expect(saveSlotOverrides).toHaveBeenCalledWith({
+      runtime_override: "trae",
       model_override: "trae-model",
+      effort_override: "high",
+    });
+  });
+
+  it("changes a slot's agent from the drawer, resetting the model", async () => {
+    localStorage.setItem("settings.enabledAgents", '["trae"]');
+    const saveSlotOverrides = vi.fn();
+    await act(async () => {
+      root.render(
+        <RunnerEditDrawer
+          open
+          runner={runner}
+          runtimeOverride={null}
+          effectiveModel="gpt-5-high"
+          effectiveEffort={null}
+          onSaveSlotOverrides={saveSlotOverrides}
+          onClose={() => {}}
+          onSaved={() => {}}
+        />,
+      );
+    });
+
+    const trigger = container.querySelector<HTMLButtonElement>("#edit-runtime");
+    const model = container.querySelector<HTMLInputElement>("#edit-model");
+    expect(trigger?.textContent).toContain("Runner default (Codex)");
+    expect(model?.value).toBe("gpt-5-high");
+
+    await selectRuntime(trigger!, "trae");
+    expect(model?.value).toBe("");
+
+    const save = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("button"),
+    ).find((button) => button.textContent === "Save");
+    await act(async () => save?.click());
+
+    expect(saveSlotOverrides).toHaveBeenCalledWith({
+      runtime_override: "trae",
+      model_override: null,
+      effort_override: null,
+    });
+  });
+
+  it("clears a matching runtime pin without dropping overrides", async () => {
+    const saveSlotOverrides = vi.fn();
+    await act(async () => {
+      root.render(
+        <RunnerEditDrawer
+          open
+          runner={runner}
+          runtimeOverride="codex"
+          effectiveModel="slot-model"
+          effectiveEffort="high"
+          onSaveSlotOverrides={saveSlotOverrides}
+          onClose={() => {}}
+          onSaved={() => {}}
+        />,
+      );
+    });
+
+    const trigger = container.querySelector<HTMLButtonElement>("#edit-runtime");
+    expect(trigger?.textContent).toContain("Codex");
+    await selectRuntime(trigger!, "runner default");
+
+    const save = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("button"),
+    ).find((button) => button.textContent === "Save");
+    await act(async () => save?.click());
+
+    expect(saveSlotOverrides).toHaveBeenCalledWith({
+      runtime_override: null,
+      model_override: "slot-model",
       effort_override: "high",
     });
   });
@@ -294,7 +366,7 @@ describe("runner runtime model reset", () => {
         <RunnerEditDrawer
           open
           runner={{ ...runner, command: "/opt/custom/codex-nightly" }}
-          effectiveRuntime="codex"
+          runtimeOverride={null}
           effectiveModel={null}
           effectiveEffort={null}
           onSaveSlotOverrides={() => {}}

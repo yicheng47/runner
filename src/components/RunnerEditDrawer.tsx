@@ -1,6 +1,6 @@
-// Edit an existing runner template. In crew context, model and effort
-// are saved as overrides for that slot while the shared runner fields
-// remain editable in place.
+// Edit an existing runner template. In crew context, agent, model, and
+// effort are saved as overrides for that slot while the shared runner
+// fields remain editable in place.
 //
 // Handle is intentionally read-only: per arch §2.2 it's the template's
 // identity for direct chat / CLI lookups, and renaming would break
@@ -36,7 +36,7 @@ import { useSelectableAgentOptions } from "./ui/useSelectableAgentOptions";
 export function RunnerEditDrawer({
   open,
   runner,
-  effectiveRuntime,
+  runtimeOverride,
   effectiveModel,
   effectiveEffort,
   onSaveSlotOverrides,
@@ -45,19 +45,27 @@ export function RunnerEditDrawer({
 }: {
   open: boolean;
   runner: Runner | null;
-  effectiveRuntime?: string;
+  /** Slot context: null inherits the runner's engine, a runtime name
+   *  pins it. Omit entirely when editing a bare runner template. */
+  runtimeOverride?: string | null;
   effectiveModel?: string | null;
   effectiveEffort?: string | null;
   onSaveSlotOverrides?: (input: {
+    runtime_override: string | null;
     model_override: string | null;
     effort_override: string | null;
   }) => void | Promise<void>;
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }) {
-  const editsSlot = effectiveRuntime !== undefined;
+  const editsSlot = runtimeOverride !== undefined;
   const [displayName, setDisplayName] = useState("");
   const [runtime, setRuntime] = useState<string>(RUNTIME_OPTIONS[0].value);
+  // Slot context only: whether the slot pins an explicit engine.
+  // Distinct from `runtime` (the effective engine) because "Runner
+  // default (codex)" and an explicit "codex" pin resolve to the same
+  // engine today but diverge if the template later changes runtime.
+  const [runtimePinned, setRuntimePinned] = useState(false);
   // Command is bound to runtime — the field below is read-only — but
   // we keep the value in state (not derived) so that opening an
   // existing runner with a custom command (e.g. `/opt/homebrew/bin/
@@ -87,14 +95,15 @@ export function RunnerEditDrawer({
     loading: agentsLoading,
     checking: agentsChecking,
     error: agentsError,
-  } = useSelectableAgentOptions(open && !editsSlot);
+  } = useSelectableAgentOptions(open);
 
   useEffect(() => {
     if (open && runner) {
       setDisplayName(runner.display_name);
-      const runtime = effectiveRuntime ?? runner.runtime;
+      const runtime = runtimeOverride ?? runner.runtime;
       const runtimeOption = RUNTIME_OPTIONS.find((option) => option.value === runtime);
       setRuntime(runtime);
+      setRuntimePinned(typeof runtimeOverride === "string");
       setCommand(
         editsSlot && runtime !== runner.runtime
           ? (runtimeOption?.defaultCommand ?? runner.command)
@@ -134,9 +143,9 @@ export function RunnerEditDrawer({
     editsSlot,
     effectiveEffort,
     effectiveModel,
-    effectiveRuntime,
     open,
     runner,
+    runtimeOverride,
   ]);
 
   const canSubmit =
@@ -146,6 +155,20 @@ export function RunnerEditDrawer({
   const currentAgentOption = RUNTIME_OPTIONS.find(
     (option) => option.value === runtime,
   );
+  const runnerRuntimeOption = RUNTIME_OPTIONS.find(
+    (option) => option.value === runner?.runtime,
+  );
+  // Slot context: the empty value means "no pin — follow the template".
+  const slotAgentOptions = runner
+    ? [
+        {
+          value: "",
+          label: `Runner default (${runnerRuntimeOption?.label ?? runner.runtime})`,
+          defaultCommand: runner.command,
+        },
+        ...agentOptions,
+      ]
+    : agentOptions;
 
   const submit = async () => {
     if (!runner || !canSubmit) return;
@@ -172,6 +195,7 @@ export function RunnerEditDrawer({
       await api.runner.update(runner.id, input);
       if (editsSlot) {
         await onSaveSlotOverrides?.({
+          runtime_override: runtimePinned ? runtime : null,
           model_override: model.trim() || null,
           effort_override: effort.trim() || null,
         });
@@ -231,16 +255,38 @@ export function RunnerEditDrawer({
           label="Agent"
           hint={
             editsSlot
-              ? "effective crew-slot override · change it from the crew row"
+              ? "slot override · Runner default follows the template; an explicit agent pins this slot's engine"
               : undefined
           }
         >
           {editsSlot ? (
-            <Input
+            <RuntimeSelect
               id="edit-runtime"
-              value={currentAgentOption?.label ?? runtime}
-              disabled
-              readOnly
+              value={runtimePinned ? runtime : ""}
+              options={slotAgentOptions}
+              currentOption={currentAgentOption}
+              disabled={submitting}
+              onChange={(opt) => {
+                if (!runner) return;
+                const nextRuntime = opt.value || runner.runtime;
+                setRuntimePinned(opt.value !== "");
+                if (nextRuntime !== runtime) {
+                  // Engine change resets the overrides, mirroring the
+                  // template editor and the backend's atomic reset.
+                  setModel("");
+                  const nextEffortOptions =
+                    EFFORT_OPTIONS_BY_RUNTIME[nextRuntime] ?? [];
+                  if (!nextEffortOptions.some((o) => o.value === effort)) {
+                    setEffort("");
+                  }
+                }
+                setRuntime(nextRuntime);
+                setCommand(
+                  nextRuntime === runner.runtime
+                    ? runner.command
+                    : opt.defaultCommand,
+                );
+              }}
             />
           ) : (
             <RuntimeSelect
@@ -275,7 +321,7 @@ export function RunnerEditDrawer({
               }}
             />
           )}
-          {!editsSlot && agentsError ? (
+          {agentsError ? (
             <p className="text-[11px] text-danger">{agentsError}</p>
           ) : null}
         </Field>

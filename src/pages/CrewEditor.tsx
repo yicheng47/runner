@@ -197,18 +197,6 @@ export default function CrewEditor() {
     }
   };
 
-  const onSetRuntimeOverride = async (
-    slotId: string,
-    runtimeOverride: string | null,
-  ) => {
-    try {
-      await api.slot.update(slotId, { runtime_override: runtimeOverride });
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
   const onRemoveSlot = async (s: SlotWithRunner) => {
     const tail = s.lead
       ? "\nAs the LEAD, leadership will pass to the next slot by position."
@@ -495,7 +483,6 @@ export default function CrewEditor() {
                 slots={slots}
                 reordering={reordering}
                 onSetLead={onSetLead}
-                onSetRuntimeOverride={onSetRuntimeOverride}
                 onEdit={setEditing}
                 onRemove={onRemoveSlot}
                 onReorder={onCommitReorder}
@@ -520,11 +507,7 @@ export default function CrewEditor() {
       <RunnerEditDrawer
         open={editing !== null}
         runner={editing?.runner ?? null}
-        effectiveRuntime={
-          editing
-            ? (editing.runtime_override ?? editing.runner.runtime)
-            : undefined
-        }
+        runtimeOverride={editing ? editing.runtime_override : undefined}
         effectiveModel={editing?.model_override}
         effectiveEffort={editing?.effort_override}
         onSaveSlotOverrides={async (input) => {
@@ -555,7 +538,6 @@ function SlotList({
   slots,
   reordering,
   onSetLead,
-  onSetRuntimeOverride,
   onEdit,
   onRemove,
   onReorder,
@@ -563,7 +545,6 @@ function SlotList({
   slots: SlotWithRunner[];
   reordering: boolean;
   onSetLead: (slotId: string) => void;
-  onSetRuntimeOverride: (slotId: string, runtimeOverride: string | null) => void;
   onEdit: (s: SlotWithRunner) => void;
   onRemove: (s: SlotWithRunner) => void;
   onReorder: (newOrder: SlotWithRunner[]) => void;
@@ -589,7 +570,6 @@ function SlotList({
           total={slots.length}
           dragDisabled={reordering}
           onSetLead={() => onSetLead(s.id)}
-          onSetRuntimeOverride={(runtime) => onSetRuntimeOverride(s.id, runtime)}
           onEdit={() => onEdit(s)}
           onRemove={() => onRemove(s)}
           onReorderDrop={(fromIndex) => {
@@ -616,7 +596,6 @@ function SlotRow({
   total,
   dragDisabled,
   onSetLead,
-  onSetRuntimeOverride,
   onEdit,
   onRemove,
   onReorderDrop,
@@ -626,7 +605,6 @@ function SlotRow({
   total: number;
   dragDisabled: boolean;
   onSetLead: () => void;
-  onSetRuntimeOverride: (runtimeOverride: string | null) => void;
   onEdit: () => void;
   onRemove: () => void;
   onReorderDrop: (fromIndex: number) => void;
@@ -721,7 +699,7 @@ function SlotRow({
               Lead
             </span>
           ) : null}
-          <SlotRuntimeSelect slot={slot} onChange={onSetRuntimeOverride} />
+          <SlotRuntimeBadge slot={slot} />
           <span className="font-mono text-[11px] text-fg-3">
             from @{runner.handle}
           </span>
@@ -748,95 +726,28 @@ function SlotRow({
   );
 }
 
-// Compact runtime dropdown living where the roster row's static
-// runtime badge used to be. Shows the slot's *effective* runtime
-// (`runtime_override ?? runner.runtime`); when an override diverges
-// from the runner default the badge paints accent so a mixed-engine
-// crew is visible at a glance. The menu offers "Runner default"
-// plus each registry runtime (feature 41).
-function SlotRuntimeSelect({
-  slot,
-  onChange,
-}: {
-  slot: SlotWithRunner;
-  onChange: (runtimeOverride: string | null) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-
+// Static effective-engine badge (`runtime_override ?? runner.runtime`);
+// when an override diverges from the runner default it paints accent so
+// a mixed-engine crew is visible at a glance. The override itself is
+// edited in the slot drawer (⋯ → Edit runner) alongside model/effort.
+function SlotRuntimeBadge({ slot }: { slot: SlotWithRunner }) {
   const override = slot.runtime_override;
   const effective = override ?? slot.runner.runtime;
   const overridden = override !== null && override !== slot.runner.runtime;
 
   return (
-    <div ref={rootRef} className="relative">
-      <button
-        type="button"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        onMouseDown={(e) => e.stopPropagation()}
-        title={
-          overridden
-            ? `Runtime override — runner default is ${slot.runner.runtime}`
-            : "Runtime (runner default)"
-        }
-        className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
-          overridden
-            ? "bg-accent/10 text-accent hover:bg-accent/20"
-            : "bg-raised text-fg-2 hover:text-fg"
-        }`}
-      >
-        {effective}
-        <span aria-hidden className={open ? "rotate-180" : ""}>
-          ▾
-        </span>
-      </button>
-      <PopoverMenu
-        open={open}
-        anchorRef={rootRef}
-        onClose={() => setOpen(false)}
-        minWidth={220}
-      >
-        <ul
-          role="listbox"
-          className="flex w-full flex-col rounded border border-line-strong bg-panel py-1 shadow-xl"
-        >
-          {[
-            {
-              value: "",
-              label: `Runner default (${slot.runner.runtime})`,
-            },
-            ...RUNTIME_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
-          ].map((opt) => {
-            const active = (override ?? "") === opt.value;
-            return (
-              <li key={opt.value || "__default__"} role="option" aria-selected={active}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpen(false);
-                    if ((override ?? "") !== opt.value) {
-                      onChange(opt.value || null);
-                    }
-                  }}
-                  className={`flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-raised ${
-                    active ? "bg-raised text-fg" : "text-fg-2"
-                  }`}
-                >
-                  <span className="font-mono">{opt.label}</span>
-                  {active ? (
-                    <span className="text-accent" aria-hidden>
-                      ✓
-                    </span>
-                  ) : null}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      </PopoverMenu>
-    </div>
+    <span
+      title={
+        overridden
+          ? `Runtime override — runner default is ${slot.runner.runtime}`
+          : "Runtime (runner default)"
+      }
+      className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+        overridden ? "bg-accent/10 text-accent" : "bg-raised text-fg-2"
+      }`}
+    >
+      {effective}
+    </span>
   );
 }
 
@@ -852,27 +763,11 @@ function SlotActionMenu({
   onRemove: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: MouseEvent) => {
-      if (!menuRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("mousedown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("mousedown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
+  const rootRef = useRef<HTMLDivElement | null>(null);
 
   return (
     <div
-      ref={menuRef}
+      ref={rootRef}
       className="relative shrink-0 opacity-70 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
     >
       <button
@@ -891,12 +786,16 @@ function SlotActionMenu({
         <MoreHorizontal aria-hidden className="h-4 w-4" />
       </button>
 
-      {open ? (
+      <PopoverMenu
+        open={open}
+        anchorRef={rootRef}
+        onClose={() => setOpen(false)}
+        minWidth={208}
+      >
         <div
           role="menu"
-          className="absolute right-0 top-full z-30 mt-2 flex w-52 flex-col gap-px rounded-lg border border-line bg-panel p-1.5 text-[13px] shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
+          className="flex w-full flex-col gap-px rounded-lg border border-line bg-panel p-1.5 text-[13px] shadow-[0_8px_30px_rgba(0,0,0,0.67)]"
           onClick={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
         >
           <button
             type="button"
@@ -948,7 +847,7 @@ function SlotActionMenu({
             <span>Remove from crew</span>
           </button>
         </div>
-      ) : null}
+      </PopoverMenu>
     </div>
   );
 }

@@ -141,8 +141,10 @@ describe("CrewEditor slot agent overrides", () => {
       buttons.some((button) => button.textContent?.includes("effort:")),
     ).toBe(false);
     expect(
-      buttons.some((button) => button.title?.startsWith("Runtime override")),
-    ).toBe(true);
+      buttons.some((button) => button.title?.startsWith("Runtime")),
+    ).toBe(false);
+    const badge = container.querySelector('span[title^="Runtime override"]');
+    expect(badge?.textContent).toBe("trae");
     expect(container.textContent).toContain("model trae-model · effort high");
   });
 
@@ -170,106 +172,37 @@ describe("CrewEditor slot agent overrides", () => {
     );
     await act(async () => actions?.click());
     const edit = Array.from(
-      container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+      document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
     ).find((button) => button.textContent?.includes("Edit runner"));
     await act(async () => edit?.click());
 
     const drawerCalls = mocks.runnerEditDrawer.mock.calls;
     const props = drawerCalls[drawerCalls.length - 1]?.[0] as {
-      effectiveRuntime: string;
+      runtimeOverride: string | null;
       effectiveModel: string | null;
       effectiveEffort: string | null;
       onSaveSlotOverrides: (input: {
+        runtime_override: string | null;
         model_override: string | null;
         effort_override: string | null;
       }) => Promise<void>;
     };
-    expect(props.effectiveRuntime).toBe("trae");
+    expect(props.runtimeOverride).toBe("trae");
     expect(props.effectiveModel).toBe("trae-model");
     expect(props.effectiveEffort).toBe("high");
 
     await act(async () => {
       await props.onSaveSlotOverrides({
+        runtime_override: "trae",
         model_override: "next-model",
         effort_override: "low",
       });
     });
     expect(mocks.slotUpdate).toHaveBeenCalledWith("slot-1", {
+      runtime_override: "trae",
       model_override: "next-model",
       effort_override: "low",
     });
   });
 
-  it("delegates runtime changes to the backend's atomic override reset", async () => {
-    mocks.slotList.mockResolvedValue([
-      {
-        ...slot,
-        model_override: "trae-model",
-        effort_override: "high",
-      },
-    ]);
-
-    await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={[`/crews/${crew.id}`]}>
-          <Routes>
-            <Route path="/crews/:crewId" element={<CrewEditor />} />
-          </Routes>
-        </MemoryRouter>,
-      );
-    });
-
-    const runtime = Array.from(
-      container.querySelectorAll<HTMLButtonElement>("button"),
-    ).find((button) => button.title?.startsWith("Runtime override"));
-    expect(runtime).toBeDefined();
-    await act(async () => runtime?.click());
-
-    const claude = Array.from(
-      document.querySelectorAll<HTMLButtonElement>('[role="option"] button'),
-    ).find((button) => button.textContent?.includes("Claude Code"));
-    expect(claude).toBeDefined();
-    await act(async () => claude?.click());
-
-    expect(mocks.slotUpdate).toHaveBeenCalledWith("slot-1", {
-      runtime_override: "claude-code",
-    });
-  });
-
-  it("preserves overrides when clearing a matching runtime pin", async () => {
-    mocks.slotList.mockResolvedValue([
-      {
-        ...slot,
-        runtime_override: "codex",
-        model_override: "slot-model",
-        effort_override: "high",
-      },
-    ]);
-
-    await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={[`/crews/${crew.id}`]}>
-          <Routes>
-            <Route path="/crews/:crewId" element={<CrewEditor />} />
-          </Routes>
-        </MemoryRouter>,
-      );
-    });
-
-    const runtime = Array.from(
-      container.querySelectorAll<HTMLButtonElement>("button"),
-    ).find((button) => button.title === "Runtime (runner default)");
-    expect(runtime).toBeDefined();
-    await act(async () => runtime?.click());
-
-    const runnerDefault = Array.from(
-      document.querySelectorAll<HTMLButtonElement>('[role="option"] button'),
-    ).find((button) => button.textContent?.includes("Runner default"));
-    expect(runnerDefault).toBeDefined();
-    await act(async () => runnerDefault?.click());
-
-    expect(mocks.slotUpdate).toHaveBeenCalledWith("slot-1", {
-      runtime_override: null,
-    });
-  });
 });
