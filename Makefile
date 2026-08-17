@@ -1,4 +1,4 @@
-.PHONY: fmt clippy test run-native
+.PHONY: fmt clippy test run
 
 fmt:
 	cargo fmt --all
@@ -9,5 +9,5 @@ clippy:
 test:
 	cargo test --workspace
 
-run-native:
+run:
 	cargo run -p runner-native

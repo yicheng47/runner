@@ -50,7 +50,7 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 
 ## Development Commands
 
-- Start the native app against the development database: `make run-native`.
+- Start the native app against the development database: `make run`.
 - Format: `make fmt`.
 - Clippy: `make clippy`.
 - Workspace tests: `make test`.
