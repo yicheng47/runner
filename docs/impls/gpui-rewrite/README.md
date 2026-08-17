@@ -12,3 +12,4 @@ Standing decisions (dated in the specs):
 - `main` owns product design and the domain model; repo-and-below stays verbatim-identical, migration numbers are allocated on `main` only (0046 §Decisions).
 - Framework: `gpui-ce`; terminal architecture mirrors Zed's `terminal`/`terminal_view` split on upstream `alacritty_terminal` (0046 §Workstreams C–D). Zed's terminal crates are GPL — architectural reference only.
 - Updater (Phase 5): Sparkle via the pulse pattern — `~/repos/yicheng47/pulse` is the in-house reference implementation on the same stack (0031 §Phase 5).
+- Crate renames at Phase 6 cutover, not before (decided 2026-08-17): `runner-app` → `runner-backend` (the UI-agnostic core the two frontends shared), `runner-native` → `runner-app` (the binary; pulse convention: `-app` = the application). Mid-program the current names stay — the `src-tauri/src/*` ↔ `crates/runner-app/src/*` port mapping is load-bearing for the catchup discipline.
