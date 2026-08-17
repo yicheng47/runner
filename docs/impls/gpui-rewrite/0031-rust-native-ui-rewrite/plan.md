@@ -31,11 +31,10 @@ Adapt (the seam, Phase 2):
 
 ## Framework decision
 
-Spike GPUI first; iced is the fallback. Do not evaluate all four candidates in depth — two is enough, both have production terminal prior art:
+Spike GPUI first; production terminal prior art decides:
 
 - **GPUI** (Zed's framework, Apache-2.0, on crates.io): Zed's terminal *is* `alacritty_terminal` rendered by GPUI — literally the architecture #307 describes, with production-grade reference code (`crates/terminal` + `terminal_view` in the Zed repo). Metal-native on macOS, proven multi-window, proven CJK/IME text input, Tailwind-like styling API. Risks: thin docs, API churn, smaller out-of-tree community. License note: `gpui` is Apache-2.0 (fine as a dependency), but Zed's `terminal`/`terminal_view` crates are GPL — architectural reference only, no code copying (cosmic-term likewise GPL; verify crate licenses at spike start).
-- **iced** (Elm-architecture, wgpu): cosmic-term is `alacritty_terminal` on iced (System76, shipping), `iced_term` crate exists. More conventional, better docs. Risks: text-input/IME maturity below Zed's, retained-widget model may fight the pane-tree layout.
-- egui (immediate mode) and Slint (markup DSL): ruled out for v1 — egui's IME/text-editing maturity is the concern for a chat-input-heavy app with Chinese input; Slint's DSL adds a layer for no benefit here. Revisit only if both spikes fail.
+- egui (immediate mode) and Slint (markup DSL): ruled out for v1 — egui's IME/text-editing maturity is the concern for a chat-input-heavy app with Chinese input; Slint's DSL adds a layer for no benefit here. Revisit only if the GPUI spike fails.
 
 Runner is macOS-only today and that stays true for this rewrite (non-goal below), so GPUI's macOS-first posture is not a cost.
 
@@ -58,7 +57,7 @@ Revised again 2026-08-17 (single repo, superseding the repo split): the pioneer 
 - **Phase work** happens on task branches off `gpui-nightly` (e.g. `phase4-direct-chats`), merged back only after human verification — unchanged.
 - **Cutover (Phase 6)** becomes a branch promotion: `gpui-nightly`'s tree replaces `main` in this repo. No repo rename.
 
-Build decision: the pioneer line has Rust-only `fmt`, `clippy`, `test`, and `run-native` Make targets. CI is one macOS Rust-workspace job for pushes and pull requests (scoped to `gpui-nightly` again after the split revert; it briefly targeted the standalone repo's `main`), including the GPUI Metal Toolchain component; native release packaging remains deferred to Phase 5.
+Build decision: the pioneer line has Rust-only `fmt`, `clippy`, `test`, and `run` Make targets. CI is one macOS Rust-workspace job for pushes and pull requests (scoped to `gpui-nightly` again after the split revert; it briefly targeted the standalone repo's `main`), including the GPUI Metal Toolchain component; native release packaging remains deferred to Phase 5.
 
 ## Phases
 
@@ -66,7 +65,7 @@ Build decision: the pioneer line has Rust-only `fmt`, `clippy`, `test`, and `run
 
 Build the riskiest 5% first: a window rendering a live claude-code session via `alacritty_terminal` on GPUI. Wire: spawn via the existing session manager → PTY bytes → `alacritty_terminal::Term` → draw the grid.
 
-Exit criteria (all must pass, else repeat once on iced):
+Exit criteria (all must pass):
 
 1. Smooth scroll/redraw under busy claude-code output (spinners, alt-screen, streaming) — no visible tearing or lag at typical window sizes.
 2. Correct CJK width, emoji, box-drawing — the glyph classes that produced the xterm garble bug.
@@ -106,7 +105,7 @@ The native app reads the same DB, so partial parity is usable: live in the nativ
 ### Phase 5 — App-shell services (replace what Tauri gave for free)
 
 - Packaging: .app assembly, codesign, notarize, staple, DMG — scripted (`cargo-bundle` or hand-rolled; validated in Phase 1's criterion 5).
-- Updater: replace `tauri-plugin-updater` — GitHub-Releases-driven check + download + swap, or Sparkle. This is real work; do not leave it for cutover week.
+- Updater: replace `tauri-plugin-updater` with **Sparkle, via the pulse pattern** (decided 2026-08-17). Pulse (`~/repos/yicheng47/pulse`, pure gpui-ce) is the in-house reference: `SPUStandardUpdaterController` through ~130 lines of `objc2` bindings behind an `updater` feature with a no-op dev fallback (`crates/pulse-app/src/updater.rs`), `Sparkle.framework` embedded by the bundle script (pinned version, SHA-256 checked), appcast served from GitHub Releases (`SUFeedURL` → `releases/latest/download/appcast.xml`, EdDSA key in `SUPublicEDKey`). Zed's hand-rolled `auto_update` (~2k lines: dmg mount/replace/relaunch, own release API) was considered and rejected — it earns its complexity from multi-platform + own server infra, neither of which applies here. One-time bridge at cutover: the last Tauri release updates users into the first native release through `tauri-plugin-updater`'s artifact format (same minisign keypair, same bundle id, higher version); Sparkle owns every update after that. This is real work; do not leave it for cutover week.
 - Dialogs → `rfd`; opener → `open` crate; logging → `tracing` + file layer (keep the crash/panic hook); window position restore → reimplement `window_state.rs` on the native windowing layer.
 - CI: nightly build + release artifacts for the native binary alongside the existing app.
 
@@ -118,7 +117,7 @@ Criteria: 2+ weeks daily-driving the native app exclusively, all Phase 4 slices 
 
 - **Parity treadmill** — the killer risk. `main` keeps growing while nightly chases it. The Phase 2 seam mitigates this only after the extraction exists on both lines; while it remains off `main`, cadence merges require hand-porting backend changes from `src-tauri/` into `crates/runner-app`. The other mitigations are dogfood-ordered slices (pressure to finish is intrinsic) and a soft feature-freeze on new *frontend* surface once Phase 3 lands.
 - **Scale honesty**: this replaces 28k LOC of UI. Solo with agent crews, expect months of part-time sessions, not weeks. The phase gates exist so the project survives motivation dips — every phase ends with something you use.
-- **GPUI churn/docs**: mitigated by the spike and by Zed's terminal code as a living reference; iced is a genuine fallback, not a fig leaf (cosmic-term proves it).
+- **GPUI churn/docs**: mitigated by the spike and by Zed's terminal code as a living reference.
 - **Packaging/notarization** first-time cost: mitigated by doing it once in Phase 1, not at the end.
 - **Accessibility/native-behavior gaps** (VoiceOver, standard text-editing shortcuts) are real regressions vs. a webview; accepted for a personal-IDE product, noted for honesty.
 
@@ -130,7 +129,7 @@ Criteria: 2+ weeks daily-driving the native app exclusively, all Phase 4 slices 
 
 ## Phase 1 decision memo (2026-07-18; finalized 2026-07-19)
 
-**Decision: GO on GPUI.** Human verification: criterion 3 (Pinyin IME in the native composer) confirmed explicitly; criteria 1/4 confirmed through live daily-style use with no tearing, lag, or reflow artifacts reported; criterion 2 machine-verified at the grid level with per-cell-origin rendering making fallback-advance skew structurally impossible. Criterion 5: .app assembly + Developer ID codesign proven; the notarize/staple run is **deferred to Phase 5 by explicit decision** — the failure-prone half (hand-rolled bundle of a bare cargo binary passing codesign with hardened runtime) is validated, notarization is bundle-agnostic, and the same credential flow already ships Runner's Tauri releases via CI. The iced fallback was never needed.
+**Decision: GO on GPUI.** Human verification: criterion 3 (Pinyin IME in the native composer) confirmed explicitly; criteria 1/4 confirmed through live daily-style use with no tearing, lag, or reflow artifacts reported; criterion 2 machine-verified at the grid level with per-cell-origin rendering making fallback-advance skew structurally impossible. Criterion 5: .app assembly + Developer ID codesign proven; the notarize/staple run is **deferred to Phase 5 by explicit decision** — the failure-prone half (hand-rolled bundle of a bare cargo binary passing codesign with hardened runtime) is validated, notarization is bundle-agnostic, and the same credential flow already ships Runner's Tauri releases via CI.
 
 Original evidence table and findings follow.
 

@@ -1,6 +1,13 @@
-# 0031 impl log
+# GPUI rewrite — program log
 
-Progress record for the Rust-native UI rewrite ([plan](plan.md), issue [#307](https://github.com/yicheng47/runner/issues/307)). Newest entries at the bottom. Keep entries short: what happened, what's next, blockers.
+Progress record for the whole gpui-rewrite program ([README](README.md)), from the Phase 1 spike onward — the 0031-era log is folded in here. Newest entries at the bottom; keep entries short: what happened, what's next, blockers.
+
+## Current state (update with each entry)
+
+- **Branch**: `feat/0046-main-parity-catchup` off `gpui-nightly`, committed, awaiting merge to `gpui-nightly` + push.
+- **Done**: 0046 M0 (gpui-ce swap) + M1 (repo-and-below at `main` parity, node tree adopted, protocol crates wholesale). Human-verified 2026-08-17: the app opens the `main`-written dev DB and chats work. 498 workspace tests green, clippy clean, fixture corpus green. `design/` synced from `main`.
+- **Next**: M2 (terminal split) and M3 (UI parity slices — the current UI is still the Phase 3 skeleton; parity references are `main`'s React frontend (`src/`) and the `design/*.pen` files via the pencil MCP) → M4 (sweep + watermark).
+- **Parity watermark**: `origin/main` fully ported for repo-and-below as of `1b7ee92` (v0.5.2 line, 2026-08-17); feature-logic lag is M3 scope.
 
 ## 2026-07-18 — Phase 1 kickoff
 
@@ -90,3 +97,31 @@ Progress record for the Rust-native UI rewrite ([plan](plan.md), issue [#307](ht
 - Rationale: after `main` was reset off #310, the shared-crates merge premise broke (main's backend at `src-tauri/src/*`, this line's at `crates/runner-app/*`), so every branch sync would have leaned on rename detection across the extraction plus modify/delete conflicts — monorepo costs without monorepo guarantees. The split makes the fork honest, and cutover-on-success becomes a repo rebrand (archive `runner`, rename this) instead of an in-place tree-swap merge.
 - The `runner` repo is wired as the `upstream` remote here; backend fixes on the Tauri line are ported by conscious cherry-pick, not automatic merges. `gpui-nightly` and the `runner-wt1` worktree are retired; `runner`'s `main` remains the shipping 0.3.x Tauri app in maintenance.
 - Docs cleanup: the open Tauri-line specs (features 05/19/21/24/37, impl 0019 landing page) moved to their `archive/` dirs unshipped — frozen during the parity-only rewrite, noted as such in the features README. `product/vision.md` stays as-is; `arch/arch.md` keeps its model/protocol sections but its stack section still says Tauri 2 + React — update pending, tracked as Phase 4-adjacent doc debt.
+
+## 2026-08-17 — Single repo restored, spec 0046, docs regrouped
+
+- Jason reverted the repo split: `gpui-nightly` is back as a long-lived branch on `yicheng47/runner`, pushed at `774aa35` (no force needed — the branch didn't exist on the remote). The standalone `runner-gpui` GitHub repo is retired; locally the line lives in the `runner-gpui` worktree. CI re-targeted from `main` to `gpui-nightly` (`dde41e7`).
+- Impl 0046 (main-parity catchup) authored and committed (`14e9680`): decisions (main owns design + schema, repo-and-below verbatim, product UI never diverges, gpui-ce, Zed-style terminal split on upstream alacritty), workstreams A–D, milestones M0–M4. 0031's Phase 4 slice list superseded.
+- Docs regrouped: gpui-rewrite impls now live under `docs/impls/gpui-rewrite/` (0031, 0046, this log, README).
+
+## 2026-08-17 — M0: gpui-ce swap (same session)
+
+- `gpui 0.2` (crates.io, stale since 2025-10) → `gpui = { package = "gpui-ce", version = "0.3" }`. True drop-in: zero source changes; the whole diff is Cargo.toml + lockfile.
+- Gates green: fixture corpus (10/10 incl. CJK/emoji/box-drawing/reflow), workspace tests, clippy, binary links.
+- `make run-native` renamed to `make run` (Makefile, AGENTS.md, READMEs).
+
+## 2026-08-17 — M1: repo-and-below catchup (same session)
+
+- First `make run` against the dev DB hit `sqlite: no such table: tabs` — the dev DB (shared with the Tauri dev build by design) was at main's migration v20, where 0015 dropped `tabs`/`folders`. Exactly the incompatibility 0046 predicted.
+- Ported wholesale from `origin/main` (merge-base `d9483ca`): migrations 0014–0020 + Rust backfills, `db.rs` (LKG login-shell env in `_app_state`, peer-coding seed + `examples/peer-coding/`), `model.rs`, `repo/` (node.rs in, tab.rs/folder.rs out), `shell_path.rs`, `crates/runner-core`, `cli/`. Migrations 0001–0013 verified byte-identical across branches — the chain never forked, so seamless open-either-way holds.
+- Adapter layer: `ops/node.rs` ported from main's `commands/node.rs` (bodies + tests verbatim, mechanical Tauri→`AppCore` translation). Node-maintenance hunks applied to mission (start/archive/pin/reset/unarchive/set-project), project (create node; delete archives children through the tree), session (archive removes from node; pin pins the tab node; set-project reconciles placement). Resume path adopts the caller→persisted-last-size→default geometry resolution (migration 0016).
+- UI minimally rewired: `pane_layout` + sidebar read tab nodes via `node_list`, write via `node_tab_upsert`. Full node sidebar (projects/folders/pinned) deferred to M3.
+- Gates: 498 workspace tests green (incl. main's ported node/db suites), clippy `-D warnings` clean.
+- Dev DB sharing restored: the parked main-schema dir was copied back live (v20, nodes present); backup deleted after. Both dev builds share `com.wycstudios.runner-dev` — run one app at a time.
+- Deliberately not ported (M3 scope): session hardening (reaping, resume seams, resize-storm coalescing), runtimes (discovery, Qoder, TRAE, model catalog, model/effort override plumbing beyond schema), router/inbox, mission feed, pagination, update checks. `main`'s impl docs 0033–0045 are the port guides.
+
+## 2026-08-17 — Phase 5 updater decided: Sparkle via the pulse pattern (same session)
+
+- Studied pulse (`~/repos/yicheng47/pulse`, pure gpui-ce at a pinned git rev): `SPUStandardUpdaterController` via ~130 lines of `objc2` bindings behind an `updater` feature with a no-op dev fallback; `Sparkle.framework` embedded by `script/bundle-mac` (pinned + SHA-256 checked); appcast on GitHub Releases (`SUFeedURL`, `SUPublicEDKey`).
+- Zed's hand-rolled `auto_update` (~2k lines: dmg mount/replace/relaunch, own release API, per-OS helpers) reviewed and rejected — its complexity pays for multi-platform + own-server needs Runner doesn't have.
+- Cutover bridge stands: last Tauri release updates users into the first native release via `tauri-plugin-updater`'s artifact format (same minisign keypair + bundle id); Sparkle owns native→native after. Recorded in 0031 Phase 5.

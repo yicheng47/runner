@@ -1,11 +1,11 @@
 # runner-native
 
-Phase 3 walking skeleton for [impl 0031](../../docs/impls/0031-rust-native-ui-rewrite/plan.md). It opens Runner's existing direct chats from the same SQLite database as the released app, spawns or resumes them through `runner_app::session::SessionManager`, and renders the manager's PTY byte stream with `alacritty_terminal` on GPUI.
+Phase 3 walking skeleton for [impl 0031](../../docs/impls/gpui-rewrite/0031-rust-native-ui-rewrite/plan.md). It opens Runner's existing direct chats from the same SQLite database as the released app, spawns or resumes them through `runner_app::session::SessionManager`, and renders the manager's PTY byte stream with `alacritty_terminal` on GPUI.
 
 ## Run
 
 ```sh
-make run-native
+make run
 ```
 
 The development command uses `~/Library/Application Support/com.wycstudios.runner-dev/runner.db`, matching the Tauri development environment and keeping production state isolated. A future packaged release build will use the production directory. Click an existing direct chat in the sidebar, then use either the terminal or composer.
@@ -25,6 +25,6 @@ Current corpus: `claude-session` (real interactive TUI boot → prompt → strea
 
 ## Smoke test
 
-1. Run `make run-native` and click a stopped direct chat in the sidebar. It should resume the same development conversation and render its live terminal.
+1. Run `make run` and click a stopped direct chat in the sidebar. It should resume the same development conversation and render its live terminal.
 2. Type in the terminal, submit a prompt, scroll, and resize the window. Output, input, and PTY geometry should remain live.
 3. Click the composer, switch to Pinyin, type `中文测试`, choose a candidate, and press Enter once more. Composition should stay anchored in the field and the committed text should submit to the selected chat.
