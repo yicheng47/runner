@@ -54,6 +54,7 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 - Format: `make fmt`.
 - Clippy: `make clippy`.
 - Workspace tests: `make test`.
+- Everything CI runs: `make verify` (check + test + clippy + fmt-check).
 
 Prefer the smallest check that covers the change. For native UI changes, run the `runner-native` tests plus workspace clippy; for core behavior, run the relevant crate tests.
 

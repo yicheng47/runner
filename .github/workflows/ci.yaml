@@ -1,28 +1,43 @@
 name: CI
 
 on:
-  push:
-    branches: [gpui-nightly]
   pull_request:
-    branches: [gpui-nightly]
+    branches:
+      - gpui-nightly
+  push:
+    branches:
+      - gpui-nightly
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   rust:
-    name: Rust workspace
-    runs-on: macos-26
+    name: Rust / macOS
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - name: Ensure Metal Toolchain component is installed
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Metal toolchain
         run: xcodebuild -downloadComponent MetalToolchain
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo build --workspace
-      - run: cargo test --workspace
+
+      - name: Verify
+        run: make verify
+
+      - name: Verify lockfile is committed
+        run: git diff --exit-code -- Cargo.lock
