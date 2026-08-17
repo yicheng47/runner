@@ -79,17 +79,19 @@ pub struct Slot {
     pub position: i64,
     pub lead: bool,
     /// Per-slot engine choice. NULL = use the runner's own `runtime`.
-    /// When set (validated against the runtime registry on write),
-    /// mission spawns resolve the effective runtime as
-    /// `runtime_override ?? runner.runtime` and reset the command,
-    /// args, and effort to registry defaults. `model_override` can
-    /// optionally pin a model for that selected runtime.
+    /// A differing runtime resets engine config to registry defaults
+    /// before the slot's model and effort overrides are applied.
     #[serde(default)]
     pub runtime_override: Option<String>,
-    /// Optional model pinned to the slot's selected runtime. NULL means
-    /// use the effective runtime's default model.
+    /// Optional model override applied after runtime resolution. NULL
+    /// inherits the runner template unless a differing runtime reset
+    /// the model to that engine's default.
     #[serde(default)]
     pub model_override: Option<String>,
+    /// Optional thinking-effort override applied after runtime
+    /// resolution, with the same inheritance semantics as model.
+    #[serde(default)]
+    pub effort_override: Option<String>,
     pub added_at: Timestamp,
 }
 

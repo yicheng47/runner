@@ -76,7 +76,9 @@ impl RunnerMcpHandler {
         Ok(CallToolResult::success(vec![Content::json(&slot)?]))
     }
 
-    #[tool(description = "Update a slot by ID. Omitted fields are preserved.")]
+    #[tool(
+        description = "Update a slot by ID, including independent runtime, model, and effort overrides. Omitted fields are preserved."
+    )]
     pub async fn slot_update(
         &self,
         Parameters(UpdateSlotArgs { slot_id, input }): Parameters<UpdateSlotArgs>,

@@ -387,6 +387,7 @@ fn slot_for(runner: &Runner) -> crate::model::Slot {
         lead: true,
         runtime_override: None,
         model_override: None,
+        effort_override: None,
         added_at: Utc::now(),
     }
 }
@@ -5151,6 +5152,89 @@ fn pinned_direct_spawn_records_override_model_and_effort() {
 }
 
 #[test]
+fn unpinned_direct_spawn_persists_options_without_pinning_runtime() {
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, created_at, updated_at)
+                 VALUES (?1, 'options-only', 'Options', 'codex', '/bin/sh',
+                         '[]', ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+    }
+    let mut r = runner("/bin/sh", &[]);
+    r.id = runner_id;
+    r.runtime = "codex".into();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let spawned = mgr
+        .spawn_direct(
+            &r,
+            None,
+            Some("gpt-5.6-sol"),
+            Some("ultra"),
+            None,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+
+    let stored: (Option<String>, Option<String>, Option<String>) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT agent_runtime, agent_model, agent_effort
+               FROM sessions WHERE id = ?1",
+            params![spawned.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(stored.0, None, "options-only direct chats must not pin");
+    assert_eq!(stored.1.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(stored.2.as_deref(), Some("ultra"));
+
+    mgr.kill(&spawned.id).unwrap();
+    mgr.resume(
+        &spawned.id,
+        None,
+        None,
+        std::path::Path::new("/tmp"),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+    let resumed = fake.last_spawn_spec().expect("resume should spawn");
+    assert!(
+        resumed
+            .args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == "gpt-5.6-sol"),
+        "model override must survive resume: {:?}",
+        resumed.args,
+    );
+    assert!(
+        resumed
+            .args
+            .windows(2)
+            .any(|w| w[0] == "-c" && w[1] == "model_reasoning_effort=ultra"),
+        "effort override must survive resume: {:?}",
+        resumed.args,
+    );
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
 fn runtime_override_helper_distinguishes_absent_matching_and_differing() {
     let mut r = runner("codex-custom", &["--custom"]);
     r.runtime = "codex".into();
@@ -5237,6 +5321,15 @@ fn runtime_override_helper_applies_slot_model_to_selected_runtime() {
     assert_eq!(matching.runtime, "codex");
     assert_eq!(matching.model.as_deref(), Some("codex-slot-model"));
     assert_eq!(matching.args, r.args);
+
+    let unpinned = resolve_runtime_override(&r, None, Some("codex-slot-model"), None).unwrap();
+    let effective = unpinned
+        .effective
+        .expect("a model-only override must rebuild the runner config");
+    assert_eq!(effective.runtime, "codex");
+    assert_eq!(effective.model.as_deref(), Some("codex-slot-model"));
+    assert_eq!(effective.effort, r.effort);
+    assert!(!unpinned.pinned, "model-only overrides must not pin");
 }
 
 #[test]
@@ -5271,6 +5364,17 @@ fn runtime_override_helper_applies_effort_to_selected_runtime() {
     assert_eq!(matching.model.as_deref(), Some("runner-model"));
     assert_eq!(matching.effort.as_deref(), Some("xhigh"));
 
+    // No runtime override: inherit the runner config, replace effort,
+    // and leave the engine unpinned.
+    let unpinned = resolve_runtime_override(&r, None, None, Some("high")).unwrap();
+    let effective = unpinned
+        .effective
+        .expect("an effort-only override must rebuild the runner config");
+    assert_eq!(effective.runtime, "codex");
+    assert_eq!(effective.model.as_deref(), Some("runner-model"));
+    assert_eq!(effective.effort.as_deref(), Some("high"));
+    assert!(!unpinned.pinned, "effort-only overrides must not pin");
+
     // Blank overrides are ignored: matching runtime stays byte-identical.
     let blank = resolve_runtime_override(&r, Some("codex"), Some("  "), Some("")).unwrap();
     assert!(blank.effective.is_none());
@@ -5304,6 +5408,7 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
     slot.id = slot_id;
     slot.runtime_override = Some("claude-code".into());
     slot.model_override = Some("opus".into());
+    slot.effort_override = Some("max".into());
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
@@ -5337,6 +5442,13 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
     assert!(
         spec.args
             .windows(2)
+            .any(|w| w[0] == "--effort" && w[1] == "max"),
+        "slot effort must reach the effective runtime: {:?}",
+        spec.args,
+    );
+    assert!(
+        spec.args
+            .windows(2)
             .any(|w| w[0] == "--permission-mode" && w[1] == "auto"),
         "override args must be the registry default permission-mode pair: {:?}",
         spec.args,
@@ -5353,18 +5465,135 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
     );
 
     // Session row records the effective runtime for respawn/resume.
-    let (agent_runtime, agent_command): (Option<String>, Option<String>) = pool
+    let (agent_runtime, agent_command, agent_model, agent_effort): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = pool
         .get()
         .unwrap()
         .query_row(
-            "SELECT agent_runtime, agent_command FROM sessions WHERE id = ?1",
+            "SELECT agent_runtime, agent_command, agent_model, agent_effort
+               FROM sessions WHERE id = ?1",
             params![spawned.id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .unwrap();
     assert_eq!(agent_runtime.as_deref(), Some("claude-code"));
     assert_effective_command(agent_command.as_deref().unwrap(), "claude");
+    assert_eq!(agent_model.as_deref(), Some("opus"));
+    assert_eq!(agent_effort.as_deref(), Some("max"));
 
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn mission_spawn_with_model_only_slot_override_uses_runner_runtime_without_pinning() {
+    let pool = pool_with_schema();
+    let mission_row = mission();
+    let runner_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_runner(&pool, &mission_row.id, &runner_id);
+
+    let mut runner = runner("codex-custom", &["--custom-flag"]);
+    runner.id = runner_id;
+    runner.runtime = "codex".into();
+    runner.model = Some("runner-model".into());
+    runner.effort = Some("high".into());
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE runners
+                SET runtime = 'codex', command = 'codex-custom',
+                    args_json = '[\"--custom-flag\"]',
+                    model = 'runner-model', effort = 'high'
+              WHERE id = ?1",
+            params![runner.id],
+        )
+        .unwrap();
+    let mut slot = slot_for(&runner);
+    slot.id = slot_id;
+    slot.model_override = Some("slot-model".into());
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let spawned = mgr
+        .spawn(
+            &mission_row,
+            &runner,
+            &slot,
+            std::path::Path::new("/tmp"),
+            PathBuf::from("/dev/null"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+
+    let spec = fake.last_spawn_spec().expect("spawn was called");
+    assert_eq!(spec.command, "codex-custom");
+    assert!(spec.args.contains(&"--custom-flag".to_string()));
+    assert!(
+        spec.args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == "slot-model"),
+        "model-only slot override must reach spawn args: {:?}",
+        spec.args,
+    );
+    assert!(
+        spec.args
+            .windows(2)
+            .any(|w| w[0] == "-c" && w[1] == "model_reasoning_effort=high"),
+        "runner effort must remain inherited: {:?}",
+        spec.args,
+    );
+
+    let (agent_runtime, agent_model, agent_effort): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT agent_runtime, agent_model, agent_effort
+               FROM sessions WHERE id = ?1",
+            params![spawned.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(agent_runtime, None, "model-only overrides must not pin");
+    assert_eq!(agent_model.as_deref(), Some("slot-model"));
+    assert_eq!(agent_effort.as_deref(), Some("high"));
+
+    mgr.kill(&spawned.id).unwrap();
+    mgr.resume(
+        &spawned.id,
+        None,
+        None,
+        std::path::Path::new("/tmp"),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+    let resumed = fake.last_spawn_spec().expect("resume should spawn");
+    assert_eq!(resumed.command, "codex-custom");
+    assert!(
+        resumed
+            .args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == "slot-model"),
+        "model override must survive resume: {:?}",
+        resumed.args,
+    );
+    assert!(
+        resumed
+            .args
+            .windows(2)
+            .any(|w| w[0] == "-c" && w[1] == "model_reasoning_effort=high"),
+        "effective effort must survive resume: {:?}",
+        resumed.args,
+    );
     mgr.kill(&spawned.id).unwrap();
 }
 

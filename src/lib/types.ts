@@ -60,13 +60,14 @@ export interface Slot {
   position: number;
   lead: boolean;
   /** Per-slot engine choice (feature 41). NULL = the runner's own
-   *  runtime. When set, mission spawns run this runtime with registry
-   *  defaults, plus an optional model override, while the runner's
-   *  persona carries over. */
+   *  runtime. A differing runtime resets engine config to registry
+   *  defaults before slot model/effort overrides are applied. */
   runtime_override: string | null;
-  /** Model pinned to the selected slot runtime. NULL = that runtime's
-   *  configured default. */
+  /** Model override applied after runtime resolution. NULL = inherit. */
   model_override: string | null;
+  /** Thinking-effort override applied after runtime resolution.
+   *  NULL = inherit. */
+  effort_override: string | null;
   added_at: Timestamp;
 }
 
@@ -326,8 +327,10 @@ export interface UpdateSlotInput {
   /** Omit to preserve; null to clear back to "Runner default"; a
    *  runtime registry name to override. */
   runtime_override?: string | null;
-  /** Omit to preserve; null to clear to the selected runtime's default. */
+  /** Omit to preserve; null to clear back to inheritance. */
   model_override?: string | null;
+  /** Omit to preserve; null to clear back to inheritance. */
+  effort_override?: string | null;
 }
 
 export interface StartMissionInput {

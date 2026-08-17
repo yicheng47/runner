@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   crewGet: vi.fn(),
   slotList: vi.fn(),
   slotUpdate: vi.fn(),
+  runnerEditDrawer: vi.fn<(props: unknown) => null>(() => null),
   listen: vi.fn(async () => () => {}),
 }));
 
@@ -39,7 +40,7 @@ vi.mock("../components/AddSlotModal", () => ({
 }));
 
 vi.mock("../components/RunnerEditDrawer", () => ({
-  RunnerEditDrawer: () => null,
+  RunnerEditDrawer: mocks.runnerEditDrawer,
 }));
 
 vi.mock("../components/StartMissionModal", () => ({
@@ -67,6 +68,7 @@ const slot: SlotWithRunner = {
   lead: true,
   runtime_override: "trae",
   model_override: null,
+  effort_override: null,
   added_at: "2026-07-27T00:00:00Z",
   runner: {
     id: "runner-1",
@@ -85,7 +87,7 @@ const slot: SlotWithRunner = {
   },
 };
 
-describe("CrewEditor slot model override", () => {
+describe("CrewEditor slot agent overrides", () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -97,6 +99,7 @@ describe("CrewEditor slot model override", () => {
     mocks.crewGet.mockReset();
     mocks.slotList.mockReset();
     mocks.slotUpdate.mockReset();
+    mocks.runnerEditDrawer.mockClear();
     mocks.listen.mockClear();
     mocks.crewGet.mockResolvedValue(crew);
     mocks.slotList.mockResolvedValue([slot]);
@@ -109,7 +112,15 @@ describe("CrewEditor slot model override", () => {
     vi.unstubAllGlobals();
   });
 
-  it("selects and saves a model for an overridden runtime", async () => {
+  it("keeps model and effort selectors out of slot rows", async () => {
+    mocks.slotList.mockResolvedValue([
+      {
+        ...slot,
+        model_override: "trae-model",
+        effort_override: "high",
+      },
+    ]);
+
     await act(async () => {
       root.render(
         <MemoryRouter initialEntries={[`/crews/${crew.id}`]}>
@@ -120,28 +131,78 @@ describe("CrewEditor slot model override", () => {
       );
     });
 
-    const trigger = Array.from(
+    const buttons = Array.from(
       container.querySelectorAll<HTMLButtonElement>("button"),
-    ).find((button) => button.textContent?.includes("model: default"));
-    expect(trigger).toBeDefined();
+    );
+    expect(
+      buttons.some((button) => button.textContent?.includes("model:")),
+    ).toBe(false);
+    expect(
+      buttons.some((button) => button.textContent?.includes("effort:")),
+    ).toBe(false);
+    expect(
+      buttons.some((button) => button.title?.startsWith("Runtime")),
+    ).toBe(false);
+    const badge = container.querySelector('span[title^="Runtime override"]');
+    expect(badge?.textContent).toBe("trae");
+    expect(container.textContent).toContain("model trae-model · effort high");
+  });
 
-    await act(async () => trigger?.click());
+  it("passes slot model and effort overrides through the edit drawer", async () => {
+    mocks.slotList.mockResolvedValue([
+      {
+        ...slot,
+        model_override: "trae-model",
+        effort_override: "high",
+      },
+    ]);
 
-    const input = document.querySelector<HTMLInputElement>("#slot-model-slot-1");
-    expect(input).not.toBeNull();
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")
-        ?.set?.call(input, "trae-model");
-      input?.dispatchEvent(new Event("input", { bubbles: true }));
+      root.render(
+        <MemoryRouter initialEntries={[`/crews/${crew.id}`]}>
+          <Routes>
+            <Route path="/crews/:crewId" element={<CrewEditor />} />
+          </Routes>
+        </MemoryRouter>,
+      );
     });
 
-    const save = Array.from(
-      document.querySelectorAll<HTMLButtonElement>("button"),
-    ).find((button) => button.textContent === "Save");
-    await act(async () => save?.click());
+    const actions = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Slot actions for @coder"]',
+    );
+    await act(async () => actions?.click());
+    const edit = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((button) => button.textContent?.includes("Edit runner"));
+    await act(async () => edit?.click());
 
+    const drawerCalls = mocks.runnerEditDrawer.mock.calls;
+    const props = drawerCalls[drawerCalls.length - 1]?.[0] as {
+      runtimeOverride: string | null;
+      effectiveModel: string | null;
+      effectiveEffort: string | null;
+      onSaveSlotOverrides: (input: {
+        runtime_override: string | null;
+        model_override: string | null;
+        effort_override: string | null;
+      }) => Promise<void>;
+    };
+    expect(props.runtimeOverride).toBe("trae");
+    expect(props.effectiveModel).toBe("trae-model");
+    expect(props.effectiveEffort).toBe("high");
+
+    await act(async () => {
+      await props.onSaveSlotOverrides({
+        runtime_override: "trae",
+        model_override: "next-model",
+        effort_override: "low",
+      });
+    });
     expect(mocks.slotUpdate).toHaveBeenCalledWith("slot-1", {
-      model_override: "trae-model",
+      runtime_override: "trae",
+      model_override: "next-model",
+      effort_override: "low",
     });
   });
+
 });

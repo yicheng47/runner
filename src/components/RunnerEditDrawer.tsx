@@ -1,4 +1,6 @@
-// Edit an existing runner template in place.
+// Edit an existing runner template. In crew context, agent, model, and
+// effort are saved as overrides for that slot while the shared runner
+// fields remain editable in place.
 //
 // Handle is intentionally read-only: per arch §2.2 it's the template's
 // identity for direct chat / CLI lookups, and renaming would break
@@ -34,21 +36,36 @@ import { useSelectableAgentOptions } from "./ui/useSelectableAgentOptions";
 export function RunnerEditDrawer({
   open,
   runner,
-  effectiveRuntime,
+  runtimeOverride,
   effectiveModel,
+  effectiveEffort,
+  onSaveSlotOverrides,
   onClose,
   onSaved,
 }: {
   open: boolean;
   runner: Runner | null;
-  effectiveRuntime?: string;
+  /** Slot context: null inherits the runner's engine, a runtime name
+   *  pins it. Omit entirely when editing a bare runner template. */
+  runtimeOverride?: string | null;
   effectiveModel?: string | null;
+  effectiveEffort?: string | null;
+  onSaveSlotOverrides?: (input: {
+    runtime_override: string | null;
+    model_override: string | null;
+    effort_override: string | null;
+  }) => void | Promise<void>;
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }) {
-  const previewsSlotEngine = effectiveRuntime !== undefined;
+  const editsSlot = runtimeOverride !== undefined;
   const [displayName, setDisplayName] = useState("");
   const [runtime, setRuntime] = useState<string>(RUNTIME_OPTIONS[0].value);
+  // Slot context only: whether the slot pins an explicit engine.
+  // Distinct from `runtime` (the effective engine) because "Runner
+  // default (codex)" and an explicit "codex" pin resolve to the same
+  // engine today but diverge if the template later changes runtime.
+  const [runtimePinned, setRuntimePinned] = useState(false);
   // Command is bound to runtime — the field below is read-only — but
   // we keep the value in state (not derived) so that opening an
   // existing runner with a custom command (e.g. `/opt/homebrew/bin/
@@ -78,53 +95,57 @@ export function RunnerEditDrawer({
     loading: agentsLoading,
     checking: agentsChecking,
     error: agentsError,
-  } = useSelectableAgentOptions(open && !previewsSlotEngine);
+  } = useSelectableAgentOptions(open);
 
   useEffect(() => {
     if (open && runner) {
       setDisplayName(runner.display_name);
-      const runtime = effectiveRuntime ?? runner.runtime;
+      const runtime = runtimeOverride ?? runner.runtime;
       const runtimeOption = RUNTIME_OPTIONS.find((option) => option.value === runtime);
       setRuntime(runtime);
+      setRuntimePinned(typeof runtimeOverride === "string");
       setCommand(
-        previewsSlotEngine
+        editsSlot && runtime !== runner.runtime
           ? (runtimeOption?.defaultCommand ?? runner.command)
           : runner.command,
       );
       setArgsText(
-        previewsSlotEngine
+        editsSlot
           ? ""
           : stripPermissionFlags(runner.runtime, runner.args).join(" "),
       );
       setWorkingDir(runner.working_dir ?? "");
       setSystemPrompt(runner.system_prompt ?? "");
       setModel(
-        previewsSlotEngine ? (effectiveModel ?? "") : (runner.model ?? ""),
+        editsSlot ? (effectiveModel ?? "") : (runner.model ?? ""),
       );
       // Coerce historically-stored effort values that aren't in this
       // runtime's current enum (e.g. an old codex row with
       // `minimal`, dropped from the picker) to "" so what's saved
       // matches what's shown.
       {
-        const loaded = previewsSlotEngine ? "" : (runner.effort ?? "");
+        const loaded = editsSlot
+          ? (effectiveEffort ?? "")
+          : (runner.effort ?? "");
         const validEfforts = EFFORT_OPTIONS_BY_RUNTIME[runtime] ?? [];
         setEffort(
           validEfforts.some((o) => o.value === loaded) ? loaded : "",
         );
       }
       setPermissionMode(
-        previewsSlotEngine
+        editsSlot
           ? "default"
           : inferPermissionMode(runner.runtime, runner.args),
       );
       setError(null);
     }
   }, [
+    editsSlot,
+    effectiveEffort,
     effectiveModel,
-    effectiveRuntime,
     open,
-    previewsSlotEngine,
     runner,
+    runtimeOverride,
   ]);
 
   const canSubmit =
@@ -134,6 +155,20 @@ export function RunnerEditDrawer({
   const currentAgentOption = RUNTIME_OPTIONS.find(
     (option) => option.value === runtime,
   );
+  const runnerRuntimeOption = RUNTIME_OPTIONS.find(
+    (option) => option.value === runner?.runtime,
+  );
+  // Slot context: the empty value means "no pin — follow the template".
+  const slotAgentOptions = runner
+    ? [
+        {
+          value: "",
+          label: `Runner default (${runnerRuntimeOption?.label ?? runner.runtime})`,
+          defaultCommand: runner.command,
+        },
+        ...agentOptions,
+      ]
+    : agentOptions;
 
   const submit = async () => {
     if (!runner || !canSubmit) return;
@@ -144,7 +179,7 @@ export function RunnerEditDrawer({
         display_name: displayName.trim(),
         working_dir: workingDir.trim() || null,
         system_prompt: systemPrompt.trim() || null,
-        ...(previewsSlotEngine
+        ...(editsSlot
           ? {}
           : {
               runtime,
@@ -158,6 +193,13 @@ export function RunnerEditDrawer({
             }),
       };
       await api.runner.update(runner.id, input);
+      if (editsSlot) {
+        await onSaveSlotOverrides?.({
+          runtime_override: runtimePinned ? runtime : null,
+          model_override: model.trim() || null,
+          effort_override: effort.trim() || null,
+        });
+      }
       await onSaved();
     } catch (e) {
       setError(String(e));
@@ -212,17 +254,39 @@ export function RunnerEditDrawer({
           id="edit-runtime"
           label="Agent"
           hint={
-            previewsSlotEngine
-              ? "effective crew-slot override · change it from the crew row"
+            editsSlot
+              ? "slot override · Runner default follows the template; an explicit agent pins this slot's engine"
               : undefined
           }
         >
-          {previewsSlotEngine ? (
-            <Input
+          {editsSlot ? (
+            <RuntimeSelect
               id="edit-runtime"
-              value={currentAgentOption?.label ?? runtime}
-              disabled
-              readOnly
+              value={runtimePinned ? runtime : ""}
+              options={slotAgentOptions}
+              currentOption={currentAgentOption}
+              disabled={submitting}
+              onChange={(opt) => {
+                if (!runner) return;
+                const nextRuntime = opt.value || runner.runtime;
+                setRuntimePinned(opt.value !== "");
+                if (nextRuntime !== runtime) {
+                  // Engine change resets the overrides, mirroring the
+                  // template editor and the backend's atomic reset.
+                  setModel("");
+                  const nextEffortOptions =
+                    EFFORT_OPTIONS_BY_RUNTIME[nextRuntime] ?? [];
+                  if (!nextEffortOptions.some((o) => o.value === effort)) {
+                    setEffort("");
+                  }
+                }
+                setRuntime(nextRuntime);
+                setCommand(
+                  nextRuntime === runner.runtime
+                    ? runner.command
+                    : opt.defaultCommand,
+                );
+              }}
             />
           ) : (
             <RuntimeSelect
@@ -257,7 +321,7 @@ export function RunnerEditDrawer({
               }}
             />
           )}
-          {!previewsSlotEngine && agentsError ? (
+          {agentsError ? (
             <p className="text-[11px] text-danger">{agentsError}</p>
           ) : null}
         </Field>
@@ -266,7 +330,7 @@ export function RunnerEditDrawer({
           <Input id="edit-command" value={command} disabled readOnly />
         </Field>
 
-        {!previewsSlotEngine ? (
+        {!editsSlot ? (
           <Field
             id="edit-args"
             label="Args"
@@ -284,27 +348,24 @@ export function RunnerEditDrawer({
         <Field
           id="edit-model"
           label="Model"
-          hint="optional · blank uses the agent's own model · type a name or pick an alias"
+          hint={
+            editsSlot
+              ? runtime === runner?.runtime
+                ? `slot override · blank inherits runner default (${runner?.model ?? "default"})`
+                : "slot override · blank uses the agent's own model"
+              : "optional · blank uses the agent's own model · type a name or pick an alias"
+          }
         >
-          {previewsSlotEngine ? (
-            <Input
-              id="edit-model"
-              value={model || "default"}
-              disabled
-              readOnly
-            />
-          ) : (
-            <ModelField
-              id="edit-model"
-              runtime={runtime}
-              model={model}
-              onModelChange={setModel}
-              disabled={submitting}
-            />
-          )}
+          <ModelField
+            id="edit-model"
+            runtime={runtime}
+            model={model}
+            onModelChange={setModel}
+            disabled={submitting}
+          />
         </Field>
 
-        {!previewsSlotEngine && runtimeSupportsEffort(runtime) ? (() => {
+        {runtimeSupportsEffort(runtime) ? (() => {
           const effortOptions = EFFORT_OPTIONS_BY_RUNTIME[runtime] ?? [];
           // Effort enums differ per runtime — claude-code's `max` is
           // not in codex's enum; codex's `none / minimal` aren't in
@@ -318,14 +379,26 @@ export function RunnerEditDrawer({
             <Field
               id="edit-effort"
               label="Thinking effort"
-              hint="optional · resolves to the agent's native effort flag"
+              hint={
+                editsSlot
+                  ? runtime === runner?.runtime
+                    ? `slot override · blank inherits runner default (${runner?.effort ?? "default"})`
+                    : "slot override · blank uses the agent's own effort"
+                  : "optional · resolves to the agent's native effort flag"
+              }
             >
               <StyledSelect
+                id="edit-effort"
                 className="w-full"
                 value={safeEffort}
                 options={effortOptions.map((o) => ({
                   value: o.value,
-                  label: o.label,
+                  label:
+                    editsSlot && !o.value
+                      ? runtime === runner?.runtime
+                        ? `Runner default (${runner?.effort ?? "default"})`
+                        : "Runtime default"
+                      : o.label,
                   description: o.description,
                 }))}
                 onChange={(v) => setEffort(v)}
@@ -334,7 +407,7 @@ export function RunnerEditDrawer({
           );
         })() : null}
 
-        {!previewsSlotEngine && runtimeSupportsPermissionMode(runtime) ? (() => {
+        {!editsSlot && runtimeSupportsPermissionMode(runtime) ? (() => {
           const modeOptions = PERMISSION_MODES_BY_RUNTIME[runtime] ?? [];
           // Mode space is per-runtime: a mode that's valid for the
           // prior runtime might not exist for the new one (e.g.

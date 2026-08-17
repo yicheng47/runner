@@ -238,16 +238,17 @@ impl SessionManager {
         // Slot-level runtime override (feature 41): the effective
         // runtime is `slot.runtime_override ?? runner.runtime`. On a
         // differing override the spawn uses the registry command,
-        // default args, and default effort; persona fields carry over. A slot may
-        // independently pin the selected runtime's model. A
-        // matching override spawns byte-identically but still pins.
+        // default args, model, and effort; persona fields carry over.
+        // Slot model/effort overrides apply last and do not themselves
+        // pin the engine. A matching runtime override still pins.
         let resolution = resolve_runtime_override(
             runner,
             slot.runtime_override.as_deref(),
             slot.model_override.as_deref(),
-            None,
+            slot.effort_override.as_deref(),
         )?;
         let pinned = resolution.pinned;
+        let agent_options_overridden = resolution.effective.is_some();
         let runner =
             self.resolve_runner_executable(resolution.effective.as_ref().unwrap_or(runner), &pool)?;
 
@@ -348,6 +349,12 @@ impl SessionManager {
                 // edited later. No-override rows stay NULL.
                 row.agent_runtime = Some(runner.runtime.clone());
                 row.agent_command = Some(runner.command.clone());
+            }
+            if agent_options_overridden {
+                // Model/effort overrides survive app restart without
+                // pinning the engine when runtime_override is absent.
+                row.agent_model = runner.model.clone();
+                row.agent_effort = runner.effort.clone();
             }
             crate::repo::session::insert(&conn, &row)?;
         }
@@ -706,9 +713,8 @@ impl SessionManager {
     /// `None` spawns the runner's own runtime unchanged; a differing
     /// registry runtime spawns that engine with registry command /
     /// default args while the runner's persona fields carry over.
-    /// `model_override` / `effort_override` ride along with an explicit
-    /// runtime override so the replacement engine can be configured
-    /// instead of always spawning on its default flags.
+    /// `model_override` / `effort_override` apply after runtime
+    /// resolution and can also customize the runner's own engine.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_direct(
         self: &Arc<Self>,
@@ -798,6 +804,7 @@ impl SessionManager {
         let resolution =
             resolve_runtime_override(runner, runtime_override, model_override, effort_override)?;
         let pinned = resolution.pinned;
+        let agent_options_overridden = resolution.effective.is_some();
         let runner =
             self.resolve_runner_executable(resolution.effective.as_ref().unwrap_or(runner), &pool)?;
 
@@ -856,11 +863,12 @@ impl SessionManager {
             row.last_cols = initial_size.map(|(cols, _)| cols);
             row.last_rows = initial_size.map(|(_, rows)| rows);
             if persisted_runner_id.is_none() || pinned {
-                // Pinned runner-backed rows also record the effective
-                // model/effort so resume replays the override instead
-                // of the replacement engine's defaults.
                 row.agent_runtime = Some(runner.runtime.clone());
                 row.agent_command = Some(runner.command.clone());
+            }
+            if persisted_runner_id.is_none() || agent_options_overridden {
+                // Keep explicit model/effort across resume without
+                // turning an options-only override into an engine pin.
                 row.agent_model = runner.model.clone();
                 row.agent_effort = runner.effort.clone();
             }
