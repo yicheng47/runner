@@ -2726,6 +2726,7 @@ fn resume_keeps_scrollback_for_claude_code() {
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let events = capture();
     let spawned = mgr
         .spawn_direct(
             &runner,
@@ -2736,7 +2737,7 @@ fn resume_keeps_scrollback_for_claude_code() {
             None,
             std::path::Path::new("/tmp"),
             Arc::clone(&pool),
-            capture(),
+            events.clone(),
             None,
         )
         .unwrap();
@@ -2748,8 +2749,15 @@ fn resume_keeps_scrollback_for_claude_code() {
         "fresh spawn must report watermark 0"
     );
 
-    fake.push_output(0, b"pre-resume scrollback");
-    let pre_max_seq = wait_for_snapshot(&mgr, &session_id, 1).last().unwrap().seq;
+    fake.push_output(0, b"\x1b[?2004h\x1b[?1000h\x1b[?1006hpre-resume scrollback");
+    let before_resume = wait_for_snapshot(&mgr, &session_id, 2);
+    assert_eq!(before_resume[0].seq, 0);
+    assert_eq!(
+        BASE64.decode(&before_resume[0].data).unwrap(),
+        b"\x1b[?2004h\x1b[?1000h\x1b[?1006h",
+        "snapshot prefix must restore tracked paste and mouse modes"
+    );
+    let pre_max_seq = before_resume.last().unwrap().seq;
 
     fake.close_spawn(0);
     wait_for_db_stop(&pool, &session_id);
@@ -2761,7 +2769,7 @@ fn resume_keeps_scrollback_for_claude_code() {
             None,
             std::path::Path::new("/tmp"),
             Arc::clone(&pool),
-            capture(),
+            events.clone(),
         )
         .unwrap();
     assert_eq!(resumed.id, session_id);
@@ -2771,19 +2779,43 @@ fn resume_keeps_scrollback_for_claude_code() {
         pre_max_seq,
         "watermark must equal the pre-resume max seq"
     );
-    let kept = BASE64.encode(b"pre-resume scrollback");
+    let kept = BASE64.encode(b"\x1b[?2004h\x1b[?1000h\x1b[?1006hpre-resume scrollback");
+    let after_resume = mgr.output_snapshot(&session_id);
     assert!(
-        mgr.output_snapshot(&session_id)
-            .iter()
-            .any(|ev| ev.data == kept),
+        after_resume.iter().any(|ev| ev.data == kept),
         "claude-code resume must keep pre-resume chunks in the ring"
+    );
+    assert_ne!(
+        after_resume.first().map(|ev| ev.seq),
+        Some(0),
+        "the seam must disable paste and mouse tracking immediately"
+    );
+    let seam = after_resume.last().unwrap();
+    assert_eq!(BASE64.decode(&seam.data).unwrap(), output::KEEP_RESUME_SEAM);
+    assert_eq!(seam.seq, pre_max_seq + 1);
+    assert!(
+        seam.seq > mgr.replay_watermark(&session_id),
+        "watermark must be stamped before the seam"
+    );
+    assert!(
+        [b"\x1b[?2004h".as_slice(), b"\x1b[?1049h", b"\x1b[?47h"]
+            .into_iter()
+            .all(|ready| !output::KEEP_RESUME_SEAM
+                .windows(ready.len())
+                .any(|window| window == ready)),
+        "seam must not contain a TUI-ready enable escape"
+    );
+    assert_eq!(
+        events.output.lock().unwrap().last().unwrap().data,
+        seam.data,
+        "synthetic seam must fan out through session/output"
     );
 
     // The new PTY (spawn index 1) continues the seq counter: its
-    // chunk lands after the kept scrollback, strictly above the
-    // watermark, with no reset back to 1.
+    // chunk lands after the kept scrollback and seam, strictly above
+    // the watermark, with no reset back to 1.
     fake.push_output(1, b"post-resume repaint");
-    let snapshot = wait_for_snapshot(&mgr, &session_id, 2);
+    let snapshot = wait_for_snapshot(&mgr, &session_id, 3);
     assert!(
         snapshot.windows(2).all(|w| w[0].seq < w[1].seq),
         "snapshot seqs must stay strictly monotonic across resume"
@@ -2833,6 +2865,7 @@ fn resume_purges_scrollback_for_codex() {
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let events = capture();
     let spawned = mgr
         .spawn_direct(
             &runner,
@@ -2843,7 +2876,7 @@ fn resume_purges_scrollback_for_codex() {
             None,
             std::path::Path::new("/tmp"),
             Arc::clone(&pool),
-            capture(),
+            events.clone(),
             None,
         )
         .unwrap();
@@ -2861,13 +2894,25 @@ fn resume_purges_scrollback_for_codex() {
         None,
         std::path::Path::new("/tmp"),
         Arc::clone(&pool),
-        capture(),
+        events.clone(),
     )
     .unwrap();
 
-    assert!(
-        mgr.output_snapshot(&session_id).is_empty(),
-        "codex resume must still purge the output ring"
+    let reset_snapshot = mgr.output_snapshot(&session_id);
+    assert_eq!(
+        reset_snapshot.len(),
+        1,
+        "codex resume must replace prior output with one reset chunk"
+    );
+    assert_eq!(
+        BASE64.decode(&reset_snapshot[0].data).unwrap(),
+        output::PURGE_RESUME_RESET
+    );
+    assert_eq!(reset_snapshot[0].seq, pre_max_seq + 1);
+    assert_eq!(
+        events.output.lock().unwrap().last().unwrap().data,
+        reset_snapshot[0].data,
+        "synthetic reset must fan out through session/output"
     );
     assert_eq!(
         mgr.replay_watermark(&session_id),
@@ -2875,13 +2920,183 @@ fn resume_purges_scrollback_for_codex() {
         "watermark must equal the pre-resume max seq on the purge path too"
     );
 
-    // Seq continuity across the purge: the new PTY's first chunk is
-    // `last + 1`, i.e. strictly above the watermark.
+    // Seq continuity across the purge: reset is `last + 1`, then the
+    // new PTY's first chunk follows it.
     fake.push_output(1, b"fresh repaint");
-    let snapshot = wait_for_snapshot(&mgr, &session_id, 1);
+    let snapshot = wait_for_snapshot(&mgr, &session_id, 2);
     assert_eq!(snapshot[0].seq, pre_max_seq + 1);
+    assert_eq!(snapshot[1].seq, pre_max_seq + 2);
+    assert_eq!(snapshot[1].data, BASE64.encode(b"fresh repaint"));
 
     mgr.kill(&session_id).unwrap();
+}
+
+#[test]
+fn first_spawn_without_dims_uses_and_persists_default_size() {
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     created_at, updated_at)
+                 VALUES (?1, 'defaultsize', 'DefaultSize', 'shell', '/bin/sh', ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+    }
+    let mut runner = runner("/bin/sh", &[]);
+    runner.id = runner_id;
+    runner.handle = "defaultsize".into();
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let spawned = mgr
+        .spawn_direct(
+            &runner,
+            None,
+            None,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().initial_size,
+        Some(DEFAULT_PTY_SIZE)
+    );
+    let persisted: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![spawned.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(persisted, DEFAULT_PTY_SIZE);
+
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn resume_size_resolution_prefers_explicit_then_persisted_after_manager_restart() {
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     created_at, updated_at)
+                 VALUES (?1, 'persistedsize', 'PersistedSize', 'shell', '/bin/sh', ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+    }
+    let mut runner = runner("/bin/sh", &[]);
+    runner.id = runner_id;
+    runner.handle = "persistedsize".into();
+
+    let first_fake = fake_runtime();
+    let first_mgr = mgr_with_fake(None, Arc::clone(&first_fake));
+    let spawned = first_mgr
+        .spawn_direct(
+            &runner,
+            None,
+            None,
+            Some("/tmp"),
+            Some(120),
+            Some(30),
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    first_fake.close_spawn(0);
+    wait_for_db_stop(&pool, &spawned.id);
+    first_mgr.resize(&spawned.id, 132, 41, &pool).unwrap();
+    let persisted: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![spawned.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        persisted,
+        (132, 41),
+        "a stopped pane must persist its measured dimensions"
+    );
+    assert!(
+        first_fake.resizes.lock().unwrap().is_empty(),
+        "a stopped pane must not call the runtime resize path"
+    );
+    drop(first_mgr);
+    drop(first_fake);
+
+    let resumed_fake = fake_runtime();
+    let resumed_mgr = mgr_with_fake(None, Arc::clone(&resumed_fake));
+    resumed_mgr
+        .resume(
+            &spawned.id,
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        resumed_fake.last_spawn_spec().unwrap().initial_size,
+        Some((132, 41)),
+        "unsized resume must use the DB size without manager memory"
+    );
+    resumed_mgr.kill(&spawned.id).unwrap();
+    wait_for_db_stop(&pool, &spawned.id);
+
+    resumed_mgr
+        .resume(
+            &spawned.id,
+            Some(144),
+            Some(50),
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+        )
+        .unwrap();
+    assert_eq!(
+        resumed_fake.last_spawn_spec().unwrap().initial_size,
+        Some((144, 50)),
+        "explicit resume size must win over the persisted size"
+    );
+    resumed_mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn resize_rejects_unknown_session_without_creating_state() {
+    let pool = pool_with_schema();
+    let mgr = SessionManager::new(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+
+    let err = mgr.resize("missing-session", 120, 30, &pool).unwrap_err();
+
+    assert_eq!(format!("{err}"), "session not found: missing-session");
+    assert!(
+        mgr.session_state("missing-session").is_none(),
+        "resize must not create manager state for an unknown row"
+    );
 }
 
 #[test]
@@ -3249,6 +3464,23 @@ fn scan_bracketed_paste_detects_enable_and_disable_escapes() {
         scan_bracketed_paste_transition(b"\x1b[?2004l\x1b[?2004h"),
         Some(true)
     );
+}
+
+#[test]
+fn scan_mouse_modes_detects_enable_disable_and_full_reset() {
+    for mode in [1000, 1002, 1003, 1006] {
+        let enable = format!("\x1b[?{mode}h");
+        let disable = format!("\x1b[?{mode}l");
+        assert_eq!(
+            scan_mouse_mode_transition(enable.as_bytes(), mode),
+            Some(true)
+        );
+        assert_eq!(
+            scan_mouse_mode_transition(disable.as_bytes(), mode),
+            Some(false)
+        );
+        assert_eq!(scan_mouse_mode_transition(b"\x1bc", mode), Some(false));
+    }
 }
 
 #[test]
@@ -3656,6 +3888,20 @@ fn resize_purges_ring_only_on_cols_change() {
     assert!(
         mgr.output_snapshot(&spawned.id).is_empty(),
         "cols change must purge the replay ring"
+    );
+    let persisted: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![spawned.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        persisted,
+        (100, 30),
+        "a live resize must still persist the applied dimensions"
     );
 
     mgr.kill(&spawned.id).unwrap();

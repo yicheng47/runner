@@ -1,6 +1,6 @@
 # runner-native
 
-Phase 3 walking skeleton for [impl 0031](../../docs/impls/gpui-rewrite/0031-rust-native-ui-rewrite/plan.md). It opens Runner's existing direct chats from the same SQLite database as the released app, spawns or resumes them through `runner_app::session::SessionManager`, and renders the manager's PTY byte stream with `alacritty_terminal` on GPUI.
+Phase 3 walking skeleton for [the gpui-rewrite plan](../../docs/impls/gpui-rewrite/plan.md). It opens Runner's existing direct chats from the same SQLite database as the released app, spawns or resumes them through `runner_app::session::SessionManager`, and renders the manager's PTY byte stream with `alacritty_terminal` on GPUI.
 
 ## Run
 

@@ -273,8 +273,8 @@ impl SessionManager {
         //     scrollback after kill, so navigating off the chat and
         //     coming back doesn't blank the terminal.
         //   - When the row is later resumed via `SessionManager::resume`,
-        //     the new PTY's first chunk continues at `seq = last + 1`
-        //     instead of restarting at 1, which the frontend's
+        //     its synthetic seam and new PTY chunks continue above
+        //     `last` instead of restarting at 1, which the frontend's
         //     seq-merge filter (`seq <= lastWrittenSeq`) would silently
         //     drop, losing the entire post-resume head of output.
         // Use `purge_session_buffers` for explicit cleanup paths
