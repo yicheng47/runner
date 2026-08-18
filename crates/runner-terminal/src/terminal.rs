@@ -408,13 +408,22 @@ mod tests {
             Arc::new(runner_backend::session::pty_runtime::PtyRuntime::new());
         let windows = Arc::new(runner_backend::windows::WindowRegistry::new());
         windows.register("main");
+        let runtime_shell_env = Arc::new(std::sync::RwLock::new(
+            runner_backend::shell_path::LoginShellEnv::default(),
+        ));
+        let runtime_discovery = Arc::new(std::sync::RwLock::new(
+            runner_backend::shell_path::DiscoveryState::startup(None, None),
+        ));
         AppCore {
             db: pool,
             app_data_dir,
             sessions: runner_backend::session::SessionManager::new(
-                runner_backend::shell_path::LoginShellEnv::default(),
+                Arc::clone(&runtime_shell_env),
+                Arc::clone(&runtime_discovery),
                 runtime,
             ),
+            runtime_shell_env,
+            runtime_discovery,
             buses: runner_backend::event_bus::BusRegistry::new(),
             routers: runner_backend::router::RouterRegistry::new(),
             mcp: Arc::new(runner_backend::mcp::McpHandle::new()),

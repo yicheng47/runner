@@ -316,6 +316,8 @@ impl NativeRoot {
                 None,
                 None,
                 None,
+                None,
+                None,
                 Some(initial_size.0),
                 Some(initial_size.1),
             )?;

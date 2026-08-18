@@ -1,13 +1,12 @@
-// Codex post-spawn session-key capture.
+// Codex-lineage post-spawn session-key capture for Codex and TRAE CLI.
 //
 // Codex's CLI doesn't accept a caller-provided session id at spawn time
 // (claude-code does, via `--session-id <uuid>`), so we can't pre-assign
 // the key the way the runtime adapter does for claude-code. Instead,
-// codex writes a "rollout" file at
-// `$HOME/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl` whose
+// both runtimes write a "rollout" file under their sessions root at
+// `YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl` whose
 // first JSON line is a `session_meta` envelope containing `payload.id`
-// (the session UUID) and `payload.cwd` (the working directory codex
-// started in).
+// (the session UUID) and `payload.cwd` (the runtime's working directory).
 //
 // After every codex spawn that didn't already have an
 // `agent_session_key` on the row, we kick off a short-lived background
@@ -64,13 +63,23 @@ fn claimed_rollouts() -> &'static Mutex<HashSet<PathBuf>> {
     SET.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-/// Spawn a background thread that captures the codex session id for
+pub fn sessions_root_for(runtime: &str) -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    match runtime {
+        "codex" => Some(home.join(".codex").join("sessions")),
+        "trae" => Some(home.join(".trae").join("cli").join("sessions")),
+        _ => None,
+    }
+}
+
+/// Spawn a background thread that captures the codex-lineage session id for
 /// `session_id` (a Runner sessions row) and writes it into
-/// `agent_session_key`. Returns immediately; no-op if `$HOME/.codex/`
-/// doesn't exist.
+/// `agent_session_key`. Returns immediately; no-op if the runtime's
+/// sessions root doesn't exist.
 pub struct CaptureRequest {
     pub session_id: String,
     pub mission_id: Option<String>,
+    pub sessions_root: PathBuf,
     pub spawn_cwd: String,
     pub started_at: DateTime<Utc>,
     pub expected_row_started_at: String,
@@ -85,11 +94,7 @@ pub fn spawn_capture(request: CaptureRequest) {
 }
 
 fn run(request: CaptureRequest) {
-    let Some(home) = std::env::var_os("HOME") else {
-        return;
-    };
-    let sessions_root = PathBuf::from(home).join(".codex").join("sessions");
-    if !sessions_root.is_dir() {
+    if !request.sessions_root.is_dir() {
         return;
     }
 
@@ -110,8 +115,8 @@ fn run(request: CaptureRequest) {
     loop {
         let (scan, source) = if let Some(pid) = request.spawn_pid {
             scan_pid_result_or_fallback(
-                open_rollout_paths_for_pid(pid, &sessions_root),
-                &sessions_root,
+                open_rollout_paths_for_pid(pid, &request.sessions_root),
+                &request.sessions_root,
                 &candidates,
                 &request.spawn_cwd,
                 request.started_at,
@@ -120,7 +125,7 @@ fn run(request: CaptureRequest) {
             )
         } else {
             scan_fallback_with_marker(
-                &sessions_root,
+                &request.sessions_root,
                 &candidates,
                 &request.spawn_cwd,
                 request.started_at,
@@ -616,6 +621,20 @@ mod tests {
             })
         )
         .unwrap();
+    }
+
+    #[test]
+    fn sessions_root_for_maps_codex_lineage_layouts() {
+        let home = PathBuf::from(std::env::var_os("HOME").expect("tests require HOME"));
+        assert_eq!(
+            sessions_root_for("codex"),
+            Some(home.join(".codex").join("sessions")),
+        );
+        assert_eq!(
+            sessions_root_for("trae"),
+            Some(home.join(".trae").join("cli").join("sessions")),
+        );
+        assert_eq!(sessions_root_for("shell"), None);
     }
 
     #[test]

@@ -51,6 +51,19 @@ fn inert_runtime() -> Arc<dyn SessionRuntime> {
     Arc::new(InertRuntime)
 }
 
+fn manager_with_runtime(
+    shell_env: crate::shell_path::LoginShellEnv,
+    runtime: Arc<dyn SessionRuntime>,
+) -> Arc<SessionManager> {
+    SessionManager::new(
+        Arc::new(std::sync::RwLock::new(shell_env)),
+        Arc::new(std::sync::RwLock::new(
+            crate::shell_path::DiscoveryState::startup(None, None),
+        )),
+        runtime,
+    )
+}
+
 /// Test stand-in that captures every call so assertions can read
 /// back what the manager handed to the runtime layer (env vars,
 /// argv, byte writes, key names, resize dimensions). Lets
@@ -304,7 +317,7 @@ fn fake_runtime() -> Arc<FakeRuntime> {
 /// Build a manager backed by the supplied FakeRuntime. Returns
 /// the Arc so tests can introspect the captured calls.
 fn mgr_with_fake(shell: Option<String>, fake: Arc<FakeRuntime>) -> Arc<SessionManager> {
-    SessionManager::new(
+    manager_with_runtime(
         crate::shell_path::LoginShellEnv {
             path: shell,
             vars: Default::default(),
@@ -353,6 +366,16 @@ fn runner(command: &str, args: &[&str]) -> Runner {
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }
+}
+
+fn assert_effective_command(command: &str, catalog_name: &str) {
+    assert_eq!(
+        std::path::Path::new(command)
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some(catalog_name),
+        "expected {catalog_name} or an absolute path ending in {catalog_name}, got {command}",
+    );
 }
 
 fn slot_for(runner: &Runner) -> crate::model::Slot {
@@ -1098,7 +1121,7 @@ fn inject_stdin_roundtrip_routes_through_runtime() {
 
 #[test]
 fn inject_stdin_on_unknown_session_errors_cleanly() {
-    let mgr = SessionManager::new(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+    let mgr = manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
     let err = mgr.inject_stdin("nope", b"x").unwrap_err();
     assert!(format!("{err}").contains("session not found"));
 }
@@ -1224,6 +1247,8 @@ fn direct_chat_persona_lands_as_trailing_positional_argv_without_worker_preamble
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -1437,6 +1462,22 @@ fn codex_mission_spawn_grants_event_log_dir_to_sandbox() {
     );
 
     mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn trae_first_turn_gets_capture_prompt_marker() {
+    let (first_turn, marker) = SessionManager::codex_capture_prompt_marker(
+        "trae",
+        "session-id",
+        Some("first turn".to_string()),
+    );
+    let marker = marker.expect("trae must use the codex-lineage capture marker");
+    assert_eq!(
+        marker,
+        crate::session::codex_capture::prompt_marker("session-id")
+    );
+    let expected = format!("first turn\n\n{marker}");
+    assert_eq!(first_turn.as_deref(), Some(expected.as_str()));
 }
 
 #[test]
@@ -1682,7 +1723,7 @@ fn spawn_failure_after_spawn_command_reaps_the_child() {
         .execute("DROP TABLE sessions", [])
         .unwrap();
 
-    let mgr = SessionManager::new(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+    let mgr = manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
     let slot = slot_for(&runner);
     let err = mgr
         .spawn(
@@ -1881,6 +1922,8 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
         .spawn_direct(
             &runner,
             None,
+            None,
+            None,
             Some(&project.id),
             Some(&project.cwd),
             None,
@@ -2036,6 +2079,8 @@ fn direct_chat_status_transition_emits_session_status_busy() {
             &runner,
             None,
             None,
+            None,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -2099,6 +2144,8 @@ fn direct_chat_status_transition_emits_session_status_idle() {
             &runner,
             None,
             None,
+            None,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -2157,6 +2204,8 @@ fn direct_chat_typing_stays_idle_until_submit() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -2515,12 +2564,14 @@ fn login_shell_proxy_env_reaches_spawn_with_runner_env_taking_precedence() {
     vars.insert("HTTPS_PROXY".into(), "http://login-shell:7890".into());
     vars.insert("https_proxy".into(), "http://login-shell:7890".into());
     vars.insert("NO_PROXY".into(), "localhost,127.0.0.1,*.byted.org".into());
-    let mgr = SessionManager::new(
+    let mgr = manager_with_runtime(
         crate::shell_path::LoginShellEnv { path: None, vars },
         Arc::clone(&fake) as Arc<dyn SessionRuntime>,
     );
     mgr.spawn_direct(
         &runner,
+        None,
+        None,
         None,
         None,
         Some("/tmp"),
@@ -2579,6 +2630,8 @@ fn output_snapshot_replays_live_session_and_clears_after_forget() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -2664,6 +2717,8 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -2817,9 +2872,8 @@ fn wait_for_db_stop(pool: &DbPool, session_id: &str) {
     }
 }
 
-#[test]
-fn resume_keeps_scrollback_for_claude_code() {
-    // Impl 0024: resuming a claude-code session must NOT drop the
+fn assert_resume_keeps_scrollback(runtime: &str) {
+    // Impl 0024: resuming an inline-repaint runtime must NOT drop the
     // output ring — a terminal emulator keeps pre-resume scrollback
     // above the resume repaint, and the ring has to agree with the
     // mounted xterm so a later remount replay doesn't lose what the
@@ -2835,16 +2889,16 @@ fn resume_keeps_scrollback_for_claude_code() {
                     (id, handle, display_name, runtime, command,
                      args_json, working_dir, system_prompt, env_json,
                      created_at, updated_at)
-                 VALUES (?1, 'keeper', 'K', 'claude-code', '/bin/sh',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now],
+                 VALUES (?1, 'keeper', 'K', ?2, '/bin/sh',
+                         NULL, NULL, NULL, NULL, ?3, ?3)",
+            params![runner_id, runtime, now],
         )
         .unwrap();
     }
     let mut runner = runner("/bin/sh", &[]);
     runner.id = runner_id;
     runner.handle = "keeper".into();
-    runner.runtime = "claude-code".into();
+    runner.runtime = runtime.into();
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
@@ -2852,6 +2906,8 @@ fn resume_keeps_scrollback_for_claude_code() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -2905,7 +2961,7 @@ fn resume_keeps_scrollback_for_claude_code() {
     let after_resume = mgr.output_snapshot(&session_id);
     assert!(
         after_resume.iter().any(|ev| ev.data == kept),
-        "claude-code resume must keep pre-resume chunks in the ring"
+        "{runtime} resume must keep pre-resume chunks in the ring"
     );
     assert_ne!(
         after_resume.first().map(|ev| ev.seq),
@@ -2959,8 +3015,17 @@ fn resume_keeps_scrollback_for_claude_code() {
 }
 
 #[test]
-fn resume_purges_scrollback_for_codex() {
-    // Codex keeps the pre-0024 behavior: its full-frame repaint over
+fn resume_keeps_scrollback_for_claude_code() {
+    assert_resume_keeps_scrollback("claude-code");
+}
+
+#[test]
+fn resume_keeps_scrollback_for_qoder() {
+    assert_resume_keeps_scrollback("qoder");
+}
+
+fn assert_resume_purges_scrollback(runtime: &str) {
+    // Codex-lineage runtimes keep the pre-0024 behavior: their full-frame repaint over
     // retained scrollback is the stacking artifact the purge was
     // added for, so resume still drops the ring — while the watermark
     // is stamped uniformly (equal to the post-purge floor here).
@@ -2974,16 +3039,16 @@ fn resume_purges_scrollback_for_codex() {
                     (id, handle, display_name, runtime, command,
                      args_json, working_dir, system_prompt, env_json,
                      created_at, updated_at)
-                 VALUES (?1, 'purger', 'P', 'codex', '/bin/sh',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now],
+                 VALUES (?1, 'purger', 'P', ?2, '/bin/sh',
+                         NULL, NULL, NULL, NULL, ?3, ?3)",
+            params![runner_id, runtime, now],
         )
         .unwrap();
     }
     let mut runner = runner("/bin/sh", &[]);
     runner.id = runner_id;
     runner.handle = "purger".into();
-    runner.runtime = "codex".into();
+    runner.runtime = runtime.into();
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
@@ -2991,6 +3056,8 @@ fn resume_purges_scrollback_for_codex() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -3024,7 +3091,7 @@ fn resume_purges_scrollback_for_codex() {
     assert_eq!(
         reset_snapshot.len(),
         1,
-        "codex resume must replace prior output with one reset chunk"
+        "{runtime} resume must replace prior output with one reset chunk"
     );
     assert_eq!(
         BASE64.decode(&reset_snapshot[0].data).unwrap(),
@@ -3054,6 +3121,16 @@ fn resume_purges_scrollback_for_codex() {
 }
 
 #[test]
+fn resume_purges_scrollback_for_codex() {
+    assert_resume_purges_scrollback("codex");
+}
+
+#[test]
+fn resume_purges_scrollback_for_trae() {
+    assert_resume_purges_scrollback("trae");
+}
+
+#[test]
 fn first_spawn_without_dims_uses_and_persists_default_size() {
     let pool = pool_with_schema();
     let now = Utc::now().to_rfc3339();
@@ -3078,6 +3155,8 @@ fn first_spawn_without_dims_uses_and_persists_default_size() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -3133,6 +3212,8 @@ fn resume_size_resolution_prefers_explicit_then_persisted_after_manager_restart(
     let spawned = first_mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -3212,7 +3293,7 @@ fn resume_size_resolution_prefers_explicit_then_persisted_after_manager_restart(
 #[test]
 fn resize_rejects_unknown_session_without_creating_state() {
     let pool = pool_with_schema();
-    let mgr = SessionManager::new(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+    let mgr = manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
 
     let err = mgr
         .resize("missing-session", 120, 30, &pool, capture())
@@ -3260,7 +3341,7 @@ fn resume_refuses_running_and_archived_rows() {
         )
         .unwrap();
     }
-    let mgr = SessionManager::new(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+    let mgr = manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
     for (sid, needle) in [
         ("running-sid", "already running"),
         ("archived-sid", "archived"),
@@ -3613,7 +3694,7 @@ fn scan_mouse_modes_detects_enable_disable_and_full_reset() {
 fn output_snapshot_prepends_alt_screen_enter_when_session_in_alt_screen() {
     let pool = pool_with_schema();
     let fake = fake_runtime();
-    let mgr = SessionManager::new(
+    let mgr = manager_with_runtime(
         crate::shell_path::LoginShellEnv::default(),
         Arc::clone(&fake) as Arc<dyn SessionRuntime>,
     );
@@ -3635,6 +3716,8 @@ fn output_snapshot_prepends_alt_screen_enter_when_session_in_alt_screen() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -3680,7 +3763,7 @@ fn output_snapshot_prepends_alt_screen_enter_when_session_in_alt_screen() {
 fn output_snapshot_prepends_bracketed_paste_enable_when_session_has_it_enabled() {
     let pool = pool_with_schema();
     let fake = fake_runtime();
-    let mgr = SessionManager::new(
+    let mgr = manager_with_runtime(
         crate::shell_path::LoginShellEnv::default(),
         Arc::clone(&fake) as Arc<dyn SessionRuntime>,
     );
@@ -3702,6 +3785,8 @@ fn output_snapshot_prepends_bracketed_paste_enable_when_session_has_it_enabled()
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -3740,7 +3825,7 @@ fn output_snapshot_prepends_bracketed_paste_enable_when_session_has_it_enabled()
 fn output_snapshot_combines_alt_screen_and_bracketed_paste_prefixes() {
     let pool = pool_with_schema();
     let fake = fake_runtime();
-    let mgr = SessionManager::new(
+    let mgr = manager_with_runtime(
         crate::shell_path::LoginShellEnv::default(),
         Arc::clone(&fake) as Arc<dyn SessionRuntime>,
     );
@@ -3762,6 +3847,8 @@ fn output_snapshot_combines_alt_screen_and_bracketed_paste_prefixes() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -3895,7 +3982,12 @@ fn runtime_clears_on_resize_resolves_runner_backed_runtimes() {
     let pool = db::open_in_memory().unwrap();
     let now = chrono::Utc::now().to_rfc3339();
     let conn = pool.get().unwrap();
-    for (runner_id, runtime) in [("r-codex", "codex"), ("r-shell", "shell")] {
+    for (runner_id, runtime) in [
+        ("r-codex", "codex"),
+        ("r-qoder", "qoder"),
+        ("r-trae", "trae"),
+        ("r-shell", "shell"),
+    ] {
         conn.execute(
             "INSERT INTO runners
                     (id, handle, display_name, runtime, command,
@@ -3911,6 +4003,18 @@ fn runtime_clears_on_resize_resolves_runner_backed_runtimes() {
     conn.execute(
         "INSERT INTO sessions (id, mission_id, runner_id, cwd, status, started_at)
              VALUES ('s-codex-runner', NULL, 'r-codex', '/tmp', 'running', ?1)",
+        params![now],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO sessions (id, mission_id, runner_id, cwd, status, started_at)
+             VALUES ('s-qoder-runner', NULL, 'r-qoder', '/tmp', 'running', ?1)",
+        params![now],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO sessions (id, mission_id, runner_id, cwd, status, started_at)
+             VALUES ('s-trae-runner', NULL, 'r-trae', '/tmp', 'running', ?1)",
         params![now],
     )
     .unwrap();
@@ -3936,6 +4040,22 @@ fn runtime_clears_on_resize_resolves_runner_backed_runtimes() {
     ));
     assert!(super::output::runtime_clears_on_resize(
         "s-claude-runtime",
+        &pool
+    ));
+    assert!(super::output::runtime_clears_on_resize(
+        "s-qoder-runner",
+        &pool
+    ));
+    assert!(super::output::runtime_clears_on_resize(
+        "s-trae-runner",
+        &pool
+    ));
+    assert!(super::output::runtime_purges_on_resume(
+        "s-trae-runner",
+        &pool
+    ));
+    assert!(!super::output::runtime_purges_on_resume(
+        "s-qoder-runner",
         &pool
     ));
     assert!(!super::output::runtime_clears_on_resize(
@@ -3974,6 +4094,8 @@ fn resize_purges_ring_only_on_cols_change() {
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -4068,6 +4190,8 @@ fn spawn_claude_for_resize(
     let spawned = mgr
         .spawn_direct(
             &runner,
+            None,
+            None,
             None,
             None,
             Some("/tmp"),
@@ -4267,13 +4391,200 @@ fn resize_settle_thread_applies_without_manual_nudge() {
 // ---------------------------------------------------------------------
 
 #[test]
+fn runtime_direct_runner_applies_model_and_effort() {
+    let configured =
+        runtime_direct_runner("codex", None, Some(" gpt-5.6-sol "), Some(" max ")).unwrap();
+    assert_eq!(configured.model.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(configured.effort.as_deref(), Some("max"));
+
+    let defaults = runtime_direct_runner("codex", None, Some(" "), Some("")).unwrap();
+    assert_eq!(defaults.model, None);
+    assert_eq!(defaults.effort, None);
+}
+
+#[test]
+fn runtime_direct_spawn_persists_model_and_effort() {
+    let pool = pool_with_schema();
+    let configured =
+        runtime_direct_runner("codex", Some("/bin/sh"), Some("gpt-5.6-sol"), Some("max")).unwrap();
+    let mgr = mgr_with_fake(None, fake_runtime());
+    let spawned = mgr
+        .spawn_runtime_direct(
+            &configured,
+            None,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+        )
+        .unwrap();
+
+    let stored: (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT agent_runtime, agent_command, agent_model, agent_effort
+               FROM sessions WHERE id = ?1",
+            params![spawned.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(stored.0.as_deref(), Some("codex"));
+    assert_eq!(stored.1.as_deref(), Some("/bin/sh"));
+    assert_eq!(stored.2.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(stored.3.as_deref(), Some("max"));
+
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn pinned_direct_spawn_records_override_model_and_effort() {
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, 'pin-me', 'Pin', 'codex', '/bin/sh',
+                         '[]', NULL, NULL, NULL, ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+    }
+    let mut r = runner("/bin/sh", &[]);
+    r.id = runner_id;
+    r.runtime = "codex".into();
+    r.model = Some("runner-model".into());
+    r.effort = Some("runner-effort".into());
+    let mgr = mgr_with_fake(None, fake_runtime());
+    let spawned = mgr
+        .spawn_direct(
+            &r,
+            Some("codex"),
+            Some("gpt-5.6-sol"),
+            Some("ultra"),
+            None,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+
+    let stored: (Option<String>, Option<String>, Option<String>) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT agent_runtime, agent_model, agent_effort
+               FROM sessions WHERE id = ?1",
+            params![spawned.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(stored.0.as_deref(), Some("codex"));
+    assert_eq!(stored.1.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(stored.2.as_deref(), Some("ultra"));
+
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn unpinned_direct_spawn_persists_options_without_pinning_runtime() {
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, created_at, updated_at)
+                 VALUES (?1, 'options-only', 'Options', 'codex', '/bin/sh',
+                         '[]', ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+    }
+    let mut r = runner("/bin/sh", &[]);
+    r.id = runner_id;
+    r.runtime = "codex".into();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let spawned = mgr
+        .spawn_direct(
+            &r,
+            None,
+            Some("gpt-5.6-sol"),
+            Some("ultra"),
+            None,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+
+    let stored: (Option<String>, Option<String>, Option<String>) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT agent_runtime, agent_model, agent_effort
+               FROM sessions WHERE id = ?1",
+            params![spawned.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(stored.0, None, "options-only direct chats must not pin");
+    assert_eq!(stored.1.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(stored.2.as_deref(), Some("ultra"));
+
+    mgr.kill(&spawned.id).unwrap();
+    mgr.resume(
+        &spawned.id,
+        None,
+        None,
+        std::path::Path::new("/tmp"),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+    let resumed = fake.last_spawn_spec().expect("resume should spawn");
+    assert!(resumed
+        .args
+        .windows(2)
+        .any(|w| w[0] == "--model" && w[1] == "gpt-5.6-sol"));
+    assert!(resumed
+        .args
+        .windows(2)
+        .any(|w| w[0] == "-c" && w[1] == "model_reasoning_effort=ultra"));
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
 fn runtime_override_helper_distinguishes_absent_matching_and_differing() {
     let mut r = runner("codex-custom", &["--custom"]);
     r.runtime = "codex".into();
 
     // Absent / blank: no rebuild, no pin.
     for value in [None, Some("  ")] {
-        let res = resolve_runtime_override(&r, value).unwrap();
+        let res = resolve_runtime_override(&r, value, None, None).unwrap();
         assert!(res.effective.is_none());
         assert!(!res.pinned, "absent/blank override must not pin");
     }
@@ -4281,14 +4592,19 @@ fn runtime_override_helper_distinguishes_absent_matching_and_differing() {
     // Matching: no rebuild (spawn stays byte-identical), but pinned —
     // the session row must record the engine so a later runner-
     // template edit can't re-engine its resume.
-    let matching = resolve_runtime_override(&r, Some("codex")).unwrap();
+    let matching = resolve_runtime_override(&r, Some("codex"), None, None).unwrap();
     assert!(matching.effective.is_none());
     assert!(matching.pinned, "explicit matching override must pin");
 
-    // Differing: rebuild + pin.
-    let differing = resolve_runtime_override(&r, Some("claude-code")).unwrap();
-    assert!(differing.effective.is_some());
-    assert!(differing.pinned);
+    // Differing: rebuild + pin for every other catalog runtime.
+    for runtime in ["claude-code", "qoder", "trae"] {
+        let differing = resolve_runtime_override(&r, Some(runtime), None, None).unwrap();
+        assert_eq!(
+            differing.effective.as_ref().map(|r| r.runtime.as_str()),
+            Some(runtime),
+        );
+        assert!(differing.pinned);
+    }
 }
 
 #[test]
@@ -4301,7 +4617,7 @@ fn runtime_override_helper_resets_engine_fields_and_keeps_persona() {
     r.working_dir = Some("/work".into());
     r.env.insert("FOO".into(), "bar".into());
 
-    let effective = resolve_runtime_override(&r, Some("claude-code"))
+    let effective = resolve_runtime_override(&r, Some("claude-code"), None, None)
         .unwrap()
         .effective
         .expect("differing runtime must produce an effective runner");
@@ -4329,9 +4645,83 @@ fn runtime_override_helper_resets_engine_fields_and_keeps_persona() {
 }
 
 #[test]
+fn runtime_override_helper_applies_slot_model_to_selected_runtime() {
+    let mut r = runner("codex-custom", &["--custom"]);
+    r.runtime = "codex".into();
+    r.model = Some("runner-model".into());
+
+    let differing = resolve_runtime_override(&r, Some("trae"), Some("trae-slot-model"), None)
+        .unwrap()
+        .effective
+        .expect("differing runtime must produce an effective runner");
+    assert_eq!(differing.runtime, "trae");
+    assert_eq!(differing.model.as_deref(), Some("trae-slot-model"));
+
+    let matching = resolve_runtime_override(&r, Some("codex"), Some("codex-slot-model"), None)
+        .unwrap()
+        .effective
+        .expect("a model override must rebuild even for a matching runtime");
+    assert_eq!(matching.runtime, "codex");
+    assert_eq!(matching.model.as_deref(), Some("codex-slot-model"));
+    assert_eq!(matching.args, r.args);
+
+    let unpinned = resolve_runtime_override(&r, None, Some("codex-slot-model"), None).unwrap();
+    let effective = unpinned
+        .effective
+        .expect("a model-only override must rebuild the runner config");
+    assert_eq!(effective.runtime, "codex");
+    assert_eq!(effective.model.as_deref(), Some("codex-slot-model"));
+    assert_eq!(effective.effort, r.effort);
+    assert!(!unpinned.pinned, "model-only overrides must not pin");
+}
+
+#[test]
+fn runtime_override_helper_applies_effort_to_selected_runtime() {
+    let mut r = runner("codex-custom", &["--custom"]);
+    r.runtime = "codex".into();
+    r.model = Some("runner-model".into());
+    r.effort = Some("runner-effort".into());
+
+    let differing = resolve_runtime_override(&r, Some("claude-code"), Some("fable"), Some("max"))
+        .unwrap()
+        .effective
+        .expect("differing runtime must produce an effective runner");
+    assert_eq!(differing.runtime, "claude-code");
+    assert_eq!(differing.model.as_deref(), Some("fable"));
+    assert_eq!(differing.effort.as_deref(), Some("max"));
+
+    let cleared = resolve_runtime_override(&r, Some("claude-code"), None, None)
+        .unwrap()
+        .effective
+        .expect("differing runtime must produce an effective runner");
+    assert_eq!(cleared.model, None);
+    assert_eq!(cleared.effort, None);
+
+    let matching = resolve_runtime_override(&r, Some("codex"), None, Some("xhigh"))
+        .unwrap()
+        .effective
+        .expect("an effort override must rebuild even for a matching runtime");
+    assert_eq!(matching.model.as_deref(), Some("runner-model"));
+    assert_eq!(matching.effort.as_deref(), Some("xhigh"));
+
+    let unpinned = resolve_runtime_override(&r, None, None, Some("high")).unwrap();
+    let effective = unpinned
+        .effective
+        .expect("an effort-only override must rebuild the runner config");
+    assert_eq!(effective.runtime, "codex");
+    assert_eq!(effective.model.as_deref(), Some("runner-model"));
+    assert_eq!(effective.effort.as_deref(), Some("high"));
+    assert!(!unpinned.pinned, "effort-only overrides must not pin");
+
+    let blank = resolve_runtime_override(&r, Some("codex"), Some("  "), Some("")).unwrap();
+    assert!(blank.effective.is_none());
+    assert!(blank.pinned);
+}
+
+#[test]
 fn runtime_override_helper_rejects_unknown_runtime() {
     let r = runner("/bin/sh", &[]);
-    let err = resolve_runtime_override(&r, Some("aider-future")).unwrap_err();
+    let err = resolve_runtime_override(&r, Some("aider-future"), None, None).unwrap_err();
     assert!(err.to_string().contains("unknown runtime"), "got: {err}",);
 }
 
@@ -4343,7 +4733,8 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
     let slot_id = insert_crew_runner(&pool, &mission_row.id, &runner_id);
 
     // Runner row is a codex engine with custom flags + pinned
-    // model/effort; the slot overrides to claude-code.
+    // model/effort; the slot overrides to claude-code and selects
+    // its own model and effort.
     let mut runner = runner("codex-custom", &["--custom-flag"]);
     runner.id = runner_id.clone();
     runner.runtime = "codex".into();
@@ -4353,6 +4744,8 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
     let mut slot = slot_for(&runner);
     slot.id = slot_id;
     slot.runtime_override = Some("claude-code".into());
+    slot.model_override = Some("opus".into());
+    slot.effort_override = Some("max".into());
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
@@ -4370,20 +4763,20 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
         .unwrap();
 
     let spec = fake.last_spawn_spec().expect("spawn was called");
-    assert_eq!(
-        spec.command, "claude",
-        "override must use the registry command"
-    );
+    assert_effective_command(&spec.command, "claude");
     assert!(
         !spec.args.contains(&"--custom-flag".to_string()),
         "runner args are engine flags and must not carry across runtimes: {:?}",
         spec.args,
     );
-    assert!(
-        !spec.args.contains(&"--model".to_string()),
-        "pinned model must be dropped on override: {:?}",
-        spec.args,
-    );
+    assert!(spec
+        .args
+        .windows(2)
+        .any(|w| w[0] == "--model" && w[1] == "opus"));
+    assert!(spec
+        .args
+        .windows(2)
+        .any(|w| w[0] == "--effort" && w[1] == "max"));
     assert!(
         spec.args
             .windows(2)
@@ -4403,18 +4796,121 @@ fn mission_spawn_with_slot_override_uses_registry_engine_and_records_runtime() {
     );
 
     // Session row records the effective runtime for respawn/resume.
-    let (agent_runtime, agent_command): (Option<String>, Option<String>) = pool
+    let (agent_runtime, agent_command, agent_model, agent_effort): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = pool
         .get()
         .unwrap()
         .query_row(
-            "SELECT agent_runtime, agent_command FROM sessions WHERE id = ?1",
+            "SELECT agent_runtime, agent_command, agent_model, agent_effort
+               FROM sessions WHERE id = ?1",
             params![spawned.id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .unwrap();
     assert_eq!(agent_runtime.as_deref(), Some("claude-code"));
-    assert_eq!(agent_command.as_deref(), Some("claude"));
+    assert_effective_command(agent_command.as_deref().unwrap(), "claude");
+    assert_eq!(agent_model.as_deref(), Some("opus"));
+    assert_eq!(agent_effort.as_deref(), Some("max"));
 
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn mission_spawn_with_model_only_slot_override_uses_runner_runtime_without_pinning() {
+    let pool = pool_with_schema();
+    let mission_row = mission();
+    let runner_id = ulid::Ulid::new().to_string();
+    let slot_id = insert_crew_runner(&pool, &mission_row.id, &runner_id);
+
+    let mut runner = runner("codex-custom", &["--custom-flag"]);
+    runner.id = runner_id;
+    runner.runtime = "codex".into();
+    runner.model = Some("runner-model".into());
+    runner.effort = Some("high".into());
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE runners
+                SET runtime = 'codex', command = 'codex-custom',
+                    args_json = '[\"--custom-flag\"]',
+                    model = 'runner-model', effort = 'high'
+              WHERE id = ?1",
+            params![runner.id],
+        )
+        .unwrap();
+    let mut slot = slot_for(&runner);
+    slot.id = slot_id;
+    slot.model_override = Some("slot-model".into());
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let spawned = mgr
+        .spawn(
+            &mission_row,
+            &runner,
+            &slot,
+            std::path::Path::new("/tmp"),
+            PathBuf::from("/dev/null"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+
+    let spec = fake.last_spawn_spec().expect("spawn was called");
+    assert_eq!(spec.command, "codex-custom");
+    assert!(spec.args.contains(&"--custom-flag".to_string()));
+    assert!(spec
+        .args
+        .windows(2)
+        .any(|w| w[0] == "--model" && w[1] == "slot-model"));
+    assert!(spec
+        .args
+        .windows(2)
+        .any(|w| w[0] == "-c" && w[1] == "model_reasoning_effort=high"));
+
+    let (agent_runtime, agent_model, agent_effort): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT agent_runtime, agent_model, agent_effort
+               FROM sessions WHERE id = ?1",
+            params![spawned.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(agent_runtime, None, "model-only overrides must not pin");
+    assert_eq!(agent_model.as_deref(), Some("slot-model"));
+    assert_eq!(agent_effort.as_deref(), Some("high"));
+
+    mgr.kill(&spawned.id).unwrap();
+    mgr.resume(
+        &spawned.id,
+        None,
+        None,
+        std::path::Path::new("/tmp"),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+    let resumed = fake.last_spawn_spec().expect("resume should spawn");
+    assert_eq!(resumed.command, "codex-custom");
+    assert!(resumed
+        .args
+        .windows(2)
+        .any(|w| w[0] == "--model" && w[1] == "slot-model"));
+    assert!(resumed
+        .args
+        .windows(2)
+        .any(|w| w[0] == "-c" && w[1] == "model_reasoning_effort=high"));
     mgr.kill(&spawned.id).unwrap();
 }
 
@@ -4558,10 +5054,7 @@ fn resume_keeps_pinned_runtime_after_runner_template_edit() {
     .unwrap();
 
     let spec = fake.last_spawn_spec().expect("resume should have spawned");
-    assert_eq!(
-        spec.command, "codex",
-        "resume must stay on the pinned engine (registry command), not the edited template's",
-    );
+    assert_effective_command(&spec.command, "codex");
     assert!(
         !spec.args.contains(&"--custom-flag".to_string()) && spec.command != "claude-custom",
         "neither the template's new engine nor its old flags may leak in: {:?}",
@@ -4595,6 +5088,8 @@ fn direct_spawn_with_override_uses_registry_engine_and_records_runtime() {
             &runner,
             Some("claude-code"),
             None,
+            None,
+            None,
             Some("/tmp"),
             None,
             None,
@@ -4606,7 +5101,7 @@ fn direct_spawn_with_override_uses_registry_engine_and_records_runtime() {
         .unwrap();
 
     let spec = fake.last_spawn_spec().expect("spawn was called");
-    assert_eq!(spec.command, "claude");
+    assert_effective_command(&spec.command, "claude");
     assert!(!spec.args.contains(&"--custom-flag".to_string()));
 
     let (row_runner_id, agent_runtime, agent_command): (
@@ -4628,7 +5123,7 @@ fn direct_spawn_with_override_uses_registry_engine_and_records_runtime() {
         "overridden chats stay runner-backed",
     );
     assert_eq!(agent_runtime.as_deref(), Some("claude-code"));
-    assert_eq!(agent_command.as_deref(), Some("claude"));
+    assert_effective_command(agent_command.as_deref().unwrap(), "claude");
 
     mgr.kill(&spawned.id).unwrap();
 }
@@ -4677,10 +5172,7 @@ fn resume_respawns_recorded_override_runtime() {
     .unwrap();
 
     let spec = fake.last_spawn_spec().expect("resume should have spawned");
-    assert_eq!(
-        spec.command, "claude",
-        "resume must respawn the recorded effective runtime",
-    );
+    assert_effective_command(&spec.command, "claude");
     assert!(
         !spec.args.contains(&"--custom-flag".to_string()),
         "runner engine flags must not leak into an overridden resume: {:?}",
@@ -4695,4 +5187,197 @@ fn resume_respawns_recorded_override_runtime() {
     );
 
     mgr.kill("ovr-sid").unwrap();
+}
+
+#[test]
+fn catalog_default_runner_uses_detected_command_while_custom_command_stays_untouched() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let pool = pool_with_schema();
+    let bin = tempfile::tempdir().unwrap();
+    let detected = bin.path().join("codex");
+    std::fs::write(&detected, "#!/bin/sh\n").unwrap();
+    let mut permissions = std::fs::metadata(&detected).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&detected, permissions).unwrap();
+
+    let now = Utc::now().to_rfc3339();
+    let default_id = ulid::Ulid::new().to_string();
+    let custom_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        for (id, handle, command) in [
+            (&default_id, "default-runtime", "codex"),
+            (&custom_id, "custom-runtime", "codex-wrapper"),
+        ] {
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, runtime, command, created_at, updated_at)
+                 VALUES (?1, ?2, ?2, 'codex', ?3, ?4, ?4)",
+                params![id, handle, command, now],
+            )
+            .unwrap();
+        }
+    }
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(Some(bin.path().display().to_string()), Arc::clone(&fake));
+    let mut default_runner = runner("codex", &[]);
+    default_runner.id = default_id;
+    default_runner.handle = "default-runtime".into();
+    default_runner.runtime = "codex".into();
+    let default_session = mgr
+        .spawn_direct(
+            &default_runner,
+            None,
+            None,
+            None,
+            None,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().command,
+        detected.display().to_string()
+    );
+
+    let mut custom_runner = runner("codex-wrapper", &[]);
+    custom_runner.id = custom_id;
+    custom_runner.handle = "custom-runtime".into();
+    custom_runner.runtime = "codex".into();
+    let custom_session = mgr
+        .spawn_direct(
+            &custom_runner,
+            None,
+            None,
+            None,
+            None,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(fake.last_spawn_spec().unwrap().command, "codex-wrapper");
+
+    mgr.shell_env.write().unwrap().path = Some("/swapped/bin".into());
+    let swapped_session = mgr
+        .spawn_direct(
+            &custom_runner,
+            None,
+            None,
+            None,
+            None,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().shell_path.as_deref(),
+        Some("/swapped/bin")
+    );
+
+    mgr.kill(&default_session.id).unwrap();
+    mgr.kill(&custom_session.id).unwrap();
+    mgr.kill(&swapped_session.id).unwrap();
+}
+
+#[test]
+fn runtime_only_resume_keeps_live_recorded_path_and_reresolves_dead_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let pool = pool_with_schema();
+    let recorded_dir = tempfile::tempdir().unwrap();
+    let detected_dir = tempfile::tempdir().unwrap();
+    let make_executable = |path: &Path| {
+        std::fs::write(path, "#!/bin/sh\n").unwrap();
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).unwrap();
+    };
+    let recorded = recorded_dir.path().join("codex-recorded");
+    let detected = detected_dir.path().join("codex");
+    make_executable(&recorded);
+    make_executable(&detected);
+
+    let now = Utc::now().to_rfc3339();
+    {
+        let conn = pool.get().unwrap();
+        for (id, command) in [
+            ("runtime-live-path", recorded.display().to_string()),
+            ("runtime-dead-path", "/definitely/missing/codex".to_string()),
+        ] {
+            conn.execute(
+                "INSERT INTO sessions
+                    (id, status, started_at, agent_runtime, agent_command,
+                     agent_model, agent_effort)
+                 VALUES (?1, 'stopped', ?2, 'codex', ?3,
+                         'gpt-5.6-sol', 'max')",
+                params![id, now, command],
+            )
+            .unwrap();
+        }
+    }
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(
+        Some(detected_dir.path().display().to_string()),
+        Arc::clone(&fake),
+    );
+    mgr.resume(
+        "runtime-live-path",
+        None,
+        None,
+        std::path::Path::new("/tmp"),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().command,
+        recorded.display().to_string()
+    );
+    assert!(fake
+        .last_spawn_spec()
+        .unwrap()
+        .args
+        .windows(2)
+        .any(|args| args[0] == "--model" && args[1] == "gpt-5.6-sol"));
+    assert!(fake
+        .last_spawn_spec()
+        .unwrap()
+        .args
+        .windows(2)
+        .any(|args| args[0] == "-c" && args[1] == "model_reasoning_effort=max"));
+
+    mgr.resume(
+        "runtime-dead-path",
+        None,
+        None,
+        std::path::Path::new("/tmp"),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().command,
+        detected.display().to_string()
+    );
+
+    mgr.kill("runtime-live-path").unwrap();
+    mgr.kill("runtime-dead-path").unwrap();
 }

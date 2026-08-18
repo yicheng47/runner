@@ -1,6 +1,50 @@
 use super::*;
 
 impl SessionManager {
+    fn resolve_runner_executable(&self, runner: &Runner, pool: &DbPool) -> Result<Runner> {
+        let Some(definition) = router::runtime::runtime_definition(&runner.runtime) else {
+            return Ok(runner.clone());
+        };
+        if runner.command != definition.command {
+            return Ok(runner.clone());
+        }
+        let effective = crate::runtime_status::effective_runtime_command(
+            definition.name,
+            pool,
+            &self.shell_env,
+            &self.discovery_state,
+        )?;
+        let mut resolved = runner.clone();
+        resolved.command = effective.command;
+        Ok(resolved)
+    }
+
+    fn resolve_runtime_only_resume_runner(
+        &self,
+        runtime: &str,
+        recorded_command: Option<&str>,
+        model: Option<&str>,
+        effort: Option<&str>,
+        pool: &DbPool,
+    ) -> Result<Runner> {
+        let definition = router::runtime::runtime_definition(runtime)
+            .ok_or_else(|| Error::msg(format!("unknown runtime: {runtime}")))?;
+        let recorded = recorded_command
+            .map(str::trim)
+            .filter(|command| !command.is_empty());
+        if let Some(command) = recorded {
+            let path = Path::new(command);
+            if path.is_absolute() && crate::runtime_status::executable_path_is_valid(path) {
+                return runtime_direct_runner(runtime, Some(command), model, effort);
+            }
+            if !path.is_absolute() && command != definition.command {
+                return runtime_direct_runner(runtime, Some(command), model, effort);
+            }
+        }
+        let runner = runtime_direct_runner(runtime, None, model, effort)?;
+        self.resolve_runner_executable(&runner, pool)
+    }
+
     /// Gate a fresh `claude-code` spawn before calling
     /// `runtime.spawn()`. No-op for any other runtime — those
     /// bypass the gate.
@@ -42,6 +86,23 @@ impl SessionManager {
         }
         *last = Some(Instant::now());
     }
+
+    fn seed_codex_project_trust(&self, session_id: &str, runtime: &str, cwd: Option<&Path>) {
+        if runtime != "codex" {
+            return;
+        }
+        let Some(cwd) = cwd else {
+            log::debug!("skipping codex project trust seed without cwd: session={session_id}");
+            return;
+        };
+        if let Err(e) = crate::session::codex_trust::seed_project_trust(cwd) {
+            log::warn!(
+                "failed to seed codex project trust: session={session_id} cwd={} error={e}",
+                cwd.display()
+            );
+        }
+    }
+
     /// Build a `SpawnSpec` skeleton with the manager's stable inputs
     /// (shell PATH, runner env after merging system vars). The
     /// runtime adapter argv (resume_plan + trailing_runtime_args)
@@ -59,11 +120,16 @@ impl SessionManager {
         initial_size: Option<(u16, u16)>,
         extra_env: BTreeMap<String, String>,
     ) -> SpawnSpec {
+        let shell_env = self
+            .shell_env
+            .read()
+            .expect("runtime shell environment lock poisoned")
+            .clone();
         // Bottom layer: login-shell vars (proxy quartet, both cases)
         // captured at app start. A runner row can override any of these
         // by setting the same name in its own env map — the runner row
         // is the most specific configuration surface.
-        let mut env: BTreeMap<String, String> = self.shell_env.vars.clone();
+        let mut env: BTreeMap<String, String> = shell_env.vars;
         for (k, v) in &runner.env {
             env.insert(k.clone(), v.clone());
         }
@@ -86,7 +152,7 @@ impl SessionManager {
             mission,
             shim_dir,
             bundled_bin_dir,
-            shell_path: self.shell_env.path.clone(),
+            shell_path: shell_env.path,
             initial_size,
         }
     }
@@ -139,12 +205,12 @@ impl SessionManager {
         delivered_via_argv
     }
 
-    fn codex_capture_prompt_marker(
+    pub(super) fn codex_capture_prompt_marker(
         runtime: &str,
         session_id: &str,
         first_turn: Option<String>,
     ) -> (Option<String>, Option<String>) {
-        if runtime != "codex" {
+        if !matches!(runtime, "codex" | "trae") {
             return (first_turn, None);
         }
         let Some(first_turn) = first_turn else {
@@ -187,12 +253,20 @@ impl SessionManager {
 
         // Slot-level runtime override (feature 41): the effective
         // runtime is `slot.runtime_override ?? runner.runtime`. On a
-        // differing override the spawn uses registry command/default
-        // args and drops model/effort; persona fields carry over. A
-        // matching override spawns byte-identically but still pins.
-        let resolution = resolve_runtime_override(runner, slot.runtime_override.as_deref())?;
+        // differing override the spawn uses registry command, default
+        // args, model, and effort; persona fields carry over. Slot
+        // model/effort overrides apply last and do not themselves pin
+        // the engine. A matching runtime override still pins.
+        let resolution = resolve_runtime_override(
+            runner,
+            slot.runtime_override.as_deref(),
+            slot.model_override.as_deref(),
+            slot.effort_override.as_deref(),
+        )?;
         let pinned = resolution.pinned;
-        let runner = resolution.effective.as_ref().unwrap_or(runner);
+        let agent_options_overridden = resolution.effective.is_some();
+        let runner =
+            self.resolve_runner_executable(resolution.effective.as_ref().unwrap_or(runner), &pool)?;
 
         // Agent-native session resume: this is a *fresh* session row, so
         // there's no prior key to inherit. The runtime adapter still
@@ -248,7 +322,7 @@ impl SessionManager {
             Self::codex_capture_prompt_marker(&runner.runtime, &session_id, first_turn);
         let mut spec = self.base_spawn_spec(
             session_id.clone(),
-            runner,
+            &runner,
             resolved_cwd.clone(),
             true,
             shim_dir,
@@ -260,7 +334,7 @@ impl SessionManager {
             runner_core::event_log::path::mission_dir(app_data_dir, &mission.crew_id, &mission.id);
         let first_turn_delivered_via_argv = Self::apply_runtime_args(
             &mut spec,
-            runner,
+            &runner,
             &plan,
             first_turn.as_deref(),
             Some(&mission_bus_dir),
@@ -291,6 +365,10 @@ impl SessionManager {
                 // edited later. No-override rows stay NULL.
                 row.agent_runtime = Some(runner.runtime.clone());
                 row.agent_command = Some(runner.command.clone());
+            }
+            if agent_options_overridden {
+                row.agent_model = runner.model.clone();
+                row.agent_effort = runner.effort.clone();
             }
             crate::repo::session::insert(&conn, &row)?;
         }
@@ -393,6 +471,7 @@ impl SessionManager {
 
         let spawn_started_at_dt = Utc::now();
         let initial_size = spec.initial_size;
+        self.seed_codex_project_trust(&session_id, &runner.runtime, spec.cwd.as_deref());
         let (rt_session, output) = self
             .runtime
             .spawn(spec)
@@ -438,20 +517,26 @@ impl SessionManager {
             );
         }
 
-        let codex_capture = if runner.runtime == "codex" && plan.assigned_key.is_none() {
-            capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
-                mission_id: Some(mission.id.clone()),
-                spawn_cwd: cwd,
-                started_at: spawn_started_at_dt,
-                row_started_at: row_started_at.clone(),
-                spawn_pid,
-                prompt_marker: codex_prompt_marker.clone(),
-                pool: Arc::clone(&pool),
-                events: Arc::clone(&events),
-            })
-        } else {
-            None
-        };
+        let codex_capture =
+            if matches!(runner.runtime.as_str(), "codex" | "trae") && plan.assigned_key.is_none() {
+                crate::session::codex_capture::sessions_root_for(&runner.runtime).and_then(
+                    |sessions_root| {
+                        capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
+                            mission_id: Some(mission.id.clone()),
+                            sessions_root,
+                            spawn_cwd: cwd,
+                            started_at: spawn_started_at_dt,
+                            row_started_at: row_started_at.clone(),
+                            spawn_pid,
+                            prompt_marker: codex_prompt_marker.clone(),
+                            pool: Arc::clone(&pool),
+                            events: Arc::clone(&events),
+                        })
+                    },
+                )
+            } else {
+                None
+            };
 
         let spawn_emit_ctx = open_mission_event_log(&app_data_dir, &mission.crew_id, &mission.id)
             .map(|event_log| ForwarderEmitCtx {
@@ -499,8 +584,10 @@ impl SessionManager {
         }
 
         emit_runner_activity(&pool, &runner, events.as_ref());
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex")
-            && !plan.resuming
+        if matches!(
+            runner.runtime.as_str(),
+            "claude-code" | "codex" | "qoder" | "trae"
+        ) && !plan.resuming
             && !first_turn_delivered_via_argv
         {
             log::warn!(
@@ -626,11 +713,15 @@ impl SessionManager {
     /// `None` spawns the runner's own runtime unchanged; a differing
     /// registry runtime spawns that engine with registry command /
     /// default args while the runner's persona fields carry over.
+    /// `model_override` / `effort_override` apply after runtime
+    /// resolution and can also customize the runner's own engine.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_direct(
         self: &Arc<Self>,
         runner: &Runner,
         runtime_override: Option<&str>,
+        model_override: Option<&str>,
+        effort_override: Option<&str>,
         project_id: Option<&str>,
         cwd: Option<&str>,
         cols: Option<u16>,
@@ -643,6 +734,8 @@ impl SessionManager {
         self.spawn_direct_inner(
             runner,
             runtime_override,
+            model_override,
+            effort_override,
             Some(runner.id.as_str()),
             project_id,
             cwd,
@@ -672,6 +765,8 @@ impl SessionManager {
             runner,
             None,
             None,
+            None,
+            None,
             project_id,
             cwd,
             cols,
@@ -689,6 +784,8 @@ impl SessionManager {
         self: &Arc<Self>,
         runner: &Runner,
         runtime_override: Option<&str>,
+        model_override: Option<&str>,
+        effort_override: Option<&str>,
         persisted_runner_id: Option<&str>,
         project_id: Option<&str>,
         cwd: Option<&str>,
@@ -704,9 +801,12 @@ impl SessionManager {
 
         // Chat-level runtime override (feature 41) — same resolution
         // rule as mission spawns.
-        let resolution = resolve_runtime_override(runner, runtime_override)?;
+        let resolution =
+            resolve_runtime_override(runner, runtime_override, model_override, effort_override)?;
         let pinned = resolution.pinned;
-        let runner = resolution.effective.as_ref().unwrap_or(runner);
+        let agent_options_overridden = resolution.effective.is_some();
+        let runner =
+            self.resolve_runner_executable(resolution.effective.as_ref().unwrap_or(runner), &pool)?;
 
         // Agent-native session resume: `spawn_direct` always opens a *new*
         // chat. The runtime adapter self-assigns a fresh
@@ -734,7 +834,7 @@ impl SessionManager {
 
         let mut spec = self.base_spawn_spec(
             session_id.clone(),
-            runner,
+            &runner,
             resolved_cwd.clone(),
             false,
             None, // shim_dir — off-bus
@@ -743,7 +843,7 @@ impl SessionManager {
             direct_env,
         );
         let first_turn_delivered_via_argv =
-            Self::apply_runtime_args(&mut spec, runner, &plan, first_turn.as_deref(), None);
+            Self::apply_runtime_args(&mut spec, &runner, &plan, first_turn.as_deref(), None);
 
         // Insert the row first so a fast-failing spawn doesn't leave
         // a half-row. Runtime-only chats (no persisted runner template)
@@ -766,6 +866,10 @@ impl SessionManager {
                 row.agent_runtime = Some(runner.runtime.clone());
                 row.agent_command = Some(runner.command.clone());
             }
+            if persisted_runner_id.is_none() || agent_options_overridden {
+                row.agent_model = runner.model.clone();
+                row.agent_effort = runner.effort.clone();
+            }
             crate::repo::session::insert(&conn, &row)?;
         }
 
@@ -786,6 +890,7 @@ impl SessionManager {
         }
 
         let spawn_started_at_dt = Utc::now();
+        self.seed_codex_project_trust(&session_id, &runner.runtime, spec.cwd.as_deref());
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -824,20 +929,26 @@ impl SessionManager {
             );
         }
 
-        let codex_capture = if runner.runtime == "codex" && plan.assigned_key.is_none() {
-            capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
-                mission_id: None,
-                spawn_cwd: cwd,
-                started_at: spawn_started_at_dt,
-                row_started_at: started_at.clone(),
-                spawn_pid,
-                prompt_marker: codex_prompt_marker.clone(),
-                pool: Arc::clone(&pool),
-                events: Arc::clone(&events),
-            })
-        } else {
-            None
-        };
+        let codex_capture =
+            if matches!(runner.runtime.as_str(), "codex" | "trae") && plan.assigned_key.is_none() {
+                crate::session::codex_capture::sessions_root_for(&runner.runtime).and_then(
+                    |sessions_root| {
+                        capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
+                            mission_id: None,
+                            sessions_root,
+                            spawn_cwd: cwd,
+                            started_at: spawn_started_at_dt,
+                            row_started_at: started_at.clone(),
+                            spawn_pid,
+                            prompt_marker: codex_prompt_marker.clone(),
+                            pool: Arc::clone(&pool),
+                            events: Arc::clone(&events),
+                        })
+                    },
+                )
+            } else {
+                None
+            };
 
         self.install_handle(
             &session_id,
@@ -882,10 +993,12 @@ impl SessionManager {
         }
 
         if emit_activity {
-            emit_runner_activity(&pool, runner, events.as_ref());
+            emit_runner_activity(&pool, &runner, events.as_ref());
         }
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex")
-            && !plan.resuming
+        if matches!(
+            runner.runtime.as_str(),
+            "claude-code" | "codex" | "qoder" | "trae"
+        ) && !plan.resuming
             && !first_turn_delivered_via_argv
         {
             log::warn!(
@@ -994,10 +1107,9 @@ impl SessionManager {
         //    and new PTY chunks continue above `last` and replay merge
         //    filters don't drop them.
         //
-        // Whether the ring itself survives is per-runtime: claude-code
-        // keeps it (a terminal emulator would; scrolling up after
-        // resume shows the prior conversation), codex/shells purge —
-        // see `runtime_purges_on_resume`.
+        // Whether the ring itself survives is per-runtime: Claude and Qoder
+        // keep it because their resume flows do not replay the transcript;
+        // Codex, TRAE, and shells purge it. See `runtime_purges_on_resume`.
         self.set_resume_watermark(session_id);
         let purges_on_resume = output::runtime_purges_on_resume(session_id, &pool);
         if purges_on_resume {
@@ -1063,46 +1175,64 @@ impl SessionManager {
         let runner = if let Some(runner_id) = snap.runner_id.as_deref() {
             let conn = pool.get()?;
             let runner = crate::ops::runner::get(&conn, runner_id)?;
-            match resolve_runtime_override(&runner, snap.agent_runtime.as_deref())?.effective {
+            let runner = match resolve_runtime_override(
+                &runner,
+                snap.agent_runtime.as_deref(),
+                snap.agent_model.as_deref(),
+                snap.agent_effort.as_deref(),
+            )?
+            .effective
+            {
                 Some(effective) => effective,
                 None => runner,
-            }
+            };
+            self.resolve_runner_executable(&runner, &pool)?
         } else {
             let runtime = snap.agent_runtime.as_deref().ok_or_else(|| {
                 Error::msg(format!(
                     "runtime-only session {session_id} missing agent_runtime"
                 ))
             })?;
-            runtime_direct_runner(runtime, snap.agent_command.as_deref())?
+            self.resolve_runtime_only_resume_runner(
+                runtime,
+                snap.agent_command.as_deref(),
+                snap.agent_model.as_deref(),
+                snap.agent_effort.as_deref(),
+                &pool,
+            )?
         };
 
         // Resume plan: hand the prior agent_session_key back to the
         // runtime adapter so claude-code uses `--resume <uuid>` and
         // codex (once capture lands) uses `codex resume <uuid>`.
         //
-        // claude-code only: if the conversation file for this
+        // claude-code / qoder only: if the conversation file for this
         // (cwd, uuid) was never persisted, `--resume <uuid>` would
         // print "No conversation found" and leave the TUI half-broken.
         // Detect the missing file up front and degrade to a fresh
-        // spawn that *keeps* the same uuid via `--session-id`.
+        // spawn with a newly self-assigned uuid via `--session-id`.
         let resolved_cwd_for_check: Option<String> = snap.cwd.clone().or_else(|| {
             snap.runner_id
                 .as_ref()
                 .and_then(|_| runner.working_dir.clone())
         });
         let is_lead_slot = mission_ctx.as_ref().is_some_and(|c| c.lead);
-        let conversation_missing = matches!(
-            (runner.runtime.as_str(), snap.agent_session_key.as_deref()),
-            ("claude-code", Some(key))
-                if !router::runtime::claude_code_conversation_exists(
+        let conversation_missing =
+            match (runner.runtime.as_str(), snap.agent_session_key.as_deref()) {
+                ("claude-code", Some(key)) => !router::runtime::claude_code_conversation_exists(
                     resolved_cwd_for_check.as_deref(),
                     key,
-                )
-        );
+                ),
+                ("qoder", Some(key)) => !router::runtime::qoder_conversation_exists(
+                    resolved_cwd_for_check.as_deref(),
+                    key,
+                ),
+                _ => false,
+            };
         let fresh_fallback_lead = conversation_missing && is_lead_slot;
         let effective_prior_key = match (runner.runtime.as_str(), snap.agent_session_key.as_deref())
         {
-            ("claude-code", Some(_)) if conversation_missing => None,
+            ("claude-code" | "qoder", Some(_)) if conversation_missing => None,
             (_, k) => k,
         };
         let plan = router::runtime::resume_plan(&runner.runtime, effective_prior_key);
@@ -1214,6 +1344,7 @@ impl SessionManager {
         // N stopped slots can spawn as fast as the runtime allows.
         // See issue #171.
         let spawn_started_at_dt = Utc::now();
+        self.seed_codex_project_trust(session_id, &runner.runtime, spec.cwd.as_deref());
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -1242,20 +1373,26 @@ impl SessionManager {
             );
         }
 
-        let codex_capture = if runner.runtime == "codex" && plan.assigned_key.is_none() {
-            capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
-                mission_id: snap.mission_id.clone(),
-                spawn_cwd: cwd,
-                started_at: spawn_started_at_dt,
-                row_started_at: started_at.clone(),
-                spawn_pid,
-                prompt_marker: None,
-                pool: Arc::clone(&pool),
-                events: Arc::clone(&events),
-            })
-        } else {
-            None
-        };
+        let codex_capture =
+            if matches!(runner.runtime.as_str(), "codex" | "trae") && plan.assigned_key.is_none() {
+                crate::session::codex_capture::sessions_root_for(&runner.runtime).and_then(
+                    |sessions_root| {
+                        capture_cwd(resolved_cwd.clone()).map(|cwd| CodexCaptureContext {
+                            mission_id: snap.mission_id.clone(),
+                            sessions_root,
+                            spawn_cwd: cwd,
+                            started_at: spawn_started_at_dt,
+                            row_started_at: started_at.clone(),
+                            spawn_pid,
+                            prompt_marker: None,
+                            pool: Arc::clone(&pool),
+                            events: Arc::clone(&events),
+                        })
+                    },
+                )
+            } else {
+                None
+            };
 
         let resume_emit_ctx = mission_ctx.as_ref().and_then(|ctx| {
             open_mission_event_log(app_data_dir, &ctx.crew_id, &ctx.mission_id).map(|event_log| {
@@ -1331,7 +1468,11 @@ impl SessionManager {
         // returned SpawnedSession. For direct-chat resume there's no
         // slot/lead concept; if that degrades to fresh and argv
         // delivery was unavailable, we log the skipped injection.
-        if matches!(runner.runtime.as_str(), "claude-code" | "codex") && !plan.resuming {
+        if matches!(
+            runner.runtime.as_str(),
+            "claude-code" | "codex" | "qoder" | "trae"
+        ) && !plan.resuming
+        {
             if mission_ctx.is_some() {
                 log::warn!(
                     "first-turn argv not delivered for {session_id} (runtime {}); skipping post-spawn injection",

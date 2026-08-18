@@ -17,6 +17,7 @@ pub mod model;
 pub mod ops;
 pub mod repo;
 pub mod router;
+pub mod runtime_status;
 pub mod session;
 pub mod shell_path;
 pub mod windows;
@@ -41,6 +42,11 @@ pub struct AppCore {
     /// start, shared across all frontends and the per-session
     /// forwarder threads it spawns.
     pub sessions: Arc<session::SessionManager>,
+    /// Swappable login-shell snapshot shared by runtime discovery and
+    /// every spawn path. Successful background probes replace it in place.
+    pub runtime_shell_env: runtime_status::SharedShellEnv,
+    /// Current login-shell probe state and diagnostics for agent availability.
+    pub runtime_discovery: runtime_status::SharedDiscoveryState,
     /// Live per-mission event-bus watchers. Mounted by `mission_start` once
     /// the opening events are durable; unmounted by `mission_stop` and on
     /// any rollback path.

@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -510,9 +510,9 @@ struct SessionHandle {
     /// `runtime.resize` / `runtime.stop` for every operation on the
     /// live session.
     runtime_session: RuntimeSession,
-    /// Codex cannot be given a caller-owned session id at launch.
+    /// Codex-lineage runtimes cannot be given a caller-owned session id at launch.
     /// When this is present, user activity can retry native id
-    /// capture after Codex has actually created its rollout file.
+    /// capture after the runtime has actually created its rollout file.
     codex_capture: Option<CodexCaptureContext>,
     /// Forwarder thread that drains the runtime's `OutputStream`
     /// into `session/output` events. `kill` joins on this so callers
@@ -532,6 +532,7 @@ struct SessionHandle {
 #[derive(Clone)]
 struct CodexCaptureContext {
     mission_id: Option<String>,
+    sessions_root: PathBuf,
     spawn_cwd: String,
     started_at: DateTime<Utc>,
     row_started_at: String,
@@ -617,9 +618,9 @@ pub struct SessionManager {
     /// PTY output for one busy session does not block lifecycle work on
     /// other sessions.
     sessions: Mutex<HashMap<String, Arc<Mutex<SessionState>>>>,
-    /// User's login-shell env snapshot, captured once at app start by
-    /// `shell_path::resolve_login_shell_env`. Empty when the resolve
-    /// failed/timed out, when running on Windows, or in tests.
+    /// User's current login-shell env snapshot. Discovery swaps this
+    /// handle after a successful background probe; spawns clone one
+    /// coherent value under a short read lock.
     ///
     /// `path` is composed into every child PTY's PATH (so GUI-launched
     /// apps can find tools like claude / codex / mise that aren't on
@@ -627,7 +628,8 @@ pub struct SessionManager {
     /// proxy quartet in both cases) is layered into every spawn's env
     /// under `runner.env` so the child can reach the network the same
     /// way Terminal.app's children would (issues #109 / #152).
-    shell_env: crate::shell_path::LoginShellEnv,
+    shell_env: Arc<RwLock<crate::shell_path::LoginShellEnv>>,
+    discovery_state: crate::runtime_status::SharedDiscoveryState,
     /// Timestamp of the most recent claude-code spawn through the
     /// launch gate. `None` until the first claude-code spawn lands.
     /// Each new claude-code spawn reads this, sleeps the remainder
@@ -737,12 +739,14 @@ fn compute_gate_wait(last: Option<Instant>, now: Instant, grace: Duration) -> Du
 
 impl SessionManager {
     pub fn new(
-        shell_env: crate::shell_path::LoginShellEnv,
+        shell_env: crate::runtime_status::SharedShellEnv,
+        discovery_state: crate::runtime_status::SharedDiscoveryState,
         runtime: Arc<dyn SessionRuntime>,
     ) -> Arc<Self> {
         Arc::new(Self {
             sessions: Mutex::new(HashMap::new()),
             shell_env,
+            discovery_state,
             claude_launch_gate: Mutex::new(None),
             pending_mission_cancels: Mutex::new(HashMap::new()),
             runtime,
@@ -917,6 +921,7 @@ impl SessionManager {
             crate::session::codex_capture::CaptureRequest {
                 session_id: session_id.to_string(),
                 mission_id: ctx.mission_id.clone(),
+                sessions_root: ctx.sessions_root.clone(),
                 spawn_cwd: ctx.spawn_cwd.clone(),
                 started_at: ctx.started_at,
                 expected_row_started_at: ctx.row_started_at.clone(),
@@ -1003,15 +1008,10 @@ fn capture_cwd(explicit: Option<String>) -> Option<String> {
 /// (feature 41).
 #[derive(Debug)]
 pub(crate) struct RuntimeOverrideResolution {
-    /// Rebuilt runner config when the override names a *different*
-    /// runtime than the runner's: registry command, the default
-    /// permission mode's canonical args (same as a bare runtime
-    /// chat), `model` / `effort` cleared; persona fields
-    /// (`system_prompt`, `working_dir`, `env`, handles) carry over.
-    /// `None` = spawn from the runner row untouched, byte-identical
-    /// to no override.
+    /// Rebuilt runner config after applying any runtime, model, or
+    /// effort override. `None` means the runner row is byte-identical.
     pub effective: Option<Runner>,
-    /// True when a non-blank override was explicitly requested —
+    /// True when a non-blank runtime override was explicitly requested —
     /// including one matching the runner's current runtime. Spawn
     /// paths record the effective runtime on the session row for
     /// pinned spawns so a later edit to the runner template's
@@ -1020,46 +1020,73 @@ pub(crate) struct RuntimeOverrideResolution {
     pub pinned: bool,
 }
 
-/// Resolve the runner config a spawn should actually use when a
-/// runtime override is in play (feature 41). Effective runtime =
-/// `override ?? runner.runtime`; a matching override keeps the spawn
-/// byte-identical but still pins. Unknown differing runtime names
-/// error.
+/// Resolve the runner config a spawn should actually use. Layering is
+/// runner template, then runtime override, then model/effort overrides.
+/// A matching runtime override keeps an otherwise unchanged spawn
+/// byte-identical but still pins. Model/effort-only overrides never pin.
 pub(crate) fn resolve_runtime_override(
     runner: &Runner,
     runtime_override: Option<&str>,
+    model_override: Option<&str>,
+    effort_override: Option<&str>,
 ) -> Result<RuntimeOverrideResolution> {
-    let Some(name) = runtime_override.map(str::trim).filter(|s| !s.is_empty()) else {
+    let runtime_override = runtime_override.map(str::trim).filter(|s| !s.is_empty());
+    let model_override = model_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let effort_override = effort_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let pinned = runtime_override.is_some();
+    if runtime_override.is_none() && model_override.is_none() && effort_override.is_none() {
         return Ok(RuntimeOverrideResolution {
             effective: None,
             pinned: false,
         });
-    };
-    if name == runner.runtime {
+    }
+    if runtime_override == Some(runner.runtime.as_str())
+        && model_override.is_none()
+        && effort_override.is_none()
+    {
         return Ok(RuntimeOverrideResolution {
             effective: None,
             pinned: true,
         });
     }
-    let def = router::runtime::runtime_definition(name)
-        .ok_or_else(|| Error::msg(format!("unknown runtime: {name}")))?;
     let mut effective = runner.clone();
-    effective.runtime = def.name.to_string();
-    effective.command = def.command.to_string();
-    effective.args = router::runtime::apply_permission_mode(
-        def.name,
-        &[],
-        crate::ops::runner::default_permission_mode(),
-    );
-    effective.model = None;
-    effective.effort = None;
+    if let Some(name) = runtime_override.filter(|name| *name != runner.runtime.as_str()) {
+        let def = router::runtime::runtime_definition(name)
+            .ok_or_else(|| Error::msg(format!("unknown runtime: {name}")))?;
+        effective.runtime = def.name.to_string();
+        effective.command = def.command.to_string();
+        effective.args = router::runtime::apply_permission_mode(
+            def.name,
+            &[],
+            crate::ops::runner::default_permission_mode(),
+        );
+        // A differing engine starts from its own defaults; the
+        // runner's model/effort belong to the original runtime.
+        effective.model = None;
+        effective.effort = None;
+    }
+    if model_override.is_some() {
+        effective.model = model_override.map(ToOwned::to_owned);
+    }
+    if effort_override.is_some() {
+        effective.effort = effort_override.map(ToOwned::to_owned);
+    }
     Ok(RuntimeOverrideResolution {
         effective: Some(effective),
-        pinned: true,
+        pinned,
     })
 }
 
-pub(crate) fn runtime_direct_runner(runtime: &str, command: Option<&str>) -> Result<Runner> {
+pub(crate) fn runtime_direct_runner(
+    runtime: &str,
+    command: Option<&str>,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Result<Runner> {
     let runtime = runtime.trim();
     if runtime.is_empty() {
         return Err(Error::msg("runtime is required"));
@@ -1087,8 +1114,14 @@ pub(crate) fn runtime_direct_runner(runtime: &str, command: Option<&str>) -> Res
         working_dir: None,
         system_prompt: None,
         env: HashMap::new(),
-        model: None,
-        effort: None,
+        model: model
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        effort: effort
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
         created_at: now,
         updated_at: now,
     })

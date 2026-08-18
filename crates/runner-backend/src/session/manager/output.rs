@@ -643,7 +643,7 @@ impl SessionManager {
         let mut events: Vec<OutputEvent> = state.output_buffer.iter().cloned().collect();
         // For sessions currently inside terminal modes that xterm
         // reset clears, prepend a synthetic chunk restoring them.
-        // Long-running TUI sessions (claude-code, codex) lose the
+        // Long-running TUI sessions lose the
         // original enter-alt-screen escape from the bounded
         // 4096-chunk buffer over time, so a re-attach that just
         // replays the remaining chunks lands mid-alt-screen content
@@ -877,19 +877,21 @@ pub(super) fn runtime_clears_on_resize(session_id: &str, pool: &DbPool) -> bool 
         )
         .ok()
         .flatten();
-    matches!(runtime.as_deref(), Some("claude-code") | Some("codex"))
+    matches!(
+        runtime.as_deref(),
+        Some("claude-code") | Some("codex") | Some("qoder") | Some("trae")
+    )
 }
 
 /// Whether `resume` should drop the session's output ring before
-/// spawning the new PTY. Codex repaints its whole frame on resume
-/// (and its own resume replay restores a deep conversation tail), so
+/// spawning the new PTY. Codex and TRAE repaint their whole frame on resume
+/// (and their own resume replays restore a deep conversation tail), so
 /// replaying retained scrollback under the new frame stacks garbled
-/// content — the artifact class from impls 0009/0011/0020. Claude-code
-/// paints inline into the main screen: kept scrollback, then the
+/// content — the artifact class from impls 0009/0011/0020. Claude Code
+/// and Qoder paint inline into the main screen: kept scrollback, then the
 /// resume banner, then the tail repaint is exactly what a physical
-/// terminal shows, so its ring is kept. Shells and future runtimes
-/// keep today's purge purely
-/// for scope (extending them is a one-line change here). Best-effort:
+/// terminal shows, so their rings are kept. Shells and future runtimes
+/// keep today's purge purely for scope. Best-effort:
 /// a DB miss fails toward the purge, i.e. today's behavior.
 pub(super) fn runtime_purges_on_resume(session_id: &str, pool: &DbPool) -> bool {
     let Ok(conn) = pool.get() else {
@@ -906,5 +908,5 @@ pub(super) fn runtime_purges_on_resume(session_id: &str, pool: &DbPool) -> bool 
         )
         .ok()
         .flatten();
-    !matches!(runtime.as_deref(), Some("claude-code"))
+    !matches!(runtime.as_deref(), Some("claude-code") | Some("qoder"))
 }

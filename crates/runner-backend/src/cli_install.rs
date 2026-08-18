@@ -47,7 +47,7 @@ const AGENT_DEST_BIN_NAME: &str = if cfg!(windows) {
     "runner"
 };
 
-/// Name of the MCP proxy binary registered with Claude Code / Codex.
+/// Name of the MCP proxy binary registered with Claude Code, Codex, Qoder, and TRAE.
 pub const MCP_DEST_BIN_NAME: &str = if cfg!(windows) {
     "runner-mcp.exe"
 } else {

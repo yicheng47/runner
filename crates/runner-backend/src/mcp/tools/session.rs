@@ -12,13 +12,21 @@ use crate::ops::session;
 pub struct StartDirectSessionArgs {
     /// Runner template ID.
     pub runner_id: String,
-    /// Optional runtime override (registry name, e.g. "codex" or
-    /// "claude-code"). Omit to use the runner's own runtime. When it
+    /// Optional runtime override (registry name, e.g. "codex",
+    /// "claude-code", "qoder", or "trae"). Omit to use the runner's own runtime. When it
     /// differs, the chat spawns that engine with registry defaults
     /// while the runner's persona (system prompt, working dir, env)
     /// carries over.
     #[serde(default)]
     pub runtime: Option<String>,
+    /// Optional model for the overridden runtime. Only meaningful with
+    /// `runtime`; omit for the engine's own default.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Optional reasoning-effort for the overridden runtime. Only
+    /// meaningful with `runtime`; omit for the engine's own default.
+    #[serde(default)]
+    pub effort: Option<String>,
     /// Optional project membership. Its cwd is used when cwd is omitted.
     #[serde(default)]
     pub project_id: Option<String>,
@@ -48,6 +56,8 @@ impl RunnerMcpHandler {
             &app_state,
             args.runner_id,
             args.runtime,
+            args.model,
+            args.effort,
             args.project_id,
             args.cwd,
             None,
