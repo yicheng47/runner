@@ -383,6 +383,7 @@ impl TerminalBridge {
 
 #[cfg(test)]
 mod tests {
+    use alacritty_terminal::term::TermMode;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -470,5 +471,47 @@ mod tests {
             visible_lines(&*term).join("\n")
         };
         assert!(rendered.contains("snapshot-markerlive-marker"));
+    }
+
+    #[test]
+    fn native_terminal_applies_resume_seam_and_reset_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+        let terminal = TerminalSession::attach(core, "replay-race".into(), 80, 24, waker).unwrap();
+
+        terminal
+            .feed_output(&output(
+                1,
+                "history-marker\x1b[?2004h\x1b[?1000h\x1b[?1006h",
+            ))
+            .unwrap();
+        {
+            let term = terminal.term.lock();
+            assert!(term.mode().contains(TermMode::BRACKETED_PASTE));
+            assert!(term.mode().intersects(TermMode::MOUSE_MODE));
+            assert!(term.mode().contains(TermMode::SGR_MOUSE));
+        }
+
+        terminal
+            .feed_output(&output(
+                2,
+                "\x1b[0m\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\r\n",
+            ))
+            .unwrap();
+        {
+            let term = terminal.term.lock();
+            assert!(visible_lines(&*term).join("\n").contains("history-marker"));
+            assert!(!term.mode().contains(TermMode::BRACKETED_PASTE));
+            assert!(!term.mode().intersects(TermMode::MOUSE_MODE));
+            assert!(!term.mode().contains(TermMode::SGR_MOUSE));
+        }
+
+        terminal.feed_output(&output(3, "\x1bc")).unwrap();
+        let term = terminal.term.lock();
+        assert!(!visible_lines(&*term).join("\n").contains("history-marker"));
+        assert!(!term.mode().contains(TermMode::BRACKETED_PASTE));
+        assert!(!term.mode().intersects(TermMode::MOUSE_MODE));
+        assert!(!term.mode().contains(TermMode::SGR_MOUSE));
     }
 }

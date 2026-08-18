@@ -148,3 +148,11 @@ M3's slices (0046 §Sequencing) run as serial codex-peer missions, one task at a
 - **M3.3** — resize-storm coalescing: `38af26c` (#373), `e78718f`. Port guide: 0039. Large frontend half needs GPUI translation in `runner-native`.
 - **M3.4** — input latch + native quit stamping: `f926581` (impl 0041), `c5b1ce4`.
 - **M3.5+** — later slices decomposed when reached, in 0046 dogfood order: runtimes/model-effort pickers (0033/0034/0036/0043/0045), node sidebar polish + pinned section (Workstream B), router/inbox group, mission feed (0042/0044), pagination/update checks/misc.
+
+## 2026-08-18 — M3.2: resume seams + terminal geometry
+
+- Ported `9f53047` and `02e7502` into `runner-app`: resume now emits an in-band clean seam for keep-ring runtimes or RIS reset for purge runtimes before the child forks; terminal tracking covers bracketed paste plus mouse modes; every spawn resolves and persists a concrete PTY size; stopped-pane measurements persist without requiring a live handle; unknown-session resize still errors without creating manager state. Main's source manager tests were ported, and a `runner-terminal` regression proves alacritty applies both seam policies to the mounted native grid.
+- Native frontend mapping: active stopped panes already stay mounted and call `TerminalSession::resize` from GPUI prepaint, so the backend liveness split is the stopped-geometry persistence trigger; manual resume already supplies the attached pane's current size. Main's invisible `PersistentSurfaces` behavior has no native counterpart yet because this line has no route-retained chat/mission surface, so there is no hidden cross-surface layer to resize.
+- `cb32720`'s repo state machine and tests were already present line-for-line from M1. Its command-side claim finalization remains deferred because the native app does not yet expose launch auto-resume or quit-time resume stamping; there is no claim consumer to finalize in this slice.
+- Ported `3f3bc04`'s structured `SessionUpdatedEvent` emission with `mission_id`. Its mission resume-all refresh/retry helper remains deferred because `runner-native` has no mission workspace surface; direct-chat resume already refreshes synchronously and through the session event bridge.
+- Gates: `make verify` green; 432 `runner-app` tests plus the native seam/reset regression pass.

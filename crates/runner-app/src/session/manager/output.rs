@@ -1,5 +1,9 @@
 use super::*;
 
+pub(super) const PURGE_RESUME_RESET: &[u8] = b"\x1bc";
+pub(super) const KEEP_RESUME_SEAM: &[u8] =
+    b"\x1b[0m\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\r\n";
+
 impl SessionManager {
     /// Forwarder thread shared by `spawn`, `spawn_direct`, and `resume`.
     /// Drains the runtime's `OutputStream` into `session/output`
@@ -56,17 +60,12 @@ impl SessionManager {
                 }
                 match output.recv_timeout(Duration::from_millis(500)) {
                     Ok(RuntimeOutput::Stream(bytes)) => {
-                        // Track terminal modes before recording so
-                        // that the very next `output_snapshot` (if
-                        // one races in here) reflects the latest
-                        // state the agent just emitted.
-                        manager_t.update_terminal_mode_state(&session_id, &bytes);
-                        let ev = manager_t.record_output(
+                        manager_t.ingest_output_chunk(
                             &session_id,
                             mission_id.as_deref(),
-                            BASE64.encode(&bytes),
+                            &bytes,
+                            events.as_ref(),
                         );
-                        events.output(&ev);
                     }
                     Ok(RuntimeOutput::StatusTransition { state, source }) => {
                         if let Some(ctx) = emit_ctx.as_ref() {
@@ -361,7 +360,37 @@ impl SessionManager {
     /// the spawn-time grid regardless of how big the visible grid
     /// is.
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16, pool: &DbPool) -> Result<()> {
-        let rt_session = self.live_runtime_session(session_id)?;
+        let state = self.session_state(session_id);
+        let rt_session = state.as_ref().and_then(|state| {
+            state
+                .lock()
+                .unwrap()
+                .handle
+                .as_ref()
+                .map(|handle| handle.runtime_session.clone())
+        });
+        match pool.get() {
+            Ok(conn) => match crate::repo::session::update_last_size(&conn, session_id, cols, rows)
+            {
+                Ok(0) if rt_session.is_none() => {
+                    return Err(Error::msg(format!("session not found: {session_id}")));
+                }
+                Ok(_) => {}
+                Err(error) if rt_session.is_none() => return Err(error.into()),
+                Err(_) => {}
+            },
+            Err(error) if rt_session.is_none() => return Err(error.into()),
+            Err(_) => {}
+        }
+        let Some(rt_session) = rt_session else {
+            return Ok(());
+        };
+        let Some(state) = state else {
+            return Ok(());
+        };
+        // Pane geometry is the next fork's desired size even if the current
+        // PTY rejects the ioctl. Keep last_pty_cols as the last size actually
+        // applied so a failed live resize cannot trigger a ring purge.
         self.runtime.resize(&rt_session, cols, rows)?;
         // Full-repaint TUI runtimes (claude-code, codex) redraw the whole
         // frame on SIGWINCH, so bytes buffered before a *width* change
@@ -381,7 +410,6 @@ impl SessionManager {
         // frame). Shells keep their buffer unconditionally — no repaint
         // would arrive, and their history is meaningful.
         let cols_changed = {
-            let state = self.session_state_or_insert(session_id);
             let mut state = state.lock().unwrap();
             let changed = state.last_pty_cols != Some(cols);
             state.last_pty_cols = Some(cols);
@@ -414,18 +442,29 @@ impl SessionManager {
         // replays the remaining chunks lands mid-alt-screen content
         // into xterm's main screen — visible as stacked redraws in
         // scrollback and a blank alt-screen pane on route remount.
-        // Bracketed paste has the same problem after RunnerTerminal
-        // calls `reset()`: without replaying `\x1b[?2004h`, xterm
-        // sends multiline clipboard text as raw Enter-delimited
-        // keystrokes. seq=0 sits below every real event's monotonic
-        // seq so the frontend's `seq <= lastWrittenSeq` filter
-        // doesn't drop it on re-replay.
+        // Bracketed paste and mouse reporting have the same problem
+        // after a terminal reset: their enable escapes may have fallen
+        // out of the ring even though the live child still expects the
+        // modes. seq=0 sits below every real event's monotonic seq so
+        // replay merge filters don't drop it on re-replay.
         let mut synthetic_prefix = Vec::new();
         if state.alt_screen_on {
             synthetic_prefix.extend_from_slice(b"\x1b[?1049h");
         }
         if state.bracketed_paste_on {
             synthetic_prefix.extend_from_slice(b"\x1b[?2004h");
+        }
+        if state.mouse_1000_on {
+            synthetic_prefix.extend_from_slice(b"\x1b[?1000h");
+        }
+        if state.mouse_1002_on {
+            synthetic_prefix.extend_from_slice(b"\x1b[?1002h");
+        }
+        if state.mouse_1003_on {
+            synthetic_prefix.extend_from_slice(b"\x1b[?1003h");
+        }
+        if state.mouse_1006_on {
+            synthetic_prefix.extend_from_slice(b"\x1b[?1006h");
         }
         if !synthetic_prefix.is_empty() {
             events.insert(
@@ -453,6 +492,10 @@ impl SessionManager {
             state.resume_watermark_seq = 0;
             state.alt_screen_on = false;
             state.bracketed_paste_on = false;
+            state.mouse_1000_on = false;
+            state.mouse_1002_on = false;
+            state.mouse_1003_on = false;
+            state.mouse_1006_on = false;
             state.last_pty_cols = None;
         }
         self.prune_empty_session_state(session_id);
@@ -460,9 +503,8 @@ impl SessionManager {
 
     /// Record the resume watermark: the seq the ring had reached when
     /// the current resume started. Called at the top of `resume()`
-    /// for every runtime — on the purge path (codex) it equals the
-    /// post-purge floor, so the frontend's `seq > watermark` filter
-    /// is a no-op there.
+    /// for every runtime. The purge path retains `output_seq`, so this
+    /// remains the boundary below its synthetic reset and child output.
     pub fn set_resume_watermark(&self, session_id: &str) {
         if let Some(state) = self.session_state(session_id) {
             let mut state = state.lock().unwrap();
@@ -485,9 +527,9 @@ impl SessionManager {
     /// whole frame on resume (codex — see `runtime_purges_on_resume`):
     /// clearing the buffer means the post-resume snapshot is fresh
     /// (no double banner / stacked agent output on remount), while
-    /// preserving the monotonic seq means the new PTY's first chunk
-    /// is `last + 1` rather than `1` — which the frontend's
-    /// `seq <= lastWrittenSeq` filter would otherwise drop.
+    /// preserving the monotonic seq means the synthetic reset and new
+    /// PTY chunks continue above `last` rather than restarting at `1`,
+    /// which replay merge filters would drop.
     pub fn purge_output_buffer(&self, session_id: &str) {
         if let Some(state) = self.session_state(session_id) {
             let mut state = state.lock().unwrap();
@@ -498,6 +540,10 @@ impl SessionManager {
             // instead of inheriting the prior child's mode.
             state.alt_screen_on = false;
             state.bracketed_paste_on = false;
+            state.mouse_1000_on = false;
+            state.mouse_1002_on = false;
+            state.mouse_1003_on = false;
+            state.mouse_1006_on = false;
         }
         self.prune_empty_session_state(session_id);
     }
@@ -529,7 +575,17 @@ impl SessionManager {
     fn update_terminal_mode_state(&self, session_id: &str, bytes: &[u8]) {
         let alt_screen = scan_alt_screen_transition(bytes);
         let bracketed_paste = scan_bracketed_paste_transition(bytes);
-        if alt_screen.is_none() && bracketed_paste.is_none() {
+        let mouse_1000 = scan_mouse_mode_transition(bytes, 1000);
+        let mouse_1002 = scan_mouse_mode_transition(bytes, 1002);
+        let mouse_1003 = scan_mouse_mode_transition(bytes, 1003);
+        let mouse_1006 = scan_mouse_mode_transition(bytes, 1006);
+        if alt_screen.is_none()
+            && bracketed_paste.is_none()
+            && mouse_1000.is_none()
+            && mouse_1002.is_none()
+            && mouse_1003.is_none()
+            && mouse_1006.is_none()
+        {
             return;
         }
         let state = self.session_state_or_insert(session_id);
@@ -540,6 +596,42 @@ impl SessionManager {
         if let Some(new_state) = bracketed_paste {
             state.bracketed_paste_on = new_state;
         }
+        if let Some(new_state) = mouse_1000 {
+            state.mouse_1000_on = new_state;
+        }
+        if let Some(new_state) = mouse_1002 {
+            state.mouse_1002_on = new_state;
+        }
+        if let Some(new_state) = mouse_1003 {
+            state.mouse_1003_on = new_state;
+        }
+        if let Some(new_state) = mouse_1006 {
+            state.mouse_1006_on = new_state;
+        }
+    }
+
+    pub(super) fn append_synthetic_output(
+        &self,
+        session_id: &str,
+        mission_id: Option<&str>,
+        bytes: &[u8],
+        events: &dyn SessionEvents,
+    ) {
+        self.ingest_output_chunk(session_id, mission_id, bytes, events);
+    }
+
+    fn ingest_output_chunk(
+        &self,
+        session_id: &str,
+        mission_id: Option<&str>,
+        bytes: &[u8],
+        events: &dyn SessionEvents,
+    ) {
+        // Track terminal modes before recording so that the very next
+        // snapshot reflects the latest state this chunk established.
+        self.update_terminal_mode_state(session_id, bytes);
+        let ev = self.record_output(session_id, mission_id, BASE64.encode(bytes));
+        events.output(&ev);
     }
 
     fn record_output(

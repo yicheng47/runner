@@ -544,9 +544,9 @@ pub fn session_resume(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
-    // Dims decide the PTY fork size; None forks at the 80×24 default and
-    // a TUI's instant banner then renders garbled at pane width. Logged
-    // so a garbled-pane report can be traced back to its resume geometry.
+    // Dims decide the PTY fork size; None uses the persisted last-applied
+    // size before falling back to 80×24. Logged so a garbled-pane report
+    // can be traced back to its resume geometry.
     log::info!("session_resume: session={session_id} cols={cols:?} rows={rows:?}");
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let spawned = state
@@ -575,7 +575,10 @@ pub fn session_resume(
     }
     state.events.emit(
         "session/updated",
-        &serde_json::json!({ "session_id": session_id }),
+        &crate::session::manager::SessionUpdatedEvent {
+            session_id: session_id.to_string(),
+            mission_id: spawned.mission_id.clone(),
+        },
     );
     Ok(spawned)
 }
