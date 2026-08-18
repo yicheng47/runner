@@ -613,6 +613,8 @@ pub fn session_start_direct_impl(
     state: &AppCore,
     runner_id: String,
     runtime: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
     project_id: Option<String>,
     cwd: Option<String>,
     cols: Option<u16>,
@@ -630,6 +632,8 @@ pub fn session_start_direct_impl(
         .spawn_direct(
             &runner,
             runtime.as_deref(),
+            model.as_deref(),
+            effort.as_deref(),
             project_id.as_deref(),
             effective_cwd.as_deref(),
             cols,
@@ -652,14 +656,20 @@ pub fn session_start_direct(
     state: &AppCore,
     runner_id: String,
     runtime: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
     project_id: Option<String>,
     cwd: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
-    Ok(session_start_direct_impl(state, runner_id, runtime, project_id, cwd, cols, rows)?.session)
+    Ok(session_start_direct_impl(
+        state, runner_id, runtime, model, effort, project_id, cwd, cols, rows,
+    )?
+    .session)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn session_start_runtime(
     state: &AppCore,
     runtime: &str,
@@ -667,8 +677,10 @@ pub fn session_start_runtime(
     cwd: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
+    model: Option<String>,
+    effort: Option<String>,
 ) -> Result<SpawnedSession> {
-    let runner = runtime_direct_runner(runtime, None)?;
+    let runner = runtime_direct_runner(runtime, None, model.as_deref(), effort.as_deref())?;
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let spawned = state
         .sessions

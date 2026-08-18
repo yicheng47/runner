@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use anyhow::{bail, Context as _, Result};
-use runner_backend::{db, event_bus, events, mcp, repo, session, shell_path, windows, AppCore};
+use runner_backend::{
+    db, event_bus, events, mcp, repo, runtime_status, session, shell_path, windows, AppCore,
+};
 
 pub const APP_IDENTIFIER: &str = "com.wycstudios.runner";
 
@@ -50,22 +52,49 @@ pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
     let pool = Arc::new(
         db::open_pool(&paths.app_data_dir.join("runner.db")).context("open Runner database")?,
     );
-    let login_shell_env = shell_path::resolve_login_shell_env().env;
+    let login_shell_lkg = match db::login_shell_env_lkg(&pool) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            eprintln!("runtime discovery LKG read failed: {error}");
+            None
+        }
+    };
+    let runtime_shell_env = Arc::new(RwLock::new(
+        login_shell_lkg
+            .as_ref()
+            .map(|snapshot| snapshot.env.clone())
+            .unwrap_or_default(),
+    ));
+    let runtime_discovery = Arc::new(RwLock::new(shell_path::DiscoveryState::startup(
+        login_shell_lkg
+            .as_ref()
+            .map(|snapshot| snapshot.shell.clone()),
+        login_shell_lkg
+            .as_ref()
+            .map(|snapshot| snapshot.captured_at.clone()),
+    )));
     let runtime: Arc<dyn session::runtime::SessionRuntime> =
         Arc::new(session::pty_runtime::PtyRuntime::new());
-    let sessions = session::SessionManager::new(login_shell_env, runtime);
+    let sessions = session::SessionManager::new(
+        Arc::clone(&runtime_shell_env),
+        Arc::clone(&runtime_discovery),
+        runtime,
+    );
     let window_registry = Arc::new(windows::WindowRegistry::new());
     window_registry.register("main");
+    let event_channel = events::EventChannel::new();
 
     let core = AppCore {
         db: Arc::clone(&pool),
         app_data_dir: paths.app_data_dir.clone(),
         sessions,
+        runtime_shell_env: Arc::clone(&runtime_shell_env),
+        runtime_discovery: Arc::clone(&runtime_discovery),
         buses: event_bus::BusRegistry::new(),
         routers: runner_backend::router::RouterRegistry::new(),
         mcp: Arc::new(mcp::McpHandle::new()),
         windows: window_registry,
-        events: events::EventChannel::new(),
+        events: event_channel.clone(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
@@ -73,6 +102,12 @@ pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
         .context("clean up stale PTY sessions")?;
     session::pty_runtime::cleanup_orphan_processes_on_startup(&pool)
         .context("clean up orphan PTY processes")?;
+    runtime_status::start_background_discovery(
+        event_channel,
+        Arc::clone(&pool),
+        runtime_shell_env,
+        runtime_discovery,
+    );
     Ok(core)
 }
 
@@ -143,10 +178,19 @@ mod tests {
         }
         let runtime: Arc<dyn session::runtime::SessionRuntime> =
             Arc::new(session::pty_runtime::PtyRuntime::new());
+        let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
+        let runtime_discovery =
+            Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
         let core = AppCore {
             db: Arc::clone(&pool),
             app_data_dir: PathBuf::new(),
-            sessions: session::SessionManager::new(shell_path::LoginShellEnv::default(), runtime),
+            sessions: session::SessionManager::new(
+                Arc::clone(&runtime_shell_env),
+                Arc::clone(&runtime_discovery),
+                runtime,
+            ),
+            runtime_shell_env,
+            runtime_discovery,
             buses: event_bus::BusRegistry::new(),
             routers: runner_backend::router::RouterRegistry::new(),
             mcp: Arc::new(mcp::McpHandle::new()),

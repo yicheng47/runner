@@ -9,6 +9,7 @@
 // for the rationale.
 
 pub mod codex_capture;
+pub(crate) mod codex_trust;
 pub mod launch;
 pub mod manager;
 #[cfg(unix)]

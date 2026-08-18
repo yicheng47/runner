@@ -1512,6 +1512,16 @@ mod tests {
             Some("codex"),
             Some("/custom/bin/codex"),
         ));
+        assert!(command_line_matches_recorded_agent(
+            "/Applications/Agent Tools/claude --resume abc",
+            Some("claude-code"),
+            Some("/Applications/Agent Tools/claude"),
+        ));
+        assert!(command_line_matches_recorded_agent(
+            "/opt/homebrew/bin/claude --resume abc",
+            Some("claude-code"),
+            Some("/opt/homebrew/bin/claude"),
+        ));
         assert!(!command_line_matches_recorded_agent(
             "python worker.py",
             Some("claude-code"),

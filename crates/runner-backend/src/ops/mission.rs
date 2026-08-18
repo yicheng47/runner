@@ -1783,7 +1783,7 @@ mod tests {
             },
         )
         .unwrap();
-        slot::create(conn, crew_id, &r.id, handle, None)
+        slot::create(conn, crew_id, &r.id, handle, None, None)
             .unwrap()
             .slot
             .id

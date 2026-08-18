@@ -561,10 +561,20 @@ mod tests {
     }
 
     fn test_core_in(app_data_dir: PathBuf) -> AppCore {
+        let runtime_shell_env = Arc::new(std::sync::RwLock::new(LoginShellEnv::default()));
+        let runtime_discovery = Arc::new(std::sync::RwLock::new(
+            crate::shell_path::DiscoveryState::startup(None, None),
+        ));
         AppCore {
             db: Arc::new(db::open_in_memory().unwrap()),
             app_data_dir,
-            sessions: SessionManager::new(LoginShellEnv::default(), Arc::new(InertRuntime)),
+            sessions: SessionManager::new(
+                Arc::clone(&runtime_shell_env),
+                Arc::clone(&runtime_discovery),
+                Arc::new(InertRuntime),
+            ),
+            runtime_shell_env,
+            runtime_discovery,
             buses: BusRegistry::new(),
             routers: RouterRegistry::new(),
             mcp: Arc::new(McpHandle::new()),

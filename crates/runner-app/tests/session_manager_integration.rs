@@ -53,6 +53,8 @@ fn direct_chat_flows_from_app_core_session_manager_into_terminal_grid() {
         None,
         None,
         None,
+        None,
+        None,
         Some(80),
         Some(24),
     )
@@ -101,6 +103,8 @@ fn terminal_ime_commit_forwards_utf8_through_session_manager() {
     let spawned = runner_backend::ops::session::session_start_direct(
         &core,
         runner.id,
+        None,
+        None,
         None,
         None,
         None,
@@ -157,6 +161,8 @@ fn bridge_keeps_multiple_tab_sessions_attached_with_independent_geometry() {
         None,
         None,
         None,
+        None,
+        None,
         Some(80),
         Some(24),
     )
@@ -164,6 +170,8 @@ fn bridge_keeps_multiple_tab_sessions_attached_with_independent_geometry() {
     let second = runner_backend::ops::session::session_start_direct(
         &core,
         runner.id,
+        None,
+        None,
         None,
         None,
         None,

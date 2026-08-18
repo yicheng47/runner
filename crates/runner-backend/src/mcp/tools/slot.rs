@@ -68,13 +68,16 @@ impl RunnerMcpHandler {
             &input.runner_id,
             &input.slot_handle,
             input.runtime_override.as_deref(),
+            input.model_override.as_deref(),
         )
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         self.state.events.emit("slot/changed", &());
         Ok(CallToolResult::success(vec![Content::json(&slot)?]))
     }
 
-    #[tool(description = "Update a slot by ID. Omitted fields are preserved.")]
+    #[tool(
+        description = "Update a slot by ID, including independent runtime, model, and effort overrides. Omitted fields are preserved."
+    )]
     pub async fn slot_update(
         &self,
         Parameters(UpdateSlotArgs { slot_id, input }): Parameters<UpdateSlotArgs>,

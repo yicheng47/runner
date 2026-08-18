@@ -45,6 +45,16 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         display_name: "Claude Code",
         command: "claude",
     },
+    RuntimeDefinition {
+        name: "qoder",
+        display_name: "Qoder",
+        command: "qodercli",
+    },
+    RuntimeDefinition {
+        name: "trae",
+        display_name: "TRAE CLI",
+        command: "traecli",
+    },
 ];
 
 pub fn runtime_definitions() -> &'static [RuntimeDefinition] {
@@ -88,13 +98,16 @@ pub fn runtime_display_name(name: &str) -> String {
 ///     used in `~/.codex/config.toml`. The value is parsed as TOML
 ///     with a raw-string fallback, so passing the level unquoted is
 ///     fine. The level is lowercased before being formatted in:
-///     codex's TOML enum is case-sensitive and rejects e.g. `High`
-///     with `unknown variant 'High', expected one of 'none',
-///     'minimal', 'low', 'medium', 'high', 'xhigh'`, but rows often
-///     store the level title-cased ("High"). claude-code's
-///     `--effort` is *not* case-sensitive (accepts `High`), so the
-///     claude-code branch deliberately forwards the value verbatim
-///     to avoid a regression on already-shipped behavior.
+///     codex-cli 0.130.0's TOML enum was case-sensitive and rejected
+///     e.g. `High` with `unknown variant 'High', expected one of
+///     'none', 'minimal', 'low', 'medium', 'high', 'xhigh'`, while
+///     rows often store the level title-cased ("High"). On 0.146.0,
+///     config-loading commands accept unknown values without that
+///     enum error, and the refreshed model catalog includes `max` and
+///     `ultra` for current models. claude-code's `--effort` is *not*
+///     case-sensitive (accepts `High`), so the claude-code branch
+///     deliberately forwards the value verbatim to avoid a regression
+///     on already-shipped behavior.
 ///
 /// shell / unknown runtimes: no equivalent flags — degrade silently
 /// so the runner row's preference is recorded but the spawn
@@ -121,7 +134,7 @@ pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str
             }
             out
         }
-        "codex" => {
+        "codex" | "trae" => {
             let mut out = Vec::new();
             if let Some(m) = model {
                 out.push("--model".into());
@@ -175,6 +188,15 @@ pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str
 ///   exposed here.)
 /// - **Bypass** — `--ask-for-approval never --sandbox
 ///   workspace-write`. Never ask.
+///
+/// qoder (2 modes — only the live-probed flag is exposed):
+/// - **Default** — no flag.
+/// - **Auto** — `--permission-mode auto`.
+///
+/// trae (3 modes — native presets declared by `traecli --help`):
+/// - **Default** — no flag; use TRAE CLI's configured default.
+/// - **Auto** — `--permission-mode auto`.
+/// - **Bypass** — `--permission-mode bypass_permissions`.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
@@ -211,11 +233,22 @@ pub fn permission_mode_args(runtime: &str, mode: PermissionMode) -> Vec<String> 
         ("claude-code", PermissionMode::Bypass) => {
             vec!["--permission-mode".into(), "bypassPermissions".into()]
         }
+        ("qoder", PermissionMode::Auto) => {
+            vec!["--permission-mode".into(), "auto".into()]
+        }
+        ("trae", PermissionMode::Auto) => {
+            vec!["--permission-mode".into(), "auto".into()]
+        }
+        ("trae", PermissionMode::Bypass) => {
+            vec!["--permission-mode".into(), "bypass_permissions".into()]
+        }
         // codex: `--ask-for-approval <cadence> --sandbox
         // workspace-write` pair for both Auto and Bypass. AcceptEdits
         // returns empty (codex has no equivalent) so a user who
         // somehow lands AcceptEdits on a codex row reads as Default.
-        ("codex", PermissionMode::AcceptEdits) => Vec::new(),
+        ("codex", PermissionMode::AcceptEdits) | ("trae", PermissionMode::AcceptEdits) => {
+            Vec::new()
+        }
         ("codex", PermissionMode::Auto) => vec![
             "--ask-for-approval".into(),
             "on-request".into(),
@@ -247,6 +280,7 @@ pub fn permission_mode_args(runtime: &str, mode: PermissionMode) -> Vec<String> 
 ///     `--dangerously-skip-permissions` (standalone, kept in the
 ///     strip set so legacy rows that still carry the deprecated flag
 ///     get cleaned up the next time the user touches their row).
+///   - qoder/trae: `--permission-mode <value>` (value-bearing).
 pub fn strip_permission_flags(runtime: &str, args: &[String]) -> Vec<String> {
     // (flag_name, takes_value)
     let keys: &[(&str, bool)] = match runtime {
@@ -255,6 +289,7 @@ pub fn strip_permission_flags(runtime: &str, args: &[String]) -> Vec<String> {
             ("--dangerously-skip-permissions", false),
             ("--permission-mode", true),
         ],
+        "qoder" | "trae" => &[("--permission-mode", true)],
         _ => &[],
     };
     if keys.is_empty() {
@@ -381,6 +416,9 @@ fn mode_match_pairs(
         ("claude-code", PermissionMode::Bypass) => {
             &[("--permission-mode", Some("bypassPermissions"))]
         }
+        ("qoder", PermissionMode::Auto) => &[("--permission-mode", Some("auto"))],
+        ("trae", PermissionMode::Auto) => &[("--permission-mode", Some("auto"))],
+        ("trae", PermissionMode::Bypass) => &[("--permission-mode", Some("bypass_permissions"))],
         ("codex", PermissionMode::Auto) => &[
             ("--ask-for-approval", Some("on-request")),
             ("--sandbox", Some("workspace-write")),
@@ -473,8 +511,8 @@ pub const FIRST_TURN_ARGV_MAX_BYTES: usize = 32 * 1024;
 /// Map a runtime + composed first-turn body to the positional argv
 /// the agent CLI reads as its first user turn at process spawn.
 ///
-/// claude-code and codex both accept a positional `[PROMPT]` argument
-/// (verified against claude-code and codex-cli 0.130.0). Delivering
+/// claude-code, codex, qoder, and trae accept a positional `[PROMPT]` argument.
+/// Delivering
 /// the first turn at spawn-time eliminates the post-spawn paste race
 /// the original `inject_paste_with_verify` machinery was working
 /// around: if the child starts, the prompt is already part of its
@@ -504,7 +542,7 @@ pub fn first_turn_argv(runtime: &str, body: Option<&str>) -> Vec<String> {
         return Vec::new();
     }
     match runtime {
-        "claude-code" | "codex" => vec![body.to_string()],
+        "claude-code" | "codex" | "qoder" | "trae" => vec![body.to_string()],
         _ => Vec::new(),
     }
 }
@@ -513,12 +551,12 @@ pub fn first_turn_argv(runtime: &str, body: Option<&str>) -> Vec<String> {
 /// any `system_prompt` argv + first-turn body positional) in the
 /// order the runtime's CLI expects.
 ///
-/// `system_prompt_args` still returns empty for both supported
-/// runtimes (claude-code's `--append-system-prompt` is SDK-only; codex
-/// has no equivalent flag). The first user turn — composed launch
-/// prompt for a mission lead, worker preamble for non-leads, persona
-/// for direct chats — rides on `first_turn_argv` instead and lands as
-/// the trailing positional.
+/// `system_prompt_args` still returns empty for all four first-class
+/// runtimes (claude-code's `--append-system-prompt` is SDK-only; codex,
+/// qoder, and trae have no probed equivalent flag). The first user turn —
+/// composed launch prompt for a mission lead, worker preamble for
+/// non-leads, persona for direct chats — rides on `first_turn_argv`
+/// instead and lands as the trailing positional.
 ///
 /// `plan_resuming` suppresses both the system_prompt argv (legacy,
 /// no-op today) and the first_turn argv — replaying a launch prompt
@@ -560,19 +598,19 @@ pub fn mission_bus_sandbox_args(runtime: &str, mission_dir: Option<&Path>) -> Ve
 /// can pass it back via `prior_key`.
 #[derive(Debug, Clone)]
 pub struct ResumePlan {
-    /// Args to splice into the spawn command. For claude-code these are
-    /// trailing flags; for codex `resume <uuid>` is a subcommand prefix the
-    /// caller must place ahead of any user-supplied args. See `prepend`.
+    /// Args to splice into the spawn command. For claude-code and qoder these
+    /// are trailing flags; for codex and trae `resume <uuid>` is a subcommand
+    /// prefix the caller must place ahead of any user-supplied args. See `prepend`.
     pub args: Vec<String>,
     /// `true` when `args` are a subcommand prefix that must precede the
-    /// runner's configured args (codex resume). `false` when they are
-    /// trailing flags safe to append (claude-code --session-id / --resume).
+    /// runner's configured args (codex/trae resume). `false` when they are
+    /// trailing flags safe to append (claude-code/qoder --session-id / --resume).
     pub prepend: bool,
     /// The native agent session key this spawn is bound to, when known up
-    /// front. claude-code: a freshly-generated UUID we just told the CLI to
-    /// use, or the prior key when resuming. codex: the prior key when
-    /// resuming, otherwise `None` (fresh codex sessions self-assign an id;
-    /// post-spawn capture is a follow-up).
+    /// front. claude-code/qoder: a freshly-generated UUID we just told the CLI
+    /// to use, or the prior key when resuming. codex/trae: the prior key when
+    /// resuming, otherwise `None` (fresh sessions self-assign an id that
+    /// Runner captures post-spawn).
     pub assigned_key: Option<String>,
     /// Whether this plan is a resume of a prior conversation. Callers can
     /// surface a "resuming previous session" hint, and on later detection
@@ -597,12 +635,11 @@ impl ResumePlan {
 ///
 /// Failure modes:
 ///   - Unknown runtime → fresh spawn, no key (degrade silently).
-///   - claude-code with no `prior_key` → fresh spawn but with a self-assigned
-///     UUID via `--session-id`, so the very next respawn can resume.
-///   - codex with no `prior_key` → fresh spawn, no key. Capturing the codex
-///     rollout id post-spawn is tracked as a follow-up; until then, codex
-///     resumes only if the user has previously triggered a captured key by
-///     other means (manual seed, future capture path).
+///   - claude-code/qoder with no `prior_key` → fresh spawn but with a
+///     self-assigned UUID via `--session-id`, so the very next respawn can
+///     resume.
+///   - codex/trae with no `prior_key` → fresh spawn, no key. Runner captures
+///     the rollout id post-spawn.
 ///
 /// `prior_key` should be the value of `sessions.agent_session_key` from the
 /// most recent prior session in the same scope. The caller decides how to
@@ -647,7 +684,24 @@ pub fn resume_plan(runtime: &str, prior_key: Option<&str>) -> ResumePlan {
                 }
             }
         },
-        "codex" => match prior_key {
+        "qoder" => match prior_key {
+            Some(k) if is_uuid(k) => ResumePlan {
+                args: vec!["--resume".into(), k.to_string()],
+                prepend: false,
+                assigned_key: Some(k.to_string()),
+                resuming: true,
+            },
+            _ => {
+                let id = uuid::Uuid::new_v4().to_string();
+                ResumePlan {
+                    args: vec!["--session-id".into(), id.clone()],
+                    prepend: false,
+                    assigned_key: Some(id),
+                    resuming: false,
+                }
+            }
+        },
+        "codex" | "trae" => match prior_key {
             Some(k) if is_uuid(k) => ResumePlan {
                 // `codex resume <uuid>` is a subcommand prefix. The caller
                 // places these args ahead of any user-supplied args.
@@ -668,27 +722,21 @@ fn is_uuid(s: &str) -> bool {
     uuid::Uuid::parse_str(s).is_ok()
 }
 
-/// True iff claude-code's conversation file for `(cwd, uuid)` exists on
-/// disk. Used by `SessionManager::resume` to skip `--resume <uuid>` when
-/// the agent never persisted a turn (for example, fast Stop after
-/// spawn before a first response persists) — passing
-/// `--resume` against a missing file makes claude-code print
-/// "No conversation found with session ID …" and leave the TUI sitting
-/// in a half-initialised state. Path scheme:
-/// `$HOME/.claude/projects/<cwd-with-/-as--dashes>/<uuid>.jsonl`. We
-/// resolve `cwd` with the same precedence the spawn used (mission /
-/// runner override) and skip the check when no concrete cwd is known.
-pub fn claude_code_conversation_exists(cwd: Option<&str>, uuid: &str) -> bool {
+/// Check an agent conversation path using that CLI's project-directory
+/// encoder. Claude Code replaces `/` and `.`, while Qoder replaces every
+/// non-ASCII-alphanumeric UTF-16 code unit and hashes paths over 200 units.
+fn conversation_file_exists(
+    agent_dir: &str,
+    cwd: Option<&str>,
+    uuid: &str,
+    encode_project_dir: fn(&str) -> String,
+) -> bool {
     // `cfg(test)` short-circuits the filesystem check so unit tests
-    // for the resume flow don't have to fake out
-    // `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`. The path
-    // encoding is exercised directly by `claude_code_conversation_*`
-    // tests below; the SessionManager-level resume tests just want
-    // the production semantic of "prior conversation present" to
-    // hold so they can assert key preservation.
+    // for the resume flow don't have to fake out the agent project
+    // directory. The encoders are exercised directly below.
     #[cfg(test)]
     {
-        let _ = (cwd, uuid);
+        let _ = (agent_dir, cwd, uuid, encode_project_dir);
         true
     }
     #[cfg(not(test))]
@@ -702,25 +750,66 @@ pub fn claude_code_conversation_exists(cwd: Option<&str>, uuid: &str) -> bool {
         let Some(home) = std::env::var_os("HOME") else {
             return true;
         };
-        // claude-code encodes the project dir by replacing both `/` and
-        // `.` with `-`. e.g. `/Users/jason/go/src/github.com/yicheng47`
-        // → `-Users-jason-go-src-github-com-yicheng47`. Confirmed against
-        // `~/.claude/projects/` directory listings. Only swapping `/`
-        // would miss every cwd containing a `.` (most repos), causing
-        // `path.exists()` to return false even when the conversation
-        // file is on disk — every resume would then spuriously fall back
-        // to a fresh spawn.
-        let encoded: String = cwd
-            .chars()
-            .map(|c| if c == '/' || c == '.' { '-' } else { c })
-            .collect();
         let path = std::path::PathBuf::from(home)
-            .join(".claude")
+            .join(agent_dir)
             .join("projects")
-            .join(encoded)
+            .join(encode_project_dir(cwd))
             .join(format!("{uuid}.jsonl"));
         path.exists()
     }
+}
+
+fn claude_code_project_dir(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c == '/' || c == '.' { '-' } else { c })
+        .collect()
+}
+
+fn qoder_project_dir(cwd: &str) -> String {
+    const PREFIX_LEN: usize = 200;
+    let mut encoded = String::with_capacity(cwd.len());
+    let mut hash = 5381_i32;
+    for code_unit in cwd.encode_utf16() {
+        encoded.push(
+            char::from_u32(u32::from(code_unit))
+                .filter(char::is_ascii_alphanumeric)
+                .unwrap_or('-'),
+        );
+        hash = hash.wrapping_mul(33) ^ i32::from(code_unit);
+    }
+    if encoded.len() <= PREFIX_LEN {
+        return encoded;
+    }
+    format!(
+        "{}-{}",
+        &encoded[..PREFIX_LEN],
+        base36(i64::from(hash).unsigned_abs()),
+    )
+}
+
+fn base36(mut value: u64) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut out = Vec::new();
+    loop {
+        out.push(char::from(DIGITS[(value % 36) as usize]));
+        value /= 36;
+        if value == 0 {
+            break;
+        }
+    }
+    out.into_iter().rev().collect()
+}
+
+/// True iff claude-code's conversation file for `(cwd, uuid)` exists on
+/// disk. Used by `SessionManager::resume` to skip `--resume <uuid>` when
+/// the agent never persisted a turn.
+pub fn claude_code_conversation_exists(cwd: Option<&str>, uuid: &str) -> bool {
+    conversation_file_exists(".claude", cwd, uuid, claude_code_project_dir)
+}
+
+/// True iff qoder's conversation file for `(cwd, uuid)` exists on disk.
+pub fn qoder_conversation_exists(cwd: Option<&str>, uuid: &str) -> bool {
+    conversation_file_exists(".qoder", cwd, uuid, qoder_project_dir)
 }
 
 #[cfg(test)]
@@ -809,6 +898,46 @@ mod tests {
     }
 
     #[test]
+    fn qoder_fresh_self_assigns_session_id() {
+        let plan = resume_plan("qoder", None);
+        assert!(!plan.resuming);
+        assert!(!plan.prepend);
+        assert_eq!(plan.args.len(), 2);
+        assert_eq!(plan.args[0], "--session-id");
+        let assigned = plan.assigned_key.as_deref().unwrap();
+        assert_eq!(plan.args[1], assigned);
+        assert!(is_uuid(assigned), "assigned key must be a UUID");
+    }
+
+    #[test]
+    fn qoder_resumes_with_prior_uuid() {
+        let prior = uuid::Uuid::new_v4().to_string();
+        let plan = resume_plan("qoder", Some(&prior));
+        assert!(plan.resuming);
+        assert!(!plan.prepend);
+        assert_eq!(plan.args, vec!["--resume", &prior]);
+        assert_eq!(plan.assigned_key.as_deref(), Some(prior.as_str()));
+    }
+
+    #[test]
+    fn qoder_project_dir_matches_cli_encoding() {
+        assert_eq!(
+            qoder_project_dir("/Users/jason/a b/c_d+e.rs"),
+            "-Users-jason-a-b-c-d-e-rs",
+        );
+        assert_eq!(qoder_project_dir("/tmp/💡"), "-tmp---");
+    }
+
+    #[test]
+    fn qoder_project_dir_truncates_with_djb2_base36_suffix() {
+        let cwd = "a".repeat(201);
+        assert_eq!(
+            qoder_project_dir(&cwd),
+            format!("{}-x54x4s", "a".repeat(200)),
+        );
+    }
+
+    #[test]
     fn codex_fresh_returns_empty_plan() {
         let plan = resume_plan("codex", None);
         assert!(plan.args.is_empty());
@@ -823,6 +952,24 @@ mod tests {
         assert!(plan.resuming);
         assert!(plan.prepend, "codex resume is a subcommand, must prepend");
         assert_eq!(plan.args, vec!["resume", &prior]);
+    }
+
+    #[test]
+    fn trae_fresh_returns_empty_plan() {
+        let plan = resume_plan("trae", None);
+        assert!(plan.args.is_empty());
+        assert!(plan.assigned_key.is_none());
+        assert!(!plan.resuming);
+    }
+
+    #[test]
+    fn trae_resume_uses_subcommand_prefix() {
+        let prior = "019fa1b9-a133-7841-b4dd-730d376ab1d1".to_string();
+        let plan = resume_plan("trae", Some(&prior));
+        assert!(plan.resuming);
+        assert!(plan.prepend, "trae resume is a subcommand, must prepend");
+        assert_eq!(plan.args, vec!["resume", &prior]);
+        assert_eq!(plan.assigned_key.as_deref(), Some(prior.as_str()));
     }
 
     #[test]
@@ -863,6 +1010,20 @@ mod tests {
             args.windows(2)
                 .any(|w| w[0] == "-c" && w[1] == "model_reasoning_effort=high"),
             "expected `-c model_reasoning_effort=high`, got: {args:?}",
+        );
+    }
+
+    #[test]
+    fn trae_emits_model_and_reasoning_effort_override() {
+        let args = model_effort_args("trae", Some("trae-model"), Some("High"));
+        assert_eq!(
+            args,
+            vec![
+                "--model".to_string(),
+                "trae-model".to_string(),
+                "-c".to_string(),
+                "model_reasoning_effort=high".to_string(),
+            ],
         );
     }
 
@@ -961,6 +1122,7 @@ mod tests {
         // Default → no flags for any runtime / any mode.
         assert!(permission_mode_args("claude-code", PermissionMode::Default).is_empty());
         assert!(permission_mode_args("codex", PermissionMode::Default).is_empty());
+        assert!(permission_mode_args("trae", PermissionMode::Default).is_empty());
         // claude-code: AcceptEdits / Auto / Bypass each emit
         // `--permission-mode <value>` with a runtime-specific value.
         assert_eq!(
@@ -978,6 +1140,12 @@ mod tests {
                 "bypassPermissions".to_string(),
             ],
         );
+        assert_eq!(
+            permission_mode_args("qoder", PermissionMode::Auto),
+            vec!["--permission-mode".to_string(), "auto".to_string()],
+        );
+        assert!(permission_mode_args("qoder", PermissionMode::AcceptEdits).is_empty());
+        assert!(permission_mode_args("qoder", PermissionMode::Bypass).is_empty());
         // codex: AcceptEdits has no equivalent (returns empty);
         // Auto uses on-request (on-failure is deprecated per
         // `codex --help`); Bypass uses never.
@@ -998,6 +1166,18 @@ mod tests {
                 "never".to_string(),
                 "--sandbox".to_string(),
                 "workspace-write".to_string(),
+            ],
+        );
+        assert!(permission_mode_args("trae", PermissionMode::AcceptEdits).is_empty());
+        assert_eq!(
+            permission_mode_args("trae", PermissionMode::Auto),
+            vec!["--permission-mode".to_string(), "auto".to_string()],
+        );
+        assert_eq!(
+            permission_mode_args("trae", PermissionMode::Bypass),
+            vec![
+                "--permission-mode".to_string(),
+                "bypass_permissions".to_string(),
             ],
         );
         // Unknown runtime → empty for every mode.
@@ -1106,6 +1286,25 @@ mod tests {
     }
 
     #[test]
+    fn apply_permission_mode_trae_round_trips_auto_to_default() {
+        let user = vec!["--debug".to_string()];
+        let auto = apply_permission_mode("trae", &user, PermissionMode::Auto);
+        assert_eq!(
+            auto,
+            vec![
+                "--debug".to_string(),
+                "--permission-mode".to_string(),
+                "auto".to_string(),
+            ],
+        );
+        assert_eq!(infer_permission_mode("trae", &auto), PermissionMode::Auto);
+        assert_eq!(
+            apply_permission_mode("trae", &auto, PermissionMode::Default),
+            user,
+        );
+    }
+
+    #[test]
     fn apply_permission_mode_claude_code_each_mode() {
         for (mode, expected_extra) in [
             (
@@ -1190,6 +1389,25 @@ mod tests {
                 "bypassPermissions".to_string(),
             ],
             "legacy flag stripped; canonical --permission-mode bypassPermissions added",
+        );
+    }
+
+    #[test]
+    fn apply_permission_mode_qoder_round_trips_auto_to_default() {
+        let user = vec!["--debug".to_string()];
+        let auto = apply_permission_mode("qoder", &user, PermissionMode::Auto);
+        assert_eq!(
+            auto,
+            vec![
+                "--debug".to_string(),
+                "--permission-mode".to_string(),
+                "auto".to_string(),
+            ],
+        );
+        assert_eq!(infer_permission_mode("qoder", &auto), PermissionMode::Auto,);
+        assert_eq!(
+            apply_permission_mode("qoder", &auto, PermissionMode::Default),
+            user,
         );
     }
 
@@ -1411,8 +1629,8 @@ mod tests {
     }
 
     #[test]
-    fn first_turn_rides_trailing_argv_on_fresh_spawn_for_both_runtimes() {
-        for runtime in ["claude-code", "codex"] {
+    fn first_turn_rides_trailing_argv_on_fresh_spawn_for_supported_runtimes() {
+        for runtime in ["claude-code", "codex", "qoder", "trae"] {
             let body = "You are the architect. Goal: ship 0007.";
             let args = trailing_runtime_args(
                 runtime,
@@ -1422,19 +1640,20 @@ mod tests {
                 Some("persona"),
                 Some(body),
             );
-            // Body lands as the trailing positional after model/effort
-            // flags. system_prompt is unchanged (still empty) for both
-            // runtimes.
+            // Body lands as the trailing positional. Qoder deliberately
+            // ignores the unprobed model/effort fields.
             assert_eq!(args.last().map(String::as_str), Some(body));
-            assert!(args
-                .windows(2)
-                .any(|w| w[0] == "--model" && w[1] == "model-x"));
+            if runtime != "qoder" {
+                assert!(args
+                    .windows(2)
+                    .any(|w| w[0] == "--model" && w[1] == "model-x"));
+            }
         }
     }
 
     #[test]
-    fn first_turn_suppressed_on_resume_for_both_runtimes() {
-        for runtime in ["claude-code", "codex"] {
+    fn first_turn_suppressed_on_resume_for_supported_runtimes() {
+        for runtime in ["claude-code", "codex", "qoder", "trae"] {
             let body = "You are the architect. Goal: ship 0007.";
             let args = trailing_runtime_args(
                 runtime,

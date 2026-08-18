@@ -303,6 +303,7 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
     // changes runtime alongside the toggle.
     let prior_runtime = existing.runtime.clone();
     let runtime = input.runtime.unwrap_or(existing.runtime);
+    let runtime_changed = prior_runtime != runtime;
     let command = input.command.unwrap_or(existing.command);
     // Compose the new args from the user-provided list (or the
     // existing one when the patch omits `args`) and the form's
@@ -316,7 +317,7 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
     let args = match input.permission_mode {
         Some(mode) => {
             let base = input.args.unwrap_or(existing.args);
-            let cleared = if prior_runtime != runtime {
+            let cleared = if runtime_changed {
                 crate::router::runtime::strip_permission_flags(&prior_runtime, &base)
             } else {
                 base
@@ -366,8 +367,9 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
         })
         .unwrap_or(existing.effort);
 
+    let tx = conn.unchecked_transaction()?;
     repo::runner::update(
-        conn,
+        &tx,
         &repo::runner::RunnerRow {
             id: id.to_string(),
             handle: existing.handle,
@@ -384,6 +386,15 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRunnerInput) -> Result<R
             updated_at: now(),
         },
     )?;
+    if runtime_changed {
+        tx.execute(
+            "UPDATE slots
+                SET model_override = NULL, effort_override = NULL
+              WHERE runner_id = ?1 AND runtime_override IS NULL",
+            params![id],
+        )?;
+    }
+    tx.commit()?;
     get(conn, id)
 }
 
@@ -698,6 +709,56 @@ mod tests {
     }
 
     #[test]
+    fn update_runtime_clears_only_inheriting_slot_agent_overrides() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let r = make(&conn, "alpha");
+        conn.execute(
+            "INSERT INTO crews (id, name, created_at, updated_at)
+             VALUES ('c1', 'Crew', '2026-04-22T00:00:00Z', '2026-04-22T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO slots
+                (id, crew_id, runner_id, slot_handle, position, lead,
+                 runtime_override, model_override, effort_override, added_at)
+             VALUES
+                ('s-inherit', 'c1', ?1, 'inherit', 0, 1,
+                 NULL, 'old-model', 'high', '2026-04-22T00:00:00Z'),
+                ('s-pinned', 'c1', ?1, 'pinned', 1, 0,
+                 'claude-code', 'opus', 'max', '2026-04-22T00:00:00Z')",
+            params![r.id],
+        )
+        .unwrap();
+
+        update(
+            &conn,
+            &r.id,
+            UpdateRunnerInput {
+                runtime: Some("codex".into()),
+                command: Some("codex".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let overrides_for = |slot_id: &str| -> (Option<String>, Option<String>) {
+            conn.query_row(
+                "SELECT model_override, effort_override FROM slots WHERE id = ?1",
+                params![slot_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(overrides_for("s-inherit"), (None, None));
+        assert_eq!(
+            overrides_for("s-pinned"),
+            (Some("opus".into()), Some("max".into())),
+        );
+    }
+
+    #[test]
     fn delete_removes_row() {
         let pool = ctx();
         let mut conn = pool.get().unwrap();
@@ -908,6 +969,55 @@ mod tests {
             vec![
                 "--permission-mode".to_string(),
                 "bypassPermissions".to_string(),
+            ],
+        );
+    }
+
+    #[test]
+    fn create_and_update_apply_trae_native_permission_mode() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let r = create(
+            &conn,
+            CreateRunnerInput {
+                handle: "trae-tester".into(),
+                display_name: "TRAE".into(),
+                runtime: "trae".into(),
+                command: "traecli".into(),
+                args: vec!["--debug".into()],
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                permission_mode: PermissionMode::Auto,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            r.args,
+            vec![
+                "--debug".to_string(),
+                "--permission-mode".to_string(),
+                "auto".to_string(),
+            ],
+        );
+
+        let r = update(
+            &conn,
+            &r.id,
+            UpdateRunnerInput {
+                permission_mode: Some(PermissionMode::Bypass),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            r.args,
+            vec![
+                "--debug".to_string(),
+                "--permission-mode".to_string(),
+                "bypass_permissions".to_string(),
             ],
         );
     }
