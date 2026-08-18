@@ -264,7 +264,7 @@ impl NativeRoot {
         &mut self,
         leaf: &PaneLeaf,
         layout: &PaneLayout,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let focused = layout.focused_pane_id == leaf.id;
@@ -313,10 +313,10 @@ impl NativeRoot {
             let status = self.session_entry(session_id).map(|entry| entry.status);
             if let Some(chat) = self.attached.get(session_id) {
                 let terminal = Arc::clone(&chat.terminal);
+                let terminal_input = chat.terminal_input.clone();
                 let resize_owner = layout.is_resize_owner(&pane_id, session_id);
                 let composer = chat.composer.clone();
                 let terminal_focus = chat.terminal_focus.clone();
-                let terminal_focused = terminal_focus.is_focused(window);
                 let key_session_id = session_id.to_owned();
                 let scroll_session_id = session_id.to_owned();
                 let paste_session_id = session_id.to_owned();
@@ -347,7 +347,8 @@ impl NativeRoot {
                         )
                         .child(TerminalElement::new(
                             terminal,
-                            terminal_focused,
+                            terminal_input,
+                            terminal_focus,
                             resize_owner,
                         )),
                 );

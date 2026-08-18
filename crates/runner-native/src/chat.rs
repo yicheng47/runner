@@ -63,12 +63,35 @@ impl NativeRoot {
         )?;
         self.bridge.attach(Arc::clone(&terminal))?;
         let terminal_focus = cx.focus_handle();
+        let terminal_input = cx.new(|_| TerminalInput::new(Arc::clone(&terminal)));
+        let terminal_input_subscription = cx.observe(&terminal_input, |this, input, cx| {
+            if let Some(result) = input.update(cx, |input, _| input.take_write_result()) {
+                match result {
+                    Ok(()) => this.error = None,
+                    Err(error) => this.error = Some(error),
+                }
+            }
+            cx.notify();
+        });
+        let terminal_input_on_focus_out = terminal_input.clone();
+        let terminal_focus_subscription =
+            cx.on_focus_out(&terminal_focus, window, move |_, _, window, cx| {
+                terminal_input_on_focus_out.update(cx, |input, input_cx| {
+                    if input.cancel_composition() {
+                        window.invalidate_character_coordinates();
+                        input_cx.notify();
+                    }
+                });
+            });
         let composer_focus = cx.focus_handle();
         let composer = cx.new(|_| Composer::new(composer_focus, Arc::clone(&terminal)));
         self.attached.insert(
             session_id.to_owned(),
             AttachedChat {
                 terminal,
+                terminal_input,
+                _terminal_input_subscription: terminal_input_subscription,
+                _terminal_focus_subscription: terminal_focus_subscription,
                 composer,
                 terminal_focus,
                 scroll_accumulator: 0.,
@@ -171,13 +194,21 @@ impl NativeRoot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if event.keystroke.modifiers.platform {
-            return;
-        }
         let Some(chat) = self.attached.get(session_id) else {
             return;
         };
         let keystroke = &event.keystroke;
+        if runner_native::terminal_ime::terminal_key_route(
+            chat.terminal_input.read(cx).is_composing(),
+            keystroke.modifiers.platform,
+            keystroke.modifiers.control,
+            keystroke.modifiers.alt,
+            keystroke.modifiers.function,
+            &keystroke.key,
+        ) != runner_native::terminal_ime::TerminalKeyRoute::Raw
+        {
+            return;
+        }
         match chat.terminal.send_key(
             &keystroke.key,
             keystroke.modifiers.control,
@@ -187,11 +218,13 @@ impl NativeRoot {
             Ok(true) => {
                 chat.terminal.scroll_to_bottom();
                 self.error = None;
+                cx.stop_propagation();
                 cx.notify();
             }
             Ok(false) => {}
             Err(error) => {
                 self.error = Some(error.to_string());
+                cx.stop_propagation();
                 cx.notify();
             }
         }
