@@ -75,6 +75,21 @@ fn pane_assignment_is_move_not_copy_across_tabs() {
 }
 
 #[test]
+fn grouped_duplicate_session_has_one_resize_owner() {
+    let mut layout = PaneLayout::fresh(PresetKind::Cols2, Some("A"), &["A".into()]);
+    let PaneNode::Split(split) = &mut layout.root else {
+        panic!("cols-2 must have an outer split");
+    };
+    let PaneNode::Leaf(second) = split.b.as_mut() else {
+        panic!("cols-2 second child must be a leaf");
+    };
+    second.session_id = Some("A".into());
+
+    assert!(layout.is_resize_owner("p1", "A"));
+    assert!(!layout.is_resize_owner("p2", "A"));
+}
+
+#[test]
 fn persisted_layout_round_trips_slots_and_per_split_sizes() {
     let mut layout = PaneLayout::fresh(PresetKind::Main2, Some("B"), &["A".into(), "B".into()]);
     assert!(layout.set_split_sizes("main-2:outer", [70., 30.]));

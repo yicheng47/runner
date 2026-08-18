@@ -21,6 +21,9 @@ use gpui::{
     Style, TextRun, Window,
 };
 
+use runner_native::terminal_resize::{
+    size_push_verdict, terminal_grid_size, SizePushVerdict, TerminalGridSize,
+};
 use runner_terminal::palette;
 use runner_terminal::terminal::TerminalSession;
 
@@ -37,11 +40,16 @@ fn to_hsla(rgb: Rgb, alpha: f32) -> Hsla {
 pub struct TerminalElement {
     session: Arc<TerminalSession>,
     focused: bool,
+    resize_owner: bool,
 }
 
 impl TerminalElement {
-    pub fn new(session: Arc<TerminalSession>, focused: bool) -> Self {
-        Self { session, focused }
+    pub fn new(session: Arc<TerminalSession>, focused: bool, resize_owner: bool) -> Self {
+        Self {
+            session,
+            focused,
+            resize_owner,
+        }
     }
 }
 
@@ -105,9 +113,33 @@ impl Element for TerminalElement {
             .unwrap_or(px(FONT_SIZE * 0.6));
         let line_height = px((FONT_SIZE * LINE_HEIGHT_FACTOR).round());
 
-        let cols = (bounds.size.width / cell_width).floor() as u16;
-        let rows = (bounds.size.height / line_height).floor() as u16;
-        self.session.resize(cols, rows);
+        let measured = terminal_grid_size(
+            f32::from(bounds.size.width),
+            f32::from(bounds.size.height),
+            f32::from(cell_width),
+            f32::from(line_height),
+        );
+        let (last_cols, last_rows) = self.session.size();
+        match size_push_verdict(
+            measured,
+            TerminalGridSize {
+                cols: last_cols,
+                rows: last_rows,
+            },
+            self.resize_owner,
+        ) {
+            SizePushVerdict::Push(size) => self.session.resize(size.cols, size.rows),
+            SizePushVerdict::Unchanged | SizePushVerdict::SuppressedNonOwner => {}
+            SizePushVerdict::SuppressedUnplaced => {
+                return GridPrepaint {
+                    backgrounds: Vec::new(),
+                    lines: Vec::new(),
+                    cursor: None,
+                    line_height,
+                };
+            }
+        }
+        let (cols, rows) = self.session.size();
 
         let base = palette::base_palette();
         let mut backgrounds: Vec<(Bounds<Pixels>, Hsla)> = Vec::new();

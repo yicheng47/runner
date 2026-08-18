@@ -65,6 +65,8 @@ struct FakeRuntime {
     stops: std::sync::Mutex<Vec<String>>,
     stop_failures: std::sync::Mutex<HashSet<String>>,
     resizes: std::sync::Mutex<Vec<(String, u16, u16)>>,
+    resize_failures: std::sync::Mutex<HashSet<String>>,
+    stop_gate: std::sync::Mutex<Option<RuntimeGate>>,
     /// What `status()` returns for any pane lookup. Most tests
     /// want exit_code=0 (clean stop); the kill-semantics test
     /// wants exit_code=143 (SIGTERM) to verify the
@@ -85,6 +87,11 @@ struct FakeSpawn {
 enum FakeInput {
     Bytes { session_id: String, bytes: Vec<u8> },
     Key { session_id: String, key: String },
+}
+
+struct RuntimeGate {
+    entered: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
 }
 
 impl FakeRuntime {
@@ -155,6 +162,27 @@ impl FakeRuntime {
         self.stop_failures.lock().unwrap().remove(session_id);
     }
 
+    fn fail_resize_for(&self, session_id: &str) {
+        self.resize_failures
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string());
+    }
+
+    fn allow_resize_for(&self, session_id: &str) {
+        self.resize_failures.lock().unwrap().remove(session_id);
+    }
+
+    fn arm_stop_gate(&self) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        *self.stop_gate.lock().unwrap() = Some(RuntimeGate {
+            entered: entered_tx,
+            release: release_rx,
+        });
+        (entered_rx, release_tx)
+    }
+
     fn last_spawn_spec(&self) -> Option<SpawnSpec> {
         self.spawns.lock().unwrap().last().map(|s| s.spec.clone())
     }
@@ -202,6 +230,11 @@ impl SessionRuntime for FakeRuntime {
 
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
         self.stops.lock().unwrap().push(session.session_id.clone());
+        let gate = self.stop_gate.lock().unwrap().take();
+        if let Some(gate) = gate {
+            let _ = gate.entered.send(());
+            let _ = gate.release.recv();
+        }
         if self
             .stop_failures
             .lock()
@@ -245,6 +278,17 @@ impl SessionRuntime for FakeRuntime {
             .lock()
             .unwrap()
             .push((session.session_id.clone(), cols, rows));
+        if self
+            .resize_failures
+            .lock()
+            .unwrap()
+            .contains(&session.session_id)
+        {
+            return Err(RuntimeError::Msg(format!(
+                "injected resize failure for {}",
+                session.session_id
+            )));
+        }
         Ok(())
     }
 
@@ -344,6 +388,10 @@ fn mission() -> Mission {
 
 fn capture() -> Arc<Capture> {
     Arc::new(Capture::default())
+}
+
+fn is_inband_clear(event: &OutputEvent) -> bool {
+    event.data == BASE64.encode(b"\x1b[2J\x1b[H")
 }
 
 fn wait_for_session_status_event(
@@ -3024,7 +3072,9 @@ fn resume_size_resolution_prefers_explicit_then_persisted_after_manager_restart(
         .unwrap();
     first_fake.close_spawn(0);
     wait_for_db_stop(&pool, &spawned.id);
-    first_mgr.resize(&spawned.id, 132, 41, &pool).unwrap();
+    first_mgr
+        .resize(&spawned.id, 132, 41, &pool, capture())
+        .unwrap();
     let persisted: (u16, u16) = pool
         .get()
         .unwrap()
@@ -3090,7 +3140,9 @@ fn resize_rejects_unknown_session_without_creating_state() {
     let pool = pool_with_schema();
     let mgr = SessionManager::new(crate::shell_path::LoginShellEnv::default(), inert_runtime());
 
-    let err = mgr.resize("missing-session", 120, 30, &pool).unwrap_err();
+    let err = mgr
+        .resize("missing-session", 120, 30, &pool, capture())
+        .unwrap_err();
 
     assert_eq!(format!("{err}"), "session not found: missing-session");
     assert!(
@@ -3819,13 +3871,6 @@ fn runtime_clears_on_resize_resolves_runner_backed_runtimes() {
     assert!(!super::output::runtime_clears_on_resize("s-missing", &pool));
 }
 
-// The resize ring purge must gate on a *width* change. The frontend's
-// activation dance resizes rows-1 → rows with cols held constant on
-// every tab return; purging there wiped claude-code's replayable
-// history even though rows-only SIGWINCHes can't garble reflow (wrap
-// depends on cols alone) — the #306 "remount shows only the latest
-// frame" symptom. Spawn seeds the gate, so even the first same-width
-// resize keeps the ring.
 #[test]
 fn resize_purges_ring_only_on_cols_change() {
     let pool = pool_with_schema();
@@ -3848,6 +3893,101 @@ fn resize_purges_ring_only_on_cols_change() {
     let mut runner = runner("/bin/cat", &[]);
     runner.id = runner_id;
     runner.handle = "colsgate".into();
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    mgr.set_resize_settle_ms(3_600_000);
+    let spawned = mgr
+        .spawn_direct(
+            &runner,
+            None,
+            None,
+            Some("/tmp"),
+            Some(120),
+            Some(30),
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+
+    fake.push_output(0, b"history to keep");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while mgr.output_snapshot(&spawned.id).is_empty() {
+        if Instant::now() > deadline {
+            panic!("output never reached the ring");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    mgr.resize(&spawned.id, 120, 29, &pool, capture()).unwrap();
+    mgr.resize(&spawned.id, 120, 30, &pool, capture()).unwrap();
+    assert_eq!(fake.resizes.lock().unwrap().len(), 2);
+    assert!(
+        !mgr.output_snapshot(&spawned.id).is_empty(),
+        "rows-only resize must keep the replay ring"
+    );
+
+    mgr.resize(&spawned.id, 100, 30, &pool, capture()).unwrap();
+    assert_eq!(fake.resizes.lock().unwrap().len(), 2);
+    assert!(
+        !mgr.output_snapshot(&spawned.id).is_empty(),
+        "the ring must survive until the storm settles"
+    );
+    let persisted: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![spawned.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        persisted,
+        (100, 30),
+        "update_last_size must record the requested size before the settle"
+    );
+
+    mgr.settle_pending_resize_now(&spawned.id);
+    assert_eq!(
+        fake.resizes.lock().unwrap().last().cloned(),
+        Some((spawned.id.clone(), 100, 30))
+    );
+    let snapshot = mgr.output_snapshot(&spawned.id);
+    assert!(snapshot.len() == 1 && is_inband_clear(&snapshot[0]));
+
+    mgr.kill(&spawned.id).unwrap();
+}
+
+fn spawn_claude_for_resize(
+    handle: &str,
+) -> (
+    Arc<db::DbPool>,
+    Arc<FakeRuntime>,
+    Arc<SessionManager>,
+    String,
+) {
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, working_dir, system_prompt, env_json,
+                     created_at, updated_at)
+                 VALUES (?1, ?2, 'Debounce', 'claude-code', '/bin/cat',
+                         NULL, NULL, NULL, NULL, ?3, ?3)",
+            params![runner_id, handle, now],
+        )
+        .unwrap();
+    }
+    let mut runner = runner("/bin/cat", &[]);
+    runner.id = runner_id;
+    runner.handle = handle.into();
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
@@ -3874,37 +4014,178 @@ fn resize_purges_ring_only_on_cols_change() {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+    (pool, fake, mgr, spawned.id)
+}
 
-    // Rows-only nudge (the activation dance): ring must survive both legs.
-    mgr.resize(&spawned.id, 120, 29, &pool).unwrap();
-    mgr.resize(&spawned.id, 120, 30, &pool).unwrap();
-    assert!(
-        !mgr.output_snapshot(&spawned.id).is_empty(),
-        "rows-only resize must keep the replay ring"
-    );
+#[test]
+fn resize_storm_collapses_to_one_settled_push() {
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("storm");
+    mgr.set_resize_settle_ms(3_600_000);
 
-    // Width change: stale-width bytes must still purge.
-    mgr.resize(&spawned.id, 100, 30, &pool).unwrap();
-    assert!(
-        mgr.output_snapshot(&spawned.id).is_empty(),
-        "cols change must purge the replay ring"
-    );
-    let persisted: (u16, u16) = pool
-        .get()
-        .unwrap()
-        .query_row(
-            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
-            params![spawned.id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
+    for cols in [78u16, 76, 209, 76, 210] {
+        mgr.resize(&id, cols, 30, &pool, capture()).unwrap();
+    }
+    assert!(fake.resizes.lock().unwrap().is_empty());
+    assert!(!mgr.output_snapshot(&id).is_empty());
+
+    mgr.settle_pending_resize_now(&id);
     assert_eq!(
-        persisted,
-        (100, 30),
-        "a live resize must still persist the applied dimensions"
+        fake.resizes.lock().unwrap().clone(),
+        vec![(id.clone(), 210, 30)]
+    );
+    let snapshot = mgr.output_snapshot(&id);
+    assert!(snapshot.len() == 1 && is_inband_clear(&snapshot[0]));
+
+    mgr.kill(&id).unwrap();
+}
+
+#[test]
+fn round_trip_resize_storm_produces_zero_purges() {
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("roundtrip");
+    mgr.set_resize_settle_ms(3_600_000);
+
+    for cols in [150u16, 209, 150, 120] {
+        mgr.resize(&id, cols, 30, &pool, capture()).unwrap();
+    }
+    mgr.settle_pending_resize_now(&id);
+    assert_eq!(
+        fake.resizes.lock().unwrap().clone(),
+        vec![(id.clone(), 120, 29), (id.clone(), 120, 30)]
+    );
+    let snapshot = mgr.output_snapshot(&id);
+    assert!(!snapshot.is_empty());
+    assert!(!snapshot.iter().any(is_inband_clear));
+
+    mgr.kill(&id).unwrap();
+}
+
+#[test]
+fn settle_during_inflight_kill_aborts_untouched() {
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("killwindow");
+    mgr.set_resize_settle_ms(3_600_000);
+
+    mgr.resize(&id, 100, 30, &pool, capture()).unwrap();
+    let (stop_entered, stop_release) = fake.arm_stop_gate();
+    let kill = {
+        let mgr = Arc::clone(&mgr);
+        let id = id.clone();
+        std::thread::spawn(move || mgr.kill(&id))
+    };
+    stop_entered
+        .recv_timeout(Duration::from_secs(2))
+        .expect("kill never reached runtime.stop");
+    mgr.settle_pending_resize_now(&id);
+    assert!(fake.resizes.lock().unwrap().is_empty());
+    assert!(!mgr.output_snapshot(&id).is_empty());
+
+    stop_release.send(()).unwrap();
+    kill.join().unwrap().unwrap();
+    assert!(!mgr.output_snapshot(&id).is_empty());
+}
+
+#[test]
+fn stale_settle_after_kill_and_respawn_touches_nothing() {
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("respawn");
+    mgr.set_resize_settle_ms(3_600_000);
+
+    mgr.resize(&id, 100, 30, &pool, capture()).unwrap();
+    mgr.kill(&id).unwrap();
+    mgr.install_handle(
+        &id,
+        SessionHandle {
+            id: id.clone(),
+            mission_id: None,
+            runner_id: None,
+            runtime_session: RuntimeSession {
+                runtime: "fake".into(),
+                session_id: id.clone(),
+            },
+            codex_capture: None,
+            forwarder: None,
+            stop: Arc::new(AtomicBool::new(false)),
+        },
+        None,
+        Some((199, 59)),
+    );
+    mgr.append_synthetic_output(&id, None, b"fresh resume repaint", capture().as_ref());
+
+    mgr.settle_pending_resize_now(&id);
+    assert!(fake.resizes.lock().unwrap().is_empty());
+    assert!(!mgr.output_snapshot(&id).is_empty());
+
+    mgr.resize(&id, 199, 58, &pool, capture()).unwrap();
+    assert_eq!(
+        fake.resizes.lock().unwrap().clone(),
+        vec![(id.clone(), 199, 58)]
+    );
+    assert!(!mgr.output_snapshot(&id).is_empty());
+
+    mgr.kill(&id).unwrap();
+}
+
+#[test]
+fn failed_settled_resize_cannot_purge() {
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("failioctl");
+    mgr.set_resize_settle_ms(3_600_000);
+
+    fake.fail_resize_for(&id);
+    mgr.resize(&id, 100, 30, &pool, capture()).unwrap();
+    mgr.settle_pending_resize_now(&id);
+    assert_eq!(
+        fake.resizes.lock().unwrap().clone(),
+        vec![(id.clone(), 100, 30)]
+    );
+    assert!(!mgr.output_snapshot(&id).is_empty());
+
+    fake.allow_resize_for(&id);
+    mgr.resize(&id, 100, 30, &pool, capture()).unwrap();
+    mgr.settle_pending_resize_now(&id);
+    let snapshot = mgr.output_snapshot(&id);
+    assert!(snapshot.len() == 1 && is_inband_clear(&snapshot[0]));
+
+    mgr.kill(&id).unwrap();
+}
+
+#[test]
+fn settled_purge_emits_inband_clear_to_live_listeners() {
+    let (pool, _fake, mgr, id) = spawn_claude_for_resize("stormemit");
+    mgr.set_resize_settle_ms(3_600_000);
+
+    let events = capture();
+    mgr.resize(&id, 100, 30, &pool, events.clone()).unwrap();
+    mgr.settle_pending_resize_now(&id);
+    let outputs = events.output.lock().unwrap();
+    assert!(outputs.len() == 1 && is_inband_clear(&outputs[0]));
+    drop(outputs);
+
+    mgr.kill(&id).unwrap();
+}
+
+#[test]
+fn resize_settle_thread_applies_without_manual_nudge() {
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("stormthread");
+    mgr.set_resize_settle_ms(25);
+
+    for cols in [78u16, 209, 210] {
+        mgr.resize(&id, cols, 30, &pool, capture()).unwrap();
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let snapshot = mgr.output_snapshot(&id);
+        if snapshot.len() == 1 && is_inband_clear(&snapshot[0]) {
+            break;
+        }
+        if Instant::now() > deadline {
+            panic!("settle thread never applied the storm");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        fake.resizes.lock().unwrap().last().cloned(),
+        Some((id.clone(), 210, 30))
     );
 
-    mgr.kill(&spawned.id).unwrap();
+    mgr.kill(&id).unwrap();
 }
 
 // ---------------------------------------------------------------------

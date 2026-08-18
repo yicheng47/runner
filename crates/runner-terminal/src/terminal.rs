@@ -249,10 +249,7 @@ impl TerminalSession {
             }
             *size = (cols, rows);
         }
-        let _ = self
-            .core
-            .sessions
-            .resize(&self.session_id, cols, rows, &self.core.db);
+        let _ = runner_app::ops::session::session_resize(&self.core, &self.session_id, cols, rows);
         self.term
             .lock()
             .resize(TermSize::new(cols as usize, rows as usize));

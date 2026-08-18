@@ -313,6 +313,7 @@ impl NativeRoot {
             let status = self.session_entry(session_id).map(|entry| entry.status);
             if let Some(chat) = self.attached.get(session_id) {
                 let terminal = Arc::clone(&chat.terminal);
+                let resize_owner = layout.is_resize_owner(&pane_id, session_id);
                 let composer = chat.composer.clone();
                 let terminal_focus = chat.terminal_focus.clone();
                 let terminal_focused = terminal_focus.is_focused(window);
@@ -344,7 +345,11 @@ impl NativeRoot {
                                 this.focus_terminal(&click_pane_id, &click_session_id, window, cx);
                             }),
                         )
-                        .child(TerminalElement::new(terminal, terminal_focused)),
+                        .child(TerminalElement::new(
+                            terminal,
+                            terminal_focused,
+                            resize_owner,
+                        )),
                 );
                 if status == Some(SessionStatus::Running) {
                     content.child(composer).into_any_element()

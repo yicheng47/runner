@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -50,6 +50,9 @@ mod tests;
 const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
 
 pub(crate) const DEFAULT_PTY_SIZE: (u16, u16) = (80, 24);
+
+/// Trailing debounce for width-changing full-repaint TUI resizes.
+const RESIZE_SETTLE_MS: u64 = 175;
 
 /// Minimum spacing between consecutive `claude-code` PTY launches.
 /// Long enough for one claude's OAuth refresh round-trip (network
@@ -538,6 +541,16 @@ struct CodexCaptureContext {
     events: Arc<dyn SessionEvents>,
 }
 
+/// Latest PTY size waiting for a resize storm to quiesce.
+struct PendingResize {
+    cols: u16,
+    rows: u16,
+    deadline: Instant,
+    suppressed: u32,
+    clears_on_resize: bool,
+    events: Arc<dyn SessionEvents>,
+}
+
 #[derive(Default)]
 struct SessionState {
     handle: Option<SessionHandle>,
@@ -565,6 +578,8 @@ struct SessionState {
     /// replay reflow (wrap depends on cols alone), so the ring survives
     /// them; only a real width change still purges.
     last_pty_cols: Option<u16>,
+    /// Present only for a debounced width-change storm.
+    pending_resize: Option<PendingResize>,
     resuming: bool,
     killed: bool,
 }
@@ -586,6 +601,7 @@ impl SessionState {
             && !self.mouse_1003_on
             && !self.mouse_1006_on
             && self.last_pty_cols.is_none()
+            && self.pending_resize.is_none()
             && !self.resuming
             && !self.killed
     }
@@ -629,6 +645,7 @@ pub struct SessionManager {
     /// owns DB + event-buffer state but never reads/writes a PTY
     /// directly.
     runtime: Arc<dyn SessionRuntime>,
+    resize_settle_ms: AtomicU64,
 }
 
 /// RAII guard that releases a session state's `resuming` flag on drop. The
@@ -725,7 +742,13 @@ impl SessionManager {
             claude_launch_gate: Mutex::new(None),
             pending_mission_cancels: Mutex::new(HashMap::new()),
             runtime,
+            resize_settle_ms: AtomicU64::new(RESIZE_SETTLE_MS),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_resize_settle_ms(&self, ms: u64) {
+        self.resize_settle_ms.store(ms, Ordering::Relaxed);
     }
 
     fn session_state(&self, session_id: &str) -> Option<Arc<Mutex<SessionState>>> {
@@ -772,6 +795,7 @@ impl SessionManager {
                 .expect("spawn size must be resolved before handle install")
                 .0,
         );
+        state.pending_resize = None;
     }
 
     fn install_forwarder(&self, session_id: &str, forwarder: thread::JoinHandle<()>) {

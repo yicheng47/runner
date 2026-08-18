@@ -88,7 +88,13 @@ pub fn session_activity_snapshot(state: &AppCore) -> BTreeMap<String, SessionAct
 }
 
 pub fn session_resize(state: &AppCore, session_id: &str, cols: u16, rows: u16) -> Result<()> {
-    state.sessions.resize(session_id, cols, rows, &state.db)
+    state.sessions.resize(
+        session_id,
+        cols,
+        rows,
+        &state.db,
+        Arc::new(state.session_events()),
+    )
 }
 
 pub fn session_output_snapshot(state: &AppCore, session_id: &str) -> Result<Vec<OutputEvent>> {
