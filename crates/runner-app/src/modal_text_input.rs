@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, AnyElement, App, Bounds, ClipboardItem, Context, CursorStyle,
+    canvas, div, px, rems, AnyElement, App, Bounds, ClipboardItem, Context, CursorStyle,
     ElementInputHandler, EntityInputHandler, FocusHandle, Focusable, KeyDownEvent, MouseButton,
     Pixels, Point, Render, SharedString, UTF16Selection, Window,
 };
@@ -10,7 +10,8 @@ use unicode_segmentation::UnicodeSegmentation as _;
 
 use runner_app::text_util;
 
-use crate::{terminal_element, theme};
+use crate::theme;
+use crate::{Copy, Cut, Paste, SelectAll};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct Selection {
@@ -340,6 +341,32 @@ impl ModalTextInput {
         }
     }
 
+    fn on_copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = self.buffer.selected_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
+        }
+    }
+
+    fn on_cut(&mut self, _: &Cut, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = self.buffer.selected_text().map(str::to_owned) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            self.buffer.delete_left(Boundary::Grapheme);
+            cx.notify();
+        }
+    }
+
+    fn on_paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            self.buffer.replace_selection(&text);
+            cx.notify();
+        }
+    }
+
+    fn on_select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        self.buffer.select_all();
+        cx.notify();
+    }
+
     fn on_mouse_down(
         &mut self,
         _: &gpui::MouseDownEvent,
@@ -389,7 +416,7 @@ impl ModalTextInput {
                         selection
                             .as_ref()
                             .is_some_and(|range| range.start < end && start < range.end),
-                        |text| text.bg(gpui::rgba(0x7aa2f744)),
+                        |text| text.bg(theme::with_alpha(theme::accent(), 0.267)),
                     )
                     .when(
                         marked
@@ -500,7 +527,7 @@ impl Render for ModalTextInput {
             .items_center()
             .min_w(px(0.))
             .w_full()
-            .h(px(36.))
+            .h(rems(36. / 16.))
             .px_3()
             .overflow_hidden()
             .rounded_md()
@@ -514,12 +541,14 @@ impl Render for ModalTextInput {
             .track_focus(&self.focus_handle)
             .cursor(CursorStyle::IBeam)
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_action(cx.listener(Self::on_cut))
+            .on_action(cx.listener(Self::on_copy))
+            .on_action(cx.listener(Self::on_paste))
+            .on_action(cx.listener(Self::on_select_all))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-            .text_size(px(13.))
+            .text_size(rems(13. / 16.))
             .text_color(theme::text())
-            .when(self.monospace, |input| {
-                input.font_family(terminal_element::FONT_FAMILY)
-            })
+            .when(self.monospace, |input| input.font_family("Menlo"))
             .child(self.render_text(focused))
             .child(
                 canvas(
@@ -664,7 +693,11 @@ fn enter_should_submit(composing: bool) -> bool {
 }
 
 fn input_caret() -> impl IntoElement {
-    div().flex_none().w(px(1.)).h(px(16.)).bg(theme::accent())
+    div()
+        .flex_none()
+        .w(rems(1. / 16.))
+        .h(rems(1.))
+        .bg(theme::accent())
 }
 
 fn single_line(text: &str) -> String {

@@ -50,8 +50,8 @@ fn osc10_reports_runner_foreground() {
     let (term, rx) = feed(b"\x1b]10;?\x07");
     let reply = color_reply(&term, &rx, 256);
     assert!(
-        reply.contains("c0c0/caca/f5f5"),
-        "OSC 10 should report the Tokyo Night foreground, got {reply:?}"
+        reply.contains("dcdc/dcdc/e0e0"),
+        "OSC 10 should report the Runner foreground, got {reply:?}"
     );
 }
 
@@ -60,8 +60,8 @@ fn osc11_reports_runner_background() {
     let (term, rx) = feed(b"\x1b]11;?\x07");
     let reply = color_reply(&term, &rx, 257);
     assert!(
-        reply.contains("1a1a/1b1b/2626"),
-        "OSC 11 should report the Tokyo Night background, got {reply:?}"
+        reply.contains("1515/1616/1b1b"),
+        "OSC 11 should report the Runner background, got {reply:?}"
     );
 }
 
@@ -70,18 +70,18 @@ fn osc12_reports_cursor_color() {
     let (term, rx) = feed(b"\x1b]12;?\x07");
     let reply = color_reply(&term, &rx, 258);
     assert!(
-        reply.contains("c0c0/caca/f5f5"),
+        reply.contains("0000/ffff/9c9c"),
         "OSC 12 should report the cursor color, got {reply:?}"
     );
 }
 
 #[test]
 fn osc4_reports_palette_slot() {
-    // Slot 1 = ANSI red (Tokyo Night f7768e).
+    // Slot 1 = Runner ANSI red (#ff4d6d).
     let (term, rx) = feed(b"\x1b]4;1;?\x07");
     let reply = color_reply(&term, &rx, 1);
     assert!(
-        reply.contains("f7f7/7676/8e8e"),
+        reply.contains("ffff/4d4d/6d6d"),
         "OSC 4;1 should report ANSI red, got {reply:?}"
     );
 }
@@ -114,7 +114,7 @@ fn osc104_reset_restores_default() {
     let (term, rx) = feed(b"\x1b]4;1;#102030\x07\x1b]104;1\x07\x1b]4;1;?\x07");
     let reply = color_reply(&term, &rx, 1);
     assert!(
-        reply.contains("f7f7/7676/8e8e"),
+        reply.contains("ffff/4d4d/6d6d"),
         "OSC 4;1 after reset should report the default, got {reply:?}"
     );
 }

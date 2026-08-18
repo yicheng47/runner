@@ -61,6 +61,7 @@ impl NativeRoot {
             size.1,
             Arc::clone(&self.waker),
         )?;
+        terminal.set_palette(self.settings.terminal_theme.palette());
         self.bridge.attach(Arc::clone(&terminal))?;
         let terminal_focus = cx.focus_handle();
         let terminal_input = cx.new(|_| TerminalInput::new(Arc::clone(&terminal)));
@@ -106,14 +107,24 @@ impl NativeRoot {
         let (width_fraction, height_fraction) =
             pane_fractions(&layout.root, pane_id).unwrap_or((1., 1.));
         let bounds = window.bounds().size;
-        let pane_width = (f32::from(bounds.width) - SIDEBAR_WIDTH).max(200.) * width_fraction;
+        let sidebar_width = if self.settings.sidebar_collapsed {
+            0.
+        } else {
+            self.settings.sidebar_width * self.settings.app_zoom
+        };
+        let pane_width = (f32::from(bounds.width) - sidebar_width).max(200.) * width_fraction;
         let grouped = layout.root.leaves().len() > 1;
-        let pane_height = (f32::from(bounds.height) - WORKSPACE_HEADER_HEIGHT).max(160.)
-            * height_fraction
-            - if grouped { PANE_HEADER_HEIGHT } else { 0. };
-        let cell_width = terminal_element::FONT_SIZE * 0.6;
-        let line_height =
-            (terminal_element::FONT_SIZE * terminal_element::LINE_HEIGHT_FACTOR).round();
+        let pane_height =
+            (f32::from(bounds.height) - WORKSPACE_HEADER_HEIGHT * self.settings.app_zoom).max(160.)
+                * height_fraction
+                - if grouped {
+                    PANE_HEADER_HEIGHT * self.settings.app_zoom
+                } else {
+                    0.
+                };
+        let font_size = self.settings.terminal_font_size as f32 * self.settings.app_zoom;
+        let cell_width = font_size * 0.6;
+        let line_height = (font_size * terminal_element::LINE_HEIGHT_FACTOR).round();
         (
             (pane_width / cell_width).floor().max(2.) as u16,
             (pane_height / line_height).floor().max(2.) as u16,
@@ -270,7 +281,7 @@ impl NativeRoot {
     pub(crate) fn on_paste(
         &mut self,
         session_id: &str,
-        _: &TermPaste,
+        _: &Paste,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {

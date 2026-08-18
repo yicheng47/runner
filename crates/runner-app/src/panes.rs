@@ -28,24 +28,35 @@ impl NativeRoot {
         let picker = self
             .layout_picker_open
             .then(|| self.render_layout_picker(preset, cx));
-
-        div()
-            .relative()
-            .flex_1()
-            .min_w(px(0.))
-            .h_full()
+        let sidebar_toggle = self.render_open_sidebar_button(cx);
+        let sidebar_divider = self.settings.sidebar_collapsed.then(|| {
+            div()
+                .mx_1()
+                .h(rems(20. / 16.))
+                .w(rems(1. / 16.))
+                .flex_none()
+                .bg(theme::border())
+        });
+        let header = div()
+            .flex_none()
+            .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
+            .pl(px(self.workspace_titlebar_padding(window)))
+            .pr_4()
             .flex()
-            .flex_col()
+            .items_center()
+            .justify_between()
+            .border_b_1()
+            .border_color(theme::border())
+            .bg(theme::panel())
             .child(
                 div()
-                    .flex_none()
-                    .h(px(WORKSPACE_HEADER_HEIGHT))
-                    .px_3()
+                    .flex_1()
+                    .min_w(px(0.))
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .border_b_1()
-                    .border_color(theme::border())
+                    .gap_2()
+                    .children(sidebar_toggle)
+                    .children(sidebar_divider)
                     .child(
                         div()
                             .flex_1()
@@ -54,51 +65,64 @@ impl NativeRoot {
                             .text_sm()
                             .text_color(theme::text())
                             .child(label),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("layout-picker-toggle")
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(if self.layout_picker_open {
+                                theme::accent()
+                            } else {
+                                theme::border()
+                            })
+                            .cursor_pointer()
+                            .text_xs()
+                            .text_color(theme::text())
+                            .hover(|button| button.bg(theme::raised()))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child("Layout")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.layout_picker_open = !this.layout_picker_open;
+                                cx.notify();
+                            })),
                     )
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .id("layout-picker-toggle")
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(if self.layout_picker_open {
-                                        theme::accent()
-                                    } else {
-                                        theme::border()
-                                    })
-                                    .cursor_pointer()
-                                    .text_xs()
-                                    .text_color(theme::text())
-                                    .hover(|button| button.bg(theme::border()))
-                                    .child("Layout")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.layout_picker_open = !this.layout_picker_open;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .id("new-tab-header")
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .text_xs()
-                                    .text_color(theme::muted())
-                                    .hover(|button| button.bg(theme::border()))
-                                    .child("New tab  ⌘T")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_new_tab_modal(&NewTab, window, cx);
-                                    })),
-                            ),
+                            .id("new-tab-header")
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .text_xs()
+                            .text_color(theme::muted())
+                            .hover(|button| button.bg(theme::raised()))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child("New tab  ⌘T")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.open_new_tab_modal(&NewTab, window, cx);
+                            })),
                     ),
-            )
+            );
+
+        div()
+            .relative()
+            .flex_1()
+            .min_w(px(0.))
+            .h_full()
+            .flex()
+            .flex_col()
+            .child(self.render_titlebar_drag_area("chat-titlebar-drag", header, cx))
             .child(div().flex_1().min_h(px(0.)).p_1().child(pane_tree))
             .children(picker)
             .on_mouse_up(
@@ -119,9 +143,9 @@ impl NativeRoot {
     ) -> AnyElement {
         div()
             .absolute()
-            .top(px(WORKSPACE_HEADER_HEIGHT + 4.))
-            .right(px(12.))
-            .w(px(244.))
+            .top(rems((WORKSPACE_HEADER_HEIGHT + 4.) / 16.))
+            .right(rems(12. / 16.))
+            .w(rems(244. / 16.))
             .p_3()
             .rounded_lg()
             .border_1()
@@ -143,7 +167,7 @@ impl NativeRoot {
                         .map(|(index, preset)| {
                             div()
                                 .id(("layout-preset", index))
-                                .w(px(104.))
+                                .w(rems(104. / 16.))
                                 .px_2()
                                 .py_2()
                                 .rounded_md()
@@ -223,12 +247,15 @@ impl NativeRoot {
                     .flex_none()
                     .when(orientation == SplitOrientation::Row, |gutter| {
                         gutter
-                            .w(px(5.))
+                            .w(rems(5. / 16.))
                             .h_full()
                             .cursor(CursorStyle::ResizeLeftRight)
                     })
                     .when(orientation == SplitOrientation::Column, |gutter| {
-                        gutter.h(px(5.)).w_full().cursor(CursorStyle::ResizeUpDown)
+                        gutter
+                            .h(rems(5. / 16.))
+                            .w_full()
+                            .cursor(CursorStyle::ResizeUpDown)
                     })
                     .bg(theme::border())
                     .on_drag(drag, |drag: &SplitResizeDrag, _, _, cx: &mut App| {
@@ -282,7 +309,7 @@ impl NativeRoot {
                 .unwrap_or_else(|| "Empty pane".into());
             div()
                 .flex_none()
-                .h(px(PANE_HEADER_HEIGHT))
+                .h(rems(PANE_HEADER_HEIGHT / 16.))
                 .px_3()
                 .flex()
                 .items_center()
@@ -317,7 +344,7 @@ impl NativeRoot {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .size(px(24.))
+                            .size(rems(1.5))
                             .rounded_md()
                             .cursor_pointer()
                             .text_sm()
@@ -344,6 +371,9 @@ impl NativeRoot {
                 let paste_session_id = session_id.to_owned();
                 let click_session_id = session_id.to_owned();
                 let click_pane_id = pane_id.clone();
+                let terminal_style = self.terminal_style();
+                let terminal_background =
+                    terminal_element::to_hsla(terminal_style.palette.background, 1.);
                 let content = div().flex_1().min_h(px(0.)).flex().flex_col().child(
                     div()
                         .id(SharedString::from(format!("terminal-{session_id}")))
@@ -352,6 +382,7 @@ impl NativeRoot {
                         .flex_1()
                         .min_h(px(0.))
                         .p_2()
+                        .bg(terminal_background)
                         .on_key_down(cx.listener(move |this, event, window, cx| {
                             this.on_key_down(&key_session_id, event, window, cx);
                         }))
@@ -372,6 +403,7 @@ impl NativeRoot {
                             terminal_input,
                             terminal_focus,
                             resize_owner,
+                            terminal_style,
                         )),
                 );
                 if status == Some(SessionStatus::Running) {
