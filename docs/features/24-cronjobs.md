@@ -120,7 +120,7 @@ same workspace UI. The only new concept is the trigger.
 
 - **Remote/headless execution.** The scheduler runs in-process in
   Tauri; the app must be open for ticks to fire. A headless daemon
-  mode (launchd agent on macOS, systemd on Linux) is a follow-up.
+  mode (a launchd agent) is a follow-up.
 - **Cron expression editor UI.** v1 ships a text input with presets
   and a human-readable preview. A visual day/hour picker grid is a
   follow-up.
@@ -141,9 +141,10 @@ same workspace UI. The only new concept is the trigger.
 1. **In-process Tokio scheduler, not OS-level cron/launchd.** The
    app must be running to spawn PTYs (they're child processes of the
    Tauri backend). An OS-level trigger that launches the app on
-   schedule is attractive but adds platform-specific complexity
-   (launchd plist on macOS, Task Scheduler on Windows, systemd on
-   Linux) that doesn't justify itself in v1. The in-process
+   schedule is attractive but adds a whole install/uninstall
+   lifecycle (a launchd plist, its permissions, and the
+   app-not-running semantics) that doesn't justify itself in v1.
+   The in-process
    scheduler is ~100 lines of Rust and covers the "app is open all
    day" use case that cronjobs target.
 2. **Skip on overlap, don't queue.** If a mission takes 2 hours and

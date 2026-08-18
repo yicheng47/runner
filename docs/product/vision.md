@@ -94,7 +94,7 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 
 ### 4.9 External control
 
-- **MCP** — external Claude Code / Codex sessions can inspect and operate Runner through the bundled `runner-mcp` bridge: project discovery, crew/runner/slot CRUD, project-aware mission/direct-chat creation, and mission lifecycle, feed, and status tools. Runner.app remains the state owner; MCP is a local control surface, not a remote server.
+- **MCP** — external Claude Code, Codex, and Qoder sessions can inspect and operate Runner through the bundled `runner-mcp` bridge: project discovery, crew/runner/slot CRUD, project-aware mission/direct-chat creation, and mission lifecycle, feed, and status tools. Runner.app remains the state owner; MCP is a local control surface, not a remote server.
 
 ## 5. The demo loop
 
@@ -129,7 +129,7 @@ These are intentionally out of scope — they belong to a different product or a
 - Thread/fact primitives for mission coordination.
 - Secrets management beyond plain env vars.
 - LLM-based signal routing (the router is a flat dispatcher by design — the lead owns coordination judgment).
-- Windows desktop support (macOS + Linux only for the foreseeable future).
+- Linux and Windows desktop support (macOS only).
 
 ## 7. Open product questions
 
@@ -142,6 +142,6 @@ Decisions we have not taken; revisit when the product surfaces them.
 
 ## 8. Risks
 
-- **PTY flakiness across platforms.** Targets macOS + Linux; Windows is deferred.
+- **PTY and process-lifecycle edge cases.** Orphan reaping, resume, and geometry are the recurring trouble spots; targeting macOS alone keeps the matrix to one.
 - **TUI rendering edge cases in xterm.js.** Claude / codex use rich TUIs (alt-screen, OSC 8 hyperlinks, OSC 52 clipboard); every new TUI quirk is a tuning loop.
 - **Agents that don't know the `runner signal` / `runner msg` conventions.** We ship sensible default briefs per runtime so even an untuned agent participates correctly.
