@@ -4,9 +4,9 @@ Progress record for the whole gpui-rewrite program ([README](README.md)), from t
 
 ## Current state (update with each entry)
 
-- **Branch**: `gpui-nightly` (M0+M1 merged via PR #407, M2 via the `feat/0046-m2-terminal-split` PR, both 2026-08-17).
-- **Done**: 0046 M0 (gpui-ce swap) + M1 (repo-and-below at `main` parity, node tree adopted, protocol crates wholesale). Human-verified 2026-08-17: the app opens the `main`-written dev DB and chats work. 498 workspace tests green, clippy clean, fixture corpus green. `design/` synced from `main`.
-- **Next**: merge M2, then M3 (UI parity slices — the current UI is still the Phase 3 skeleton; parity references are `main`'s React frontend (`src/`) and the `design/*.pen` files via the pencil MCP) → M4 (sweep + watermark).
+- **Branch**: `gpui-nightly` (M0+M1 merged via PR #407, M2 via PR #408, both 2026-08-17; M3.1 via PR #409, 2026-08-18).
+- **Done**: 0046 M0 (gpui-ce swap), M1 (repo-and-below at `main` parity, node tree adopted, protocol crates wholesale; human-verified 2026-08-17), M2 (terminal split + shell modularization), M3.1 (session reaping).
+- **Next**: M3 parity slices as serial codex-peer missions — task numbering in the 2026-08-18 breakdown entry; M3.2 (resume seams + geometry) is next → M4 (sweep + watermark). Parity references are `main`'s React frontend (`src/`) and the `design/*.pen` files via the pencil MCP.
 - **Parity watermark**: `origin/main` fully ported for repo-and-below as of `1b7ee92` (v0.5.2 line, 2026-08-17); feature-logic lag is M3 scope.
 
 ## 2026-07-18 — Phase 1 kickoff
@@ -138,3 +138,13 @@ Progress record for the whole gpui-rewrite program ([README](README.md)), from t
 - Reap calls land in `mission_start_impl_with_size` and `mission_reset_impl`'s spawn-failure branch; `ops/node.rs` already carried `48d2231`'s kill aggregation since M1, so no diff there.
 - Recorded divergence: `runner-native/src/bootstrap.rs` makes `cleanup_orphan_processes_on_startup` fatal where main's Tauri builder logs-and-continues — deliberate, matching `boot_core`'s existing fatal stale-row convention; the only error paths are DB failures that would abort one line earlier anyway. Also noted: `stop()` may now block ~500ms per stuck session (callers are quit/close handlers and MCP ops).
 - Gates: `make verify` green; 428 `runner-app` tests including the ten ported reaping tests; codex-peer review clean with independent SHA and hunk-level verification.
+
+## 2026-08-18 — M3 task breakdown (mission numbering)
+
+M3's slices (0046 §Sequencing) run as serial codex-peer missions, one task at a time; mission titles use this numbering:
+
+- **M3.1** — session reaping: `48d2231`, `0dadea7`. Merged via PR #409 (2026-08-18).
+- **M3.2** — resume seams + geometry: `9f53047` (#349), `02e7502`, `cb32720`, `3f3bc04`. Port guides: main's impl 0032 (archived), 0035, 0038. M1 already ported `repo/session.rs`, migrations 0016/0017, and the resume geometry resolution — diff against `origin/main` before applying hunks.
+- **M3.3** — resize-storm coalescing: `38af26c` (#373), `e78718f`. Port guide: 0039. Large frontend half needs GPUI translation in `runner-native`.
+- **M3.4** — input latch + native quit stamping: `f926581` (impl 0041), `c5b1ce4`.
+- **M3.5+** — later slices decomposed when reached, in 0046 dogfood order: runtimes/model-effort pickers (0033/0034/0036/0043/0045), node sidebar polish + pinned section (Workstream B), router/inbox group, mission feed (0042/0044), pagination/update checks/misc.
