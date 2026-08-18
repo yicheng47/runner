@@ -31,7 +31,7 @@ Surprising findings:
 
 ## Source-of-truth and classification rules
 
-Decision 1 and decision 3 in the program plan resolve conflicts: current `main` defines which product surfaces, flows, and copy exist; the matching `runner.pen` frame defines visual treatment where one exists. A Pencil-only idea is not permission to add a product surface. Where Pencil has no current matching frame, M4 copies `main` rather than filling the gap with a redesign.
+Decisions 1 and 3 in the program plan resolve conflicts: current `main`'s shipped React code is the source of truth on every axis — which product surfaces, flows, and copy exist, *and* their visual treatment. `design/runner.pen` is a reference only (tightened 2026-08-18): useful for design intent and naming, never an override. Where Pencil and `main` disagree in any respect, port `main`; a Pencil-only idea is not permission to add or change a product surface. The Pencil-conflict rows recorded below are documentation of that drift, not a to-do list.
 
 The Pencil audit saw 68 top-level nodes and 8 reusable components: `cmp/InboxBlockedPill`, `cmp/SearchField`, `cmp/Pager`, `cmp/SidebarC`, `cmp/RunnerCardC`, `cmp/CrewCardC`, `cmp/ConfirmDialog`, and `cmp/SettingsNav`. The canvas variables cover the Carbon base (`bg`, `panel`, `raised`, sidebar colors, three text levels, accent/warn, Inter, and JetBrains Mono); the other shipped palette values must come from `main`'s `src/index.css` and `src/lib/settings.ts`.
 

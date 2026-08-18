@@ -24,7 +24,7 @@ Keep (~33k LOC Rust, extracted into UI-agnostic crates):
 Rewrite (~28k LOC TS/React):
 
 - 7 pages (`Runners`, `RunnerDetail`, `RunnerChat`, `Crews`, `CrewEditor`, `MissionWorkspace`, `SettingsPage`), ~30 components + `settings/` + `ui/`, the xterm.js terminal, the layout/pane store, sidebar (projects / tabs / missions), modals, command palette.
-- Design system: Tailwind tokens → theme constants in Rust. The `.pen` files remain the visual source of truth where they match the current product; `main`'s four shipped app variants (Runner/Carbon, Catppuccin Mocha, Codex Light, Catppuccin Latte) and three terminal palettes carry over as data, not CSS.
+- Design system: Tailwind tokens → theme constants in Rust, read from `main`'s shipped `src/index.css` and `src/lib/settings.ts`. `main`'s four shipped app variants (Runner/Carbon, Catppuccin Mocha, Codex Light, Catppuccin Latte) and three terminal palettes carry over as data, not CSS.
 
 Adapt (the seam, built in Phase 2): the ~85 `#[tauri::command]` handlers became plain async fns over the UI-agnostic core (`runner_backend::ops` after decision 7's crate rename); event fanout became a `tokio::sync::broadcast` channel with each frontend as a subscriber.
 
@@ -54,7 +54,7 @@ Build: the pioneer line has Rust-only `fmt`, `clippy`, `test`, and `run` Make ta
 
 2026-08-17 (Jason):
 
-1. **`main` owns the design.** The whole product design follows `main`, including the node-tree sidebar (Feature 44). The GPUI line does not fork product decisions.
+1. **`main`'s shipped React code is the source of truth; `design/runner.pen` is a reference only** (tightened 2026-08-18, Jason; supersedes the earlier "the `.pen` files are the visual source of truth where a matching frame exists" framing). The whole product design follows `main`, including the node-tree sidebar (Feature 44), and `src/` wins on *every* axis — structure, flow, copy, and visual treatment (layout, spacing, sizing, colors, tokens, states). Pencil stays useful for design intent, naming, and as a sanity check on what a surface is meant to be, but it never overrides shipped code and a Pencil-only detail is never grounds to add or change a surface. Design evolution therefore flows design → `main` → port, never design → this line directly. The GPUI line does not fork product decisions.
 2. **Repo-and-below is identical.** `crates/runner-core`, `cli/`, `db.rs` + migrations, and `repo/` must match `main` line-for-line (modulo file paths: `src-tauri/src/*` ↔ `crates/runner-backend/src/*`). Anything GPUI-specific lives in the adapter layer (`ops/`) or above — never in repo/db. Migration numbers are allocated on `main` only; this branch never adds its own.
 3. **Product UI never changes; only the tech stack changes.** The GPUI app renders the same surfaces, flows, and copy as `main`'s current React app. Divergence is a bug, not a design opportunity.
 4. **Terminal architecture mimics Zed's `terminal` / `terminal_view` crate split** (studied from the local checkout at `~/repos/gui/zed`, tree of 2026-08-17), but on **upstream `alacritty_terminal`** from crates.io — not Zed's fork.
