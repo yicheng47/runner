@@ -27,11 +27,14 @@ use terminal_element::TerminalElement;
 actions!(runner_app_ui, [Quit, TermPaste, NewTab]);
 
 mod chat;
+mod modal_text_input;
 mod panes;
 mod sidebar;
+mod start_chat;
 
 use panes::pane_fractions;
 use sidebar::session_label;
+use start_chat::StartChatModal;
 
 const INITIAL_COLS: u16 = 100;
 const INITIAL_ROWS: u16 = 30;
@@ -46,12 +49,6 @@ struct AttachedChat {
     _terminal_focus_subscription: Subscription,
     terminal_focus: FocusHandle,
     scroll_accumulator: f32,
-}
-
-#[derive(Clone)]
-enum NewChatTarget {
-    NewTab,
-    Pane { tab_id: String, pane_id: String },
 }
 
 #[derive(Clone)]
@@ -75,7 +72,8 @@ struct NativeRoot {
     attached: HashMap<String, AttachedChat>,
     root_focus: FocusHandle,
     waker: Arc<dyn Fn() + Send + Sync>,
-    new_chat_target: Option<NewChatTarget>,
+    start_chat_modal: Option<StartChatModal>,
+    last_focused_runner_id: Option<String>,
     layout_picker_open: bool,
     split_sizes_dirty: bool,
     error: Option<String>,
@@ -94,6 +92,35 @@ impl NativeRoot {
             while wake_rx.next().await.is_some() {
                 while wake_rx.try_recv().is_ok() {}
                 if weak.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        let (runtime_event_tx, mut runtime_event_rx) = futures::channel::mpsc::unbounded::<()>();
+        let mut app_events = core.events.subscribe();
+        cx.background_spawn(async move {
+            loop {
+                match app_events.recv().await {
+                    Ok(event) if event.name == "runtime/changed" => {
+                        if runtime_event_tx.unbounded_send(()).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        })
+        .detach();
+        cx.spawn(async move |weak, cx| {
+            while runtime_event_rx.next().await.is_some() {
+                while runtime_event_rx.try_recv().is_ok() {}
+                if weak
+                    .update(cx, |this, cx| this.refresh_start_chat_runtimes(cx))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -127,6 +154,11 @@ impl NativeRoot {
         };
 
         let root_focus = cx.focus_handle();
+        let last_focused_runner_id = tabs
+            .active()
+            .and_then(PaneLayout::focused_session_id)
+            .and_then(|session_id| sessions.iter().find(|entry| entry.session_id == session_id))
+            .and_then(|entry| entry.runner_id.clone());
         let mut root = Self {
             core,
             bridge,
@@ -136,7 +168,8 @@ impl NativeRoot {
             attached: HashMap::new(),
             root_focus,
             waker,
-            new_chat_target: None,
+            start_chat_modal: None,
+            last_focused_runner_id,
             layout_picker_open: false,
             split_sizes_dirty: false,
             error: (!errors.is_empty()).then(|| errors.join("\n")),
@@ -175,32 +208,38 @@ impl Render for NativeRoot {
 
         let sidebar = self.render_sidebar(cx);
         let workspace = self.render_active_tab(window, cx);
+        let modal = self
+            .start_chat_modal
+            .as_ref()
+            .map(|_| self.render_start_chat_modal(cx));
         div()
+            .relative()
             .size_full()
-            .flex()
             .track_focus(&self.root_focus)
             .bg(theme::bg())
-            .child(sidebar)
             .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .child(workspace)
-                    .children(self.error.as_ref().map(|error| {
-                        div()
-                            .flex_none()
-                            .px_3()
-                            .py_2()
-                            .bg(gpui::rgb(0x3b1d2b))
-                            .text_sm()
-                            .text_color(gpui::rgb(0xf7768e))
-                            .child(SharedString::from(error.clone()))
-                    })),
+                div().size_full().flex().child(sidebar).child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .h_full()
+                        .flex()
+                        .flex_col()
+                        .child(workspace)
+                        .children(self.error.as_ref().map(|error| {
+                            div()
+                                .flex_none()
+                                .px_3()
+                                .py_2()
+                                .bg(gpui::rgb(0x3b1d2b))
+                                .text_sm()
+                                .text_color(gpui::rgb(0xf7768e))
+                                .child(SharedString::from(error.clone()))
+                        })),
+                ),
             )
-            .on_action(cx.listener(Self::begin_new_tab))
+            .children(modal)
+            .on_action(cx.listener(Self::open_new_tab_modal))
     }
 }
 
