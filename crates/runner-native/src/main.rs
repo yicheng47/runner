@@ -10,8 +10,8 @@ use futures::StreamExt as _;
 use gpui::{
     actions, div, prelude::*, px, relative, size, AnyElement, App, Application, Bounds, Context,
     CursorStyle, DragMoveEvent, Entity, FocusHandle, KeyBinding, KeyDownEvent, Menu, MenuItem,
-    MouseButton, ScrollDelta, ScrollWheelEvent, SharedString, TitlebarOptions, Window,
-    WindowBounds, WindowOptions,
+    MouseButton, ScrollDelta, ScrollWheelEvent, SharedString, Subscription, TitlebarOptions,
+    Window, WindowBounds, WindowOptions,
 };
 use runner_app::model::{Runner, SessionStatus};
 use runner_app::ops::session::DirectSessionEntry;
@@ -22,6 +22,7 @@ use runner_native::bootstrap::{
 use runner_native::pane_layout::{
     PaneLayout, PaneLeaf, PaneNode, PresetKind, SplitOrientation, TabSet,
 };
+use runner_native::terminal_ime::TerminalInput;
 use runner_terminal::terminal::{TerminalBridge, TerminalSession};
 
 use composer::Composer;
@@ -45,6 +46,9 @@ const COMPOSER_HEIGHT: f32 = 38.;
 
 struct AttachedChat {
     terminal: Arc<TerminalSession>,
+    terminal_input: Entity<TerminalInput>,
+    _terminal_input_subscription: Subscription,
+    _terminal_focus_subscription: Subscription,
     composer: Entity<Composer>,
     terminal_focus: FocusHandle,
     scroll_accumulator: f32,

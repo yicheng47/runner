@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use runner_app::ops::runner::CreateRunnerInput;
 use runner_app::router::runtime::PermissionMode;
 use runner_native::bootstrap::{boot_core, NativePaths};
+use runner_native::terminal_ime::TerminalInput;
 use runner_terminal::replay::visible_lines;
 use runner_terminal::terminal::{TerminalBridge, TerminalSession};
 
@@ -73,6 +74,59 @@ fn direct_chat_flows_from_app_core_session_manager_into_terminal_grid() {
         rendered,
         "manager output never reached the alacritty terminal grid"
     );
+}
+
+#[test]
+fn terminal_ime_commit_forwards_utf8_through_session_manager() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = NativePaths::new(temp.path().join("app-data"), temp.path().join("logs"));
+    let core = boot_core(&paths).unwrap();
+    let runner = runner_app::ops::runner::runner_create(
+        &core,
+        CreateRunnerInput {
+            handle: "terminal-ime".into(),
+            display_name: "Terminal IME".into(),
+            runtime: "shell".into(),
+            command: "/bin/cat".into(),
+            args: Vec::new(),
+            working_dir: Some(temp.path().to_string_lossy().into_owned()),
+            system_prompt: None,
+            env: HashMap::new(),
+            model: None,
+            effort: None,
+            permission_mode: PermissionMode::Auto,
+        },
+    )
+    .unwrap();
+    let spawned = runner_app::ops::session::session_start_direct(
+        &core,
+        runner.id,
+        None,
+        None,
+        None,
+        Some(80),
+        Some(24),
+    )
+    .unwrap();
+    let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+    let bridge = TerminalBridge::new(core.clone(), Arc::clone(&waker)).unwrap();
+    let terminal =
+        TerminalSession::attach(core.clone(), spawned.id.clone(), 80, 24, waker).unwrap();
+    bridge.attach(Arc::clone(&terminal)).unwrap();
+
+    let mut input = TerminalInput::new(Arc::clone(&terminal));
+    input.replace_and_mark_text(None, "pinyin", Some(6..6));
+    input.commit_text("拼音").unwrap();
+    assert_eq!(input.marked_text(), None);
+    let rendered = wait_for_text(&terminal, "拼音");
+    let visible = {
+        let term = terminal.term.lock();
+        visible_lines(&*term).join("\n")
+    };
+
+    runner_app::ops::session::session_kill(&core, &spawned.id).unwrap();
+    assert!(rendered, "committed UTF-8 did not reach the terminal grid");
+    assert!(!visible.contains("pinyin"), "marked text reached the PTY");
 }
 
 #[test]

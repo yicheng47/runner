@@ -14,13 +14,15 @@ use std::sync::Arc;
 use alacritty_terminal::index::Point as GridPoint;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::point_to_viewport;
-use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
+use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use gpui::{
-    fill, font, outline, point, px, relative, size, App, Bounds, Element, Font, GlobalElementId,
-    Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, ShapedLine, SharedString,
-    Style, TextRun, Window,
+    fill, font, outline, point, px, relative, size, App, Bounds, ContentMask, Element,
+    ElementInputHandler, Entity, FocusHandle, Font, GlobalElementId, Hsla, InspectorElementId,
+    IntoElement, LayoutId, Pixels, Point, ShapedLine, SharedString, Style, TextRun, UnderlineStyle,
+    Window,
 };
 
+use runner_native::terminal_ime::TerminalInput;
 use runner_native::terminal_resize::{
     size_push_verdict, terminal_grid_size, SizePushVerdict, TerminalGridSize,
 };
@@ -39,15 +41,22 @@ fn to_hsla(rgb: Rgb, alpha: f32) -> Hsla {
 
 pub struct TerminalElement {
     session: Arc<TerminalSession>,
-    focused: bool,
+    input: Entity<TerminalInput>,
+    focus_handle: FocusHandle,
     resize_owner: bool,
 }
 
 impl TerminalElement {
-    pub fn new(session: Arc<TerminalSession>, focused: bool, resize_owner: bool) -> Self {
+    pub fn new(
+        session: Arc<TerminalSession>,
+        input: Entity<TerminalInput>,
+        focus_handle: FocusHandle,
+        resize_owner: bool,
+    ) -> Self {
         Self {
             session,
-            focused,
+            input,
+            focus_handle,
             resize_owner,
         }
     }
@@ -57,6 +66,9 @@ pub struct GridPrepaint {
     backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
     lines: Vec<(Point<Pixels>, ShapedLine)>,
     cursor: Option<(Bounds<Pixels>, CursorShape)>,
+    cursor_cell: Option<Bounds<Pixels>>,
+    marked_text: Option<(Bounds<Pixels>, ShapedLine, Hsla)>,
+    cell_width: Pixels,
     line_height: Pixels,
 }
 
@@ -102,7 +114,7 @@ impl Element for TerminalElement {
         bounds: Bounds<Pixels>,
         _state: &mut (),
         window: &mut Window,
-        _cx: &mut App,
+        cx: &mut App,
     ) -> GridPrepaint {
         let text_system = window.text_system();
         let base_font = font(FONT_FAMILY);
@@ -135,6 +147,9 @@ impl Element for TerminalElement {
                     backgrounds: Vec::new(),
                     lines: Vec::new(),
                     cursor: None,
+                    cursor_cell: None,
+                    marked_text: None,
+                    cell_width,
                     line_height,
                 };
             }
@@ -145,12 +160,19 @@ impl Element for TerminalElement {
         let mut backgrounds: Vec<(Bounds<Pixels>, Hsla)> = Vec::new();
         let mut spans: Vec<(usize, StyledSpan)> = Vec::new();
         let mut cursor = None;
+        let mut cursor_cell = None;
+        let marked_foreground;
+        let marked_background;
 
         {
             let term = self.session.term.lock();
             let content = term.renderable_content();
             let display_offset = content.display_offset;
             let overrides = content.colors;
+            marked_foreground =
+                palette::resolve(Color::Named(NamedColor::Foreground), overrides, &base);
+            marked_background =
+                palette::resolve(Color::Named(NamedColor::Background), overrides, &base);
 
             for indexed in content.display_iter {
                 let cell = &indexed.cell;
@@ -295,18 +317,19 @@ impl Element for TerminalElement {
             }
 
             let rc = content.cursor;
-            if rc.shape != CursorShape::Hidden {
-                if let Some(vp) = point_to_viewport(
-                    display_offset,
-                    GridPoint::new(rc.point.line, rc.point.column),
-                ) {
-                    if vp.line < rows as usize && vp.column.0 < cols as usize {
-                        let origin = point(
-                            bounds.left() + cell_width * vp.column.0 as f32,
-                            bounds.top() + line_height * vp.line as f32,
-                        );
-                        cursor =
-                            Some((Bounds::new(origin, size(cell_width, line_height)), rc.shape));
+            if let Some(vp) = point_to_viewport(
+                display_offset,
+                GridPoint::new(rc.point.line, rc.point.column),
+            ) {
+                if vp.line < rows as usize && vp.column.0 < cols as usize {
+                    let origin = point(
+                        bounds.left() + cell_width * vp.column.0 as f32,
+                        bounds.top() + line_height * vp.line as f32,
+                    );
+                    let bounds = Bounds::new(origin, size(cell_width, line_height));
+                    cursor_cell = Some(bounds);
+                    if rc.shape != CursorShape::Hidden {
+                        cursor = Some((bounds, rc.shape));
                     }
                 }
             }
@@ -331,10 +354,40 @@ impl Element for TerminalElement {
             })
             .collect();
 
+        let marked_text =
+            self.input
+                .read(cx)
+                .marked_text()
+                .zip(cursor_cell)
+                .map(|(text, cursor_bounds)| {
+                    let color = to_hsla(marked_foreground, 1.);
+                    let line = window.text_system().shape_line(
+                        SharedString::from(text.to_owned()),
+                        font_size,
+                        &[TextRun {
+                            len: text.len(),
+                            font: base_font,
+                            color,
+                            background_color: None,
+                            underline: Some(UnderlineStyle {
+                                color: Some(color),
+                                thickness: px(1.),
+                                wavy: false,
+                            }),
+                            strikethrough: None,
+                        }],
+                        None,
+                    );
+                    (cursor_bounds, line, to_hsla(marked_background, 1.))
+                });
+
         GridPrepaint {
             backgrounds,
             lines,
             cursor,
+            cursor_cell,
+            marked_text,
+            cell_width,
             line_height,
         }
     }
@@ -343,7 +396,7 @@ impl Element for TerminalElement {
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _state: &mut (),
         prepaint: &mut GridPrepaint,
         window: &mut Window,
@@ -355,10 +408,22 @@ impl Element for TerminalElement {
         for (origin, line) in &prepaint.lines {
             let _ = line.paint(*origin, prepaint.line_height, window, cx);
         }
-        if let Some((cursor_bounds, shape)) = prepaint.cursor {
-            let color = to_hsla(palette::CURSOR, if self.focused { 0.55 } else { 0.3 });
+        if let Some((cursor_bounds, line, background)) = &prepaint.marked_text {
+            window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        cursor_bounds.origin,
+                        size(line.width.max(prepaint.cell_width), prepaint.line_height),
+                    ),
+                    *background,
+                ));
+                let _ = line.paint(cursor_bounds.origin, prepaint.line_height, window, cx);
+            });
+        } else if let Some((cursor_bounds, shape)) = prepaint.cursor {
+            let focused = self.focus_handle.is_focused(window);
+            let color = to_hsla(palette::CURSOR, if focused { 0.55 } else { 0.3 });
             match shape {
-                CursorShape::Block if self.focused => {
+                CursorShape::Block if focused => {
                     window.paint_quad(fill(cursor_bounds, color));
                 }
                 CursorShape::Block | CursorShape::HollowBlock => {
@@ -378,6 +443,17 @@ impl Element for TerminalElement {
                 CursorShape::Hidden => {}
             }
         }
+        let input_bounds = prepaint.cursor_cell.unwrap_or_else(|| {
+            Bounds::new(
+                bounds.origin,
+                size(prepaint.cell_width, prepaint.line_height),
+            )
+        });
+        window.handle_input(
+            &self.focus_handle,
+            ElementInputHandler::new(input_bounds, self.input.clone()),
+            cx,
+        );
     }
 }
 

@@ -45,7 +45,28 @@ pub fn encode_key(
             "end" => b"\x1b[F",
             "pageup" => b"\x1b[5~",
             "pagedown" => b"\x1b[6~",
+            "insert" => b"\x1b[2~",
             "delete" => b"\x1b[3~",
+            "f1" => b"\x1bOP",
+            "f2" => b"\x1bOQ",
+            "f3" => b"\x1bOR",
+            "f4" => b"\x1bOS",
+            "f5" => b"\x1b[15~",
+            "f6" => b"\x1b[17~",
+            "f7" => b"\x1b[18~",
+            "f8" => b"\x1b[19~",
+            "f9" => b"\x1b[20~",
+            "f10" => b"\x1b[21~",
+            "f11" => b"\x1b[23~",
+            "f12" => b"\x1b[24~",
+            "f13" => b"\x1b[25~",
+            "f14" => b"\x1b[26~",
+            "f15" => b"\x1b[28~",
+            "f16" => b"\x1b[29~",
+            "f17" => b"\x1b[31~",
+            "f18" => b"\x1b[32~",
+            "f19" => b"\x1b[33~",
+            "f20" => b"\x1b[34~",
             "space" => b" ",
             _ => match key_char {
                 Some(text) if !text.is_empty() => text.as_bytes(),
@@ -71,5 +92,26 @@ pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
         bytes
     } else {
         sanitized.into_bytes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_key;
+
+    #[test]
+    fn function_keys_keep_their_terminal_sequences() {
+        assert_eq!(
+            encode_key("f1", false, false, None, false),
+            Some(b"\x1bOP".to_vec())
+        );
+        assert_eq!(
+            encode_key("f12", false, false, None, false),
+            Some(b"\x1b[24~".to_vec())
+        );
+        assert_eq!(
+            encode_key("f20", false, false, None, false),
+            Some(b"\x1b[34~".to_vec())
+        );
     }
 }
