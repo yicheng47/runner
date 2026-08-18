@@ -94,7 +94,7 @@ impl NativeRoot {
                                     .hover(|button| button.bg(theme::border()))
                                     .child("New tab  ⌘T")
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.begin_new_tab(&NewTab, window, cx);
+                                        this.open_new_tab_modal(&NewTab, window, cx);
                                     })),
                             ),
                     ),
@@ -272,6 +272,8 @@ impl NativeRoot {
         let pane_id = leaf.id.clone();
         let pane_id_for_focus = pane_id.clone();
         let header = grouped.then(|| {
+            let empty = leaf.session_id.is_none();
+            let close_pane_id = pane_id.clone();
             let label = leaf
                 .session_id
                 .as_deref()
@@ -307,6 +309,27 @@ impl NativeRoot {
                         .text_color(theme::text())
                         .child(label),
                 )
+                .when(empty, |header| {
+                    header.child(
+                        div()
+                            .id(SharedString::from(format!("close-pane-{close_pane_id}")))
+                            .ml_auto()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(24.))
+                            .rounded_md()
+                            .cursor_pointer()
+                            .text_sm()
+                            .text_color(theme::muted())
+                            .hover(|button| button.bg(theme::border()).text_color(theme::text()))
+                            .child("×")
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.close_pane(&close_pane_id, window, cx);
+                            })),
+                    )
+                })
         });
 
         let body: AnyElement = if let Some(session_id) = leaf.session_id.as_deref() {
@@ -449,8 +472,16 @@ impl NativeRoot {
             div()
                 .flex_1()
                 .flex()
+                .flex_col()
                 .items_center()
                 .justify_center()
+                .gap_3()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::muted())
+                        .child("No chat in this pane"),
+                )
                 .child(
                     div()
                         .id(SharedString::from(format!("new-chat-{pane_id}")))
@@ -464,9 +495,15 @@ impl NativeRoot {
                         .text_color(theme::accent())
                         .hover(|button| button.bg(theme::border()))
                         .child("New chat")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.begin_pane_chat(&new_chat_pane_id, cx);
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_pane_chat_modal(&new_chat_pane_id, window, cx);
                         })),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::muted())
+                        .child("or pick a chat from the sidebar"),
                 )
                 .into_any_element()
         };

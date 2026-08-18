@@ -44,6 +44,17 @@ impl PresetKind {
             Self::Main2 | Self::Cols3 | Self::Rows3 => 3,
         }
     }
+
+    fn split_id_prefix(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::Cols2 => "cols-2",
+            Self::Rows2 => "rows-2",
+            Self::Main2 => "main-2",
+            Self::Cols3 => "cols-3",
+            Self::Rows3 => "rows-3",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,6 +321,37 @@ impl PaneLayout {
         }
     }
 
+    pub fn close_pane(&mut self, pane_id: &str) -> bool {
+        if matches!(self.root, PaneNode::Leaf(_)) {
+            return false;
+        }
+
+        let Some(mut root) = remove_pane(&self.root, pane_id) else {
+            return false;
+        };
+        if root == self.root {
+            return false;
+        }
+
+        let preset = derive_preset(&root);
+        canonicalize_split_ids(&mut root, preset);
+        let focused_pane_id = root
+            .leaves()
+            .into_iter()
+            .find(|leaf| leaf.id == self.focused_pane_id)
+            .or_else(|| root.leaves().into_iter().next())
+            .expect("collapsed pane tree has a leaf")
+            .id
+            .clone();
+        self.preset = preset;
+        self.root = root;
+        self.focused_pane_id = focused_pane_id;
+        if self.preset == PresetKind::Single {
+            self.name = None;
+        }
+        true
+    }
+
     pub fn set_split_sizes(&mut self, split_id: &str, sizes: [f32; 2]) -> bool {
         if !valid_sizes(sizes) {
             return false;
@@ -503,6 +545,67 @@ fn build_preset_tree(preset: PresetKind, slots: &[Option<String>]) -> PaneNode {
             p1,
             split("rows-3:inner", SplitOrientation::Column, [50., 50.], p2, p3),
         ),
+    }
+}
+
+fn remove_pane(node: &PaneNode, pane_id: &str) -> Option<PaneNode> {
+    match node {
+        PaneNode::Leaf(leaf) => (leaf.id != pane_id).then(|| node.clone()),
+        PaneNode::Split(split) => {
+            let a = remove_pane(&split.a, pane_id);
+            let b = remove_pane(&split.b, pane_id);
+            match (a, b) {
+                (None, None) => None,
+                (Some(node), None) | (None, Some(node)) => Some(node),
+                (Some(a), Some(b)) => {
+                    if &a == split.a.as_ref() && &b == split.b.as_ref() {
+                        Some(node.clone())
+                    } else {
+                        Some(PaneNode::Split(PaneSplit {
+                            id: split.id.clone(),
+                            orientation: split.orientation,
+                            sizes: split.sizes,
+                            a: Box::new(a),
+                            b: Box::new(b),
+                        }))
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn derive_preset(root: &PaneNode) -> PresetKind {
+    let PaneNode::Split(split) = root else {
+        return PresetKind::Single;
+    };
+    match (&*split.a, &*split.b) {
+        (PaneNode::Leaf(_), PaneNode::Leaf(_)) => match split.orientation {
+            SplitOrientation::Row => PresetKind::Cols2,
+            SplitOrientation::Column => PresetKind::Rows2,
+        },
+        (_, PaneNode::Split(inner)) => match (split.orientation, inner.orientation) {
+            (SplitOrientation::Row, SplitOrientation::Column) => PresetKind::Main2,
+            (SplitOrientation::Row, SplitOrientation::Row) => PresetKind::Cols3,
+            (SplitOrientation::Column, _) => PresetKind::Rows3,
+        },
+        (PaneNode::Split(_), PaneNode::Leaf(_)) => match split.orientation {
+            SplitOrientation::Row => PresetKind::Cols3,
+            SplitOrientation::Column => PresetKind::Rows3,
+        },
+    }
+}
+
+fn canonicalize_split_ids(root: &mut PaneNode, preset: PresetKind) {
+    let PaneNode::Split(outer) = root else {
+        return;
+    };
+    outer.id = format!("{}:outer", preset.split_id_prefix());
+    if let PaneNode::Split(inner) = outer.a.as_mut() {
+        inner.id = format!("{}:inner", preset.split_id_prefix());
+    }
+    if let PaneNode::Split(inner) = outer.b.as_mut() {
+        inner.id = format!("{}:inner", preset.split_id_prefix());
     }
 }
 

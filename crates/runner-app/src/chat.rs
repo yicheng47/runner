@@ -148,11 +148,11 @@ impl NativeRoot {
         if !self.tabs.activate(tab_id) {
             return;
         }
-        self.new_chat_target = None;
         self.layout_picker_open = false;
         match self.ensure_active_tab_attached(window, cx) {
             Ok(()) => {
                 self.error = None;
+                self.remember_active_runner();
                 self.focus_active_terminal(window);
             }
             Err(error) => self.error = Some(error.to_string()),
@@ -161,11 +161,26 @@ impl NativeRoot {
     }
 
     pub(crate) fn focus_pane(&mut self, pane_id: &str, cx: &mut Context<Self>) {
+        let runner_id = self.tabs.active().and_then(|layout| {
+            layout
+                .root
+                .leaves()
+                .into_iter()
+                .find(|leaf| leaf.id == pane_id)
+                .and_then(|leaf| leaf.session_id.as_deref())
+                .map(|session_id| {
+                    self.session_entry(session_id)
+                        .and_then(|entry| entry.runner_id.clone())
+                })
+        });
         if self
             .tabs
             .active_mut()
             .is_some_and(|layout| layout.focus_pane(pane_id))
         {
+            if let Some(runner_id) = runner_id {
+                self.last_focused_runner_id = runner_id;
+            }
             cx.notify();
         }
     }
@@ -178,6 +193,9 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         self.focus_pane(pane_id, cx);
+        self.last_focused_runner_id = self
+            .session_entry(session_id)
+            .and_then(|entry| entry.runner_id.clone());
         if let Some(chat) = self.attached.get(session_id) {
             chat.terminal_focus.focus(window);
         }
@@ -267,98 +285,6 @@ impl NativeRoot {
         }
     }
 
-    pub(crate) fn begin_new_tab(&mut self, _: &NewTab, _: &mut Window, cx: &mut Context<Self>) {
-        self.new_chat_target = Some(NewChatTarget::NewTab);
-        self.layout_picker_open = false;
-        cx.notify();
-    }
-
-    pub(crate) fn begin_pane_chat(&mut self, pane_id: &str, cx: &mut Context<Self>) {
-        let Some(tab_id) = self.tabs.active_tab_id().map(str::to_owned) else {
-            return;
-        };
-        self.new_chat_target = Some(NewChatTarget::Pane {
-            tab_id,
-            pane_id: pane_id.to_owned(),
-        });
-        cx.notify();
-    }
-
-    pub(crate) fn start_chat(
-        &mut self,
-        runner_id: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(target) = self.new_chat_target.clone() else {
-            return;
-        };
-        let initial_size = match &target {
-            NewChatTarget::NewTab => (INITIAL_COLS, INITIAL_ROWS),
-            NewChatTarget::Pane { tab_id, pane_id }
-                if self.tabs.active_tab_id() == Some(tab_id.as_str()) =>
-            {
-                self.tabs
-                    .active()
-                    .map(|layout| self.estimated_terminal_size(layout, pane_id, window))
-                    .unwrap_or((INITIAL_COLS, INITIAL_ROWS))
-            }
-            NewChatTarget::Pane { .. } => {
-                self.error = Some("The target tab is no longer active".into());
-                return;
-            }
-        };
-        let mut spawned_id = None;
-        let result = (|| -> Result<String> {
-            let spawned = runner_backend::ops::session::session_start_direct(
-                &self.core,
-                runner_id.to_owned(),
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some(initial_size.0),
-                Some(initial_size.1),
-            )?;
-            spawned_id = Some(spawned.id.clone());
-            self.refresh_sessions();
-            match target {
-                NewChatTarget::NewTab => {
-                    self.reload_tabs()?;
-                    self.tabs.activate_session(&spawned.id);
-                }
-                NewChatTarget::Pane { pane_id, .. } => {
-                    self.tabs.assign_to_active(&pane_id, &spawned.id)?;
-                    self.persist_active_tab()?;
-                    self.reload_tabs()?;
-                    self.tabs.activate_session(&spawned.id);
-                }
-            }
-            self.new_chat_target = None;
-            self.ensure_active_tab_attached(window, cx)?;
-            Ok(spawned.id)
-        })();
-        match result {
-            Ok(session_id) => {
-                self.error = None;
-                if let Some(chat) = self.attached.get(&session_id) {
-                    chat.terminal_focus.focus(window);
-                }
-            }
-            Err(error) => {
-                if let Some(session_id) = spawned_id {
-                    self.new_chat_target = None;
-                    let _ = self.reload_tabs();
-                    self.tabs.activate_session(&session_id);
-                    let _ = self.ensure_active_tab_attached(window, cx);
-                }
-                self.error = Some(error.to_string());
-            }
-        }
-        cx.notify();
-    }
-
     pub(crate) fn resume_chat(
         &mut self,
         pane_id: &str,
@@ -420,8 +346,9 @@ impl NativeRoot {
             Ok(empty_pane_id) => {
                 self.error = None;
                 if let Some(pane_id) = empty_pane_id {
-                    self.begin_pane_chat(&pane_id, cx);
+                    self.open_pane_chat_modal(&pane_id, window, cx);
                 } else {
+                    self.remember_active_runner();
                     self.focus_active_terminal(window);
                 }
             }
@@ -438,6 +365,36 @@ impl NativeRoot {
             .upsert_input()?;
         runner_backend::ops::node::node_tab_upsert(&self.core, input)?;
         Ok(())
+    }
+
+    pub(crate) fn close_pane(
+        &mut self,
+        pane_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let result = (|| -> Result<bool> {
+            let Some(layout) = self.tabs.active_mut() else {
+                return Ok(false);
+            };
+            if !layout.close_pane(pane_id) {
+                return Ok(false);
+            }
+            self.persist_active_tab()?;
+            self.reload_tabs()?;
+            self.ensure_active_tab_attached(window, cx)?;
+            Ok(true)
+        })();
+        match result {
+            Ok(true) => {
+                self.error = None;
+                self.remember_active_runner();
+                self.focus_active_terminal(window);
+            }
+            Ok(false) => {}
+            Err(error) => self.error = Some(error.to_string()),
+        }
+        cx.notify();
     }
 
     pub(crate) fn resize_split(

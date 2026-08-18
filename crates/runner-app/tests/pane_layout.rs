@@ -105,6 +105,80 @@ fn persisted_layout_round_trips_slots_and_per_split_sizes() {
 }
 
 #[test]
+fn close_pane_collapses_the_tree_and_keeps_sessions_in_the_surviving_order() {
+    let mut focused = PaneLayout::fresh(PresetKind::Cols2, Some("A"), &["A".into(), "B".into()]);
+    let focused_pane = focused.focused_pane_id.clone();
+    assert!(focused.close_pane(&focused_pane));
+    assert_eq!(focused.preset, PresetKind::Single);
+    assert_eq!(focused.session_ids(), ["B"]);
+    assert_eq!(focused.focused_pane_id, focused.root.leaves()[0].id);
+
+    let mut main = PaneLayout::fresh(
+        PresetKind::Main2,
+        Some("A"),
+        &["A".into(), "B".into(), "C".into()],
+    );
+    assert!(main.set_split_sizes("main-2:inner", [70., 30.]));
+    let big_pane = main.root.leaves()[0].id.clone();
+    assert!(main.close_pane(&big_pane));
+    assert_eq!(main.preset, PresetKind::Rows2);
+    assert_eq!(main.session_ids(), ["B", "C"]);
+    let PaneNode::Split(split) = &main.root else {
+        panic!("rows-2 must stay split");
+    };
+    assert_eq!(split.id, "rows-2:outer");
+    assert_eq!(split.sizes, [70., 30.]);
+
+    let restored = PaneLayout::from_node_row(&row("01K00000000000000000000000", 0, &main)).unwrap();
+    assert_eq!(restored.preset, PresetKind::Rows2);
+    assert_eq!(restored.session_ids(), ["B", "C"]);
+    let PaneNode::Split(split) = restored.root else {
+        panic!("rows-2 must stay split");
+    };
+    assert_eq!(split.sizes, [70., 30.]);
+}
+
+#[test]
+fn close_pane_preserves_focus_when_another_pane_closes_and_single_is_a_noop() {
+    let mut main = PaneLayout::fresh(
+        PresetKind::Main2,
+        Some("A"),
+        &["A".into(), "B".into(), "C".into()],
+    );
+    let original_focus = main.focused_pane_id.clone();
+    let last_pane = main.root.leaves()[2].id.clone();
+    assert!(main.close_pane(&last_pane));
+    assert_eq!(main.preset, PresetKind::Cols2);
+    assert_eq!(main.session_ids(), ["A", "B"]);
+    assert_eq!(main.focused_pane_id, original_focus);
+
+    let mut single = PaneLayout::fresh(PresetKind::Single, Some("A"), &["A".into()]);
+    let pane_id = single.focused_pane_id.clone();
+    assert!(!single.close_pane(&pane_id));
+    assert_eq!(single.session_ids(), ["A"]);
+}
+
+#[test]
+fn close_pane_handles_three_way_rows_and_columns_and_missing_ids() {
+    for preset in [PresetKind::Cols3, PresetKind::Rows3] {
+        let mut layout =
+            PaneLayout::fresh(preset, Some("A"), &["A".into(), "B".into(), "C".into()]);
+        let middle = layout.root.leaves()[1].id.clone();
+        assert!(layout.close_pane(&middle));
+        assert_eq!(layout.session_ids(), ["A", "C"]);
+        assert_eq!(
+            layout.preset,
+            if preset == PresetKind::Cols3 {
+                PresetKind::Cols2
+            } else {
+                PresetKind::Rows2
+            }
+        );
+        assert!(!layout.close_pane("missing-pane"));
+    }
+}
+
+#[test]
 fn switching_tabs_preserves_each_tabs_sessions_focus_and_geometry() {
     let mut tab_a = PaneLayout::fresh(PresetKind::Cols2, Some("A"), &["A".into(), "B".into()]);
     tab_a.set_split_sizes("cols-2:outer", [65., 35.]);
