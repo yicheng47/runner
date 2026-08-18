@@ -5,8 +5,8 @@ Progress record for the whole gpui-rewrite program ([README](README.md)), from t
 ## Current state (update with each entry)
 
 - **Branch**: `gpui-nightly` (M0+M1 merged via PR #407, M2 via PR #408, both 2026-08-17; M3.1 via PR #409, M3.2 via PR #410, M3.3 via the `feat/0046-m3-resize-storms` PR, all 2026-08-18).
-- **Done**: 0046 M0 (gpui-ce swap), M1 (repo-and-below at `main` parity, node tree adopted, protocol crates wholesale; human-verified 2026-08-17), M2 (terminal split + shell modularization), M3.1 (session reaping), M3.2 (resume seams + geometry), M3.3 (resize-storm coalescing + owner-pane gating), terminal-pane IME (M4 pull-forward; Pinyin human-verified 2026-08-18).
-- **Next**: direct-chat composer removal (parity restore — `main`'s direct chats are terminal-only; the composer was this line's IME workaround), then M3.4 (input latch + native quit stamping) closes the session-hardening slice; then the crate renames as one mechanical commit (plan decision 7: `runner-app` → `runner-backend`, `runner-native` → `runner-app`); later M3 slices continue in the 2026-08-18 breakdown order, followed by M4 (UI parity) → M5 (sweep + watermark) per the merged [program plan](plan.md). Parity references are `main`'s React frontend (`src/`) and the `design/*.pen` files via the pencil MCP.
+- **Done**: 0046 M0 (gpui-ce swap), M1 (repo-and-below at `main` parity, node tree adopted, protocol crates wholesale; human-verified 2026-08-17), M2 (terminal split + shell modularization), M3.1 (session reaping), M3.2 (resume seams + geometry), M3.3 (resize-storm coalescing + owner-pane gating), terminal-pane IME (M4 pull-forward; Pinyin human-verified 2026-08-18), direct-chat composer removal (parity restore, smoke-tested 2026-08-18).
+- **Next**: M3.4 (input latch + native quit stamping) closes the session-hardening slice; then the crate renames as one mechanical commit (plan decision 7: `runner-app` → `runner-backend`, `runner-native` → `runner-app`); later M3 slices continue in the 2026-08-18 breakdown order, followed by M4 (UI parity) → M5 (sweep + watermark) per the merged [program plan](plan.md). Parity references are `main`'s React frontend (`src/`) and the `design/*.pen` files via the pencil MCP.
 - **Parity watermark**: `origin/main` fully ported for repo-and-below as of `1b7ee92` (v0.5.2 line, 2026-08-17); feature-logic lag is M3 scope.
 
 ## 2026-07-18 — Phase 1 kickoff
@@ -168,3 +168,9 @@ M3's slices (0046 §Sequencing) run as serial codex-peer missions, one task at a
 
 - Added a per-session GPUI input handler to focused terminal panes: marked text stays in local composition state and renders as an underlined cursor-cell overlay, candidate-window bounds follow the rendered cursor cell, committed UTF-8 goes through `TerminalSession` into `SessionManager`, and raw dispatch remains reserved for control/navigation/function keys and app shortcuts.
 - Pure tests cover marked-text replacement/clear transitions, UTF-16 selection conversion for multibyte text, raw-versus-IME arbitration, and function-key encoding; a `/bin/cat` integration test covers the committed-text SessionManager path. Chinese Pinyin composition and candidate placement in normal and split/scrolled panes remain human-verified before landing.
+
+## 2026-08-18 — Direct-chat composer removed (parity restore)
+
+- With terminal-pane IME verified, the bottom composer under direct-chat terminals is gone: running chats render the terminal as the only input, at parity with `main`'s `RunnerChat` (the composer was this line's IME workaround, never a `main` surface). The terminal grid gains the reclaimed height; the stopped/crashed Resume bar stays.
+- `composer.rs` deleted rather than parked — dead code fails the clippy gate, and the mission-feed channel composer (0042, later M3 slice) will build on `terminal_ime` + pulse's `text_input` instead. `text_util` and its tests stay (the terminal IME consumes them); `theme::selection` dropped as dead.
+- Gates: runner-native build + tests green, clippy `-D warnings` clean, fmt clean. Human smoke test passed (typing incl. Pinyin straight into the terminal, shortcuts intact, Resume bar present).

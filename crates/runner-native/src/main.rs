@@ -1,4 +1,3 @@
-mod composer;
 mod terminal_element;
 mod theme;
 
@@ -25,7 +24,6 @@ use runner_native::pane_layout::{
 use runner_native::terminal_ime::TerminalInput;
 use runner_terminal::terminal::{TerminalBridge, TerminalSession};
 
-use composer::Composer;
 use terminal_element::TerminalElement;
 
 actions!(runner_native_ui, [Quit, TermPaste, NewTab]);
@@ -42,14 +40,12 @@ const INITIAL_ROWS: u16 = 30;
 const SIDEBAR_WIDTH: f32 = 248.;
 const WORKSPACE_HEADER_HEIGHT: f32 = 42.;
 const PANE_HEADER_HEIGHT: f32 = 34.;
-const COMPOSER_HEIGHT: f32 = 38.;
 
 struct AttachedChat {
     terminal: Arc<TerminalSession>,
     terminal_input: Entity<TerminalInput>,
     _terminal_input_subscription: Subscription,
     _terminal_focus_subscription: Subscription,
-    composer: Entity<Composer>,
     terminal_focus: FocusHandle,
     scroll_accumulator: f32,
 }
@@ -234,22 +230,6 @@ fn run() -> Result<()> {
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-t", NewTab, None),
             KeyBinding::new("cmd-v", TermPaste, Some("Terminal")),
-            KeyBinding::new("backspace", composer::Backspace, Some("Composer")),
-            KeyBinding::new("delete", composer::Delete, Some("Composer")),
-            KeyBinding::new("left", composer::Left, Some("Composer")),
-            KeyBinding::new("right", composer::Right, Some("Composer")),
-            KeyBinding::new("shift-left", composer::SelectLeft, Some("Composer")),
-            KeyBinding::new("shift-right", composer::SelectRight, Some("Composer")),
-            KeyBinding::new("cmd-a", composer::SelectAll, Some("Composer")),
-            KeyBinding::new("home", composer::Home, Some("Composer")),
-            KeyBinding::new("end", composer::End, Some("Composer")),
-            KeyBinding::new("cmd-v", composer::Paste, Some("Composer")),
-            KeyBinding::new("enter", composer::Submit, Some("Composer")),
-            KeyBinding::new(
-                "ctrl-cmd-space",
-                composer::ShowCharacterPalette,
-                Some("Composer"),
-            ),
         ]);
         cx.set_menus(vec![Menu {
             name: "Runner Native".into(),

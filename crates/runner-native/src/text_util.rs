@@ -1,4 +1,4 @@
-//! Text offset helpers for the composer: UTF-16 ⇄ UTF-8 conversion
+//! Text offset helpers for IME input: UTF-16 ⇄ UTF-8 conversion
 //! (NSTextInputClient speaks UTF-16 code units) and grapheme-cluster
 //! boundaries (so Backspace deletes 👨‍👩‍👧‍👦 as one unit, not one code
 //! point at a time).
