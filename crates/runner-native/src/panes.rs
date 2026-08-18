@@ -48,7 +48,9 @@ impl NativeRoot {
                     .border_color(theme::border())
                     .child(
                         div()
+                            .flex_1()
                             .min_w(px(0.))
+                            .truncate()
                             .text_sm()
                             .text_color(theme::text())
                             .child(label),
@@ -298,7 +300,9 @@ impl NativeRoot {
                 )
                 .child(
                     div()
+                        .flex_1()
                         .min_w(px(0.))
+                        .truncate()
                         .text_sm()
                         .text_color(theme::text())
                         .child(label),
