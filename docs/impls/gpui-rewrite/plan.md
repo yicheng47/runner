@@ -60,7 +60,7 @@ Build: the pioneer line has Rust-only `fmt`, `clippy`, `test`, and `run` Make ta
 4. **Terminal architecture mimics Zed's `terminal` / `terminal_view` crate split** (studied from the local checkout at `~/repos/gui/zed`, tree of 2026-08-17), but on **upstream `alacritty_terminal`** from crates.io — not Zed's fork.
 5. **Framework: `gpui-ce`** (see §Framework).
 6. **Updater (Phase 5): Sparkle via the pulse pattern** (see §Roadmap, Phase 5).
-7. **Crate renames at Phase 6 cutover, not before**: `runner-app` → `runner-backend` (the UI-agnostic core the two frontends shared), `runner-native` → `runner-app` (the binary; pulse convention: `-app` = the application). Mid-program the current names stay — the `src-tauri/src/*` ↔ `crates/runner-app/src/*` port mapping is load-bearing for the catchup discipline.
+7. **Crate renames after the M3 session-hardening slice** (timing revised 2026-08-18; originally at Phase 6 cutover): `runner-app` → `runner-backend` (the UI-agnostic core the two frontends shared), `runner-native` → `runner-app` (the binary; pulse convention: `-app` = the application). Lands as one mechanical commit at the slice boundary right after M3.4 (Cargo package names, imports, Makefile/CI, doc references), gated on `make verify` — so M4's UI code, the bulk of new code in this program, is written under the final crate layout. From then on the port mapping is `src-tauri/src/*` ↔ `crates/runner-backend/src/*`, and every mission goal states it explicitly with a warning that `runner-app` now names the binary — the name reuse is the wrong-crate hazard that kept this at cutover originally.
 
 2026-08-18 (Jason):
 
@@ -158,7 +158,7 @@ Each milestone is a task branch off `gpui-nightly`, human-verified before merge.
 
 ### Phase 6 — Cutover
 
-Criteria: 2+ weeks daily-driving the native app exclusively, M3–M5 done, updater proven by shipping at least one native-to-native update, fixture corpus green. Then: `gpui-nightly`'s tree replaces `main` (branch promotion), the crate renames of decision 7 land, the native binary becomes `Runner.app`, major version bump.
+Criteria: 2+ weeks daily-driving the native app exclusively, M3–M5 done, updater proven by shipping at least one native-to-native update, fixture corpus green. Then: `gpui-nightly`'s tree replaces `main` (branch promotion), the native binary becomes `Runner.app`, major version bump. (The crate renames of decision 7 land earlier, after the M3 session-hardening slice.)
 
 ## Verification
 

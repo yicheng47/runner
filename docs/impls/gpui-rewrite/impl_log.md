@@ -4,9 +4,9 @@ Progress record for the whole gpui-rewrite program ([README](README.md)), from t
 
 ## Current state (update with each entry)
 
-- **Branch**: `gpui-nightly` (M0+M1 merged via PR #407, M2 via PR #408, both 2026-08-17; M3.1 via PR #409 and M3.2 via the `feat/0046-m3-resume-seams` PR, both 2026-08-18); M3.3 is implemented on `feat/0046-m3-resize-storms` pending review and human verification.
-- **Done**: 0046 M0 (gpui-ce swap), M1 (repo-and-below at `main` parity, node tree adopted, protocol crates wholesale; human-verified 2026-08-17), M2 (terminal split + shell modularization), M3.1 (session reaping), M3.2 (resume seams + geometry); M3.3 implementation and gates are complete.
-- **Next**: clean working-tree review and human verification for M3.3, then M3.4 (input latch + native quit stamping); later M3 slices continue in the 2026-08-18 breakdown order, followed by M4 (UI parity) → M5 (sweep + watermark) per the merged [program plan](plan.md). Parity references are `main`'s React frontend (`src/`) and the `design/*.pen` files via the pencil MCP.
+- **Branch**: `gpui-nightly` (M0+M1 merged via PR #407, M2 via PR #408, both 2026-08-17; M3.1 via PR #409, M3.2 via PR #410, M3.3 via the `feat/0046-m3-resize-storms` PR, all 2026-08-18).
+- **Done**: 0046 M0 (gpui-ce swap), M1 (repo-and-below at `main` parity, node tree adopted, protocol crates wholesale; human-verified 2026-08-17), M2 (terminal split + shell modularization), M3.1 (session reaping), M3.2 (resume seams + geometry), M3.3 (resize-storm coalescing + owner-pane gating).
+- **Next**: M3.4 (input latch + native quit stamping) closes the session-hardening slice; then the crate renames as one mechanical commit (plan decision 7: `runner-app` → `runner-backend`, `runner-native` → `runner-app`); later M3 slices continue in the 2026-08-18 breakdown order, followed by M4 (UI parity) → M5 (sweep + watermark) per the merged [program plan](plan.md). Parity references are `main`'s React frontend (`src/`) and the `design/*.pen` files via the pencil MCP.
 - **Parity watermark**: `origin/main` fully ported for repo-and-below as of `1b7ee92` (v0.5.2 line, 2026-08-17); feature-logic lag is M3 scope.
 
 ## 2026-07-18 — Phase 1 kickoff
