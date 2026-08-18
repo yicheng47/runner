@@ -1,6 +1,6 @@
-# runner-native
+# runner-app
 
-Phase 3 walking skeleton for [the gpui-rewrite plan](../../docs/impls/gpui-rewrite/plan.md). It opens Runner's existing direct chats from the same SQLite database as the released app, spawns or resumes them through `runner_app::session::SessionManager`, and renders the manager's PTY byte stream with `alacritty_terminal` on GPUI.
+Phase 3 walking skeleton for [the gpui-rewrite plan](../../docs/impls/gpui-rewrite/plan.md). It opens Runner's existing direct chats from the same SQLite database as the released app, spawns or resumes them through `runner_backend::session::SessionManager`, and renders the manager's PTY byte stream with `alacritty_terminal` on GPUI.
 
 ## Run
 
@@ -17,8 +17,8 @@ GPUI requires the Xcode 26 Metal Toolchain component, already installed on the d
 Recorded PTY byte logs in `fixtures/*.ndjson` (header line + base64 data/input/exit events), replayed into a headless `Term` and compared against blessed `*.snapshot.txt` grids:
 
 ```sh
-cargo test -p runner-native
-UPDATE_SNAPSHOTS=1 cargo test -p runner-native
+cargo test -p runner-app
+UPDATE_SNAPSHOTS=1 cargo test -p runner-app
 ```
 
 Current corpus: `claude-session` (real interactive TUI boot → prompt → streamed reply → /exit palette), `top-busy` (full-screen redraw churn), `width-torture` (CJK/emoji/ZWJ/box-drawing/SGR glyph classes).

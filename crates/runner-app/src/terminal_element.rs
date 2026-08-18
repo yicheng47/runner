@@ -22,8 +22,8 @@ use gpui::{
     Window,
 };
 
-use runner_native::terminal_ime::TerminalInput;
-use runner_native::terminal_resize::{
+use runner_app::terminal_ime::TerminalInput;
+use runner_app::terminal_resize::{
     size_push_verdict, terminal_grid_size, SizePushVerdict, TerminalGridSize,
 };
 use runner_terminal::palette;

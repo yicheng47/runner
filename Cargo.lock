@@ -4874,6 +4874,24 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 name = "runner-app"
 version = "0.3.17"
 dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "base64",
+ "futures",
+ "gpui-ce",
+ "runner-backend",
+ "runner-terminal",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "runner-backend"
+version = "0.3.17"
+dependencies = [
  "base64",
  "chrono",
  "fs2",
@@ -4928,31 +4946,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "runner-native"
-version = "0.3.17"
-dependencies = [
- "alacritty_terminal",
- "anyhow",
- "base64",
- "futures",
- "gpui-ce",
- "runner-app",
- "runner-terminal",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "unicode-segmentation",
-]
-
-[[package]]
 name = "runner-terminal"
 version = "0.3.17"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
  "base64",
- "runner-app",
+ "runner-backend",
  "serde",
  "serde_json",
  "tempfile",

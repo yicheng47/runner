@@ -2,7 +2,7 @@
 //! selection offsets are relative to the marked string, and cursor
 //! navigation must respect grapheme clusters, not Unicode scalars.
 
-use runner_native::text_util::{
+use runner_app::text_util::{
     marked_selection, next_grapheme_boundary, offset_from_utf16, offset_to_utf16,
     prev_grapheme_boundary, range_from_utf16,
 };

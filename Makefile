@@ -21,4 +21,4 @@ test:
 verify: check test clippy fmt-check
 
 run:
-	cargo run -p runner-native
+	cargo run -p runner-app

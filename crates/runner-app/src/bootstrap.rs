@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{bail, Context as _, Result};
-use runner_app::{db, event_bus, events, mcp, repo, session, shell_path, windows, AppCore};
+use runner_backend::{db, event_bus, events, mcp, repo, session, shell_path, windows, AppCore};
 
 pub const APP_IDENTIFIER: &str = "com.wycstudios.runner";
 
@@ -62,7 +62,7 @@ pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
         app_data_dir: paths.app_data_dir.clone(),
         sessions,
         buses: event_bus::BusRegistry::new(),
-        routers: runner_app::router::RouterRegistry::new(),
+        routers: runner_backend::router::RouterRegistry::new(),
         mcp: Arc::new(mcp::McpHandle::new()),
         windows: window_registry,
         events: events::EventChannel::new(),
@@ -148,7 +148,7 @@ mod tests {
             app_data_dir: PathBuf::new(),
             sessions: session::SessionManager::new(shell_path::LoginShellEnv::default(), runtime),
             buses: event_bus::BusRegistry::new(),
-            routers: runner_app::router::RouterRegistry::new(),
+            routers: runner_backend::router::RouterRegistry::new(),
             mcp: Arc::new(mcp::McpHandle::new()),
             windows: Arc::new(windows::WindowRegistry::new()),
             events: events::EventChannel::new(),

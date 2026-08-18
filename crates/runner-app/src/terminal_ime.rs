@@ -175,7 +175,7 @@ impl TerminalInput {
         self.write_result.take()
     }
 
-    pub fn commit_text(&mut self, text: &str) -> runner_app::error::Result<()> {
+    pub fn commit_text(&mut self, text: &str) -> runner_backend::error::Result<()> {
         self.composition.clear();
         if text.is_empty() {
             return Ok(());
@@ -185,12 +185,12 @@ impl TerminalInput {
         Ok(())
     }
 
-    fn commit_marked_text(&mut self) -> runner_app::error::Result<()> {
+    fn commit_marked_text(&mut self) -> runner_backend::error::Result<()> {
         let text = self.marked_text().unwrap_or_default().to_owned();
         self.commit_text(&text)
     }
 
-    fn record_write_result(&mut self, result: runner_app::error::Result<()>) {
+    fn record_write_result(&mut self, result: runner_backend::error::Result<()>) {
         self.write_result = Some(result.map_err(|error| error.to_string()));
     }
 }

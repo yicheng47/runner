@@ -30,15 +30,15 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 ## Stack
 
 - Native UI: GPUI with `alacritty_terminal` as the terminal model and render buffer.
-- Application core: Rust, SQLite via `rusqlite`, exposed by `crates/runner-app`.
+- Application core: Rust, SQLite via `rusqlite`, exposed by `crates/runner-backend`.
 - PTY runtime: `portable-pty`.
 - Event transport: append-only NDJSON logs watched through `notify`.
 - Bundled CLI: `runner`, built from the `cli/` workspace member.
 
 ## Project Map
 
-- `crates/runner-native/`: GPUI application, terminal renderer, composer, and terminal fixture corpus.
-- `crates/runner-app/`: UI-agnostic application core, including SQLite, session manager, event bus, router, and MCP server.
+- `crates/runner-app/`: GPUI application, terminal renderer, and terminal fixture corpus.
+- `crates/runner-backend/`: UI-agnostic application core, including SQLite, session manager, event bus, router, and MCP server.
 - `cli/`: bundled `runner` CLI used by spawned agents.
 - `crates/runner-core/`: shared event-log primitives.
 - `design/`: Pencil source files.
@@ -56,7 +56,7 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 - Workspace tests: `make test`.
 - Everything CI runs: `make verify` (check + test + clippy + fmt-check).
 
-Prefer the smallest check that covers the change. For native UI changes, run the `runner-native` tests plus workspace clippy; for core behavior, run the relevant crate tests.
+Prefer the smallest check that covers the change. For native UI changes, run the `runner-app` tests plus workspace clippy; for core behavior, run the relevant crate tests.
 
 ## Engineering Conventions
 

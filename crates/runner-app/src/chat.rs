@@ -33,7 +33,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        let _entry = runner_app::ops::session::session_get(&self.core, session_id)?
+        let _entry = runner_backend::ops::session::session_get(&self.core, session_id)?
             .with_context(|| format!("direct chat not found: {session_id}"))?;
         let pane_id = layout
             .root
@@ -194,14 +194,14 @@ impl NativeRoot {
             return;
         };
         let keystroke = &event.keystroke;
-        if runner_native::terminal_ime::terminal_key_route(
+        if runner_app::terminal_ime::terminal_key_route(
             chat.terminal_input.read(cx).is_composing(),
             keystroke.modifiers.platform,
             keystroke.modifiers.control,
             keystroke.modifiers.alt,
             keystroke.modifiers.function,
             &keystroke.key,
-        ) != runner_native::terminal_ime::TerminalKeyRoute::Raw
+        ) != runner_app::terminal_ime::TerminalKeyRoute::Raw
         {
             return;
         }
@@ -310,7 +310,7 @@ impl NativeRoot {
         };
         let mut spawned_id = None;
         let result = (|| -> Result<String> {
-            let spawned = runner_app::ops::session::session_start_direct(
+            let spawned = runner_backend::ops::session::session_start_direct(
                 &self.core,
                 runner_id.to_owned(),
                 None,
@@ -371,7 +371,7 @@ impl NativeRoot {
                 .get(session_id)
                 .map(|chat| chat.terminal.size())
                 .unwrap_or_else(|| self.estimated_terminal_size(&layout, pane_id, window));
-            runner_app::ops::session::session_resume(
+            runner_backend::ops::session::session_resume(
                 &self.core,
                 session_id,
                 Some(size.0),
@@ -434,7 +434,7 @@ impl NativeRoot {
             .active()
             .context("active tab is missing")?
             .upsert_input()?;
-        runner_app::ops::node::node_tab_upsert(&self.core, input)?;
+        runner_backend::ops::node::node_tab_upsert(&self.core, input)?;
         Ok(())
     }
 
