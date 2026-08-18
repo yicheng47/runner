@@ -1,5 +1,5 @@
-use runner_app::repo::node::{NodeRow, NodeType};
-use runner_native::pane_layout::{PaneLayout, PaneNode, PresetKind, SplitOrientation, TabSet};
+use runner_backend::repo::node::{NodeRow, NodeType};
+use runner_app::pane_layout::{PaneLayout, PaneNode, PresetKind, SplitOrientation, TabSet};
 
 fn row(id: &str, position: i64, layout: &PaneLayout) -> NodeRow {
     NodeRow {

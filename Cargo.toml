@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/runner-app",
+    "crates/runner-backend",
     "crates/runner-core",
-    "crates/runner-native",
+    "crates/runner-app",
     "crates/runner-terminal",
     "cli",
 ]

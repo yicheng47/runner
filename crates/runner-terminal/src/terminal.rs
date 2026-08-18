@@ -13,9 +13,9 @@ use alacritty_terminal::vte::ansi::Processor;
 use anyhow::{Context as _, Result};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
-use runner_app::events::AppEvent;
-use runner_app::session::manager::OutputEvent;
-use runner_app::AppCore;
+use runner_backend::events::AppEvent;
+use runner_backend::session::manager::OutputEvent;
+use runner_backend::AppCore;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::palette;
@@ -198,12 +198,12 @@ impl TerminalSession {
         Ok(())
     }
 
-    pub fn submit_text(&self, text: &str) -> runner_app::error::Result<()> {
+    pub fn submit_text(&self, text: &str) -> runner_backend::error::Result<()> {
         self.write_user_bytes(text.as_bytes())?;
         self.write_user_bytes(b"\r")
     }
 
-    pub fn write_user_bytes(&self, bytes: &[u8]) -> runner_app::error::Result<()> {
+    pub fn write_user_bytes(&self, bytes: &[u8]) -> runner_backend::error::Result<()> {
         self.core
             .sessions
             .inject_direct_stdin(&self.session_id, bytes, &self.core.session_events())
@@ -215,7 +215,7 @@ impl TerminalSession {
         ctrl: bool,
         alt: bool,
         key_char: Option<&str>,
-    ) -> runner_app::error::Result<bool> {
+    ) -> runner_backend::error::Result<bool> {
         let app_cursor = self
             .term
             .lock_unfair()
@@ -230,7 +230,7 @@ impl TerminalSession {
         }
     }
 
-    pub fn paste(&self, text: &str) -> runner_app::error::Result<()> {
+    pub fn paste(&self, text: &str) -> runner_backend::error::Result<()> {
         let bracketed = self
             .term
             .lock_unfair()
@@ -249,7 +249,7 @@ impl TerminalSession {
             }
             *size = (cols, rows);
         }
-        let _ = runner_app::ops::session::session_resize(&self.core, &self.session_id, cols, rows);
+        let _ = runner_backend::ops::session::session_resize(&self.core, &self.session_id, cols, rows);
         self.term
             .lock()
             .resize(TermSize::new(cols as usize, rows as usize));
@@ -317,7 +317,7 @@ impl TerminalBridge {
             .lock()
             .unwrap()
             .insert(session_id.clone(), Arc::downgrade(&session));
-        let snapshot = runner_app::ops::session::session_output_snapshot(&self.core, &session_id)
+        let snapshot = runner_backend::ops::session::session_output_snapshot(&self.core, &session_id)
             .context("load terminal output snapshot")?;
         session.feed_snapshot_locked(&snapshot)?;
         Ok(())
@@ -370,7 +370,7 @@ impl TerminalBridge {
         for session in sessions {
             let _feed = session.feed_gate.lock().unwrap();
             if let Ok(snapshot) =
-                runner_app::ops::session::session_output_snapshot(&self.core, session.session_id())
+                runner_backend::ops::session::session_output_snapshot(&self.core, session.session_id())
             {
                 let _ = session.feed_snapshot_locked(&snapshot);
             }
@@ -388,34 +388,34 @@ mod tests {
 
     use base64::engine::general_purpose::STANDARD as B64;
     use base64::Engine as _;
-    use runner_app::session::manager::OutputEvent;
+    use runner_backend::session::manager::OutputEvent;
 
     use super::TerminalSession;
     use crate::replay::visible_lines;
-    use runner_app::AppCore;
+    use runner_backend::AppCore;
 
     /// Minimal `AppCore` over a temp dir — the pieces `boot_core` wires
-    /// in runner-native, minus login-shell discovery and startup cleanup.
+    /// in runner-app, minus login-shell discovery and startup cleanup.
     fn test_core(root: &std::path::Path) -> AppCore {
         let app_data_dir = root.join("app-data");
         std::fs::create_dir_all(&app_data_dir).unwrap();
-        let pool = Arc::new(runner_app::db::open_pool(&app_data_dir.join("runner.db")).unwrap());
-        let runtime: Arc<dyn runner_app::session::runtime::SessionRuntime> =
-            Arc::new(runner_app::session::pty_runtime::PtyRuntime::new());
-        let windows = Arc::new(runner_app::windows::WindowRegistry::new());
+        let pool = Arc::new(runner_backend::db::open_pool(&app_data_dir.join("runner.db")).unwrap());
+        let runtime: Arc<dyn runner_backend::session::runtime::SessionRuntime> =
+            Arc::new(runner_backend::session::pty_runtime::PtyRuntime::new());
+        let windows = Arc::new(runner_backend::windows::WindowRegistry::new());
         windows.register("main");
         AppCore {
             db: pool,
             app_data_dir,
-            sessions: runner_app::session::SessionManager::new(
-                runner_app::shell_path::LoginShellEnv::default(),
+            sessions: runner_backend::session::SessionManager::new(
+                runner_backend::shell_path::LoginShellEnv::default(),
                 runtime,
             ),
-            buses: runner_app::event_bus::BusRegistry::new(),
-            routers: runner_app::router::RouterRegistry::new(),
-            mcp: Arc::new(runner_app::mcp::McpHandle::new()),
+            buses: runner_backend::event_bus::BusRegistry::new(),
+            routers: runner_backend::router::RouterRegistry::new(),
+            mcp: Arc::new(runner_backend::mcp::McpHandle::new()),
             windows,
-            events: runner_app::events::EventChannel::new(),
+            events: runner_backend::events::EventChannel::new(),
             app_version: "0.0.0-test".into(),
         }
     }

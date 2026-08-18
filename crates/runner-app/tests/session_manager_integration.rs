@@ -3,10 +3,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use runner_app::ops::runner::CreateRunnerInput;
-use runner_app::router::runtime::PermissionMode;
-use runner_native::bootstrap::{boot_core, NativePaths};
-use runner_native::terminal_ime::TerminalInput;
+use runner_backend::ops::runner::CreateRunnerInput;
+use runner_backend::router::runtime::PermissionMode;
+use runner_app::bootstrap::{boot_core, NativePaths};
+use runner_app::terminal_ime::TerminalInput;
 use runner_terminal::replay::visible_lines;
 use runner_terminal::terminal::{TerminalBridge, TerminalSession};
 
@@ -30,7 +30,7 @@ fn direct_chat_flows_from_app_core_session_manager_into_terminal_grid() {
     let temp = tempfile::tempdir().unwrap();
     let paths = NativePaths::new(temp.path().join("app-data"), temp.path().join("logs"));
     let core = boot_core(&paths).unwrap();
-    let runner = runner_app::ops::runner::runner_create(
+    let runner = runner_backend::ops::runner::runner_create(
         &core,
         CreateRunnerInput {
             handle: "phase3-seam".into(),
@@ -47,7 +47,7 @@ fn direct_chat_flows_from_app_core_session_manager_into_terminal_grid() {
         },
     )
     .unwrap();
-    let spawned = runner_app::ops::session::session_start_direct(
+    let spawned = runner_backend::ops::session::session_start_direct(
         &core,
         runner.id,
         None,
@@ -69,7 +69,7 @@ fn direct_chat_flows_from_app_core_session_manager_into_terminal_grid() {
     terminal.submit_text("manager-owned-pty").unwrap();
     let rendered = wait_for_text(&terminal, "manager-owned-pty");
 
-    runner_app::ops::session::session_kill(&core, &spawned.id).unwrap();
+    runner_backend::ops::session::session_kill(&core, &spawned.id).unwrap();
     assert!(
         rendered,
         "manager output never reached the alacritty terminal grid"
@@ -81,7 +81,7 @@ fn terminal_ime_commit_forwards_utf8_through_session_manager() {
     let temp = tempfile::tempdir().unwrap();
     let paths = NativePaths::new(temp.path().join("app-data"), temp.path().join("logs"));
     let core = boot_core(&paths).unwrap();
-    let runner = runner_app::ops::runner::runner_create(
+    let runner = runner_backend::ops::runner::runner_create(
         &core,
         CreateRunnerInput {
             handle: "terminal-ime".into(),
@@ -98,7 +98,7 @@ fn terminal_ime_commit_forwards_utf8_through_session_manager() {
         },
     )
     .unwrap();
-    let spawned = runner_app::ops::session::session_start_direct(
+    let spawned = runner_backend::ops::session::session_start_direct(
         &core,
         runner.id,
         None,
@@ -124,7 +124,7 @@ fn terminal_ime_commit_forwards_utf8_through_session_manager() {
         visible_lines(&*term).join("\n")
     };
 
-    runner_app::ops::session::session_kill(&core, &spawned.id).unwrap();
+    runner_backend::ops::session::session_kill(&core, &spawned.id).unwrap();
     assert!(rendered, "committed UTF-8 did not reach the terminal grid");
     assert!(!visible.contains("pinyin"), "marked text reached the PTY");
 }
@@ -134,7 +134,7 @@ fn bridge_keeps_multiple_tab_sessions_attached_with_independent_geometry() {
     let temp = tempfile::tempdir().unwrap();
     let paths = NativePaths::new(temp.path().join("app-data"), temp.path().join("logs"));
     let core = boot_core(&paths).unwrap();
-    let runner = runner_app::ops::runner::runner_create(
+    let runner = runner_backend::ops::runner::runner_create(
         &core,
         CreateRunnerInput {
             handle: "phase4-tabs".into(),
@@ -151,7 +151,7 @@ fn bridge_keeps_multiple_tab_sessions_attached_with_independent_geometry() {
         },
     )
     .unwrap();
-    let first = runner_app::ops::session::session_start_direct(
+    let first = runner_backend::ops::session::session_start_direct(
         &core,
         runner.id.clone(),
         None,
@@ -161,7 +161,7 @@ fn bridge_keeps_multiple_tab_sessions_attached_with_independent_geometry() {
         Some(24),
     )
     .unwrap();
-    let second = runner_app::ops::session::session_start_direct(
+    let second = runner_backend::ops::session::session_start_direct(
         &core,
         runner.id,
         None,
@@ -190,6 +190,6 @@ fn bridge_keeps_multiple_tab_sessions_attached_with_independent_geometry() {
     assert_eq!(first_terminal.size(), (80, 24));
     assert_eq!(second_terminal.size(), (120, 40));
 
-    runner_app::ops::session::session_kill(&core, &first.id).unwrap();
-    runner_app::ops::session::session_kill(&core, &second.id).unwrap();
+    runner_backend::ops::session::session_kill(&core, &first.id).unwrap();
+    runner_backend::ops::session::session_kill(&core, &second.id).unwrap();
 }

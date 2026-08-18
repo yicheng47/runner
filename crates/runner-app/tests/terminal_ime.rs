@@ -1,4 +1,4 @@
-use runner_native::terminal_ime::{terminal_key_route, TerminalComposition, TerminalKeyRoute};
+use runner_app::terminal_ime::{terminal_key_route, TerminalComposition, TerminalKeyRoute};
 
 #[test]
 fn composition_replaces_and_clears_marked_text_with_utf16_selection_math() {

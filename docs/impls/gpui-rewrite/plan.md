@@ -16,8 +16,8 @@ One native Rust binary. No webview, no JS, no Tauri. The UI is rendered by GPUI 
 
 Keep (~33k LOC Rust, extracted into UI-agnostic crates):
 
-- `crates/runner-app/src/session/` — PTY session manager (`portable-pty`).
-- `crates/runner-app/src/router/`, `event_bus/`, `repo/`, `db.rs` (SQLite), `mcp/`, `model.rs`, `error.rs`.
+- `crates/runner-backend/src/session/` — PTY session manager (`portable-pty`).
+- `crates/runner-backend/src/router/`, `event_bus/`, `repo/`, `db.rs` (SQLite), `mcp/`, `model.rs`, `error.rs`.
 - `crates/runner-core/`, `cli/` — untouched.
 - The SQLite schema and NDJSON event-log format — the native app reads the same data; you can switch between old and new app against the same state.
 
@@ -44,7 +44,7 @@ Revised 2026-07-19 by Jason's decision, superseding the original fold-into-main-
 
 Revised again 2026-07-19 (repo split): the pioneer line briefly moved to its own **runner-gpui** repository. Revised again 2026-08-17 (single repo, current state): the line moved back into the `runner` repo as the long-lived `gpui-nightly` branch, pushed at `774aa35` with the standalone repo's full history; the separate GitHub repo is retired, and locally the branch lives in the `runner-gpui` worktree. Rationale: most of the tree differs between the lines anyway, and the shared part is ported by hand either way — one repo keeps issues, CI, and history together without cross-repo remote juggling.
 
-- **Cross-branch flow**: backend changes on `main` are ported onto `gpui-nightly` by conscious cherry-pick, hand-relocated from `src-tauri/src/*` into `crates/runner-app/*` paths. Nothing flows automatically in either direction. Schema- and protocol-affecting changes (`db.rs` migrations, the `runner-core` event log, `cli` message shapes) port promptly — both apps must keep reading the same `runner.db` and event logs; feature logic ports when a parity slice needs it.
+- **Cross-branch flow**: backend changes on `main` are ported onto `gpui-nightly` by conscious cherry-pick, hand-relocated from `src-tauri/src/*` into `crates/runner-backend/*` paths. Nothing flows automatically in either direction. Schema- and protocol-affecting changes (`db.rs` migrations, the `runner-core` event log, `cli` message shapes) port promptly — both apps must keep reading the same `runner.db` and event logs; feature logic ports when a parity slice needs it.
 - **Milestone work** happens on task branches off `gpui-nightly`, merged back only after human verification.
 - **Cutover (Phase 6)** is a branch promotion: `gpui-nightly`'s tree replaces `main` in this repo.
 
@@ -55,12 +55,12 @@ Build: the pioneer line has Rust-only `fmt`, `clippy`, `test`, and `run` Make ta
 2026-08-17 (Jason):
 
 1. **`main` owns the design.** The whole product design follows `main`, including the node-tree sidebar (Feature 44). The GPUI line does not fork product decisions.
-2. **Repo-and-below is identical.** `crates/runner-core`, `cli/`, `db.rs` + migrations, and `repo/` must match `main` line-for-line (modulo file paths: `src-tauri/src/*` ↔ `crates/runner-app/src/*`). Anything GPUI-specific lives in the adapter layer (`ops/`) or above — never in repo/db. Migration numbers are allocated on `main` only; this branch never adds its own.
+2. **Repo-and-below is identical.** `crates/runner-core`, `cli/`, `db.rs` + migrations, and `repo/` must match `main` line-for-line (modulo file paths: `src-tauri/src/*` ↔ `crates/runner-backend/src/*`). Anything GPUI-specific lives in the adapter layer (`ops/`) or above — never in repo/db. Migration numbers are allocated on `main` only; this branch never adds its own.
 3. **Product UI never changes; only the tech stack changes.** The GPUI app renders the same surfaces, flows, and copy as `main`'s current React app. Divergence is a bug, not a design opportunity.
 4. **Terminal architecture mimics Zed's `terminal` / `terminal_view` crate split** (studied from the local checkout at `~/repos/gui/zed`, tree of 2026-08-17), but on **upstream `alacritty_terminal`** from crates.io — not Zed's fork.
 5. **Framework: `gpui-ce`** (see §Framework).
 6. **Updater (Phase 5): Sparkle via the pulse pattern** (see §Roadmap, Phase 5).
-7. **Crate renames after the M3 session-hardening slice** (timing revised 2026-08-18; originally at Phase 6 cutover): `runner-app` → `runner-backend` (the UI-agnostic core the two frontends shared), `runner-native` → `runner-app` (the binary; pulse convention: `-app` = the application). Lands as one mechanical commit at the slice boundary right after M3.4 (Cargo package names, imports, Makefile/CI, doc references), gated on `make verify` — so M4's UI code, the bulk of new code in this program, is written under the final crate layout. From then on the port mapping is `src-tauri/src/*` ↔ `crates/runner-backend/src/*`, and every mission goal states it explicitly with a warning that `runner-app` now names the binary — the name reuse is the wrong-crate hazard that kept this at cutover originally.
+7. **Crate renames after the M3 session-hardening slice** (timing revised 2026-08-18; originally at Phase 6 cutover): `runner-app` → `runner-backend` (the UI-agnostic core the two frontends shared), `runner-native` → `runner-app` (the binary; pulse convention: `-app` = the application). Landed 2026-08-18 as one mechanical commit right after M3.4 (Cargo package names, imports, Makefile, doc references), gated on `make verify` — so M4's UI code, the bulk of new code in this program, is written under the final crate layout. From then on the port mapping is `src-tauri/src/*` ↔ `crates/runner-backend/src/*`, and every mission goal states it explicitly with a warning that `runner-app` now names the binary — the name reuse is the wrong-crate hazard that kept this at cutover originally.
 
 2026-08-18 (Jason):
 
@@ -83,7 +83,7 @@ Build: the pioneer line has Rust-only `fmt`, `clippy`, `test`, and `run` Make ta
 
 ### A2. DB layer: migrations 0014–0020 + backfills, verbatim
 
-Copy `main`'s `src-tauri/src/db.rs` and `src-tauri/migrations/` over `crates/runner-app/`'s, adjusting only the module path prefix. New content: `0014_nodes.sql` (nodes table + 1:1 row copy from folders/tabs), `0015_retire_folders.sql` (drops legacy tables), `0016_session_last_size`, `0017_session_resume_on_launch`, `0018_slot_model_override`, `0019_session_agent_options`, `0020_slot_effort_override`, plus the Rust backfill steps (`backfill_0014_nodes`, `backfill_0015_retire_folders`) and the peer-coding-crew seed (`d04ce3f`).
+Copy `main`'s `src-tauri/src/db.rs` and `src-tauri/migrations/` over `crates/runner-backend/`'s, adjusting only the module path prefix. New content: `0014_nodes.sql` (nodes table + 1:1 row copy from folders/tabs), `0015_retire_folders.sql` (drops legacy tables), `0016_session_last_size`, `0017_session_resume_on_launch`, `0018_slot_model_override`, `0019_session_agent_options`, `0020_slot_effort_override`, plus the Rust backfill steps (`backfill_0014_nodes`, `backfill_0015_retire_folders`) and the peer-coding-crew seed (`d04ce3f`).
 
 ### A3. Repo layer: adopt `main`'s files, retire ours
 
@@ -117,9 +117,9 @@ Mirror Zed's two-crate shape (reference: `~/repos/gui/zed/crates/terminal` and `
 | `terminal/src/alacritty.rs` + `alacritty/hyperlinks.rs` | isolation of `alacritty_terminal` API surface: grid iteration, selection types, event glue | `runner-terminal/src/alacritty.rs` (deferred until the view side needs it) |
 | `terminal/src/mappings/{keys,mouse,colors}.rs` | keystroke→escape encoding, mouse reports, color conversion | `runner-terminal/src/mappings.rs` |
 | `terminal/src/pty_info.rs` | foreground-process info | **not ported** — process identity is `SessionManager`'s domain |
-| `terminal_view/src/terminal_element.rs` | GPUI `Element`: layout → batched text runs/rects/cursor, paint, IME `InputHandler` | stays in `runner-native/src/terminal_element.rs` (keeps the per-cell-origin alignment strategy) |
-| `terminal_view/src/terminal_view.rs` | focus, key dispatch, blink, context menu | `runner-native` chat/pane views |
-| `terminal_view/src/{terminal_panel,persistence,scrollbar,path_like_target}.rs` | workspace integration | `runner-native` pane layout / future slices |
+| `terminal_view/src/terminal_element.rs` | GPUI `Element`: layout → batched text runs/rects/cursor, paint, IME `InputHandler` | stays in `runner-app/src/terminal_element.rs` (keeps the per-cell-origin alignment strategy) |
+| `terminal_view/src/terminal_view.rs` | focus, key dispatch, blink, context menu | `runner-app` chat/pane views |
+| `terminal_view/src/{terminal_panel,persistence,scrollbar,path_like_target}.rs` | workspace integration | `runner-app` pane layout / future slices |
 
 **Deliberate deviations from Zed:**
 
@@ -147,8 +147,8 @@ Each milestone is a task branch off `gpui-nightly`, human-verified before merge.
 2. **M1 — repo-and-below parity** ✓ (2026-08-17; A1–A3 + minimal B): protocol crates wholesale; db + migrations + repo verbatim; `ops/` adapter updated; sidebar rewired onto nodes far enough to compile and function. Gate: migration test on a *copy* of a production `runner.db`, then the A/B switch test — Tauri `main` build and GPUI build alternately opening the same copy.
 3. **M2 — terminal split** ✓ (2026-08-17; C): extract `runner-terminal`, consolidate input encoding into `mappings`, move the fixture corpus. No rendering change; corpus green.
 4. **M3 — feature-parity slices** (in progress; A4 + B function, dogfood order): session hardening → runtimes/model-effort pickers → node sidebar polish + pinned section → mission feed (read-mostly + channel composer) → pagination/update checks/misc. Run as serial codex-peer missions; task numbering (M3.1, M3.2, …) pinned in the [program log](impl_log.md)'s 2026-08-18 breakdown entry. Each slice daily-driven before the next.
-5. **M4 — UI parity** (new 2026-08-18): bring the native app to full product-UI parity with `main` — this restores the surface breadth of the original Phase 4 list that M3's backend-first slices deliberately defer. Entry task is a **surface inventory**: walk `main`'s `src/` (7 pages, ~30 components + `settings/` + `ui/`) and the `design/*.pen` files, classify every surface as present / unstyled / missing in `runner-native`, and pin the resulting task list in the program log (continuing the serial-mission numbering). Known scope: chat surface + composer styling; tab bar and layout picker; sidebar visual polish beyond M3's functional parity; mission workspace UI; runners/crews CRUD pages; settings; modals and dialogs; command palette; themes as data (Tokyo Night + light); window chrome per §UI reference (hidden titlebar, traffic lights, drag areas — pulse pattern); multi-window; and **terminal-pane IME** (marked-text composition and candidate-window positioning in the focused terminal, committed UTF-8 forwarded through `SessionManager`, raw handling preserved for control/navigation/function keys — a cutover blocker carried from Phase 3). Exit gate: side-by-side parity review against the Tauri app on every surface — same surface, same flow, same copy — and the native app is the daily driver for all workflows, not just chats.
-6. **M5 — sweep + watermark** (was 0046's M4): diff `crates/runner-app` against `main`'s `src-tauri/src` module-by-module; the diff should be adapter-shaped only. Record the synced `main` SHA in this doc as the watermark; subsequent `main` backend commits port promptly (schema/protocol) or per-slice (features).
+5. **M4 — UI parity** (new 2026-08-18): bring the native app to full product-UI parity with `main` — this restores the surface breadth of the original Phase 4 list that M3's backend-first slices deliberately defer. Entry task is a **surface inventory**: walk `main`'s `src/` (7 pages, ~30 components + `settings/` + `ui/`) and the `design/*.pen` files, classify every surface as present / unstyled / missing in `runner-app` (the binary crate), and pin the resulting task list in the program log (continuing the serial-mission numbering). Known scope: chat surface + composer styling; tab bar and layout picker; sidebar visual polish beyond M3's functional parity; mission workspace UI; runners/crews CRUD pages; settings; modals and dialogs; command palette; themes as data (Tokyo Night + light); window chrome per §UI reference (hidden titlebar, traffic lights, drag areas — pulse pattern); multi-window; and **terminal-pane IME** (marked-text composition and candidate-window positioning in the focused terminal, committed UTF-8 forwarded through `SessionManager`, raw handling preserved for control/navigation/function keys — a cutover blocker carried from Phase 3). Exit gate: side-by-side parity review against the Tauri app on every surface — same surface, same flow, same copy — and the native app is the daily driver for all workflows, not just chats.
+6. **M5 — sweep + watermark** (was 0046's M4): diff `crates/runner-backend` against `main`'s `src-tauri/src` module-by-module; the diff should be adapter-shaped only. Record the synced `main` SHA in this doc as the watermark; subsequent `main` backend commits port promptly (schema/protocol) or per-slice (features).
 
 ### Phase 5 — App-shell services (replace what Tauri gave for free)
 

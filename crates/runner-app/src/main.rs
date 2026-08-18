@@ -12,21 +12,21 @@ use gpui::{
     MouseButton, ScrollDelta, ScrollWheelEvent, SharedString, Subscription, TitlebarOptions,
     Window, WindowBounds, WindowOptions,
 };
-use runner_app::model::{Runner, SessionStatus};
-use runner_app::ops::session::DirectSessionEntry;
-use runner_app::AppCore;
-use runner_native::bootstrap::{
+use runner_backend::model::{Runner, SessionStatus};
+use runner_backend::ops::session::DirectSessionEntry;
+use runner_backend::AppCore;
+use runner_app::bootstrap::{
     boot_core, native_paths, stop_running_sessions_on_quit, NativePaths,
 };
-use runner_native::pane_layout::{
+use runner_app::pane_layout::{
     PaneLayout, PaneLeaf, PaneNode, PresetKind, SplitOrientation, TabSet,
 };
-use runner_native::terminal_ime::TerminalInput;
+use runner_app::terminal_ime::TerminalInput;
 use runner_terminal::terminal::{TerminalBridge, TerminalSession};
 
 use terminal_element::TerminalElement;
 
-actions!(runner_native_ui, [Quit, TermPaste, NewTab]);
+actions!(runner_app_ui, [Quit, TermPaste, NewTab]);
 
 mod chat;
 mod panes;
@@ -103,21 +103,21 @@ impl NativeRoot {
         .detach();
 
         let mut errors = Vec::new();
-        let sessions = match runner_app::ops::session::session_list_recent_direct(&core) {
+        let sessions = match runner_backend::ops::session::session_list_recent_direct(&core) {
             Ok(sessions) => sessions,
             Err(error) => {
                 errors.push(error.to_string());
                 Vec::new()
             }
         };
-        let runners = match runner_app::ops::runner::runner_list(&core) {
+        let runners = match runner_backend::ops::runner::runner_list(&core) {
             Ok(runners) => runners,
             Err(error) => {
                 errors.push(error.to_string());
                 Vec::new()
             }
         };
-        let tabs = match runner_app::ops::node::node_list(&core)
+        let tabs = match runner_backend::ops::node::node_list(&core)
             .map_err(anyhow::Error::from)
             .and_then(|rows| TabSet::from_rows(&rows))
         {
@@ -151,14 +151,14 @@ impl NativeRoot {
     }
 
     fn refresh_sessions(&mut self) {
-        match runner_app::ops::session::session_list_recent_direct(&self.core) {
+        match runner_backend::ops::session::session_list_recent_direct(&self.core) {
             Ok(sessions) => self.sessions = sessions,
             Err(error) => self.error = Some(error.to_string()),
         }
     }
 
     fn reload_tabs(&mut self) -> Result<()> {
-        let rows = runner_app::ops::node::node_list(&self.core)?;
+        let rows = runner_backend::ops::node::node_list(&self.core)?;
         self.tabs.replace_rows(&rows)
     }
 
