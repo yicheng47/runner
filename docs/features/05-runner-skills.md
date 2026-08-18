@@ -1,4 +1,4 @@
-# 05 — Cross-platform, agent-agnostic MCP & skills management
+# 05 — Agent-agnostic MCP & skills management
 
 Tracking: [#73](https://github.com/yicheng47/runner/issues/73)
 
@@ -6,7 +6,7 @@ Tracking: [#73](https://github.com/yicheng47/runner/issues/73)
 
 ## Motivation
 
-Every coding agent ships its own way to configure MCP servers and skills — claude-code reads `~/.claude.json` + `~/.claude/skills/`, codex reads `~/.codex/config.toml`, and each agent's settings UI is specific to that agent and that machine. There's no single place to manage these, and nothing that works the same across agents or across platforms.
+Every coding agent ships its own way to configure MCP servers and skills — claude-code reads `~/.claude.json` + `~/.claude/skills/`, codex reads `~/.codex/config.toml`, and each agent's settings UI is specific to that agent and that machine. There's no single place to manage these, and nothing that works the same across agents.
 
 Runner already coordinates multiple agents from one app, so it's the natural home for one central, agent-agnostic place to define and manage MCP servers and skills: define a server or a skill once, and let Runner apply it to whichever agent a runner is backed by.
 
@@ -14,7 +14,7 @@ Runner already coordinates multiple agents from one app, so it's the natural hom
 
 - **Central catalog.** A dedicated management surface (settings-style, like Codex's "MCP servers" screen) to create / edit / delete reusable MCP servers and skills. One catalog, not buried inside per-runner edit forms.
 - **Agent-agnostic.** Definitions are stored in Runner's own neutral shape and materialized into whatever the target agent expects (claude-code JSON, codex TOML, skill directories). The user defines an MCP/skill once; Runner handles the per-agent translation.
-- **Cross-platform.** Both the management surface and the apply mechanism must work on macOS, Linux, and Windows — no Unix-only assumptions.
+- **macOS-only, so Unix mechanisms are fine.** Symlinks always work; the apply mechanism needs no portability ladder. (This lifts the constraint that partly motivated the 2026-07-15 rewrite below — the old symlink-overlay agent home was rejected as "Unix-only", which is no longer disqualifying. It stays rejected on the other grounds: the per-runner-only surface buried the catalog.)
 
 ## Reference analysis: skills-manager
 
@@ -33,7 +33,7 @@ Runner already coordinates multiple agents from one app, so it's the natural hom
 ### What Runner borrows
 
 1. **The adapter-registry shape.** A neutral per-agent record describing where skills/config live, how to detect the agent, and per-agent overrides — extended in Runner to also describe the MCP config file format (JSON at `~/.claude.json` vs TOML at `~/.codex/config.toml`) and merge strategy.
-2. **Copy-capable apply with the Windows ladder.** Symlink where possible, junction on NTFS, copy as the universal fallback — plus their src/dst overlap guards. This directly resolves the cross-platform constraint that killed the old spec's symlink-overlay agent home.
+2. **Copy-capable apply, plus their overlap guards.** Symlink by default with copy as a per-agent option, and their guards refusing syncs where source and destination overlap in either direction. Their Windows symlink→junction→copy ladder is moot here — on macOS symlinks always work — but copy stays worth offering for agents that follow symlinks badly.
 3. **Scan-don't-trust.** The management surface should show what the agent actually sees (scan the real dirs/config), surface externally-added entries, and offer adoption — not maintain a parallel belief that drifts.
 4. **Source metadata + content hash** on catalog entries, so "imported from git / local / hand-written" is recorded and update checks are possible later without redesign.
 5. **`SKILL.md` + YAML frontmatter** as the on-disk skill format — it's the ecosystem convention; claude-code loads it natively.
