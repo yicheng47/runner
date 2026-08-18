@@ -37,18 +37,42 @@ pub fn query_color<T>(
     index: usize,
     base: &[alacritty_terminal::vte::ansi::Rgb; 256],
 ) -> alacritty_terminal::vte::ansi::Rgb {
+    query_color_for(term, index, base, palette::RUNNER)
+}
+
+pub fn query_color_for<T>(
+    term: &Term<T>,
+    index: usize,
+    base: &[alacritty_terminal::vte::ansi::Rgb; 256],
+    theme: palette::TerminalPalette,
+) -> alacritty_terminal::vte::ansi::Rgb {
     let stored = if index < alacritty_terminal::term::color::COUNT {
         term.colors()[index]
     } else {
         None
     };
-    stored.unwrap_or_else(|| palette::resolve_index(index, base))
+    stored.unwrap_or_else(|| palette::resolve_index_for(index, base, theme))
 }
 
 #[derive(Default)]
 struct SequenceState {
     last: u64,
     synthetic_prefix_seen: bool,
+}
+
+#[derive(Clone, Copy)]
+struct PaletteState {
+    theme: palette::TerminalPalette,
+    base: [alacritty_terminal::vte::ansi::Rgb; 256],
+}
+
+impl PaletteState {
+    fn new(theme: palette::TerminalPalette) -> Self {
+        Self {
+            theme,
+            base: palette::base_palette_for(theme),
+        }
+    }
 }
 
 pub struct TerminalSession {
@@ -60,6 +84,7 @@ pub struct TerminalSession {
     sequence: Mutex<SequenceState>,
     size: Arc<Mutex<(u16, u16)>>,
     title: Arc<Mutex<String>>,
+    palette: Arc<Mutex<PaletteState>>,
     waker: Arc<dyn Fn() + Send + Sync>,
 }
 
@@ -83,6 +108,7 @@ impl TerminalSession {
         )));
         let size = Arc::new(Mutex::new((cols, rows)));
         let title = Arc::new(Mutex::new(String::new()));
+        let terminal_palette = Arc::new(Mutex::new(PaletteState::new(palette::RUNNER)));
         let session = Arc::new(Self {
             term: Arc::clone(&term),
             core: core.clone(),
@@ -92,6 +118,7 @@ impl TerminalSession {
             sequence: Mutex::new(SequenceState::default()),
             size: Arc::clone(&size),
             title: Arc::clone(&title),
+            palette: Arc::clone(&terminal_palette),
             waker,
         });
 
@@ -99,7 +126,6 @@ impl TerminalSession {
         thread::Builder::new()
             .name(format!("native-term-events-{session_id}"))
             .spawn(move || {
-                let base = palette::base_palette();
                 let write = |bytes: &[u8]| {
                     let _ = core.sessions.inject_stdin(&session_id, bytes);
                 };
@@ -107,10 +133,24 @@ impl TerminalSession {
                     match event {
                         Event::PtyWrite(text) => write(text.as_bytes()),
                         Event::ColorRequest(index, format) => {
+                            let palette = *terminal_palette.lock().unwrap();
                             let rgb = term_for_events
                                 .upgrade()
-                                .map(|term| query_color(&*term.lock_unfair(), index, &base))
-                                .unwrap_or_else(|| palette::resolve_index(index, &base));
+                                .map(|term| {
+                                    query_color_for(
+                                        &*term.lock_unfair(),
+                                        index,
+                                        &palette.base,
+                                        palette.theme,
+                                    )
+                                })
+                                .unwrap_or_else(|| {
+                                    crate::palette::resolve_index_for(
+                                        index,
+                                        &palette.base,
+                                        palette.theme,
+                                    )
+                                });
                             write(format(rgb).as_bytes());
                         }
                         Event::TextAreaSizeRequest(format) => {
@@ -144,6 +184,19 @@ impl TerminalSession {
 
     pub fn title(&self) -> String {
         self.title.lock().unwrap().clone()
+    }
+
+    pub fn set_palette(&self, palette: palette::TerminalPalette) {
+        let mut current = self.palette.lock().unwrap();
+        if current.theme != palette {
+            *current = PaletteState::new(palette);
+            drop(current);
+            (self.waker)();
+        }
+    }
+
+    pub fn palette(&self) -> palette::TerminalPalette {
+        self.palette.lock().unwrap().theme
     }
 
     pub fn feed_output(&self, event: &OutputEvent) -> Result<()> {

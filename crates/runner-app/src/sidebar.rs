@@ -19,7 +19,7 @@ impl NativeRoot {
         }
     }
 
-    pub(crate) fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_sidebar_contents(&self, cx: &mut Context<Self>) -> AnyElement {
         let active_tab_id = self.tabs.active_tab_id().map(str::to_owned);
         let tab_rows = self
             .tabs
@@ -56,8 +56,14 @@ impl NativeRoot {
                         .py_2()
                         .rounded_md()
                         .cursor_pointer()
-                        .when(selected, |row| row.bg(theme::border()))
-                        .hover(|row| row.bg(theme::border()))
+                        .border_1()
+                        .border_color(if selected {
+                            theme::sidebar_selected_border()
+                        } else {
+                            gpui::transparent_black()
+                        })
+                        .when(selected, |row| row.bg(theme::sidebar_selected()))
+                        .hover(|row| row.bg(theme::sidebar_selected()))
                         .child(div().text_sm().text_color(theme::text()).child(label))
                         .child(div().text_xs().text_color(theme::muted()).child(format!(
                             "{} · {pane_count} {}",
@@ -71,27 +77,23 @@ impl NativeRoot {
             ));
 
         div()
-            .w(px(SIDEBAR_WIDTH))
-            .h_full()
-            .flex_none()
+            .min_h(px(0.))
+            .flex_1()
             .flex()
             .flex_col()
-            .bg(theme::composer_bg())
-            .border_r_1()
-            .border_color(theme::border())
             .child(
                 div()
-                    .px_4()
-                    .pt_10()
-                    .pb_3()
+                    .px_5()
+                    .pb_2()
                     .flex()
                     .items_center()
                     .justify_between()
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(theme::muted())
-                            .child("DIRECT CHAT TABS"),
+                            .text_size(rems(10. / 16.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme::faint())
+                            .child("CHATS & MISSIONS"),
                     )
                     .child(
                         div()
@@ -102,7 +104,7 @@ impl NativeRoot {
                             .cursor_pointer()
                             .text_xs()
                             .text_color(theme::accent())
-                            .hover(|button| button.bg(theme::border()))
+                            .hover(|button| button.bg(theme::sidebar_selected()))
                             .child("+ New")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_new_tab_modal(&NewTab, window, cx);

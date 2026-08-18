@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use gpui::prelude::*;
 use gpui::{
-    anchored, deferred, div, point, px, relative, AnchoredPositionMode, AnyElement, Context,
+    anchored, deferred, div, point, px, relative, rems, AnchoredPositionMode, AnyElement, Context,
     FontWeight, KeyDownEvent, MouseButton, PathPromptOptions, SharedString, Window,
 };
 use runner_backend::model::Runner;
@@ -737,9 +737,9 @@ impl NativeRoot {
             .when(modal.runners.is_empty(), |fields| {
                 fields.child(
                     div()
-                        .mt(px(-14.))
-                        .text_size(px(11.))
-                        .text_color(gpui::rgb(0xe0af68))
+                        .mt(rems(-14. / 16.))
+                        .text_size(rems(11. / 16.))
+                        .text_color(theme::warning())
                         .child("No runners yet. Create one from the runner page first."),
                 )
             })
@@ -767,9 +767,9 @@ impl NativeRoot {
             .when(modal.runtimes.is_empty(), |fields| {
                 fields.child(
                     div()
-                        .mt(px(-14.))
-                        .text_size(px(11.))
-                        .text_color(gpui::rgb(0xe0af68))
+                        .mt(rems(-14. / 16.))
+                        .text_size(rems(11. / 16.))
+                        .text_color(theme::warning())
                         .child(if modal.agents_checking {
                             "Detecting agents…"
                         } else {
@@ -780,9 +780,9 @@ impl NativeRoot {
             .when_some(modal.agents_error.clone(), |fields, error| {
                 fields.child(
                     div()
-                        .mt(px(-14.))
-                        .text_size(px(11.))
-                        .text_color(gpui::rgb(0xf7768e))
+                        .mt(rems(-14. / 16.))
+                        .text_size(rems(11. / 16.))
+                        .text_color(theme::danger())
                         .child(error),
                 )
             })
@@ -806,19 +806,19 @@ impl NativeRoot {
                     div()
                         .rounded_md()
                         .border_1()
-                        .border_color(gpui::rgb(0x7a3448))
-                        .bg(gpui::rgb(0x3b1d2b))
+                        .border_color(theme::with_alpha(theme::danger(), 0.4))
+                        .bg(theme::with_alpha(theme::danger(), 0.1))
                         .px_3()
                         .py_2()
                         .text_xs()
-                        .text_color(gpui::rgb(0xf7768e))
+                        .text_color(theme::danger())
                         .child(SharedString::from(error.clone()))
                 }))
                 .child(
                     div()
                         .flex()
                         .w_full()
-                        .p(px(2.))
+                        .p(rems(2. / 16.))
                         .rounded_md()
                         .border_1()
                         .border_color(theme::border())
@@ -867,8 +867,8 @@ impl NativeRoot {
                 ))
                 .child(
                     div()
-                        .mt(px(-14.))
-                        .text_size(px(11.))
+                        .mt(rems(-14. / 16.))
+                        .text_size(rems(11. / 16.))
                         .text_color(theme::muted())
                         .child("Leave blank to use the default working directory."),
                 );
@@ -890,8 +890,8 @@ impl NativeRoot {
             )
             .child(
                 div()
-                    .w(px(MODAL_WIDTH))
-                    .h(px(650.))
+                    .w(rems(MODAL_WIDTH / 16.))
+                    .h(rems(650. / 16.))
                     .max_h(relative(0.85))
                     .flex()
                     .flex_col()
@@ -909,7 +909,7 @@ impl NativeRoot {
                     .child(
                         div()
                             .flex_none()
-                            .h(px(74.))
+                            .h(rems(74. / 16.))
                             .px_6()
                             .flex()
                             .items_center()
@@ -923,7 +923,7 @@ impl NativeRoot {
                                     .gap_1()
                                     .child(
                                         div()
-                                            .text_size(px(16.))
+                                            .text_size(rems(1.))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(theme::text())
                                             .child("Start a chat"),
@@ -940,10 +940,10 @@ impl NativeRoot {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .size(px(28.))
+                                    .size(rems(28. / 16.))
                                     .rounded_md()
                                     .cursor_pointer()
-                                    .text_size(px(18.))
+                                    .text_size(rems(18. / 16.))
                                     .text_color(theme::muted())
                                     .hover(|button| {
                                         button.bg(theme::border()).text_color(theme::text())
@@ -969,7 +969,7 @@ impl NativeRoot {
                     .child(
                         div()
                             .flex_none()
-                            .h(px(64.))
+                            .h(rems(4.))
                             .px_6()
                             .flex()
                             .items_center()
@@ -1025,7 +1025,7 @@ impl NativeRoot {
             .flex()
             .items_center()
             .justify_center()
-            .h(px(30.))
+            .h(rems(30. / 16.))
             .rounded_md()
             .text_xs()
             .font_weight(FontWeight::SEMIBOLD)
@@ -1065,8 +1065,8 @@ impl NativeRoot {
         let open = open_picker == Some(picker_kind);
         let button = div()
             .id(id)
-            .w(px(width))
-            .h(px(if detailed { 52. } else { 36. }))
+            .w(rems(width / 16.))
+            .h(rems(if detailed { 52. / 16. } else { 36. / 16. }))
             .px_3()
             .flex()
             .items_center()
@@ -1099,7 +1099,7 @@ impl NativeRoot {
                     .child(
                         div()
                             .truncate()
-                            .text_size(px(13.))
+                            .text_size(rems(13. / 16.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::text())
                             .child(selected_label),
@@ -1107,7 +1107,7 @@ impl NativeRoot {
                     .children(selected_description.map(|description| {
                         div()
                             .truncate()
-                            .text_size(px(11.))
+                            .text_size(rems(11. / 16.))
                             .text_color(theme::muted())
                             .child(description)
                     })),
@@ -1124,12 +1124,15 @@ impl NativeRoot {
             deferred(
                 anchored()
                     .position_mode(AnchoredPositionMode::Local)
-                    .offset(point(px(0.), px(if detailed { 56. } else { 40. })))
+                    .offset(point(
+                        px(0.),
+                        px((if detailed { 56. } else { 40. }) * self.settings.app_zoom),
+                    ))
                     .child(
                         div()
                             .id("start-chat-options-menu")
-                            .w(px(width))
-                            .max_h(px(224.))
+                            .w(rems(width / 16.))
+                            .max_h(rems(14.))
                             .overflow_y_scroll()
                             .p_1()
                             .rounded_md()
@@ -1158,14 +1161,14 @@ impl NativeRoot {
                                         .child(
                                             div()
                                                 .truncate()
-                                                .text_size(px(13.))
+                                                .text_size(rems(13. / 16.))
                                                 .text_color(theme::text())
                                                 .child(choice.label),
                                         )
                                         .children(choice.description.map(|description| {
                                             div()
                                                 .truncate()
-                                                .text_size(px(11.))
+                                                .text_size(rems(11. / 16.))
                                                 .text_color(theme::muted())
                                                 .child(description)
                                         }))
@@ -1180,7 +1183,7 @@ impl NativeRoot {
         });
         div()
             .relative()
-            .w(px(width))
+            .w(rems(width / 16.))
             .child(button)
             .children(menu)
             .into_any_element()
@@ -1205,12 +1208,12 @@ impl NativeRoot {
             deferred(
                 anchored()
                     .position_mode(AnchoredPositionMode::Local)
-                    .offset(point(px(0.), px(40.)))
+                    .offset(point(px(0.), px(40. * self.settings.app_zoom)))
                     .child(
                         div()
                             .id("start-chat-model-options-menu")
-                            .w(px(model_width))
-                            .max_h(px(224.))
+                            .w(rems(model_width / 16.))
+                            .max_h(rems(14.))
                             .overflow_y_scroll()
                             .p_1()
                             .rounded_md()
@@ -1235,14 +1238,14 @@ impl NativeRoot {
                                         .child(
                                             div()
                                                 .truncate()
-                                                .text_size(px(13.))
+                                                .text_size(rems(13. / 16.))
                                                 .text_color(theme::text())
                                                 .child(choice.label),
                                         )
                                         .children(choice.description.map(|description| {
                                             div()
                                                 .truncate()
-                                                .text_size(px(11.))
+                                                .text_size(rems(11. / 16.))
                                                 .text_color(theme::muted())
                                                 .child(description)
                                         }))
@@ -1263,7 +1266,7 @@ impl NativeRoot {
         let model = div()
             .id("start-chat-model-field")
             .relative()
-            .w(px(model_width))
+            .w(rems(model_width / 16.))
             .flex()
             .items_center()
             .child(div().flex_1().min_w(px(0.)).child(model_input))
@@ -1271,9 +1274,9 @@ impl NativeRoot {
                 div()
                     .id("start-chat-model-options")
                     .absolute()
-                    .right(px(6.))
-                    .top(px(6.))
-                    .size(px(24.))
+                    .right(rems(6. / 16.))
+                    .top(rems(6. / 16.))
+                    .size(rems(1.5))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1349,7 +1352,7 @@ fn modal_field(
         .child(child)
         .children(subtitle.map(|subtitle| {
             div()
-                .text_size(px(11.))
+                .text_size(rems(11. / 16.))
                 .text_color(theme::muted())
                 .child(subtitle)
         }))
@@ -1364,7 +1367,7 @@ fn modal_button(
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
-        .h(px(34.))
+        .h(rems(34. / 16.))
         .px_4()
         .flex()
         .items_center()
@@ -1391,9 +1394,13 @@ fn modal_button(
                 }
             })
         })
-        .text_size(px(13.))
+        .text_size(rems(13. / 16.))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(if primary { theme::bg() } else { theme::text() })
+        .text_color(if primary {
+            theme::accent_ink()
+        } else {
+            theme::text()
+        })
         .child(label)
 }
 

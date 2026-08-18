@@ -26,14 +26,12 @@ use runner_app::terminal_ime::TerminalInput;
 use runner_app::terminal_resize::{
     size_push_verdict, terminal_grid_size, SizePushVerdict, TerminalGridSize,
 };
-use runner_terminal::palette;
+use runner_terminal::palette::{self, TerminalPalette};
 use runner_terminal::terminal::TerminalSession;
 
-pub const FONT_FAMILY: &str = "Menlo";
-pub const FONT_SIZE: f32 = 13.0;
 pub const LINE_HEIGHT_FACTOR: f32 = 1.4;
 
-fn to_hsla(rgb: Rgb, alpha: f32) -> Hsla {
+pub(crate) fn to_hsla(rgb: Rgb, alpha: f32) -> Hsla {
     let mut rgba = gpui::rgb(((rgb.r as u32) << 16) | ((rgb.g as u32) << 8) | rgb.b as u32);
     rgba.a = alpha;
     rgba.into()
@@ -44,6 +42,15 @@ pub struct TerminalElement {
     input: Entity<TerminalInput>,
     focus_handle: FocusHandle,
     resize_owner: bool,
+    style: TerminalStyle,
+}
+
+#[derive(Clone)]
+pub struct TerminalStyle {
+    pub palette: TerminalPalette,
+    pub font_family: SharedString,
+    pub font_size: f32,
+    pub app_zoom: f32,
 }
 
 impl TerminalElement {
@@ -52,12 +59,14 @@ impl TerminalElement {
         input: Entity<TerminalInput>,
         focus_handle: FocusHandle,
         resize_owner: bool,
+        style: TerminalStyle,
     ) -> Self {
         Self {
             session,
             input,
             focus_handle,
             resize_owner,
+            style,
         }
     }
 }
@@ -117,13 +126,13 @@ impl Element for TerminalElement {
         cx: &mut App,
     ) -> GridPrepaint {
         let text_system = window.text_system();
-        let base_font = font(FONT_FAMILY);
-        let font_size = px(FONT_SIZE);
+        let base_font = font(self.style.font_family.clone());
+        let font_size = px(self.style.font_size);
         let font_id = text_system.resolve_font(&base_font);
         let cell_width = text_system
             .em_advance(font_id, font_size)
-            .unwrap_or(px(FONT_SIZE * 0.6));
-        let line_height = px((FONT_SIZE * LINE_HEIGHT_FACTOR).round());
+            .unwrap_or(px(self.style.font_size * 0.6));
+        let line_height = px((self.style.font_size * LINE_HEIGHT_FACTOR).round());
 
         let measured = terminal_grid_size(
             f32::from(bounds.size.width),
@@ -156,7 +165,8 @@ impl Element for TerminalElement {
         }
         let (cols, rows) = self.session.size();
 
-        let base = palette::base_palette();
+        let terminal_palette = self.style.palette;
+        let base = palette::base_palette_for(terminal_palette);
         let mut backgrounds: Vec<(Bounds<Pixels>, Hsla)> = Vec::new();
         let mut spans: Vec<(usize, StyledSpan)> = Vec::new();
         let mut cursor = None;
@@ -169,10 +179,18 @@ impl Element for TerminalElement {
             let content = term.renderable_content();
             let display_offset = content.display_offset;
             let overrides = content.colors;
-            marked_foreground =
-                palette::resolve(Color::Named(NamedColor::Foreground), overrides, &base);
-            marked_background =
-                palette::resolve(Color::Named(NamedColor::Background), overrides, &base);
+            marked_foreground = palette::resolve_for(
+                Color::Named(NamedColor::Foreground),
+                overrides,
+                &base,
+                terminal_palette,
+            );
+            marked_background = palette::resolve_for(
+                Color::Named(NamedColor::Background),
+                overrides,
+                &base,
+                terminal_palette,
+            );
 
             for indexed in content.display_iter {
                 let cell = &indexed.cell;
@@ -190,8 +208,8 @@ impl Element for TerminalElement {
                     continue;
                 }
 
-                let mut fg = palette::resolve(cell.fg, overrides, &base);
-                let mut bg = palette::resolve(cell.bg, overrides, &base);
+                let mut fg = palette::resolve_for(cell.fg, overrides, &base, terminal_palette);
+                let mut bg = palette::resolve_for(cell.bg, overrides, &base, terminal_palette);
                 if cell.flags.contains(Flags::INVERSE) {
                     std::mem::swap(&mut fg, &mut bg);
                 }
@@ -202,7 +220,7 @@ impl Element for TerminalElement {
                 let wide = cell.flags.contains(Flags::WIDE_CHAR);
                 let cell_cols = if wide { 2usize } else { 1 };
 
-                if bg != palette::BACKGROUND {
+                if bg != terminal_palette.background {
                     let quad_bounds = Bounds::new(
                         point(
                             bounds.left() + cell_width * col as f32,
@@ -241,11 +259,13 @@ impl Element for TerminalElement {
                     Some(gpui::UnderlineStyle {
                         color: Some(to_hsla(
                             cell.underline_color()
-                                .map(|c| palette::resolve(c, overrides, &base))
+                                .map(|color| {
+                                    palette::resolve_for(color, overrides, &base, terminal_palette)
+                                })
                                 .unwrap_or(fg),
                             1.,
                         )),
-                        thickness: px(1.),
+                        thickness: px(self.style.app_zoom),
                         wavy: cell.flags.contains(Flags::UNDERCURL),
                     })
                 } else {
@@ -254,7 +274,7 @@ impl Element for TerminalElement {
                 let strikethrough = if cell.flags.contains(Flags::STRIKEOUT) {
                     Some(gpui::StrikethroughStyle {
                         color: Some(to_hsla(fg, 1.)),
-                        thickness: px(1.),
+                        thickness: px(self.style.app_zoom),
                     })
                 } else {
                     None
@@ -371,7 +391,7 @@ impl Element for TerminalElement {
                             background_color: None,
                             underline: Some(UnderlineStyle {
                                 color: Some(color),
-                                thickness: px(1.),
+                                thickness: px(self.style.app_zoom),
                                 wavy: false,
                             }),
                             strikethrough: None,
@@ -402,6 +422,7 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        window.paint_quad(fill(bounds, to_hsla(self.style.palette.background, 1.)));
         for (quad_bounds, color) in &prepaint.backgrounds {
             window.paint_quad(fill(*quad_bounds, *color));
         }
@@ -421,7 +442,7 @@ impl Element for TerminalElement {
             });
         } else if let Some((cursor_bounds, shape)) = prepaint.cursor {
             let focused = self.focus_handle.is_focused(window);
-            let color = to_hsla(palette::CURSOR, if focused { 0.55 } else { 0.3 });
+            let color = to_hsla(self.style.palette.cursor, if focused { 0.55 } else { 0.3 });
             match shape {
                 CursorShape::Block if focused => {
                     window.paint_quad(fill(cursor_bounds, color));
@@ -431,13 +452,13 @@ impl Element for TerminalElement {
                 }
                 CursorShape::Underline => {
                     let mut b = cursor_bounds;
-                    b.origin.y = b.bottom() - px(2.);
-                    b.size.height = px(2.);
+                    b.origin.y = b.bottom() - px(2. * self.style.app_zoom);
+                    b.size.height = px(2. * self.style.app_zoom);
                     window.paint_quad(fill(b, color));
                 }
                 CursorShape::Beam => {
                     let mut b = cursor_bounds;
-                    b.size.width = px(2.);
+                    b.size.width = px(2. * self.style.app_zoom);
                     window.paint_quad(fill(b, color));
                 }
                 CursorShape::Hidden => {}

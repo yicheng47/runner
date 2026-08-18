@@ -1,16 +1,21 @@
+mod app_settings;
+mod app_shell;
+mod assets;
+mod mac_chrome;
 mod terminal_element;
 mod theme;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use futures::StreamExt as _;
 use gpui::{
-    actions, div, prelude::*, px, relative, size, AnyElement, App, Application, Bounds, Context,
-    CursorStyle, DragMoveEvent, Entity, FocusHandle, KeyBinding, KeyDownEvent, Menu, MenuItem,
-    MouseButton, ScrollDelta, ScrollWheelEvent, SharedString, Subscription, TitlebarOptions,
-    Window, WindowBounds, WindowOptions,
+    actions, div, point, prelude::*, px, relative, rems, size, AnyElement, App, Application,
+    Bounds, Context, CursorStyle, DragMoveEvent, Entity, FocusHandle, KeyBinding, KeyDownEvent,
+    Menu, MenuItem, MouseButton, OsAction, ScrollDelta, ScrollWheelEvent, SharedString,
+    Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use runner_app::bootstrap::{boot_core, native_paths, stop_running_sessions_on_quit, NativePaths};
 use runner_app::pane_layout::{
@@ -22,15 +27,42 @@ use runner_backend::ops::session::DirectSessionEntry;
 use runner_backend::AppCore;
 use runner_terminal::terminal::{TerminalBridge, TerminalSession};
 
+use app_settings::{settings_path, AppSettings};
+use app_shell::AppRoute;
+use assets::Assets;
 use terminal_element::TerminalElement;
+use toast::ToastHost;
 
-actions!(runner_app_ui, [Quit, TermPaste, NewTab]);
+actions!(
+    runner_app_ui,
+    [
+        CloseWindow,
+        Copy,
+        Cut,
+        Hide,
+        HideOthers,
+        Maximize,
+        Minimize,
+        NewTab,
+        OpenSettings,
+        Paste,
+        Quit,
+        SelectAll,
+        ShowAll,
+        ToggleFullscreen,
+        ToggleSidebar,
+        ZoomIn,
+        ZoomOut,
+        ZoomReset
+    ]
+);
 
 mod chat;
 mod modal_text_input;
 mod panes;
 mod sidebar;
 mod start_chat;
+mod toast;
 
 use panes::pane_fractions;
 use sidebar::session_label;
@@ -38,8 +70,7 @@ use start_chat::StartChatModal;
 
 const INITIAL_COLS: u16 = 100;
 const INITIAL_ROWS: u16 = 30;
-const SIDEBAR_WIDTH: f32 = 248.;
-const WORKSPACE_HEADER_HEIGHT: f32 = 42.;
+const WORKSPACE_HEADER_HEIGHT: f32 = 44.;
 const PANE_HEADER_HEIGHT: f32 = 34.;
 
 struct AttachedChat {
@@ -77,10 +108,25 @@ struct NativeRoot {
     layout_picker_open: bool,
     split_sizes_dirty: bool,
     error: Option<String>,
+    settings: AppSettings,
+    settings_path: PathBuf,
+    route: AppRoute,
+    sidebar_preview_open: bool,
+    titlebar_drag_armed: bool,
+    toasts: ToastHost,
+    _appearance_subscription: Option<Subscription>,
+    _bounds_subscription: Option<Subscription>,
 }
 
 impl NativeRoot {
-    fn new(core: AppCore, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        core: AppCore,
+        settings_path: PathBuf,
+        settings: AppSettings,
+        settings_error: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let (wake_tx, mut wake_rx) = futures::channel::mpsc::unbounded::<()>();
         let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             let _ = wake_tx.unbounded_send(());
@@ -127,7 +173,8 @@ impl NativeRoot {
         })
         .detach();
 
-        let mut errors = Vec::new();
+        let mut errors: Vec<_> = settings_error.into_iter().collect();
+        window.set_rem_size(px(16. * settings.app_zoom));
         let sessions = match runner_backend::ops::session::session_list_recent_direct(&core) {
             Ok(sessions) => sessions,
             Err(error) => {
@@ -173,7 +220,23 @@ impl NativeRoot {
             layout_picker_open: false,
             split_sizes_dirty: false,
             error: (!errors.is_empty()).then(|| errors.join("\n")),
+            settings,
+            settings_path,
+            route: AppRoute::Chat,
+            sidebar_preview_open: false,
+            titlebar_drag_armed: false,
+            toasts: ToastHost::default(),
+            _appearance_subscription: None,
+            _bounds_subscription: None,
         };
+        root._appearance_subscription = Some(cx.observe_window_appearance(window, |_, _, cx| {
+            cx.notify();
+        }));
+        root._bounds_subscription = Some(cx.observe_window_bounds(window, |this, window, cx| {
+            mac_chrome::sync_traffic_lights(window, this.settings.app_zoom);
+            cx.notify();
+        }));
+        mac_chrome::sync_traffic_lights(window, root.settings.app_zoom);
         if let Err(error) = root.ensure_active_tab_attached(window, cx) {
             root.error = Some(error.to_string());
         }
@@ -202,44 +265,7 @@ impl NativeRoot {
 
 impl Render for NativeRoot {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.bridge.take_session_refresh() {
-            self.refresh_sessions();
-        }
-
-        let sidebar = self.render_sidebar(cx);
-        let workspace = self.render_active_tab(window, cx);
-        let modal = self
-            .start_chat_modal
-            .as_ref()
-            .map(|_| self.render_start_chat_modal(cx));
-        div()
-            .relative()
-            .size_full()
-            .track_focus(&self.root_focus)
-            .bg(theme::bg())
-            .child(
-                div().size_full().flex().child(sidebar).child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .h_full()
-                        .flex()
-                        .flex_col()
-                        .child(workspace)
-                        .children(self.error.as_ref().map(|error| {
-                            div()
-                                .flex_none()
-                                .px_3()
-                                .py_2()
-                                .bg(gpui::rgb(0x3b1d2b))
-                                .text_sm()
-                                .text_color(gpui::rgb(0xf7768e))
-                                .child(SharedString::from(error.clone()))
-                        })),
-                ),
-            )
-            .children(modal)
-            .on_action(cx.listener(Self::open_new_tab_modal))
+        self.render_app_shell(window, cx)
     }
 }
 
@@ -248,61 +274,145 @@ fn run() -> Result<()> {
     let core = boot_core(&paths)?;
     print_startup_paths(&paths);
     let shutdown_core = core.clone();
+    let ui_settings_path = settings_path(&paths.app_data_dir);
 
-    Application::new().run(move |cx: &mut App| {
-        let quit_core = core.clone();
-        cx.on_action(move |_: &Quit, cx| {
-            if let Err(error) = stop_running_sessions_on_quit(&quit_core) {
-                eprintln!("Runner Native quit session teardown failed: {error:#}");
-            }
-            cx.quit();
-        });
-        let close_core = core.clone();
-        cx.on_window_closed(move |cx| {
-            if cx.windows().is_empty() {
-                if let Err(error) = stop_running_sessions_on_quit(&close_core) {
-                    eprintln!("Runner Native quit session teardown failed: {error:#}");
+    Application::new()
+        .with_assets(Assets)
+        .run(move |cx: &mut App| {
+            let quit_core = core.clone();
+            cx.on_action(move |_: &Quit, cx| {
+                if let Err(error) = stop_running_sessions_on_quit(&quit_core) {
+                    eprintln!("Runner quit session teardown failed: {error:#}");
                 }
                 cx.quit();
-            }
-        })
-        .detach();
-        cx.bind_keys([
-            KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("cmd-t", NewTab, None),
-            KeyBinding::new("cmd-v", TermPaste, Some("Terminal")),
-        ]);
-        cx.set_menus(vec![Menu {
-            name: "Runner Native".into(),
-            items: vec![
-                MenuItem::action("New Chat", NewTab),
-                MenuItem::action("Quit", Quit),
-            ],
-        }]);
+            });
+            cx.on_action(|_: &Hide, cx| cx.hide());
+            cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+            cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+            cx.on_action(|_: &Minimize, cx| {
+                if let Some(window) = cx.active_window() {
+                    let _ = window.update(cx, |_, window, _| window.minimize_window());
+                }
+            });
+            cx.on_action(|_: &Maximize, cx| {
+                if let Some(window) = cx.active_window() {
+                    let _ = window.update(cx, |_, window, _| window.zoom_window());
+                }
+            });
+            cx.on_action(|_: &CloseWindow, cx| {
+                if let Some(window) = cx.active_window() {
+                    let _ = window.update(cx, |_, window, _| window.remove_window());
+                }
+            });
+            let close_core = core.clone();
+            cx.on_window_closed(move |cx| {
+                if cx.windows().is_empty() {
+                    if let Err(error) = stop_running_sessions_on_quit(&close_core) {
+                        eprintln!("Runner quit session teardown failed: {error:#}");
+                    }
+                    cx.quit();
+                }
+            })
+            .detach();
+            cx.bind_keys([
+                KeyBinding::new("cmd-q", Quit, None),
+                KeyBinding::new("cmd-h", Hide, None),
+                KeyBinding::new("cmd-alt-h", HideOthers, None),
+                KeyBinding::new("cmd-m", Minimize, None),
+                KeyBinding::new("cmd-w", CloseWindow, None),
+                KeyBinding::new("cmd-t", NewTab, None),
+                KeyBinding::new("cmd-s", ToggleSidebar, None),
+                KeyBinding::new("cmd-,", OpenSettings, None),
+                KeyBinding::new("cmd-=", ZoomIn, None),
+                KeyBinding::new("cmd-shift-=", ZoomIn, None),
+                KeyBinding::new("cmd--", ZoomOut, None),
+                KeyBinding::new("cmd-0", ZoomReset, None),
+                KeyBinding::new("ctrl-cmd-f", ToggleFullscreen, None),
+                KeyBinding::new("cmd-v", Paste, Some("Terminal")),
+            ]);
+            cx.set_menus(vec![
+                Menu {
+                    name: "Runner".into(),
+                    items: vec![
+                        MenuItem::os_submenu("Services", SystemMenuType::Services),
+                        MenuItem::separator(),
+                        MenuItem::action("Hide Runner", Hide),
+                        MenuItem::action("Hide Others", HideOthers),
+                        MenuItem::action("Show All", ShowAll),
+                        MenuItem::separator(),
+                        MenuItem::action("Quit Runner", Quit),
+                    ],
+                },
+                Menu {
+                    name: "Edit".into(),
+                    items: vec![
+                        MenuItem::os_action("Cut", Cut, OsAction::Cut),
+                        MenuItem::os_action("Copy", Copy, OsAction::Copy),
+                        MenuItem::os_action("Paste", Paste, OsAction::Paste),
+                        MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+                    ],
+                },
+                Menu {
+                    name: "View".into(),
+                    items: vec![MenuItem::action("Enter Full Screen", ToggleFullscreen)],
+                },
+                Menu {
+                    name: "Window".into(),
+                    items: vec![
+                        MenuItem::action("Minimize", Minimize),
+                        MenuItem::action("Maximize", Maximize),
+                        MenuItem::separator(),
+                        MenuItem::action("Close Window", CloseWindow),
+                    ],
+                },
+            ]);
 
-        let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Runner Native".into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |window, cx| cx.new(|cx| NativeRoot::new(core.clone(), window, cx)),
-        )
-        .expect("open Runner Native window");
-        cx.activate(true);
-    });
+            open_runner_window(core.clone(), ui_settings_path.clone(), cx)
+                .expect("open Runner window");
+            cx.activate(true);
+        });
 
     stop_running_sessions_on_quit(&shutdown_core)?;
     Ok(())
 }
 
+fn open_runner_window(core: AppCore, settings_path: PathBuf, cx: &mut App) -> Result<()> {
+    let (settings, settings_error) = match AppSettings::load(&settings_path) {
+        Ok(settings) => (settings, None),
+        Err(error) => (AppSettings::default(), Some(error.to_string())),
+    };
+    let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
+    cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(TitlebarOptions {
+                title: None,
+                appears_transparent: true,
+                // The zoom-aware AppKit frame path owns this position. Giving GPUI a second
+                // position makes its resize callback race the frame update and visibly jump.
+                traffic_light_position: None,
+            }),
+            ..Default::default()
+        },
+        |window, cx| {
+            cx.new(|cx| {
+                NativeRoot::new(
+                    core.clone(),
+                    settings_path.clone(),
+                    settings.clone(),
+                    settings_error.clone(),
+                    window,
+                    cx,
+                )
+            })
+        },
+    )?;
+    Ok(())
+}
+
 fn print_startup_paths(paths: &NativePaths) {
     eprintln!(
-        "Runner Native: database={} logs={}",
+        "Runner: database={} logs={}",
         paths.app_data_dir.join("runner.db").display(),
         paths.log_dir.display()
     );
@@ -310,7 +420,7 @@ fn print_startup_paths(paths: &NativePaths) {
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("Runner Native failed: {error:#}");
+        eprintln!("Runner failed: {error:#}");
         std::process::exit(1);
     }
 }
