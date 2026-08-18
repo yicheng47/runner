@@ -247,6 +247,14 @@ impl PaneLayout {
             .any(|leaf| leaf.session_id.as_deref() == Some(session_id))
     }
 
+    pub fn is_resize_owner(&self, pane_id: &str, session_id: &str) -> bool {
+        self.root
+            .leaves()
+            .into_iter()
+            .find(|leaf| leaf.session_id.as_deref() == Some(session_id))
+            .is_some_and(|leaf| leaf.id == pane_id)
+    }
+
     pub fn focused_session_id(&self) -> Option<&str> {
         self.root
             .leaves()

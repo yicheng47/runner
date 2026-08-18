@@ -68,6 +68,7 @@ impl SessionManager {
                     state.suppress_local_input_busy = false;
                     state.mission_status_sink = None;
                     state.completion_armed = false;
+                    state.pending_resize = None;
                     (h.stop.clone(), h.forwarder.take())
                 }
                 None => return Ok(()), // raced with another caller; no-op

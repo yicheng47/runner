@@ -359,7 +359,14 @@ impl SessionManager {
     /// xterm fits its container — without it, claude-code stays at
     /// the spawn-time grid regardless of how big the visible grid
     /// is.
-    pub fn resize(&self, session_id: &str, cols: u16, rows: u16, pool: &DbPool) -> Result<()> {
+    pub fn resize(
+        &self,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+        pool: &DbPool,
+        events: Arc<dyn SessionEvents>,
+    ) -> Result<()> {
         let state = self.session_state(session_id);
         let rt_session = state.as_ref().and_then(|state| {
             state
@@ -388,37 +395,174 @@ impl SessionManager {
         let Some(state) = state else {
             return Ok(());
         };
-        // Pane geometry is the next fork's desired size even if the current
-        // PTY rejects the ioctl. Keep last_pty_cols as the last size actually
-        // applied so a failed live resize cannot trigger a ring purge.
-        self.runtime.resize(&rt_session, cols, rows)?;
-        // Full-repaint TUI runtimes (claude-code, codex) redraw the whole
-        // frame on SIGWINCH, so bytes buffered before a *width* change
-        // describe a stale grid width. Replaying them into the new grid on
-        // a later snapshot re-attach wraps their absolute-positioned frames
-        // wrong — box-drawing borders shredded into scrollback garbage
-        // (seen dogfooding split view, impl 0020). Drop them: the incoming
-        // repaint rebuilds the buffer at the new width, and the frontend
-        // already hard-clears its local viewport for these runtimes on
-        // width changes.
-        //
-        // Rows-only resizes keep the ring: reflow depends on cols alone,
-        // and the frontend's activation dance nudges rows (rows-1 → rows)
-        // with width held constant on every tab return — purging there
-        // threw away claude-code history that snapshot replay could have
-        // restored (the #306 symptom: remount shows only the latest
-        // frame). Shells keep their buffer unconditionally — no repaint
-        // would arrive, and their history is meaningful.
-        let cols_changed = {
+
+        let settle_ms = self
+            .resize_settle_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut session = state.lock().unwrap();
+            if let Some(pending) = session.pending_resize.as_mut() {
+                pending.cols = cols;
+                pending.rows = rows;
+                pending.deadline = Instant::now() + Duration::from_millis(settle_ms);
+                pending.suppressed += 1;
+                return Ok(());
+            }
+            // Same-width resizes include the rows nudge used to force a
+            // repaint, so they must stay synchronous.
+            if session.last_pty_cols == Some(cols) {
+                drop(session);
+                self.runtime.resize(&rt_session, cols, rows)?;
+                state.lock().unwrap().last_pty_cols = Some(cols);
+                return Ok(());
+            }
+        }
+
+        let clears_on_resize = runtime_clears_on_resize(session_id, pool);
+        if !clears_on_resize {
+            // Shell history never purges, so delaying its ioctl buys nothing.
+            self.runtime.resize(&rt_session, cols, rows)?;
+            state.lock().unwrap().last_pty_cols = Some(cols);
+            return Ok(());
+        }
+
+        let spawn_settle_thread = {
             let mut state = state.lock().unwrap();
-            let changed = state.last_pty_cols != Some(cols);
-            state.last_pty_cols = Some(cols);
-            changed
+            match state.pending_resize.as_mut() {
+                Some(pending) => {
+                    pending.cols = cols;
+                    pending.rows = rows;
+                    pending.deadline = Instant::now() + Duration::from_millis(settle_ms);
+                    pending.suppressed += 1;
+                    false
+                }
+                None => {
+                    state.pending_resize = Some(PendingResize {
+                        cols,
+                        rows,
+                        deadline: Instant::now() + Duration::from_millis(settle_ms),
+                        suppressed: 0,
+                        clears_on_resize,
+                        events,
+                    });
+                    true
+                }
+            }
         };
-        if cols_changed && runtime_clears_on_resize(session_id, pool) {
-            self.purge_output_buffer_keep_modes(session_id);
+        if spawn_settle_thread {
+            let session_id = session_id.to_string();
+            let state = Arc::clone(&state);
+            let runtime = Arc::clone(&self.runtime);
+            thread::spawn(move || loop {
+                let wait = {
+                    let state = state.lock().unwrap();
+                    let Some(pending) = state.pending_resize.as_ref() else {
+                        return;
+                    };
+                    pending.deadline.saturating_duration_since(Instant::now())
+                };
+                if !wait.is_zero() {
+                    thread::sleep(wait);
+                    continue;
+                }
+                Self::settle_pending_resize(&session_id, &state, runtime.as_ref());
+                return;
+            });
         }
         Ok(())
+    }
+
+    fn settle_pending_resize(
+        session_id: &str,
+        state: &Arc<Mutex<SessionState>>,
+        runtime: &dyn SessionRuntime,
+    ) {
+        // The runtime resolves a reusable session id to the live child. Keep
+        // the state lock through the ioctl so kill/resume cannot retarget it.
+        let mut state = state.lock().unwrap();
+        let Some(pending) = state.pending_resize.take() else {
+            return;
+        };
+        if state.killed || state.resuming {
+            log::info!(
+                "cols-gate settle abandoned: session={session_id} {}x{} ({} coalesced) — \
+                 kill/resume in flight",
+                pending.cols,
+                pending.rows,
+                pending.suppressed,
+            );
+            return;
+        }
+        let Some(handle) = state.handle.as_ref() else {
+            return;
+        };
+        let rt_session = handle.runtime_session.clone();
+        let mission_id = handle.mission_id.clone();
+        let prev_cols = state.last_pty_cols;
+        let purge = pending.clears_on_resize && prev_cols != Some(pending.cols);
+        let ioctl = if purge {
+            runtime.resize(&rt_session, pending.cols, pending.rows)
+        } else {
+            let nudged_rows = if pending.rows > 1 {
+                pending.rows - 1
+            } else {
+                pending.rows + 1
+            };
+            runtime
+                .resize(&rt_session, pending.cols, nudged_rows)
+                .and_then(|()| runtime.resize(&rt_session, pending.cols, pending.rows))
+        };
+        if let Err(error) = ioctl {
+            log::warn!(
+                "settled resize failed: session={session_id} {}x{} ({} coalesced): {error}",
+                pending.cols,
+                pending.rows,
+                pending.suppressed,
+            );
+            return;
+        }
+        state.last_pty_cols = Some(pending.cols);
+        if purge {
+            state.output_buffer.clear();
+            state.output_seq += 1;
+            let clear = OutputEvent {
+                session_id: session_id.to_string(),
+                mission_id,
+                seq: state.output_seq,
+                data: BASE64.encode(b"\x1b[2J\x1b[H"),
+            };
+            state.output_buffer.push_back(clear.clone());
+            // PTY ingestion takes this same state lock, so the clear is
+            // sequenced ahead of the SIGWINCH repaint bytes in the buffer.
+            // Broadcast delivery order is not guaranteed by the lock alone: a
+            // chunk sequenced under the lock can still be emitted after the
+            // clear, and the consumer's seq gate (terminal.rs
+            // feed_encoded_locked) drops it.
+            pending.events.output(&clear);
+        }
+        drop(state);
+        if purge {
+            log::info!(
+                "cols-gate purge: session={session_id} cols {} -> {} ({} coalesced)",
+                prev_cols.map_or_else(|| "none".to_string(), |cols| cols.to_string()),
+                pending.cols,
+                pending.suppressed,
+            );
+        } else {
+            log::info!(
+                "cols-gate settle: session={session_id} cols {} round-trip, purge skipped, \
+                 repaint nudged ({} coalesced)",
+                pending.cols,
+                pending.suppressed,
+            );
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn settle_pending_resize_now(&self, session_id: &str) {
+        if let Some(state) = self.session_state(session_id) {
+            Self::settle_pending_resize(session_id, &state, self.runtime.as_ref());
+        }
     }
 
     /// Return the bounded in-memory PTY output snapshot for a session.
@@ -497,6 +641,7 @@ impl SessionManager {
             state.mouse_1003_on = false;
             state.mouse_1006_on = false;
             state.last_pty_cols = None;
+            state.pending_resize = None;
         }
         self.prune_empty_session_state(session_id);
     }
@@ -546,18 +691,6 @@ impl SessionManager {
             state.mouse_1006_on = false;
         }
         self.prune_empty_session_state(session_id);
-    }
-
-    /// Buffer-only purge for `resize`: the child process survives, so its
-    /// terminal modes persist — a SIGWINCH repaint does not re-emit the
-    /// enter-alt-screen / bracketed-paste escapes, and clearing the flags
-    /// here would strip the synthetic prefix a later snapshot needs. The
-    /// seq counter is likewise untouched.
-    fn purge_output_buffer_keep_modes(&self, session_id: &str) {
-        if let Some(state) = self.session_state(session_id) {
-            let mut state = state.lock().unwrap();
-            state.output_buffer.clear();
-        }
     }
 
     /// Update per-session terminal mode flags from a raw runtime
