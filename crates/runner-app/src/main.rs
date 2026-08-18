@@ -12,16 +12,14 @@ use gpui::{
     MouseButton, ScrollDelta, ScrollWheelEvent, SharedString, Subscription, TitlebarOptions,
     Window, WindowBounds, WindowOptions,
 };
-use runner_backend::model::{Runner, SessionStatus};
-use runner_backend::ops::session::DirectSessionEntry;
-use runner_backend::AppCore;
-use runner_app::bootstrap::{
-    boot_core, native_paths, stop_running_sessions_on_quit, NativePaths,
-};
+use runner_app::bootstrap::{boot_core, native_paths, stop_running_sessions_on_quit, NativePaths};
 use runner_app::pane_layout::{
     PaneLayout, PaneLeaf, PaneNode, PresetKind, SplitOrientation, TabSet,
 };
 use runner_app::terminal_ime::TerminalInput;
+use runner_backend::model::{Runner, SessionStatus};
+use runner_backend::ops::session::DirectSessionEntry;
+use runner_backend::AppCore;
 use runner_terminal::terminal::{TerminalBridge, TerminalSession};
 
 use terminal_element::TerminalElement;

@@ -3,10 +3,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use runner_backend::ops::runner::CreateRunnerInput;
-use runner_backend::router::runtime::PermissionMode;
 use runner_app::bootstrap::{boot_core, NativePaths};
 use runner_app::terminal_ime::TerminalInput;
+use runner_backend::ops::runner::CreateRunnerInput;
+use runner_backend::router::runtime::PermissionMode;
 use runner_terminal::replay::visible_lines;
 use runner_terminal::terminal::{TerminalBridge, TerminalSession};
 

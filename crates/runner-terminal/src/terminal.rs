@@ -249,7 +249,8 @@ impl TerminalSession {
             }
             *size = (cols, rows);
         }
-        let _ = runner_backend::ops::session::session_resize(&self.core, &self.session_id, cols, rows);
+        let _ =
+            runner_backend::ops::session::session_resize(&self.core, &self.session_id, cols, rows);
         self.term
             .lock()
             .resize(TermSize::new(cols as usize, rows as usize));
@@ -317,8 +318,9 @@ impl TerminalBridge {
             .lock()
             .unwrap()
             .insert(session_id.clone(), Arc::downgrade(&session));
-        let snapshot = runner_backend::ops::session::session_output_snapshot(&self.core, &session_id)
-            .context("load terminal output snapshot")?;
+        let snapshot =
+            runner_backend::ops::session::session_output_snapshot(&self.core, &session_id)
+                .context("load terminal output snapshot")?;
         session.feed_snapshot_locked(&snapshot)?;
         Ok(())
     }
@@ -369,9 +371,10 @@ impl TerminalBridge {
         };
         for session in sessions {
             let _feed = session.feed_gate.lock().unwrap();
-            if let Ok(snapshot) =
-                runner_backend::ops::session::session_output_snapshot(&self.core, session.session_id())
-            {
+            if let Ok(snapshot) = runner_backend::ops::session::session_output_snapshot(
+                &self.core,
+                session.session_id(),
+            ) {
                 let _ = session.feed_snapshot_locked(&snapshot);
             }
         }
@@ -399,7 +402,8 @@ mod tests {
     fn test_core(root: &std::path::Path) -> AppCore {
         let app_data_dir = root.join("app-data");
         std::fs::create_dir_all(&app_data_dir).unwrap();
-        let pool = Arc::new(runner_backend::db::open_pool(&app_data_dir.join("runner.db")).unwrap());
+        let pool =
+            Arc::new(runner_backend::db::open_pool(&app_data_dir.join("runner.db")).unwrap());
         let runtime: Arc<dyn runner_backend::session::runtime::SessionRuntime> =
             Arc::new(runner_backend::session::pty_runtime::PtyRuntime::new());
         let windows = Arc::new(runner_backend::windows::WindowRegistry::new());
