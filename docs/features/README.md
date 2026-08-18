@@ -23,6 +23,7 @@ links to its tracking issue.
 - [58 — Runner & crew detail redesign](./58-runner-crew-detail-redesign.md) — Pencil-first redesign of both MVP-draft detail pages: crew detail puts the slot roster above the prose config sections instead of below them, runner detail clamps the system-prompt dump and consolidates redundant cards ([#393](https://github.com/yicheng47/runner/issues/393)).
 - [59 — Per-slot model and effort overrides](./59-slot-model-effort-overrides.md) — complete the slot-as-agent-config model: model and effort overridable per slot without requiring a runtime override first (new `effort_override` column, resolver rework, ungated chips in the crew editor) ([#397](https://github.com/yicheng47/runner/issues/397)).
 - [61 — Opt-in worktree isolation per mission](./61-mission-worktree-isolation.md) — mission-start decorator: opted-in missions get `git worktree add <repo>/.worktrees/… -b mission/<short-id>-<slug>` and `mission.cwd` points into it, so concurrent crews and the human's checkout never collide; default stays the project checkout, all slots share the tree, archive offers safe (`git worktree remove`, dirty-refusing) cleanup ([#403](https://github.com/yicheng47/runner/issues/403)).
+- [62 — Monokai terminal theme](./62-monokai-terminal-theme.md) — add the classic Monokai palette to the terminal theme picker as a pure additive variant in `settings.ts` (union member, ANSI-16 palette, pink `#F92672` swatch); no UI changes ([#406](https://github.com/yicheng47/runner/issues/406)).
 
 ## Archive
 
