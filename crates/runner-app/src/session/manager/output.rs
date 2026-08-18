@@ -4,6 +4,60 @@ pub(super) const PURGE_RESUME_RESET: &[u8] = b"\x1bc";
 pub(super) const KEEP_RESUME_SEAM: &[u8] =
     b"\x1b[0m\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\r\n";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LocalInputClass {
+    SetPending,
+    ClearPending,
+    ActivityOnly,
+}
+
+pub(super) fn classify_local_input(bytes: &[u8]) -> Option<LocalInputClass> {
+    if bytes.is_empty() {
+        return None;
+    }
+    if bytes == b"\r" || bytes == b"\x03" {
+        return Some(LocalInputClass::ClearPending);
+    }
+    if bytes == b"\x16" || bytes.starts_with(b"\x1b[200~") {
+        return Some(LocalInputClass::SetPending);
+    }
+    if bytes.starts_with(b"\x1b") {
+        return Some(LocalInputClass::ActivityOnly);
+    }
+    if bytes
+        .iter()
+        .any(|byte| matches!(byte, 0x20..=0x7e | 0x80..=0xff))
+    {
+        Some(LocalInputClass::SetPending)
+    } else {
+        Some(LocalInputClass::ActivityOnly)
+    }
+}
+
+pub(super) fn update_local_input_state(
+    state: &mut SessionState,
+    input_class: Option<LocalInputClass>,
+    now: Instant,
+) -> bool {
+    match input_class {
+        Some(LocalInputClass::SetPending) => {
+            state.local_input_pending = true;
+            state.last_local_input_at = Some(now);
+            false
+        }
+        Some(LocalInputClass::ClearPending) => {
+            state.local_input_pending = false;
+            state.last_local_input_at = None;
+            true
+        }
+        Some(LocalInputClass::ActivityOnly) => {
+            state.last_local_input_at = Some(now);
+            false
+        }
+        None => false,
+    }
+}
+
 impl SessionManager {
     /// Forwarder thread shared by `spawn`, `spawn_direct`, and `resume`.
     /// Drains the runtime's `OutputStream` into `session/output`
@@ -216,12 +270,15 @@ impl SessionManager {
     ) -> Result<()> {
         let rt_session = self.live_runtime_session(session_id)?;
         let submitted = bytes == b"\r";
+        let input_class = classify_local_input(bytes);
         let session = self.session_state(session_id);
         let (transition, mission_status_sink, mission_scoped) =
             if let Some(session) = session.as_ref() {
                 let mut session = session.lock().unwrap();
                 let previous_activity = session.activity;
                 let previous_suppression = session.suppress_local_input_busy;
+                let previous_input_pending = session.local_input_pending;
+                let previous_input_at = session.last_local_input_at;
                 let mission_status_sink = session.mission_status_sink.clone();
                 let mission_scoped = session
                     .handle
@@ -245,9 +302,15 @@ impl SessionManager {
                     }
                     None
                 };
+                // The deferred router slice will consume the clear transition and
+                // recent-input timestamp when it ports delivery gating.
+                let _input_cleared =
+                    update_local_input_state(&mut session, input_class, Instant::now());
                 if let Err(error) = self.write_stdin_bytes(&rt_session, bytes) {
                     session.activity = previous_activity;
                     session.suppress_local_input_busy = previous_suppression;
+                    session.local_input_pending = previous_input_pending;
+                    session.last_local_input_at = previous_input_at;
                     return Err(error);
                 }
                 if submitted {

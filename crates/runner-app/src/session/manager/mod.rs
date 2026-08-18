@@ -556,6 +556,8 @@ struct SessionState {
     handle: Option<SessionHandle>,
     activity: Option<SessionActivityState>,
     suppress_local_input_busy: bool,
+    local_input_pending: bool,
+    last_local_input_at: Option<Instant>,
     mission_status_sink: Option<ForwarderEmitCtx>,
     completion_armed: bool,
     output_buffer: VecDeque<OutputEvent>,
@@ -589,6 +591,8 @@ impl SessionState {
         self.handle.is_none()
             && self.activity.is_none()
             && !self.suppress_local_input_busy
+            && !self.local_input_pending
+            && self.last_local_input_at.is_none()
             && self.mission_status_sink.is_none()
             && !self.completion_armed
             && self.output_buffer.is_empty()
@@ -784,6 +788,8 @@ impl SessionManager {
     ) {
         let state = self.session_state_or_insert(session_id);
         let mut state = state.lock().unwrap();
+        state.local_input_pending = false;
+        state.last_local_input_at = None;
         state.handle = Some(handle);
         state.mission_status_sink = mission_status_sink;
         state.killed = false;

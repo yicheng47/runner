@@ -16,7 +16,7 @@ use runner_app::model::{Runner, SessionStatus};
 use runner_app::ops::session::DirectSessionEntry;
 use runner_app::AppCore;
 use runner_native::bootstrap::{
-    boot_core, native_paths, stop_running_direct_sessions, NativePaths,
+    boot_core, native_paths, stop_running_sessions_on_quit, NativePaths,
 };
 use runner_native::pane_layout::{
     PaneLayout, PaneLeaf, PaneNode, PresetKind, SplitOrientation, TabSet,
@@ -215,13 +215,17 @@ fn run() -> Result<()> {
     Application::new().run(move |cx: &mut App| {
         let quit_core = core.clone();
         cx.on_action(move |_: &Quit, cx| {
-            let _ = stop_running_direct_sessions(&quit_core);
+            if let Err(error) = stop_running_sessions_on_quit(&quit_core) {
+                eprintln!("Runner Native quit session teardown failed: {error:#}");
+            }
             cx.quit();
         });
         let close_core = core.clone();
         cx.on_window_closed(move |cx| {
-            let _ = stop_running_direct_sessions(&close_core);
             if cx.windows().is_empty() {
+                if let Err(error) = stop_running_sessions_on_quit(&close_core) {
+                    eprintln!("Runner Native quit session teardown failed: {error:#}");
+                }
                 cx.quit();
             }
         })
@@ -255,7 +259,7 @@ fn run() -> Result<()> {
         cx.activate(true);
     });
 
-    stop_running_direct_sessions(&shutdown_core)?;
+    stop_running_sessions_on_quit(&shutdown_core)?;
     Ok(())
 }
 
