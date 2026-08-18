@@ -66,6 +66,8 @@ impl SessionManager {
                 Some(mut h) => {
                     state.activity = None;
                     state.suppress_local_input_busy = false;
+                    state.local_input_pending = false;
+                    state.last_local_input_at = None;
                     state.mission_status_sink = None;
                     state.completion_armed = false;
                     state.pending_resize = None;
@@ -290,6 +292,8 @@ impl SessionManager {
                 state.handle = None;
                 state.activity = None;
                 state.suppress_local_input_busy = false;
+                state.local_input_pending = false;
+                state.last_local_input_at = None;
                 state.mission_status_sink = None;
                 state.completion_armed = false;
             }

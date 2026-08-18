@@ -1103,6 +1103,66 @@ fn inject_stdin_on_unknown_session_errors_cleanly() {
     assert!(format!("{err}").contains("session not found"));
 }
 
+#[test]
+fn local_input_byte_classes_drive_pending_state() {
+    use super::output::{classify_local_input, update_local_input_state, LocalInputClass};
+
+    assert_eq!(
+        classify_local_input(b"x"),
+        Some(LocalInputClass::SetPending)
+    );
+    assert_eq!(
+        classify_local_input("界".as_bytes()),
+        Some(LocalInputClass::SetPending)
+    );
+    for protocol in [
+        b"\x1b[A".as_slice(),
+        b"\x1b]10;rgb:dcdc/dcdc/e0e0\x1b\\",
+        b"\x1b]11;rgb:1515/1616/1b1b\x1b\\",
+    ] {
+        assert_eq!(
+            classify_local_input(protocol),
+            Some(LocalInputClass::ActivityOnly),
+            "terminal protocol traffic must not mark local input pending"
+        );
+    }
+    assert_eq!(
+        classify_local_input(b"\x1b[200~pasted text\x1b[201~"),
+        Some(LocalInputClass::SetPending)
+    );
+    assert_eq!(
+        classify_local_input(b"\x16"),
+        Some(LocalInputClass::SetPending)
+    );
+    assert_eq!(
+        classify_local_input(b"\r"),
+        Some(LocalInputClass::ClearPending)
+    );
+    assert_eq!(
+        classify_local_input(b"\x03"),
+        Some(LocalInputClass::ClearPending)
+    );
+
+    let now = Instant::now();
+    let mut state = SessionState::default();
+    update_local_input_state(&mut state, classify_local_input(b"draft"), now);
+    assert!(state.local_input_pending);
+    assert_eq!(state.last_local_input_at, Some(now));
+
+    update_local_input_state(&mut state, classify_local_input(b"\r"), now);
+    assert!(!state.local_input_pending);
+    assert!(state.last_local_input_at.is_none());
+
+    update_local_input_state(&mut state, classify_local_input(b"\x1b[D"), now);
+    assert!(!state.local_input_pending);
+    assert_eq!(state.last_local_input_at, Some(now));
+
+    state.local_input_pending = true;
+    update_local_input_state(&mut state, classify_local_input(b"\x03"), now);
+    assert!(!state.local_input_pending);
+    assert!(state.last_local_input_at.is_none());
+}
+
 // `await_pty_output` was deleted in the Step 9 cutover. Tests
 // that previously observed echoed bytes from /bin/cat through
 // a portable-pty master now assert on FakeRuntime's captured
@@ -2116,6 +2176,14 @@ fn direct_chat_typing_stays_idle_until_submit() {
     mgr.inject_direct_stdin(&spawned.id, b"x", cap.as_ref())
         .unwrap();
     assert!(
+        mgr.session_state(&spawned.id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .local_input_pending,
+        "printable terminal input must latch pending input",
+    );
+    assert!(
         !mgr.take_completion_armed(std::slice::from_ref(&spawned.id)),
         "typing without submit must not arm completion",
     );
@@ -2132,6 +2200,12 @@ fn direct_chat_typing_stays_idle_until_submit() {
 
     mgr.inject_direct_stdin(&spawned.id, b"\r", cap.as_ref())
         .unwrap();
+    {
+        let state = mgr.session_state(&spawned.id).unwrap();
+        let state = state.lock().unwrap();
+        assert!(!state.local_input_pending, "Enter must clear the latch");
+        assert!(state.last_local_input_at.is_none());
+    }
     let submitted = wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Busy);
     assert_eq!(submitted.source, "input-submit");
     assert_eq!(

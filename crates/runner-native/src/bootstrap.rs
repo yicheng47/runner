@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context as _, Result};
-use runner_app::{db, event_bus, events, mcp, session, shell_path, windows, AppCore};
+use anyhow::{bail, Context as _, Result};
+use runner_app::{db, event_bus, events, mcp, repo, session, shell_path, windows, AppCore};
 
 pub const APP_IDENTIFIER: &str = "com.wycstudios.runner";
 
@@ -76,24 +76,20 @@ pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
     Ok(core)
 }
 
-pub fn stop_running_direct_sessions(core: &AppCore) -> Result<()> {
+pub fn stop_running_sessions_on_quit(core: &AppCore) -> Result<()> {
     let ids = {
-        let conn = core.db.get().context("get database connection")?;
-        let mut stmt = conn.prepare(
-            "SELECT id FROM sessions
-             WHERE status = 'running' AND mission_id IS NULL",
-        )?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        let mut ids = Vec::new();
-        for row in rows {
-            ids.push(row?);
-        }
-        ids
+        let mut conn = core.db.get().context("get database connection")?;
+        repo::session::mark_running_for_resume_on_launch(&mut conn)
+            .context("stamp sessions for resume on launch")?
     };
+    let mut failures = Vec::new();
     for id in ids {
-        core.sessions
-            .kill(&id)
-            .with_context(|| format!("stop direct session {id}"))?;
+        if let Err(error) = core.sessions.kill(&id) {
+            failures.push(format!("{id}: {error}"));
+        }
+    }
+    if !failures.is_empty() {
+        bail!("failed to stop sessions on quit: {}", failures.join("; "));
     }
     Ok(())
 }
@@ -117,5 +113,60 @@ mod tests {
         let debug = paths_for_home(Path::new("/Users/tester"), true);
         assert!(debug.app_data_dir.ends_with("com.wycstudios.runner-dev"));
         assert!(debug.log_dir.ends_with("com.wycstudios.runner-dev"));
+    }
+
+    #[test]
+    fn quit_preparation_stamps_running_sessions_and_requeues_claims() {
+        let temp = tempfile::tempdir().unwrap();
+        let pool = Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap());
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     args_json, created_at, updated_at)
+                 VALUES
+                    ('r1', 'alpha', 'Alpha', 'shell', '/bin/cat',
+                     '[]', '2026-08-18T00:00:00Z', '2026-08-18T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions
+                    (id, runner_id, status, started_at, resume_on_launch)
+                 VALUES
+                    ('s1', 'r1', 'running', '2026-08-18T00:00:00Z', 0),
+                    ('claimed', 'r1', 'stopped', '2026-08-18T00:00:01Z', 2)",
+                [],
+            )
+            .unwrap();
+        }
+        let runtime: Arc<dyn session::runtime::SessionRuntime> =
+            Arc::new(session::pty_runtime::PtyRuntime::new());
+        let core = AppCore {
+            db: Arc::clone(&pool),
+            app_data_dir: PathBuf::new(),
+            sessions: session::SessionManager::new(shell_path::LoginShellEnv::default(), runtime),
+            buses: event_bus::BusRegistry::new(),
+            routers: runner_app::router::RouterRegistry::new(),
+            mcp: Arc::new(mcp::McpHandle::new()),
+            windows: Arc::new(windows::WindowRegistry::new()),
+            events: events::EventChannel::new(),
+            app_version: "0.0.0-test".into(),
+        };
+
+        stop_running_sessions_on_quit(&core).unwrap();
+
+        let conn = pool.get().unwrap();
+        for id in ["s1", "claimed"] {
+            let stamp: i64 = conn
+                .query_row(
+                    "SELECT resume_on_launch FROM sessions WHERE id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(stamp, 1, "{id} must be pending for the next launch");
+        }
     }
 }
