@@ -161,6 +161,10 @@ Each milestone is a task branch off `gpui-nightly`, human-verified before merge.
 
 Criteria: 2+ weeks daily-driving the native app exclusively, M3–M5 done, updater proven by shipping at least one native-to-native update, fixture corpus green. Then: `gpui-nightly`'s tree replaces `main` (branch promotion), the native binary becomes `Runner.app`, major version bump. (The crate renames of decision 7 land earlier, after the M3 session-hardening slice.)
 
+### Post-cutover direction: session daemon (recorded 2026-08-18, Jason)
+
+Live PTY sessions dying with the app is a process-ownership fact in both stacks — the rewrite keeps that behavior identical (parity only; agent-session-key resume remains the continuity story). But the Phase 2 extraction made the fix buildable: `runner-backend` is UI-free, so it can be promoted into a long-lived session daemon (tmux-server model — daemon owns PTYs + seq'd output buffers, the app attaches/detaches over a socket; M3.2/M3.3's replay seams are exactly the attach discipline). The concrete motivator is the nightly/Sparkle loop: every update restarts the app and kills running agents; a daemon makes updates and crashes invisible to live missions. Scope it as the flagship post-cutover project, after M5 — it forks the architecture away from `main`, so it must not happen mid-parity. Known work when designed: ops become RPC, daemon/UI version skew across updates, reaping semantics (M3.1's sweep assumes app-owned processes), MCP moves into the daemon.
+
 ## Verification
 
 - Fixture corpus replay green at every milestone (the terminal regression floor).
