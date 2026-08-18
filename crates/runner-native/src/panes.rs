@@ -315,7 +315,6 @@ impl NativeRoot {
                 let terminal = Arc::clone(&chat.terminal);
                 let terminal_input = chat.terminal_input.clone();
                 let resize_owner = layout.is_resize_owner(&pane_id, session_id);
-                let composer = chat.composer.clone();
                 let terminal_focus = chat.terminal_focus.clone();
                 let key_session_id = session_id.to_owned();
                 let scroll_session_id = session_id.to_owned();
@@ -353,7 +352,7 @@ impl NativeRoot {
                         )),
                 );
                 if status == Some(SessionStatus::Running) {
-                    content.child(composer).into_any_element()
+                    content.into_any_element()
                 } else {
                     let resume_pane_id = pane_id.clone();
                     let resume_session_id = session_id.to_owned();

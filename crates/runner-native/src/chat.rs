@@ -83,8 +83,6 @@ impl NativeRoot {
                     }
                 });
             });
-        let composer_focus = cx.focus_handle();
-        let composer = cx.new(|_| Composer::new(composer_focus, Arc::clone(&terminal)));
         self.attached.insert(
             session_id.to_owned(),
             AttachedChat {
@@ -92,7 +90,6 @@ impl NativeRoot {
                 terminal_input,
                 _terminal_input_subscription: terminal_input_subscription,
                 _terminal_focus_subscription: terminal_focus_subscription,
-                composer,
                 terminal_focus,
                 scroll_accumulator: 0.,
             },
@@ -113,7 +110,6 @@ impl NativeRoot {
         let grouped = layout.root.leaves().len() > 1;
         let pane_height = (f32::from(bounds.height) - WORKSPACE_HEADER_HEIGHT).max(160.)
             * height_fraction
-            - COMPOSER_HEIGHT
             - if grouped { PANE_HEADER_HEIGHT } else { 0. };
         let cell_width = terminal_element::FONT_SIZE * 0.6;
         let line_height =
