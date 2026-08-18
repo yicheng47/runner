@@ -4,9 +4,9 @@ Progress record for the whole gpui-rewrite program ([README](README.md)), from t
 
 ## Current state (update with each entry)
 
-- **Branch**: `gpui-nightly` (M0+M1 merged via PR #407, M2 via PR #408, both 2026-08-17; M3.1 via PR #409, 2026-08-18).
-- **Done**: 0046 M0 (gpui-ce swap), M1 (repo-and-below at `main` parity, node tree adopted, protocol crates wholesale; human-verified 2026-08-17), M2 (terminal split + shell modularization), M3.1 (session reaping).
-- **Next**: M3 parity slices as serial codex-peer missions — task numbering in the 2026-08-18 breakdown entry; M3.2 (resume seams + geometry) is next → M4 (sweep + watermark). Parity references are `main`'s React frontend (`src/`) and the `design/*.pen` files via the pencil MCP.
+- **Branch**: `gpui-nightly` (M0+M1 merged via PR #407, M2 via PR #408, both 2026-08-17; M3.1 via PR #409 and M3.2 via the `feat/0046-m3-resume-seams` PR, both 2026-08-18).
+- **Done**: 0046 M0 (gpui-ce swap), M1 (repo-and-below at `main` parity, node tree adopted, protocol crates wholesale; human-verified 2026-08-17), M2 (terminal split + shell modularization), M3.1 (session reaping), M3.2 (resume seams + geometry).
+- **Next**: M3 parity slices as serial codex-peer missions — task numbering in the 2026-08-18 breakdown entry; M3.3 (resize-storm coalescing) is next; then M4 (UI parity) → M5 (sweep + watermark) per the merged [program plan](plan.md). Parity references are `main`'s React frontend (`src/`) and the `design/*.pen` files via the pencil MCP.
 - **Parity watermark**: `origin/main` fully ported for repo-and-below as of `1b7ee92` (v0.5.2 line, 2026-08-17); feature-logic lag is M3 scope.
 
 ## 2026-07-18 — Phase 1 kickoff
