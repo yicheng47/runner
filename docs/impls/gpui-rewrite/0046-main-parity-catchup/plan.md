@@ -81,6 +81,10 @@ Evidence (checked 2026-08-17):
 
 Decision: switch to `gpui-ce`. Start on crates.io 0.3.3; if reference patterns from Zed's current tree need newer API, pin a git rev of `gpui-ce/gpui-ce` and bump deliberately. Exit hatch: because it's a drop-in, reverting to mainline `gpui` (or a future Zed publish) is a one-line change. The swap lands first and alone, gated on the fixture corpus and the app running clean — API churn between 0.2.2 and 0.3.x is expected in element/input APIs and must not be entangled with parity changes.
 
+## UI reference: pulse (2026-08-18, Jason)
+
+For M3+ native UI work, `~/repos/yicheng47/pulse` (our own pure gpui-ce app, in production) is the reference for window-level operations — hidden-native-titlebar setup (`TitlebarOptions`, traffic-light positioning in `pulse-app/src/main.rs`), titlebar drag areas and double-click zoom (`shell.rs`), app menus (`menu.rs`), and window-bounds handling. Its `components.rs`, `text_input.rs`, `theme.rs`, and settings surfaces are candidate reusable components/patterns. Check pulse before hand-rolling any window-level UI; it already anchors the Phase 5 Sparkle updater decision. Zed remains the reference for terminal/editor-grade patterns (architecture only — GPL guardrail above); pulse is the reference we can copy from directly.
+
 ## Sequencing
 
 Each milestone is a task branch off `gpui-nightly`, human-verified before merge:
