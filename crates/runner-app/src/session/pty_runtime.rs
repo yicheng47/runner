@@ -22,7 +22,9 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{
+    native_pty_system, Child, ChildKiller, CommandBuilder, ExitStatus, MasterPty, PtySize,
+};
 
 use super::launch;
 use super::runtime::{
@@ -34,6 +36,9 @@ const RUNTIME_LABEL: &str = "native-pty";
 const READ_BUF: usize = 8 * 1024;
 const DEFAULT_IDLE_THRESHOLD: Duration = Duration::from_millis(750);
 const IDLE_MONITOR_POLL: Duration = Duration::from_millis(50);
+const STOP_GRACE: Duration = Duration::from_millis(250);
+const STOP_POLL: Duration = Duration::from_millis(10);
+const ORPHAN_SWEEP_CONFIRM: Duration = Duration::from_secs(1);
 /// Window right after a `resize` (SIGWINCH) during which repaint bytes
 /// from the child's TUI are not treated as fresh activity. Without this,
 /// resizing the window while a session is idle flips it to Busy for a
@@ -226,10 +231,38 @@ impl SessionRuntime for PtyRuntime {
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
         let handle = lookup(self, &session.session_id)?;
         let mut killer = handle.killer.lock().expect("killer poisoned");
-        killer
-            .kill()
-            .map_err(|e| RuntimeError::Msg(format!("ChildKiller::kill: {e}")))?;
-        Ok(())
+        let child = handle.child.lock().expect("child slot poisoned").take();
+
+        match child {
+            Some(mut child) => {
+                let result = stop_and_reap_child(
+                    &session.session_id,
+                    handle.pid,
+                    killer.as_mut(),
+                    child.as_mut(),
+                );
+                match result {
+                    Ok(status) => {
+                        record_exit_status(&handle, status);
+                        Ok(())
+                    }
+                    Err(error) => {
+                        handle
+                            .child
+                            .lock()
+                            .expect("child slot poisoned")
+                            .replace(child);
+                        Err(error)
+                    }
+                }
+            }
+            None => stop_child_owned_by_reader(
+                &session.session_id,
+                handle.pid,
+                killer.as_mut(),
+                &handle,
+            ),
+        }
     }
 
     fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
@@ -281,6 +314,185 @@ impl SessionRuntime for PtyRuntime {
             command: Some(handle.command.clone()),
         }))
     }
+}
+
+fn stop_and_reap_child(
+    session_id: &str,
+    pid: Option<i32>,
+    killer: &mut dyn ChildKiller,
+    child: &mut dyn Child,
+) -> RuntimeResult<ExitStatus> {
+    if poll_until(STOP_POLL, Duration::ZERO, || {
+        child
+            .try_wait()
+            .map_err(|e| RuntimeError::Msg(format!("try_wait {session_id}: {e}")))
+    })?
+    .is_some()
+    {
+        return child
+            .wait()
+            .map_err(|e| RuntimeError::Msg(format!("wait {session_id}: {e}")));
+    }
+
+    let hup_error = killer.kill().err();
+    if poll_until(STOP_POLL, STOP_GRACE, || {
+        child
+            .try_wait()
+            .map_err(|e| RuntimeError::Msg(format!("try_wait {session_id}: {e}")))
+    })?
+    .is_some()
+    {
+        return child
+            .wait()
+            .map_err(|e| RuntimeError::Msg(format!("wait {session_id}: {e}")));
+    }
+
+    let pid = pid.ok_or_else(|| {
+        RuntimeError::Msg(format!(
+            "session {session_id} survived SIGHUP but has no pid for SIGKILL"
+        ))
+    })?;
+    let kill_error = signal_process_group(pid, libc::SIGKILL).err();
+    if poll_until(STOP_POLL, STOP_GRACE, || {
+        child
+            .try_wait()
+            .map_err(|e| RuntimeError::Msg(format!("try_wait {session_id}: {e}")))
+    })?
+    .is_some()
+    {
+        return child
+            .wait()
+            .map_err(|e| RuntimeError::Msg(format!("wait {session_id}: {e}")));
+    }
+
+    Err(RuntimeError::Msg(format!(
+        "session {session_id} is still alive after SIGHUP and SIGKILL{}{}",
+        hup_error
+            .map(|e| format!("; SIGHUP error: {e}"))
+            .unwrap_or_default(),
+        kill_error
+            .map(|e| format!("; SIGKILL error: {e}"))
+            .unwrap_or_default(),
+    )))
+}
+
+fn stop_child_owned_by_reader(
+    session_id: &str,
+    pid: Option<i32>,
+    killer: &mut dyn ChildKiller,
+    handle: &SessionHandle,
+) -> RuntimeResult<()> {
+    if poll_until(STOP_POLL, Duration::ZERO, || {
+        Ok(reader_reaped_child(handle, pid).then_some(()))
+    })?
+    .is_some()
+    {
+        return Ok(());
+    }
+
+    let hup_error = killer.kill().err();
+    if poll_until(STOP_POLL, STOP_GRACE, || {
+        Ok(reader_reaped_child(handle, pid).then_some(()))
+    })?
+    .is_some()
+    {
+        return Ok(());
+    }
+
+    let pid = pid.ok_or_else(|| {
+        RuntimeError::Msg(format!(
+            "session {session_id} has no child handle or pid and was not reaped"
+        ))
+    })?;
+    let kill_error = signal_process_group(pid, libc::SIGKILL).err();
+    if poll_until(STOP_POLL, STOP_GRACE, || {
+        Ok(reader_reaped_child(handle, Some(pid)).then_some(()))
+    })?
+    .is_some()
+    {
+        return Ok(());
+    }
+
+    Err(RuntimeError::Msg(format!(
+        "session {session_id} was not reaped after SIGHUP and SIGKILL{}{}",
+        hup_error
+            .map(|e| format!("; SIGHUP error: {e}"))
+            .unwrap_or_default(),
+        kill_error
+            .map(|e| format!("; SIGKILL error: {e}"))
+            .unwrap_or_default(),
+    )))
+}
+
+fn poll_until<T>(
+    poll_interval: Duration,
+    timeout: Duration,
+    mut poll: impl FnMut() -> RuntimeResult<Option<T>>,
+) -> RuntimeResult<Option<T>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(value) = poll()? {
+            return Ok(Some(value));
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(None);
+        }
+        thread::sleep(poll_interval.min(deadline.saturating_duration_since(now)));
+    }
+}
+
+fn signal_process_group(pid: i32, signal: i32) -> std::io::Result<()> {
+    if pid <= 1 {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("refusing to signal unsafe pid {pid}"),
+        ));
+    }
+    let group_result = unsafe { libc::kill(-pid, signal) };
+    if group_result == 0 {
+        return Ok(());
+    }
+    let group_error = std::io::Error::last_os_error();
+    if group_error.raw_os_error() != Some(libc::ESRCH) {
+        return Err(group_error);
+    }
+    signal_process(pid, signal)
+}
+
+fn signal_process(pid: i32, signal: i32) -> std::io::Result<()> {
+    if pid <= 1 {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("refusing to signal unsafe pid {pid}"),
+        ));
+    }
+    let process_result = unsafe { libc::kill(pid, signal) };
+    if process_result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn reaped_exit_status(handle: &SessionHandle) -> Option<i32> {
+    match handle.exit_code.load(Ordering::Acquire) {
+        EXIT_UNSET => None,
+        code => Some(code),
+    }
+}
+
+fn reader_reaped_child(handle: &SessionHandle, pid: Option<i32>) -> bool {
+    reaped_exit_status(handle).is_some() || pid.is_some_and(|pid| !process_exists(pid))
+}
+
+fn record_exit_status(handle: &SessionHandle, status: ExitStatus) {
+    let code = status
+        .exit_code()
+        .try_into()
+        .unwrap_or(EXIT_UNSET.saturating_add(1));
+    handle.exit_code.store(code, Ordering::Release);
+    handle.alive.store(false, Ordering::Release);
 }
 
 // --- Reader thread ------------------------------------------------------
@@ -461,17 +673,12 @@ fn reader_thread(
     let mut child_slot = handle.child.lock().expect("child slot poisoned");
     if let Some(mut child) = child_slot.take() {
         match child.wait() {
-            Ok(status) => {
-                let code = status
-                    .exit_code()
-                    .try_into()
-                    .unwrap_or(EXIT_UNSET.saturating_add(1));
-                handle.exit_code.store(code, Ordering::Release);
-            }
-            Err(_) => {
+            Ok(status) => record_exit_status(&handle, status),
+            Err(error) => {
                 // wait() failure leaves exit_code as EXIT_UNSET;
                 // status() reports None and the manager treats it as
                 // "crashed".
+                log::warn!("wait failed while reaping session {session_id}: {error}");
             }
         }
     }
@@ -665,6 +872,260 @@ pub fn cleanup_stale_running_rows_on_startup(
     Ok(updated)
 }
 
+pub fn cleanup_orphan_processes_on_startup(
+    pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+) -> crate::error::Result<usize> {
+    let conn = pool.get()?;
+    let candidates = {
+        let mut stmt = conn.prepare(
+            "SELECT s.id,
+                    s.pid,
+                    COALESCE(s.agent_runtime, r.runtime),
+                    COALESCE(s.agent_command, r.command)
+               FROM sessions s
+               LEFT JOIN runners r ON r.id = s.runner_id
+              WHERE s.status != 'running'
+                AND s.pid IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    let mut signaled = Vec::new();
+    for (session_id, raw_pid, runtime, command) in candidates {
+        let Ok(pid) = i32::try_from(raw_pid) else {
+            log::warn!(
+                "startup orphan sweep: session={session_id} has invalid pid={raw_pid}; skipping"
+            );
+            clear_recorded_pid(&conn, &session_id, raw_pid);
+            continue;
+        };
+        if !process_exists(pid) {
+            clear_recorded_pid(&conn, &session_id, raw_pid);
+            continue;
+        }
+        let command_line = match process_command_line(pid) {
+            Ok(Some(command_line)) => command_line,
+            Ok(None) => {
+                clear_recorded_pid(&conn, &session_id, raw_pid);
+                continue;
+            }
+            Err(error) => {
+                log::warn!(
+                    "startup orphan sweep: session={session_id} pid={pid} command lookup failed: {error}"
+                );
+                continue;
+            }
+        };
+        if !command_line_matches_recorded_agent(
+            &command_line,
+            runtime.as_deref(),
+            command.as_deref(),
+        ) {
+            log::warn!(
+                "startup orphan sweep: session={session_id} pid={pid} command mismatch; not signaling"
+            );
+            clear_recorded_pid(&conn, &session_id, raw_pid);
+            continue;
+        }
+
+        let signal_error = signal_process(pid, libc::SIGKILL).err();
+        signaled.push((session_id, raw_pid, pid, signal_error));
+    }
+
+    let deadline = Instant::now() + ORPHAN_SWEEP_CONFIRM;
+    let mut reaped = 0;
+    for (session_id, raw_pid, pid, signal_error) in signaled {
+        if wait_for_process_exit_until(pid, deadline) {
+            reaped += 1;
+            clear_recorded_pid(&conn, &session_id, raw_pid);
+            log::info!("startup orphan sweep: reaped session={session_id} pid={pid}");
+        } else {
+            log::warn!(
+                "startup orphan sweep: session={session_id} pid={pid} survived SIGKILL{}",
+                signal_error
+                    .map(|error| format!(": {error}"))
+                    .unwrap_or_default()
+            );
+        }
+    }
+    Ok(reaped)
+}
+
+fn clear_recorded_pid(conn: &rusqlite::Connection, session_id: &str, expected_pid: i64) {
+    if let Err(error) = conn.execute(
+        "UPDATE sessions
+            SET pid = NULL
+          WHERE id = ?1
+            AND pid = ?2
+            AND status != 'running'",
+        rusqlite::params![session_id, expected_pid],
+    ) {
+        log::warn!(
+            "startup orphan sweep: session={session_id} pid={expected_pid} clear failed: {error}"
+        );
+    }
+}
+
+fn process_exists(pid: i32) -> bool {
+    if pid <= 1 {
+        return false;
+    }
+    let result = unsafe { libc::kill(pid, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(target_os = "macos")]
+fn process_command_line(pid: i32) -> std::io::Result<Option<String>> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    let mut size = 0;
+    let size_result = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as u32,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if size_result != 0 {
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error() == Some(libc::ESRCH) {
+            Ok(None)
+        } else {
+            Err(error)
+        };
+    }
+    let mut bytes = vec![0u8; size];
+    let read_result = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as u32,
+            bytes.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if read_result != 0 {
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error() == Some(libc::ESRCH) {
+            Ok(None)
+        } else {
+            Err(error)
+        };
+    }
+    bytes.truncate(size);
+    Ok(parse_macos_process_args(&bytes))
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_process_args(bytes: &[u8]) -> Option<String> {
+    let argc_bytes: [u8; std::mem::size_of::<i32>()] =
+        bytes.get(..std::mem::size_of::<i32>())?.try_into().ok()?;
+    let argc = i32::from_ne_bytes(argc_bytes);
+    if argc <= 0 {
+        return None;
+    }
+
+    let mut cursor = std::mem::size_of::<i32>();
+    cursor += bytes.get(cursor..)?.iter().position(|byte| *byte == 0)? + 1;
+    while bytes.get(cursor) == Some(&0) {
+        cursor += 1;
+    }
+
+    let mut args = Vec::with_capacity(argc as usize);
+    for _ in 0..argc {
+        let remaining = bytes.get(cursor..)?;
+        let end = remaining.iter().position(|byte| *byte == 0)?;
+        args.push(String::from_utf8_lossy(&remaining[..end]).into_owned());
+        cursor += end + 1;
+    }
+    (!args.is_empty()).then(|| args.join(" "))
+}
+
+#[cfg(target_os = "linux")]
+fn process_command_line(pid: i32) -> std::io::Result<Option<String>> {
+    let path = format!("/proc/{pid}/cmdline");
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let args: Vec<_> = bytes
+        .split(|byte| *byte == 0)
+        .filter(|arg| !arg.is_empty())
+        .map(|arg| String::from_utf8_lossy(arg).into_owned())
+        .collect();
+    Ok((!args.is_empty()).then(|| args.join(" ")))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn process_command_line(pid: i32) -> std::io::Result<Option<String>> {
+    let output = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let command_line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!command_line.is_empty()).then_some(command_line))
+}
+
+fn command_line_matches_recorded_agent(
+    command_line: &str,
+    runtime: Option<&str>,
+    command: Option<&str>,
+) -> bool {
+    let expected = command
+        .filter(|command| !command.trim().is_empty())
+        .or_else(|| {
+            runtime.and_then(|runtime| {
+                crate::router::runtime::runtime_definition(runtime)
+                    .map(|definition| definition.command)
+            })
+        });
+    let Some(expected) = expected.map(str::trim) else {
+        return false;
+    };
+
+    if command_line == expected
+        || command_line
+            .strip_prefix(expected)
+            .is_some_and(|rest| rest.chars().next().is_some_and(char::is_whitespace))
+    {
+        return true;
+    }
+
+    let Some(actual_executable) = command_line.split_ascii_whitespace().next() else {
+        return false;
+    };
+    let expected_name = std::path::Path::new(expected).file_name();
+    let actual_name = std::path::Path::new(actual_executable).file_name();
+    expected_name.is_some() && expected_name == actual_name
+}
+
+fn wait_for_process_exit_until(pid: i32, deadline: Instant) -> bool {
+    loop {
+        if !process_exists(pid) {
+            return true;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        thread::sleep(STOP_POLL.min(deadline.saturating_duration_since(now)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -684,6 +1145,41 @@ mod tests {
             shell_path: None,
             initial_size: Some((80, 24)),
         }
+    }
+
+    fn wait_for_command_identity(pid: i32, command: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let last_observation = match process_command_line(pid) {
+                Ok(Some(line)) => {
+                    if command_line_matches_recorded_agent(&line, Some("test"), Some(command)) {
+                        return;
+                    }
+                    format!("command {line:?}")
+                }
+                Ok(None) => "no command".into(),
+                Err(error) => format!("lookup error: {error}"),
+            };
+            assert!(
+                Instant::now() < deadline,
+                "process {pid} never matched command {command}; last {last_observation}"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn recorded_pid(
+        pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+        session_id: &str,
+    ) -> Option<i64> {
+        pool.get()
+            .unwrap()
+            .query_row(
+                "SELECT pid FROM sessions WHERE id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap()
     }
 
     #[test]
@@ -940,5 +1436,219 @@ mod tests {
             .unwrap();
         rt.resize(&sess, 120, 40).expect("resize should succeed");
         rt.stop(&sess).unwrap();
+    }
+
+    #[test]
+    fn poll_until_returns_the_first_observed_value() {
+        let mut attempts = 0;
+        let result = poll_until(Duration::from_millis(1), Duration::from_millis(20), || {
+            attempts += 1;
+            Ok((attempts == 3).then_some(attempts))
+        })
+        .unwrap();
+
+        assert_eq!(result, Some(3));
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn stop_sigkills_and_reaps_child_that_ignores_hup_and_term() {
+        let rt = PtyRuntime::new();
+        let (sess, stream) = rt
+            .spawn(spec(
+                "test-ignore-soft-signals",
+                "/bin/sh",
+                &[
+                    "-c",
+                    "trap '' HUP TERM; printf ready; while :; do sleep 1; done",
+                ],
+            ))
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut output = Vec::new();
+        while Instant::now() < deadline && !output.windows(5).any(|bytes| bytes == b"ready") {
+            match stream.recv_timeout(Duration::from_millis(50)) {
+                Ok(RuntimeOutput::Stream(bytes)) => output.extend_from_slice(&bytes),
+                Ok(RuntimeOutput::StatusTransition { .. }) => {}
+                Err(_) => {}
+            }
+        }
+        assert!(
+            output.windows(5).any(|bytes| bytes == b"ready"),
+            "child did not install signal traps"
+        );
+        let pid = rt.status(&sess).unwrap().unwrap().pid.unwrap();
+
+        let started = Instant::now();
+        rt.stop(&sess).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(900),
+            "stop exceeded latency budget: {:?}",
+            started.elapsed()
+        );
+
+        let status = rt.status(&sess).unwrap().unwrap();
+        assert!(!status.alive);
+        assert!(status.exit_code.is_some());
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
+
+    #[test]
+    fn recorded_agent_identity_matches_command_path_or_runtime_default() {
+        assert!(command_line_matches_recorded_agent(
+            "claude --resume abc",
+            Some("claude-code"),
+            None,
+        ));
+        assert!(command_line_matches_recorded_agent(
+            "/opt/tools/codex --model gpt-5",
+            Some("codex"),
+            Some("/custom/bin/codex"),
+        ));
+        assert!(!command_line_matches_recorded_agent(
+            "python worker.py",
+            Some("claude-code"),
+            Some("claude"),
+        ));
+        assert!(!command_line_matches_recorded_agent(
+            "claude-malicious --resume abc",
+            Some("claude-code"),
+            Some("claude"),
+        ));
+    }
+
+    #[test]
+    fn startup_orphan_sweep_clears_resolved_pid_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_pool(&dir.path().join("runner.db")).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO sessions
+                        (id, status, pid, agent_runtime, agent_command)
+                     VALUES ('gone-orphan', 'stopped', 999999, 'test', '/bin/sleep')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions
+                        (id, status, pid, agent_runtime, agent_command)
+                     VALUES ('invalid-orphan', 'crashed', 2147483648, 'test', '/bin/sleep')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions
+                        (id, status, pid, agent_runtime, agent_command)
+                     VALUES ('running-session', 'running', 999998, 'test', '/bin/sleep')",
+                [],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(cleanup_orphan_processes_on_startup(&pool).unwrap(), 0);
+        let recorded_pids: (Option<i64>, Option<i64>, Option<i64>) = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT
+                    (SELECT pid FROM sessions WHERE id = 'gone-orphan'),
+                    (SELECT pid FROM sessions WHERE id = 'invalid-orphan'),
+                    (SELECT pid FROM sessions WHERE id = 'running-session')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(recorded_pids, (None, None, Some(999998)));
+    }
+
+    #[test]
+    fn startup_orphan_sweep_kills_only_matching_processes() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_pool(&dir.path().join("runner.db")).unwrap();
+
+        let mut matching = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let matching_pid = matching.id() as i32;
+        wait_for_command_identity(matching_pid, "/bin/sleep");
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO sessions
+                        (id, status, pid, agent_runtime, agent_command)
+                     VALUES ('matching-live', 'stopped', ?1, 'test', '/bin/sleep')",
+                rusqlite::params![matching_pid],
+            )
+            .unwrap();
+        }
+
+        let (wait_ready_tx, wait_ready_rx) = mpsc::channel();
+        let matching_wait = thread::spawn(move || {
+            wait_ready_tx.send(()).unwrap();
+            matching.wait().unwrap()
+        });
+        wait_ready_rx.recv().unwrap();
+        let sweep_deadline = Instant::now() + Duration::from_secs(5);
+        let reaped = loop {
+            let reaped = cleanup_orphan_processes_on_startup(&pool).unwrap();
+            if reaped == 1 {
+                break reaped;
+            }
+            assert!(
+                recorded_pid(&pool, "matching-live").is_some(),
+                "matching pid cleared without a confirmed reap"
+            );
+            assert!(
+                Instant::now() < sweep_deadline,
+                "matching process was never reaped"
+            );
+            thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(reaped, 1);
+        let matching_status = matching_wait.join().unwrap();
+        assert!(!matching_status.success());
+        assert_eq!(recorded_pid(&pool, "matching-live"), None);
+        assert!(!process_exists(matching_pid));
+
+        let mut mismatched = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mismatched_pid = mismatched.id() as i32;
+        wait_for_command_identity(mismatched_pid, "/bin/sleep");
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO sessions
+                        (id, status, pid, agent_runtime, agent_command)
+                     VALUES ('mismatched-live', 'crashed', ?1, 'test', 'claude')",
+                rusqlite::params![mismatched_pid],
+            )
+            .unwrap();
+        }
+
+        let sweep_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert_eq!(cleanup_orphan_processes_on_startup(&pool).unwrap(), 0);
+            if recorded_pid(&pool, "mismatched-live").is_none() {
+                break;
+            }
+            assert!(
+                Instant::now() < sweep_deadline,
+                "mismatched pid was never resolved"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(mismatched.try_wait().unwrap().is_none());
+        assert!(process_exists(mismatched_pid));
+        mismatched.kill().unwrap();
+        mismatched.wait().unwrap();
     }
 }

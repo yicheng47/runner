@@ -71,6 +71,8 @@ pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
 
     session::pty_runtime::cleanup_stale_running_rows_on_startup(&pool)
         .context("clean up stale PTY sessions")?;
+    session::pty_runtime::cleanup_orphan_processes_on_startup(&pool)
+        .context("clean up orphan PTY processes")?;
     Ok(core)
 }
 

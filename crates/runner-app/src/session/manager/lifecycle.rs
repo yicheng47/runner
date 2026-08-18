@@ -49,8 +49,8 @@ impl SessionManager {
             }
         };
 
-        // Stop verifies that the child was signaled. Returns Err if
-        // the runtime refuses to reap it.
+        // Stop verifies that the child is dead and reaped. Returns Err
+        // while either half of that contract is unmet.
         if let Err(e) = self.runtime.stop(&rt_session) {
             // Roll back: child is alive, the handle stays
             // in the map, the killed marker is cleared. The
@@ -162,10 +162,73 @@ impl SessionManager {
                 })
                 .collect()
         };
+        let mut failures = Vec::new();
         for id in ids {
-            self.kill(&id)?;
+            if let Err(error) = self.kill(&id) {
+                failures.push(format!("{id}: {error}"));
+            }
+        }
+        if !failures.is_empty() {
+            return Err(Error::msg(format!(
+                "failed to kill mission sessions: {}",
+                failures.join("; ")
+            )));
         }
         Ok(())
+    }
+
+    pub(crate) fn reap_live_mission_siblings(
+        &self,
+        mission_id: &str,
+        exited_session_id: &str,
+        pool: &DbPool,
+    ) {
+        let has_live_siblings = {
+            let sessions = self.sessions.lock().unwrap();
+            sessions.values().any(|state| {
+                state
+                    .lock()
+                    .unwrap()
+                    .handle
+                    .as_ref()
+                    .is_some_and(|handle| handle.mission_id.as_deref() == Some(mission_id))
+            })
+        };
+        let has_pending_spawns = self
+            .pending_mission_cancels
+            .lock()
+            .unwrap()
+            .contains_key(mission_id);
+        if !has_live_siblings && !has_pending_spawns {
+            return;
+        }
+
+        let conn = match pool.get() {
+            Ok(conn) => conn,
+            Err(error) => {
+                log::warn!("mission sibling reap pool checkout failed for {mission_id}: {error}");
+                return;
+            }
+        };
+        let mission = match crate::repo::mission::get(&conn, mission_id) {
+            Ok(Some(mission)) => mission,
+            Ok(None) => return,
+            Err(error) => {
+                log::warn!("mission sibling reap status lookup failed for {mission_id}: {error}");
+                return;
+            }
+        };
+        if !matches!(mission.status, crate::model::MissionStatus::Running) {
+            return;
+        }
+        drop(conn);
+
+        log::info!(
+            "mission sibling reap triggered: mission={mission_id} exited_session={exited_session_id}"
+        );
+        if let Err(error) = self.kill_all_for_mission(mission_id) {
+            log::warn!("mission sibling reap failed for {mission_id}: {error}");
+        }
     }
 
     /// Kill every live session for `runner_id` — both mission-scoped and
@@ -184,8 +247,17 @@ impl SessionManager {
                 })
                 .collect()
         };
+        let mut failures = Vec::new();
         for id in ids {
-            self.kill(&id)?;
+            if let Err(error) = self.kill(&id) {
+                failures.push(format!("{id}: {error}"));
+            }
+        }
+        if !failures.is_empty() {
+            return Err(Error::msg(format!(
+                "failed to kill runner sessions: {}",
+                failures.join("; ")
+            )));
         }
         Ok(())
     }
