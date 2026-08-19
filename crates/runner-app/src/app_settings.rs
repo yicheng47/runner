@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -107,6 +108,10 @@ pub struct AppSettings {
     pub terminal_font_size: u16,
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
+    pub default_working_dir: String,
+    pub default_runtime: String,
+    pub disabled_agents: BTreeSet<String>,
+    pub enabled_agents: BTreeSet<String>,
 }
 
 impl Default for AppSettings {
@@ -122,6 +127,10 @@ impl Default for AppSettings {
             terminal_font_size: TERMINAL_FONT_SIZE_DEFAULT,
             sidebar_width: SIDEBAR_DEFAULT,
             sidebar_collapsed: false,
+            default_working_dir: String::new(),
+            default_runtime: String::new(),
+            disabled_agents: BTreeSet::new(),
+            enabled_agents: BTreeSet::new(),
         }
     }
 }
@@ -150,7 +159,26 @@ impl AppSettings {
         self.app_zoom = normalize_zoom(self.app_zoom);
         self.terminal_font_size = normalize_terminal_font_size(self.terminal_font_size);
         self.sidebar_width = normalize_sidebar_width(self.sidebar_width);
+        self.default_working_dir = self.default_working_dir.trim().to_owned();
+        self.default_runtime = self.default_runtime.trim().to_owned();
+        self.disabled_agents = normalize_agent_set(std::mem::take(&mut self.disabled_agents));
+        self.enabled_agents = normalize_agent_set(std::mem::take(&mut self.enabled_agents));
     }
+
+    pub fn is_agent_enabled(&self, name: &str, default_enabled: bool) -> bool {
+        if self.disabled_agents.contains(name) {
+            return false;
+        }
+        default_enabled || self.enabled_agents.contains(name)
+    }
+}
+
+fn normalize_agent_set(values: BTreeSet<String>) -> BTreeSet<String> {
+    values
+        .into_iter()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .collect()
 }
 
 pub fn settings_path(app_data_dir: &Path) -> PathBuf {
@@ -267,6 +295,19 @@ mod tests {
         assert_eq!(value["appFontFamily"], "Inter");
         assert_eq!(value["terminalTheme"], "runner");
         assert_eq!(value["terminalFontFamily"], "System default");
+        assert_eq!(value["defaultWorkingDir"], "");
+        assert_eq!(value["defaultRuntime"], "");
+    }
+
+    #[test]
+    fn agent_enablement_preserves_shipped_defaults_and_explicit_overrides() {
+        let mut settings = AppSettings::default();
+        assert!(settings.is_agent_enabled("codex", true));
+        assert!(!settings.is_agent_enabled("trae", false));
+        settings.enabled_agents.insert("trae".into());
+        assert!(settings.is_agent_enabled("trae", false));
+        settings.disabled_agents.insert("codex".into());
+        assert!(!settings.is_agent_enabled("codex", true));
     }
 
     #[test]

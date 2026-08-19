@@ -63,6 +63,7 @@ impl NativeRoot {
         )?;
         terminal.set_palette(self.settings.terminal_theme.palette());
         self.bridge.attach(Arc::clone(&terminal))?;
+        let terminal_scrollbar = cx.new(|_| Scrollbar::terminal(Arc::clone(&terminal)));
         let terminal_focus = cx.focus_handle();
         let terminal_input = cx.new(|_| TerminalInput::new(Arc::clone(&terminal)));
         let terminal_input_subscription = cx.observe(&terminal_input, |this, input, cx| {
@@ -88,6 +89,7 @@ impl NativeRoot {
             session_id.to_owned(),
             AttachedChat {
                 terminal,
+                terminal_scrollbar,
                 terminal_input,
                 _terminal_input_subscription: terminal_input_subscription,
                 _terminal_focus_subscription: terminal_focus_subscription,
