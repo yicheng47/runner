@@ -2,8 +2,8 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, svg, AnyElement, App, BoxShadow, CursorStyle, ElementId, FontWeight, KeyDownEvent,
-    RenderOnce, SharedString, Window,
+    div, px, rems, svg, AnyElement, App, BoxShadow, CursorStyle, ElementId, FontWeight,
+    KeyDownEvent, RenderOnce, SharedString, Window,
 };
 
 use crate::theme;
@@ -43,10 +43,10 @@ impl RenderOnce for SettingsHeader {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap(px(24.))
+                    .gap(rems(24. / 16.))
                     .child(
                         div()
-                            .text_size(px(20.))
+                            .text_size(rems(20. / 16.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::text())
                             .child(self.title),
@@ -55,7 +55,7 @@ impl RenderOnce for SettingsHeader {
             )
             .child(
                 div()
-                    .text_size(px(13.))
+                    .text_size(rems(13. / 16.))
                     .text_color(theme::muted())
                     .child(self.subtitle),
             )
@@ -81,7 +81,7 @@ impl RenderOnce for SettingsCard {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .rounded(px(12.))
+            .rounded(rems(12. / 16.))
             .border_1()
             .border_color(theme::border())
             .bg(theme::panel())
@@ -123,7 +123,7 @@ impl RenderOnce for SettingsRow {
             .flex()
             .items_center()
             .justify_between()
-            .gap(px(24.))
+            .gap(rems(24. / 16.))
             .px_4()
             .py_3()
             .child(
@@ -131,17 +131,17 @@ impl RenderOnce for SettingsRow {
                     .min_w(px(0.))
                     .flex()
                     .flex_col()
-                    .gap(px(2.))
+                    .gap(rems(2. / 16.))
                     .child(
                         div()
-                            .text_size(px(13.))
+                            .text_size(rems(13. / 16.))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme::text())
                             .child(self.label),
                     )
                     .children(self.subtitle.map(|subtitle| {
                         div()
-                            .text_size(px(11.))
+                            .text_size(rems(11. / 16.))
                             .text_color(theme::muted())
                             .child(subtitle)
                     })),
@@ -197,9 +197,9 @@ impl RenderOnce for Stepper {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         div()
             .flex()
-            .h(px(30.))
+            .h(rems(30. / 16.))
             .items_center()
-            .rounded(px(6.))
+            .rounded(rems(6. / 16.))
             .border_1()
             .border_color(theme::border())
             .bg(theme::bg())
@@ -211,8 +211,8 @@ impl RenderOnce for Stepper {
             ))
             .child(
                 div()
-                    .w(px(self.value_width))
-                    .h(px(30.))
+                    .w(rems(self.value_width / 16.))
+                    .h(rems(30. / 16.))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -241,7 +241,7 @@ fn stepper_button(
         .id(id)
         .tab_index(0)
         .tab_stop(!disabled)
-        .size(px(30.))
+        .size(rems(30. / 16.))
         .flex_none()
         .flex()
         .items_center()
@@ -261,7 +261,7 @@ fn stepper_button(
                 spread_radius: px(2.),
             }])
         })
-        .child(svg().path(icon).size(px(14.)));
+        .child(svg().path(icon).size(rems(14. / 16.)));
     if !disabled {
         button = button
             .hover(|button| button.text_color(theme::text()))

@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, svg, AnyElement, App, BoxShadow, Context, CursorStyle, Entity, FontWeight,
+    div, px, rems, svg, AnyElement, App, BoxShadow, Context, CursorStyle, Entity, FontWeight,
     KeyDownEvent, Render, RenderOnce, ScrollHandle, SharedString, Subscription, Window,
 };
 
@@ -151,11 +151,11 @@ impl Render for SearchInput {
         div()
             .id(SharedString::from(format!("search-input-{label}")))
             .w_full()
-            .max_w(px(320.))
+            .max_w(rems(320. / 16.))
             .flex()
             .items_center()
             .gap_2()
-            .rounded(px(4.))
+            .rounded(rems(4. / 16.))
             .border_1()
             .border_color(if focus_handle.is_focused(_window) {
                 theme::border_strong()
@@ -170,7 +170,7 @@ impl Render for SearchInput {
             .child(
                 svg()
                     .path("search.svg")
-                    .size(px(14.))
+                    .size(rems(14. / 16.))
                     .flex_none()
                     .text_color(theme::faint()),
             )
@@ -183,8 +183,8 @@ impl Render for SearchInput {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .size(px(20.))
-                    .rounded(px(4.))
+                    .size(rems(20. / 16.))
+                    .rounded(rems(4. / 16.))
                     .text_color(theme::faint())
                     .cursor_pointer()
                     .hover(|button| button.bg(theme::raised()).text_color(theme::text()))
@@ -208,7 +208,7 @@ impl Render for SearchInput {
                             clear_key_entity.update(cx, |search, cx| search.clear(cx));
                         }
                     })
-                    .child(svg().path("close.svg").size(px(14.)));
+                    .child(svg().path("close.svg").size(rems(14. / 16.)));
                 search.child(button)
             })
     }
@@ -254,11 +254,11 @@ impl RenderOnce for Pager {
                     .enumerate()
                     .map(|(index, item)| match item {
                         PageWindowItem::Ellipsis => div()
-                            .size(px(28.))
+                            .size(rems(28. / 16.))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .text_size(px(12.))
+                            .text_size(rems(12. / 16.))
                             .text_color(theme::faint())
                             .child("…")
                             .into_any_element(),
@@ -269,11 +269,11 @@ impl RenderOnce for Pager {
                             div()
                                 .id(("pager-page", index))
                                 .tab_index(0)
-                                .size(px(28.))
+                                .size(rems(28. / 16.))
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .rounded(px(4.))
+                                .rounded(rems(4. / 16.))
                                 .border_1()
                                 .border_color(if active {
                                     theme::border_strong()
@@ -290,7 +290,7 @@ impl RenderOnce for Pager {
                                 } else {
                                     FontWeight::NORMAL
                                 })
-                                .text_size(px(12.))
+                                .text_size(rems(12. / 16.))
                                 .text_color(if active {
                                     theme::text()
                                 } else {
@@ -340,11 +340,11 @@ fn pager_icon_button(
         .id(id)
         .tab_index(0)
         .tab_stop(!disabled)
-        .size(px(28.))
+        .size(rems(28. / 16.))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(4.))
+        .rounded(rems(4. / 16.))
         .border_1()
         .border_color(gpui::transparent_black())
         .text_color(theme::muted())
@@ -362,7 +362,7 @@ fn pager_icon_button(
                 spread_radius: px(2.),
             }])
         })
-        .child(svg().path(icon).size(px(14.)));
+        .child(svg().path(icon).size(rems(14. / 16.)));
     if !disabled {
         button = button
             .hover(|button| button.bg(theme::raised()).text_color(theme::text()))
@@ -406,20 +406,20 @@ impl RenderOnce for EmptyStateCard {
         div().flex_1().flex().items_center().justify_center().child(
             div()
                 .w_full()
-                .max_w(px(520.))
+                .max_w(rems(520. / 16.))
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap(px(20.))
-                .rounded(px(12.))
+                .gap(rems(20. / 16.))
+                .rounded(rems(12. / 16.))
                 .border_1()
                 .border_color(theme::border())
                 .bg(theme::with_alpha(theme::panel(), 0.4))
-                .p(px(48.))
+                .p(rems(48. / 16.))
                 .text_center()
                 .child(
                     div()
-                        .size(px(64.))
+                        .size(rems(64. / 16.))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -432,16 +432,16 @@ impl RenderOnce for EmptyStateCard {
                 )
                 .child(
                     div()
-                        .text_size(px(20.))
+                        .text_size(rems(20. / 16.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::text())
                         .child(self.title),
                 )
                 .child(
                     div()
-                        .max_w(px(384.))
-                        .text_size(px(14.))
-                        .line_height(px(22.))
+                        .max_w(rems(384. / 16.))
+                        .text_size(rems(14. / 16.))
+                        .line_height(rems(22. / 16.))
                         .text_color(theme::muted())
                         .child(self.description),
                 )
@@ -529,19 +529,19 @@ impl RenderOnce for PaginatedListPage {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let body = if self.loading && !self.loaded {
             div()
-                .text_size(px(14.))
+                .text_size(rems(14. / 16.))
                 .text_color(theme::muted())
                 .child("Loading…")
                 .into_any_element()
         } else if !self.loaded {
             div()
-                .rounded(px(4.))
+                .rounded(rems(4. / 16.))
                 .border_1()
                 .border_color(theme::with_alpha(theme::danger(), 0.4))
                 .bg(theme::with_alpha(theme::danger(), 0.1))
                 .px_3()
                 .py_2()
-                .text_size(px(14.))
+                .text_size(rems(14. / 16.))
                 .text_color(theme::danger())
                 .child(format!("Failed to load {}.", self.noun))
                 .into_any_element()
@@ -586,7 +586,7 @@ impl RenderOnce for PaginatedListPage {
                             .justify_center()
                             .border_t_1()
                             .border_color(theme::border())
-                            .pt(px(10.))
+                            .pt(rems(10. / 16.))
                             .child(Pager::new(self.page, self.page_count, self.on_page_change)),
                     )
                     .into_any_element()
@@ -608,7 +608,7 @@ impl RenderOnce for PaginatedListPage {
                             div()
                                 .flex_none()
                                 .font_family("JetBrains Mono")
-                                .text_size(px(11.))
+                                .text_size(rems(11. / 16.))
                                 .text_color(theme::muted())
                                 .child(format!(
                                     "{} of {} {}",
@@ -633,10 +633,10 @@ impl RenderOnce for PaginatedListPage {
                     .flex_1()
                     .flex()
                     .flex_col()
-                    .gap(px(24.))
-                    .px(px(32.))
-                    .pt(px(40.))
-                    .pb(px(18.))
+                    .gap(rems(24. / 16.))
+                    .px(rems(32. / 16.))
+                    .pt(rems(40. / 16.))
+                    .pb(rems(18. / 16.))
                     .child(
                         div()
                             .flex()
@@ -650,14 +650,14 @@ impl RenderOnce for PaginatedListPage {
                                     .gap_1()
                                     .child(
                                         div()
-                                            .text_size(px(24.))
+                                            .text_size(rems(24. / 16.))
                                             .font_weight(FontWeight::BOLD)
                                             .text_color(theme::text())
                                             .child(self.title),
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(14.))
+                                            .text_size(rems(14. / 16.))
                                             .text_color(theme::muted())
                                             .child(self.description),
                                     ),
@@ -666,13 +666,13 @@ impl RenderOnce for PaginatedListPage {
                     )
                     .children(self.error.map(|error| {
                         div()
-                            .rounded(px(4.))
+                            .rounded(rems(4. / 16.))
                             .border_1()
                             .border_color(theme::with_alpha(theme::danger(), 0.4))
                             .bg(theme::with_alpha(theme::danger(), 0.1))
                             .px_3()
                             .py_2()
-                            .text_size(px(14.))
+                            .text_size(rems(14. / 16.))
                             .text_color(theme::danger())
                             .child(error)
                     }))

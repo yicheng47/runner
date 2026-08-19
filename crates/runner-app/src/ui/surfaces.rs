@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, FontWeight, IntoElement, RenderOnce, SharedString, Window};
+use gpui::{div, rems, AnyElement, FontWeight, IntoElement, RenderOnce, SharedString, Window};
 
 use crate::theme;
 
@@ -49,7 +49,7 @@ impl RenderOnce for Card {
     fn render(self, _window: &mut Window, _cx: &mut gpui::App) -> impl IntoElement {
         div()
             .overflow_hidden()
-            .rounded(px(12.))
+            .rounded(rems(12. / 16.))
             .border_1()
             .border_color(theme::border())
             .bg(theme::panel())
@@ -86,9 +86,9 @@ impl RenderOnce for Badge {
         div()
             .flex()
             .items_center()
-            .gap(px(6.))
-            .h(px(18.))
-            .px(px(8.))
+            .gap(rems(6. / 16.))
+            .h(rems(18. / 16.))
+            .px(rems(8. / 16.))
             .rounded_full()
             .bg(theme::with_alpha(
                 color,
@@ -99,10 +99,10 @@ impl RenderOnce for Badge {
                 },
             ))
             .font_weight(FontWeight::MEDIUM)
-            .text_size(px(10.))
+            .text_size(rems(10. / 16.))
             .text_color(color)
             .when(self.dot, |badge| {
-                badge.child(div().size(px(6.)).rounded_full().bg(color))
+                badge.child(div().size(rems(6. / 16.)).rounded_full().bg(color))
             })
             .child(self.label)
     }
@@ -117,14 +117,14 @@ pub fn pill(label: impl Into<SharedString>, tone: Tone) -> AnyElement {
     div()
         .flex()
         .items_center()
-        .h(px(24.))
-        .px(px(10.))
-        .rounded(px(6.))
+        .h(rems(24. / 16.))
+        .px(rems(10. / 16.))
+        .rounded(rems(6. / 16.))
         .border_1()
         .border_color(theme::with_alpha(color, 0.4))
         .bg(theme::with_alpha(color, 0.1))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_size(px(11.))
+        .text_size(rems(11. / 16.))
         .text_color(color)
         .child(label.into())
         .into_any_element()

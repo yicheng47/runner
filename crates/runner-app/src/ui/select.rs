@@ -2,12 +2,13 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, rgb, svg, App, Bounds, Context, ElementId, Entity, FocusHandle, FontWeight,
-    KeyDownEvent, Pixels, Render, ScrollHandle, SharedString, Window,
+    canvas, div, px, rems, rgb, svg, App, Bounds, Context, ElementId, Entity, FocusHandle,
+    FontWeight, KeyDownEvent, Pixels, Render, ScrollHandle, SharedString, Window,
 };
 use runner_backend::ops::runtime::RuntimeCatalogEntry;
 
 use crate::theme;
+use crate::ui::app_zoom;
 use crate::ui::menu::{popup_layer, DismissHandler, MenuItem, MenuKey, MenuState};
 use crate::ui::scrollbar::Scrollbar;
 
@@ -334,6 +335,7 @@ impl StyledSelect {
 
 impl Render for StyledSelect {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let zoom = app_zoom(window);
         let selected = self.options.get(self.selected_index());
         let label = selected
             .map(|option| option.label.clone())
@@ -351,7 +353,7 @@ impl Render for StyledSelect {
         let mut root = div()
             .id(self.id.clone())
             .relative()
-            .w(self.width)
+            .w(rems(f32::from(self.width) / 16.))
             .track_focus(&self.focus_handle)
             .tab_index(0)
             .tab_stop(!self.disabled)
@@ -361,12 +363,12 @@ impl Render for StyledSelect {
                     .id("styled-select-trigger")
                     .track_focus(&self.focus_handle)
                     .w_full()
-                    .h(px(height))
-                    .px(px(if self.detailed { 12. } else { 10. }))
+                    .h(rems(height / 16.))
+                    .px(rems(if self.detailed { 12. / 16. } else { 10. / 16. }))
                     .flex()
                     .items_center()
                     .gap_2()
-                    .rounded(px(if self.detailed { 6. } else { 4. }))
+                    .rounded(rems(if self.detailed { 6. / 16. } else { 4. / 16. }))
                     .border_1()
                     .border_color(if self.error.is_some() {
                         theme::danger()
@@ -391,9 +393,9 @@ impl Render for StyledSelect {
                     .focus_visible(|style| style.border_color(theme::faint()))
                     .children(swatch.map(|color| {
                         div()
-                            .size(px(12.))
+                            .size(rems(12. / 16.))
                             .flex_none()
-                            .rounded(px(2.))
+                            .rounded(rems(2. / 16.))
                             .bg(rgb(color))
                     }))
                     .child(
@@ -406,7 +408,11 @@ impl Render for StyledSelect {
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(if self.detailed { 13. } else { 14. }))
+                                    .text_size(rems(if self.detailed {
+                                        13. / 16.
+                                    } else {
+                                        14. / 16.
+                                    }))
                                     .font_weight(if self.detailed {
                                         FontWeight::SEMIBOLD
                                     } else {
@@ -421,7 +427,7 @@ impl Render for StyledSelect {
                             .children(description.map(|description| {
                                 div()
                                     .truncate()
-                                    .text_size(px(11.))
+                                    .text_size(rems(11. / 16.))
                                     .text_color(theme::muted())
                                     .child(description)
                             })),
@@ -433,7 +439,7 @@ impl Render for StyledSelect {
                             } else {
                                 "chevron-down.svg"
                             })
-                            .size(px(14.))
+                            .size(rems(14. / 16.))
                             .flex_none()
                             .text_color(theme::faint()),
                     ),
@@ -472,12 +478,12 @@ impl Render for StyledSelect {
                     div()
                         .id(("select-option", index))
                         .w_full()
-                        .px(px(if self.detailed { 10. } else { 12. }))
+                        .px(rems(if self.detailed { 10. / 16. } else { 12. / 16. }))
                         .py_2()
                         .flex()
                         .items_start()
                         .gap_2()
-                        .when(self.detailed, |row| row.rounded(px(4.)))
+                        .when(self.detailed, |row| row.rounded(rems(4. / 16.)))
                         .opacity(if option.disabled { 0.5 } else { 1. })
                         .when(active || highlighted, |row| {
                             row.bg(if option.danger {
@@ -497,10 +503,10 @@ impl Render for StyledSelect {
                         })
                         .children(option.swatch.map(|color| {
                             div()
-                                .mt(px(2.))
-                                .size(px(12.))
+                                .mt(rems(2. / 16.))
+                                .size(rems(12. / 16.))
                                 .flex_none()
-                                .rounded(px(2.))
+                                .rounded(rems(2. / 16.))
                                 .bg(rgb(color))
                         }))
                         .child(
@@ -509,11 +515,15 @@ impl Render for StyledSelect {
                                 .min_w(px(0.))
                                 .flex()
                                 .flex_col()
-                                .gap(px(2.))
+                                .gap(rems(2. / 16.))
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_size(px(if self.detailed { 13. } else { 14. }))
+                                        .text_size(rems(if self.detailed {
+                                            13. / 16.
+                                        } else {
+                                            14. / 16.
+                                        }))
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(foreground)
                                         .when(self.monospace, |label| {
@@ -523,7 +533,7 @@ impl Render for StyledSelect {
                                 )
                                 .children(option.description.map(|description| {
                                     div()
-                                        .text_size(px(11.))
+                                        .text_size(rems(11. / 16.))
                                         .text_color(if self.detailed {
                                             theme::muted()
                                         } else {
@@ -536,7 +546,7 @@ impl Render for StyledSelect {
                             row.child(
                                 svg()
                                     .path("check.svg")
-                                    .size(px(14.))
+                                    .size(rems(14. / 16.))
                                     .flex_none()
                                     .text_color(if option.danger {
                                         theme::danger()
@@ -555,9 +565,9 @@ impl Render for StyledSelect {
             let menu = div()
                 .id("styled-select-options")
                 .relative()
-                .max_h(px(260.))
+                .max_h(rems(260. / 16.))
                 .overflow_hidden()
-                .rounded(px(if self.detailed { 6. } else { 4. }))
+                .rounded(rems(if self.detailed { 6. / 16. } else { 4. / 16. }))
                 .border_1()
                 .border_color(if self.detailed {
                     theme::border()
@@ -569,7 +579,7 @@ impl Render for StyledSelect {
                 .child(
                     div()
                         .id("styled-select-scroll")
-                        .max_h(px(260.))
+                        .max_h(rems(260. / 16.))
                         .overflow_y_scroll()
                         .scrollbar_width(px(0.))
                         .track_scroll(&self.menu_scroll)
@@ -585,8 +595,8 @@ impl Render for StyledSelect {
             });
             root = root.child(popup_layer(
                 anchor,
-                window.viewport_size(),
-                anchor.size.width.max(self.min_menu_width),
+                window,
+                anchor.size.width.max(self.min_menu_width * zoom),
                 menu,
                 dismiss,
             ));

@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, svg, Bounds, Context, Entity, KeyDownEvent, MouseButton, Pixels, Render,
+    canvas, div, px, rems, svg, Bounds, Context, Entity, KeyDownEvent, MouseButton, Pixels, Render,
     ScrollHandle, Window,
 };
 use runner_backend::ops::runtime::RuntimeCatalogOption;
@@ -165,9 +165,9 @@ impl Render for ModelField {
                 field.child(
                     div()
                         .absolute()
-                        .right(px(2.))
-                        .top(px(2.))
-                        .size(px(32.))
+                        .right(rems(2. / 16.))
+                        .top(rems(2. / 16.))
+                        .size(rems(32. / 16.))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -179,7 +179,7 @@ impl Render for ModelField {
                                 } else {
                                     "chevron-down.svg"
                                 })
-                                .size(px(14.))
+                                .size(rems(14. / 16.))
                                 .text_color(theme::faint()),
                         ),
                 )
@@ -219,7 +219,7 @@ impl Render for ModelField {
                         .py_2()
                         .flex()
                         .flex_col()
-                        .gap(px(2.))
+                        .gap(rems(2. / 16.))
                         .cursor_pointer()
                         .when(active || highlighted, |row| row.bg(theme::raised()))
                         .hover(|row| row.bg(theme::raised()))
@@ -232,7 +232,7 @@ impl Render for ModelField {
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_size(px(14.))
+                                        .text_size(rems(14. / 16.))
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(foreground)
                                         .child(option.label),
@@ -241,14 +241,14 @@ impl Render for ModelField {
                                     label.child(
                                         svg()
                                             .path("check.svg")
-                                            .size(px(14.))
+                                            .size(rems(14. / 16.))
                                             .text_color(theme::accent()),
                                     )
                                 }),
                         )
                         .children(option.description.map(|description| {
                             div()
-                                .text_size(px(11.))
+                                .text_size(rems(11. / 16.))
                                 .text_color(theme::faint())
                                 .child(description)
                         }))
@@ -259,9 +259,9 @@ impl Render for ModelField {
             let menu = div()
                 .id("model-field-options")
                 .relative()
-                .max_h(px(260.))
+                .max_h(rems(260. / 16.))
                 .overflow_hidden()
-                .rounded(px(4.))
+                .rounded(rems(4. / 16.))
                 .border_1()
                 .border_color(theme::border_strong())
                 .bg(theme::panel())
@@ -269,7 +269,7 @@ impl Render for ModelField {
                 .child(
                     div()
                         .id("model-field-scroll")
-                        .max_h(px(260.))
+                        .max_h(rems(260. / 16.))
                         .overflow_y_scroll()
                         .scrollbar_width(px(0.))
                         .track_scroll(&self.menu_scroll)
@@ -284,7 +284,7 @@ impl Render for ModelField {
             });
             root = root.child(popup_layer(
                 anchor,
-                window.viewport_size(),
+                window,
                 anchor.size.width,
                 menu,
                 dismiss,

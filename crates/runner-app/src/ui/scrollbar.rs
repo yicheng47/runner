@@ -3,11 +3,12 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, App, Bounds, Context, CursorStyle, DragMoveEvent, EntityId, MouseButton,
+    canvas, div, px, rems, App, Bounds, Context, CursorStyle, DragMoveEvent, EntityId, MouseButton,
     MouseDownEvent, Pixels, Point, Render, ScrollHandle, Window,
 };
 
 use crate::theme;
+use crate::ui::app_zoom;
 use runner_terminal::terminal::TerminalSession;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -24,12 +25,12 @@ pub struct ScrollbarMetrics {
 }
 
 impl ScrollbarMetrics {
-    fn thumb(self, track_height: f32) -> Option<(f32, f32)> {
+    fn thumb(self, track_height: f32, min_height: f32) -> Option<(f32, f32)> {
         if self.viewport <= 0. || self.content <= self.viewport {
             return None;
         }
         let height = (track_height * self.viewport / self.content)
-            .max(20.)
+            .max(min_height)
             .min(track_height);
         let max_position = (self.content - self.viewport).max(0.);
         let ratio = if max_position == 0. {
@@ -60,6 +61,7 @@ pub struct Scrollbar {
     track_bounds: Bounds<Pixels>,
     last_metrics: ScrollbarMetrics,
     drag_grab: Option<Pixels>,
+    min_thumb: f32,
 }
 
 impl Scrollbar {
@@ -118,6 +120,7 @@ impl Scrollbar {
             track_bounds: Bounds::default(),
             last_metrics: ScrollbarMetrics::default(),
             drag_grab: None,
+            min_thumb: 20.,
         }
     }
 
@@ -128,7 +131,8 @@ impl Scrollbar {
         cx: &mut Context<Self>,
     ) {
         let track_height = f32::from(self.track_bounds.size.height);
-        let Some((thumb_top, thumb_height)) = (self.metrics)().thumb(track_height) else {
+        let Some((thumb_top, thumb_height)) = (self.metrics)().thumb(track_height, self.min_thumb)
+        else {
             return;
         };
         let local = event.position.y - self.track_bounds.origin.y;
@@ -161,7 +165,7 @@ impl Scrollbar {
     fn scroll_for_pointer(&self, pointer_y: Pixels, cx: &mut Context<Self>) {
         let metrics = (self.metrics)();
         let track_height = f32::from(self.track_bounds.size.height);
-        let Some((_, thumb_height)) = metrics.thumb(track_height) else {
+        let Some((_, thumb_height)) = metrics.thumb(track_height, self.min_thumb) else {
             return;
         };
         let grab = f32::from(self.drag_grab.unwrap_or(px(thumb_height / 2.)));
@@ -173,10 +177,12 @@ impl Scrollbar {
 }
 
 impl Render for Scrollbar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let zoom = app_zoom(window);
+        self.min_thumb = 20. * zoom;
         let metrics = (self.metrics)();
         let track_height = f32::from(self.track_bounds.size.height);
-        let thumb = metrics.thumb(track_height);
+        let thumb = metrics.thumb(track_height, self.min_thumb);
         let gutter = match self.kind {
             ScrollbarKind::App => 10.,
             ScrollbarKind::Terminal => 8.,
@@ -192,7 +198,7 @@ impl Render for Scrollbar {
             .top_0()
             .right_0()
             .bottom_0()
-            .w(px(gutter))
+            .w(rems(gutter / 16.))
             .cursor(CursorStyle::Arrow)
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_drag(ScrollbarDrag, |drag, _, _, cx| cx.new(|_| drag.clone()))
@@ -233,8 +239,8 @@ impl Render for Scrollbar {
                 div()
                     .absolute()
                     .top(px(top))
-                    .left(px(inset))
-                    .right(px(inset))
+                    .left(rems(inset / 16.))
+                    .right(rems(inset / 16.))
                     .h(px(height))
                     .rounded_full()
                     .bg(theme::border_strong())
@@ -255,13 +261,13 @@ mod tests {
             content: 400.,
             position: 150.,
         };
-        assert_eq!(metrics.thumb(100.), Some((37.5, 25.)));
+        assert_eq!(metrics.thumb(100., 20.), Some((37.5, 25.)));
         assert_eq!(
             ScrollbarMetrics {
                 content: 100.,
                 ..metrics
             }
-            .thumb(100.),
+            .thumb(100., 20.),
             None
         );
     }
