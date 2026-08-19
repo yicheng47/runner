@@ -832,10 +832,24 @@ impl SessionManager {
         let plan = router::runtime::resume_plan(&runner.runtime, None);
 
         // Working directory precedence: explicit `cwd` arg (Chat now
-        // dialog folder) ► runner's `working_dir` ► inherit parent's.
+        // dialog folder) ► runner's `working_dir`. A direct chat must
+        // name a real directory: portable-pty silently substitutes
+        // $HOME for a missing or nonexistent cwd, which strands the
+        // agent in the wrong place and breaks codex session-key
+        // capture (the rollout cwd can never match the row).
         let resolved_cwd: Option<String> = cwd
             .map(|s| s.to_string())
             .or_else(|| runner.working_dir.clone());
+        let Some(chat_cwd) = resolved_cwd.as_deref().filter(|c| !c.is_empty()) else {
+            return Err(Error::msg(
+                "select a working directory before starting a chat",
+            ));
+        };
+        if !std::path::Path::new(chat_cwd).is_dir() {
+            return Err(Error::msg(format!(
+                "working directory does not exist: {chat_cwd}"
+            )));
+        }
 
         // Direct chats are off-bus: RUNNER_HANDLE is the runner template's
         // own handle, no slot/mission env vars.

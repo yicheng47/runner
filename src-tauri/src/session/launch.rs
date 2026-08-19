@@ -279,7 +279,10 @@ pub fn render_launch_script(script: &LaunchScript) -> RuntimeResult<String> {
         out.push_str(&format!("export {}={}\n", k, shell_quote(v)));
     }
     if let Some(cwd) = &script.cwd {
-        out.push_str(&format!("cd {}\n", shell_quote(&cwd.display().to_string())));
+        let quoted = shell_quote(&cwd.display().to_string());
+        out.push_str(&format!(
+            "cd {quoted} || {{ echo \"runner: working directory not found:\" {quoted} >&2; exit 1; }}\n"
+        ));
     }
     let cmd = shell_quote(&script.command);
     let args = script
@@ -508,7 +511,9 @@ mod tests {
         let foo_idx = body.find("export FOO=").unwrap();
         assert!(baz_idx < foo_idx, "envs should be alphabetical: {body}");
         assert!(body.contains("export BAZ='with space'\n"));
-        assert!(body.contains("cd '/work/proj'\n"));
+        assert!(body.contains(
+            "cd '/work/proj' || { echo \"runner: working directory not found:\" '/work/proj' >&2; exit 1; }\n"
+        ));
         assert!(body.contains("exec 'claude' '--permission-mode' 'acceptEdits'\n"));
     }
 
