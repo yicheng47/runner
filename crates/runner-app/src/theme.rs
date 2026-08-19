@@ -254,6 +254,10 @@ pub fn warning() -> Hsla {
     color(colors().warn)
 }
 
+pub fn info() -> Hsla {
+    color(colors().info)
+}
+
 pub fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
     color.a = alpha;
     color

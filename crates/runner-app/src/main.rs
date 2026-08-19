@@ -3,7 +3,6 @@ mod app_shell;
 mod assets;
 mod mac_chrome;
 mod terminal_element;
-mod theme;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -14,14 +13,19 @@ use futures::StreamExt as _;
 use gpui::{
     actions, div, point, prelude::*, px, relative, rems, size, AnyElement, App, Application,
     Bounds, Context, CursorStyle, DragMoveEvent, Entity, FocusHandle, KeyBinding, KeyDownEvent,
-    Menu, MenuItem, MouseButton, OsAction, ScrollDelta, ScrollWheelEvent, SharedString,
-    Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    Menu, MenuItem, MouseButton, OsAction, ScrollDelta, ScrollHandle, ScrollWheelEvent,
+    SharedString, Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds,
+    WindowOptions,
 };
 use runner_app::bootstrap::{boot_core, native_paths, stop_running_sessions_on_quit, NativePaths};
 use runner_app::pane_layout::{
     PaneLayout, PaneLeaf, PaneNode, PresetKind, SplitOrientation, TabSet,
 };
 use runner_app::terminal_ime::TerminalInput;
+use runner_app::ui::{
+    Button, ButtonSize, IconButton, IconButtonSize, Scrollbar, SessionControl, SessionControlKind,
+};
+use runner_app::{theme, Copy, Cut, Paste, SelectAll};
 use runner_backend::model::{Runner, SessionStatus};
 use runner_backend::ops::session::DirectSessionEntry;
 use runner_backend::AppCore;
@@ -37,17 +41,13 @@ actions!(
     runner_app_ui,
     [
         CloseWindow,
-        Copy,
-        Cut,
         Hide,
         HideOthers,
         Maximize,
         Minimize,
         NewTab,
         OpenSettings,
-        Paste,
         Quit,
-        SelectAll,
         ShowAll,
         ToggleFullscreen,
         ToggleSidebar,
@@ -58,7 +58,6 @@ actions!(
 );
 
 mod chat;
-mod modal_text_input;
 mod panes;
 mod sidebar;
 mod start_chat;
@@ -75,6 +74,7 @@ const PANE_HEADER_HEIGHT: f32 = 34.;
 
 struct AttachedChat {
     terminal: Arc<TerminalSession>,
+    terminal_scrollbar: Entity<Scrollbar>,
     terminal_input: Entity<TerminalInput>,
     _terminal_input_subscription: Subscription,
     _terminal_focus_subscription: Subscription,
@@ -102,6 +102,8 @@ struct NativeRoot {
     tabs: TabSet,
     attached: HashMap<String, AttachedChat>,
     root_focus: FocusHandle,
+    sidebar_scroll: ScrollHandle,
+    sidebar_scrollbar: Entity<Scrollbar>,
     waker: Arc<dyn Fn() + Send + Sync>,
     start_chat_modal: Option<StartChatModal>,
     last_focused_runner_id: Option<String>,
@@ -201,6 +203,9 @@ impl NativeRoot {
         };
 
         let root_focus = cx.focus_handle();
+        let sidebar_scroll = ScrollHandle::new();
+        let scroll_owner = cx.entity_id();
+        let sidebar_scrollbar = cx.new(|_| Scrollbar::app(sidebar_scroll.clone(), scroll_owner));
         let last_focused_runner_id = tabs
             .active()
             .and_then(PaneLayout::focused_session_id)
@@ -214,6 +219,8 @@ impl NativeRoot {
             tabs,
             attached: HashMap::new(),
             root_focus,
+            sidebar_scroll,
+            sidebar_scrollbar,
             waker,
             start_chat_modal: None,
             last_focused_runner_id,

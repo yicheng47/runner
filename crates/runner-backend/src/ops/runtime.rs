@@ -122,10 +122,13 @@ pub fn selectable_runtime_catalog(
     state: &AppCore,
     enabled_agents: Option<&[String]>,
 ) -> Result<Vec<RuntimeCatalogEntry>> {
-    Ok(filter_selectable(runtime_catalog(state)?, enabled_agents))
+    Ok(filter_selectable_runtime_catalog(
+        runtime_catalog(state)?,
+        enabled_agents,
+    ))
 }
 
-fn filter_selectable(
+pub fn filter_selectable_runtime_catalog(
     catalog: Vec<RuntimeCatalogEntry>,
     enabled_agents: Option<&[String]>,
 ) -> Vec<RuntimeCatalogEntry> {
@@ -362,7 +365,7 @@ mod tests {
             runtime.available = true;
         }
         assert_eq!(
-            filter_selectable(catalog.clone(), None)
+            filter_selectable_runtime_catalog(catalog.clone(), None)
                 .iter()
                 .map(|runtime| runtime.name.as_str())
                 .collect::<Vec<_>>(),
@@ -371,7 +374,7 @@ mod tests {
 
         let enabled = vec!["qoder".to_string()];
         assert_eq!(
-            filter_selectable(catalog, Some(&enabled))
+            filter_selectable_runtime_catalog(catalog, Some(&enabled))
                 .iter()
                 .map(|runtime| runtime.name.as_str())
                 .collect::<Vec<_>>(),

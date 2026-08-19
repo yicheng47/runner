@@ -53,7 +53,7 @@ impl NativeRoot {
         let modal = (self.route != AppRoute::Settings)
             .then_some(self.start_chat_modal.as_ref())
             .flatten()
-            .map(|_| deferred(self.render_start_chat_modal(cx)).with_priority(2));
+            .map(|_| self.render_start_chat_modal(cx));
         let chrome = div()
             .relative()
             .size_full()

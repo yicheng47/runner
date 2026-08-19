@@ -37,6 +37,9 @@ impl NativeRoot {
                 .flex_none()
                 .bg(theme::border())
         });
+        let root = cx.entity();
+        let layout_root = root.clone();
+        let new_tab_root = root;
         let header = div()
             .flex_none()
             .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
@@ -73,45 +76,29 @@ impl NativeRoot {
                     .items_center()
                     .gap_2()
                     .child(
-                        div()
-                            .id("layout-picker-toggle")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(if self.layout_picker_open {
-                                theme::accent()
+                        IconButton::new("layout-picker-toggle", "layout.svg")
+                            .variant(if self.layout_picker_open {
+                                runner_app::ui::ButtonVariant::Secondary
                             } else {
-                                theme::border()
+                                runner_app::ui::ButtonVariant::Ghost
                             })
-                            .cursor_pointer()
-                            .text_xs()
-                            .text_color(theme::text())
-                            .hover(|button| button.bg(theme::raised()))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .child("Layout")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.layout_picker_open = !this.layout_picker_open;
-                                cx.notify();
-                            })),
+                            .tooltip("Layout")
+                            .on_press(move |_, cx| {
+                                layout_root.update(cx, |this, cx| {
+                                    this.layout_picker_open = !this.layout_picker_open;
+                                    cx.notify();
+                                });
+                            }),
                     )
                     .child(
-                        div()
-                            .id("new-tab-header")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .text_xs()
-                            .text_color(theme::muted())
-                            .hover(|button| button.bg(theme::raised()))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .child("New tab  ⌘T")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.open_new_tab_modal(&NewTab, window, cx);
-                            })),
+                        Button::new("new-tab-header", "New tab  ⌘T")
+                            .size(ButtonSize::Sm)
+                            .variant(runner_app::ui::ButtonVariant::Ghost)
+                            .on_press(move |window, cx| {
+                                new_tab_root.update(cx, |this, cx| {
+                                    this.open_new_tab_modal(&NewTab, window, cx);
+                                });
+                            }),
                     ),
             );
 
@@ -298,6 +285,7 @@ impl NativeRoot {
         let grouped = layout.root.leaves().len() > 1;
         let pane_id = leaf.id.clone();
         let pane_id_for_focus = pane_id.clone();
+        let close_root = cx.entity();
         let header = grouped.then(|| {
             let empty = leaf.session_id.is_none();
             let close_pane_id = pane_id.clone();
@@ -338,23 +326,19 @@ impl NativeRoot {
                 )
                 .when(empty, |header| {
                     header.child(
-                        div()
-                            .id(SharedString::from(format!("close-pane-{close_pane_id}")))
-                            .ml_auto()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(rems(1.5))
-                            .rounded_md()
-                            .cursor_pointer()
-                            .text_sm()
-                            .text_color(theme::muted())
-                            .hover(|button| button.bg(theme::border()).text_color(theme::text()))
-                            .child("×")
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.close_pane(&close_pane_id, window, cx);
-                            })),
+                        div().ml_auto().child(
+                            IconButton::new(
+                                SharedString::from(format!("close-pane-{close_pane_id}")),
+                                "close.svg",
+                            )
+                            .size(IconButtonSize::Sm)
+                            .tooltip("Close pane")
+                            .on_press(move |window, cx| {
+                                close_root.update(cx, |this, cx| {
+                                    this.close_pane(&close_pane_id, window, cx);
+                                });
+                            }),
+                        ),
                     )
                 })
         });
@@ -363,6 +347,7 @@ impl NativeRoot {
             let status = self.session_entry(session_id).map(|entry| entry.status);
             if let Some(chat) = self.attached.get(session_id) {
                 let terminal = Arc::clone(&chat.terminal);
+                let terminal_scrollbar = chat.terminal_scrollbar.clone();
                 let terminal_input = chat.terminal_input.clone();
                 let resize_owner = layout.is_resize_owner(&pane_id, session_id);
                 let terminal_focus = chat.terminal_focus.clone();
@@ -377,6 +362,7 @@ impl NativeRoot {
                 let content = div().flex_1().min_h(px(0.)).flex().flex_col().child(
                     div()
                         .id(SharedString::from(format!("terminal-{session_id}")))
+                        .relative()
                         .key_context("Terminal")
                         .track_focus(&terminal_focus)
                         .flex_1()
@@ -404,7 +390,8 @@ impl NativeRoot {
                             terminal_focus,
                             resize_owner,
                             terminal_style,
-                        )),
+                        ))
+                        .child(terminal_scrollbar),
                 );
                 if status == Some(SessionStatus::Running) {
                     content.into_any_element()
@@ -430,28 +417,25 @@ impl NativeRoot {
                                 .text_sm()
                                 .text_color(theme::muted())
                                 .child(status_label)
-                                .child(
-                                    div()
-                                        .id(SharedString::from(format!("resume-chat-{session_id}")))
-                                        .px_2()
-                                        .py_1()
-                                        .rounded_md()
-                                        .border_1()
-                                        .border_color(theme::border())
-                                        .cursor_pointer()
-                                        .text_sm()
-                                        .text_color(theme::accent())
-                                        .hover(|button| button.bg(theme::border()))
-                                        .child("Resume")
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.resume_chat(
-                                                &resume_pane_id,
-                                                &resume_session_id,
-                                                window,
-                                                cx,
-                                            );
-                                        })),
-                                ),
+                                .child({
+                                    let root = cx.entity();
+                                    SessionControl::new(
+                                        SharedString::from(format!("resume-chat-{session_id}")),
+                                        SessionControlKind::Resume,
+                                    )
+                                    .on_press(
+                                        move |window, cx| {
+                                            root.update(cx, |this, cx| {
+                                                this.resume_chat(
+                                                    &resume_pane_id,
+                                                    &resume_session_id,
+                                                    window,
+                                                    cx,
+                                                );
+                                            });
+                                        },
+                                    )
+                                }),
                         )
                         .into_any_element()
                 }
@@ -471,23 +455,18 @@ impl NativeRoot {
                     .gap_2()
                     .text_color(theme::muted())
                     .child(status_label)
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("resume-chat-{session_id}")))
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(theme::border())
-                            .cursor_pointer()
-                            .text_sm()
-                            .text_color(theme::accent())
-                            .hover(|button| button.bg(theme::border()))
-                            .child("Resume")
-                            .on_click(cx.listener(move |this, _, window, cx| {
+                    .child({
+                        let root = cx.entity();
+                        SessionControl::new(
+                            SharedString::from(format!("resume-chat-{session_id}")),
+                            SessionControlKind::Resume,
+                        )
+                        .on_press(move |window, cx| {
+                            root.update(cx, |this, cx| {
                                 this.resume_chat(&resume_pane_id, &resume_session_id, window, cx);
-                            })),
-                    )
+                            });
+                        })
+                    })
                     .into_any_element()
             } else {
                 div()

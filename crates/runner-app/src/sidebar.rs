@@ -40,9 +40,11 @@ impl NativeRoot {
 
         let list = div()
             .id("tab-list")
-            .flex_1()
+            .size_full()
             .min_h(px(0.))
             .overflow_y_scroll()
+            .scrollbar_width(px(0.))
+            .track_scroll(&self.sidebar_scroll)
             .px_2()
             .children(tab_rows.into_iter().enumerate().map(
                 |(index, (tab_id, label, pane_count, running))| {
@@ -95,23 +97,26 @@ impl NativeRoot {
                             .text_color(theme::faint())
                             .child("CHATS & MISSIONS"),
                     )
-                    .child(
-                        div()
-                            .id("new-tab-sidebar")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .text_xs()
-                            .text_color(theme::accent())
-                            .hover(|button| button.bg(theme::sidebar_selected()))
-                            .child("+ New")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_new_tab_modal(&NewTab, window, cx);
-                            })),
-                    ),
+                    .child({
+                        let root = cx.entity();
+                        Button::new("new-tab-sidebar", "+ New")
+                            .size(ButtonSize::Sm)
+                            .variant(runner_app::ui::ButtonVariant::Ghost)
+                            .on_press(move |window, cx| {
+                                root.update(cx, |this, cx| {
+                                    this.open_new_tab_modal(&NewTab, window, cx);
+                                });
+                            })
+                    }),
             )
-            .child(list)
+            .child(
+                div()
+                    .relative()
+                    .min_h(px(0.))
+                    .flex_1()
+                    .child(list)
+                    .child(self.sidebar_scrollbar.clone()),
+            )
             .into_any_element()
     }
 }

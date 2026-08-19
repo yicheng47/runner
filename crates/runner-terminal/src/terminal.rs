@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
-use alacritty_terminal::grid::Scroll;
+use alacritty_terminal::grid::{Dimensions as _, Scroll};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
@@ -86,6 +86,13 @@ pub struct TerminalSession {
     title: Arc<Mutex<String>>,
     palette: Arc<Mutex<PaletteState>>,
     waker: Arc<dyn Fn() + Send + Sync>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TerminalScrollState {
+    pub history_lines: usize,
+    pub display_offset: usize,
+    pub screen_lines: usize,
 }
 
 impl TerminalSession {
@@ -319,6 +326,27 @@ impl TerminalSession {
 
     pub fn scroll_to_bottom(&self) {
         self.term.lock().scroll_display(Scroll::Bottom);
+    }
+
+    pub fn scroll_state(&self) -> TerminalScrollState {
+        let term = self.term.lock_unfair();
+        TerminalScrollState {
+            history_lines: term.history_size(),
+            display_offset: term.grid().display_offset(),
+            screen_lines: term.screen_lines(),
+        }
+    }
+
+    pub fn scroll_to_display_offset(&self, display_offset: usize) {
+        let mut term = self.term.lock();
+        let current = term.grid().display_offset();
+        let target = display_offset.min(term.history_size());
+        let delta = target as i64 - current as i64;
+        term.scroll_display(Scroll::Delta(
+            delta.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+        ));
+        drop(term);
+        (self.waker)();
     }
 }
 
@@ -576,5 +604,33 @@ mod tests {
         assert!(!term.mode().contains(TermMode::BRACKETED_PASTE));
         assert!(!term.mode().intersects(TermMode::MOUSE_MODE));
         assert!(!term.mode().contains(TermMode::SGR_MOUSE));
+    }
+
+    #[test]
+    fn terminal_scroll_state_and_absolute_scroll_stay_in_sync() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let woke = Arc::new(AtomicBool::new(false));
+        let wake_flag = Arc::clone(&woke);
+        let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            wake_flag.store(true, Ordering::Release);
+        });
+        let terminal = TerminalSession::attach(core, "replay-race".into(), 80, 24, waker).unwrap();
+        terminal
+            .feed_output(&output(1, &"scrollback line\r\n".repeat(80)))
+            .unwrap();
+
+        let bottom = terminal.scroll_state();
+        assert_eq!(bottom.screen_lines, 24);
+        assert!(bottom.history_lines > 0);
+        assert_eq!(bottom.display_offset, 0);
+
+        woke.store(false, Ordering::Release);
+        terminal.scroll_to_display_offset(bottom.history_lines);
+        assert_eq!(terminal.scroll_state().display_offset, bottom.history_lines);
+        assert!(woke.load(Ordering::Acquire));
+
+        terminal.scroll_to_display_offset(0);
+        assert_eq!(terminal.scroll_state().display_offset, 0);
     }
 }

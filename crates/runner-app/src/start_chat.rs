@@ -1,15 +1,22 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    anchored, deferred, div, point, px, relative, rems, AnchoredPositionMode, AnyElement, Context,
-    FontWeight, KeyDownEvent, MouseButton, PathPromptOptions, SharedString, Window,
+    div, px, AnyElement, Context, FontWeight, KeyDownEvent, PathPromptOptions, ScrollHandle,
+    SharedString, Window,
 };
 use runner_backend::model::Runner;
-use runner_backend::ops::runtime::{RuntimeCatalogEntry, RuntimeCatalogOption};
+use runner_backend::ops::runtime::{
+    filter_selectable_runtime_catalog, RuntimeCatalogEntry, RuntimeCatalogOption,
+};
 
-use crate::modal_text_input::ModalTextInput;
+use runner_app::ui::{
+    effective_working_dir, working_dir_placeholder, working_dir_text_field, Button, ButtonVariant,
+    Field, IconButton, Modal, ModelField, OverlayWidth, Scrollbar, SelectHandler, SelectOption,
+    StyledSelect, TextField, WorkingDirField,
+};
 
 use super::*;
 
@@ -47,19 +54,11 @@ enum ChatTarget {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ModalPicker {
+enum StartChatSelection {
     Runner,
     RunnerRuntime,
     Runtime,
-    Model,
     Effort,
-}
-
-#[derive(Clone)]
-struct ModalChoice {
-    value: String,
-    label: String,
-    description: Option<String>,
 }
 
 pub(crate) struct StartChatModal {
@@ -71,10 +70,22 @@ pub(crate) struct StartChatModal {
     runtime_name: Option<String>,
     runner_runtime_override: Option<String>,
     effort: String,
-    picker: Option<ModalPicker>,
-    title: Entity<ModalTextInput>,
-    cwd: Entity<ModalTextInput>,
-    model: Entity<ModalTextInput>,
+    title: Entity<TextField>,
+    cwd: Entity<TextField>,
+    model: Entity<TextField>,
+    model_field: Entity<ModelField>,
+    runner_select: Entity<StyledSelect>,
+    runner_runtime_select: Entity<StyledSelect>,
+    runtime_select: Entity<StyledSelect>,
+    effort_select: Entity<StyledSelect>,
+    scroll_handle: ScrollHandle,
+    scrollbar: Entity<Scrollbar>,
+    runner_mode_focus: FocusHandle,
+    direct_mode_focus: FocusHandle,
+    browse_focus: FocusHandle,
+    close_focus: FocusHandle,
+    cancel_focus: FocusHandle,
+    submit_focus: FocusHandle,
     agents_checking: bool,
     agents_error: Option<String>,
     submitting: bool,
@@ -185,7 +196,8 @@ impl NativeRoot {
             Err(load_error) => error = Some(load_error.to_string()),
         }
 
-        let (runtimes, agents_checking, agents_error) = load_selectable_runtimes(&self.core);
+        let (runtimes, agents_checking, agents_error) =
+            load_selectable_runtimes(&self.core, &self.settings);
         let persisted_mode = read_start_chat_mode(&self.core.app_data_dir);
         let mode = if default_runner_id.is_some() {
             ChatMode::Runner
@@ -195,7 +207,11 @@ impl NativeRoot {
         let runner_id = default_runner_id
             .filter(|runner_id| self.runners.iter().any(|runner| runner.id == *runner_id))
             .or_else(|| self.runners.first().map(|runner| runner.id.clone()));
-        let runtime_name = runtimes.first().map(|runtime| runtime.name.clone());
+        let runtime_name = runtimes
+            .iter()
+            .find(|runtime| runtime.name == self.settings.default_runtime)
+            .or_else(|| runtimes.first())
+            .map(|runtime| runtime.name.clone());
         let title = match mode {
             ChatMode::Runner => runner_id
                 .as_deref()
@@ -213,18 +229,96 @@ impl NativeRoot {
             runner_id
                 .as_deref()
                 .and_then(|runner_id| self.runners.iter().find(|runner| runner.id == runner_id)),
+            &self.settings.default_working_dir,
         );
         let title_input = cx.new(|input_cx| {
-            ModalTextInput::new(input_cx.focus_handle(), title, "e.g. quick-debug", false)
+            TextField::new(input_cx.focus_handle(), title, "e.g. quick-debug", false).text_size(13.)
         });
         let cwd_input = cx.new(|input_cx| {
-            ModalTextInput::new(input_cx.focus_handle(), "", cwd_placeholder, true)
+            working_dir_text_field(input_cx.focus_handle(), "", cwd_placeholder, true)
+                .text_size(12.)
         });
-        let model_input =
-            cx.new(|input_cx| ModalTextInput::new(input_cx.focus_handle(), "", "default", true));
+        let model_input = cx.new(|input_cx| {
+            TextField::new(input_cx.focus_handle(), "", "default", false).placeholder_as_value(true)
+        });
+        let root = cx.entity();
+        let runner_handler = selection_handler(&root, StartChatSelection::Runner);
+        let runner_select = cx.new(|select_cx| {
+            StyledSelect::new(
+                "start-chat-runner",
+                select_cx.focus_handle(),
+                runner_id.clone().unwrap_or_default(),
+                runner_options(&self.runners),
+                runner_handler,
+                select_cx,
+            )
+            .width(px(FIELD_WIDTH))
+            .min_menu_width(px(FIELD_WIDTH))
+            .detailed(true)
+            .monospace(true)
+            .placeholder("No runners yet")
+            .disabled(self.runners.is_empty())
+        });
+        let runner_runtime_options = runner_runtime_options(
+            &runtimes,
+            runner_id
+                .as_deref()
+                .and_then(|id| self.runners.iter().find(|runner| runner.id == id)),
+        );
+        let runner_runtime_handler = selection_handler(&root, StartChatSelection::RunnerRuntime);
+        let runner_runtime_select = cx.new(|select_cx| {
+            StyledSelect::new(
+                "start-chat-runner-runtime",
+                select_cx.focus_handle(),
+                "",
+                runner_runtime_options,
+                runner_runtime_handler,
+                select_cx,
+            )
+            .width(px(FIELD_WIDTH))
+            .min_menu_width(px(FIELD_WIDTH))
+        });
+        let runtime_handler = selection_handler(&root, StartChatSelection::Runtime);
+        let runtime_select = cx.new(|select_cx| {
+            StyledSelect::new(
+                "start-chat-runtime",
+                select_cx.focus_handle(),
+                runtime_name.clone().unwrap_or_default(),
+                runtime_options(&runtimes),
+                runtime_handler,
+                select_cx,
+            )
+            .width(px(FIELD_WIDTH))
+            .min_menu_width(px(FIELD_WIDTH))
+            .disabled(runtimes.is_empty())
+        });
+        let effort_handler = selection_handler(&root, StartChatSelection::Effort);
+        let effort_select = cx.new(|select_cx| {
+            StyledSelect::new(
+                "start-chat-effort",
+                select_cx.focus_handle(),
+                "",
+                Vec::new(),
+                effort_handler,
+                select_cx,
+            )
+            .width(px(232.))
+            .min_menu_width(px(240.))
+        });
+        let model_field = cx.new(|model_cx| ModelField::new(model_input.clone(), &[], model_cx));
+        let scroll_handle = ScrollHandle::new();
+        let scroll_owner = cx.entity_id();
+        let scrollbar = cx.new(|_| Scrollbar::app(scroll_handle.clone(), scroll_owner));
+        let runner_mode_focus = cx.focus_handle();
+        let direct_mode_focus = cx.focus_handle();
+        let browse_focus = cx.focus_handle();
+        let close_focus = cx.focus_handle();
+        let cancel_focus = cx.focus_handle();
+        let submit_focus = cx.focus_handle();
         let title_focus = title_input.read(cx).focus_handle();
 
         self.layout_picker_open = false;
+        self.sidebar_preview_open = false;
         self.start_chat_modal = Some(StartChatModal {
             target,
             mode,
@@ -234,15 +328,30 @@ impl NativeRoot {
             runtime_name,
             runner_runtime_override: None,
             effort: String::new(),
-            picker: None,
             title: title_input,
             cwd: cwd_input,
             model: model_input,
+            model_field,
+            runner_select,
+            runner_runtime_select,
+            runtime_select,
+            effort_select,
+            scroll_handle,
+            scrollbar,
+            runner_mode_focus,
+            direct_mode_focus,
+            browse_focus,
+            close_focus,
+            cancel_focus,
+            submit_focus,
             agents_checking,
             agents_error,
             submitting: false,
             error: error.take(),
         });
+        if let Some(modal) = self.start_chat_modal.as_mut() {
+            sync_runtime_controls(modal, cx);
+        }
         title_focus.focus(window);
         cx.notify();
     }
@@ -251,7 +360,8 @@ impl NativeRoot {
         let Some(modal) = self.start_chat_modal.as_mut() else {
             return;
         };
-        let (runtimes, agents_checking, agents_error) = load_selectable_runtimes(&self.core);
+        let (runtimes, agents_checking, agents_error) =
+            load_selectable_runtimes(&self.core, &self.settings);
         let catalog_loaded = agents_error.is_none();
         let previous_runtime = modal.runtime_name.clone();
         let previous_override = modal.runner_runtime_override.clone();
@@ -289,6 +399,21 @@ impl NativeRoot {
                     .unwrap_or_default();
                 update_auto_title(&modal.title, derived, cx);
             }
+            modal.runtime_select.update(cx, |select, select_cx| {
+                select.set_options(runtime_options(&modal.runtimes), select_cx);
+                select.set_value(modal.runtime_name.clone().unwrap_or_default(), select_cx);
+            });
+            modal.runner_runtime_select.update(cx, |select, select_cx| {
+                select.set_options(
+                    runner_runtime_options(&modal.runtimes, modal.selected_runner()),
+                    select_cx,
+                );
+                select.set_value(
+                    modal.runner_runtime_override.clone().unwrap_or_default(),
+                    select_cx,
+                );
+            });
+            sync_runtime_controls(modal, cx);
         }
         cx.notify();
     }
@@ -325,10 +450,10 @@ impl NativeRoot {
         modal.mode = mode;
         modal.runner_runtime_override = None;
         modal.effort.clear();
-        modal.picker = None;
         modal
             .model
             .update(cx, |input, input_cx| input.reset("", input_cx));
+        sync_runtime_controls(modal, cx);
         let derived = match mode {
             ChatMode::Runner => modal
                 .selected_runner()
@@ -340,7 +465,11 @@ impl NativeRoot {
                 .unwrap_or_default(),
         };
         update_auto_title(&modal.title, derived, cx);
-        let placeholder = cwd_placeholder(mode, modal.selected_runner());
+        let placeholder = cwd_placeholder(
+            mode,
+            modal.selected_runner(),
+            &self.settings.default_working_dir,
+        );
         modal.cwd.update(cx, |input, input_cx| {
             input.set_placeholder(placeholder, input_cx)
         });
@@ -348,47 +477,45 @@ impl NativeRoot {
         cx.notify();
     }
 
-    fn toggle_start_chat_picker(&mut self, picker: ModalPicker, cx: &mut Context<Self>) {
-        let Some(modal) = self.start_chat_modal.as_mut() else {
-            return;
-        };
-        if modal.submitting {
-            return;
-        }
-        modal.picker = (modal.picker != Some(picker)).then_some(picker);
-        cx.notify();
-    }
-
     fn select_start_chat_choice(
         &mut self,
-        picker: ModalPicker,
+        selection: StartChatSelection,
         value: &str,
         cx: &mut Context<Self>,
     ) {
         let Some(modal) = self.start_chat_modal.as_mut() else {
             return;
         };
-        match picker {
-            ModalPicker::Runner => {
+        match selection {
+            StartChatSelection::Runner => {
                 modal.runner_id = Some(value.to_owned());
                 let derived = modal
                     .selected_runner()
                     .map(|runner| default_title_for_runner(&runner.handle))
                     .unwrap_or_default();
                 update_auto_title(&modal.title, derived, cx);
-                let placeholder = cwd_placeholder(modal.mode, modal.selected_runner());
+                let placeholder = cwd_placeholder(
+                    modal.mode,
+                    modal.selected_runner(),
+                    &self.settings.default_working_dir,
+                );
                 modal.cwd.update(cx, |input, input_cx| {
                     input.set_placeholder(placeholder, input_cx)
                 });
+                let options = runner_runtime_options(&modal.runtimes, modal.selected_runner());
+                modal.runner_runtime_select.update(cx, |select, select_cx| {
+                    select.set_options(options, select_cx)
+                });
             }
-            ModalPicker::RunnerRuntime => {
+            StartChatSelection::RunnerRuntime => {
                 modal.runner_runtime_override = (!value.is_empty()).then(|| value.to_owned());
                 modal.effort.clear();
                 modal
                     .model
                     .update(cx, |input, input_cx| input.reset("", input_cx));
+                sync_runtime_controls(modal, cx);
             }
-            ModalPicker::Runtime => {
+            StartChatSelection::Runtime => {
                 modal.runtime_name = Some(value.to_owned());
                 modal.effort.clear();
                 modal
@@ -399,15 +526,10 @@ impl NativeRoot {
                     .map(|runtime| default_title_for_runtime(&runtime.display_name))
                     .unwrap_or_default();
                 update_auto_title(&modal.title, derived, cx);
+                sync_runtime_controls(modal, cx);
             }
-            ModalPicker::Model => {
-                modal.model.update(cx, |input, input_cx| {
-                    input.reset(value.to_owned(), input_cx)
-                });
-            }
-            ModalPicker::Effort => modal.effort = value.to_owned(),
+            StartChatSelection::Effort => modal.effort = value.to_owned(),
         }
-        modal.picker = None;
         cx.notify();
     }
 
@@ -461,15 +583,6 @@ impl NativeRoot {
         .detach();
     }
 
-    fn dismiss_start_chat_picker(&mut self, cx: &mut Context<Self>) {
-        if let Some(modal) = self.start_chat_modal.as_mut() {
-            if modal.picker.take().is_some() {
-                cx.notify();
-            }
-        }
-        cx.stop_propagation();
-    }
-
     fn on_start_chat_key_down(
         &mut self,
         event: &KeyDownEvent,
@@ -502,7 +615,15 @@ impl NativeRoot {
             return;
         }
         let target = modal.target.clone();
-        let cwd = normalized_value(modal.cwd.read(cx).text());
+        let cwd = effective_working_dir(
+            modal.cwd.read(cx).text(),
+            modal.mode == ChatMode::Runner
+                && modal
+                    .selected_runner()
+                    .and_then(|runner| runner.working_dir.as_deref())
+                    .is_some_and(|path| !path.trim().is_empty()),
+            &self.settings.default_working_dir,
+        );
         let model = normalized_value(modal.model.read(cx).text());
         let effort = normalized_value(&modal.effort);
         let title = modal.title.read(cx).text().trim().to_owned();
@@ -539,6 +660,7 @@ impl NativeRoot {
         if let Some(modal) = self.start_chat_modal.as_mut() {
             modal.submitting = true;
             modal.error = None;
+            set_start_chat_controls_disabled(modal, true, cx);
         }
         cx.notify();
 
@@ -628,6 +750,7 @@ impl NativeRoot {
                 } else if let Some(modal) = self.start_chat_modal.as_mut() {
                     modal.submitting = false;
                     modal.error = Some(start_error.to_string());
+                    set_start_chat_controls_disabled(modal, false, cx);
                 }
             }
         }
@@ -636,125 +759,51 @@ impl NativeRoot {
 
     pub(crate) fn render_start_chat_modal(&self, cx: &mut Context<Self>) -> AnyElement {
         let modal = self.start_chat_modal.as_ref().expect("modal is open");
-        let selected_runner = modal.selected_runner().cloned();
-        let selected_runtime = modal.selected_runtime().cloned();
-        let override_runtime = modal.override_runtime().cloned();
         let active_runtime = modal.active_runtime().cloned();
         let mode = modal.mode;
         let submitting = modal.submitting;
         let can_submit = modal.can_submit();
-        let picker = modal.picker;
-        let title_input = modal.title.clone();
-        let cwd_input = modal.cwd.clone();
-        let model_input = modal.model.clone();
-
-        let runner_choices = modal
-            .runners
-            .iter()
-            .map(|runner| ModalChoice {
-                value: runner.id.clone(),
-                label: format!("@{}", runner.handle),
-                description: Some(summarize_runner(runner)),
-            })
-            .collect::<Vec<_>>();
-        let runtime_choices = modal
-            .runtimes
-            .iter()
-            .map(runtime_choice)
-            .collect::<Vec<_>>();
-        let mut runner_runtime_choices = vec![ModalChoice {
-            value: String::new(),
-            label: format!(
-                "Runner default{}",
-                selected_runner
-                    .as_ref()
-                    .map(|runner| format!(
-                        " ({})",
-                        runtime_display_name(&modal.runtimes, &runner.runtime)
-                    ))
-                    .unwrap_or_default()
-            ),
-            description: None,
-        }];
-        runner_runtime_choices.extend(runtime_choices.clone());
-        let runner_picker = self.render_modal_select(
-            "start-chat-runner",
-            ModalPicker::Runner,
-            selected_runner
-                .as_ref()
-                .map(|runner| format!("@{}", runner.handle))
-                .unwrap_or_else(|| "No runners yet".into()),
-            selected_runner.as_ref().map(summarize_runner),
-            modal.runner_id.clone().unwrap_or_default(),
-            runner_choices,
-            FIELD_WIDTH,
-            true,
-            !submitting && !modal.runners.is_empty(),
-            picker,
-            cx,
-        );
-        let runner_runtime_picker = self.render_modal_select(
-            "start-chat-runner-runtime",
-            ModalPicker::RunnerRuntime,
-            runner_runtime_choices
-                .iter()
-                .find(|choice| {
-                    choice.value == modal.runner_runtime_override.as_deref().unwrap_or_default()
-                })
-                .map(|choice| choice.label.clone())
-                .unwrap_or_else(|| "Runner default".into()),
-            None,
-            modal.runner_runtime_override.clone().unwrap_or_default(),
-            runner_runtime_choices,
-            FIELD_WIDTH,
-            false,
-            !submitting,
-            picker,
-            cx,
-        );
-        let runtime_picker = self.render_modal_select(
-            "start-chat-runtime",
-            ModalPicker::Runtime,
-            selected_runtime
-                .as_ref()
-                .map(|runtime| runtime.display_name.clone())
-                .unwrap_or_else(|| "No agents detected".into()),
-            None,
-            modal.runtime_name.clone().unwrap_or_default(),
-            runtime_choices,
-            FIELD_WIDTH,
-            false,
-            !submitting && !modal.runtimes.is_empty(),
-            picker,
-            cx,
-        );
 
         let runner_fields = div()
             .flex()
             .flex_col()
             .gap_5()
-            .child(modal_field("Runner", None, runner_picker))
-            .when(modal.runners.is_empty(), |fields| {
-                fields.child(
+            .child(
+                Field::new(
+                    "start-chat-runner-field",
+                    "Runner",
                     div()
-                        .mt(rems(-14. / 16.))
-                        .text_size(rems(11. / 16.))
-                        .text_color(theme::warning())
-                        .child("No runners yet. Create one from the runner page first."),
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(modal.runner_select.clone())
+                        .when(modal.runners.is_empty(), |field| {
+                            field.child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(theme::warning())
+                                    .child("No runners yet. Create one from the runner page first."),
+                            )
+                        }),
                 )
-            })
-            .child(modal_field(
-                "Agent",
-                Some("Overriding runs this persona on another agent; its model and effort become configurable below."),
-                runner_runtime_picker,
-            ))
-            .when_some(override_runtime, |fields, runtime| {
-                fields.child(self.render_model_effort_fields(
+                .focus_target(modal.runner_select.read(cx).focus_handle())
+                .emphasized(true),
+            )
+            .child(
+                Field::new(
+                    "start-chat-runner-agent-field",
+                    "Agent",
+                    modal.runner_runtime_select.clone(),
+                )
+                    .focus_target(modal.runner_runtime_select.read(cx).focus_handle())
+                    .emphasized(true)
+                    .subtitle("Overriding runs this persona on another agent; its model and effort become configurable below."),
+            )
+            .when_some(modal.override_runtime().cloned(), |fields, runtime| {
+                fields.child(render_shared_model_effort_fields(
                     &runtime,
-                    model_input.clone(),
-                    &modal.effort,
-                    picker,
-                    submitting,
+                    modal.model_field.clone(),
+                    modal.effort_select.clone(),
                     cx,
                 ))
             });
@@ -763,249 +812,200 @@ impl NativeRoot {
             .flex()
             .flex_col()
             .gap_5()
-            .child(modal_field("Agent", None, runtime_picker))
-            .when(modal.runtimes.is_empty(), |fields| {
-                fields.child(
+            .child(
+                Field::new(
+                    "start-chat-direct-agent-field",
+                    "Agent",
                     div()
-                        .mt(rems(-14. / 16.))
-                        .text_size(rems(11. / 16.))
-                        .text_color(theme::warning())
-                        .child(if modal.agents_checking {
-                            "Detecting agents…"
-                        } else {
-                            "No enabled agents detected. Configure one in Settings → Agents."
-                        }),
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(modal.runtime_select.clone())
+                        .when(modal.runtimes.is_empty(), |field| {
+                            field.child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(theme::warning())
+                                    .child(if modal.agents_checking {
+                                        "Detecting agents…"
+                                    } else {
+                                        "No enabled agents detected. Configure one in Settings → Agents."
+                                    }),
+                            )
+                        })
+                        .children(modal.agents_error.clone().map(|error| {
+                            div().text_size(px(11.)).text_color(theme::danger()).child(error)
+                        })),
                 )
-            })
-            .when_some(modal.agents_error.clone(), |fields, error| {
-                fields.child(
-                    div()
-                        .mt(rems(-14. / 16.))
-                        .text_size(rems(11. / 16.))
-                        .text_color(theme::danger())
-                        .child(error),
-                )
-            })
+                .focus_target(modal.runtime_select.read(cx).focus_handle())
+                .emphasized(true),
+            )
             .when_some(active_runtime, |fields, runtime| {
-                fields.child(self.render_model_effort_fields(
+                fields.child(render_shared_model_effort_fields(
                     &runtime,
-                    model_input,
-                    &modal.effort,
-                    picker,
-                    submitting,
+                    modal.model_field.clone(),
+                    modal.effort_select.clone(),
                     cx,
                 ))
             });
 
-        let content =
-            div()
-                .flex()
-                .flex_col()
-                .gap_5()
-                .children(modal.error.as_ref().map(|error| {
-                    div()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(theme::with_alpha(theme::danger(), 0.4))
-                        .bg(theme::with_alpha(theme::danger(), 0.1))
-                        .px_3()
-                        .py_2()
-                        .text_xs()
-                        .text_color(theme::danger())
-                        .child(SharedString::from(error.clone()))
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .w_full()
-                        .p(rems(2. / 16.))
-                        .rounded_md()
-                        .border_1()
-                        .border_color(theme::border())
-                        .bg(theme::bg())
-                        .child(self.render_mode_button(
-                            "Runner",
-                            ChatMode::Runner,
-                            mode,
-                            submitting,
-                            cx,
-                        ))
-                        .child(self.render_mode_button(
-                            "Direct",
-                            ChatMode::Runtime,
-                            mode,
-                            submitting,
-                            cx,
-                        )),
-                )
-                .child(match mode {
-                    ChatMode::Runner => runner_fields.into_any_element(),
-                    ChatMode::Runtime => direct_fields.into_any_element(),
-                })
-                .child(modal_field(
-                    "Chat name",
-                    Some("Optional. Leave blank to use the default label."),
-                    title_input,
-                ))
-                .child(modal_field(
-                    "Working directory",
-                    None,
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .w_full()
-                        .child(div().flex_1().min_w(px(0.)).child(cwd_input))
-                        .child(
-                            modal_button("browse-start-chat-cwd", "Browse…", false, submitting)
-                                .when(!submitting, |button| {
-                                    button.on_click(cx.listener(|this, _, _, cx| {
-                                        this.browse_start_chat_cwd(cx);
-                                    }))
-                                }),
-                        ),
-                ))
-                .child(
-                    div()
-                        .mt(rems(-14. / 16.))
-                        .text_size(rems(11. / 16.))
-                        .text_color(theme::muted())
-                        .child("Leave blank to use the default working directory."),
-                );
-
-        div()
-            .absolute()
-            .left_0()
-            .top_0()
-            .size_full()
+        let root = cx.entity();
+        let browse_root = root.clone();
+        let content = div()
             .flex()
-            .items_center()
-            .justify_center()
-            .p_4()
-            .bg(gpui::rgba(0x00000099))
-            .occlude()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| this.close_start_chat_modal(window, cx)),
-            )
+            .flex_col()
+            .gap_5()
+            .on_key_down(cx.listener(Self::on_start_chat_key_down))
+            .children(modal.error.as_ref().map(|error| {
+                div()
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(theme::with_alpha(theme::danger(), 0.4))
+                    .bg(theme::with_alpha(theme::danger(), 0.1))
+                    .px_3()
+                    .py_2()
+                    .text_size(px(12.))
+                    .text_color(theme::danger())
+                    .child(SharedString::from(error.clone()))
+            }))
             .child(
                 div()
-                    .w(rems(MODAL_WIDTH / 16.))
-                    .h(rems(650. / 16.))
-                    .max_h(relative(0.85))
+                    .flex()
+                    .w_full()
+                    .p(px(2.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(theme::border())
+                    .bg(theme::bg())
+                    .child(self.render_mode_button(
+                        "Runner",
+                        ChatMode::Runner,
+                        mode,
+                        submitting,
+                        modal.runner_mode_focus.clone(),
+                        cx,
+                    ))
+                    .child(self.render_mode_button(
+                        "Direct",
+                        ChatMode::Runtime,
+                        mode,
+                        submitting,
+                        modal.direct_mode_focus.clone(),
+                        cx,
+                    )),
+            )
+            .child(match mode {
+                ChatMode::Runner => runner_fields.into_any_element(),
+                ChatMode::Runtime => direct_fields.into_any_element(),
+            })
+            .child(
+                Field::new("start-chat-title-field", "Chat name", modal.title.clone())
+                    .focus_target(modal.title.read(cx).focus_handle())
+                    .emphasized(true)
+                    .subtitle("Optional. Leave blank to use the default label."),
+            )
+            .child(
+                Field::new(
+                    "start-chat-working-dir-field",
+                    "Working directory",
+                    WorkingDirField::new(
+                        modal.cwd.clone(),
+                        true,
+                        submitting,
+                        Rc::new(move |_, cx| {
+                            browse_root.update(cx, |this, cx| this.browse_start_chat_cwd(cx));
+                        }),
+                    )
+                    .browse_focus(modal.browse_focus.clone()),
+                )
+                .focus_target(modal.cwd.read(cx).focus_handle())
+                .emphasized(true)
+                .subtitle("Leave blank to use the default working directory."),
+            );
+
+        let close_root = root.clone();
+        let cancel_root = root.clone();
+        let submit_root = root;
+        let title = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_4()
+            .child(
+                div()
                     .flex()
                     .flex_col()
-                    .overflow_hidden()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(theme::muted())
-                    .bg(theme::composer_bg())
-                    .shadow_lg()
-                    .on_key_down(cx.listener(Self::on_start_chat_key_down))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| this.dismiss_start_chat_picker(cx)),
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                            .child("Start a chat"),
                     )
                     .child(
                         div()
-                            .flex_none()
-                            .h(rems(74. / 16.))
-                            .px_6()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .border_b_1()
-                            .border_color(theme::border())
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .text_size(rems(1.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(theme::text())
-                                            .child("Start a chat"),
-                                    )
-                                    .child(
-                                        div().text_xs().text_color(theme::muted()).child(
-                                            "Spawns a direct PTY in the selected directory.",
-                                        ),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .id("close-start-chat")
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .size(rems(28. / 16.))
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .text_size(rems(18. / 16.))
-                                    .text_color(theme::muted())
-                                    .hover(|button| {
-                                        button.bg(theme::border()).text_color(theme::text())
-                                    })
-                                    .child("×")
-                                    .when(!submitting, |button| {
-                                        button.on_click(cx.listener(|this, _, window, cx| {
-                                            this.close_start_chat_modal(window, cx);
-                                        }))
-                                    }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("start-chat-modal-content")
-                            .flex_1()
-                            .min_h(px(0.))
-                            .overflow_y_scroll()
-                            .px_6()
-                            .py_5()
-                            .child(content),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .h(rems(4.))
-                            .px_6()
-                            .flex()
-                            .items_center()
-                            .justify_end()
-                            .gap_2()
-                            .border_t_1()
-                            .border_color(theme::border())
-                            .bg(theme::bg())
-                            .child(
-                                modal_button("cancel-start-chat", "Cancel", false, submitting)
-                                    .when(!submitting, |button| {
-                                        button.on_click(cx.listener(|this, _, window, cx| {
-                                            this.close_start_chat_modal(window, cx);
-                                        }))
-                                    }),
-                            )
-                            .child(
-                                modal_button(
-                                    "submit-start-chat",
-                                    if submitting {
-                                        "Starting…"
-                                    } else {
-                                        "Start chat"
-                                    },
-                                    true,
-                                    !can_submit,
-                                )
-                                .when(can_submit, |button| {
-                                    button.on_click(cx.listener(|this, _, window, cx| {
-                                        this.submit_start_chat(window, cx);
-                                    }))
-                                }),
-                            ),
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::NORMAL)
+                            .text_color(theme::muted())
+                            .child("Spawns a direct PTY in the selected directory."),
                     ),
             )
-            .into_any_element()
+            .child(
+                IconButton::new("close-start-chat", "close.svg")
+                    .focus_handle(modal.close_focus.clone())
+                    .tooltip("Close start chat")
+                    .disabled(submitting)
+                    .on_press(move |window, cx| {
+                        close_root.update(cx, |this, cx| this.close_start_chat_modal(window, cx));
+                    }),
+            );
+        let footer = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                Button::new("cancel-start-chat", "Cancel")
+                    .focus_handle(modal.cancel_focus.clone())
+                    .disabled(submitting)
+                    .on_press(move |window, cx| {
+                        cancel_root.update(cx, |this, cx| this.close_start_chat_modal(window, cx));
+                    }),
+            )
+            .child(
+                Button::new(
+                    "submit-start-chat",
+                    if submitting {
+                        "Starting…"
+                    } else {
+                        "Start chat"
+                    },
+                )
+                .focus_handle(modal.submit_focus.clone())
+                .variant(ButtonVariant::Primary)
+                .disabled(!can_submit)
+                .on_press(move |window, cx| {
+                    submit_root.update(cx, |this, cx| this.submit_start_chat(window, cx));
+                }),
+            );
+        let modal_close_root = cx.entity();
+        Modal::new(
+            title,
+            content,
+            Rc::new(move |window, cx| {
+                modal_close_root.update(cx, |this, cx| this.close_start_chat_modal(window, cx));
+            }),
+        )
+        .width(OverlayWidth::Custom(MODAL_WIDTH))
+        .busy(submitting)
+        .focus_order(if submitting {
+            Vec::new()
+        } else {
+            start_chat_focus_order(modal, cx)
+        })
+        .scrollbar(modal.scroll_handle.clone(), modal.scrollbar.clone())
+        .footer(footer)
+        .into_any_element()
     }
 
     fn render_mode_button(
@@ -1014,13 +1014,20 @@ impl NativeRoot {
         mode: ChatMode,
         active: ChatMode,
         disabled: bool,
+        focus_handle: FocusHandle,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        div()
+        let root = cx.entity();
+        let key_root = root.clone();
+        let click_focus = focus_handle.clone();
+        let mut button = div()
             .id(match mode {
                 ChatMode::Runner => "start-chat-mode-runner",
                 ChatMode::Runtime => "start-chat-mode-runtime",
             })
+            .track_focus(&focus_handle)
+            .tab_index(0)
+            .tab_stop(!disabled)
             .flex_1()
             .flex()
             .items_center()
@@ -1029,406 +1036,223 @@ impl NativeRoot {
             .rounded_md()
             .text_xs()
             .font_weight(FontWeight::SEMIBOLD)
+            .on_mouse_down(MouseButton::Left, move |_, window, _| {
+                click_focus.focus(window);
+            })
             .text_color(if active == mode {
                 theme::text()
             } else {
                 theme::muted()
             })
             .when(active == mode, |button| button.bg(theme::border()))
-            .when(!disabled, |button| {
-                button
-                    .cursor_pointer()
-                    .hover(|button| button.text_color(theme::text()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.set_start_chat_mode(mode, cx);
-                    }))
-            })
-            .child(label)
-            .into_any_element()
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn render_modal_select(
-        &self,
-        id: &'static str,
-        picker_kind: ModalPicker,
-        selected_label: String,
-        selected_description: Option<String>,
-        selected_value: String,
-        choices: Vec<ModalChoice>,
-        width: f32,
-        detailed: bool,
-        enabled: bool,
-        open_picker: Option<ModalPicker>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let open = open_picker == Some(picker_kind);
-        let button = div()
-            .id(id)
-            .w(rems(width / 16.))
-            .h(rems(if detailed { 52. / 16. } else { 36. / 16. }))
-            .px_3()
-            .flex()
-            .items_center()
-            .gap_3()
-            .rounded_md()
-            .border_1()
-            .border_color(if open {
-                theme::muted()
-            } else {
-                theme::border()
-            })
-            .bg(theme::bg())
-            .opacity(if enabled { 1. } else { 0.6 })
-            .when(enabled, |button| {
-                button
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .cursor_pointer()
-                    .hover(|button| button.border_color(theme::muted()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_start_chat_picker(picker_kind, cx);
-                    }))
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .flex()
-                    .flex_col()
-                    .justify_center()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(rems(13. / 16.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme::text())
-                            .child(selected_label),
-                    )
-                    .children(selected_description.map(|description| {
-                        div()
-                            .truncate()
-                            .text_size(rems(11. / 16.))
-                            .text_color(theme::muted())
-                            .child(description)
-                    })),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_sm()
-                    .text_color(theme::muted())
-                    .child("⌄"),
-            );
-
-        let menu = open.then(|| {
-            deferred(
-                anchored()
-                    .position_mode(AnchoredPositionMode::Local)
-                    .offset(point(
-                        px(0.),
-                        px((if detailed { 56. } else { 40. }) * self.settings.app_zoom),
-                    ))
-                    .child(
-                        div()
-                            .id("start-chat-options-menu")
-                            .w(rems(width / 16.))
-                            .max_h(rems(14.))
-                            .overflow_y_scroll()
-                            .p_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(theme::border())
-                            .bg(theme::composer_bg())
-                            .shadow_lg()
-                            .occlude()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .children(choices.into_iter().enumerate().map(
-                                move |(index, choice)| {
-                                    let active = choice.value == selected_value;
-                                    let value = choice.value.clone();
-                                    div()
-                                        .id(SharedString::from(format!(
-                                            "start-chat-option-{}-{index}",
-                                            picker_kind as usize
-                                        )))
-                                        .w_full()
-                                        .px_3()
-                                        .py_2()
-                                        .rounded_md()
-                                        .cursor_pointer()
-                                        .when(active, |row| row.bg(theme::border()))
-                                        .hover(|row| row.bg(theme::border()))
-                                        .child(
-                                            div()
-                                                .truncate()
-                                                .text_size(rems(13. / 16.))
-                                                .text_color(theme::text())
-                                                .child(choice.label),
-                                        )
-                                        .children(choice.description.map(|description| {
-                                            div()
-                                                .truncate()
-                                                .text_size(rems(11. / 16.))
-                                                .text_color(theme::muted())
-                                                .child(description)
-                                        }))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.select_start_chat_choice(picker_kind, &value, cx);
-                                        }))
-                                },
-                            )),
-                    ),
-            )
-            .with_priority(2)
-        });
-        div()
-            .relative()
-            .w(rems(width / 16.))
-            .child(button)
-            .children(menu)
-            .into_any_element()
-    }
-
-    fn render_model_effort_fields(
-        &self,
-        runtime: &RuntimeCatalogEntry,
-        model_input: Entity<ModalTextInput>,
-        effort: &str,
-        open_picker: Option<ModalPicker>,
-        submitting: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let effort_options =
-            effort_options_for_runtime(std::slice::from_ref(runtime), &runtime.name);
-        let has_effort = !effort_options.is_empty();
-        let model_width = if has_effort { 232. } else { FIELD_WIDTH };
-        let selected_model = model_input.read(cx).text().to_owned();
-        let model_choices = runtime.models.iter().map(option_choice).collect::<Vec<_>>();
-        let model_menu = (open_picker == Some(ModalPicker::Model)).then(|| {
-            deferred(
-                anchored()
-                    .position_mode(AnchoredPositionMode::Local)
-                    .offset(point(px(0.), px(40. * self.settings.app_zoom)))
-                    .child(
-                        div()
-                            .id("start-chat-model-options-menu")
-                            .w(rems(model_width / 16.))
-                            .max_h(rems(14.))
-                            .overflow_y_scroll()
-                            .p_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(theme::border())
-                            .bg(theme::composer_bg())
-                            .shadow_lg()
-                            .occlude()
-                            .children(model_choices.into_iter().enumerate().map(
-                                |(index, choice)| {
-                                    let active = choice.value == selected_model;
-                                    let value = choice.value.clone();
-                                    div()
-                                        .id(("start-chat-model-option", index))
-                                        .w_full()
-                                        .px_3()
-                                        .py_2()
-                                        .rounded_md()
-                                        .cursor_pointer()
-                                        .when(active, |row| row.bg(theme::border()))
-                                        .hover(|row| row.bg(theme::border()))
-                                        .child(
-                                            div()
-                                                .truncate()
-                                                .text_size(rems(13. / 16.))
-                                                .text_color(theme::text())
-                                                .child(choice.label),
-                                        )
-                                        .children(choice.description.map(|description| {
-                                            div()
-                                                .truncate()
-                                                .text_size(rems(11. / 16.))
-                                                .text_color(theme::muted())
-                                                .child(description)
-                                        }))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            cx.stop_propagation();
-                                            this.select_start_chat_choice(
-                                                ModalPicker::Model,
-                                                &value,
-                                                cx,
-                                            );
-                                        }))
-                                },
-                            )),
-                    ),
-            )
-            .with_priority(2)
-        });
-        let model = div()
-            .id("start-chat-model-field")
-            .relative()
-            .w(rems(model_width / 16.))
-            .flex()
-            .items_center()
-            .child(div().flex_1().min_w(px(0.)).child(model_input))
-            .child(
-                div()
-                    .id("start-chat-model-options")
-                    .absolute()
-                    .right(rems(6. / 16.))
-                    .top(rems(6. / 16.))
-                    .size(rems(1.5))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_md()
-                    .text_sm()
-                    .text_color(theme::muted())
-                    .when(!submitting, |button| {
-                        button
-                            .cursor_pointer()
-                            .hover(|button| button.bg(theme::border()))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.toggle_start_chat_picker(ModalPicker::Model, cx);
-                            }))
-                    })
-                    .child("⌄"),
-            )
-            .children(model_menu);
-
-        let fields = div()
-            .flex()
-            .items_start()
-            .gap_3()
-            .child(modal_field("Model", None, model));
-        if !has_effort {
-            return fields.into_any_element();
+            .opacity(if disabled { 0.6 } else { 1. })
+            .focus_visible(|button| button.text_color(theme::text()));
+        if !disabled {
+            button = button
+                .cursor_pointer()
+                .hover(|button| button.text_color(theme::text()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_start_chat_mode(mode, cx);
+                }))
+                .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        cx.stop_propagation();
+                        key_root.update(cx, |this, cx| this.set_start_chat_mode(mode, cx));
+                    }
+                });
         }
-        let effort_choices = effort_options.iter().map(option_choice).collect::<Vec<_>>();
-        let effort_label = effort_options
-            .iter()
-            .find(|option| option.value == effort)
-            .map(|option| option.label.clone())
-            .unwrap_or_else(|| "default".into());
-        fields
-            .child(modal_field(
-                "Thinking effort",
-                None,
-                self.render_modal_select(
-                    "start-chat-effort",
-                    ModalPicker::Effort,
-                    effort_label,
-                    None,
-                    effort.to_owned(),
-                    effort_choices,
-                    232.,
-                    false,
-                    !submitting,
-                    open_picker,
-                    cx,
-                ),
-            ))
-            .into_any_element()
+        button.child(label).into_any_element()
     }
 }
 
-fn modal_field(
-    label: &'static str,
-    subtitle: Option<&'static str>,
-    child: impl IntoElement,
+fn selection_handler(root: &Entity<NativeRoot>, selection: StartChatSelection) -> SelectHandler {
+    let root = root.clone();
+    Rc::new(move |value, _, cx| {
+        root.update(cx, |this, cx| {
+            this.select_start_chat_choice(selection, &value, cx)
+        });
+    })
+}
+
+fn runner_options(runners: &[Runner]) -> Vec<SelectOption> {
+    runners
+        .iter()
+        .map(|runner| {
+            SelectOption::new(runner.id.clone(), format!("@{}", runner.handle))
+                .description(summarize_runner(runner))
+        })
+        .collect()
+}
+
+fn runtime_options(runtimes: &[RuntimeCatalogEntry]) -> Vec<SelectOption> {
+    runtimes
+        .iter()
+        .map(|runtime| SelectOption::new(runtime.name.clone(), runtime.display_name.clone()))
+        .collect()
+}
+
+fn runner_runtime_options(
+    runtimes: &[RuntimeCatalogEntry],
+    runner: Option<&Runner>,
+) -> Vec<SelectOption> {
+    let suffix = runner
+        .map(|runner| format!(" ({})", runtime_display_name(runtimes, &runner.runtime)))
+        .unwrap_or_default();
+    std::iter::once(SelectOption::new("", format!("Runner default{suffix}")))
+        .chain(runtime_options(runtimes))
+        .collect()
+}
+
+fn option_select_options(options: &[RuntimeCatalogOption]) -> Vec<SelectOption> {
+    options
+        .iter()
+        .map(|option| {
+            let mut select = SelectOption::new(option.value.clone(), option.label.clone());
+            if let Some(description) = &option.description {
+                select = select.description(description.clone());
+            }
+            select
+        })
+        .collect()
+}
+
+fn sync_runtime_controls(modal: &mut StartChatModal, cx: &mut Context<NativeRoot>) {
+    let runtime = modal.active_runtime().cloned();
+    let models = runtime
+        .as_ref()
+        .map(|runtime| runtime.models.as_slice())
+        .unwrap_or_default();
+    let efforts = runtime
+        .as_ref()
+        .map(|runtime| runtime.efforts.as_slice())
+        .unwrap_or_default();
+    modal.model_field.update(cx, |field, field_cx| {
+        field.set_suggestions(models, field_cx);
+        field.set_disabled(modal.submitting || runtime.is_none(), field_cx);
+    });
+    modal.effort_select.update(cx, |select, select_cx| {
+        select.set_options(option_select_options(efforts), select_cx);
+        select.set_value(modal.effort.clone(), select_cx);
+        select.set_disabled(modal.submitting || efforts.is_empty(), select_cx);
+    });
+}
+
+fn set_start_chat_controls_disabled(
+    modal: &mut StartChatModal,
+    disabled: bool,
+    cx: &mut Context<NativeRoot>,
+) {
+    modal
+        .title
+        .update(cx, |field, field_cx| field.set_disabled(disabled, field_cx));
+    modal
+        .cwd
+        .update(cx, |field, field_cx| field.set_disabled(disabled, field_cx));
+    modal.runner_select.update(cx, |select, select_cx| {
+        select.set_disabled(disabled || modal.runners.is_empty(), select_cx)
+    });
+    modal.runner_runtime_select.update(cx, |select, select_cx| {
+        select.set_disabled(disabled, select_cx)
+    });
+    modal.runtime_select.update(cx, |select, select_cx| {
+        select.set_disabled(disabled || modal.runtimes.is_empty(), select_cx)
+    });
+    sync_runtime_controls(modal, cx);
+}
+
+fn start_chat_focus_order(modal: &StartChatModal, cx: &Context<NativeRoot>) -> Vec<FocusHandle> {
+    let mut order = vec![
+        modal.close_focus.clone(),
+        modal.runner_mode_focus.clone(),
+        modal.direct_mode_focus.clone(),
+    ];
+    match modal.mode {
+        ChatMode::Runner => {
+            if !modal.runners.is_empty() {
+                order.push(modal.runner_select.read(cx).focus_handle());
+            }
+            order.push(modal.runner_runtime_select.read(cx).focus_handle());
+        }
+        ChatMode::Runtime => {
+            if !modal.runtimes.is_empty() {
+                order.push(modal.runtime_select.read(cx).focus_handle());
+            }
+        }
+    }
+    if let Some(runtime) = modal.active_runtime() {
+        order.push(modal.model.read(cx).focus_handle());
+        if !runtime.efforts.is_empty() {
+            order.push(modal.effort_select.read(cx).focus_handle());
+        }
+    }
+    order.push(modal.title.read(cx).focus_handle());
+    order.push(modal.cwd.read(cx).focus_handle());
+    order.push(modal.browse_focus.clone());
+    order.push(modal.cancel_focus.clone());
+    if modal.can_submit() {
+        order.push(modal.submit_focus.clone());
+    }
+    order
+}
+
+fn render_shared_model_effort_fields(
+    runtime: &RuntimeCatalogEntry,
+    model: Entity<ModelField>,
+    effort: Entity<StyledSelect>,
+    cx: &Context<NativeRoot>,
 ) -> AnyElement {
+    let has_effort = !runtime.efforts.is_empty();
+    let model_input = model.read(cx).input();
+    let model_focus = model_input.read(cx).focus_handle();
+    let effort_focus = effort.read(cx).focus_handle();
     div()
         .flex()
-        .flex_col()
-        .gap_2()
+        .items_start()
+        .gap_3()
         .child(
             div()
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme::text())
-                .child(label),
+                .w(px(if has_effort { 232. } else { FIELD_WIDTH }))
+                .child(
+                    Field::new("start-chat-model-field", "Model", model)
+                        .focus_target(model_focus)
+                        .emphasized(true),
+                ),
         )
-        .child(child)
-        .children(subtitle.map(|subtitle| {
-            div()
-                .text_size(rems(11. / 16.))
-                .text_color(theme::muted())
-                .child(subtitle)
-        }))
+        .when(has_effort, |fields| {
+            fields.child(
+                div().w(px(232.)).child(
+                    Field::new("start-chat-effort-field", "Thinking effort", effort)
+                        .focus_target(effort_focus)
+                        .emphasized(true),
+                ),
+            )
+        })
         .into_any_element()
 }
 
-fn modal_button(
-    id: &'static str,
-    label: &'static str,
-    primary: bool,
-    disabled: bool,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .h(rems(34. / 16.))
-        .px_4()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_md()
-        .border_1()
-        .border_color(if primary {
-            theme::accent()
-        } else {
-            theme::border()
-        })
-        .bg(if primary {
-            theme::accent()
-        } else {
-            theme::composer_bg()
-        })
-        .opacity(if disabled { 0.5 } else { 1. })
-        .when(!disabled, |button| {
-            button.cursor_pointer().hover(|button| {
-                if primary {
-                    button.opacity(0.9)
-                } else {
-                    button.bg(theme::border())
-                }
-            })
-        })
-        .text_size(rems(13. / 16.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(if primary {
-            theme::accent_ink()
-        } else {
-            theme::text()
-        })
-        .child(label)
-}
-
-fn load_selectable_runtimes(core: &AppCore) -> (Vec<RuntimeCatalogEntry>, bool, Option<String>) {
+fn load_selectable_runtimes(
+    core: &AppCore,
+    settings: &AppSettings,
+) -> (Vec<RuntimeCatalogEntry>, bool, Option<String>) {
     let checking = core
         .runtime_discovery
         .read()
         .map(|discovery| discovery.checking)
         .unwrap_or(false);
-    match runner_backend::ops::runtime::selectable_runtime_catalog(core, None) {
-        Ok(catalog) => (catalog, checking, None),
+    match runner_backend::ops::runtime::runtime_catalog(core) {
+        Ok(catalog) => {
+            let enabled = catalog
+                .iter()
+                .filter(|runtime| settings.is_agent_enabled(&runtime.name, runtime.default_enabled))
+                .map(|runtime| runtime.name.clone())
+                .collect::<Vec<_>>();
+            (
+                filter_selectable_runtime_catalog(catalog, Some(&enabled)),
+                checking,
+                None,
+            )
+        }
         Err(error) => (Vec::new(), checking, Some(error.to_string())),
-    }
-}
-
-fn runtime_choice(runtime: &RuntimeCatalogEntry) -> ModalChoice {
-    ModalChoice {
-        value: runtime.name.clone(),
-        label: runtime.display_name.clone(),
-        description: None,
-    }
-}
-
-fn option_choice(option: &RuntimeCatalogOption) -> ModalChoice {
-    ModalChoice {
-        value: option.value.clone(),
-        label: option.label.clone(),
-        description: option.description.clone(),
     }
 }
 
@@ -1470,11 +1294,7 @@ fn auto_title_after_selection(edited: bool, current: &str, derived: String) -> S
     }
 }
 
-fn update_auto_title(
-    title: &Entity<ModalTextInput>,
-    derived: String,
-    cx: &mut Context<NativeRoot>,
-) {
+fn update_auto_title(title: &Entity<TextField>, derived: String, cx: &mut Context<NativeRoot>) {
     let (edited, next) = {
         let input = title.read(cx);
         (
@@ -1488,15 +1308,17 @@ fn update_auto_title(
     title.update(cx, |input, input_cx| input.reset(next, input_cx));
 }
 
-fn cwd_placeholder(mode: ChatMode, runner: Option<&Runner>) -> String {
+fn cwd_placeholder(mode: ChatMode, runner: Option<&Runner>, default_path: &str) -> String {
     match mode {
-        ChatMode::Runner => runner
-            .and_then(|runner| runner.working_dir.clone())
-            .unwrap_or_else(|| "(no working directory)".into()),
-        ChatMode::Runtime => "(no working directory)".into(),
+        ChatMode::Runner => working_dir_placeholder(
+            runner.and_then(|runner| runner.working_dir.as_deref()),
+            default_path,
+        ),
+        ChatMode::Runtime => working_dir_placeholder(None, default_path),
     }
 }
 
+#[cfg(test)]
 fn effort_options_for_runtime<'a>(
     runtimes: &'a [RuntimeCatalogEntry],
     name: &str,
