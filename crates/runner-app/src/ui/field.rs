@@ -1,12 +1,14 @@
+use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, rems, svg, AnyElement, App, Bounds, BoxShadow, ClipboardItem, Context,
+    canvas, div, point, px, rems, svg, AnyElement, App, Bounds, BoxShadow, ClipboardItem, Context,
     CursorStyle, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
-    FontWeight, IntoElement, KeyDownEvent, MouseButton, Pixels, Point, Render, RenderOnce,
-    ScrollHandle, SharedString, UTF16Selection, Window,
+    FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, Render, RenderOnce, ScrollHandle, SharedString, UTF16Selection,
+    Window, WrappedLine,
 };
 use unicode_segmentation::UnicodeSegmentation as _;
 
@@ -171,6 +173,39 @@ impl TextBuffer {
         self.marked = None;
     }
 
+    fn select_word_at(&mut self, position: usize) {
+        let position = position.min(self.text.len());
+        let range = self
+            .text
+            .split_word_bound_indices()
+            .find_map(|(start, segment)| {
+                let end = start + segment.len();
+                (start <= position && (position < end || position == self.text.len()))
+                    .then_some(start..end)
+            })
+            .unwrap_or(position..position);
+        self.selection = Selection {
+            anchor: range.start,
+            caret: range.end,
+        };
+        self.marked = None;
+    }
+
+    fn select_line_at(&mut self, position: usize) {
+        let position = position.min(self.text.len());
+        let start = self.text[..position]
+            .rfind('\n')
+            .map_or(0, |offset| offset + 1);
+        let end = self.text[position..]
+            .find('\n')
+            .map_or(self.text.len(), |offset| position + offset + 1);
+        self.selection = Selection {
+            anchor: start,
+            caret: end,
+        };
+        self.marked = None;
+    }
+
     fn move_left(&mut self, boundary: Boundary, extend: bool) {
         if !extend && !self.selection.is_empty() {
             let start = self.selection.range().start;
@@ -300,6 +335,107 @@ impl TextFieldKind {
     }
 }
 
+struct TextFieldLayoutLine {
+    start: usize,
+    top: Pixels,
+    layout: WrappedLine,
+}
+
+struct TextFieldLayout {
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    lines: Vec<TextFieldLayoutLine>,
+    text_len: usize,
+    multiline: bool,
+}
+
+impl TextFieldLayout {
+    fn new(
+        text: &str,
+        kind: TextFieldKind,
+        bare: bool,
+        right_padding: f32,
+        scroll_offset: Point<Pixels>,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+    ) -> Self {
+        let rem_size = window.rem_size();
+        let left_padding = if bare { px(0.) } else { rem_size * (10. / 16.) };
+        let right_padding = if bare {
+            px(0.)
+        } else {
+            rem_size * (right_padding / 16.)
+        };
+        let top_padding = if bare || !kind.multiline() {
+            px(0.)
+        } else {
+            rem_size * (6. / 16.)
+        };
+        let text_style = window.text_style();
+        let font_size = text_style.font_size.to_pixels(rem_size);
+        let line_height = if kind.multiline() {
+            rem_size * (20. / 16.)
+        } else {
+            text_style.line_height_in_pixels(rem_size)
+        };
+        let content_width = (bounds.size.width - left_padding - right_padding).max(px(0.));
+        let shaped = window
+            .text_system()
+            .shape_text(
+                text.to_owned().into(),
+                font_size,
+                &[text_style.to_run(text.len())],
+                kind.multiline().then_some(content_width),
+                None,
+            )
+            .unwrap_or_default();
+        let mut start = 0;
+        let mut top = px(0.);
+        let mut lines = Vec::with_capacity(shaped.len());
+        for (source, layout) in text.split('\n').zip(shaped) {
+            let row_count = layout.wrap_boundaries().len() + 1;
+            lines.push(TextFieldLayoutLine { start, top, layout });
+            start += source.len() + usize::from(start + source.len() < text.len());
+            top += line_height * row_count as f32;
+        }
+        Self {
+            origin: bounds.origin + point(left_padding, top_padding) + scroll_offset,
+            line_height,
+            lines,
+            text_len: text.len(),
+            multiline: kind.multiline(),
+        }
+    }
+
+    fn index_for_point(&self, screen_point: Point<Pixels>) -> usize {
+        let local = screen_point - self.origin;
+        if !self.multiline {
+            return self.lines.first().map_or(0, |line| {
+                line.start
+                    + line
+                        .layout
+                        .closest_index_for_position(point(local.x, px(0.)), self.line_height)
+                        .unwrap_or_else(|index| index)
+            });
+        }
+        if local.y < px(0.) {
+            return 0;
+        }
+        for line in &self.lines {
+            let height = self.line_height * (line.layout.wrap_boundaries().len() + 1) as f32;
+            if local.y < line.top + height {
+                let relative = point(local.x, local.y - line.top);
+                return line.start
+                    + line
+                        .layout
+                        .closest_index_for_position(relative, self.line_height)
+                        .unwrap_or_else(|index| index);
+            }
+        }
+        self.text_len
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum FieldValidation {
     #[default]
@@ -340,6 +476,8 @@ pub struct TextField {
     disabled_cursor_not_allowed: bool,
     scroll_handle: ScrollHandle,
     scrollbar: Option<Entity<Scrollbar>>,
+    selecting: bool,
+    text_layout: Rc<RefCell<Option<TextFieldLayout>>>,
 }
 
 impl TextField {
@@ -367,6 +505,8 @@ impl TextField {
             disabled_cursor_not_allowed: false,
             scroll_handle: ScrollHandle::new(),
             scrollbar: None,
+            selecting: false,
+            text_layout: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -389,6 +529,10 @@ impl TextField {
 
     pub fn edited(&self) -> bool {
         self.buffer.edited
+    }
+
+    pub fn mark_clean(&mut self) {
+        self.buffer.edited = false;
     }
 
     pub fn is_composing(&self) -> bool {
@@ -423,6 +567,12 @@ impl TextField {
 
     pub fn reset(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
         self.buffer.reset(text);
+        cx.notify();
+    }
+
+    pub fn set_text(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.buffer.reset(text);
+        self.buffer.edited = true;
         cx.notify();
     }
 
@@ -543,7 +693,7 @@ impl TextField {
 
     fn on_mouse_down(
         &mut self,
-        _: &gpui::MouseDownEvent,
+        event: &MouseDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -551,8 +701,52 @@ impl TextField {
             return;
         }
         self.focus_handle.focus(window);
-        self.buffer.move_to_end();
+        let position = self
+            .text_layout
+            .borrow()
+            .as_ref()
+            .map_or(self.buffer.text.len(), |layout| {
+                layout.index_for_point(event.position)
+            });
+        self.selecting = true;
+        match event.click_count {
+            2 => self.buffer.select_word_at(position),
+            count if count >= 3 => self.buffer.select_line_at(position),
+            _ => self.buffer.move_to(position, event.modifiers.shift),
+        }
+        cx.stop_propagation();
         cx.notify();
+    }
+
+    fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.selecting || !event.dragging() {
+            return;
+        }
+        let Some(position) = self
+            .text_layout
+            .borrow()
+            .as_ref()
+            .map(|layout| layout.index_for_point(event.position))
+        else {
+            return;
+        };
+        self.buffer.move_to(position, true);
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn on_mouse_up(
+        &mut self,
+        _event: &MouseUpEvent,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        self.selecting = false;
     }
 
     fn render_text(&self, focused: bool) -> AnyElement {
@@ -728,11 +922,19 @@ impl EntityInputHandler for TextField {
 
     fn character_index_for_point(
         &mut self,
-        _point: Point<Pixels>,
+        point: Point<Pixels>,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
-        Some(self.buffer.character_index_utf16())
+        self.text_layout.borrow().as_ref().map_or_else(
+            || Some(self.buffer.character_index_utf16()),
+            |layout| {
+                Some(text_util::offset_to_utf16(
+                    &self.buffer.text,
+                    layout.index_for_point(point),
+                ))
+            },
+        )
     }
 }
 
@@ -753,6 +955,12 @@ impl Render for TextField {
         }
         let multiline = self.kind != TextFieldKind::Input;
         let scrollbar = self.scrollbar.clone();
+        let text_layout = Rc::clone(&self.text_layout);
+        let layout_text = self.buffer.text.clone();
+        let layout_kind = self.kind;
+        let layout_bare = self.bare;
+        let layout_right_padding = self.right_padding;
+        let layout_scroll_handle = self.scroll_handle.clone();
         let height = if self.bare {
             20.
         } else {
@@ -809,6 +1017,9 @@ impl Render for TextField {
             .on_action(cx.listener(Self::on_paste))
             .on_action(cx.listener(Self::on_select_all))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .text_size(rems(self.text_size / 16.))
             .when(multiline, |input| input.line_height(rems(20. / 16.)))
             .text_color(theme::text())
@@ -831,7 +1042,21 @@ impl Render for TextField {
             .when(!self.disabled, |input| {
                 input.child(
                     canvas(
-                        |_, _, _| {},
+                        move |bounds, window, _| {
+                            text_layout.replace(Some(TextFieldLayout::new(
+                                &layout_text,
+                                layout_kind,
+                                layout_bare,
+                                layout_right_padding,
+                                if layout_kind.multiline() {
+                                    layout_scroll_handle.offset()
+                                } else {
+                                    Point::default()
+                                },
+                                bounds,
+                                window,
+                            )));
+                        },
                         move |bounds, _, window, cx| {
                             let focus = input_entity.read(cx).focus_handle.clone();
                             window.handle_input(
@@ -882,8 +1107,8 @@ impl Label {
         }
     }
 
-    pub fn hint(mut self, hint: impl Into<SharedString>, focus_handle: FocusHandle) -> Self {
-        self.hint = Some((hint.into(), focus_handle));
+    pub fn hint(mut self, hint: impl Into<SharedString>, focus: FocusHandle) -> Self {
+        self.hint = Some((hint.into(), focus));
         self
     }
 
@@ -933,7 +1158,7 @@ impl RenderOnce for Label {
                     hint_id,
                     hint,
                     div()
-                        .track_focus(&hint_focus)
+                        .track_focus(&focus)
                         .tab_index(0)
                         .tab_stop(true)
                         .flex()
@@ -954,7 +1179,12 @@ impl RenderOnce for Label {
                             hint_focus.focus(window);
                             cx.stop_propagation();
                         })
-                        .child(svg().path("info.svg").size(rems(14. / 16.))),
+                        .child(
+                            svg()
+                                .path("info.svg")
+                                .size(rems(14. / 16.))
+                                .text_color(theme::faint()),
+                        ),
                 )
                 .focus_handle(focus)
             }))
@@ -1013,8 +1243,8 @@ impl Field {
         }
     }
 
-    pub fn hint(mut self, hint: impl Into<SharedString>, focus_handle: FocusHandle) -> Self {
-        self.hint = Some((hint.into(), focus_handle));
+    pub fn hint(mut self, hint: impl Into<SharedString>, focus: FocusHandle) -> Self {
+        self.hint = Some((hint.into(), focus));
         self
     }
 
@@ -1068,22 +1298,15 @@ impl RenderOnce for Field {
 pub struct WorkingDirField {
     input: Entity<TextField>,
     disabled: bool,
-    single_line: bool,
     browse_focus: Option<FocusHandle>,
     on_browse: PressHandler,
 }
 
 impl WorkingDirField {
-    pub fn new(
-        input: Entity<TextField>,
-        single_line: bool,
-        disabled: bool,
-        on_browse: PressHandler,
-    ) -> Self {
+    pub fn new(input: Entity<TextField>, disabled: bool, on_browse: PressHandler) -> Self {
         Self {
             input,
             disabled,
-            single_line,
             browse_focus: None,
             on_browse,
         }
@@ -1100,12 +1323,11 @@ impl RenderOnce for WorkingDirField {
         let browse = Rc::clone(&self.on_browse);
         div()
             .flex()
+            .items_center()
             .gap(rems(8. / 16.))
-            .when(self.single_line, |field| field.items_center())
-            .when(!self.single_line, |field| field.items_start())
             .child(div().flex_1().min_w(px(0.)).child(self.input))
             .child(
-                Button::new("working-dir-browse", "Browse…")
+                Button::new("working-dir-browse", "Browse")
                     .when_some(self.browse_focus, |button, focus| {
                         button.focus_handle(focus)
                     })
@@ -1127,22 +1349,8 @@ pub fn working_dir_text_field(
     focus_handle: FocusHandle,
     text: impl Into<String>,
     placeholder: impl Into<SharedString>,
-    single_line: bool,
 ) -> TextField {
-    match working_dir_field_kind(single_line) {
-        TextFieldKind::Input => TextField::new(focus_handle, text, placeholder, true),
-        TextFieldKind::Textarea { rows } => {
-            TextField::textarea(focus_handle, text, placeholder, rows, true)
-        }
-    }
-}
-
-fn working_dir_field_kind(single_line: bool) -> TextFieldKind {
-    if single_line {
-        TextFieldKind::Input
-    } else {
-        TextFieldKind::Textarea { rows: 2 }
-    }
+    TextField::new(focus_handle, text, placeholder, true)
 }
 
 pub fn effective_working_dir(
@@ -1409,6 +1617,22 @@ mod tests {
     }
 
     #[test]
+    fn pointer_selection_uses_byte_safe_word_and_line_ranges() {
+        let mut input = TextBuffer::default();
+        input.reset("alpha 王菲\nbeta");
+
+        input.move_to("alpha ".len(), false);
+        input.move_to("alpha 王菲".len(), true);
+        assert_eq!(input.selected_text(), Some("王菲"));
+
+        input.select_word_at("alpha ".len());
+        assert_eq!(input.selected_text(), Some("王"));
+
+        input.select_line_at("alpha 王".len());
+        assert_eq!(input.selected_text(), Some("alpha 王菲\n"));
+    }
+
+    #[test]
     fn single_line_input_normalizes_commits_and_paste() {
         let mut input = TextBuffer::default();
         input.reset("");
@@ -1478,14 +1702,5 @@ mod tests {
             Some("/default".into())
         );
         assert_eq!(effective_working_dir("", false, ""), None);
-    }
-
-    #[test]
-    fn working_directory_control_kind_matches_main() {
-        assert_eq!(working_dir_field_kind(true), TextFieldKind::Input);
-        assert_eq!(
-            working_dir_field_kind(false),
-            TextFieldKind::Textarea { rows: 2 }
-        );
     }
 }

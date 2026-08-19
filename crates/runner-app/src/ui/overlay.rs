@@ -435,13 +435,13 @@ impl RenderOnce for ConfirmDialog {
                                     .child(self.title),
                             ),
                     )
-                    .child(
+                    .children((!self.body.is_empty()).then(|| {
                         div()
                             .text_size(rems(13. / 16.))
                             .line_height(rems(20. / 16.))
                             .text_color(theme::muted())
-                            .child(self.body),
-                    )
+                            .child(self.body)
+                    }))
                     .child(
                         div()
                             .flex()

@@ -162,9 +162,7 @@ impl RenderOnce for SessionOverlay {
                             .border_1()
                             .border_color(theme::border())
                             .bg(theme::panel())
-                            .px_5()
-                            .pt_5()
-                            .pb(rems(36. / 16.))
+                            .p_5()
                             .shadow_lg()
                             .child(
                                 div()

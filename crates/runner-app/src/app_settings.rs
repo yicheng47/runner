@@ -58,7 +58,7 @@ pub enum AppFontFamily {
 impl AppFontFamily {
     pub fn font(self) -> Font {
         let (family, named_fallback) = match self {
-            Self::Inter => ("Inter Variable", Some("Inter")),
+            Self::Inter => ("Inter", Some("Inter Variable")),
             Self::Geist => ("Geist Variable", Some("Geist")),
             Self::Roboto => ("Roboto Variable", Some("Roboto")),
             Self::SystemUi => (".SystemUIFont", None),
@@ -451,11 +451,11 @@ mod tests {
     #[test]
     fn app_fonts_preserve_the_react_fallback_chain() {
         let inter = AppFontFamily::Inter.font();
-        assert_eq!(inter.family.as_ref(), "Inter Variable");
+        assert_eq!(inter.family.as_ref(), "Inter");
         assert_eq!(
             inter.fallbacks.unwrap().fallback_list(),
             [
-                "Inter",
+                "Inter Variable",
                 ".SystemUIFont",
                 "Segoe UI",
                 "PingFang SC",

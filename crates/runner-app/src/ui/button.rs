@@ -53,6 +53,7 @@ pub struct Button {
     disabled: bool,
     loading: bool,
     focus_handle: Option<FocusHandle>,
+    tooltip: Option<SharedString>,
     on_press: Option<PressHandler>,
 }
 
@@ -67,6 +68,7 @@ impl Button {
             disabled: false,
             loading: false,
             focus_handle: None,
+            tooltip: None,
             on_press: None,
         }
     }
@@ -98,6 +100,11 @@ impl Button {
 
     pub fn focus_handle(mut self, focus_handle: FocusHandle) -> Self {
         self.focus_handle = Some(focus_handle);
+        self
+    }
+
+    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
         self
     }
 
@@ -134,6 +141,8 @@ impl RenderOnce for Button {
             ButtonSize::Md => (12., 14., 14.),
         };
         let mouse_focus = self.focus_handle.clone();
+        let tooltip_focus = self.focus_handle.clone();
+        let tooltip_id = (self.id.clone(), "tooltip");
         let spinner_id = (self.id.clone(), "loading");
         let icon = (!self.loading).then_some(self.icon).flatten();
         let mut button = div()
@@ -191,7 +200,7 @@ impl RenderOnce for Button {
             }
         }
 
-        button
+        let button = button
             .when(self.loading, |button| {
                 button.child(spinner(spinner_id, icon_size, foreground))
             })
@@ -203,7 +212,17 @@ impl RenderOnce for Button {
                         .text_color(foreground),
                 )
             })
-            .child(self.label)
+            .child(self.label);
+        if let Some(content) = self.tooltip {
+            let tooltip = Tooltip::new(tooltip_id, content, button);
+            if let Some(focus_handle) = tooltip_focus {
+                tooltip.focus_handle(focus_handle).into_any_element()
+            } else {
+                tooltip.into_any_element()
+            }
+        } else {
+            button.into_any_element()
+        }
     }
 }
 

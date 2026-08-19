@@ -102,6 +102,49 @@ pub fn list(conn: &Connection) -> Result<Vec<CrewListItem>> {
         .collect())
 }
 
+pub fn list_page(
+    conn: &Connection,
+    page: i64,
+    page_size: i64,
+    query: &str,
+) -> Result<super::ListPage<CrewListItem>> {
+    let pattern = super::escaped_like_pattern(query);
+    let total_count = repo::crew::count(conn)?;
+    let filtered_count = repo::crew::count_matching(conn, &pattern)?;
+    let (limit, offset) = super::page_limit_offset(page, page_size, filtered_count);
+    let rows = repo::crew::list_with_runner_count_page(conn, &pattern, limit, offset)?;
+    let crew_ids = rows
+        .iter()
+        .map(|(crew, _)| crew.id.clone())
+        .collect::<Vec<_>>();
+    let mut members_by_crew: std::collections::HashMap<String, Vec<CrewMemberPreview>> =
+        std::collections::HashMap::new();
+    for preview in repo::crew::list_member_previews_for_crews(conn, &crew_ids)? {
+        members_by_crew
+            .entry(preview.crew_id)
+            .or_default()
+            .push(CrewMemberPreview {
+                slot_handle: preview.slot_handle,
+                runner_handle: preview.runner_handle,
+                runtime: preview.runtime,
+                lead: preview.lead,
+            });
+    }
+    let items = rows
+        .into_iter()
+        .map(|(crew, runner_count)| CrewListItem {
+            members: members_by_crew.remove(&crew.id).unwrap_or_default(),
+            crew,
+            runner_count,
+        })
+        .collect();
+    Ok(super::ListPage {
+        items,
+        total_count,
+        filtered_count,
+    })
+}
+
 pub fn get(conn: &Connection, id: &str) -> Result<Crew> {
     repo::crew::get(conn, id)?.ok_or_else(|| Error::msg(format!("crew not found: {id}")))
 }
@@ -237,9 +280,14 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn crew_list(state: &AppCore) -> Result<Vec<CrewListItem>> {
+pub fn crew_list(
+    state: &AppCore,
+    page: i64,
+    page_size: i64,
+    query: &str,
+) -> Result<super::ListPage<CrewListItem>> {
     let conn = state.db.get()?;
-    list(&conn)
+    list_page(&conn, page, page_size, query)
 }
 
 pub fn crew_get(state: &AppCore, id: &str) -> Result<Crew> {
@@ -361,6 +409,93 @@ mod tests {
         assert_eq!(a_item.runner_count, 1);
         let b_item = items.iter().find(|i| i.crew.name == "B").unwrap();
         assert_eq!(b_item.runner_count, 0);
+    }
+
+    #[test]
+    fn list_page_filters_every_advertised_field_case_insensitively() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let target = create(
+            &conn,
+            CreateCrewInput {
+                name: "Name Needle".into(),
+                purpose: Some("Purpose Needle".into()),
+                goal: Some("Goal Needle".into()),
+                system_prompt_addendum: Some("System Prompt Needle".into()),
+            },
+        )
+        .unwrap();
+        create(
+            &conn,
+            CreateCrewInput {
+                name: "Decoy".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO runners (
+                id, handle, display_name, runtime, command,
+                created_at, updated_at
+             ) VALUES ('r-search', 'runner-needle', 'Runner', 'shell', 'sh',
+                       '2026-04-22T00:00:00Z', '2026-04-22T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO slots (
+                id, crew_id, runner_id, slot_handle, position, lead,
+                runtime_override, added_at
+             ) VALUES (
+                's-search', ?1, 'r-search', 'slot-needle', 0, 1,
+                'runtime-needle', '2026-04-22T00:00:00Z'
+             )",
+            params![target.id],
+        )
+        .unwrap();
+
+        for query in [
+            "NAME NEEDLE",
+            "purpose needle",
+            "goal needle",
+            "system prompt needle",
+            "slot-needle",
+            "runner-needle",
+            "runtime-needle",
+        ] {
+            let page = list_page(&conn, 1, 8, query).unwrap();
+            assert_eq!(page.filtered_count, 1, "query {query:?}");
+            assert_eq!(page.items[0].crew.id, target.id, "query {query:?}");
+            assert_eq!(page.items[0].members.len(), 1, "query {query:?}");
+        }
+    }
+
+    #[test]
+    fn list_page_applies_limit_offset_and_clamps_empty_pages() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        for index in 0..10 {
+            create(
+                &conn,
+                CreateCrewInput {
+                    name: format!("Crew {index:02}"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let all = list(&conn).unwrap();
+
+        let second = list_page(&conn, 2, 4, "").unwrap();
+        assert_eq!(second.total_count, 10);
+        assert_eq!(second.filtered_count, 10);
+        assert_eq!(second.items.len(), 4);
+        assert_eq!(second.items[0].crew.id, all[4].crew.id);
+        assert_eq!(second.items[3].crew.id, all[7].crew.id);
+
+        let clamped = list_page(&conn, 99, 8, "").unwrap();
+        assert_eq!(clamped.items.len(), 2);
+        assert_eq!(clamped.items[0].crew.id, all[8].crew.id);
     }
 
     #[test]

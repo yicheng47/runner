@@ -253,6 +253,9 @@ impl StyledSelect {
     }
 
     pub fn set_options(&mut self, options: Vec<SelectOption>, cx: &mut Context<Self>) {
+        if self.options == options {
+            return;
+        }
         self.options = options;
         if self.options.is_empty() {
             self.state.close();
@@ -265,6 +268,15 @@ impl StyledSelect {
         if disabled {
             self.state.close();
         }
+        cx.notify();
+    }
+
+    pub fn set_placeholder(
+        &mut self,
+        placeholder: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.placeholder = placeholder.into();
         cx.notify();
     }
 

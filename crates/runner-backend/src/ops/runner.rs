@@ -210,21 +210,27 @@ pub fn list(conn: &Connection) -> Result<Vec<Runner>> {
     repo::runner::list(conn).map_err(Into::into)
 }
 
-/// `list()` + `activity()` for every runner, in one IPC call. The Runners
-/// list page calls this on mount so each card's "N sessions / M missions"
-/// badge renders without a second-pass flicker. Activity is computed
-/// per row rather than via one giant JOIN — there are at most a few
-/// dozen runners and the queries are indexed; a JOIN would obscure the
-/// fact that `activity()` is the canonical aggregation and the two paths
-/// would drift over time.
-pub fn list_with_activity(conn: &Connection) -> Result<Vec<RunnerWithActivity>> {
-    let runners = list(conn)?;
-    let mut out = Vec::with_capacity(runners.len());
+pub fn list_with_activity_page(
+    conn: &Connection,
+    page: i64,
+    page_size: i64,
+    query: &str,
+) -> Result<super::ListPage<RunnerWithActivity>> {
+    let pattern = super::escaped_like_pattern(query);
+    let total_count = repo::runner::count(conn)?;
+    let filtered_count = repo::runner::count_matching(conn, &pattern)?;
+    let (limit, offset) = super::page_limit_offset(page, page_size, filtered_count);
+    let runners = repo::runner::list_page(conn, &pattern, limit, offset)?;
+    let mut items = Vec::with_capacity(runners.len());
     for runner in runners {
         let activity = activity(conn, &runner.id)?;
-        out.push(RunnerWithActivity { runner, activity });
+        items.push(RunnerWithActivity { runner, activity });
     }
-    Ok(out)
+    Ok(super::ListPage {
+        items,
+        total_count,
+        filtered_count,
+    })
 }
 
 pub fn get(conn: &Connection, id: &str) -> Result<Runner> {
@@ -567,9 +573,14 @@ pub fn runner_list(state: &AppCore) -> Result<Vec<Runner>> {
     list(&conn)
 }
 
-pub fn runner_list_with_activity(state: &AppCore) -> Result<Vec<RunnerWithActivity>> {
+pub fn runner_list_with_activity(
+    state: &AppCore,
+    page: i64,
+    page_size: i64,
+    query: &str,
+) -> Result<super::ListPage<RunnerWithActivity>> {
     let conn = state.db.get()?;
-    list_with_activity(&conn)
+    list_with_activity_page(&conn, page, page_size, query)
 }
 
 pub fn runner_get(state: &AppCore, id: &str) -> Result<Runner> {
@@ -662,6 +673,117 @@ mod tests {
         assert_eq!(runners.len(), 2);
         assert_eq!(runners[0].handle, "alpha");
         assert_eq!(runners[1].handle, "bravo");
+    }
+
+    #[test]
+    fn list_page_filters_handle_and_display_name_case_insensitively() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let runner = create(
+            &conn,
+            CreateRunnerInput {
+                handle: "handle-needle".into(),
+                display_name: "Display Needle".into(),
+                runtime: "Runtime-Needle".into(),
+                command: "/bin/command-needle".into(),
+                args: vec!["--args-needle".into()],
+                working_dir: Some("/tmp/working-dir-needle".into()),
+                system_prompt: Some("System Prompt Needle".into()),
+                env: HashMap::new(),
+                model: Some("model-needle".into()),
+                effort: Some("effort-needle".into()),
+                permission_mode: PermissionMode::Auto,
+            },
+        )
+        .unwrap();
+        make(&conn, "decoy");
+
+        for query in ["HANDLE-NEEDLE", "display needle"] {
+            let page = list_with_activity_page(&conn, 1, 8, query).unwrap();
+            assert_eq!(page.filtered_count, 1, "query {query:?}");
+            assert_eq!(page.items[0].runner.id, runner.id, "query {query:?}");
+        }
+
+        for query in [
+            "runtime-needle",
+            "command-needle",
+            "args-needle",
+            "model-needle",
+            "effort-needle",
+            "working-dir-needle",
+            "system prompt needle",
+        ] {
+            let page = list_with_activity_page(&conn, 1, 8, query).unwrap();
+            assert_eq!(page.filtered_count, 0, "query {query:?}");
+            assert!(page.items.is_empty(), "query {query:?}");
+        }
+    }
+
+    #[test]
+    fn list_page_treats_like_wildcards_as_literals() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let percent = make(&conn, "percent");
+        update(
+            &conn,
+            &percent.id,
+            UpdateRunnerInput {
+                display_name: Some("100% literal".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let underscore = make(&conn, "underscore");
+        update(
+            &conn,
+            &underscore.id,
+            UpdateRunnerInput {
+                display_name: Some("under_score literal".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let backslash = make(&conn, "backslash");
+        update(
+            &conn,
+            &backslash.id,
+            UpdateRunnerInput {
+                display_name: Some("back\\slash literal".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        make(&conn, "plain");
+
+        let percent_page = list_with_activity_page(&conn, 1, 8, "%").unwrap();
+        assert_eq!(percent_page.filtered_count, 1);
+        assert_eq!(percent_page.items[0].runner.id, percent.id);
+        let underscore_page = list_with_activity_page(&conn, 1, 8, "_").unwrap();
+        assert_eq!(underscore_page.filtered_count, 1);
+        assert_eq!(underscore_page.items[0].runner.id, underscore.id);
+        let backslash_page = list_with_activity_page(&conn, 1, 8, "\\").unwrap();
+        assert_eq!(backslash_page.filtered_count, 1);
+        assert_eq!(backslash_page.items[0].runner.id, backslash.id);
+    }
+
+    #[test]
+    fn list_page_applies_limit_offset_and_clamps_empty_pages() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        for index in 0..10 {
+            make(&conn, &format!("runner-{index:02}"));
+        }
+
+        let second = list_with_activity_page(&conn, 2, 4, "").unwrap();
+        assert_eq!(second.total_count, 10);
+        assert_eq!(second.filtered_count, 10);
+        assert_eq!(second.items.len(), 4);
+        assert_eq!(second.items[0].runner.handle, "runner-04");
+        assert_eq!(second.items[3].runner.handle, "runner-07");
+
+        let clamped = list_with_activity_page(&conn, 99, 8, "").unwrap();
+        assert_eq!(clamped.items.len(), 2);
+        assert_eq!(clamped.items[0].runner.handle, "runner-08");
     }
 
     #[test]
