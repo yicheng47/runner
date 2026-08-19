@@ -108,6 +108,10 @@ pub struct AppSettings {
     pub terminal_font_size: u16,
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
+    pub sidebar_projects_open: bool,
+    pub sidebar_chats_open: bool,
+    pub sidebar_collapsed_projects: BTreeSet<String>,
+    pub sidebar_collapsed_tabs: BTreeSet<String>,
     pub default_working_dir: String,
     pub default_runtime: String,
     pub disabled_agents: BTreeSet<String>,
@@ -127,6 +131,10 @@ impl Default for AppSettings {
             terminal_font_size: TERMINAL_FONT_SIZE_DEFAULT,
             sidebar_width: SIDEBAR_DEFAULT,
             sidebar_collapsed: false,
+            sidebar_projects_open: true,
+            sidebar_chats_open: true,
+            sidebar_collapsed_projects: BTreeSet::new(),
+            sidebar_collapsed_tabs: BTreeSet::new(),
             default_working_dir: String::new(),
             default_runtime: String::new(),
             disabled_agents: BTreeSet::new(),
@@ -161,6 +169,10 @@ impl AppSettings {
         self.sidebar_width = normalize_sidebar_width(self.sidebar_width);
         self.default_working_dir = self.default_working_dir.trim().to_owned();
         self.default_runtime = self.default_runtime.trim().to_owned();
+        self.sidebar_collapsed_projects =
+            normalize_agent_set(std::mem::take(&mut self.sidebar_collapsed_projects));
+        self.sidebar_collapsed_tabs =
+            normalize_agent_set(std::mem::take(&mut self.sidebar_collapsed_tabs));
         self.disabled_agents = normalize_agent_set(std::mem::take(&mut self.disabled_agents));
         self.enabled_agents = normalize_agent_set(std::mem::take(&mut self.enabled_agents));
     }
@@ -281,6 +293,8 @@ mod tests {
         assert_eq!(loaded.terminal_font_size, TERMINAL_FONT_SIZE_MAX);
         assert_eq!(loaded.sidebar_width, SIDEBAR_DEFAULT);
         assert!(!loaded.sidebar_collapsed);
+        assert!(loaded.sidebar_projects_open);
+        assert!(loaded.sidebar_chats_open);
 
         assert_eq!(normalize_terminal_font_size(0), TERMINAL_FONT_SIZE_DEFAULT);
         assert_eq!(normalize_terminal_font_size(1), TERMINAL_FONT_SIZE_MIN);

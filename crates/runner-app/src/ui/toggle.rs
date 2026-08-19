@@ -1,7 +1,9 @@
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{div, px, App, BoxShadow, CursorStyle, ElementId, KeyDownEvent, RenderOnce, Window};
+use gpui::{
+    div, px, rems, App, BoxShadow, CursorStyle, ElementId, KeyDownEvent, RenderOnce, Window,
+};
 
 use crate::theme;
 
@@ -50,9 +52,9 @@ impl RenderOnce for Toggle {
             .justify_start()
             .when(on, |toggle| toggle.justify_end())
             .size_full()
-            .w(px(32.))
-            .h(px(18.))
-            .p(px(2.))
+            .w(rems(32. / 16.))
+            .h(rems(18. / 16.))
+            .p(rems(2. / 16.))
             .rounded_full()
             .bg(if on {
                 theme::with_alpha(theme::accent(), 0.15)
@@ -73,7 +75,7 @@ impl RenderOnce for Toggle {
                     spread_radius: px(2.),
                 }])
             })
-            .child(div().size(px(14.)).rounded_full().bg(if on {
+            .child(div().size(rems(14. / 16.)).rounded_full().bg(if on {
                 theme::accent()
             } else {
                 theme::faint()

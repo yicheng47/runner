@@ -14,6 +14,16 @@ pub mod surfaces;
 pub mod toggle;
 pub mod tooltip;
 
+use gpui::{Pixels, Window};
+
+pub(crate) fn app_zoom(window: &Window) -> f32 {
+    zoom_from_rem_size(window.rem_size())
+}
+
+fn zoom_from_rem_size(rem_size: Pixels) -> f32 {
+    f32::from(rem_size) / 16.
+}
+
 pub use avatar::{
     cells_for_seed, hue_for_seed, lead_badge, AvatarHue, RunnerAvatar, RunnerPresence,
 };
@@ -27,7 +37,7 @@ pub use list::{
     clamp_page, page_window, EmptyStateCard, PageHandler, PageWindowItem, Pager, PaginatedListPage,
     SearchHandler, SearchInput, PAGE_SIZE,
 };
-pub use menu::{MenuAction, MenuItem, MenuKey, MenuState, PopoverMenu};
+pub use menu::{ContextMenu, MenuAction, MenuItem, MenuKey, MenuState, PopoverMenu};
 pub use model_field::ModelField;
 pub use overlay::{ConfirmDialog, Drawer, Modal, OverlayWidth};
 pub use scrollbar::{Scrollbar, ScrollbarKind, ScrollbarMetrics};
@@ -39,3 +49,17 @@ pub use settings::{PaneHeader, SettingsCard, SettingsHeader, SettingsRow, StepHa
 pub use surfaces::{pill, status_badge, Badge, Card, Tone};
 pub use toggle::{Toggle, ToggleHandler};
 pub use tooltip::Tooltip;
+
+#[cfg(test)]
+mod tests {
+    use gpui::px;
+
+    use super::zoom_from_rem_size;
+
+    #[test]
+    fn app_zoom_tracks_the_window_rem_size() {
+        assert_eq!(zoom_from_rem_size(px(12.8)), 0.8);
+        assert_eq!(zoom_from_rem_size(px(16.)), 1.);
+        assert_eq!(zoom_from_rem_size(px(24.)), 1.5);
+    }
+}

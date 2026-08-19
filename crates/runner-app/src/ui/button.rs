@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    div, percentage, px, svg, Animation, AnimationExt as _, AnyElement, App, BoxShadow,
+    div, percentage, px, rems, svg, Animation, AnimationExt as _, AnyElement, App, BoxShadow,
     CursorStyle, ElementId, FocusHandle, FontWeight, IntoElement, KeyDownEvent, MouseButton,
     RenderOnce, SharedString, Transformation, Window,
 };
@@ -134,14 +134,14 @@ impl RenderOnce for Button {
             .flex()
             .items_center()
             .justify_center()
-            .gap(px(6.))
-            .h(px(height))
-            .px(px(horizontal_padding))
-            .rounded(px(4.))
+            .gap(rems(6. / 16.))
+            .h(rems(height / 16.))
+            .px(rems(horizontal_padding / 16.))
+            .rounded(rems(4. / 16.))
             .when(has_border, |button| button.border_1().border_color(border))
             .bg(background)
             .font_weight(FontWeight::MEDIUM)
-            .text_size(px(text_size))
+            .text_size(rems(text_size / 16.))
             .text_color(foreground)
             .opacity(if inactive { 0.5 } else { 1. })
             .cursor(if inactive {
@@ -184,7 +184,12 @@ impl RenderOnce for Button {
                 button.child(spinner(spinner_id, icon_size, foreground))
             })
             .when_some(icon, |button, icon| {
-                button.child(svg().path(icon).size(px(icon_size)).text_color(foreground))
+                button.child(
+                    svg()
+                        .path(icon)
+                        .size(rems(icon_size / 16.))
+                        .text_color(foreground),
+                )
             })
             .child(self.label)
     }
@@ -193,7 +198,7 @@ impl RenderOnce for Button {
 pub fn spinner(id: impl Into<ElementId>, size: f32, color: gpui::Hsla) -> AnyElement {
     svg()
         .path("loader.svg")
-        .size(px(size))
+        .size(rems(size / 16.))
         .text_color(color)
         .with_animation(
             id,
@@ -205,6 +210,7 @@ pub fn spinner(id: impl Into<ElementId>, size: f32, color: gpui::Hsla) -> AnyEle
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum IconButtonSize {
+    Xs,
     Sm,
     #[default]
     Md,
@@ -220,6 +226,8 @@ pub struct IconButton {
     disabled: bool,
     loading: bool,
     keyboard_activation: bool,
+    stop_click_propagation: bool,
+    reveal_on_group_hover: Option<SharedString>,
     focus_handle: Option<FocusHandle>,
     tooltip: Option<SharedString>,
     on_press: Option<PressHandler>,
@@ -235,6 +243,8 @@ impl IconButton {
             disabled: false,
             loading: false,
             keyboard_activation: true,
+            stop_click_propagation: false,
+            reveal_on_group_hover: None,
             focus_handle: None,
             tooltip: None,
             on_press: None,
@@ -266,6 +276,16 @@ impl IconButton {
         self
     }
 
+    pub fn stop_click_propagation(mut self, stop: bool) -> Self {
+        self.stop_click_propagation = stop;
+        self
+    }
+
+    pub fn reveal_on_group_hover(mut self, group: impl Into<SharedString>) -> Self {
+        self.reveal_on_group_hover = Some(group.into());
+        self
+    }
+
     pub fn focus_handle(mut self, focus_handle: FocusHandle) -> Self {
         self.focus_handle = Some(focus_handle);
         self
@@ -285,6 +305,7 @@ impl IconButton {
 impl RenderOnce for IconButton {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let (button_size, icon_size) = match self.size {
+            IconButtonSize::Xs => (16., 12.),
             IconButtonSize::Sm => (24., 14.),
             IconButtonSize::Md => (28., 14.),
             IconButtonSize::Lg => (32., 16.),
@@ -294,6 +315,8 @@ impl RenderOnce for IconButton {
         let tooltip_id = (self.id.clone(), "tooltip");
         let inactive = self.disabled || self.loading;
         let keyboard_activation = self.keyboard_activation;
+        let stop_click_propagation = self.stop_click_propagation;
+        let reveal_on_group_hover = self.reveal_on_group_hover;
         let spinner_id = (self.id.clone(), "loading");
         let foreground = match self.variant {
             ButtonVariant::Danger => theme::danger(),
@@ -316,11 +339,20 @@ impl RenderOnce for IconButton {
             .flex()
             .items_center()
             .justify_center()
-            .size(px(button_size))
-            .rounded(px(4.))
+            .size(rems(button_size / 16.))
+            .rounded(rems(4. / 16.))
             .bg(background)
             .text_color(foreground)
-            .opacity(if inactive { 0.5 } else { 1. })
+            .opacity(if inactive {
+                0.5
+            } else if reveal_on_group_hover.is_some() {
+                0.
+            } else {
+                1.
+            })
+            .when_some(reveal_on_group_hover, |button, group| {
+                button.group_hover(group, |style| style.opacity(1.))
+            })
             .cursor(if inactive {
                 CursorStyle::OperationNotAllowed
             } else {
@@ -335,7 +367,7 @@ impl RenderOnce for IconButton {
                 })
             })
             .focus_visible(|style| {
-                style.shadow(focus_ring(match self.variant {
+                style.opacity(1.).shadow(focus_ring(match self.variant {
                     ButtonVariant::Primary => theme::accent(),
                     ButtonVariant::Secondary | ButtonVariant::Ghost => theme::border_strong(),
                     ButtonVariant::Danger => theme::danger(),
@@ -350,7 +382,12 @@ impl RenderOnce for IconButton {
             });
             if let Some(on_press) = self.on_press {
                 let click = Rc::clone(&on_press);
-                button = button.on_click(move |_, window, cx| click(window, cx));
+                button = button.on_click(move |_, window, cx| {
+                    if stop_click_propagation {
+                        cx.stop_propagation();
+                    }
+                    click(window, cx);
+                });
                 if keyboard_activation {
                     button = button.on_key_down(move |event: &KeyDownEvent, window, cx| {
                         if is_activation_key(event) {
@@ -367,7 +404,7 @@ impl RenderOnce for IconButton {
             button.child(
                 svg()
                     .path(self.icon)
-                    .size(px(icon_size))
+                    .size(rems(icon_size / 16.))
                     .text_color(foreground),
             )
         };

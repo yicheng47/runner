@@ -161,11 +161,13 @@ impl NativeRoot {
         if !self.tabs.activate(tab_id) {
             return;
         }
+        self.sync_active_project_from_active_tab();
         self.layout_picker_open = false;
         match self.ensure_active_tab_attached(window, cx) {
             Ok(()) => {
                 self.error = None;
                 self.remember_active_runner();
+                self.mark_active_tab_viewed(window);
                 self.focus_active_terminal(window);
             }
             Err(error) => self.error = Some(error.to_string()),
@@ -212,6 +214,7 @@ impl NativeRoot {
         if let Some(chat) = self.attached.get(session_id) {
             chat.terminal_focus.focus(window);
         }
+        self.mark_active_tab_viewed(window);
     }
 
     pub(crate) fn on_key_down(
@@ -362,6 +365,7 @@ impl NativeRoot {
                     self.open_pane_chat_modal(&pane_id, window, cx);
                 } else {
                     self.remember_active_runner();
+                    self.mark_active_tab_viewed(window);
                     self.focus_active_terminal(window);
                 }
             }
@@ -402,6 +406,7 @@ impl NativeRoot {
             Ok(true) => {
                 self.error = None;
                 self.remember_active_runner();
+                self.mark_active_tab_viewed(window);
                 self.focus_active_terminal(window);
             }
             Ok(false) => {}

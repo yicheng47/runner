@@ -1,6 +1,7 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, rgb, AnyElement, App, FontWeight, Hsla, IntoElement, RenderOnce, SharedString, Window,
+    div, rems, rgb, AnyElement, App, FontWeight, Hsla, IntoElement, RenderOnce, SharedString,
+    Window,
 };
 
 use crate::theme;
@@ -107,22 +108,22 @@ impl RenderOnce for RunnerAvatar {
         div()
             .relative()
             .flex_none()
-            .size(px(self.size))
+            .size(rems(self.size / 16.))
             .child(
                 div()
                     .relative()
                     .size_full()
-                    .rounded(px(4_f32.max((self.size * 0.23).round())))
+                    .rounded(rems(4_f32.max((self.size * 0.23).round()) / 16.))
                     .overflow_hidden()
                     .children((0..5).map(|row| {
                         div()
                             .absolute()
-                            .top(px(row as f32 * cell))
+                            .top(rems(row as f32 * cell / 16.))
                             .left_0()
                             .flex()
-                            .h(px(cell))
+                            .h(rems(cell / 16.))
                             .children((0..5).map(move |column| {
-                                div().size(px(cell)).bg(if cells[row * 5 + column] {
+                                div().size(rems(cell / 16.)).bg(if cells[row * 5 + column] {
                                     hue
                                 } else {
                                     theme::raised()
@@ -133,9 +134,9 @@ impl RenderOnce for RunnerAvatar {
             .children(presence.map(|presence| {
                 div()
                     .absolute()
-                    .right(px(-1.))
-                    .bottom(px(-1.))
-                    .size(px(9.))
+                    .right(rems(-1. / 16.))
+                    .bottom(rems(-1. / 16.))
+                    .size(rems(9. / 16.))
                     .rounded_full()
                     .border_2()
                     .border_color(theme::bg())
@@ -151,12 +152,12 @@ impl RenderOnce for RunnerAvatar {
 
 pub fn lead_badge() -> AnyElement {
     div()
-        .rounded(px(4.))
+        .rounded(rems(4. / 16.))
         .bg(theme::with_alpha(theme::warning(), 0.2))
-        .px(px(6.))
-        .py(px(1.))
+        .px(rems(6. / 16.))
+        .py(rems(1. / 16.))
         .font_weight(FontWeight::BOLD)
-        .text_size(px(9.))
+        .text_size(rems(9. / 16.))
         .text_color(theme::warning())
         .child("LEAD")
         .into_any_element()

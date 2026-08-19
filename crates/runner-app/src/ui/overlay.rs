@@ -2,8 +2,9 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, relative, AnyElement, App, BoxShadow, CursorStyle, Entity, FocusHandle, FontWeight,
-    IntoElement, KeyDownEvent, MouseButton, RenderOnce, ScrollHandle, SharedString, Window,
+    div, px, relative, rems, AnyElement, App, BoxShadow, CursorStyle, Entity, FocusHandle,
+    FontWeight, IntoElement, KeyDownEvent, MouseButton, RenderOnce, ScrollHandle, SharedString,
+    Window,
 };
 
 use crate::theme;
@@ -128,12 +129,12 @@ impl RenderOnce for Modal {
             .child(
                 div()
                     .w_full()
-                    .max_w(px(self.width.pixels()))
+                    .max_w(rems(self.width.pixels() / 16.))
                     .max_h(relative(0.85))
                     .flex()
                     .flex_col()
                     .overflow_hidden()
-                    .rounded(px(8.))
+                    .rounded(rems(8. / 16.))
                     .border_1()
                     .border_color(theme::border_strong())
                     .bg(theme::panel())
@@ -142,11 +143,11 @@ impl RenderOnce for Modal {
                     .child(
                         div()
                             .flex_none()
-                            .px(px(24.))
-                            .py(px(16.))
+                            .px(rems(24. / 16.))
+                            .py(rems(1.))
                             .border_b_1()
                             .border_color(theme::border())
-                            .text_size(px(14.))
+                            .text_size(rems(14. / 16.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::text())
                             .child(self.title),
@@ -164,8 +165,8 @@ impl RenderOnce for Modal {
                                     .when_some(scroll_handle, |body, handle| {
                                         body.scrollbar_width(px(0.)).track_scroll(&handle)
                                     })
-                                    .px(px(24.))
-                                    .py(px(20.))
+                                    .px(rems(24. / 16.))
+                                    .py(rems(20. / 16.))
                                     .child(self.body),
                             )
                             .children(scrollbar),
@@ -180,8 +181,8 @@ impl RenderOnce for Modal {
                             .border_t_1()
                             .border_color(theme::border())
                             .bg(theme::with_alpha(theme::bg(), 0.4))
-                            .px(px(24.))
-                            .py(px(16.))
+                            .px(rems(24. / 16.))
+                            .py(rems(1.))
                             .child(footer)
                     })),
             )
@@ -284,7 +285,7 @@ impl RenderOnce for Drawer {
             .child(
                 div()
                     .w_full()
-                    .max_w(px(self.width.pixels()))
+                    .max_w(rems(self.width.pixels() / 16.))
                     .h_full()
                     .flex()
                     .flex_col()
@@ -295,11 +296,11 @@ impl RenderOnce for Drawer {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
                         div()
-                            .px(px(24.))
-                            .py(px(16.))
+                            .px(rems(24. / 16.))
+                            .py(rems(1.))
                             .border_b_1()
                             .border_color(theme::border())
-                            .text_size(px(14.))
+                            .text_size(rems(14. / 16.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::text())
                             .child(self.title),
@@ -317,8 +318,8 @@ impl RenderOnce for Drawer {
                                     .when_some(scroll_handle, |body, handle| {
                                         body.scrollbar_width(px(0.)).track_scroll(&handle)
                                     })
-                                    .px(px(24.))
-                                    .py(px(20.))
+                                    .px(rems(24. / 16.))
+                                    .py(rems(20. / 16.))
                                     .child(self.body),
                             )
                             .children(scrollbar),
@@ -332,8 +333,8 @@ impl RenderOnce for Drawer {
                             .border_t_1()
                             .border_color(theme::border())
                             .bg(theme::with_alpha(theme::bg(), 0.4))
-                            .px(px(24.))
-                            .py(px(16.))
+                            .px(rems(24. / 16.))
+                            .py(rems(1.))
                             .child(footer)
                     })),
             )
@@ -385,6 +386,7 @@ impl RenderOnce for ConfirmDialog {
             .flex()
             .items_center()
             .justify_center()
+            .p_4()
             .bg(gpui::rgba(0x0000008c))
             .occlude()
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -400,33 +402,34 @@ impl RenderOnce for ConfirmDialog {
             })
             .child(
                 div()
-                    .w(px(420.))
+                    .w_full()
+                    .max_w(rems(420. / 16.))
                     .flex()
                     .flex_col()
-                    .gap(px(14.))
-                    .rounded(px(12.))
+                    .gap(rems(14. / 16.))
+                    .rounded(rems(12. / 16.))
                     .border_1()
                     .border_color(theme::border())
                     .bg(theme::panel())
-                    .px(px(22.))
-                    .py(px(20.))
+                    .px(rems(22. / 16.))
+                    .py(rems(20. / 16.))
                     .shadow_2xl()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(10.))
+                            .gap(rems(10. / 16.))
                             .child(
                                 gpui::svg()
                                     .path("trash.svg")
-                                    .size(px(15.))
+                                    .size(rems(15. / 16.))
                                     .flex_none()
                                     .text_color(theme::danger()),
                             )
                             .child(
                                 div()
-                                    .text_size(px(15.))
+                                    .text_size(rems(15. / 16.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme::text())
                                     .child(self.title),
@@ -434,8 +437,8 @@ impl RenderOnce for ConfirmDialog {
                     )
                     .child(
                         div()
-                            .text_size(px(13.))
-                            .line_height(px(20.))
+                            .text_size(rems(13. / 16.))
+                            .line_height(rems(20. / 16.))
                             .text_color(theme::muted())
                             .child(self.body),
                     )
@@ -483,7 +486,7 @@ fn confirm_action_button(
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(8.))
+        .rounded(rems(8. / 16.))
         .when(destructive, |button| {
             button
                 .border_1()
@@ -494,10 +497,10 @@ fn confirm_action_button(
         } else {
             theme::raised()
         })
-        .px(px(14.))
-        .py(px(6.))
+        .px(rems(14. / 16.))
+        .py(rems(6. / 16.))
         .font_weight(FontWeight::MEDIUM)
-        .text_size(px(12.))
+        .text_size(rems(12. / 16.))
         .text_color(if destructive {
             theme::danger()
         } else {

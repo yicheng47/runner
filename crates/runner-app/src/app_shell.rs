@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use gpui::{deferred, svg, BoxShadow, FontWeight, WindowAppearance, WindowControlArea};
 
 use super::*;
@@ -10,6 +8,7 @@ const TITLEBAR_HEIGHT: f32 = 44.;
 const TITLEBAR_DRAG_HEIGHT: f32 = 28.;
 const SIDEBAR_TOGGLE_GLYPH_X: f32 = 94.3;
 const SIDEBAR_TOGGLE_GLYPH_INSET: f32 = 6.3;
+const SIDEBAR_TRANSITION_MS: u64 = 200;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum AppRoute {
@@ -43,6 +42,21 @@ impl NativeRoot {
         if self.bridge.take_session_refresh() {
             self.refresh_sessions();
         }
+        if self.route == AppRoute::Chat {
+            let needs_attach = self.tabs.active().is_some_and(|layout| {
+                layout
+                    .session_ids()
+                    .iter()
+                    .any(|session_id| !self.attached.contains_key(session_id))
+            });
+            if needs_attach {
+                if let Err(error) = self.ensure_active_tab_attached(window, cx) {
+                    self.error = Some(error.to_string());
+                } else {
+                    self.mark_active_tab_viewed(window);
+                }
+            }
+        }
         if let Some(error) = self.error.take() {
             self.show_toast(error, ToastTone::Error, cx);
         }
@@ -54,6 +68,11 @@ impl NativeRoot {
             .then_some(self.start_chat_modal.as_ref())
             .flatten()
             .map(|_| self.render_start_chat_modal(cx));
+        let sidebar_overlays = if self.route != AppRoute::Settings {
+            self.render_sidebar_overlays(cx)
+        } else {
+            Vec::new()
+        };
         let chrome = div()
             .relative()
             .size_full()
@@ -82,7 +101,8 @@ impl NativeRoot {
                     .child(workspace),
             )
             .children(preview_trigger)
-            .children(modal);
+            .children(modal)
+            .children(sidebar_overlays);
         let settings =
             (self.route == AppRoute::Settings).then(|| self.render_settings_takeover(window, cx));
         let toast = self
@@ -111,6 +131,14 @@ impl NativeRoot {
             .on_drop(cx.listener(|this, _: &SidebarResizeDrag, _, _| {
                 this.save_settings();
             }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.clear_sidebar_drag(cx)),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.clear_sidebar_drag(cx)),
+            )
             .on_action(cx.listener(Self::open_new_tab_modal))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::open_settings))
@@ -122,16 +150,37 @@ impl NativeRoot {
     }
 
     fn render_app_sidebar(
-        &self,
+        &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let visible = !self.settings.sidebar_collapsed || self.sidebar_preview_open;
-        if !visible || (self.route == AppRoute::Settings && self.settings.sidebar_collapsed) {
-            return None;
+        let visibility_target = if visible { 1. } else { 0. };
+        let (visibility, animating) = self.sidebar_visibility.animate_to(
+            visibility_target,
+            Instant::now(),
+            Duration::from_millis(SIDEBAR_TRANSITION_MS),
+        );
+        if animating {
+            window.request_animation_frame();
         }
-        let preview = self.settings.sidebar_collapsed && self.sidebar_preview_open;
-        let width = self.settings.sidebar_width * self.settings.app_zoom;
+        let show_panel = visible || animating;
+        let full_width = self.settings.sidebar_width * self.settings.app_zoom;
+        let width = full_width * visibility;
+        if !show_panel {
+            return Some(
+                div()
+                    .id("app-sidebar")
+                    .relative()
+                    .w(px(width))
+                    .h_full()
+                    .flex_none()
+                    .overflow_hidden()
+                    .into_any_element(),
+            );
+        }
+        let preview = self.settings.sidebar_collapsed
+            && (self.sidebar_preview_open || self.sidebar_preview_peeking);
         let fullscreen = window.is_fullscreen();
         let titlebar_padding = if fullscreen {
             8. * self.settings.app_zoom
@@ -187,8 +236,10 @@ impl NativeRoot {
                             if this.settings.sidebar_collapsed {
                                 this.settings.sidebar_collapsed = false;
                                 this.sidebar_preview_open = false;
+                                this.sidebar_preview_peeking = false;
                             } else {
                                 this.settings.sidebar_collapsed = true;
+                                this.sidebar_preview_peeking = false;
                             }
                             this.save_settings();
                             cx.notify();
@@ -213,15 +264,44 @@ impl NativeRoot {
             )
             .child(
                 div()
+                    .flex_1()
                     .text_base()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::text())
                     .child("Runner"),
+            )
+            .child(
+                div()
+                    .id("sidebar-search")
+                    .group("sidebar-search")
+                    .flex_none()
+                    .size(px(24. * self.settings.app_zoom))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(gpui::transparent_black())
+                    .cursor_pointer()
+                    .text_color(theme::muted())
+                    .hover(|button| {
+                        button
+                            .border_color(theme::sidebar_selected_border())
+                            .bg(alpha(theme::sidebar_selected(), 0.4))
+                            .text_color(theme::text())
+                    })
+                    .child(
+                        svg()
+                            .path("search.svg")
+                            .size(px(14. * self.settings.app_zoom))
+                            .text_color(theme::muted())
+                            .group_hover("sidebar-search", |icon| icon.text_color(theme::text())),
+                    ),
             );
         let settings_button = div()
             .flex_none()
             .px_3()
-            .pt_2()
+            .pt_1()
             .border_t_1()
             .border_color(theme::sidebar_selected_border())
             .child(
@@ -263,7 +343,7 @@ impl NativeRoot {
                         this.enter_settings(window, cx);
                     })),
             );
-        let resize_handle = self.render_sidebar_resize_handle();
+        let resize_handle = visible.then(|| self.render_sidebar_resize_handle());
         let mut sidebar = div()
             .id("app-sidebar")
             .relative()
@@ -272,8 +352,9 @@ impl NativeRoot {
             .flex_none()
             .flex()
             .flex_col()
-            .pb_3()
+            .pb_2()
             .overflow_hidden()
+            .opacity(visibility)
             .bg(theme::sidebar())
             .border_r_1()
             .border_color(theme::border())
@@ -281,7 +362,7 @@ impl NativeRoot {
             .child(brand)
             .child(self.render_sidebar_contents(cx))
             .child(settings_button)
-            .child(resize_handle);
+            .children(resize_handle);
         if preview {
             sidebar = sidebar
                 .absolute()
@@ -330,6 +411,7 @@ impl NativeRoot {
                 .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                     if *hovered {
                         this.sidebar_preview_open = true;
+                        this.sidebar_preview_peeking = true;
                         cx.notify();
                     }
                 }))
@@ -366,6 +448,7 @@ impl NativeRoot {
                     cx.stop_propagation();
                     this.settings.sidebar_collapsed = false;
                     this.sidebar_preview_open = false;
+                    this.sidebar_preview_peeking = false;
                     this.save_settings();
                     this.focus_active_terminal(window);
                     cx.notify();
@@ -626,7 +709,7 @@ impl NativeRoot {
         ));
     }
 
-    fn save_settings(&self) {
+    pub(crate) fn save_settings(&self) {
         if let Err(error) = self.settings.save(&self.settings_path) {
             eprintln!("Runner UI settings save failed: {error:#}");
         }
@@ -634,6 +717,9 @@ impl NativeRoot {
 
     fn enter_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.route != AppRoute::Settings {
+            self.dismiss_sidebar_transients(cx);
+            self.core.windows.set_subjects("main", Vec::new());
+            self.core.broadcast_focus_map();
             self.route = AppRoute::Settings;
             window.focus(&self.root_focus);
             cx.notify();
@@ -642,6 +728,7 @@ impl NativeRoot {
 
     fn leave_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.route = AppRoute::Chat;
+        self.mark_active_tab_viewed(window);
         self.focus_active_terminal(window);
         cx.notify();
     }
@@ -654,6 +741,7 @@ impl NativeRoot {
         if !self.settings.sidebar_collapsed {
             self.sidebar_preview_open = false;
         }
+        self.sidebar_preview_peeking = false;
         self.save_settings();
         cx.notify();
     }

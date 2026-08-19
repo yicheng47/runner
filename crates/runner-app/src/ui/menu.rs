@@ -2,12 +2,13 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    anchored, canvas, deferred, div, point, px, svg, AnchoredPositionMode, AnyElement, App, Bounds,
-    Context, Corner, ElementId, Entity, FocusHandle, FontWeight, KeyDownEvent, MouseButton, Pixels,
-    Render, ScrollHandle, SharedString, Size, Window,
+    anchored, canvas, deferred, div, point, px, rems, svg, AnchoredPositionMode, AnyElement, App,
+    Bounds, Context, Corner, ElementId, Entity, FocusHandle, FontWeight, KeyDownEvent, MouseButton,
+    Pixels, Render, ScrollHandle, SharedString, Window,
 };
 
 use crate::theme;
+use crate::ui::app_zoom;
 use crate::ui::button::{IconButton, IconButtonSize};
 use crate::ui::scrollbar::Scrollbar;
 
@@ -173,37 +174,42 @@ fn previous_enabled(items: &[MenuItem], current: usize) -> Option<usize> {
 
 pub fn popup_layer(
     anchor: Bounds<Pixels>,
-    viewport: Size<Pixels>,
+    window: &Window,
     width: Pixels,
     menu: AnyElement,
     on_dismiss: DismissHandler,
 ) -> AnyElement {
-    const GAP: f32 = 4.;
-    const EDGE: f32 = 8.;
-    const ESTIMATED_HEIGHT: f32 = 280.;
+    let viewport = window.viewport_size();
+    let zoom = app_zoom(window);
+    let gap = px(4. * zoom);
+    let edge = px(8. * zoom);
+    let estimated_height = px(280. * zoom);
     let dismiss = Rc::clone(&on_dismiss);
-    let width = width.min(viewport.width - px(EDGE * 2.));
-    let left = anchor
-        .left()
-        .min(viewport.width - px(EDGE) - width)
-        .max(px(EDGE));
+    let dismiss_right = Rc::clone(&on_dismiss);
+    let width = width.min(viewport.width - edge * 2.);
+    let left = anchor.left().min(viewport.width - edge - width).max(edge);
     let space_below = viewport.height - anchor.bottom();
-    let flip = space_below < px(ESTIMATED_HEIGHT) && anchor.top() > space_below;
+    let flip = space_below < estimated_height && anchor.top() > space_below;
     let top = if flip {
-        anchor.top() - px(GAP)
+        anchor.top() - gap
     } else {
-        anchor.bottom() + px(GAP)
+        anchor.bottom() + gap
     };
     deferred(
         div()
-            .child(anchored().position(point(px(0.), px(0.))).child(
-                div().w(viewport.width).h(viewport.height).on_mouse_down(
-                    MouseButton::Left,
-                    move |_, window, cx| {
-                        dismiss(window, cx);
-                    },
+            .child(
+                anchored().position(point(px(0.), px(0.))).child(
+                    div()
+                        .w(viewport.width)
+                        .h(viewport.height)
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            dismiss(window, cx);
+                        })
+                        .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+                            dismiss_right(window, cx);
+                        }),
                 ),
-            ))
+            )
             .child(
                 anchored()
                     .position(point(left, top))
@@ -213,11 +219,12 @@ pub fn popup_layer(
                         Corner::TopLeft
                     })
                     .position_mode(AnchoredPositionMode::Window)
-                    .snap_to_window_with_margin(px(8.))
+                    .snap_to_window_with_margin(edge)
                     .child(
                         div()
                             .w(width)
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                             .child(menu),
                     ),
             ),
@@ -234,6 +241,8 @@ pub struct PopoverMenu {
     anchor_bounds: Option<Bounds<Pixels>>,
     min_width: Pixels,
     trigger_size: IconButtonSize,
+    trigger_icon: SharedString,
+    trigger_tooltip: Option<SharedString>,
     menu_scroll: ScrollHandle,
     menu_scrollbar: Entity<Scrollbar>,
     on_activate: MenuHandler,
@@ -258,6 +267,8 @@ impl PopoverMenu {
             anchor_bounds: None,
             min_width: px(160.),
             trigger_size: IconButtonSize::Md,
+            trigger_icon: "more-horizontal.svg".into(),
+            trigger_tooltip: Some("More actions".into()),
             menu_scroll,
             menu_scrollbar,
             on_activate,
@@ -271,6 +282,21 @@ impl PopoverMenu {
 
     pub fn trigger_size(mut self, trigger_size: IconButtonSize) -> Self {
         self.trigger_size = trigger_size;
+        self
+    }
+
+    pub fn trigger_icon(mut self, trigger_icon: impl Into<SharedString>) -> Self {
+        self.trigger_icon = trigger_icon.into();
+        self
+    }
+
+    pub fn trigger_tooltip(mut self, trigger_tooltip: impl Into<SharedString>) -> Self {
+        self.trigger_tooltip = Some(trigger_tooltip.into());
+        self
+    }
+
+    pub fn without_trigger_tooltip(mut self) -> Self {
+        self.trigger_tooltip = None;
         self
     }
 
@@ -322,23 +348,26 @@ impl PopoverMenu {
 
 impl Render for PopoverMenu {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let zoom = app_zoom(window);
         let entity = cx.entity();
         let click_entity = entity.clone();
+        let trigger = IconButton::new("popover-trigger", self.trigger_icon.clone())
+            .size(self.trigger_size)
+            .focus_handle(self.focus_handle.clone())
+            .keyboard_activation(false)
+            .on_press(move |_, cx| {
+                click_entity.update(cx, |menu, cx| menu.toggle(cx));
+            });
+        let trigger = match self.trigger_tooltip.clone() {
+            Some(tooltip) => trigger.tooltip(tooltip),
+            None => trigger,
+        };
         let mut root = div()
             .id(self.id.clone())
             .relative()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
-            .child(
-                IconButton::new("popover-trigger", "more-horizontal.svg")
-                    .size(self.trigger_size)
-                    .focus_handle(self.focus_handle.clone())
-                    .tooltip("More actions")
-                    .keyboard_activation(false)
-                    .on_press(move |_, cx| {
-                        click_entity.update(cx, |menu, cx| menu.toggle(cx));
-                    }),
-            )
+            .child(trigger)
             .child(
                 canvas(
                     |_, _, _| {},
@@ -366,21 +395,27 @@ impl Render for PopoverMenu {
                 let row = div()
                     .id(("popover-item", index))
                     .w_full()
-                    .px(px(10.))
-                    .py(px(if item.description.is_some() { 8. } else { 6. }))
+                    .px(rems(10. / 16.))
+                    .py(rems(if item.description.is_some() {
+                        8. / 16.
+                    } else {
+                        6. / 16.
+                    }))
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .rounded(px(4.))
+                    .gap(rems(10. / 16.))
+                    .rounded(rems(4. / 16.))
                     .opacity(if item.disabled { 0.5 } else { 1. })
                     .when(active, |row| row.bg(theme::border()))
                     .when(!item.disabled, |row| {
                         row.cursor_pointer().hover(|row| row.bg(theme::border()))
                     })
-                    .children(
-                        item.icon
-                            .map(|icon| svg().path(icon).size(px(14.)).text_color(foreground)),
-                    )
+                    .children(item.icon.map(|icon| {
+                        svg()
+                            .path(icon)
+                            .size(rems(14. / 16.))
+                            .text_color(foreground)
+                    }))
                     .child(
                         div()
                             .flex_1()
@@ -389,14 +424,14 @@ impl Render for PopoverMenu {
                             .flex_col()
                             .child(
                                 div()
-                                    .text_size(px(13.))
+                                    .text_size(rems(13. / 16.))
                                     .font_weight(FontWeight::NORMAL)
                                     .text_color(foreground)
                                     .child(item.label),
                             )
                             .children(item.description.map(|description| {
                                 div()
-                                    .text_size(px(11.))
+                                    .text_size(rems(11. / 16.))
                                     .text_color(theme::faint())
                                     .child(description)
                             })),
@@ -425,9 +460,9 @@ impl Render for PopoverMenu {
             let menu = div()
                 .id("popover-menu-items")
                 .relative()
-                .max_h(px(280.))
+                .max_h(rems(280. / 16.))
                 .overflow_hidden()
-                .rounded(px(8.))
+                .rounded(rems(8. / 16.))
                 .border_1()
                 .border_color(theme::border())
                 .bg(theme::raised())
@@ -435,14 +470,14 @@ impl Render for PopoverMenu {
                 .child(
                     div()
                         .id("popover-menu-scroll")
-                        .max_h(px(280.))
+                        .max_h(rems(280. / 16.))
                         .overflow_y_scroll()
                         .scrollbar_width(px(0.))
                         .track_scroll(&self.menu_scroll)
                         .flex()
                         .flex_col()
-                        .gap(px(1.))
-                        .p(px(6.))
+                        .gap(rems(1. / 16.))
+                        .p(rems(6. / 16.))
                         .children(rows),
                 )
                 .child(self.menu_scrollbar.clone())
@@ -453,14 +488,241 @@ impl Render for PopoverMenu {
             });
             root = root.child(popup_layer(
                 anchor,
-                window.viewport_size(),
-                anchor.size.width.max(self.min_width),
+                window,
+                anchor.size.width.max(self.min_width * zoom),
                 menu,
                 dismiss,
             ));
         }
         root
     }
+}
+
+pub struct ContextMenu {
+    id: ElementId,
+    focus_handle: FocusHandle,
+    position: gpui::Point<Pixels>,
+    width: Pixels,
+    items: Vec<MenuItem>,
+    state: MenuState,
+    on_activate: MenuHandler,
+    on_dismiss: DismissHandler,
+}
+
+impl ContextMenu {
+    pub fn new(
+        id: impl Into<ElementId>,
+        focus_handle: FocusHandle,
+        position: gpui::Point<Pixels>,
+        items: Vec<MenuItem>,
+        on_activate: MenuHandler,
+        on_dismiss: DismissHandler,
+    ) -> Self {
+        let mut state = MenuState::default();
+        state.open(&items, 0);
+        Self {
+            id: id.into(),
+            focus_handle,
+            position,
+            width: px(160.),
+            items,
+            state,
+            on_activate,
+            on_dismiss,
+        }
+    }
+
+    pub fn width(mut self, width: Pixels) -> Self {
+        self.width = width;
+        self
+    }
+
+    pub fn focus_handle(&self) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+
+    fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.close();
+        (self.on_dismiss)(window, cx);
+        cx.notify();
+    }
+
+    fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.items.get(index).is_none_or(|item| item.disabled) {
+            return;
+        }
+        self.state.close();
+        (self.on_dismiss)(window, cx);
+        (self.on_activate)(index, window, cx);
+        cx.notify();
+    }
+
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = match event.keystroke.key.as_str() {
+            "up" => Some(MenuKey::Up),
+            "down" => Some(MenuKey::Down),
+            "home" => Some(MenuKey::Home),
+            "end" => Some(MenuKey::End),
+            "enter" | "space" => Some(MenuKey::Enter),
+            "escape" => Some(MenuKey::Escape),
+            _ => None,
+        };
+        let Some(key) = key else { return };
+        cx.stop_propagation();
+        match self.state.handle_key(key, &self.items) {
+            MenuAction::Activate(index) => self.activate(index, window, cx),
+            MenuAction::Close => self.dismiss(window, cx),
+            MenuAction::None => cx.notify(),
+        }
+    }
+}
+
+impl Render for ContextMenu {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.state.open {
+            return div().into_any_element();
+        }
+        let zoom = app_zoom(window);
+        let width = self.width * zoom;
+        let entity = cx.entity();
+        let rows = self.items.iter().cloned().enumerate().map(|(index, item)| {
+            let active = self.state.highlighted == index;
+            let click_entity = entity.clone();
+            let foreground = if item.destructive {
+                theme::danger()
+            } else if item.disabled {
+                theme::faint()
+            } else {
+                theme::text()
+            };
+            let separator_before = item.separator_before;
+            let row = div()
+                .id(("context-menu-item", index))
+                .w_full()
+                .px(rems(10. / 16.))
+                .py(rems(if item.description.is_some() {
+                    8. / 16.
+                } else {
+                    6. / 16.
+                }))
+                .flex()
+                .items_center()
+                .gap(rems(10. / 16.))
+                .rounded(rems(4. / 16.))
+                .opacity(if item.disabled { 0.5 } else { 1. })
+                .when(active, |row| row.bg(theme::border()))
+                .when(!item.disabled, |row| {
+                    row.cursor_pointer().hover(|row| row.bg(theme::border()))
+                })
+                .children(item.icon.map(|icon| {
+                    svg()
+                        .path(icon)
+                        .size(rems(14. / 16.))
+                        .text_color(foreground)
+                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_size(rems(13. / 16.))
+                                .font_weight(FontWeight::NORMAL)
+                                .text_color(foreground)
+                                .child(item.label),
+                        )
+                        .children(item.description.map(|description| {
+                            div()
+                                .text_size(rems(11. / 16.))
+                                .text_color(theme::faint())
+                                .child(description)
+                        })),
+                )
+                .when(!item.disabled, |row| {
+                    row.on_click(move |_, window, cx| {
+                        click_entity.update(cx, |menu, cx| menu.activate(index, window, cx));
+                    })
+                });
+            div()
+                .w_full()
+                .when(separator_before, |wrapper| {
+                    wrapper.child(
+                        div()
+                            .mx_1()
+                            .py_1()
+                            .child(div().h(px(1.)).w_full().bg(theme::border())),
+                    )
+                })
+                .child(row)
+        });
+        let menu = div()
+            .id(self.id.clone())
+            .track_focus(&self.focus_handle)
+            .tab_index(0)
+            .w(width)
+            .flex()
+            .flex_col()
+            .gap(rems(1. / 16.))
+            .p(rems(6. / 16.))
+            .rounded(rems(8. / 16.))
+            .border_1()
+            .border_color(theme::border())
+            .bg(theme::raised())
+            .shadow_2xl()
+            .on_key_down(cx.listener(Self::on_key_down))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .children(rows)
+            .into_any_element();
+        let dismiss_entity = cx.entity();
+        let dismiss: DismissHandler = Rc::new(move |window, cx| {
+            dismiss_entity.update(cx, |menu, cx| menu.dismiss(window, cx));
+        });
+        context_menu_layer(self.position, window, width, menu, dismiss)
+    }
+}
+
+fn context_menu_layer(
+    position: gpui::Point<Pixels>,
+    window: &Window,
+    width: Pixels,
+    menu: AnyElement,
+    on_dismiss: DismissHandler,
+) -> AnyElement {
+    let viewport = window.viewport_size();
+    let zoom = app_zoom(window);
+    let edge = px(4. * zoom);
+    let left = position.x.min(viewport.width - width - edge).max(edge);
+    let top = position.y.min(viewport.height - edge).max(edge);
+    let dismiss_right = Rc::clone(&on_dismiss);
+    deferred(
+        div()
+            .child(
+                anchored().position(point(px(0.), px(0.))).child(
+                    div()
+                        .w(viewport.width)
+                        .h(viewport.height)
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            on_dismiss(window, cx)
+                        })
+                        .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+                            dismiss_right(window, cx)
+                        }),
+                ),
+            )
+            .child(
+                anchored()
+                    .position(point(left, top))
+                    .anchor(Corner::TopLeft)
+                    .position_mode(AnchoredPositionMode::Window)
+                    .snap_to_window_with_margin(edge)
+                    .child(menu),
+            ),
+    )
+    .with_priority(8)
+    .into_any_element()
 }
 
 #[cfg(test)]

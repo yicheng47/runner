@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, svg, ClipboardItem, Context, CursorStyle, FocusHandle, Focusable, KeyDownEvent,
+    div, rems, svg, ClipboardItem, Context, CursorStyle, FocusHandle, Focusable, KeyDownEvent,
     MouseButton, Render, SharedString, Window,
 };
 
@@ -91,8 +91,8 @@ impl Render for CopyValueButton {
             .flex()
             .items_center()
             .justify_center()
-            .size(px(20.))
-            .rounded(px(4.))
+            .size(rems(20. / 16.))
+            .rounded(rems(4. / 16.))
             .text_color(theme::faint())
             .cursor(CursorStyle::PointingHand)
             .hover(|button| {
@@ -114,7 +114,7 @@ impl Render for CopyValueButton {
             .child(
                 svg()
                     .path(if copied { "check.svg" } else { "copy.svg" })
-                    .size(px(12.)),
+                    .size(rems(12. / 16.)),
             );
         Tooltip::new(
             SharedString::from(format!("copy-value-tooltip-{}", self.label)),

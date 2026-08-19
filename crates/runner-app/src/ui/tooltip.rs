@@ -1,10 +1,11 @@
 use gpui::prelude::*;
 use gpui::{
-    anchored, deferred, div, point, px, AnchoredPositionMode, AnyElement, App, Corner, ElementId,
-    FocusHandle, FontWeight, IntoElement, Render, RenderOnce, SharedString, Window,
+    anchored, deferred, div, point, px, rems, AnchoredPositionMode, AnyElement, App, Corner,
+    ElementId, FocusHandle, FontWeight, IntoElement, Render, RenderOnce, SharedString, Window,
 };
 
 use crate::theme;
+use crate::ui::app_zoom;
 
 struct TooltipView {
     content: SharedString,
@@ -22,6 +23,7 @@ pub struct Tooltip {
     content: SharedString,
     child: AnyElement,
     focus_handle: Option<FocusHandle>,
+    expand: bool,
 }
 
 impl Tooltip {
@@ -35,6 +37,7 @@ impl Tooltip {
             content: content.into(),
             child: child.into_any_element(),
             focus_handle: None,
+            expand: false,
         }
     }
 
@@ -42,11 +45,18 @@ impl Tooltip {
         self.focus_handle = Some(focus_handle);
         self
     }
+
+    pub fn expand(mut self) -> Self {
+        self.expand = true;
+        self
+    }
 }
 
 impl RenderOnce for Tooltip {
     fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let zoom = app_zoom(window);
         let hover_content = self.content.clone();
+        let expand = self.expand;
         let focused = self
             .focus_handle
             .as_ref()
@@ -55,6 +65,7 @@ impl RenderOnce for Tooltip {
             .flex()
             .id(self.id)
             .relative()
+            .when(expand, |trigger| trigger.min_w(px(0.)).flex_1())
             .when(!focused, |trigger| {
                 trigger.tooltip(move |_, cx| {
                     cx.new(|_| TooltipView {
@@ -70,7 +81,7 @@ impl RenderOnce for Tooltip {
                         anchored()
                             .anchor(Corner::BottomLeft)
                             .position_mode(AnchoredPositionMode::Local)
-                            .offset(point(px(0.), px(-6.)))
+                            .offset(point(px(0.), px(-6. * zoom)))
                             .child(tooltip_content(self.content)),
                     )
                     .with_priority(60),
@@ -81,17 +92,17 @@ impl RenderOnce for Tooltip {
 
 fn tooltip_content(content: SharedString) -> impl IntoElement {
     div()
-        .max_w(px(320.))
+        .max_w(rems(320. / 16.))
         .px_2()
         .py_1()
-        .rounded(px(4.))
+        .rounded(rems(4. / 16.))
         .border_1()
         .border_color(theme::border_strong())
         .bg(theme::raised())
         .shadow_lg()
         .font_weight(FontWeight::NORMAL)
-        .text_size(px(11.))
-        .line_height(px(15.))
+        .text_size(rems(11. / 16.))
+        .line_height(rems(15. / 16.))
         .text_color(theme::muted())
         .child(content)
 }

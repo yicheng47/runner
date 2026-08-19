@@ -426,6 +426,11 @@ impl TextField {
         cx.notify();
     }
 
+    pub fn select_all(&mut self, cx: &mut Context<Self>) {
+        self.buffer.select_all();
+        cx.notify();
+    }
+
     pub fn set_placeholder(
         &mut self,
         placeholder: impl Into<SharedString>,
@@ -555,7 +560,7 @@ impl TextField {
             return div()
                 .flex()
                 .items_center()
-                .min_h(px(16.))
+                .min_h(rems(1.))
                 .min_w(px(0.))
                 .text_color(if self.placeholder_as_value {
                     theme::text()
@@ -613,7 +618,7 @@ impl TextField {
             .flex()
             .items_center()
             .min_w(px(0.))
-            .min_h(px(16.))
+            .min_h(rems(1.))
             .when(self.kind == TextFieldKind::Input, |line| {
                 line.whitespace_nowrap()
             })
@@ -767,17 +772,17 @@ impl Render for TextField {
             })
             .min_w(px(0.))
             .w_full()
-            .h(px(height))
+            .h(rems(height / 16.))
             .when(!self.bare, |input| {
-                input.pl(px(10.)).pr(px(self.right_padding))
+                input.pl(rems(10. / 16.)).pr(rems(self.right_padding / 16.))
             })
             .when(!self.bare && self.kind != TextFieldKind::Input, |input| {
-                input.py(px(6.))
+                input.py(rems(6. / 16.))
             })
             .overflow_hidden()
             .when(!self.bare, |input| {
                 input
-                    .rounded(px(4.))
+                    .rounded(rems(4. / 16.))
                     .border_1()
                     .border_color(input_border_color(&self.validation, focused))
                     .bg(theme::bg())
@@ -805,7 +810,7 @@ impl Render for TextField {
             .on_action(cx.listener(Self::on_select_all))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .text_size(rems(self.text_size / 16.))
-            .when(multiline, |input| input.line_height(px(20.)))
+            .when(multiline, |input| input.line_height(rems(20. / 16.)))
             .text_color(theme::text())
             .when(self.monospace, |input| input.font_family("JetBrains Mono"))
             .when(self.kind == TextFieldKind::Input, |input| {
@@ -901,13 +906,13 @@ impl RenderOnce for Label {
             .id(SharedString::from(format!("field-label-{}", self.id)))
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(rems(6. / 16.))
             .font_weight(if self.emphasized {
                 FontWeight::SEMIBOLD
             } else {
                 FontWeight::MEDIUM
             })
-            .text_size(px(12.))
+            .text_size(rems(12. / 16.))
             .text_color(if self.emphasized {
                 theme::text()
             } else {
@@ -934,8 +939,8 @@ impl RenderOnce for Label {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .size(px(14.))
-                        .rounded(px(2.))
+                        .size(rems(14. / 16.))
+                        .rounded(rems(2. / 16.))
                         .text_color(theme::faint())
                         .focus_visible(|hint| {
                             hint.shadow(vec![BoxShadow {
@@ -949,7 +954,7 @@ impl RenderOnce for Label {
                             hint_focus.focus(window);
                             cx.stop_propagation();
                         })
-                        .child(svg().path("info.svg").size(px(14.))),
+                        .child(svg().path("info.svg").size(rems(14. / 16.))),
                 )
                 .focus_handle(focus)
             }))
@@ -972,7 +977,7 @@ impl FieldError {
 impl RenderOnce for FieldError {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         div()
-            .text_size(px(12.))
+            .text_size(rems(12. / 16.))
             .text_color(theme::danger())
             .child(self.message)
     }
@@ -1046,12 +1051,12 @@ impl RenderOnce for Field {
         div()
             .flex()
             .flex_col()
-            .gap(px(if self.emphasized { 6. } else { 4. }))
+            .gap(rems(if self.emphasized { 6. / 16. } else { 4. / 16. }))
             .child(label)
             .child(self.child)
             .children(self.subtitle.map(|subtitle| {
                 div()
-                    .text_size(px(11.))
+                    .text_size(rems(11. / 16.))
                     .text_color(theme::faint())
                     .child(subtitle)
             }))
@@ -1095,7 +1100,7 @@ impl RenderOnce for WorkingDirField {
         let browse = Rc::clone(&self.on_browse);
         div()
             .flex()
-            .gap(px(8.))
+            .gap(rems(8. / 16.))
             .when(self.single_line, |field| field.items_center())
             .when(!self.single_line, |field| field.items_start())
             .child(div().flex_1().min_w(px(0.)).child(self.input))

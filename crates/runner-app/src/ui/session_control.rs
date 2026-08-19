@@ -2,8 +2,8 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, svg, App, BoxShadow, CursorStyle, ElementId, FocusHandle, FontWeight, KeyDownEvent,
-    RenderOnce, SharedString, Window,
+    div, px, rems, svg, App, BoxShadow, CursorStyle, ElementId, FocusHandle, FontWeight,
+    KeyDownEvent, RenderOnce, SharedString, Window,
 };
 
 use crate::theme;
@@ -170,7 +170,7 @@ impl RenderOnce for SessionControl {
             _ => icon.map(|icon| {
                 svg()
                     .path(icon)
-                    .size(px(icon_size))
+                    .size(rems(icon_size / 16.))
                     .text_color(icon_color)
                     .into_any_element()
             }),
@@ -186,19 +186,21 @@ impl RenderOnce for SessionControl {
             .flex()
             .items_center()
             .justify_center()
-            .gap(px(6.))
-            .when(header, |control| control.size(px(28.)).rounded(px(4.)))
+            .gap(rems(6. / 16.))
+            .when(header, |control| {
+                control.size(rems(28. / 16.)).rounded(rems(4. / 16.))
+            })
             .when(!header, |control| {
                 control
-                    .px(px(10.))
-                    .py(px(4.))
-                    .rounded(px(6.))
+                    .px(rems(10. / 16.))
+                    .py(rems(4. / 16.))
+                    .rounded(rems(6. / 16.))
                     .border_1()
                     .border_color(border)
                     .bg(background)
             })
             .font_weight(FontWeight::SEMIBOLD)
-            .text_size(px(11.))
+            .text_size(rems(11. / 16.))
             .text_color(if header {
                 match self.kind {
                     SessionControlKind::Resume => theme::with_alpha(theme::accent(), 0.8),
