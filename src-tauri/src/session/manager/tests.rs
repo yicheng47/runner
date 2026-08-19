@@ -2081,7 +2081,7 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
     runner.handle = "directrunner".into();
     let project = {
         let conn = pool.get().unwrap();
-        crate::repo::project::create(&conn, "Runner", "/project").unwrap()
+        crate::repo::project::create(&conn, "Runner", "/tmp").unwrap()
     };
 
     let cap = capture();
