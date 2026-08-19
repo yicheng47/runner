@@ -262,11 +262,7 @@ impl NativeRoot {
         let title_input = cx.new(|input_cx| {
             TextField::new(input_cx.focus_handle(), title, "e.g. quick-debug", false).text_size(13.)
         });
-        let project_id = project.as_ref().map(|project| project.id.clone());
-        let project_cwd = project
-            .as_ref()
-            .map(|project| project.cwd.clone())
-            .unwrap_or_default();
+        let (project_id, project_cwd) = project_start_scope(project.as_ref());
         let cwd_input = cx.new(|input_cx| {
             working_dir_text_field(input_cx.focus_handle(), project_cwd, cwd_placeholder, true)
                 .text_size(12.)
@@ -773,9 +769,14 @@ impl NativeRoot {
                 self.error = rename_error;
                 self.remember_active_runner();
                 self.mark_active_tab_viewed(window);
-                if let Some(chat) = self.attached.get(&session_id) {
-                    chat.terminal_focus.focus(window);
-                }
+                self.sync_active_chat_detail(cx);
+                self.begin_chat_transition(
+                    &session_id,
+                    chat_lifecycle::TransitionKind::Starting,
+                    Some(0),
+                    window,
+                    cx,
+                );
             }
             Err(start_error) => {
                 if let Some(session_id) = spawned_id {
@@ -786,6 +787,14 @@ impl NativeRoot {
                     let _ = self.ensure_active_tab_attached(window, cx);
                     self.remember_active_runner();
                     self.mark_active_tab_viewed(window);
+                    self.sync_active_chat_detail(cx);
+                    self.begin_chat_transition(
+                        &session_id,
+                        chat_lifecycle::TransitionKind::Starting,
+                        Some(0),
+                        window,
+                        cx,
+                    );
                     self.error = Some(start_error.to_string());
                 } else if let Some(modal) = self.start_chat_modal.as_mut() {
                     modal.submitting = false;
@@ -803,6 +812,7 @@ impl NativeRoot {
         let mode = modal.mode;
         let submitting = modal.submitting;
         let can_submit = modal.can_submit();
+        let settings_root = cx.entity();
 
         let runner_fields = div()
             .flex()
@@ -864,12 +874,29 @@ impl NativeRoot {
                         .when(modal.runtimes.is_empty(), |field| {
                             field.child(
                                 div()
+                                    .flex()
+                                    .items_center()
                                     .text_size(rems(11. / 16.))
                                     .text_color(theme::warning())
-                                    .child(if modal.agents_checking {
-                                        "Detecting agents…"
-                                    } else {
-                                        "No enabled agents detected. Configure one in Settings → Agents."
+                                    .when(modal.agents_checking, |message| {
+                                        message.child("Detecting agents…")
+                                    })
+                                    .when(!modal.agents_checking, |message| {
+                                        let root = settings_root.clone();
+                                        message.child("No enabled agents detected. ").child(
+                                            div()
+                                                .id("start-chat-open-agent-settings")
+                                                .cursor_pointer()
+                                                .text_color(theme::warning())
+                                                .hover(|link| link.text_color(theme::text()))
+                                                .child("Configure one in Settings → Agents.")
+                                                .on_click(move |_, window, cx| {
+                                                    root.update(cx, |this, cx| {
+                                                        this.start_chat_modal = None;
+                                                        this.enter_settings(window, cx);
+                                                    });
+                                                }),
+                                        )
                                     }),
                             )
                         })
@@ -1365,6 +1392,15 @@ fn cwd_placeholder(mode: ChatMode, runner: Option<&Runner>, default_path: &str) 
     }
 }
 
+fn project_start_scope(
+    project: Option<&runner_backend::repo::project::ProjectRow>,
+) -> (Option<String>, String) {
+    project.map_or_else(
+        || (None, String::new()),
+        |project| (Some(project.id.clone()), project.cwd.clone()),
+    )
+}
+
 #[cfg(test)]
 fn effort_options_for_runtime<'a>(
     runtimes: &'a [RuntimeCatalogEntry],
@@ -1546,5 +1582,31 @@ mod tests {
 
         fs::write(start_chat_mode_path(temp.path()), "unexpected").unwrap();
         assert_eq!(read_start_chat_mode(temp.path()), ChatMode::Runner);
+    }
+
+    #[test]
+    fn project_scope_seeds_cwd_before_runner_and_settings_defaults() {
+        let project = runner_backend::repo::project::ProjectRow {
+            id: "project-1".into(),
+            name: "Runner".into(),
+            cwd: "/project".into(),
+            position: 0,
+            created_at: "now".into(),
+        };
+        let (project_id, seeded_cwd) = project_start_scope(Some(&project));
+        assert_eq!(project_id.as_deref(), Some("project-1"));
+        assert_eq!(seeded_cwd, "/project");
+        assert_eq!(
+            effective_working_dir(&seeded_cwd, true, "/settings"),
+            Some("/project".into())
+        );
+
+        let (project_id, seeded_cwd) = project_start_scope(None);
+        assert_eq!(project_id, None);
+        assert!(seeded_cwd.is_empty());
+        assert_eq!(
+            effective_working_dir(&seeded_cwd, false, "/settings"),
+            Some("/settings".into())
+        );
     }
 }

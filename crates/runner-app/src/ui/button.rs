@@ -29,6 +29,20 @@ pub enum ButtonSize {
     Md,
 }
 
+impl ButtonSize {
+    pub const fn height(self, bordered: bool) -> f32 {
+        let height = match self {
+            Self::Sm => 24.,
+            Self::Md => 32.,
+        };
+        if bordered {
+            height + 2.
+        } else {
+            height
+        }
+    }
+}
+
 #[derive(IntoElement)]
 pub struct Button {
     id: ElementId,
@@ -114,13 +128,11 @@ impl RenderOnce for Button {
                 theme::with_alpha(theme::danger(), 0.4),
             ),
         };
-        let (mut height, horizontal_padding, text_size, icon_size) = match self.size {
-            ButtonSize::Sm => (24., 10., 12., 12.),
-            ButtonSize::Md => (32., 12., 14., 14.),
+        let height = self.size.height(has_border);
+        let (horizontal_padding, text_size, icon_size) = match self.size {
+            ButtonSize::Sm => (10., 12., 12.),
+            ButtonSize::Md => (12., 14., 14.),
         };
-        if has_border {
-            height += 2.;
-        }
         let mouse_focus = self.focus_handle.clone();
         let spinner_id = (self.id.clone(), "loading");
         let icon = (!self.loading).then_some(self.icon).flatten();
@@ -192,6 +204,19 @@ impl RenderOnce for Button {
                 )
             })
             .child(self.label)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn button_height_includes_the_border_box() {
+        assert_eq!(ButtonSize::Sm.height(false), 24.);
+        assert_eq!(ButtonSize::Sm.height(true), 26.);
+        assert_eq!(ButtonSize::Md.height(false), 32.);
+        assert_eq!(ButtonSize::Md.height(true), 34.);
     }
 }
 
