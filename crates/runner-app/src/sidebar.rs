@@ -29,6 +29,12 @@ pub(crate) enum SidebarRefreshKind {
     All,
 }
 
+#[derive(Clone, Copy)]
+enum ArchiveErrorTarget {
+    App,
+    Chat,
+}
+
 impl SidebarRefreshKind {
     pub(crate) fn for_event(event: &AppEvent) -> Option<Self> {
         match event.name {
@@ -231,6 +237,10 @@ impl NativeRoot {
                 .map(|session| session.session_id.as_str())
                 .collect::<std::collections::HashSet<_>>();
             self.attached.retain(|id, _| visible.contains(id.as_str()));
+            self.pane_action_menus
+                .retain(|id, _| visible.contains(id.as_str()));
+            self.session_exit_codes
+                .retain(|id, _| visible.contains(id.as_str()));
         }
         if matches!(
             refresh,
@@ -854,9 +864,28 @@ impl NativeRoot {
         }
     }
 
-    fn archive_sidebar_tab(
+    pub(crate) fn archive_sidebar_tab(
+        &mut self,
+        session_ids: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.archive_sessions(session_ids, ArchiveErrorTarget::App, window, cx);
+    }
+
+    pub(crate) fn archive_chat_sessions(
+        &mut self,
+        session_ids: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.archive_sessions(session_ids, ArchiveErrorTarget::Chat, window, cx);
+    }
+
+    fn archive_sessions(
         &mut self,
         mut session_ids: Vec<String>,
+        error_target: ArchiveErrorTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -918,11 +947,15 @@ impl NativeRoot {
                     this.mark_active_tab_viewed(window);
                     this.focus_active_terminal(window);
                 }
-                this.error = archive_error.or_else(|| {
+                let error = archive_error.or_else(|| {
                     refresh_result
                         .err()
                         .map(|refresh_error| refresh_error.to_string())
                 });
+                match error_target {
+                    ArchiveErrorTarget::App => this.error = error,
+                    ArchiveErrorTarget::Chat => this.chat_error = error,
+                }
                 cx.notify();
             });
         })
@@ -2904,14 +2937,14 @@ fn attention_indicator(attention: AttentionState) -> AnyElement {
 }
 
 #[derive(Clone, Copy)]
-enum DirectChatDisplayStatus {
+pub(crate) enum DirectChatDisplayStatus {
     Busy,
     Idle,
     Stopped,
     Crashed,
 }
 
-fn direct_chat_display_status(
+pub(crate) fn direct_chat_display_status(
     session: &DirectSessionEntry,
     activity: Option<&SessionActivityState>,
 ) -> DirectChatDisplayStatus {

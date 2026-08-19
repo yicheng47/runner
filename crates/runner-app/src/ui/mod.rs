@@ -9,6 +9,7 @@ pub mod overlay;
 pub mod scrollbar;
 pub mod select;
 pub mod session_control;
+pub mod session_overlay;
 pub mod settings;
 pub mod surfaces;
 pub mod toggle;
@@ -45,6 +46,7 @@ pub use select::{
     runtime_select_options, RuntimeSelect, SelectHandler, SelectOption, SelectState, StyledSelect,
 };
 pub use session_control::{SessionControl, SessionControlKind, SessionControlVariant};
+pub use session_overlay::{SessionOverlay, SessionOverlayKind};
 pub use settings::{PaneHeader, SettingsCard, SettingsHeader, SettingsRow, StepHandler, Stepper};
 pub use surfaces::{pill, status_badge, Badge, Card, Tone};
 pub use toggle::{Toggle, ToggleHandler};

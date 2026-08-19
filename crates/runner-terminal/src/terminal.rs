@@ -3,13 +3,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread;
+use std::time::Instant;
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions as _, Scroll};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::Processor;
+use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor};
 use anyhow::{Context as _, Result};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
@@ -58,6 +59,8 @@ pub fn query_color_for<T>(
 struct SequenceState {
     last: u64,
     synthetic_prefix_seen: bool,
+    tui_ready_seq: u64,
+    last_output_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -93,6 +96,13 @@ pub struct TerminalScrollState {
     pub history_lines: usize,
     pub display_offset: usize,
     pub screen_lines: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TerminalOutputActivity {
+    pub last_seq: u64,
+    pub tui_ready_seq: u64,
+    pub last_output_at: Option<Instant>,
 }
 
 impl TerminalSession {
@@ -206,6 +216,27 @@ impl TerminalSession {
         self.palette.lock().unwrap().theme
     }
 
+    pub fn configure(&self, scrollback: usize, cursor_shape: CursorShape) {
+        self.term.lock().set_options(Config {
+            scrolling_history: scrollback,
+            default_cursor_style: CursorStyle {
+                shape: cursor_shape,
+                blinking: true,
+            },
+            ..Config::default()
+        });
+        (self.waker)();
+    }
+
+    pub fn output_activity(&self) -> TerminalOutputActivity {
+        let sequence = self.sequence.lock().unwrap();
+        TerminalOutputActivity {
+            last_seq: sequence.last,
+            tui_ready_seq: sequence.tui_ready_seq,
+            last_output_at: sequence.last_output_at,
+        }
+    }
+
     pub fn feed_output(&self, event: &OutputEvent) -> Result<()> {
         self.feed_encoded(event.seq, &event.data)
     }
@@ -247,6 +278,10 @@ impl TerminalSession {
                 return Ok(());
             }
             sequence.last = seq;
+        }
+        sequence.last_output_at = Some(Instant::now());
+        if chunk_indicates_tui_ready(&bytes) {
+            sequence.tui_ready_seq = sequence.tui_ready_seq.max(seq);
         }
         let mut parser = self.parser.lock().unwrap();
         let mut term = self.term.lock();
@@ -348,6 +383,12 @@ impl TerminalSession {
         drop(term);
         (self.waker)();
     }
+}
+
+fn chunk_indicates_tui_ready(bytes: &[u8]) -> bool {
+    [b"\x1b[?2004h".as_slice(), b"\x1b[?1049h", b"\x1b[?47h"]
+        .into_iter()
+        .any(|signal| bytes.windows(signal.len()).any(|window| window == signal))
 }
 
 pub struct TerminalBridge {
@@ -464,7 +505,9 @@ impl TerminalBridge {
 
 #[cfg(test)]
 mod tests {
+    use alacritty_terminal::grid::Dimensions as _;
     use alacritty_terminal::term::TermMode;
+    use alacritty_terminal::vte::ansi::CursorShape;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -632,5 +675,45 @@ mod tests {
 
         terminal.scroll_to_display_offset(0);
         assert_eq!(terminal.scroll_state().display_offset, 0);
+    }
+
+    #[test]
+    fn terminal_configuration_applies_scrollback_and_cursor_shape() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+        let terminal = TerminalSession::attach(core, "replay-race".into(), 80, 5, waker).unwrap();
+
+        terminal.configure(3, CursorShape::Beam);
+        terminal
+            .feed_output(&output(1, &"configured line\r\n".repeat(20)))
+            .unwrap();
+
+        let term = terminal.term.lock();
+        assert_eq!(term.history_size(), 3);
+        assert_eq!(term.renderable_content().cursor.shape, CursorShape::Beam);
+    }
+
+    #[test]
+    fn output_activity_tracks_sequence_idle_time_and_tui_ready_signals() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+        let terminal = TerminalSession::attach(core, "replay-race".into(), 80, 24, waker).unwrap();
+
+        assert_eq!(terminal.output_activity().last_seq, 0);
+        terminal.feed_output(&output(1, "booting")).unwrap();
+        let first = terminal.output_activity();
+        assert_eq!(first.last_seq, 1);
+        assert_eq!(first.tui_ready_seq, 0);
+        assert!(first.last_output_at.is_some());
+
+        terminal
+            .feed_output(&output(2, "\x1b[?2004hready"))
+            .unwrap();
+        let ready = terminal.output_activity();
+        assert_eq!(ready.last_seq, 2);
+        assert_eq!(ready.tui_ready_seq, 2);
+        assert!(ready.last_output_at >= first.last_output_at);
     }
 }

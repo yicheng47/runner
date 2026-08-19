@@ -1,6 +1,7 @@
 mod app_settings;
 mod app_shell;
 mod assets;
+mod chat_lifecycle;
 mod mac_chrome;
 mod sidebar_logic;
 mod terminal_element;
@@ -15,10 +16,10 @@ use anyhow::{Context as _, Result};
 use futures::StreamExt as _;
 use gpui::{
     actions, div, point, prelude::*, px, relative, rems, size, AnyElement, App, Application,
-    Bounds, Context, CursorStyle, DragMoveEvent, Entity, FocusHandle, KeyBinding, KeyDownEvent,
-    Menu, MenuItem, MouseButton, OsAction, ScrollDelta, ScrollHandle, ScrollWheelEvent,
-    SharedString, Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds,
-    WindowOptions,
+    Bounds, ClipboardEntry, Context, CursorStyle, DragMoveEvent, Entity, FocusHandle, KeyBinding,
+    KeyDownEvent, Menu, MenuItem, MouseButton, OsAction, ScrollDelta, ScrollHandle,
+    ScrollWheelEvent, SharedString, Subscription, SystemMenuType, TitlebarOptions, Window,
+    WindowBounds, WindowOptions,
 };
 use runner_app::bootstrap::{boot_core, native_paths, stop_running_sessions_on_quit, NativePaths};
 use runner_app::pane_layout::{
@@ -26,8 +27,8 @@ use runner_app::pane_layout::{
 };
 use runner_app::terminal_ime::TerminalInput;
 use runner_app::ui::{
-    Button, ButtonSize, ContextMenu, IconButton, IconButtonSize, MenuItem as UiMenuItem,
-    PopoverMenu, Scrollbar, SessionControl, SessionControlKind,
+    Button, ButtonSize, ContextMenu, CopyValueButton, IconButton, IconButtonSize,
+    MenuItem as UiMenuItem, PopoverMenu, Scrollbar, SessionControl, SessionControlKind,
 };
 use runner_app::{theme, Copy, Cut, Paste, SelectAll};
 use runner_backend::model::{Runner, SessionStatus};
@@ -49,6 +50,9 @@ actions!(
     runner_app_ui,
     [
         CloseWindow,
+        ClosePane,
+        FocusNextPane,
+        FocusPreviousPane,
         Hide,
         HideOthers,
         Maximize,
@@ -71,7 +75,7 @@ mod sidebar;
 mod start_chat;
 mod toast;
 
-use panes::pane_fractions;
+use panes::{adjacent_pane_index, pane_fractions};
 use sidebar::{session_label, ProjectModal, SidebarRefreshKind, SidebarRename};
 use sidebar_logic::DropTarget;
 use start_chat::StartChatModal;
@@ -107,6 +111,53 @@ struct SidebarVisibilityTransition {
     start: f32,
     target: f32,
     started_at: Option<Instant>,
+}
+
+#[derive(Clone, Copy)]
+struct ChatTransition {
+    kind: chat_lifecycle::TransitionKind,
+    started_at: Instant,
+    baseline_seq: u64,
+    generation: u64,
+}
+
+#[derive(Clone)]
+enum ChatMenuAction {
+    TogglePin { session_id: String, pinned: bool },
+    RenameSession { session_id: String, current: String },
+    RenameTab { tab_id: String, current: String },
+    Archive(Vec<String>),
+}
+
+#[derive(Clone)]
+enum ChatRenameTarget {
+    Session {
+        session_id: String,
+        original: String,
+    },
+    Tab {
+        tab_id: String,
+        original: String,
+    },
+}
+
+struct ChatRenameModal {
+    target: ChatRenameTarget,
+    input: Entity<runner_app::ui::TextField>,
+    close_focus: FocusHandle,
+    cancel_focus: FocusHandle,
+    submit_focus: FocusHandle,
+    submitting: bool,
+    error: Option<String>,
+}
+
+#[derive(Clone)]
+struct ChatPanelResizeDrag;
+
+impl Render for ChatPanelResizeDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().w(px(1.)).h(px(1.))
+    }
 }
 
 impl SidebarVisibilityTransition {
@@ -160,6 +211,7 @@ struct NativeRoot {
     tabs: TabSet,
     attached: HashMap<String, AttachedChat>,
     root_focus: FocusHandle,
+    layout_picker_focus: FocusHandle,
     sidebar_scroll: ScrollHandle,
     sidebar_scrollbar: Entity<Scrollbar>,
     waker: Arc<dyn Fn() + Send + Sync>,
@@ -172,6 +224,18 @@ struct NativeRoot {
     project_delete_busy: bool,
     sidebar_archiving_sessions: HashSet<String>,
     sidebar_archiving_missions: HashSet<String>,
+    stopping_sessions: HashSet<String>,
+    chat_transitions: HashMap<String, ChatTransition>,
+    next_chat_transition_generation: u64,
+    session_exit_codes: HashMap<String, Option<i32>>,
+    chat_error: Option<String>,
+    chat_warning: Option<String>,
+    active_chat_detail: Option<DirectSessionEntry>,
+    session_key_copy: Entity<CopyValueButton>,
+    chat_action_menu: Entity<PopoverMenu>,
+    chat_menu_actions: Vec<ChatMenuAction>,
+    pane_action_menus: HashMap<String, Entity<PopoverMenu>>,
+    chat_rename_modal: Option<ChatRenameModal>,
     active_project_id: Option<String>,
     sidebar_dragged_id: Option<String>,
     sidebar_drop_target: Option<DropTarget>,
@@ -184,9 +248,11 @@ struct NativeRoot {
     settings_path: PathBuf,
     route: AppRoute,
     sidebar_visibility: SidebarVisibilityTransition,
+    chat_panel_visibility: SidebarVisibilityTransition,
     sidebar_preview_open: bool,
     sidebar_preview_peeking: bool,
     titlebar_drag_armed: bool,
+    window_size_save_generation: u64,
     toasts: ToastHost,
     _appearance_subscription: Option<Subscription>,
     _activation_subscription: Option<Subscription>,
@@ -215,6 +281,43 @@ impl NativeRoot {
             while wake_rx.next().await.is_some() {
                 while wake_rx.try_recv().is_ok() {}
                 if weak.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        let (chat_event_tx, mut chat_event_rx) =
+            futures::channel::mpsc::unbounded::<runner_backend::events::AppEvent>();
+        let mut chat_events = core.events.subscribe();
+        cx.background_spawn(async move {
+            loop {
+                match chat_events.recv().await {
+                    Ok(event)
+                        if matches!(
+                            event.name,
+                            "session/exit" | "session/updated" | "session/warning"
+                        ) =>
+                    {
+                        if chat_event_tx.unbounded_send(event).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        })
+        .detach();
+        cx.spawn_in(window, async move |weak, cx| {
+            while let Some(event) = chat_event_rx.next().await {
+                if weak
+                    .update_in(cx, |this, window, cx| {
+                        this.handle_chat_lifecycle_event(event, window, cx);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -333,9 +436,47 @@ impl NativeRoot {
         let session_activity = runner_backend::ops::session::session_activity_snapshot(&core);
 
         let root_focus = cx.focus_handle();
+        let layout_picker_focus = cx.focus_handle();
         let sidebar_scroll = ScrollHandle::new();
         let scroll_owner = cx.entity_id();
         let sidebar_scrollbar = cx.new(|_| Scrollbar::app(sidebar_scroll.clone(), scroll_owner));
+        let active_chat_detail = tabs
+            .active()
+            .and_then(PaneLayout::focused_session_id)
+            .and_then(|session_id| {
+                runner_backend::ops::session::session_get(&core, session_id)
+                    .ok()
+                    .flatten()
+            });
+        let initial_session_key = active_chat_detail
+            .as_ref()
+            .and_then(|entry| entry.agent_session_key.clone());
+        let session_key_copy = cx.new(|copy_cx| {
+            CopyValueButton::new(
+                copy_cx.focus_handle(),
+                initial_session_key,
+                "Copy session_key",
+            )
+        });
+        let chat_root = cx.entity();
+        let chat_action_menu = cx.new(move |menu_cx| {
+            let action_root = chat_root.clone();
+            PopoverMenu::new(
+                "chat-actions",
+                menu_cx.focus_handle(),
+                Vec::new(),
+                Rc::new(move |index, window, cx| {
+                    action_root.update(cx, |this, cx| {
+                        this.handle_chat_menu_action(index, window, cx);
+                    });
+                }),
+                menu_cx,
+            )
+            .min_width(px(160.))
+            .trigger_size(IconButtonSize::Md)
+            .trigger_icon("more-horizontal.svg")
+            .trigger_tooltip("Chat actions")
+        });
         let create_root = cx.entity();
         let sidebar_create_menu = cx.new(move |menu_cx| {
             let action_root = create_root.clone();
@@ -375,6 +516,7 @@ impl NativeRoot {
                 .and_then(|node| node.ref_id.clone())
         });
         let sidebar_visibility = SidebarVisibilityTransition::new(!settings.sidebar_collapsed);
+        let chat_panel_visibility = SidebarVisibilityTransition::new(settings.chat_panel_open);
         let mut root = Self {
             core,
             bridge,
@@ -387,6 +529,7 @@ impl NativeRoot {
             tabs,
             attached: HashMap::new(),
             root_focus,
+            layout_picker_focus,
             sidebar_scroll,
             sidebar_scrollbar,
             waker,
@@ -399,6 +542,18 @@ impl NativeRoot {
             project_delete_busy: false,
             sidebar_archiving_sessions: HashSet::new(),
             sidebar_archiving_missions: HashSet::new(),
+            stopping_sessions: HashSet::new(),
+            chat_transitions: HashMap::new(),
+            next_chat_transition_generation: 0,
+            session_exit_codes: HashMap::new(),
+            chat_error: None,
+            chat_warning: None,
+            active_chat_detail,
+            session_key_copy,
+            chat_action_menu,
+            chat_menu_actions: Vec::new(),
+            pane_action_menus: HashMap::new(),
+            chat_rename_modal: None,
             active_project_id,
             sidebar_dragged_id: None,
             sidebar_drop_target: None,
@@ -411,9 +566,11 @@ impl NativeRoot {
             settings_path,
             route: AppRoute::Chat,
             sidebar_visibility,
+            chat_panel_visibility,
             sidebar_preview_open: false,
             sidebar_preview_peeking: false,
             titlebar_drag_armed: false,
+            window_size_save_generation: 0,
             toasts: ToastHost::default(),
             _appearance_subscription: None,
             _activation_subscription: None,
@@ -426,6 +583,7 @@ impl NativeRoot {
         }));
         root._bounds_subscription = Some(cx.observe_window_bounds(window, |this, window, cx| {
             mac_chrome::sync_traffic_lights(window, this.settings.app_zoom);
+            this.schedule_window_size_save(window, cx);
             cx.notify();
         }));
         root._activation_subscription =
@@ -520,7 +678,9 @@ fn run() -> Result<()> {
                 KeyBinding::new("cmd-h", Hide, None),
                 KeyBinding::new("cmd-alt-h", HideOthers, None),
                 KeyBinding::new("cmd-m", Minimize, None),
-                KeyBinding::new("cmd-w", CloseWindow, None),
+                KeyBinding::new("cmd-w", ClosePane, None),
+                KeyBinding::new("cmd-[", FocusPreviousPane, None),
+                KeyBinding::new("cmd-]", FocusNextPane, None),
                 KeyBinding::new("cmd-t", NewTab, None),
                 KeyBinding::new("cmd-s", ToggleSidebar, None),
                 KeyBinding::new("cmd-,", OpenSettings, None),
@@ -582,7 +742,19 @@ fn open_runner_window(core: AppCore, settings_path: PathBuf, cx: &mut App) -> Re
         Ok(settings) => (settings, None),
         Err(error) => (AppSettings::default(), Some(error.to_string())),
     };
-    let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
+    let (window_width, window_height) = cx
+        .primary_display()
+        .map(|display| {
+            let display_size = display.visible_bounds().size;
+            app_settings::clamp_window_size_to_display(
+                settings.window_width,
+                settings.window_height,
+                f32::from(display_size.width),
+                f32::from(display_size.height),
+            )
+        })
+        .unwrap_or((settings.window_width, settings.window_height));
+    let bounds = Bounds::centered(None, size(px(window_width), px(window_height)), cx);
     cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -596,7 +768,7 @@ fn open_runner_window(core: AppCore, settings_path: PathBuf, cx: &mut App) -> Re
             ..Default::default()
         },
         |window, cx| {
-            cx.new(|cx| {
+            let root = cx.new(|cx| {
                 NativeRoot::new(
                     core.clone(),
                     settings_path.clone(),
@@ -605,7 +777,13 @@ fn open_runner_window(core: AppCore, settings_path: PathBuf, cx: &mut App) -> Re
                     window,
                     cx,
                 )
-            })
+            });
+            let weak = root.downgrade();
+            window.on_window_should_close(cx, move |window, cx| {
+                let _ = weak.update(cx, |this, _| this.save_window_size(window));
+                true
+            });
+            root
         },
     )?;
     Ok(())

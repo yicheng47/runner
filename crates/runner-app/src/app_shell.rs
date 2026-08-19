@@ -9,6 +9,7 @@ const TITLEBAR_DRAG_HEIGHT: f32 = 28.;
 const SIDEBAR_TOGGLE_GLYPH_X: f32 = 94.3;
 const SIDEBAR_TOGGLE_GLYPH_INSET: f32 = 6.3;
 const SIDEBAR_TRANSITION_MS: u64 = 200;
+const WINDOW_SIZE_SAVE_DELAY_MS: u64 = 300;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum AppRoute {
@@ -68,6 +69,10 @@ impl NativeRoot {
             .then_some(self.start_chat_modal.as_ref())
             .flatten()
             .map(|_| self.render_start_chat_modal(cx));
+        let chat_rename_modal = (self.route == AppRoute::Chat)
+            .then_some(self.chat_rename_modal.as_ref())
+            .flatten()
+            .map(|_| self.render_chat_rename_modal(cx));
         let sidebar_overlays = if self.route != AppRoute::Settings {
             self.render_sidebar_overlays(cx)
         } else {
@@ -102,6 +107,7 @@ impl NativeRoot {
             )
             .children(preview_trigger)
             .children(modal)
+            .children(chat_rename_modal)
             .children(sidebar_overlays);
         let settings =
             (self.route == AppRoute::Settings).then(|| self.render_settings_takeover(window, cx));
@@ -140,6 +146,9 @@ impl NativeRoot {
                 cx.listener(|this, _, _, cx| this.clear_sidebar_drag(cx)),
             )
             .on_action(cx.listener(Self::open_new_tab_modal))
+            .on_action(cx.listener(Self::close_focused_chat_pane))
+            .on_action(cx.listener(Self::focus_previous_chat_pane))
+            .on_action(cx.listener(Self::focus_next_chat_pane))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::zoom_in))
@@ -572,8 +581,9 @@ impl NativeRoot {
                     window.start_window_move();
                 }
             }))
-            .on_click(|event, window, _| {
+            .on_click(|event, window, cx| {
                 if event.click_count() == 2 {
+                    cx.stop_propagation();
                     window.titlebar_double_click();
                 }
             })
@@ -715,7 +725,42 @@ impl NativeRoot {
         }
     }
 
-    fn enter_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn schedule_window_size_save(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.window_size_save_generation = self.window_size_save_generation.wrapping_add(1);
+        let generation = self.window_size_save_generation;
+        cx.spawn_in(window, async move |weak, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(WINDOW_SIZE_SAVE_DELAY_MS))
+                .await;
+            let _ = weak.update_in(cx, |this, window, _| {
+                if this.window_size_save_generation == generation {
+                    this.save_window_size(window);
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn save_window_size(&mut self, window: &Window) {
+        if window.is_fullscreen() || window.is_maximized() {
+            return;
+        }
+        let size = window.viewport_size();
+        let width = f32::from(size.width);
+        let height = f32::from(size.height);
+        if self.settings.window_width == width && self.settings.window_height == height {
+            return;
+        }
+        self.settings.window_width = width;
+        self.settings.window_height = height;
+        self.save_settings();
+    }
+
+    pub(crate) fn enter_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.route != AppRoute::Settings {
             self.dismiss_sidebar_transients(cx);
             self.core.windows.set_subjects("main", Vec::new());
