@@ -4877,6 +4877,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "base64",
+ "chrono",
  "futures",
  "gpui-ce",
  "objc2",

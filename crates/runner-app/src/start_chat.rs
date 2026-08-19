@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, AnyElement, Context, FontWeight, KeyDownEvent, PathPromptOptions, ScrollHandle,
+    div, px, rems, AnyElement, Context, FontWeight, KeyDownEvent, PathPromptOptions, ScrollHandle,
     SharedString, Window,
 };
 use runner_backend::model::Runner;
@@ -63,6 +63,7 @@ enum StartChatSelection {
 
 pub(crate) struct StartChatModal {
     target: ChatTarget,
+    project_id: Option<String>,
     mode: ChatMode,
     runners: Vec<Runner>,
     runtimes: Vec<RuntimeCatalogEntry>,
@@ -160,7 +161,27 @@ impl NativeRoot {
         if self.start_chat_modal.is_some() {
             return;
         }
-        self.open_start_chat_modal(ChatTarget::NewTab, None, window, cx);
+        let project = self
+            .active_project_id
+            .as_deref()
+            .and_then(|id| self.projects.iter().find(|project| project.id == id))
+            .cloned();
+        self.open_start_chat_modal(ChatTarget::NewTab, None, project, window, cx);
+    }
+
+    pub(crate) fn open_sidebar_chat_modal(
+        &mut self,
+        project_id: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.start_chat_modal.is_some() {
+            return;
+        }
+        let project = project_id
+            .and_then(|id| self.projects.iter().find(|project| project.id == id))
+            .cloned();
+        self.open_start_chat_modal(ChatTarget::NewTab, None, project, window, cx);
     }
 
     pub(crate) fn open_pane_chat_modal(
@@ -172,12 +193,18 @@ impl NativeRoot {
         let Some(tab_id) = self.tabs.active_tab_id().map(str::to_owned) else {
             return;
         };
+        let project = self
+            .active_project_id
+            .as_deref()
+            .and_then(|id| self.projects.iter().find(|project| project.id == id))
+            .cloned();
         self.open_start_chat_modal(
             ChatTarget::Pane {
                 tab_id,
                 pane_id: pane_id.to_owned(),
             },
             self.last_focused_runner_id.clone(),
+            project,
             window,
             cx,
         );
@@ -187,6 +214,7 @@ impl NativeRoot {
         &mut self,
         target: ChatTarget,
         default_runner_id: Option<String>,
+        project: Option<runner_backend::repo::project::ProjectRow>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -234,8 +262,13 @@ impl NativeRoot {
         let title_input = cx.new(|input_cx| {
             TextField::new(input_cx.focus_handle(), title, "e.g. quick-debug", false).text_size(13.)
         });
+        let project_id = project.as_ref().map(|project| project.id.clone());
+        let project_cwd = project
+            .as_ref()
+            .map(|project| project.cwd.clone())
+            .unwrap_or_default();
         let cwd_input = cx.new(|input_cx| {
-            working_dir_text_field(input_cx.focus_handle(), "", cwd_placeholder, true)
+            working_dir_text_field(input_cx.focus_handle(), project_cwd, cwd_placeholder, true)
                 .text_size(12.)
         });
         let model_input = cx.new(|input_cx| {
@@ -321,6 +354,7 @@ impl NativeRoot {
         self.sidebar_preview_open = false;
         self.start_chat_modal = Some(StartChatModal {
             target,
+            project_id,
             mode,
             runners: self.runners.clone(),
             runtimes,
@@ -627,6 +661,7 @@ impl NativeRoot {
         let model = normalized_value(modal.model.read(cx).text());
         let effort = normalized_value(&modal.effort);
         let title = modal.title.read(cx).text().trim().to_owned();
+        let project_id = modal.project_id.clone();
         let request = build_start_request(
             modal.mode,
             modal.selected_runner().map(|runner| runner.id.as_str()),
@@ -680,7 +715,7 @@ impl NativeRoot {
                     runtime,
                     model,
                     effort,
-                    None,
+                    project_id,
                     cwd,
                     Some(initial_size.0),
                     Some(initial_size.1),
@@ -693,7 +728,7 @@ impl NativeRoot {
                 } => runner_backend::ops::session::session_start_runtime(
                     &self.core,
                     &runtime,
-                    None,
+                    project_id,
                     cwd,
                     Some(initial_size.0),
                     Some(initial_size.1),
@@ -718,12 +753,14 @@ impl NativeRoot {
                 ChatTarget::NewTab => {
                     self.reload_tabs()?;
                     self.tabs.activate_session(&spawned.id);
+                    self.sync_active_project_from_active_tab();
                 }
                 ChatTarget::Pane { pane_id, .. } => {
                     self.tabs.assign_to_active(&pane_id, &spawned.id)?;
                     self.persist_active_tab()?;
                     self.reload_tabs()?;
                     self.tabs.activate_session(&spawned.id);
+                    self.sync_active_project_from_active_tab();
                 }
             }
             self.ensure_active_tab_attached(window, cx)?;
@@ -735,6 +772,7 @@ impl NativeRoot {
                 self.start_chat_modal = None;
                 self.error = rename_error;
                 self.remember_active_runner();
+                self.mark_active_tab_viewed(window);
                 if let Some(chat) = self.attached.get(&session_id) {
                     chat.terminal_focus.focus(window);
                 }
@@ -744,8 +782,10 @@ impl NativeRoot {
                     self.start_chat_modal = None;
                     let _ = self.reload_tabs();
                     self.tabs.activate_session(&session_id);
+                    self.sync_active_project_from_active_tab();
                     let _ = self.ensure_active_tab_attached(window, cx);
                     self.remember_active_runner();
+                    self.mark_active_tab_viewed(window);
                     self.error = Some(start_error.to_string());
                 } else if let Some(modal) = self.start_chat_modal.as_mut() {
                     modal.submitting = false;
@@ -780,7 +820,7 @@ impl NativeRoot {
                         .when(modal.runners.is_empty(), |field| {
                             field.child(
                                 div()
-                                    .text_size(px(11.))
+                                    .text_size(rems(11. / 16.))
                                     .text_color(theme::warning())
                                     .child("No runners yet. Create one from the runner page first."),
                             )
@@ -824,7 +864,7 @@ impl NativeRoot {
                         .when(modal.runtimes.is_empty(), |field| {
                             field.child(
                                 div()
-                                    .text_size(px(11.))
+                                    .text_size(rems(11. / 16.))
                                     .text_color(theme::warning())
                                     .child(if modal.agents_checking {
                                         "Detecting agents…"
@@ -834,7 +874,10 @@ impl NativeRoot {
                             )
                         })
                         .children(modal.agents_error.clone().map(|error| {
-                            div().text_size(px(11.)).text_color(theme::danger()).child(error)
+                            div()
+                                .text_size(rems(11. / 16.))
+                                .text_color(theme::danger())
+                                .child(error)
                         })),
                 )
                 .focus_target(modal.runtime_select.read(cx).focus_handle())
@@ -858,13 +901,13 @@ impl NativeRoot {
             .on_key_down(cx.listener(Self::on_start_chat_key_down))
             .children(modal.error.as_ref().map(|error| {
                 div()
-                    .rounded(px(4.))
+                    .rounded(rems(4. / 16.))
                     .border_1()
                     .border_color(theme::with_alpha(theme::danger(), 0.4))
                     .bg(theme::with_alpha(theme::danger(), 0.1))
                     .px_3()
                     .py_2()
-                    .text_size(px(12.))
+                    .text_size(rems(12. / 16.))
                     .text_color(theme::danger())
                     .child(SharedString::from(error.clone()))
             }))
@@ -872,8 +915,8 @@ impl NativeRoot {
                 div()
                     .flex()
                     .w_full()
-                    .p(px(2.))
-                    .rounded(px(6.))
+                    .p(rems(2. / 16.))
+                    .rounded(rems(6. / 16.))
                     .border_1()
                     .border_color(theme::border())
                     .bg(theme::bg())
@@ -935,17 +978,17 @@ impl NativeRoot {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(2.))
+                    .gap(rems(2. / 16.))
                     .child(
                         div()
-                            .text_size(px(16.))
+                            .text_size(rems(1.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::text())
                             .child("Start a chat"),
                     )
                     .child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(rems(12. / 16.))
                             .font_weight(FontWeight::NORMAL)
                             .text_color(theme::muted())
                             .child("Spawns a direct PTY in the selected directory."),
@@ -1211,7 +1254,11 @@ fn render_shared_model_effort_fields(
         .gap_3()
         .child(
             div()
-                .w(px(if has_effort { 232. } else { FIELD_WIDTH }))
+                .w(rems(if has_effort {
+                    232. / 16.
+                } else {
+                    FIELD_WIDTH / 16.
+                }))
                 .child(
                     Field::new("start-chat-model-field", "Model", model)
                         .focus_target(model_focus)
@@ -1220,7 +1267,7 @@ fn render_shared_model_effort_fields(
         )
         .when(has_effort, |fields| {
             fields.child(
-                div().w(px(232.)).child(
+                div().w(rems(232. / 16.)).child(
                     Field::new("start-chat-effort-field", "Thinking effort", effort)
                         .focus_target(effort_focus)
                         .emphasized(true),

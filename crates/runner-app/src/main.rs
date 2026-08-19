@@ -2,11 +2,14 @@ mod app_settings;
 mod app_shell;
 mod assets;
 mod mac_chrome;
+mod sidebar_logic;
 mod terminal_element;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use futures::StreamExt as _;
@@ -23,11 +26,16 @@ use runner_app::pane_layout::{
 };
 use runner_app::terminal_ime::TerminalInput;
 use runner_app::ui::{
-    Button, ButtonSize, IconButton, IconButtonSize, Scrollbar, SessionControl, SessionControlKind,
+    Button, ButtonSize, ContextMenu, IconButton, IconButtonSize, MenuItem as UiMenuItem,
+    PopoverMenu, Scrollbar, SessionControl, SessionControlKind,
 };
 use runner_app::{theme, Copy, Cut, Paste, SelectAll};
 use runner_backend::model::{Runner, SessionStatus};
+use runner_backend::ops::mission::MissionSummary;
 use runner_backend::ops::session::DirectSessionEntry;
+use runner_backend::repo::node::NodeRow;
+use runner_backend::repo::project::ProjectRow;
+use runner_backend::session::manager::SessionActivityState;
 use runner_backend::AppCore;
 use runner_terminal::terminal::{TerminalBridge, TerminalSession};
 
@@ -64,7 +72,8 @@ mod start_chat;
 mod toast;
 
 use panes::pane_fractions;
-use sidebar::session_label;
+use sidebar::{session_label, ProjectModal, SidebarRefreshKind, SidebarRename};
+use sidebar_logic::DropTarget;
 use start_chat::StartChatModal;
 
 const INITIAL_COLS: u16 = 100;
@@ -94,11 +103,60 @@ impl Render for SplitResizeDrag {
     }
 }
 
+struct SidebarVisibilityTransition {
+    start: f32,
+    target: f32,
+    started_at: Option<Instant>,
+}
+
+impl SidebarVisibilityTransition {
+    fn new(visible: bool) -> Self {
+        let value = if visible { 1. } else { 0. };
+        Self {
+            start: value,
+            target: value,
+            started_at: None,
+        }
+    }
+
+    fn animate_to(&mut self, target: f32, now: Instant, duration: Duration) -> (f32, bool) {
+        let current = self.value_at(now, duration);
+        if self.target != target {
+            self.start = current;
+            self.target = target;
+            self.started_at = Some(now);
+        }
+        let Some(started_at) = self.started_at else {
+            return (self.target, false);
+        };
+        if now.saturating_duration_since(started_at) >= duration {
+            self.start = self.target;
+            self.started_at = None;
+            return (self.target, false);
+        }
+        (self.value_at(now, duration), true)
+    }
+
+    fn value_at(&self, now: Instant, duration: Duration) -> f32 {
+        let Some(started_at) = self.started_at else {
+            return self.target;
+        };
+        let delta = (now.saturating_duration_since(started_at).as_secs_f32()
+            / duration.as_secs_f32())
+        .clamp(0., 1.);
+        self.start + (self.target - self.start) * gpui::ease_in_out(delta)
+    }
+}
+
 struct NativeRoot {
     core: AppCore,
     bridge: Arc<TerminalBridge>,
     sessions: Vec<DirectSessionEntry>,
     runners: Vec<Runner>,
+    nodes: Vec<NodeRow>,
+    projects: Vec<ProjectRow>,
+    missions: Vec<MissionSummary>,
+    session_activity: BTreeMap<String, SessionActivityState>,
     tabs: TabSet,
     attached: HashMap<String, AttachedChat>,
     root_focus: FocusHandle,
@@ -106,6 +164,18 @@ struct NativeRoot {
     sidebar_scrollbar: Entity<Scrollbar>,
     waker: Arc<dyn Fn() + Send + Sync>,
     start_chat_modal: Option<StartChatModal>,
+    sidebar_create_menu: Entity<PopoverMenu>,
+    sidebar_context_menu: Option<Entity<ContextMenu>>,
+    sidebar_rename: Option<SidebarRename>,
+    project_modal: Option<ProjectModal>,
+    project_delete_confirm: Option<String>,
+    project_delete_busy: bool,
+    sidebar_archiving_sessions: HashSet<String>,
+    sidebar_archiving_missions: HashSet<String>,
+    active_project_id: Option<String>,
+    sidebar_dragged_id: Option<String>,
+    sidebar_drop_target: Option<DropTarget>,
+    sidebar_drop_marker: Option<String>,
     last_focused_runner_id: Option<String>,
     layout_picker_open: bool,
     split_sizes_dirty: bool,
@@ -113,11 +183,16 @@ struct NativeRoot {
     settings: AppSettings,
     settings_path: PathBuf,
     route: AppRoute,
+    sidebar_visibility: SidebarVisibilityTransition,
     sidebar_preview_open: bool,
+    sidebar_preview_peeking: bool,
     titlebar_drag_armed: bool,
     toasts: ToastHost,
     _appearance_subscription: Option<Subscription>,
+    _activation_subscription: Option<Subscription>,
     _bounds_subscription: Option<Subscription>,
+    _sidebar_rename_focus_subscription: Option<Subscription>,
+    _project_cwd_subscription: Option<Subscription>,
 }
 
 impl NativeRoot {
@@ -140,6 +215,40 @@ impl NativeRoot {
             while wake_rx.next().await.is_some() {
                 while wake_rx.try_recv().is_ok() {}
                 if weak.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        let (sidebar_event_tx, mut sidebar_event_rx) =
+            futures::channel::mpsc::unbounded::<SidebarRefreshKind>();
+        let mut sidebar_events = core.events.subscribe();
+        cx.background_spawn(async move {
+            loop {
+                let refresh = match sidebar_events.recv().await {
+                    Ok(event) => SidebarRefreshKind::for_event(&event),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        Some(SidebarRefreshKind::All)
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                if refresh.is_some_and(|refresh| sidebar_event_tx.unbounded_send(refresh).is_err())
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.spawn(async move |weak, cx| {
+            while let Some(mut refresh) = sidebar_event_rx.next().await {
+                while let Ok(next) = sidebar_event_rx.try_recv() {
+                    refresh = refresh.merge(next);
+                }
+                if weak
+                    .update(cx, |this, cx| this.refresh_sidebar(refresh, cx))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -191,31 +300,90 @@ impl NativeRoot {
                 Vec::new()
             }
         };
-        let tabs = match runner_backend::ops::node::node_list(&core)
-            .map_err(anyhow::Error::from)
-            .and_then(|rows| TabSet::from_rows(&rows))
-        {
+        let nodes = match runner_backend::ops::node::node_list(&core) {
+            Ok(nodes) => nodes,
+            Err(error) => {
+                errors.push(error.to_string());
+                Vec::new()
+            }
+        };
+        let tabs = match TabSet::from_rows(&nodes) {
             Ok(tabs) => tabs,
             Err(error) => {
                 errors.push(error.to_string());
                 TabSet::default()
             }
         };
+        let projects = match runner_backend::ops::project::project_list(&core) {
+            Ok(projects) => projects,
+            Err(error) => {
+                errors.push(error.to_string());
+                Vec::new()
+            }
+        };
+        let missions = match futures::executor::block_on(
+            runner_backend::ops::mission::mission_list_summary_impl(&core, None),
+        ) {
+            Ok(missions) => missions,
+            Err(error) => {
+                errors.push(error.to_string());
+                Vec::new()
+            }
+        };
+        let session_activity = runner_backend::ops::session::session_activity_snapshot(&core);
 
         let root_focus = cx.focus_handle();
         let sidebar_scroll = ScrollHandle::new();
         let scroll_owner = cx.entity_id();
         let sidebar_scrollbar = cx.new(|_| Scrollbar::app(sidebar_scroll.clone(), scroll_owner));
+        let create_root = cx.entity();
+        let sidebar_create_menu = cx.new(move |menu_cx| {
+            let action_root = create_root.clone();
+            PopoverMenu::new(
+                "sidebar-create",
+                menu_cx.focus_handle(),
+                vec![
+                    UiMenuItem::new("New chat").icon("message-square-plus.svg"),
+                    UiMenuItem::new("New mission").icon("flag.svg"),
+                ],
+                Rc::new(move |index, window, cx| {
+                    action_root.update(cx, |this, cx| {
+                        this.handle_sidebar_create_action(index, window, cx);
+                    });
+                }),
+                menu_cx,
+            )
+            .min_width(px(160.))
+            .trigger_size(IconButtonSize::Sm)
+            .trigger_icon("plus.svg")
+            .without_trigger_tooltip()
+        });
         let last_focused_runner_id = tabs
             .active()
             .and_then(PaneLayout::focused_session_id)
             .and_then(|session_id| sessions.iter().find(|entry| entry.session_id == session_id))
             .and_then(|entry| entry.runner_id.clone());
+        let active_project_id = tabs.active_tab_id().and_then(|tab_id| {
+            let tab = nodes.iter().find(|node| node.id == tab_id)?;
+            let parent_id = tab.parent_id.as_deref()?;
+            nodes
+                .iter()
+                .find(|node| {
+                    node.id == parent_id
+                        && node.node_type == runner_backend::repo::node::NodeType::Project
+                })
+                .and_then(|node| node.ref_id.clone())
+        });
+        let sidebar_visibility = SidebarVisibilityTransition::new(!settings.sidebar_collapsed);
         let mut root = Self {
             core,
             bridge,
             sessions,
             runners,
+            nodes,
+            projects,
+            missions,
+            session_activity,
             tabs,
             attached: HashMap::new(),
             root_focus,
@@ -223,6 +391,18 @@ impl NativeRoot {
             sidebar_scrollbar,
             waker,
             start_chat_modal: None,
+            sidebar_create_menu,
+            sidebar_context_menu: None,
+            sidebar_rename: None,
+            project_modal: None,
+            project_delete_confirm: None,
+            project_delete_busy: false,
+            sidebar_archiving_sessions: HashSet::new(),
+            sidebar_archiving_missions: HashSet::new(),
+            active_project_id,
+            sidebar_dragged_id: None,
+            sidebar_drop_target: None,
+            sidebar_drop_marker: None,
             last_focused_runner_id,
             layout_picker_open: false,
             split_sizes_dirty: false,
@@ -230,11 +410,16 @@ impl NativeRoot {
             settings,
             settings_path,
             route: AppRoute::Chat,
+            sidebar_visibility,
             sidebar_preview_open: false,
+            sidebar_preview_peeking: false,
             titlebar_drag_armed: false,
             toasts: ToastHost::default(),
             _appearance_subscription: None,
+            _activation_subscription: None,
             _bounds_subscription: None,
+            _sidebar_rename_focus_subscription: None,
+            _project_cwd_subscription: None,
         };
         root._appearance_subscription = Some(cx.observe_window_appearance(window, |_, _, cx| {
             cx.notify();
@@ -243,11 +428,16 @@ impl NativeRoot {
             mac_chrome::sync_traffic_lights(window, this.settings.app_zoom);
             cx.notify();
         }));
+        root._activation_subscription =
+            Some(cx.observe_window_activation(window, |this, window, cx| {
+                this.sync_sidebar_window_activation(window, cx)
+            }));
         mac_chrome::sync_traffic_lights(window, root.settings.app_zoom);
         if let Err(error) = root.ensure_active_tab_attached(window, cx) {
             root.error = Some(error.to_string());
         }
         root.focus_active_terminal(window);
+        root.sync_sidebar_window_activation(window, cx);
         root
     }
 
@@ -260,7 +450,11 @@ impl NativeRoot {
 
     fn reload_tabs(&mut self) -> Result<()> {
         let rows = runner_backend::ops::node::node_list(&self.core)?;
-        self.tabs.replace_rows(&rows)
+        self.tabs.replace_rows(&rows)?;
+        self.nodes = rows;
+        self.sync_active_project_from_active_tab();
+        self.prune_sidebar_collapse_state();
+        Ok(())
     }
 
     fn session_entry(&self, session_id: &str) -> Option<&DirectSessionEntry> {
@@ -429,5 +623,42 @@ fn main() {
     if let Err(error) = run() {
         eprintln!("Runner failed: {error:#}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod sidebar_visibility_tests {
+    use super::*;
+
+    #[test]
+    fn collapse_transition_eases_from_open_to_closed() {
+        let start = Instant::now();
+        let duration = Duration::from_millis(200);
+        let mut transition = SidebarVisibilityTransition::new(true);
+
+        assert_eq!(transition.animate_to(0., start, duration), (1., true));
+        assert_eq!(
+            transition.animate_to(0., start + Duration::from_millis(100), duration),
+            (0.5, true)
+        );
+        assert_eq!(
+            transition.animate_to(0., start + Duration::from_millis(200), duration),
+            (0., false)
+        );
+    }
+
+    #[test]
+    fn reversing_transition_continues_from_the_current_width() {
+        let start = Instant::now();
+        let duration = Duration::from_millis(200);
+        let midpoint = start + Duration::from_millis(100);
+        let mut transition = SidebarVisibilityTransition::new(true);
+
+        transition.animate_to(0., start, duration);
+        assert_eq!(transition.animate_to(1., midpoint, duration), (0.5, true));
+        assert_eq!(
+            transition.animate_to(1., midpoint + Duration::from_millis(100), duration),
+            (0.75, true)
+        );
     }
 }
