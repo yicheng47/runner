@@ -989,19 +989,17 @@ impl SessionManager {
 /// `runner/activity` event. Best-effort: if the DB roundtrip fails we drop
 /// the emission rather than failing the spawn/reap path. Runners list will
 /// reconcile via the next emission or a manual refresh.
-/// Resolve the cwd the codex_capture watcher should match against,
-/// falling back to the parent process's cwd when the spawn didn't
-/// set one (the child inherits parent's cwd, which is what codex
-/// stamps into the rollout's `payload.cwd`).
+/// Resolve the cwd the codex_capture watcher should match against.
+/// portable-pty substitutes $HOME when the spawn has no cwd (or a
+/// nonexistent one), so the fallback must be the home dir — that is
+/// what codex stamps into the rollout's `payload.cwd`.
 fn capture_cwd(explicit: Option<String>) -> Option<String> {
     if let Some(cwd) = explicit {
         if !cwd.is_empty() {
             return Some(cwd);
         }
     }
-    std::env::current_dir()
-        .ok()
-        .and_then(|p| p.into_os_string().into_string().ok())
+    std::env::var_os("HOME").and_then(|h| h.into_string().ok())
 }
 
 /// Outcome of resolving a runtime override against a runner row
