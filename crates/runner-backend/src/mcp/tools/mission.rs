@@ -532,6 +532,20 @@ impl RunnerMcpHandler {
             .map_err(mcp_error)?;
         Ok(CallToolResult::success(vec![Content::json(&event)?]))
     }
+
+    #[tool(
+        description = "Post a human-authored message into a running mission channel. Omit `to` to broadcast to the crew, or set it to one roster handle for a targeted message."
+    )]
+    pub async fn mission_post_human_message(
+        &self,
+        Parameters(input): Parameters<mission::PostHumanMessageInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let app_state = self.state.clone();
+        let event = mission::mission_post_human_message_impl(&app_state, input)
+            .await
+            .map_err(mcp_error)?;
+        Ok(CallToolResult::success(vec![Content::json(&event)?]))
+    }
 }
 
 #[cfg(test)]

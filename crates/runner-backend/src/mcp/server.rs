@@ -104,6 +104,7 @@ mod tests {
             "mission_rename",
             "mission_reset",
             "mission_post_human_signal",
+            "mission_post_human_message",
             "session_start_direct",
         ]
         .iter()
