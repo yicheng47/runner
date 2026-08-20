@@ -723,7 +723,11 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.cycle_chat_pane(-1, window, cx);
+        if matches!(self.route, AppRoute::Mission(_)) {
+            self.cycle_mission_tab(-1, window, cx);
+        } else {
+            self.cycle_chat_pane(-1, window, cx);
+        }
     }
 
     pub(crate) fn focus_next_chat_pane(
@@ -732,7 +736,11 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.cycle_chat_pane(1, window, cx);
+        if matches!(self.route, AppRoute::Mission(_)) {
+            self.cycle_mission_tab(1, window, cx);
+        } else {
+            self.cycle_chat_pane(1, window, cx);
+        }
     }
 
     fn cycle_chat_pane(&mut self, direction: isize, window: &mut Window, cx: &mut Context<Self>) {

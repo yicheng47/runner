@@ -800,6 +800,8 @@ impl NativeRoot {
         let back_root = root.clone();
         let back_key_root = root.clone();
         let save_name_root = root.clone();
+        let start_mission_root = root.clone();
+        let start_mission_crew_id = editor.crew_id.clone();
         let add_slot_root = root.clone();
         let header = div()
             .flex_none()
@@ -910,8 +912,22 @@ impl NativeRoot {
                     .child(
                         Button::new("start-crew-mission", "Start mission")
                             .variant(ButtonVariant::Primary)
-                            .tooltip("Start Mission is available in M4.5.")
-                            .disabled(true),
+                            .tooltip(if slots.is_empty() {
+                                "Add at least one slot before starting a mission"
+                            } else {
+                                "Start a mission with this crew"
+                            })
+                            .disabled(slots.is_empty())
+                            .on_press(move |window, cx| {
+                                start_mission_root.update(cx, |this, cx| {
+                                    this.open_start_mission_modal(
+                                        Some(start_mission_crew_id.clone()),
+                                        None,
+                                        window,
+                                        cx,
+                                    )
+                                });
+                            }),
                     ),
             );
         let content = if editor.loading {

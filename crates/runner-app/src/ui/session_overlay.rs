@@ -21,6 +21,7 @@ pub enum SessionOverlayKind {
 pub struct SessionOverlay {
     id: SharedString,
     kind: SessionOverlayKind,
+    label: Option<SharedString>,
     subtitle: Option<SharedString>,
     on_resume: Option<PressHandler>,
     on_archive: Option<PressHandler>,
@@ -32,6 +33,7 @@ impl SessionOverlay {
         Self {
             id: id.into(),
             kind,
+            label: None,
             subtitle: None,
             on_resume: None,
             on_archive: None,
@@ -47,10 +49,16 @@ impl SessionOverlay {
         Self {
             id: id.into(),
             kind: SessionOverlayKind::Ended,
+            label: None,
             subtitle: Some(subtitle.into()),
             on_resume: Some(Rc::new(on_resume)),
             on_archive: Some(Rc::new(on_archive)),
         }
+    }
+
+    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = Some(label.into());
+        self
     }
 }
 
@@ -59,11 +67,13 @@ impl RenderOnce for SessionOverlay {
         let id = self.id.clone();
         match self.kind {
             SessionOverlayKind::Starting | SessionOverlayKind::Resuming => {
-                let label = if self.kind == SessionOverlayKind::Starting {
-                    "Starting chat…"
-                } else {
-                    "Resuming…"
-                };
+                let label = self.label.unwrap_or_else(|| {
+                    if self.kind == SessionOverlayKind::Starting {
+                        "Starting chat…".into()
+                    } else {
+                        "Resuming…".into()
+                    }
+                });
                 div()
                     .absolute()
                     .inset_4()

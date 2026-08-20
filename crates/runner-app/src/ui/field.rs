@@ -19,6 +19,8 @@ use crate::ui::scrollbar::Scrollbar;
 use crate::ui::tooltip::Tooltip;
 use crate::{Copy, Cut, Paste, SelectAll};
 
+pub type KeyDownInterceptor = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App) -> bool>;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct Selection {
     anchor: usize,
@@ -330,7 +332,7 @@ impl TextFieldKind {
     fn rows(self) -> u8 {
         match self {
             Self::Input => 1,
-            Self::Textarea { rows } => rows.max(2),
+            Self::Textarea { rows } => rows.max(1),
         }
     }
 }
@@ -479,6 +481,7 @@ pub struct TextField {
     selecting: bool,
     text_layout: Rc<RefCell<Option<TextFieldLayout>>>,
     auto_grow_rows: Option<u8>,
+    key_interceptor: Option<KeyDownInterceptor>,
 }
 
 impl TextField {
@@ -509,6 +512,7 @@ impl TextField {
             selecting: false,
             text_layout: Rc::new(RefCell::new(None)),
             auto_grow_rows: None,
+            key_interceptor: None,
         }
     }
 
@@ -520,7 +524,7 @@ impl TextField {
         monospace: bool,
     ) -> Self {
         let mut field = Self::new(focus_handle, text, placeholder, monospace);
-        field.kind = TextFieldKind::Textarea { rows: rows.max(2) };
+        field.kind = TextFieldKind::Textarea { rows: rows.max(1) };
         field.buffer.multiline = true;
         field
     }
@@ -529,6 +533,11 @@ impl TextField {
     /// to `max_rows`; longer content scrolls as before.
     pub fn auto_grow(mut self, max_rows: u8) -> Self {
         self.auto_grow_rows = Some(max_rows);
+        self
+    }
+
+    pub fn key_interceptor(mut self, interceptor: KeyDownInterceptor) -> Self {
+        self.key_interceptor = Some(interceptor);
         self
     }
 
@@ -645,8 +654,17 @@ impl TextField {
         }
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.disabled {
+            return;
+        }
+        if !self.is_composing()
+            && self
+                .key_interceptor
+                .clone()
+                .is_some_and(|interceptor| interceptor(event, window, cx))
+        {
+            cx.stop_propagation();
             return;
         }
         if event.keystroke.key == "enter" {
@@ -972,7 +990,9 @@ impl Render for TextField {
         let layout_scroll_handle = self.scroll_handle.clone();
         // Auto-grow textareas take their height from the wrapped content between
         // the base row count and `auto_grow_rows`; everything else is fixed-height.
-        let auto_grow = (self.kind.multiline() && !self.bare)
+        let auto_grow = self
+            .kind
+            .multiline()
             .then_some(self.auto_grow_rows)
             .flatten()
             .map(|max_rows| {

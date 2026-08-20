@@ -89,6 +89,19 @@ pub struct TerminalSession {
     title: Arc<Mutex<String>>,
     palette: Arc<Mutex<PaletteState>>,
     waker: Arc<dyn Fn() + Send + Sync>,
+    user_input: UserInput,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum UserInputMode {
+    #[default]
+    Inline,
+    Queued,
+}
+
+enum UserInput {
+    Inline,
+    Queued(Sender<Vec<u8>>),
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -113,7 +126,47 @@ impl TerminalSession {
         rows: u16,
         waker: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Arc<Self>> {
+        Self::attach_with_input_mode(core, session_id, cols, rows, waker, UserInputMode::Inline)
+    }
+
+    pub fn attach_with_input_mode(
+        core: AppCore,
+        session_id: String,
+        cols: u16,
+        rows: u16,
+        waker: Arc<dyn Fn() + Send + Sync>,
+        input_mode: UserInputMode,
+    ) -> Result<Arc<Self>> {
         let (tx, rx) = mpsc::channel::<Event>();
+        let user_input = match input_mode {
+            UserInputMode::Inline => UserInput::Inline,
+            UserInputMode::Queued => {
+                let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
+                let input_core = core.clone();
+                let input_session_id = session_id.clone();
+                thread::Builder::new()
+                    .name(format!("native-term-input-{session_id}"))
+                    .spawn(move || {
+                        while let Ok(bytes) = input_rx.recv() {
+                            if let Err(error) = input_core.sessions.inject_direct_stdin(
+                                &input_session_id,
+                                &bytes,
+                                &input_core.session_events(),
+                            ) {
+                                input_core.events.emit(
+                                    "session/input-error",
+                                    &serde_json::json!({
+                                        "session_id": input_session_id,
+                                        "message": error.to_string(),
+                                    }),
+                                );
+                            }
+                        }
+                    })
+                    .context("spawn terminal input thread")?;
+                UserInput::Queued(input_tx)
+            }
+        };
         let proxy = EventProxy {
             tx,
             waker: Arc::clone(&waker),
@@ -137,6 +190,7 @@ impl TerminalSession {
             title: Arc::clone(&title),
             palette: Arc::clone(&terminal_palette),
             waker,
+            user_input,
         });
 
         let term_for_events = Arc::downgrade(&term);
@@ -299,9 +353,19 @@ impl TerminalSession {
     }
 
     pub fn write_user_bytes(&self, bytes: &[u8]) -> runner_backend::error::Result<()> {
-        self.core
-            .sessions
-            .inject_direct_stdin(&self.session_id, bytes, &self.core.session_events())
+        match &self.user_input {
+            UserInput::Inline => self.core.sessions.inject_direct_stdin(
+                &self.session_id,
+                bytes,
+                &self.core.session_events(),
+            ),
+            UserInput::Queued(tx) => tx.send(bytes.to_vec()).map_err(|_| {
+                runner_backend::error::Error::msg(format!(
+                    "terminal input worker stopped: {}",
+                    self.session_id
+                ))
+            }),
+        }
     }
 
     pub fn send_key(
@@ -517,7 +581,7 @@ mod tests {
     use base64::Engine as _;
     use runner_backend::session::manager::OutputEvent;
 
-    use super::TerminalSession;
+    use super::{TerminalSession, UserInputMode};
     use crate::replay::visible_lines;
     use runner_backend::AppCore;
 
@@ -564,6 +628,32 @@ mod tests {
             seq,
             data: B64.encode(text),
         }
+    }
+
+    #[test]
+    fn queued_user_input_reports_backend_errors_without_blocking_the_caller() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let mut events = core.events.subscribe();
+        let terminal = TerminalSession::attach_with_input_mode(
+            core,
+            "missing-session".into(),
+            80,
+            24,
+            Arc::new(|| {}),
+            UserInputMode::Queued,
+        )
+        .unwrap();
+
+        terminal.write_user_bytes(b"x").unwrap();
+
+        let event = events.blocking_recv().unwrap();
+        assert_eq!(event.name, "session/input-error");
+        assert_eq!(event.payload["session_id"], "missing-session");
+        assert!(event.payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("session not found"));
     }
 
     #[test]
