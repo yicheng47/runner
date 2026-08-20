@@ -577,6 +577,7 @@ mod tests {
             runtime_discovery,
             buses: BusRegistry::new(),
             routers: RouterRegistry::new(),
+            mission_grid_hint: Arc::new(std::sync::Mutex::new(None)),
             mcp: Arc::new(McpHandle::new()),
             windows: Arc::new(WindowRegistry::new()),
             events: EventChannel::new(),

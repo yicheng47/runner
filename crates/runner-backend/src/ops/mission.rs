@@ -534,6 +534,33 @@ pub async fn mission_start_impl(
     mission_start_impl_with_size(state, input, None).await
 }
 
+/// Grid a mission fork will use, plus the source tag the fork log line
+/// reports. Caller-measured dims win; with none, the frontend's cached
+/// mission pane grid fills in so backend-initiated starts/resets do not fork
+/// at 80x24. `None` means no hint was ever recorded and registration falls
+/// back to `DEFAULT_PTY_SIZE`.
+pub fn mission_fork_size(
+    caller: Option<(u16, u16)>,
+    hint: Option<(u16, u16)>,
+) -> (Option<(u16, u16)>, &'static str) {
+    match (caller, hint) {
+        (Some(size), _) => (Some(size), "caller-supplied"),
+        (None, Some(size)) => (Some(size), "mission-hint"),
+        (None, None) => (None, "DEFAULT_PTY_SIZE"),
+    }
+}
+
+/// Record the frontend's most recent measured/estimated mission pane grid.
+pub fn mission_grid_hint_set(state: &AppCore, cols: u16, rows: u16) -> Result<()> {
+    if cols == 0 || rows == 0 {
+        return Err(Error::msg(format!(
+            "mission grid hint must be positive; got {cols}x{rows}"
+        )));
+    }
+    *state.mission_grid_hint.lock().unwrap() = Some((cols, rows));
+    Ok(())
+}
+
 pub async fn mission_start_impl_with_size(
     state: &AppCore,
     input: StartMissionInput,
@@ -546,6 +573,9 @@ pub async fn mission_start_impl_with_size(
     };
     use crate::session::manager::SessionEvents;
     use std::sync::Arc;
+
+    let (initial_size, size_source) =
+        mission_fork_size(initial_size, *state.mission_grid_hint.lock().unwrap());
 
     let out = {
         let mut conn = state.db.get()?;
@@ -734,6 +764,7 @@ pub async fn mission_start_impl_with_size(
             state.db.clone(),
             first_turn,
             initial_size,
+            size_source,
         );
         match register_res {
             Ok(pending) => {
@@ -1168,6 +1199,14 @@ pub fn mission_set_project(
 /// having to rebuild the crew + start a new mission. Preserves the
 /// mission's id, title, crew, cwd, and goal so links/bookmarks survive.
 pub async fn mission_reset_impl(state: &AppCore, id: String) -> Result<Mission> {
+    mission_reset_impl_with_size(state, id, None).await
+}
+
+pub async fn mission_reset_impl_with_size(
+    state: &AppCore,
+    id: String,
+    initial_size: Option<(u16, u16)>,
+) -> Result<Mission> {
     use crate::event_bus::{BusEmitter, ChannelBusEvents};
     use crate::router::{
         open_log_for_mission, ChannelRouterUiNotifier, CompositeBusEmitter, Router,
@@ -1175,6 +1214,9 @@ pub async fn mission_reset_impl(state: &AppCore, id: String) -> Result<Mission> 
     };
     use crate::session::manager::SessionEvents;
     use std::sync::Arc;
+
+    let (initial_size, size_source) =
+        mission_fork_size(initial_size, *state.mission_grid_hint.lock().unwrap());
 
     // 1. Snapshot the mission + crew + roster up front.
     let mission_snap = {
@@ -1393,7 +1435,8 @@ pub async fn mission_reset_impl(state: &AppCore, id: String) -> Result<Mission> 
             events_log_path.clone(),
             state.db.clone(),
             first_turn,
-            None,
+            initial_size,
+            size_source,
         );
         match register_res {
             Ok(pending) => {
@@ -1813,6 +1856,30 @@ mod tests {
 
     fn pool() -> db::DbPool {
         db::open_in_memory().unwrap()
+    }
+
+    // Unit coverage here locks the pure resolver's precedence / abstention
+    // only; the resolver-to-fork seam is exercised by the manager tests.
+    #[test]
+    fn mission_fork_size_uses_hint_when_caller_absent() {
+        assert_eq!(
+            mission_fork_size(None, Some((161, 45))),
+            (Some((161, 45)), "mission-hint"),
+        );
+    }
+
+    #[test]
+    fn mission_fork_size_abstains_without_caller_or_hint() {
+        assert_eq!(mission_fork_size(None, None), (None, "DEFAULT_PTY_SIZE"));
+    }
+
+    #[test]
+    fn mission_fork_size_prefers_caller_over_hint() {
+        // The UI path measures a real pane; a stale hint must not override it.
+        assert_eq!(
+            mission_fork_size(Some((120, 30)), Some((161, 45))),
+            (Some((120, 30)), "caller-supplied"),
+        );
     }
 
     fn seed_crew(conn: &Connection, name: &str, goal: Option<&str>) -> String {

@@ -248,6 +248,7 @@ impl SessionManager {
         pool: Arc<DbPool>,
         first_turn: Option<String>,
         initial_size: Option<(u16, u16)>,
+        size_source: &'static str,
     ) -> Result<PendingMissionSpawn> {
         let initial_size = Some(initial_size.unwrap_or(DEFAULT_PTY_SIZE));
 
@@ -379,6 +380,7 @@ impl SessionManager {
             mission: mission.clone(),
             runner: runner.clone(),
             slot_handle: slot.slot_handle.clone(),
+            size_source,
             plan,
             first_turn_delivered_via_argv,
             resolved_cwd,
@@ -422,6 +424,7 @@ impl SessionManager {
             mission,
             runner,
             slot_handle,
+            size_source,
             plan,
             first_turn_delivered_via_argv,
             resolved_cwd,
@@ -501,6 +504,14 @@ impl SessionManager {
                 );
             }
             return Ok(CompleteSpawnOutcome::Cancelled);
+        }
+
+        if let Some((cols, rows)) = initial_size {
+            log::info!(
+                "mission slot fork: session={session_id} runtime={} \
+                 size={cols}x{rows} source={size_source}",
+                runner.runtime,
+            );
         }
 
         let spawn_pid = self.runtime_pid(&rt_session);
@@ -652,6 +663,7 @@ impl SessionManager {
             Arc::clone(&pool),
             first_turn,
             None,
+            "DEFAULT_PTY_SIZE",
         )?;
         let session_id = pending.session_id.clone();
         let mission_id = pending.mission.id.clone();
@@ -1061,6 +1073,35 @@ impl SessionManager {
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
     ) -> Result<SpawnedSession> {
+        self.resume_with_fresh_fallback(session_id, cols, rows, app_data_dir, pool, events, true)
+    }
+
+    /// Launch-time resume shares the normal resume path but refuses the
+    /// manual flow's fresh fallback when the prior conversation is gone.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resume_on_launch(
+        self: &Arc<Self>,
+        session_id: &str,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        app_data_dir: &Path,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+    ) -> Result<SpawnedSession> {
+        self.resume_with_fresh_fallback(session_id, cols, rows, app_data_dir, pool, events, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resume_with_fresh_fallback(
+        self: &Arc<Self>,
+        session_id: &str,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        app_data_dir: &Path,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+        allow_fresh_fallback: bool,
+    ) -> Result<SpawnedSession> {
         // Atomically claim this session id for the resume. If another
         // resume is already in flight (e.g. two fast clicks, two
         // windows), refuse rather than racing two PTY spawns against
@@ -1243,6 +1284,11 @@ impl SessionManager {
                 ),
                 _ => false,
             };
+        if conversation_missing && !allow_fresh_fallback {
+            return Err(Error::msg(format!(
+                "session {session_id} conversation is unavailable; resume it manually to start fresh"
+            )));
+        }
         let fresh_fallback_lead = conversation_missing && is_lead_slot;
         let effective_prior_key = match (runner.runtime.as_str(), snap.agent_session_key.as_deref())
         {
@@ -1250,6 +1296,11 @@ impl SessionManager {
             (_, k) => k,
         };
         let plan = router::runtime::resume_plan(&runner.runtime, effective_prior_key);
+        if !allow_fresh_fallback && !plan.resuming {
+            return Err(Error::msg(format!(
+                "session {session_id} cannot resume its prior conversation; resume it manually to start fresh"
+            )));
+        }
 
         // Working directory: same precedence as `spawn_direct` — the
         // row's stored cwd wins; otherwise fall back to the runner's
@@ -1307,10 +1358,11 @@ impl SessionManager {
         // Caller-supplied size wins; else the row's persisted last size
         // (migration 0016); else the default. Resuming at the pane's
         // real width keeps full-frame TUIs from repainting at 80 cols.
-        let initial_size = match (cols.zip(rows), snap.last_cols.zip(snap.last_rows)) {
-            (Some(size), _) => size,
-            (None, Some(size)) => size,
-            (None, None) => super::DEFAULT_PTY_SIZE,
+        let (initial_size, size_source) = match (cols.zip(rows), snap.last_cols.zip(snap.last_rows))
+        {
+            (Some(size), _) => (size, "caller-supplied"),
+            (None, Some(size)) => (size, "persisted-last-size"),
+            (None, None) => (super::DEFAULT_PTY_SIZE, "DEFAULT_PTY_SIZE"),
         };
         let mut spec = self.base_spawn_spec(
             session_id.to_string(),
@@ -1374,6 +1426,18 @@ impl SessionManager {
                 return Err(Error::msg(format!("spawn {}: {e}", runner.command)));
             }
         };
+
+        log::info!(
+            "{} fork: session={session_id} runtime={} size={}x{} source={size_source}",
+            if allow_fresh_fallback {
+                "resume"
+            } else {
+                "resume-on-launch"
+            },
+            runner.runtime,
+            initial_size.0,
+            initial_size.1,
+        );
 
         let spawn_pid = self.runtime_pid(&rt_session);
 
