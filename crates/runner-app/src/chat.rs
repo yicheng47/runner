@@ -858,7 +858,7 @@ impl NativeRoot {
         let whole = chat.scroll_accumulator.trunc() as i32;
         if whole != 0 {
             chat.scroll_accumulator -= whole as f32;
-            chat.terminal.scroll(whole);
+            chat.terminal.scroll(whole, event.modifiers.shift);
             cx.notify();
         }
     }

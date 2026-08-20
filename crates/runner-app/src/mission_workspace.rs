@@ -741,16 +741,11 @@ impl NativeRoot {
     }
 
     pub(crate) fn sync_mission_grid_hint(&self, window: &Window) {
-        let (cols, rows) = if matches!(&self.route, AppRoute::Mission(_)) {
-            self.current_mission_terminal_size(window)
-        } else {
-            self.estimated_mission_terminal_size(window)
-        };
-        if let Err(error) =
-            runner_backend::ops::mission::mission_grid_hint_set(&self.core, cols, rows)
-        {
-            eprintln!("Runner mission grid hint update failed for {cols}x{rows}: {error}");
+        if !matches!(&self.route, AppRoute::Mission(_)) || self.mission_workspace.secondary {
+            return;
         }
+        let (cols, rows) = self.current_mission_terminal_size(window);
+        let _ = runner_backend::ops::mission::mission_grid_hint_set(&self.core, cols, rows);
     }
 
     fn ensure_mission_terminals_attached(
@@ -2228,7 +2223,7 @@ impl NativeRoot {
         let whole = chat.scroll_accumulator.trunc() as i32;
         if whole != 0 {
             chat.scroll_accumulator -= whole as f32;
-            chat.terminal.scroll(whole);
+            chat.terminal.scroll(whole, event.modifiers.shift);
             cx.notify();
         }
     }
