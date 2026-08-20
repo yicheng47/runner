@@ -664,6 +664,15 @@ impl NativeRoot {
         if self.runner_surfaces.delete_confirm.is_some() {
             overlays.push(self.render_runner_delete_confirm(cx));
         }
+        if self.mission_workspace.rename_modal.is_some() {
+            overlays.push(self.render_mission_rename_modal(cx));
+        }
+        if self.mission_workspace.reset_confirm_open {
+            overlays.push(self.render_mission_reset_confirm(cx));
+        }
+        if self.start_mission_modal.is_some() {
+            overlays.push(self.render_start_mission_modal(cx));
+        }
         overlays.extend(self.render_crew_overlays(cx));
         overlays
     }
@@ -1717,6 +1726,7 @@ impl NativeRoot {
             AppRoute::Runners => self.render_runners_page(cx),
             AppRoute::RunnerDetail(_) => self.render_runner_detail(cx),
             AppRoute::Crews | AppRoute::CrewEditor(_) => self.render_crew_surface(window, cx),
+            AppRoute::Mission(_) => self.render_mission_workspace(window, cx),
             AppRoute::Settings => self.render_active_tab(window, cx),
         }
     }

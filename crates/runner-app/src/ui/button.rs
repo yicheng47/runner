@@ -16,6 +16,7 @@ pub type PressHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ButtonVariant {
     Primary,
+    Warning,
     #[default]
     Secondary,
     Ghost,
@@ -123,6 +124,7 @@ impl RenderOnce for Button {
         );
         let (background, foreground, border) = match self.variant {
             ButtonVariant::Primary => (theme::accent(), theme::accent_ink(), theme::accent()),
+            ButtonVariant::Warning => (theme::warning(), theme::bg(), theme::warning()),
             ButtonVariant::Secondary => (theme::raised(), theme::text(), theme::border_strong()),
             ButtonVariant::Ghost => (
                 gpui::transparent_black(),
@@ -181,6 +183,7 @@ impl RenderOnce for Button {
             .focus_visible(|style| {
                 style.shadow(focus_ring(match self.variant {
                     ButtonVariant::Primary => theme::accent(),
+                    ButtonVariant::Warning => theme::warning(),
                     ButtonVariant::Secondary | ButtonVariant::Ghost => theme::border_strong(),
                     ButtonVariant::Danger => theme::danger(),
                 }))
@@ -365,11 +368,13 @@ impl RenderOnce for IconButton {
         let foreground = match self.variant {
             ButtonVariant::Danger => theme::danger(),
             ButtonVariant::Primary => theme::accent_ink(),
+            ButtonVariant::Warning => theme::bg(),
             ButtonVariant::Secondary => theme::text(),
             ButtonVariant::Ghost => theme::faint(),
         };
         let background = match self.variant {
             ButtonVariant::Primary => theme::accent(),
+            ButtonVariant::Warning => theme::warning(),
             ButtonVariant::Secondary => theme::raised(),
             ButtonVariant::Ghost | ButtonVariant::Danger => gpui::transparent_black(),
         };
@@ -413,6 +418,7 @@ impl RenderOnce for IconButton {
             .focus_visible(|style| {
                 style.opacity(1.).shadow(focus_ring(match self.variant {
                     ButtonVariant::Primary => theme::accent(),
+                    ButtonVariant::Warning => theme::warning(),
                     ButtonVariant::Secondary | ButtonVariant::Ghost => theme::border_strong(),
                     ButtonVariant::Danger => theme::danger(),
                 }))
@@ -422,6 +428,7 @@ impl RenderOnce for IconButton {
                 ButtonVariant::Danger => style
                     .bg(theme::with_alpha(theme::danger(), 0.1))
                     .text_color(theme::danger()),
+                ButtonVariant::Warning => style.opacity(0.9),
                 _ => style.bg(theme::raised()).text_color(theme::text()),
             });
             if let Some(on_press) = self.on_press {

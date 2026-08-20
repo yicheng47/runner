@@ -183,7 +183,7 @@ impl Render for SidebarNodeDrag {
 #[derive(Clone)]
 enum SidebarMenuAction {
     NewChat(Option<String>),
-    NewMission,
+    NewMission(Option<String>),
     TogglePin { node_id: String, pinned: bool },
     Rename(SidebarRenameTarget),
     RemoveTabFromProject(Vec<String>),
@@ -233,16 +233,24 @@ impl NativeRoot {
                 Ok(projects) => self.projects = projects,
                 Err(error) => self.error = Some(error.to_string()),
             }
-            let visible = self
+            let mut visible = self
+                .sessions
+                .iter()
+                .map(|session| session.session_id.clone())
+                .collect::<std::collections::HashSet<_>>();
+            if matches!(self.route, AppRoute::Mission(_)) {
+                visible.extend(self.mission_workspace.session_ids());
+            }
+            self.attached.retain(|id, _| visible.contains(id));
+            let direct_visible = self
                 .sessions
                 .iter()
                 .map(|session| session.session_id.as_str())
                 .collect::<std::collections::HashSet<_>>();
-            self.attached.retain(|id, _| visible.contains(id.as_str()));
             self.pane_action_menus
-                .retain(|id, _| visible.contains(id.as_str()));
+                .retain(|id, _| direct_visible.contains(id.as_str()));
             self.session_exit_codes
-                .retain(|id, _| visible.contains(id.as_str()));
+                .retain(|id, _| direct_visible.contains(id.as_str()));
         }
         if matches!(
             refresh,
@@ -300,6 +308,18 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let AppRoute::Mission(mission_id) = &self.route {
+            let subject = Subject::Mission(mission_id.clone());
+            self.core.windows.set_subjects("main", vec![subject]);
+            if window.is_window_active() {
+                self.core.windows.mark_focused("main");
+            } else {
+                self.core.windows.mark_blurred("main");
+            }
+            self.core.broadcast_focus_map();
+            self.sync_mission_subject_ownership(window, cx);
+            return;
+        }
         if self.route != AppRoute::Chat {
             self.core.windows.set_subjects("main", Vec::new());
             self.core.windows.mark_blurred("main");
@@ -470,7 +490,7 @@ impl NativeRoot {
     ) {
         match index {
             0 => self.open_sidebar_chat_modal(None, window, cx),
-            1 => {}
+            1 => self.open_start_mission_modal(None, None, window, cx),
             _ => unreachable!("sidebar create menu index"),
         }
     }
@@ -725,7 +745,7 @@ impl NativeRoot {
             ),
             (
                 UiMenuItem::new("New mission in project").icon("flag.svg"),
-                SidebarMenuAction::NewMission,
+                SidebarMenuAction::NewMission(Some(project.id.clone())),
             ),
             (
                 UiMenuItem::new("Rename project")
@@ -763,7 +783,11 @@ impl NativeRoot {
                 }
                 self.open_sidebar_chat_modal(project_id.as_deref(), window, cx);
             }
-            SidebarMenuAction::NewMission | SidebarMenuAction::OpenMissionWindow => {}
+            SidebarMenuAction::NewMission(project_id) => {
+                self.active_project_id = project_id.clone();
+                self.open_start_mission_modal(None, project_id, window, cx);
+            }
+            SidebarMenuAction::OpenMissionWindow => {}
             SidebarMenuAction::TogglePin { node_id, pinned } => {
                 match runner_backend::ops::node::node_set_pinned(&self.core, node_id, !pinned) {
                     Ok(_) => self.refresh_sidebar(SidebarRefreshKind::All, cx),
@@ -1818,6 +1842,10 @@ impl NativeRoot {
         visible_ids: Vec<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let active = matches!(
+            &self.route,
+            AppRoute::Mission(active_id) if active_id == &summary.mission.id
+        );
         let renaming = self.sidebar_rename.as_ref().is_some_and(|rename| {
             rename
                 .target
@@ -1841,12 +1869,12 @@ impl NativeRoot {
         } else {
             sidebar_row_shell(
                 SharedString::from(format!("sidebar-mission-{}", summary.mission.id)),
-                false,
+                active,
                 false,
             )
             .children(node.pinned_position.is_some().then(pin_indicator))
             .child(sidebar_icon("flag.svg", summary.all_sessions_live))
-            .child(sidebar_row_label(label.clone(), false, false))
+            .child(sidebar_row_label(label.clone(), active, false))
             .child(attention_indicator(attention))
             .child(
                 IconButton::new(
@@ -1870,9 +1898,9 @@ impl NativeRoot {
                     });
                 }),
             )
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .on_click(cx.listener(move |this, _, window, cx| {
                 this.active_project_id = project_id.clone();
-                cx.notify();
+                this.open_mission(summary.mission.id.clone(), window, cx);
             }))
             .on_mouse_down(
                 MouseButton::Right,

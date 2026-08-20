@@ -21,12 +21,13 @@ pub(crate) enum AppRoute {
     RunnerDetail(String),
     Crews,
     CrewEditor(String),
+    Mission(String),
     Settings,
 }
 
 impl AppRoute {
     pub(crate) fn terminal_visible(&self) -> bool {
-        matches!(self, Self::Chat)
+        matches!(self, Self::Chat | Self::Mission(_))
     }
 }
 
@@ -809,6 +810,7 @@ impl NativeRoot {
             AppRoute::RunnerDetail(handle) => self.open_runner_detail(handle, window, cx),
             AppRoute::Crews => self.open_crews(window, cx),
             AppRoute::CrewEditor(crew_id) => self.open_crew_editor(crew_id, window, cx),
+            AppRoute::Mission(mission_id) => self.open_mission(mission_id, window, cx),
         }
     }
 

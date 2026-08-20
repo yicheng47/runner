@@ -33,7 +33,11 @@ impl CopyValueButton {
     }
 
     pub fn set_value(&mut self, value: Option<String>, cx: &mut Context<Self>) {
-        self.value = value.filter(|value| !value.is_empty());
+        let value = value.filter(|value| !value.is_empty());
+        if self.value == value {
+            return;
+        }
+        self.value = value;
         self.copied = false;
         self.generation += 1;
         cx.notify();

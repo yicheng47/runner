@@ -4,6 +4,9 @@ mod assets;
 mod chat_lifecycle;
 mod list_controls;
 mod mac_chrome;
+mod mission_composer;
+mod mission_feed;
+mod mission_markdown;
 mod sidebar_logic;
 mod terminal_element;
 
@@ -73,18 +76,22 @@ actions!(
 
 mod chat;
 mod crews;
+mod mission_workspace;
 mod panes;
 mod runners;
 mod sidebar;
 mod start_chat;
+mod start_mission;
 mod toast;
 
 use crews::CrewSurfaces;
+use mission_workspace::MissionWorkspaceState;
 use panes::{adjacent_pane_index, pane_fractions};
 use runners::RunnerSurfaces;
 use sidebar::{session_label, ProjectModal, SidebarRefreshKind, SidebarRename};
 use sidebar_logic::DropTarget;
 use start_chat::StartChatModal;
+use start_mission::StartMissionModalState;
 
 const INITIAL_COLS: u16 = 100;
 const INITIAL_ROWS: u16 = 30;
@@ -257,6 +264,7 @@ struct NativeRoot {
     sidebar_scrollbar: Entity<Scrollbar>,
     waker: Arc<dyn Fn() + Send + Sync>,
     start_chat_modal: Option<StartChatModal>,
+    start_mission_modal: Option<StartMissionModalState>,
     sidebar_create_menu: Entity<PopoverMenu>,
     sidebar_context_menu: Option<Entity<ContextMenu>>,
     sidebar_rename: Option<SidebarRename>,
@@ -298,6 +306,7 @@ struct NativeRoot {
     toasts: ToastHost,
     runner_surfaces: RunnerSurfaces,
     crew_surfaces: CrewSurfaces,
+    mission_workspace: MissionWorkspaceState,
     _appearance_subscription: Option<Subscription>,
     _activation_subscription: Option<Subscription>,
     _bounds_subscription: Option<Subscription>,
@@ -375,6 +384,60 @@ impl NativeRoot {
         })
         .detach();
 
+        let (mission_event_tx, mut mission_event_rx) =
+            futures::channel::mpsc::unbounded::<runner_backend::events::AppEvent>();
+        let mut mission_events = core.events.subscribe();
+        cx.background_spawn(async move {
+            loop {
+                match mission_events.recv().await {
+                    Ok(event)
+                        if matches!(
+                            event.name,
+                            "event/appended"
+                                | "mission/changed"
+                                | "router/delivery-blocked"
+                                | "session/exit"
+                                | "session/updated"
+                                | "session/warning"
+                                | "session/input-error"
+                                | "window_focus_map"
+                        ) =>
+                    {
+                        if mission_event_tx.unbounded_send(event).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        if mission_event_tx
+                            .unbounded_send(runner_backend::events::AppEvent {
+                                name: "mission/resync",
+                                payload: serde_json::Value::Null,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        })
+        .detach();
+        cx.spawn_in(window, async move |weak, cx| {
+            while let Some(event) = mission_event_rx.next().await {
+                if weak
+                    .update_in(cx, |this, window, cx| {
+                        this.handle_mission_workspace_event(event, window, cx);
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         let (sidebar_event_tx, mut sidebar_event_rx) =
             futures::channel::mpsc::unbounded::<(SidebarRefreshKind, EntityRefreshKind)>();
         let mut sidebar_events = core.events.subscribe();
@@ -422,6 +485,7 @@ impl NativeRoot {
                             | AppRoute::RunnerDetail(_)
                             | AppRoute::Crews
                             | AppRoute::CrewEditor(_)
+                            | AppRoute::Mission(_)
                             | AppRoute::Settings => {}
                         }
                     })
@@ -597,6 +661,7 @@ impl NativeRoot {
         let chat_panel_visibility = SidebarVisibilityTransition::new(settings.chat_panel_open);
         let runner_surfaces = RunnerSurfaces::new(cx.entity(), cx);
         let crew_surfaces = CrewSurfaces::new(cx.entity(), cx);
+        let mission_workspace = MissionWorkspaceState::new(cx.entity(), cx);
         let mut root = Self {
             core,
             bridge,
@@ -614,6 +679,7 @@ impl NativeRoot {
             sidebar_scrollbar,
             waker,
             start_chat_modal: None,
+            start_mission_modal: None,
             sidebar_create_menu,
             sidebar_context_menu: None,
             sidebar_rename: None,
@@ -655,6 +721,7 @@ impl NativeRoot {
             toasts: ToastHost::default(),
             runner_surfaces,
             crew_surfaces,
+            mission_workspace,
             _appearance_subscription: None,
             _activation_subscription: None,
             _bounds_subscription: None,
