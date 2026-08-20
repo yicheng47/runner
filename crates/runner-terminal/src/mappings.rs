@@ -3,6 +3,8 @@
 //! Zed's terminal crate). Pure functions: terminal mode state is passed
 //! in, bytes come out.
 
+use alacritty_terminal::term::TermMode;
+
 /// Encode a non-text keystroke (or ctrl-chord) into PTY bytes.
 /// `app_cursor` selects the DECCKM application-cursor sequences for the
 /// arrow keys. Returns `None` when the key is not ours to handle (the
@@ -81,6 +83,36 @@ pub fn encode_key(
     Some(bytes)
 }
 
+/// Route a wheel gesture the way a real terminal would: apps that
+/// enabled mouse reporting (claude, codex — the reason the resume seam
+/// disables 1000/1002/1003/1006) receive wheel-button reports and
+/// scroll their own transcript; alt-screen apps with DECSET 1007 get
+/// arrow keys; everything else returns `None` and the caller scrolls
+/// the local viewport. `bypass_reporting` (shift held, xterm
+/// convention) forces the viewport path. Reports carry cell (1;1) —
+/// the single-transcript agent TUIs we host ignore wheel coordinates.
+pub fn encode_scroll(mode: TermMode, delta_lines: i32, bypass_reporting: bool) -> Option<Vec<u8>> {
+    if delta_lines == 0 || bypass_reporting {
+        return None;
+    }
+    let up = delta_lines > 0;
+    let count = delta_lines.unsigned_abs() as usize;
+    if mode.intersects(TermMode::MOUSE_MODE) {
+        let button: u8 = if up { 64 } else { 65 };
+        return Some(if mode.contains(TermMode::SGR_MOUSE) {
+            format!("\x1b[<{button};1;1M").into_bytes().repeat(count)
+        } else {
+            [0x1b, b'[', b'M', 32 + button, 33, 33].repeat(count)
+        });
+    }
+    if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
+        let key = if up { "up" } else { "down" };
+        let arrow = encode_key(key, false, false, None, mode.contains(TermMode::APP_CURSOR))?;
+        return Some(arrow.repeat(count));
+    }
+    None
+}
+
 /// Encode pasted text, stripping raw escapes and wrapping in bracketed
 /// paste markers when the terminal has that mode enabled.
 pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
@@ -97,7 +129,46 @@ pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::encode_key;
+    use super::{encode_key, encode_scroll, TermMode};
+
+    #[test]
+    fn wheel_reports_go_to_mouse_mode_apps() {
+        let mode = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
+        assert_eq!(
+            encode_scroll(mode, 2, false),
+            Some(b"\x1b[<64;1;1M\x1b[<64;1;1M".to_vec())
+        );
+        assert_eq!(
+            encode_scroll(mode, -1, false),
+            Some(b"\x1b[<65;1;1M".to_vec())
+        );
+        assert_eq!(
+            encode_scroll(TermMode::MOUSE_REPORT_CLICK, 1, false),
+            Some(vec![0x1b, b'[', b'M', 96, 33, 33])
+        );
+    }
+
+    #[test]
+    fn alternate_scroll_sends_arrows_only_on_the_alt_screen() {
+        let mode = TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL;
+        assert_eq!(
+            encode_scroll(mode, 2, false),
+            Some(b"\x1b[A\x1b[A".to_vec())
+        );
+        assert_eq!(
+            encode_scroll(mode | TermMode::APP_CURSOR, -1, false),
+            Some(b"\x1bOB".to_vec())
+        );
+        assert_eq!(encode_scroll(TermMode::ALTERNATE_SCROLL, 1, false), None);
+    }
+
+    #[test]
+    fn viewport_scroll_wins_for_plain_apps_and_shift_bypass() {
+        assert_eq!(encode_scroll(TermMode::NONE, 3, false), None);
+        let mouse = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
+        assert_eq!(encode_scroll(mouse, 3, true), None);
+        assert_eq!(encode_scroll(mouse, 0, false), None);
+    }
 
     #[test]
     fn function_keys_keep_their_terminal_sequences() {

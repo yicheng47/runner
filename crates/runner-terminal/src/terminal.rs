@@ -419,8 +419,14 @@ impl TerminalSession {
         *self.size.lock().unwrap()
     }
 
-    pub fn scroll(&self, delta_lines: i32) {
-        self.term.lock().scroll_display(Scroll::Delta(delta_lines));
+    pub fn scroll(&self, delta_lines: i32, bypass_reporting: bool) {
+        let mode = *self.term.lock_unfair().mode();
+        match crate::mappings::encode_scroll(mode, delta_lines, bypass_reporting) {
+            Some(bytes) => {
+                let _ = self.write_user_bytes(&bytes);
+            }
+            None => self.term.lock().scroll_display(Scroll::Delta(delta_lines)),
+        }
     }
 
     pub fn scroll_to_bottom(&self) {
