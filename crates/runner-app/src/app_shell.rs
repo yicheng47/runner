@@ -5,7 +5,7 @@ use crate::app_settings::{clamp_sidebar_width, nudge_zoom};
 use crate::toast::ToastTone;
 
 const TITLEBAR_HEIGHT: f32 = 44.;
-const TITLEBAR_DRAG_HEIGHT: f32 = 28.;
+pub(crate) const TITLEBAR_DRAG_HEIGHT: f32 = 28.;
 const SIDEBAR_TOGGLE_GLYPH_X: f32 = 94.3;
 const SIDEBAR_TOGGLE_GLYPH_INSET: f32 = 6.3;
 const SIDEBAR_TRANSITION_MS: u64 = 200;
@@ -376,7 +376,7 @@ impl NativeRoot {
                             .child("Settings"),
                     )
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.enter_settings(window, cx);
+                        this.enter_settings_route(None, window, cx);
                     })),
             );
         let resize_handle = visible.then(|| self.render_sidebar_resize_handle());
@@ -418,7 +418,7 @@ impl NativeRoot {
         Some(sidebar.into_any_element())
     }
 
-    fn render_sidebar_resize_handle(&self) -> AnyElement {
+    pub(crate) fn render_sidebar_resize_handle(&self) -> AnyElement {
         div()
             .id("sidebar-resize")
             .absolute()
@@ -491,92 +491,6 @@ impl NativeRoot {
                 }))
                 .into_any_element()
         })
-    }
-
-    fn render_settings_takeover(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let width = self.settings.sidebar_width * self.settings.app_zoom;
-        div()
-            .absolute()
-            .inset_0()
-            .flex()
-            .overflow_hidden()
-            .bg(theme::bg())
-            .occlude()
-            .child(
-                div()
-                    .relative()
-                    .w(px(width))
-                    .h_full()
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .bg(theme::sidebar())
-                    .border_r_1()
-                    .border_color(theme::border())
-                    .child(self.render_titlebar_drag_area(
-                        "settings-sidebar-titlebar-drag",
-                        div().h(px(32. * self.settings.app_zoom)).flex_none(),
-                        cx,
-                    ))
-                    .child(
-                        div().px_4().pb_3().pt_1().child(
-                            div()
-                                .id("settings-back")
-                                .group("settings-back")
-                                .px_2()
-                                .py(rems(6. / 16.))
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .rounded_sm()
-                                .border_1()
-                                .border_color(gpui::transparent_black())
-                                .cursor_pointer()
-                                .text_color(theme::muted())
-                                .hover(|button| {
-                                    button
-                                        .border_color(theme::sidebar_selected_border())
-                                        .bg(alpha(theme::sidebar_selected(), 0.4))
-                                        .text_color(theme::text())
-                                })
-                                .child(
-                                    svg()
-                                        .path("arrow-left.svg")
-                                        .w(px(14. * self.settings.app_zoom))
-                                        .h(px(14. * self.settings.app_zoom))
-                                        .flex_none()
-                                        .text_color(theme::muted())
-                                        .group_hover("settings-back", |icon| {
-                                            icon.text_color(theme::text())
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(13. * self.settings.app_zoom))
-                                        .child("Back to app"),
-                                )
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.leave_settings(window, cx);
-                                })),
-                        ),
-                    )
-                    .child(self.render_sidebar_resize_handle()),
-            )
-            .child(
-                div().relative().flex_1().h_full().bg(theme::bg()).child(
-                    self.render_titlebar_drag_area(
-                        "settings-content-titlebar-drag",
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .h(px(TITLEBAR_DRAG_HEIGHT * self.settings.app_zoom)),
-                        cx,
-                    ),
-                ),
-            )
-            .into_any_element()
     }
 
     pub(crate) fn render_titlebar_drag_area(
@@ -787,19 +701,8 @@ impl NativeRoot {
         self.save_settings();
     }
 
-    pub(crate) fn enter_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.route != AppRoute::Settings {
-            self.settings_return_route = self.route.clone();
-            self.dismiss_sidebar_transients(cx);
-            self.core.windows.set_subjects("main", Vec::new());
-            self.core.broadcast_focus_map();
-            self.route = AppRoute::Settings;
-            window.focus(&self.root_focus);
-            cx.notify();
-        }
-    }
-
-    fn leave_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn leave_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_settings();
         match self.settings_return_route.clone() {
             AppRoute::Chat | AppRoute::Settings => {
                 self.route = AppRoute::Chat;
@@ -829,7 +732,7 @@ impl NativeRoot {
     }
 
     fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
-        self.enter_settings(window, cx);
+        self.enter_settings_route(None, window, cx);
     }
 
     fn zoom_in(&mut self, _: &ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
@@ -844,7 +747,7 @@ impl NativeRoot {
         self.set_zoom(1., window, cx);
     }
 
-    fn set_zoom(&mut self, zoom: f32, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn set_zoom(&mut self, zoom: f32, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.app_zoom = zoom;
         window.set_rem_size(px(16. * zoom));
         mac_chrome::sync_traffic_lights(window, zoom);

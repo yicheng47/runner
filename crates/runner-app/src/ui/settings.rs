@@ -236,9 +236,19 @@ fn stepper_button(
     disabled: bool,
     handler: StepHandler,
 ) -> AnyElement {
+    const HOVER_GROUP: &str = "settings-stepper-button";
+
     let key_handler = Rc::clone(&handler);
+    let icon = svg()
+        .path(icon)
+        .size(rems(14. / 16.))
+        .text_color(theme::faint())
+        .when(!disabled, |icon| {
+            icon.group_hover(HOVER_GROUP, |icon| icon.text_color(theme::text()))
+        });
     let mut button = div()
         .id(id)
+        .when(!disabled, |button| button.group(HOVER_GROUP))
         .tab_index(0)
         .tab_stop(!disabled)
         .size(rems(30. / 16.))
@@ -261,10 +271,9 @@ fn stepper_button(
                 spread_radius: px(2.),
             }])
         })
-        .child(svg().path(icon).size(rems(14. / 16.)));
+        .child(icon);
     if !disabled {
         button = button
-            .hover(|button| button.text_color(theme::text()))
             .on_click(move |_, window, cx| handler(window, cx))
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
                 if matches!(event.keystroke.key.as_str(), "enter" | "space") {

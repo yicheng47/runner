@@ -1,12 +1,20 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use anyhow::{bail, Context as _, Result};
 use runner_backend::{
-    db, event_bus, events, mcp, repo, runtime_status, session, shell_path, windows, AppCore,
+    db, event_bus, events, mcp, ops, repo, runtime_status, session, shell_path, windows, AppCore,
 };
 
 pub const APP_IDENTIFIER: &str = "com.wycstudios.runner";
+pub const AUTO_RESUME_STAGGER_MS: u64 = 300;
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct AutoResumeReport {
+    pub resumed: Vec<String>,
+    pub errors: Vec<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativePaths {
@@ -99,6 +107,7 @@ pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
+    futures::executor::block_on(ops::mission::mount_all_running_mission_routers(&core));
     session::pty_runtime::cleanup_stale_running_rows_on_startup(&pool)
         .context("clean up stale PTY sessions")?;
     match pool.get() {
@@ -124,6 +133,64 @@ pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
     Ok(core)
 }
 
+pub fn consume_resume_on_launch(
+    core: &AppCore,
+    enabled: bool,
+    dims_for: impl Fn(&str) -> Option<(u16, u16)>,
+) -> Result<AutoResumeReport> {
+    consume_launch_claims(
+        enabled,
+        || {
+            let conn = core.db.get().context("get launch-resume connection")?;
+            repo::session::clear_resume_on_launch(&conn).context("clear launch-resume claims")?;
+            Ok(())
+        },
+        || {
+            let mut conn = core.db.get().context("get launch-resume connection")?;
+            repo::session::take_resume_on_launch(&mut conn).context("take launch-resume claim")
+        },
+        |session_id| {
+            let dims = dims_for(session_id);
+            ops::session::session_resume_on_launch(
+                core,
+                session_id,
+                dims.map(|size| size.0),
+                dims.map(|size| size.1),
+            )
+            .map(drop)
+            .map_err(|error| error.to_string())
+        },
+        || std::thread::sleep(Duration::from_millis(AUTO_RESUME_STAGGER_MS)),
+    )
+}
+
+fn consume_launch_claims(
+    enabled: bool,
+    mut clear: impl FnMut() -> Result<()>,
+    mut take: impl FnMut() -> Result<Option<String>>,
+    mut resume: impl FnMut(&str) -> std::result::Result<(), String>,
+    mut wait: impl FnMut(),
+) -> Result<AutoResumeReport> {
+    if !enabled {
+        clear()?;
+        return Ok(AutoResumeReport::default());
+    }
+
+    let mut report = AutoResumeReport::default();
+    let mut attempted = false;
+    while let Some(session_id) = take()? {
+        if attempted {
+            wait();
+        }
+        attempted = true;
+        match resume(&session_id) {
+            Ok(()) => report.resumed.push(session_id),
+            Err(error) => report.errors.push(format!("{session_id}: {error}")),
+        }
+    }
+    Ok(report)
+}
+
 pub fn stop_running_sessions_on_quit(core: &AppCore) -> Result<()> {
     let ids = {
         let mut conn = core.db.get().context("get database connection")?;
@@ -145,6 +212,7 @@ pub fn stop_running_sessions_on_quit(core: &AppCore) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
 
     #[test]
     fn paths_match_tauri_bundle_convention() {
@@ -226,5 +294,65 @@ mod tests {
                 .unwrap();
             assert_eq!(stamp, 1, "{id} must be pending for the next launch");
         }
+    }
+
+    #[test]
+    fn launch_claim_consumer_clears_when_disabled_without_taking() {
+        let cleared = Cell::new(false);
+        let taken = Cell::new(false);
+        let resumed = Cell::new(false);
+        let report = consume_launch_claims(
+            false,
+            || {
+                cleared.set(true);
+                Ok(())
+            },
+            || {
+                taken.set(true);
+                Ok(None)
+            },
+            |_| {
+                resumed.set(true);
+                Ok(())
+            },
+            || {},
+        )
+        .unwrap();
+
+        assert_eq!(report, AutoResumeReport::default());
+        assert!(cleared.get());
+        assert!(!taken.get());
+        assert!(!resumed.get());
+    }
+
+    #[test]
+    fn launch_claim_consumer_drains_sequentially_and_continues_after_failure() {
+        let claims = RefCell::new(vec![
+            None,
+            Some("session-b".to_owned()),
+            Some("session-a".to_owned()),
+        ]);
+        let attempts = RefCell::new(Vec::new());
+        let waits = Cell::new(0);
+        let report = consume_launch_claims(
+            true,
+            || panic!("enabled launch must not clear claims"),
+            || Ok(claims.borrow_mut().pop().unwrap()),
+            |session_id| {
+                attempts.borrow_mut().push(session_id.to_owned());
+                if session_id == "session-a" {
+                    Err("rejected key".into())
+                } else {
+                    Ok(())
+                }
+            },
+            || waits.set(waits.get() + 1),
+        )
+        .unwrap();
+
+        assert_eq!(&*attempts.borrow(), &["session-a", "session-b"]);
+        assert_eq!(waits.get(), 1);
+        assert_eq!(report.resumed, ["session-b"]);
+        assert_eq!(report.errors, ["session-a: rejected key"]);
     }
 }

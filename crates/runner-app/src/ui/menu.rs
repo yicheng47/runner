@@ -385,6 +385,7 @@ impl Render for PopoverMenu {
             let rows = self.items.iter().cloned().enumerate().map(|(index, item)| {
                 let active = self.state.highlighted == index;
                 let click_entity = menu_entity.clone();
+                let hover_entity = menu_entity.clone();
                 let foreground = if item.destructive {
                     theme::danger()
                 } else if item.disabled {
@@ -407,9 +408,20 @@ impl Render for PopoverMenu {
                     .gap(rems(10. / 16.))
                     .rounded(rems(4. / 16.))
                     .opacity(if item.disabled { 0.5 } else { 1. })
-                    .when(active, |row| row.bg(theme::border()))
+                    .when(active, |row| row.bg(theme::sidebar_selected()))
                     .when(!item.disabled, |row| {
-                        row.cursor_pointer().hover(|row| row.bg(theme::border()))
+                        row.cursor_pointer()
+                            .hover(|row| row.bg(theme::sidebar_selected()))
+                            .on_hover(move |hovered, _, cx| {
+                                if *hovered {
+                                    hover_entity.update(cx, |menu, cx| {
+                                        if menu.state.highlighted != index {
+                                            menu.state.highlighted = index;
+                                            cx.notify();
+                                        }
+                                    });
+                                }
+                            })
                     })
                     .children(item.icon.map(|icon| {
                         svg()
@@ -589,6 +601,7 @@ impl Render for ContextMenu {
         let rows = self.items.iter().cloned().enumerate().map(|(index, item)| {
             let active = self.state.highlighted == index;
             let click_entity = entity.clone();
+            let hover_entity = entity.clone();
             let foreground = if item.destructive {
                 theme::danger()
             } else if item.disabled {
@@ -611,9 +624,20 @@ impl Render for ContextMenu {
                 .gap(rems(10. / 16.))
                 .rounded(rems(4. / 16.))
                 .opacity(if item.disabled { 0.5 } else { 1. })
-                .when(active, |row| row.bg(theme::border()))
+                .when(active, |row| row.bg(theme::sidebar_selected()))
                 .when(!item.disabled, |row| {
-                    row.cursor_pointer().hover(|row| row.bg(theme::border()))
+                    row.cursor_pointer()
+                        .hover(|row| row.bg(theme::sidebar_selected()))
+                        .on_hover(move |hovered, _, cx| {
+                            if *hovered {
+                                hover_entity.update(cx, |menu, cx| {
+                                    if menu.state.highlighted != index {
+                                        menu.state.highlighted = index;
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        })
                 })
                 .children(item.icon.map(|icon| {
                     svg()

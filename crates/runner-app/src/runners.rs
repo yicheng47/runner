@@ -1721,7 +1721,12 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        match self.route.clone() {
+        let route = if self.route == AppRoute::Settings {
+            self.settings_return_route.clone()
+        } else {
+            self.route.clone()
+        };
+        match route {
             AppRoute::Chat => self.render_active_tab(window, cx),
             AppRoute::Runners => self.render_runners_page(cx),
             AppRoute::RunnerDetail(_) => self.render_runner_detail(cx),

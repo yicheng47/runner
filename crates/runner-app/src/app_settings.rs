@@ -82,17 +82,15 @@ impl AppFontFamily {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TerminalFontFamily {
-    #[default]
-    #[serde(rename = "System default")]
-    SystemDefault,
+    #[serde(
+        alias = "System default",
+        alias = "Monaco",
+        alias = "SF Mono",
+        alias = "JetBrains Mono",
+        alias = "Fira Code"
+    )]
     Menlo,
-    Monaco,
-    #[serde(rename = "SF Mono")]
-    SfMono,
-    #[serde(rename = "JetBrains Mono")]
-    JetBrainsMono,
-    #[serde(rename = "Fira Code")]
-    FiraCode,
+    #[default]
     #[serde(rename = "Meslo Nerd Font")]
     MesloNerdFont,
 }
@@ -100,12 +98,8 @@ pub enum TerminalFontFamily {
 impl TerminalFontFamily {
     pub fn family(self) -> &'static str {
         match self {
-            Self::SystemDefault | Self::Menlo => "Menlo",
-            Self::Monaco => "Monaco",
-            Self::SfMono => "SF Mono",
-            Self::JetBrainsMono => "JetBrains Mono",
-            Self::FiraCode => "Fira Code",
-            Self::MesloNerdFont => "MesloLGSDZ Nerd Font",
+            Self::Menlo => "Menlo",
+            Self::MesloNerdFont => "MesloLGS NF",
         }
     }
 }
@@ -145,7 +139,9 @@ pub struct AppSettings {
     pub mission_rail_width: f32,
     pub mission_rail_view: String,
     pub last_mission_terminal_ids: BTreeMap<String, String>,
+    pub default_crew_id: String,
     pub default_working_dir: String,
+    pub resume_on_launch: bool,
     pub default_runtime: String,
     pub disabled_agents: BTreeSet<String>,
     pub enabled_agents: BTreeSet<String>,
@@ -162,7 +158,7 @@ impl Default for AppSettings {
             window_width: WINDOW_WIDTH_DEFAULT,
             window_height: WINDOW_HEIGHT_DEFAULT,
             terminal_theme: TerminalTheme::Runner,
-            terminal_font_family: TerminalFontFamily::SystemDefault,
+            terminal_font_family: TerminalFontFamily::MesloNerdFont,
             terminal_font_size: TERMINAL_FONT_SIZE_DEFAULT,
             terminal_cursor_style: TerminalCursorStyle::Block,
             terminal_scrollback: TERMINAL_SCROLLBACK_DEFAULT,
@@ -177,7 +173,9 @@ impl Default for AppSettings {
             mission_rail_width: MISSION_RAIL_DEFAULT,
             mission_rail_view: "runners".into(),
             last_mission_terminal_ids: BTreeMap::new(),
+            default_crew_id: String::new(),
             default_working_dir: String::new(),
+            resume_on_launch: false,
             default_runtime: String::new(),
             disabled_agents: BTreeSet::new(),
             enabled_agents: BTreeSet::new(),
@@ -224,6 +222,7 @@ impl AppSettings {
         }
         self.last_mission_terminal_ids
             .retain(|mission_id, session_id| !mission_id.is_empty() && !session_id.is_empty());
+        self.default_crew_id = self.default_crew_id.trim().to_owned();
         self.default_working_dir = self.default_working_dir.trim().to_owned();
         self.default_runtime = self.default_runtime.trim().to_owned();
         self.sidebar_collapsed_projects =
@@ -488,9 +487,31 @@ mod tests {
         assert_eq!(value["darkAppTheme"], "carbon");
         assert_eq!(value["appFontFamily"], "Inter");
         assert_eq!(value["terminalTheme"], "runner");
-        assert_eq!(value["terminalFontFamily"], "System default");
+        assert_eq!(value["terminalFontFamily"], "Meslo Nerd Font");
+        assert_eq!(value["defaultCrewId"], "");
         assert_eq!(value["defaultWorkingDir"], "");
+        assert_eq!(value["resumeOnLaunch"], false);
         assert_eq!(value["defaultRuntime"], "");
+    }
+
+    #[test]
+    fn terminal_fonts_default_to_meslo_and_normalize_legacy_choices_to_menlo() {
+        assert_eq!(
+            AppSettings::default().terminal_font_family,
+            TerminalFontFamily::MesloNerdFont
+        );
+        for legacy in [
+            "System default",
+            "Menlo",
+            "Monaco",
+            "SF Mono",
+            "JetBrains Mono",
+            "Fira Code",
+        ] {
+            let parsed: TerminalFontFamily =
+                serde_json::from_str(&format!("\"{legacy}\"")).unwrap();
+            assert_eq!(parsed, TerminalFontFamily::Menlo);
+        }
     }
 
     #[test]
