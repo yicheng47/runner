@@ -420,11 +420,11 @@ impl SessionManager {
     ) -> Result<CompleteSpawnOutcome> {
         let PendingMissionSpawn {
             session_id,
-            spec,
+            mut spec,
             mission,
             runner,
             slot_handle,
-            size_source,
+            mut size_source,
             plan,
             first_turn_delivered_via_argv,
             resolved_cwd,
@@ -473,6 +473,16 @@ impl SessionManager {
         }
 
         let spawn_started_at_dt = Utc::now();
+        // The row has been visible (status running) since registration,
+        // and `resize` persists a frontend push even when there is no PTY
+        // to apply it to, so the row's last size can be newer than the
+        // hint captured into the spec. Fork at the newer one.
+        if let Some(persisted) = Self::persisted_size(&pool, &session_id) {
+            if spec.initial_size != Some(persisted) {
+                spec.initial_size = Some(persisted);
+                size_source = "persisted-last-size";
+            }
+        }
         let initial_size = spec.initial_size;
         self.seed_codex_project_trust(&session_id, &runner.runtime, spec.cwd.as_deref());
         let (rt_session, output) = self
@@ -574,6 +584,15 @@ impl SessionManager {
             spawn_emit_ctx.clone(),
             initial_size,
         );
+        // A push that landed after the pre-fork read found no handle and
+        // was only persisted; the handle exists now, so apply it. Reading
+        // after the install is what makes this race-free: `resize`
+        // persists before it looks for the handle.
+        if let Some(persisted) = Self::persisted_size(&pool, &session_id) {
+            if Some(persisted) != initial_size {
+                self.apply_persisted_size(&session_id, &rt_session, persisted);
+            }
+        }
         if first_turn_delivered_via_argv {
             self.arm_completion(&session_id);
         }
@@ -1502,6 +1521,13 @@ impl SessionManager {
             resume_emit_ctx.clone(),
             Some(initial_size),
         );
+        // Same window as the mission fork: a push that landed while the
+        // row had no handle was persisted only. Apply it now.
+        if let Some(persisted) = Self::persisted_size(&pool, session_id) {
+            if persisted != initial_size {
+                self.apply_persisted_size(session_id, &rt_session, persisted);
+            }
+        }
         if snap.mission_id.is_none() {
             self.publish_direct_activity(
                 session_id,
@@ -1604,6 +1630,36 @@ impl SessionManager {
             |r| r.get(0),
         );
         count.map(|n| n > 0).unwrap_or(false)
+    }
+
+    /// The row's persisted last size: the hint from registration until a
+    /// frontend push lands, then whatever `resize` recorded.
+    fn persisted_size(pool: &DbPool, session_id: &str) -> Option<(u16, u16)> {
+        let conn = pool.get().ok()?;
+        let row = crate::repo::session::get_row(&conn, session_id).ok()??;
+        row.last_cols.zip(row.last_rows)
+    }
+
+    fn apply_persisted_size(
+        &self,
+        session_id: &str,
+        rt_session: &RuntimeSession,
+        (cols, rows): (u16, u16),
+    ) {
+        match self.runtime.resize(rt_session, cols, rows) {
+            Ok(()) => {
+                if let Some(state) = self.session_state(session_id) {
+                    state.lock().unwrap().last_pty_cols = Some(cols);
+                }
+                log::info!(
+                    "pty size reconciled after fork: session={session_id} {cols}x{rows} \
+                     (pushed mid-fork)"
+                );
+            }
+            Err(error) => log::warn!(
+                "pty size reconcile after fork failed: session={session_id} {cols}x{rows}: {error}"
+            ),
+        }
     }
 
     fn runtime_pid(&self, rt_session: &RuntimeSession) -> Option<i32> {

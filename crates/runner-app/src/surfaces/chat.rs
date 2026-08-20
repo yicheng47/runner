@@ -506,6 +506,11 @@ impl NativeRoot {
             .attached
             .get(session_id)
             .map(|chat| chat.terminal.size())
+            .or_else(|| {
+                runner_backend::ops::session::session_last_size(self.core(cx), session_id)
+                    .ok()
+                    .flatten()
+            })
             .unwrap_or(estimated);
 
         if self.attached.contains_key(session_id) {

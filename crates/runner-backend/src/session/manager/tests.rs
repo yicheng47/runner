@@ -90,6 +90,9 @@ struct FakeRuntime {
     stop_failures: std::sync::Mutex<HashSet<String>>,
     resizes: std::sync::Mutex<Vec<(String, u16, u16)>>,
     resize_failures: std::sync::Mutex<HashSet<String>>,
+    /// Runs inside `spawn` once the fork is recorded — lets a test land
+    /// work (a resize) between the fork and the handle install.
+    spawn_hook: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     stop_gate: std::sync::Mutex<Option<RuntimeGate>>,
     /// What `status()` returns for any pane lookup. Most tests
     /// want exit_code=0 (clean stop); the kill-semantics test
@@ -249,6 +252,9 @@ impl SessionRuntime for FakeRuntime {
             rt_session: rt_session.clone(),
             tx: Some(tx),
         });
+        if let Some(hook) = self.spawn_hook.lock().unwrap().as_ref() {
+            hook();
+        }
         Ok((rt_session, OutputStream::new(rx, stop)))
     }
 
@@ -1586,6 +1592,143 @@ fn hinted_mission_start_forks_slots_at_the_hint() {
         fake.last_spawn_spec().unwrap().initial_size,
         Some((161, 45))
     );
+    mgr.kill(&session_id).unwrap();
+}
+
+/// Mission + runner + slot rows for a single-slot crew, ready for
+/// `register_mission_session`.
+fn single_slot_mission(pool: &DbPool) -> (Mission, Runner, crate::model::Slot) {
+    let mission_base = Mission {
+        crew_id: "c".into(),
+        ..mission()
+    };
+    let runner = runner("/bin/cat", &[]);
+    let slot_id = insert_crew_runner(pool, &mission_base.id, &runner.id);
+    let fresh_mission_id: String = {
+        let conn = pool.get().unwrap();
+        conn.query_row("SELECT id FROM missions LIMIT 1", [], |r| r.get(0))
+            .unwrap()
+    };
+    let mission = Mission {
+        id: fresh_mission_id,
+        ..mission_base
+    };
+    let mut slot = slot_for(&runner);
+    slot.id = slot_id;
+    (mission, runner, slot)
+}
+
+#[test]
+fn mission_fork_uses_a_size_pushed_before_the_pty_existed() {
+    // The two-phase spawn leaves the row visible for the whole gate wait
+    // before any PTY exists. A terminal that measures itself in that
+    // window pushes through `resize`, which can only persist the size;
+    // the fork must honor it over the hint captured at registration, or
+    // the PTY comes up wider than the grid the terminal already moved to
+    // and every full-width row wraps by a cell.
+    let pool = pool_with_schema();
+    let (mission, runner, slot) = single_slot_mission(&pool);
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture();
+    let pending = mgr
+        .register_mission_session(
+            &mission,
+            &runner,
+            &slot,
+            std::path::Path::new("/tmp"),
+            PathBuf::from("/dev/null"),
+            Arc::clone(&pool),
+            None,
+            Some((113, 38)),
+            "mission-hint",
+        )
+        .unwrap();
+    let session_id = pending.session_id.clone();
+
+    mgr.resize(
+        &session_id,
+        112,
+        38,
+        &pool,
+        Arc::clone(&cap) as Arc<dyn SessionEvents>,
+    )
+    .unwrap();
+    assert!(
+        fake.resizes.lock().unwrap().is_empty(),
+        "no PTY yet: the push can only be persisted"
+    );
+
+    let outcome = mgr
+        .complete_mission_session_spawn(
+            pending,
+            Arc::clone(&cap) as Arc<dyn SessionEvents>,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .unwrap();
+
+    assert!(matches!(outcome, CompleteSpawnOutcome::Spawned));
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().initial_size,
+        Some((112, 38))
+    );
+    assert!(fake.resizes.lock().unwrap().is_empty());
+    mgr.kill(&session_id).unwrap();
+}
+
+#[test]
+fn mission_fork_applies_a_size_pushed_mid_fork() {
+    // Narrower window, same drop: a push between the fork and the handle
+    // install. The post-install re-read applies it to the new PTY.
+    let pool = pool_with_schema();
+    let (mission, runner, slot) = single_slot_mission(&pool);
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture();
+    let pending = mgr
+        .register_mission_session(
+            &mission,
+            &runner,
+            &slot,
+            std::path::Path::new("/tmp"),
+            PathBuf::from("/dev/null"),
+            Arc::clone(&pool),
+            None,
+            Some((113, 38)),
+            "mission-hint",
+        )
+        .unwrap();
+    let session_id = pending.session_id.clone();
+    {
+        let mgr = Arc::clone(&mgr);
+        let pool = Arc::clone(&pool);
+        let events = Arc::clone(&cap) as Arc<dyn SessionEvents>;
+        let session_id = session_id.clone();
+        *fake.spawn_hook.lock().unwrap() = Some(Box::new(move || {
+            mgr.resize(&session_id, 112, 38, &pool, Arc::clone(&events))
+                .unwrap();
+        }));
+    }
+
+    let outcome = mgr
+        .complete_mission_session_spawn(
+            pending,
+            Arc::clone(&cap) as Arc<dyn SessionEvents>,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .unwrap();
+
+    assert!(matches!(outcome, CompleteSpawnOutcome::Spawned));
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().initial_size,
+        Some((113, 38)),
+        "the push came after the fork"
+    );
+    assert_eq!(
+        fake.resizes.lock().unwrap().as_slice(),
+        &[(session_id.clone(), 112, 38)]
+    );
+    *fake.spawn_hook.lock().unwrap() = None;
     mgr.kill(&session_id).unwrap();
 }
 
@@ -3334,6 +3477,87 @@ fn assert_resume_purges_scrollback(runtime: &str) {
     assert_eq!(snapshot[1].seq, pre_max_seq + 2);
     assert_eq!(snapshot[1].data, BASE64.encode(b"fresh repaint"));
 
+    mgr.kill(&session_id).unwrap();
+}
+
+#[test]
+fn resume_applies_a_size_pushed_mid_fork() {
+    // The resume window has the same shape as the mission fork: the row
+    // exists, `resuming` is set, and there is no handle until the new
+    // PTY is installed. A push in that window is persisted only; the
+    // post-install re-read must apply it.
+    let pool = pool_with_schema();
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     created_at, updated_at)
+                 VALUES (?1, 'midfork', 'MidFork', 'codex', '/bin/sh', ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+    }
+    let mut runner = runner("/bin/sh", &[]);
+    runner.id = runner_id;
+    runner.handle = "midfork".into();
+    runner.runtime = "codex".into();
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let events = capture();
+    let spawned = mgr
+        .spawn_direct(
+            &runner,
+            None,
+            None,
+            None,
+            None,
+            Some("/tmp"),
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            events.clone(),
+            None,
+        )
+        .unwrap();
+    let session_id = spawned.id.clone();
+    fake.close_spawn(0);
+    wait_for_db_stop(&pool, &session_id);
+    {
+        let mgr = Arc::clone(&mgr);
+        let pool = Arc::clone(&pool);
+        let events = Arc::clone(&events) as Arc<dyn SessionEvents>;
+        let session_id = session_id.clone();
+        *fake.spawn_hook.lock().unwrap() = Some(Box::new(move || {
+            mgr.resize(&session_id, 112, 38, &pool, Arc::clone(&events))
+                .unwrap();
+        }));
+    }
+
+    mgr.resume(
+        &session_id,
+        Some(113),
+        Some(38),
+        std::path::Path::new("/tmp"),
+        Arc::clone(&pool),
+        events.clone(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().initial_size,
+        Some((113, 38)),
+        "the caller's size still forks the PTY"
+    );
+    assert_eq!(
+        fake.resizes.lock().unwrap().as_slice(),
+        &[(session_id.clone(), 112, 38)]
+    );
+    *fake.spawn_hook.lock().unwrap() = None;
     mgr.kill(&session_id).unwrap();
 }
 
