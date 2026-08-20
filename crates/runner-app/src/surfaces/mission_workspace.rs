@@ -26,14 +26,15 @@ use runner_backend::windows::Subject;
 use runner_terminal::terminal::{TerminalSession, UserInputMode};
 
 use super::*;
-use crate::mission_composer::{
+use crate::surfaces::mission_composer::{
     key_down as composer_key_down, mention_options, select_target as select_composer_target,
     update_draft as update_composer_draft, ComposerPost, ComposerState,
     RosterEntry as ComposerRosterEntry,
 };
-use crate::mission_feed::{
+use crate::surfaces::mission_feed::{
     group_feed_blocks, is_human_authored, message_target, message_text, project_asks, FeedBlock,
 };
+use crate::*;
 
 const WORKSPACE_TABS_HEIGHT: f32 = 38.;
 
@@ -721,7 +722,7 @@ impl NativeRoot {
             .max(160.);
         let font_size = self.settings.terminal_font_size as f32 * self.settings.app_zoom;
         let cell_width = font_size * 0.6;
-        let line_height = (font_size * terminal_element::LINE_HEIGHT_FACTOR).round();
+        let line_height = (font_size * crate::terminal::element::LINE_HEIGHT_FACTOR).round();
         (
             (width / cell_width).floor().max(2.) as u16,
             (height / line_height).floor().max(2.) as u16,
@@ -3305,7 +3306,9 @@ impl NativeRoot {
                                             .into_any_element()
                                     })
                                 } else {
-                                    Some(crate::mission_markdown::render_markdown(&event.id, &text))
+                                    Some(crate::surfaces::mission_markdown::render_markdown(
+                                        &event.id, &text,
+                                    ))
                                 }
                             })),
                     ),
@@ -3650,7 +3653,9 @@ impl NativeRoot {
                                     .child("(no prompt)")
                                     .into_any_element()
                             } else {
-                                crate::mission_markdown::render_markdown(&event.id, &prompt)
+                                crate::surfaces::mission_markdown::render_markdown(
+                                    &event.id, &prompt,
+                                )
                             })
                             .child(buttons)
                             .children(resolved.map(|choice| {
@@ -3754,7 +3759,7 @@ impl NativeRoot {
         let terminal_focus = chat.terminal_focus.clone();
         let terminal_scrollbar = chat.terminal_scrollbar.clone();
         let terminal_background =
-            terminal_element::to_hsla(self.terminal_style().palette.background, 1.);
+            crate::terminal::element::to_hsla(self.terminal_style().palette.background, 1.);
         let interactive = self.mission_terminal_interactive(&session_id);
         let key_id = session_id.clone();
         let scroll_id = session_id.clone();

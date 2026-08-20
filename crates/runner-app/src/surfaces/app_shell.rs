@@ -1,8 +1,8 @@
 use gpui::{deferred, svg, BoxShadow, FontWeight, WindowAppearance, WindowControlArea};
 
-use super::*;
 use crate::app_settings::{clamp_sidebar_width, nudge_zoom};
 use crate::toast::ToastTone;
+use crate::*;
 
 const TITLEBAR_HEIGHT: f32 = 44.;
 pub(crate) const TITLEBAR_DRAG_HEIGHT: f32 = 28.;
@@ -630,8 +630,8 @@ impl NativeRoot {
         .detach();
     }
 
-    pub(crate) fn terminal_style(&self) -> terminal_element::TerminalStyle {
-        terminal_element::TerminalStyle {
+    pub(crate) fn terminal_style(&self) -> crate::terminal::element::TerminalStyle {
+        crate::terminal::element::TerminalStyle {
             palette: self.settings.terminal_theme.palette(),
             font_family: self.settings.terminal_font_family.family().into(),
             font_size: self.settings.terminal_font_size as f32 * self.settings.app_zoom,

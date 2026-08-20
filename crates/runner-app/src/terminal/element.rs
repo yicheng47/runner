@@ -28,7 +28,7 @@ use runner_app::terminal_resize::{
 use runner_terminal::palette::{self, TerminalPalette};
 use runner_terminal::terminal::TerminalSession;
 
-use crate::terminal_glyphs::{snapped_cell_bounds, ProceduralCell};
+use super::glyphs::{snapped_cell_bounds, ProceduralCell};
 
 pub const LINE_HEIGHT_FACTOR: f32 = 1.4;
 

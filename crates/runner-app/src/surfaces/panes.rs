@@ -1,15 +1,16 @@
 //! Chat-surface rendering: the active tab, layout picker, and pane tree.
 use super::*;
+use crate::*;
 use gpui::{svg, FontWeight};
 use runner_app::ui::{
     ButtonVariant, Modal, OverlayWidth, SessionControlVariant, SessionOverlay, SessionOverlayKind,
     Tooltip,
 };
 
-use crate::chat_lifecycle::{
+use crate::surfaces::chat_lifecycle::{
     ended_subtitle, resolve_pane_overlay, PaneOverlayState, TransitionKind,
 };
-use crate::sidebar::{direct_chat_display_status, DirectChatDisplayStatus};
+use crate::surfaces::sidebar::{direct_chat_display_status, DirectChatDisplayStatus};
 
 const CHAT_PANEL_TRANSITION_MS: u64 = 200;
 
@@ -1214,7 +1215,7 @@ impl NativeRoot {
                 && !self.sidebar_archiving_sessions.contains(&session_id);
             let terminal_style = self.terminal_style();
             let terminal_background =
-                terminal_element::to_hsla(terminal_style.palette.background, 1.);
+                crate::terminal::element::to_hsla(terminal_style.palette.background, 1.);
             let terminal_surface = if let Some(chat) = self.attached.get(&session_id) {
                 let terminal = Arc::clone(&chat.terminal);
                 let terminal_scrollbar = chat.terminal_scrollbar.clone();

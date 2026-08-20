@@ -17,8 +17,9 @@ use crate::app_settings::{
     TerminalTheme, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, TERMINAL_SCROLLBACK_OPTIONS,
     ZOOM_STEPS,
 };
-use crate::app_shell::TITLEBAR_DRAG_HEIGHT;
+use crate::surfaces::app_shell::TITLEBAR_DRAG_HEIGHT;
 use crate::theme::{DarkTheme, LightTheme, ThemeIntent};
+use crate::*;
 
 const SETTINGS_SAVE_DELAY_MS: u64 = 300;
 

@@ -24,6 +24,7 @@ use runner_backend::router::runtime::PermissionMode;
 
 use super::*;
 use crate::list_controls::{ListControls, LIST_QUERY_DEBOUNCE_MS};
+use crate::*;
 
 const FORM_WIDTH: f32 = 576.;
 const FIELD_WIDTH: f32 = 528.;
@@ -170,7 +171,7 @@ impl RunnerSurfaces {
 impl NativeRoot {
     pub(crate) fn refresh_runner_form_runtimes(&mut self, cx: &mut Context<Self>) {
         let (selectable, agents_checking, agents_error) =
-            crate::start_chat::load_selectable_runtimes(&self.core, &self.settings);
+            crate::surfaces::start_chat::load_selectable_runtimes(&self.core, &self.settings);
         let catalog_loaded = agents_error.is_none();
         let placeholder = if agents_checking {
             "Detecting agents…"
@@ -271,7 +272,7 @@ impl NativeRoot {
             return;
         }
         let (runtimes, agents_checking, agents_error) =
-            crate::start_chat::load_selectable_runtimes(&self.core, &self.settings);
+            crate::surfaces::start_chat::load_selectable_runtimes(&self.core, &self.settings);
         let runtime = runtimes
             .first()
             .map(|runtime| runtime.name.clone())
@@ -449,7 +450,7 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         let (mut runtimes, agents_checking, agents_error) =
-            crate::start_chat::load_selectable_runtimes(&self.core, &self.settings);
+            crate::surfaces::start_chat::load_selectable_runtimes(&self.core, &self.settings);
         let mut resolution = resolve_runner_edit(&runner, slot.as_ref());
         ensure_runtime_present(&self.core, &mut runtimes, &resolution.runtime);
         if !runtime_efforts(&runtimes, &resolution.runtime)

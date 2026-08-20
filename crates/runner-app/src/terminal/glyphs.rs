@@ -1,6 +1,6 @@
 use gpui::{fill, point, px, size, Bounds, ContentMask, Hsla, PathBuilder, Pixels, Point, Window};
 
-#[path = "terminal_glyph_data.rs"]
+#[path = "glyph_data.rs"]
 mod data;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

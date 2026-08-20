@@ -19,6 +19,7 @@ use runner_app::ui::{
 };
 
 use super::*;
+use crate::*;
 
 const START_CHAT_MODE_FILE: &str = "start-chat-mode";
 const MODAL_WIDTH: f32 = 560.;

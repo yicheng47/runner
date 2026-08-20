@@ -1,5 +1,5 @@
 // Generated from @xterm/addon-webgl 0.20.0-beta.219 CustomGlyphDefinitions.ts.
-// The source table is MIT-licensed by the xterm.js authors; see ../LICENSE.xterm.
+// The source table is MIT-licensed by the xterm.js authors; see ../../LICENSE.xterm.
 
 use super::{Draw, Octant, Part, Scale};
 

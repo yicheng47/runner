@@ -2,6 +2,7 @@
 //! activation/focus, key/scroll/paste routing, chat start/resume, and
 //! split resizing.
 use super::*;
+use crate::*;
 
 impl NativeRoot {
     pub(crate) fn handle_chat_lifecycle_event(
@@ -605,7 +606,7 @@ impl NativeRoot {
                 };
         let font_size = self.settings.terminal_font_size as f32 * self.settings.app_zoom;
         let cell_width = font_size * 0.6;
-        let line_height = (font_size * terminal_element::LINE_HEIGHT_FACTOR).round();
+        let line_height = (font_size * crate::terminal::element::LINE_HEIGHT_FACTOR).round();
         (
             (pane_width / cell_width).floor().max(2.) as u16,
             (pane_height / line_height).floor().max(2.) as u16,
