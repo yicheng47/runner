@@ -1342,6 +1342,7 @@ impl NativeRoot {
                 4,
                 false,
             )
+            .auto_grow(12)
         });
         let focus = input.read(cx).focus_handle();
         self.crew_surfaces.editor.goal_edit = Some(input);
@@ -1401,6 +1402,7 @@ impl NativeRoot {
                 6,
                 true,
             )
+            .auto_grow(24)
         });
         let focus = input.read(cx).focus_handle();
         self.crew_surfaces.editor.conventions_edit = Some(input);

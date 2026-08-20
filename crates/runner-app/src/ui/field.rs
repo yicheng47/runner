@@ -478,6 +478,7 @@ pub struct TextField {
     scrollbar: Option<Entity<Scrollbar>>,
     selecting: bool,
     text_layout: Rc<RefCell<Option<TextFieldLayout>>>,
+    auto_grow_rows: Option<u8>,
 }
 
 impl TextField {
@@ -507,6 +508,7 @@ impl TextField {
             scrollbar: None,
             selecting: false,
             text_layout: Rc::new(RefCell::new(None)),
+            auto_grow_rows: None,
         }
     }
 
@@ -521,6 +523,13 @@ impl TextField {
         field.kind = TextFieldKind::Textarea { rows: rows.max(2) };
         field.buffer.multiline = true;
         field
+    }
+
+    /// Let a textarea grow with its wrapped content, from its base `rows` up
+    /// to `max_rows`; longer content scrolls as before.
+    pub fn auto_grow(mut self, max_rows: u8) -> Self {
+        self.auto_grow_rows = Some(max_rows);
+        self
     }
 
     pub fn text(&self) -> &str {
@@ -961,6 +970,15 @@ impl Render for TextField {
         let layout_bare = self.bare;
         let layout_right_padding = self.right_padding;
         let layout_scroll_handle = self.scroll_handle.clone();
+        // Auto-grow textareas take their height from the wrapped content between
+        // the base row count and `auto_grow_rows`; everything else is fixed-height.
+        let auto_grow = (self.kind.multiline() && !self.bare)
+            .then_some(self.auto_grow_rows)
+            .flatten()
+            .map(|max_rows| {
+                let min_rows = self.kind.rows();
+                (min_rows as f32 * 20., max_rows.max(min_rows) as f32 * 20.)
+            });
         let height = if self.bare {
             20.
         } else {
@@ -980,7 +998,7 @@ impl Render for TextField {
             })
             .min_w(px(0.))
             .w_full()
-            .h(rems(height / 16.))
+            .when(auto_grow.is_none(), |input| input.h(rems(height / 16.)))
             .when(!self.bare, |input| {
                 input.pl(rems(10. / 16.)).pr(rems(self.right_padding / 16.))
             })
@@ -1032,7 +1050,13 @@ impl Render for TextField {
                     div()
                         .id("text-field-scroll")
                         .relative()
-                        .size_full()
+                        .w_full()
+                        .map(|scroll| match auto_grow {
+                            Some((min_px, max_px)) => {
+                                scroll.min_h(rems(min_px / 16.)).max_h(rems(max_px / 16.))
+                            }
+                            None => scroll.h_full(),
+                        })
                         .overflow_y_scroll()
                         .scrollbar_width(px(0.))
                         .track_scroll(&self.scroll_handle)
