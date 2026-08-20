@@ -133,7 +133,6 @@ pub struct AppSettings {
     pub sidebar_projects_open: bool,
     pub sidebar_chats_open: bool,
     pub sidebar_collapsed_projects: BTreeSet<String>,
-    pub sidebar_collapsed_tabs: BTreeSet<String>,
     pub chat_panel_open: bool,
     pub chat_panel_width: f32,
     pub default_working_dir: String,
@@ -162,7 +161,6 @@ impl Default for AppSettings {
             sidebar_projects_open: true,
             sidebar_chats_open: true,
             sidebar_collapsed_projects: BTreeSet::new(),
-            sidebar_collapsed_tabs: BTreeSet::new(),
             chat_panel_open: true,
             chat_panel_width: CHAT_PANEL_DEFAULT,
             default_working_dir: String::new(),
@@ -210,8 +208,6 @@ impl AppSettings {
         self.default_runtime = self.default_runtime.trim().to_owned();
         self.sidebar_collapsed_projects =
             normalize_agent_set(std::mem::take(&mut self.sidebar_collapsed_projects));
-        self.sidebar_collapsed_tabs =
-            normalize_agent_set(std::mem::take(&mut self.sidebar_collapsed_tabs));
         self.disabled_agents = normalize_agent_set(std::mem::take(&mut self.disabled_agents));
         self.enabled_agents = normalize_agent_set(std::mem::take(&mut self.enabled_agents));
     }
