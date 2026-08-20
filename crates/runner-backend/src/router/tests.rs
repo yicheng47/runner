@@ -473,6 +473,14 @@ fn read_signals(log: &EventLog) -> Vec<Event> {
 }
 
 fn wait_until(timeout: Duration, predicate: impl Fn() -> bool) {
+    // Deviation from main (CI accommodation): GitHub's shared macOS runners
+    // oversleep 5ms ticks several-fold, so the local budgets flunk there.
+    // Scaling under CI keeps these tests asserting ordering, not VM speed.
+    let timeout = if std::env::var_os("CI").is_some() {
+        timeout * 10
+    } else {
+        timeout
+    };
     let deadline = Instant::now() + timeout;
     while !predicate() {
         assert!(Instant::now() < deadline, "condition did not become true");
