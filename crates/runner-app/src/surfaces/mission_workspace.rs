@@ -5,11 +5,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use futures::StreamExt as _;
 use gpui::prelude::*;
 use gpui::{
     canvas, div, px, rems, svg, AnyElement, App, Bounds, BoxShadow, CursorStyle, DragMoveEvent,
     Entity, FontWeight, KeyDownEvent, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
-    SharedString, Window,
+    SharedString, WeakEntity, Window, WindowControlArea,
 };
 use runner_app::terminal_ime::TerminalInput;
 use runner_app::ui::{
@@ -26,6 +27,7 @@ use runner_backend::windows::Subject;
 use runner_terminal::terminal::{TerminalSession, UserInputMode};
 
 use super::*;
+use crate::surfaces::app_shell::{SIDEBAR_TOGGLE_GLYPH_INSET, SIDEBAR_TOGGLE_GLYPH_X};
 use crate::surfaces::mission_composer::{
     key_down as composer_key_down, mention_options, select_target as select_composer_target,
     update_draft as update_composer_draft, ComposerPost, ComposerState,
@@ -142,7 +144,14 @@ struct DeliveryBlocked {
     unread_count: usize,
 }
 
-pub(crate) struct MissionWorkspaceState {
+pub(crate) struct MissionWorkspace {
+    shell: WeakEntity<NativeRoot>,
+    app_store: Entity<AppStore>,
+    store_revisions: StoreRevisions,
+    attached: HashMap<String, AttachedChat>,
+    active: bool,
+    root_focus: FocusHandle,
+    titlebar_drag_armed: bool,
     pub mission_id: Option<String>,
     generation: u64,
     refresh_generation: u64,
@@ -193,11 +202,19 @@ pub(crate) struct MissionWorkspaceState {
     pub(crate) rename_modal: Option<MissionRenameModal>,
     mission_id_copy: Entity<CopyValueButton>,
     session_key_copies: HashMap<String, Entity<CopyValueButton>>,
+    _store_subscription: Subscription,
 }
 
-impl MissionWorkspaceState {
-    pub(crate) fn new(root: Entity<NativeRoot>, cx: &mut Context<NativeRoot>) -> Self {
-        let menu_root = root.clone();
+impl MissionWorkspace {
+    pub(crate) fn new(
+        shell: WeakEntity<NativeRoot>,
+        app_store: Entity<AppStore>,
+        root_focus: FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let workspace = cx.entity();
+        let menu_root = workspace.clone();
         let action_menu = cx.new(move |menu_cx| {
             PopoverMenu::new(
                 "mission-actions",
@@ -217,7 +234,7 @@ impl MissionWorkspaceState {
         });
         let mission_id_copy =
             cx.new(|copy_cx| CopyValueButton::new(copy_cx.focus_handle(), None, "Copy mission ID"));
-        let composer_root = root.clone();
+        let composer_root = workspace;
         let composer_input = cx.new(move |input_cx| {
             let key_root = composer_root.clone();
             TextField::textarea(
@@ -235,8 +252,7 @@ impl MissionWorkspaceState {
                 let prevent_default = {
                     let root = key_root.read(cx);
                     let roster = root.mission_composer_roster();
-                    composer_key_down(&root.mission_workspace.composer, &roster, &key, shift)
-                        .prevent_default
+                    composer_key_down(&root.composer, &roster, &key, shift).prevent_default
                 };
                 if prevent_default {
                     let deferred_root = key_root.clone();
@@ -255,13 +271,73 @@ impl MissionWorkspaceState {
         });
         let composer_subscription = cx.observe(&composer_input, |this, input, cx| {
             let draft = input.read(cx).text().to_owned();
-            if draft != this.mission_workspace.composer.draft {
-                this.mission_workspace.composer =
-                    update_composer_draft(&this.mission_workspace.composer, draft);
+            if draft != this.composer.draft {
+                this.composer = update_composer_draft(&this.composer, draft);
                 cx.notify();
             }
         });
+        let (mission_event_tx, mut mission_event_rx) =
+            futures::channel::mpsc::unbounded::<runner_backend::events::AppEvent>();
+        let mut mission_events = app_store.read(cx).core.events.subscribe();
+        cx.background_spawn(async move {
+            loop {
+                match mission_events.recv().await {
+                    Ok(event)
+                        if matches!(
+                            event.name,
+                            "event/appended"
+                                | "mission/changed"
+                                | "router/delivery-blocked"
+                                | "session/exit"
+                                | "session/updated"
+                                | "session/warning"
+                                | "session/input-error"
+                                | "window_focus_map"
+                        ) =>
+                    {
+                        if mission_event_tx.unbounded_send(event).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        if mission_event_tx
+                            .unbounded_send(runner_backend::events::AppEvent {
+                                name: "mission/resync",
+                                payload: serde_json::Value::Null,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        })
+        .detach();
+        cx.spawn_in(window, async move |weak, cx| {
+            while let Some(event) = mission_event_rx.next().await {
+                if weak
+                    .update_in(cx, |this, window, cx| {
+                        this.handle_mission_workspace_event(event, window, cx);
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+        let store_revisions = app_store.read(cx).revisions;
         Self {
+            shell,
+            app_store: app_store.clone(),
+            store_revisions,
+            attached: HashMap::new(),
+            active: false,
+            root_focus,
+            titlebar_drag_armed: false,
             mission_id: None,
             generation: 0,
             refresh_generation: 0,
@@ -312,6 +388,8 @@ impl MissionWorkspaceState {
             rename_modal: None,
             mission_id_copy,
             session_key_copies: HashMap::new(),
+            _store_subscription: cx
+                .observe(&app_store, |this, _, cx| this.handle_app_store_update(cx)),
         }
     }
 
@@ -320,6 +398,7 @@ impl MissionWorkspaceState {
         self.refresh_generation += 1;
         self.event_resync_generation += 1;
         self.mission_id = Some(mission_id);
+        self.attached.clear();
         self.mission = None;
         self.crew = None;
         self.sessions.clear();
@@ -476,6 +555,194 @@ impl MissionWorkspaceState {
             .map(|session| session.session.id.clone())
             .collect()
     }
+
+    fn core<'a>(&self, cx: &'a App) -> &'a AppCore {
+        &self.app_store.read(cx).core
+    }
+
+    fn settings<'a>(&self, cx: &'a App) -> &'a AppSettings {
+        &self.app_store.read(cx).settings
+    }
+
+    fn update_app_settings(
+        &self,
+        cx: &mut Context<Self>,
+        persist: bool,
+        update: impl FnOnce(&mut AppSettings) -> bool,
+    ) -> bool {
+        self.app_store.update(cx, |store, store_cx| {
+            store.update_settings(update, persist, store_cx)
+        })
+    }
+
+    fn save_settings(&self, cx: &App) {
+        self.app_store.read(cx).save_settings();
+    }
+
+    fn refresh_store(&self, refresh: StoreRefreshKind, cx: &mut Context<Self>) {
+        self.app_store
+            .update(cx, |store, store_cx| store.refresh(refresh, store_cx));
+    }
+
+    fn is_active(&self, _: &App) -> bool {
+        self.active
+    }
+
+    fn terminal_style(&self, cx: &App) -> crate::terminal::element::TerminalStyle {
+        crate::terminal::element::TerminalStyle {
+            palette: self.settings(cx).terminal_theme.palette(),
+            font_family: self.settings(cx).terminal_font_family.family().into(),
+            font_size: self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom,
+            app_zoom: self.settings(cx).app_zoom,
+        }
+    }
+
+    pub(crate) fn apply_terminal_settings(&self, cx: &App) {
+        let cursor = match self.settings(cx).terminal_cursor_style {
+            app_settings::TerminalCursorStyle::Block => {
+                alacritty_terminal::vte::ansi::CursorShape::Block
+            }
+            app_settings::TerminalCursorStyle::Underline => {
+                alacritty_terminal::vte::ansi::CursorShape::Underline
+            }
+            app_settings::TerminalCursorStyle::Bar => {
+                alacritty_terminal::vte::ansi::CursorShape::Beam
+            }
+        };
+        for chat in self.attached.values() {
+            chat.terminal
+                .set_palette(self.settings(cx).terminal_theme.palette());
+            chat.terminal
+                .configure(self.settings(cx).terminal_scrollback, cursor);
+        }
+    }
+
+    fn handle_app_store_update(&mut self, cx: &mut Context<Self>) {
+        let revisions = self.app_store.read(cx).revisions;
+        let previous = self.store_revisions;
+        let reactions = revisions.reactions_since(previous);
+        self.store_revisions = revisions;
+        if reactions.apply_terminal_settings {
+            self.apply_terminal_settings(cx);
+        }
+        if revisions.settings != previous.settings
+            || (reactions.terminal_wake && self.is_active(cx))
+        {
+            cx.notify();
+        }
+    }
+
+    fn workspace_titlebar_padding(&self, window: &Window, cx: &App) -> f32 {
+        if self.settings(cx).sidebar_collapsed && !window.is_fullscreen() {
+            SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
+        } else {
+            16. * self.settings(cx).app_zoom
+        }
+    }
+
+    fn render_open_sidebar_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.settings(cx).sidebar_collapsed.then(|| {
+            div()
+                .id("open-sidebar")
+                .group("open-sidebar")
+                .flex_none()
+                .w(px(28. * self.settings(cx).app_zoom))
+                .h(px(28. * self.settings(cx).app_zoom))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_sm()
+                .cursor_pointer()
+                .text_color(theme::muted())
+                .hover(|button| button.bg(theme::raised()).text_color(theme::text()))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    svg()
+                        .path("panel-left-hollow.svg")
+                        .w(px(15.4 * self.settings(cx).app_zoom))
+                        .h(px(12. * self.settings(cx).app_zoom))
+                        .flex_none()
+                        .text_color(theme::muted())
+                        .group_hover("open-sidebar", |icon| icon.text_color(theme::text())),
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.update_app_settings(cx, true, |settings| {
+                        settings.sidebar_collapsed = false;
+                        true
+                    });
+                    if let Some(shell) = this.shell.upgrade() {
+                        shell.update(cx, |shell, _| {
+                            shell.sidebar_preview_open = false;
+                            shell.sidebar_preview_peeking = false;
+                        });
+                    }
+                    this.focus_active_mission_terminal(window, cx);
+                    cx.notify();
+                }))
+                .into_any_element()
+        })
+    }
+
+    fn render_titlebar_drag_area(
+        &self,
+        id: &'static str,
+        area: gpui::Div,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        area.id(id)
+            .window_control_area(WindowControlArea::Drag)
+            .on_mouse_down_out(cx.listener(|this, _, _, _| {
+                this.titlebar_drag_armed = false;
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| {
+                    this.titlebar_drag_armed = false;
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| {
+                    this.titlebar_drag_armed = true;
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, _, window, _| {
+                if this.titlebar_drag_armed {
+                    this.titlebar_drag_armed = false;
+                    window.start_window_move();
+                }
+            }))
+            .on_click(|event, window, cx| {
+                if event.click_count() == 2 {
+                    cx.stop_propagation();
+                    window.titlebar_double_click();
+                }
+            })
+    }
+
+    fn open_runners(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(shell) = self.shell.upgrade() {
+            shell.update(cx, |shell, shell_cx| shell.open_runners(window, shell_cx));
+        }
+    }
+
+    fn open_crew_editor(&mut self, crew_id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(shell) = self.shell.upgrade() {
+            shell.update(cx, |shell, shell_cx| {
+                shell.open_crew_editor(crew_id, window, shell_cx)
+            });
+        }
+    }
+
+    fn set_sidebar_archiving(&self, mission_id: &str, archiving: bool, cx: &mut Context<Self>) {
+        if let Some(shell) = self.shell.upgrade() {
+            let mission_id = mission_id.to_owned();
+            shell.update(cx, |shell, shell_cx| {
+                shell.set_sidebar_mission_archiving(mission_id, archiving, shell_cx);
+            });
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -497,43 +764,118 @@ impl Render for MissionRailResizeDrag {
 }
 
 impl NativeRoot {
+    pub(crate) fn set_route(&mut self, route: AppRoute, cx: &mut Context<Self>) {
+        let route_changed = self.route != route;
+        let leaving_mission =
+            matches!(self.route, AppRoute::Mission(_)) && !matches!(route, AppRoute::Mission(_));
+        self.route = route;
+        if route_changed {
+            let sidebar = self.sidebar.clone();
+            cx.defer(move |cx| {
+                sidebar.update(cx, |_, sidebar_cx| sidebar_cx.notify());
+            });
+        }
+        if leaving_mission {
+            let workspace = self.mission_workspace.clone();
+            cx.defer(move |cx| {
+                workspace.update(cx, |workspace, workspace_cx| {
+                    let still_active = workspace.shell.upgrade().is_some_and(|shell| {
+                        matches!(
+                            &shell.read(workspace_cx).route,
+                            AppRoute::Mission(active)
+                                if Some(active.as_str()) == workspace.mission_id.as_deref()
+                        )
+                    });
+                    if !still_active {
+                        workspace.active = false;
+                        workspace.attached.clear();
+                        workspace_cx.notify();
+                    }
+                });
+            });
+        }
+    }
+
     pub(crate) fn open_mission(
         &mut self,
         mission_id: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if matches!(&self.route, AppRoute::Mission(active) if active == &mission_id)
-            && (self.mission_workspace.loading || self.mission_workspace.mission.is_some())
-        {
-            return;
+        if matches!(&self.route, AppRoute::Mission(active) if active == &mission_id) {
+            let workspace = self.mission_workspace.read(cx);
+            if workspace.loading || workspace.mission.is_some() {
+                return;
+            }
         }
         self.dismiss_sidebar_transients(cx);
-        self.route = AppRoute::Mission(mission_id.clone());
-        self.core
+        self.set_route(AppRoute::Mission(mission_id.clone()), cx);
+        let workspace = self.mission_workspace.clone();
+        workspace.update(cx, |workspace, workspace_cx| {
+            workspace.open_mission(mission_id, window, workspace_cx)
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn cycle_mission_tab(
+        &mut self,
+        direction: isize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let workspace = self.mission_workspace.clone();
+        workspace.update(cx, |workspace, workspace_cx| {
+            workspace.cycle_mission_tab(direction, window, workspace_cx)
+        });
+    }
+
+    pub(crate) fn estimated_mission_terminal_size(&self, window: &Window, cx: &App) -> (u16, u16) {
+        self.mission_workspace
+            .read(cx)
+            .estimated_mission_terminal_size(window, cx)
+    }
+
+    pub(crate) fn sync_mission_subject_ownership(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let active = matches!(self.route, AppRoute::Mission(_));
+        let workspace = self.mission_workspace.clone();
+        workspace.update(cx, |workspace, workspace_cx| {
+            workspace.sync_mission_subject_ownership(active, window, workspace_cx)
+        });
+    }
+}
+
+impl MissionWorkspace {
+    pub(crate) fn open_mission(
+        &mut self,
+        mission_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.active = true;
+        self.core(cx)
             .windows
             .set_subjects("main", vec![Subject::Mission(mission_id.clone())]);
         if window.is_window_active() {
-            self.core.windows.mark_focused("main");
+            self.core(cx).windows.mark_focused("main");
         } else {
-            self.core.windows.mark_blurred("main");
+            self.core(cx).windows.mark_blurred("main");
         }
-        self.core.broadcast_focus_map();
-        let generation = self.mission_workspace.reset(
+        self.core(cx).broadcast_focus_map();
+        let generation = self.reset(
             mission_id.clone(),
-            MissionRailView::from_setting(&self.settings.mission_rail_view),
+            MissionRailView::from_setting(&self.settings(cx).mission_rail_view),
         );
-        self.mission_workspace
-            .composer_input
-            .update(cx, |input, input_cx| {
-                input.reset("", input_cx);
-                input.set_disabled(false, input_cx);
-            });
-        self.mission_workspace
-            .mission_id_copy
-            .update(cx, |copy, copy_cx| {
-                copy.set_value(Some(mission_id.clone()), copy_cx)
-            });
+        self.composer_input.update(cx, |input, input_cx| {
+            input.reset("", input_cx);
+            input.set_disabled(false, input_cx);
+        });
+        self.mission_id_copy.update(cx, |copy, copy_cx| {
+            copy.set_value(Some(mission_id.clone()), copy_cx)
+        });
         window.focus(&self.root_focus);
         cx.notify();
 
@@ -543,10 +885,8 @@ impl NativeRoot {
                 .timer(Duration::from_millis(150))
                 .await;
             let _ = weak.update(cx, |this, cx| {
-                if this.mission_workspace.is_current(&loading_id, generation)
-                    && this.mission_workspace.loading
-                {
-                    this.mission_workspace.loading_overlay_visible = true;
+                if this.is_current(&loading_id, generation) && this.loading {
+                    this.loading_overlay_visible = true;
                     cx.notify();
                 }
             });
@@ -560,7 +900,7 @@ impl NativeRoot {
                 .await;
             let keep_running = weak
                 .update(cx, |this, cx| {
-                    let current = this.mission_workspace.is_current(&ticker_id, generation);
+                    let current = this.is_current(&ticker_id, generation);
                     if current {
                         cx.notify();
                     }
@@ -573,7 +913,7 @@ impl NativeRoot {
         })
         .detach();
 
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let load_id = mission_id.clone();
         let load = cx.background_spawn(async move {
             runner_backend::ops::mission::mission_attach(&core, &load_id)
@@ -599,12 +939,7 @@ impl NativeRoot {
         cx.spawn_in(window, async move |weak, cx| {
             let result = load.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                if !this.mission_workspace.is_current(&mission_id, generation)
-                    || !matches!(
-                        &this.route,
-                        AppRoute::Mission(active) if active == &mission_id
-                    )
-                {
+                if !this.is_current(&mission_id, generation) || !this.is_active(cx) {
                     return;
                 }
                 match result {
@@ -614,7 +949,7 @@ impl NativeRoot {
                             .iter()
                             .map(|event| event.id.clone())
                             .collect::<HashSet<_>>();
-                        for event in std::mem::take(&mut this.mission_workspace.events) {
+                        for event in std::mem::take(&mut this.events) {
                             if seen.insert(event.id.clone()) {
                                 loaded.events.push(event);
                             }
@@ -627,49 +962,53 @@ impl NativeRoot {
                             .map(|session| session.session.id.clone())
                             .collect::<HashSet<_>>();
                         let remembered = this
-                            .settings
+                            .settings(cx)
                             .last_mission_terminal_ids
                             .get(&mission_id)
                             .filter(|session_id| valid_ids.contains(*session_id))
                             .cloned();
-                        let workspace = &mut this.mission_workspace;
-                        workspace.mission = Some(loaded.mission);
-                        workspace.crew = loaded.crew;
-                        workspace.roster = loaded.roster;
-                        workspace.sessions = loaded.sessions;
-                        workspace.events = loaded.events;
-                        workspace.rebuild_event_projection();
-                        workspace.feed_scroll.scroll_to_bottom();
-                        workspace.loading = false;
-                        workspace.error = None;
+                        this.mission = Some(loaded.mission);
+                        this.crew = loaded.crew;
+                        this.roster = loaded.roster;
+                        this.sessions = loaded.sessions;
+                        this.events = loaded.events;
+                        this.rebuild_event_projection();
+                        this.feed_scroll.scroll_to_bottom();
+                        this.loading = false;
+                        this.error = None;
                         if archived {
-                            workspace.active_tab = MissionTab::Feed;
-                            workspace.open_tabs.clear();
-                            this.settings.last_mission_terminal_ids.remove(&mission_id);
-                            this.save_settings();
+                            this.active_tab = MissionTab::Feed;
+                            this.open_tabs.clear();
+                            let removed_mission_id = mission_id.clone();
+                            this.update_app_settings(cx, true, move |settings| {
+                                settings
+                                    .last_mission_terminal_ids
+                                    .remove(&removed_mission_id);
+                                true
+                            });
                         } else {
-                            workspace.open_tabs = workspace
+                            this.open_tabs = this
                                 .sessions
                                 .iter()
                                 .map(|session| session.session.id.clone())
                                 .collect();
-                            workspace.active_tab = remembered
+                            this.active_tab = remembered
                                 .map(MissionTab::Session)
                                 .unwrap_or(MissionTab::Feed);
                         }
                         this.sync_mission_copy_entities(cx);
-                        this.sync_mission_subject_ownership(window, cx);
-                        if !this.mission_workspace.secondary {
+                        let active = this.is_active(cx);
+                        this.sync_mission_subject_ownership(active, window, cx);
+                        if !this.secondary {
                             if let Err(error) = this.ensure_mission_terminals_attached(window, cx) {
-                                this.mission_workspace.error = Some(error.to_string());
+                                this.error = Some(error.to_string());
                             }
                         }
-                        this.focus_active_mission_terminal(window);
+                        this.focus_active_mission_terminal(window, cx);
                     }
                     Err(error) => {
-                        this.mission_workspace.loading = false;
-                        this.mission_workspace.error =
-                            Some(action_failure("load the mission", error));
+                        this.loading = false;
+                        this.error = Some(action_failure("load the mission", error));
                     }
                 }
                 cx.notify();
@@ -679,19 +1018,17 @@ impl NativeRoot {
     }
 
     fn sync_mission_copy_entities(&mut self, cx: &mut Context<Self>) {
-        let sessions = self.mission_workspace.sessions.clone();
+        let sessions = self.sessions.clone();
         let valid = sessions
             .iter()
             .map(|session| session.session.id.clone())
             .collect::<HashSet<_>>();
-        self.mission_workspace
-            .session_key_copies
+        self.session_key_copies
             .retain(|session_id, _| valid.contains(session_id));
         for session in sessions {
             let label = format!("Copy @{} session_key", session.handle);
             let value = session.agent_session_key.clone();
             let copy = self
-                .mission_workspace
                 .session_key_copies
                 .entry(session.session.id.clone())
                 .or_insert_with(|| {
@@ -704,23 +1041,23 @@ impl NativeRoot {
         }
     }
 
-    pub(crate) fn estimated_mission_terminal_size(&self, window: &Window) -> (u16, u16) {
+    pub(crate) fn estimated_mission_terminal_size(&self, window: &Window, cx: &App) -> (u16, u16) {
         let bounds = window.bounds().size;
-        let sidebar_width = if self.settings.sidebar_collapsed {
+        let sidebar_width = if self.settings(cx).sidebar_collapsed {
             0.
         } else {
-            self.settings.sidebar_width * self.settings.app_zoom
+            self.settings(cx).sidebar_width * self.settings(cx).app_zoom
         };
-        let rail_width = if self.settings.mission_rail_open {
-            self.settings.mission_rail_width * self.settings.app_zoom
+        let rail_width = if self.settings(cx).mission_rail_open {
+            self.settings(cx).mission_rail_width * self.settings(cx).app_zoom
         } else {
             0.
         };
         let width = (f32::from(bounds.width) - sidebar_width - rail_width - 16.).max(200.);
         let height = (f32::from(bounds.height)
-            - (WORKSPACE_HEADER_HEIGHT + WORKSPACE_TABS_HEIGHT + 24.) * self.settings.app_zoom)
+            - (WORKSPACE_HEADER_HEIGHT + WORKSPACE_TABS_HEIGHT + 24.) * self.settings(cx).app_zoom)
             .max(160.);
-        let font_size = self.settings.terminal_font_size as f32 * self.settings.app_zoom;
+        let font_size = self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom;
         let cell_width = font_size * 0.6;
         let line_height = (font_size * crate::terminal::element::LINE_HEIGHT_FACTOR).round();
         (
@@ -729,23 +1066,23 @@ impl NativeRoot {
         )
     }
 
-    pub(crate) fn current_mission_terminal_size(&self, window: &Window) -> (u16, u16) {
-        match &self.mission_workspace.active_tab {
+    pub(crate) fn current_mission_terminal_size(&self, window: &Window, cx: &App) -> (u16, u16) {
+        match &self.active_tab {
             MissionTab::Session(session_id) => self
                 .attached
                 .get(session_id)
                 .map(|chat| chat.terminal.size())
-                .unwrap_or_else(|| self.estimated_mission_terminal_size(window)),
-            MissionTab::Feed => self.estimated_mission_terminal_size(window),
+                .unwrap_or_else(|| self.estimated_mission_terminal_size(window, cx)),
+            MissionTab::Feed => self.estimated_mission_terminal_size(window, cx),
         }
     }
 
-    pub(crate) fn sync_mission_grid_hint(&self, window: &Window) {
-        if !matches!(&self.route, AppRoute::Mission(_)) || self.mission_workspace.secondary {
+    pub(crate) fn sync_mission_grid_hint(&self, window: &Window, cx: &App) {
+        if !self.is_active(cx) || self.secondary {
             return;
         }
-        let (cols, rows) = self.current_mission_terminal_size(window);
-        let _ = runner_backend::ops::mission::mission_grid_hint_set(&self.core, cols, rows);
+        let (cols, rows) = self.current_mission_terminal_size(window, cx);
+        let _ = runner_backend::ops::mission::mission_grid_hint_set(self.core(cx), cols, rows);
     }
 
     fn ensure_mission_terminals_attached(
@@ -753,17 +1090,13 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        if self.mission_workspace.archived() || self.mission_workspace.secondary {
+        if self.archived() || self.secondary {
             return Ok(());
         }
-        let size = self.current_mission_terminal_size(window);
+        let size = self.current_mission_terminal_size(window, cx);
         let mut errors = Vec::new();
-        for session in self.mission_workspace.sessions.clone() {
-            if !self
-                .mission_workspace
-                .open_tabs
-                .contains(&session.session.id)
-            {
+        for session in self.sessions.clone() {
+            if !self.open_tabs.contains(&session.session.id) {
                 continue;
             }
             if let Err(error) = self.ensure_mission_terminal_attached(&session, size, window, cx) {
@@ -791,17 +1124,17 @@ impl NativeRoot {
         // Mission delivery can wait on the draft gate, so PTY input must never run on GPUI's
         // render thread. The queued mode preserves input order on a per-session worker.
         let terminal = TerminalSession::attach_with_input_mode(
-            self.core.clone(),
+            self.core(cx).clone(),
             session_id.clone(),
             size.0,
             size.1,
-            Arc::clone(&self.waker),
+            Arc::clone(&self.app_store.read(cx).waker),
             UserInputMode::Queued,
         )?;
-        terminal.set_palette(self.settings.terminal_theme.palette());
+        terminal.set_palette(self.settings(cx).terminal_theme.palette());
         terminal.configure(
-            self.settings.terminal_scrollback,
-            match self.settings.terminal_cursor_style {
+            self.settings(cx).terminal_scrollback,
+            match self.settings(cx).terminal_cursor_style {
                 app_settings::TerminalCursorStyle::Block => {
                     alacritty_terminal::vte::ansi::CursorShape::Block
                 }
@@ -813,21 +1146,23 @@ impl NativeRoot {
                 }
             },
         );
-        self.bridge.attach(Arc::clone(&terminal))?;
+        self.app_store
+            .read(cx)
+            .bridge
+            .attach(Arc::clone(&terminal))?;
         let terminal_scrollbar = cx.new(|_| Scrollbar::terminal(Arc::clone(&terminal)));
         let terminal_focus = cx.focus_handle();
         let terminal_input = cx.new(|_| TerminalInput::new(Arc::clone(&terminal)));
         let input_session_id = session_id.clone();
         let terminal_input_subscription = cx.observe(&terminal_input, move |this, input, cx| {
             if let Some(Err(error)) = input.update(cx, |input, _| input.take_write_result()) {
-                let visible = matches!(&this.route, AppRoute::Mission(_))
+                let visible = this.is_active(cx)
                     && this
-                        .mission_workspace
                         .sessions
                         .iter()
                         .any(|session| session.session.id == input_session_id);
                 if visible {
-                    this.mission_workspace.error = Some(error);
+                    this.error = Some(error);
                 }
             }
             cx.notify();
@@ -883,15 +1218,15 @@ impl NativeRoot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.mission_workspace.next_transition_generation += 1;
-        let generation = self.mission_workspace.next_transition_generation;
+        self.next_transition_generation += 1;
+        let generation = self.next_transition_generation;
         let baseline_seq = baseline_seq.unwrap_or_else(|| {
             self.attached
                 .get(session_id)
                 .map(|chat| chat.terminal.output_activity().last_seq)
                 .unwrap_or(0)
         });
-        self.mission_workspace.transitions.insert(
+        self.transitions.insert(
             session_id.to_owned(),
             MissionTransition {
                 kind,
@@ -907,9 +1242,7 @@ impl NativeRoot {
                 .await;
             let done = weak
                 .update(cx, |this, cx| {
-                    let Some(transition) =
-                        this.mission_workspace.transitions.get(&tracked_id).copied()
-                    else {
+                    let Some(transition) = this.transitions.get(&tracked_id).copied() else {
                         return true;
                     };
                     if transition.generation != generation {
@@ -940,7 +1273,7 @@ impl NativeRoot {
                             .map(|last| now.saturating_duration_since(last)),
                     );
                     if settled {
-                        this.mission_workspace.transitions.remove(&tracked_id);
+                        this.transitions.remove(&tracked_id);
                         cx.notify();
                     }
                     settled
@@ -956,43 +1289,45 @@ impl NativeRoot {
 
     pub(crate) fn sync_mission_subject_ownership(
         &mut self,
+        active: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let AppRoute::Mission(mission_id) = &self.route else {
+        if !active {
+            return;
+        }
+        let Some(mission_id) = self.mission_id.as_ref() else {
             return;
         };
         let primary = self
-            .core
+            .core(cx)
             .windows
             .primary_for(&Subject::Mission(mission_id.clone()));
         let secondary = primary.as_deref().is_some_and(|label| label != "main");
-        if secondary != self.mission_workspace.secondary {
-            self.mission_workspace.secondary = secondary;
-            self.mission_workspace.duplicate_dismissed = false;
-            self.mission_workspace.primary_label = primary;
+        if secondary != self.secondary {
+            self.secondary = secondary;
+            self.duplicate_dismissed = false;
+            self.primary_label = primary;
             if secondary {
                 window.focus(&self.root_focus);
             } else if let Err(error) = self.ensure_mission_terminals_attached(window, cx) {
-                self.mission_workspace.error = Some(error.to_string());
+                self.error = Some(error.to_string());
             }
             cx.notify();
         } else {
-            self.mission_workspace.primary_label = primary;
+            self.primary_label = primary;
         }
     }
 
-    fn focus_active_mission_terminal(&self, window: &mut Window) {
-        if self.mission_workspace.rename_modal.is_some()
-            || self.mission_workspace.reset_confirm_open
-        {
+    fn focus_active_mission_terminal(&self, window: &mut Window, cx: &App) {
+        if self.rename_modal.is_some() || self.reset_confirm_open {
             return;
         }
-        let MissionTab::Session(session_id) = &self.mission_workspace.active_tab else {
+        let MissionTab::Session(session_id) = &self.active_tab else {
             window.focus(&self.root_focus);
             return;
         };
-        if self.mission_terminal_interactive(session_id) {
+        if self.mission_terminal_interactive(session_id, cx) {
             if let Some(chat) = self.attached.get(session_id) {
                 chat.terminal_focus.focus(window);
                 return;
@@ -1001,18 +1336,17 @@ impl NativeRoot {
         window.focus(&self.root_focus);
     }
 
-    fn mission_terminal_interactive(&self, session_id: &str) -> bool {
-        matches!(&self.route, AppRoute::Mission(_))
-            && !self.mission_workspace.secondary
-            && !self.mission_workspace.archiving
+    fn mission_terminal_interactive(&self, session_id: &str, cx: &App) -> bool {
+        self.is_active(cx)
+            && !self.secondary
+            && !self.archiving
             && self
-                .mission_workspace
                 .sessions
                 .iter()
                 .find(|session| session.session.id == session_id)
                 .is_some_and(|session| {
                     session.session.status == SessionStatus::Running
-                        && self.mission_workspace.transition_kind(session_id).is_none()
+                        && self.transition_kind(session_id).is_none()
                 })
     }
 
@@ -1022,10 +1356,12 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let AppRoute::Mission(mission_id) = &self.route else {
+        if !self.is_active(cx) {
+            return;
+        }
+        let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
-        let mission_id = mission_id.clone();
         match event.name {
             "event/appended" => {
                 if event
@@ -1043,17 +1379,14 @@ impl NativeRoot {
                     return;
                 };
                 if !self
-                    .mission_workspace
                     .events
                     .iter()
                     .any(|existing| existing.id == appended.id)
                 {
-                    self.mission_workspace.handle_feed_append(&appended);
-                    self.mission_workspace.events.push(appended);
-                    self.mission_workspace
-                        .events
-                        .sort_by(|a, b| a.id.cmp(&b.id));
-                    self.mission_workspace.rebuild_event_projection();
+                    self.handle_feed_append(&appended);
+                    self.events.push(appended);
+                    self.events.sort_by(|a, b| a.id.cmp(&b.id));
+                    self.rebuild_event_projection();
                     cx.notify();
                 }
             }
@@ -1085,11 +1418,10 @@ impl NativeRoot {
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0) as usize;
                 if blocked && unread_count > 0 {
-                    self.mission_workspace
-                        .delivery_blocked
+                    self.delivery_blocked
                         .insert(session_id, DeliveryBlocked { unread_count });
                 } else {
-                    self.mission_workspace.delivery_blocked.remove(&session_id);
+                    self.delivery_blocked.remove(&session_id);
                 }
                 cx.notify();
             }
@@ -1100,7 +1432,7 @@ impl NativeRoot {
                     .and_then(serde_json::Value::as_str)
                     == Some(mission_id.as_str())
                 {
-                    self.mission_workspace.warning = event
+                    self.warning = event
                         .payload
                         .get("message")
                         .and_then(serde_json::Value::as_str)
@@ -1114,13 +1446,12 @@ impl NativeRoot {
                     .get("session_id")
                     .and_then(serde_json::Value::as_str)
                     .is_some_and(|session_id| {
-                        self.mission_workspace
-                            .sessions
+                        self.sessions
                             .iter()
                             .any(|session| session.session.id == session_id)
                     });
                 if relevant {
-                    self.mission_workspace.error = event
+                    self.error = event
                         .payload
                         .get("message")
                         .and_then(serde_json::Value::as_str)
@@ -1141,8 +1472,8 @@ impl NativeRoot {
                             .get("session_id")
                             .and_then(serde_json::Value::as_str)
                         {
-                            self.mission_workspace.delivery_blocked.remove(session_id);
-                            self.mission_workspace.transitions.remove(session_id);
+                            self.delivery_blocked.remove(session_id);
+                            self.transitions.remove(session_id);
                         }
                     }
                     self.refresh_open_mission(window, cx);
@@ -1159,19 +1490,22 @@ impl NativeRoot {
                 }
             }
             "mission/resync" => self.resync_mission_events(cx),
-            "window_focus_map" => self.sync_mission_subject_ownership(window, cx),
+            "window_focus_map" => {
+                let active = self.is_active(cx);
+                self.sync_mission_subject_ownership(active, window, cx);
+            }
             _ => {}
         }
     }
 
     fn resync_mission_events(&mut self, cx: &mut Context<Self>) {
-        let Some(mission_id) = self.mission_workspace.mission_id.clone() else {
+        let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
-        let generation = self.mission_workspace.generation;
-        self.mission_workspace.event_resync_generation += 1;
-        let resync_generation = self.mission_workspace.event_resync_generation;
-        let core = self.core.clone();
+        let generation = self.generation;
+        self.event_resync_generation += 1;
+        let resync_generation = self.event_resync_generation;
+        let core = self.core(cx).clone();
         let resync_id = mission_id.clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::mission::mission_events_replay(&core, &resync_id)
@@ -1180,43 +1514,35 @@ impl NativeRoot {
         cx.spawn(async move |weak, cx| {
             let result = task.await;
             let _ = weak.update(cx, |this, cx| {
-                if !this.mission_workspace.is_current(&mission_id, generation)
-                    || this.mission_workspace.event_resync_generation != resync_generation
+                if !this.is_current(&mission_id, generation)
+                    || this.event_resync_generation != resync_generation
                 {
                     return;
                 }
                 match result {
                     Ok(replayed) => {
-                        let old_tail = this
-                            .mission_workspace
-                            .events
-                            .last()
-                            .map(|event| event.id.clone());
+                        let old_tail = this.events.last().map(|event| event.id.clone());
                         let mut seen = this
-                            .mission_workspace
                             .events
                             .iter()
                             .map(|event| event.id.clone())
                             .collect::<HashSet<_>>();
                         for event in replayed {
                             if seen.insert(event.id.clone()) {
-                                this.mission_workspace.events.push(event);
+                                this.events.push(event);
                             }
                         }
-                        this.mission_workspace
-                            .events
-                            .sort_by(|a, b| a.id.cmp(&b.id));
-                        let new_tail = this.mission_workspace.events.last().cloned();
+                        this.events.sort_by(|a, b| a.id.cmp(&b.id));
+                        let new_tail = this.events.last().cloned();
                         if new_tail.as_ref().map(|event| &event.id) != old_tail.as_ref() {
                             if let Some(tail) = new_tail.as_ref() {
-                                this.mission_workspace.handle_feed_append(tail);
+                                this.handle_feed_append(tail);
                             }
                         }
-                        this.mission_workspace.rebuild_event_projection();
+                        this.rebuild_event_projection();
                     }
                     Err(error) => {
-                        this.mission_workspace.warning =
-                            Some(action_failure("resync the mission feed", error));
+                        this.warning = Some(action_failure("resync the mission feed", error));
                     }
                 }
                 cx.notify();
@@ -1226,13 +1552,13 @@ impl NativeRoot {
     }
 
     fn refresh_open_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mission_id) = self.mission_workspace.mission_id.clone() else {
+        let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
-        let generation = self.mission_workspace.generation;
-        self.mission_workspace.refresh_generation += 1;
-        let refresh_generation = self.mission_workspace.refresh_generation;
-        let core = self.core.clone();
+        let generation = self.generation;
+        self.refresh_generation += 1;
+        let refresh_generation = self.refresh_generation;
+        let core = self.core(cx).clone();
         let refresh_id = mission_id.clone();
         let refresh = cx.background_spawn(async move {
             let mission = runner_backend::ops::mission::mission_get(&core, &refresh_id)
@@ -1244,8 +1570,8 @@ impl NativeRoot {
         cx.spawn_in(window, async move |weak, cx| {
             let result = refresh.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                if !this.mission_workspace.is_current(&mission_id, generation)
-                    || this.mission_workspace.refresh_generation != refresh_generation
+                if !this.is_current(&mission_id, generation)
+                    || this.refresh_generation != refresh_generation
                 {
                     return;
                 }
@@ -1256,35 +1582,36 @@ impl NativeRoot {
                             .iter()
                             .map(|session| session.session.id.clone())
                             .collect::<HashSet<_>>();
-                        let workspace = &mut this.mission_workspace;
-                        workspace.mission = Some(mission);
-                        workspace.sessions = sessions;
-                        workspace
-                            .delivery_blocked
+                        this.mission = Some(mission);
+                        this.sessions = sessions;
+                        this.delivery_blocked
                             .retain(|session_id, _| valid_ids.contains(session_id));
-                        workspace
-                            .transitions
+                        this.transitions
                             .retain(|session_id, _| valid_ids.contains(session_id));
-                        workspace
-                            .open_tabs
+                        this.open_tabs
                             .retain(|session_id| valid_ids.contains(session_id));
                         if archived {
-                            workspace.active_tab = MissionTab::Feed;
-                            workspace.open_tabs.clear();
-                            this.settings.last_mission_terminal_ids.remove(&mission_id);
-                            this.save_settings();
+                            this.active_tab = MissionTab::Feed;
+                            this.open_tabs.clear();
+                            let removed_mission_id = mission_id.clone();
+                            this.update_app_settings(cx, true, move |settings| {
+                                settings
+                                    .last_mission_terminal_ids
+                                    .remove(&removed_mission_id);
+                                true
+                            });
                         } else if matches!(
-                            &workspace.active_tab,
+                            &this.active_tab,
                             MissionTab::Session(session_id) if !valid_ids.contains(session_id)
                         ) {
-                            workspace.active_tab = MissionTab::Feed;
+                            this.active_tab = MissionTab::Feed;
                         }
                         this.sync_mission_copy_entities(cx);
                         if let Err(error) = this.ensure_mission_terminals_attached(window, cx) {
-                            this.mission_workspace.error = Some(error.to_string());
+                            this.error = Some(error.to_string());
                         }
                     }
-                    Err(error) => this.mission_workspace.error = Some(error),
+                    Err(error) => this.error = Some(error),
                 }
                 cx.notify();
             });
@@ -1293,39 +1620,37 @@ impl NativeRoot {
     }
 
     fn configure_mission_action_menu(&mut self, cx: &mut Context<Self>) {
-        let Some(mission) = self.mission_workspace.mission.as_ref() else {
+        let Some(mission) = self.mission.as_ref() else {
             return;
         };
-        let busy = self.mission_workspace.lifecycle_busy() || self.mission_workspace.secondary;
+        let busy = self.lifecycle_busy() || self.secondary;
         let pinned = mission.pinned_at.is_some();
-        self.mission_workspace.menu_actions = vec![
+        self.menu_actions = vec![
             MissionMenuAction::Pin,
             MissionMenuAction::Rename,
             MissionMenuAction::Reset,
             MissionMenuAction::Archive,
         ];
-        self.mission_workspace
-            .action_menu
-            .update(cx, |menu, menu_cx| {
-                menu.set_items(
-                    vec![
-                        UiMenuItem::new(if pinned { "Unpin" } else { "Pin" })
-                            .icon(if pinned { "pin-off.svg" } else { "pin.svg" })
-                            .disabled(busy),
-                        UiMenuItem::new("Rename")
-                            .icon("square-pen.svg")
-                            .disabled(busy),
-                        UiMenuItem::new("Reset")
-                            .icon("rotate-ccw.svg")
-                            .disabled(busy || mission.status != MissionStatus::Running),
-                        UiMenuItem::new("Archive")
-                            .icon("archive.svg")
-                            .destructive(true)
-                            .disabled(busy),
-                    ],
-                    menu_cx,
-                )
-            });
+        self.action_menu.update(cx, |menu, menu_cx| {
+            menu.set_items(
+                vec![
+                    UiMenuItem::new(if pinned { "Unpin" } else { "Pin" })
+                        .icon(if pinned { "pin-off.svg" } else { "pin.svg" })
+                        .disabled(busy),
+                    UiMenuItem::new("Rename")
+                        .icon("square-pen.svg")
+                        .disabled(busy),
+                    UiMenuItem::new("Reset")
+                        .icon("rotate-ccw.svg")
+                        .disabled(busy || mission.status != MissionStatus::Running),
+                    UiMenuItem::new("Archive")
+                        .icon("archive.svg")
+                        .destructive(true)
+                        .disabled(busy),
+                ],
+                menu_cx,
+            )
+        });
     }
 
     fn handle_mission_menu_action(
@@ -1334,22 +1659,21 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(action) = self.mission_workspace.menu_actions.get(index).cloned() else {
+        let Some(action) = self.menu_actions.get(index).cloned() else {
             return;
         };
         match action {
             MissionMenuAction::Pin => self.toggle_mission_pin(window, cx),
             MissionMenuAction::Rename => self.open_mission_rename(window, cx),
             MissionMenuAction::Reset => {
-                if !self.mission_workspace.lifecycle_busy()
+                if !self.lifecycle_busy()
                     && self
-                        .mission_workspace
                         .mission
                         .as_ref()
                         .is_some_and(|mission| mission.status == MissionStatus::Running)
                 {
-                    self.mission_workspace.reset_confirm_open = true;
-                    self.mission_workspace.reset_cancel_focus.focus(window);
+                    self.reset_confirm_open = true;
+                    self.reset_cancel_focus.focus(window);
                     cx.notify();
                 }
             }
@@ -1358,11 +1682,11 @@ impl NativeRoot {
     }
 
     fn toggle_mission_pin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mission) = self.mission_workspace.mission.clone() else {
+        let Some(mission) = self.mission.clone() else {
             return;
         };
         let mission_id = mission.id.clone();
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::mission::mission_pin_impl(
                 &core,
@@ -1375,21 +1699,20 @@ impl NativeRoot {
         cx.spawn_in(window, async move |weak, cx| {
             let result = task.await;
             let _ = weak.update_in(cx, |this, _, cx| {
-                if this.mission_workspace.mission_id.as_deref() != Some(mission_id.as_str()) {
+                if this.mission_id.as_deref() != Some(mission_id.as_str()) {
                     return;
                 }
                 match result {
                     Ok(mission) => {
-                        this.mission_workspace.mission = Some(mission);
-                        this.refresh_sidebar(SidebarRefreshKind::All, cx);
-                        this.core.events.emit(
+                        this.mission = Some(mission);
+                        this.refresh_store(StoreRefreshKind::All, cx);
+                        this.core(cx).events.emit(
                             "mission/changed",
                             &serde_json::json!({ "mission_id": mission_id }),
                         );
                     }
                     Err(error) => {
-                        this.mission_workspace.error =
-                            Some(action_failure("update the mission pin", error));
+                        this.error = Some(action_failure("update the mission pin", error));
                     }
                 }
                 cx.notify();
@@ -1399,16 +1722,16 @@ impl NativeRoot {
     }
 
     fn stop_open_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mission_id) = self.mission_workspace.mission_id.clone() else {
+        let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
-        if self.mission_workspace.lifecycle_busy() {
+        if self.lifecycle_busy() {
             return;
         }
-        self.mission_workspace.stopping = true;
+        self.stopping = true;
         self.root_focus.focus(window);
         cx.notify();
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let stop_id = mission_id.clone();
         let task = cx.background_spawn(async move {
             let mission = runner_backend::ops::mission::mission_stop_impl(&core, stop_id.clone())
@@ -1421,24 +1744,23 @@ impl NativeRoot {
         cx.spawn_in(window, async move |weak, cx| {
             let result = task.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                if this.mission_workspace.mission_id.as_deref() != Some(mission_id.as_str()) {
+                if this.mission_id.as_deref() != Some(mission_id.as_str()) {
                     return;
                 }
-                this.mission_workspace.stopping = false;
+                this.stopping = false;
                 match result {
                     Ok((mission, sessions)) => {
-                        this.mission_workspace.mission = Some(mission);
-                        this.mission_workspace.sessions = sessions;
-                        this.mission_workspace.transitions.clear();
+                        this.mission = Some(mission);
+                        this.sessions = sessions;
+                        this.transitions.clear();
                         this.sync_mission_copy_entities(cx);
-                        this.refresh_sidebar(SidebarRefreshKind::All, cx);
+                        this.refresh_store(StoreRefreshKind::All, cx);
                     }
                     Err(error) => {
-                        this.mission_workspace.error =
-                            Some(action_failure("stop the mission", error));
+                        this.error = Some(action_failure("stop the mission", error));
                     }
                 }
-                this.focus_active_mission_terminal(window);
+                this.focus_active_mission_terminal(window, cx);
                 cx.notify();
             });
         })
@@ -1446,14 +1768,13 @@ impl NativeRoot {
     }
 
     fn resume_open_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mission_id) = self.mission_workspace.mission_id.clone() else {
+        let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
-        if self.mission_workspace.lifecycle_busy() {
+        if self.lifecycle_busy() {
             return;
         }
         let stopped = self
-            .mission_workspace
             .sessions
             .iter()
             .filter(|session| session.session.status != SessionStatus::Running)
@@ -1462,8 +1783,8 @@ impl NativeRoot {
         if stopped.is_empty() {
             return;
         }
-        let size = self.current_mission_terminal_size(window);
-        self.mission_workspace.resuming = true;
+        let size = self.current_mission_terminal_size(window, cx);
+        self.resuming = true;
         for session_id in &stopped {
             self.begin_mission_transition(
                 session_id,
@@ -1475,7 +1796,7 @@ impl NativeRoot {
         }
         self.root_focus.focus(window);
         cx.notify();
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let resume_id = mission_id.clone();
         let task = cx.background_spawn(async move {
             let mut sessions = runner_backend::ops::session::session_list(&core, &resume_id)
@@ -1519,42 +1840,34 @@ impl NativeRoot {
         cx.spawn_in(window, async move |weak, cx| {
             let result = task.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                if this.mission_workspace.mission_id.as_deref() != Some(mission_id.as_str()) {
+                if this.mission_id.as_deref() != Some(mission_id.as_str()) {
                     return;
                 }
-                this.mission_workspace.resuming = false;
+                this.resuming = false;
                 match result {
                     Ok((sessions, error)) => {
-                        this.mission_workspace.sessions = sessions;
-                        for session in &this.mission_workspace.sessions {
-                            if !this
-                                .mission_workspace
-                                .open_tabs
-                                .contains(&session.session.id)
-                            {
-                                this.mission_workspace
-                                    .open_tabs
-                                    .push(session.session.id.clone());
+                        this.sessions = sessions;
+                        for session in &this.sessions {
+                            if !this.open_tabs.contains(&session.session.id) {
+                                this.open_tabs.push(session.session.id.clone());
                             }
                         }
                         if let Some(error) = error {
-                            this.mission_workspace.error =
-                                Some(action_failure("resume the mission", error));
+                            this.error = Some(action_failure("resume the mission", error));
                         } else {
-                            this.mission_workspace.error = None;
+                            this.error = None;
                         }
                         this.sync_mission_copy_entities(cx);
                         if let Err(error) = this.ensure_mission_terminals_attached(window, cx) {
-                            this.mission_workspace.error = Some(error.to_string());
+                            this.error = Some(error.to_string());
                         }
-                        this.refresh_sidebar(SidebarRefreshKind::All, cx);
+                        this.refresh_store(StoreRefreshKind::All, cx);
                     }
                     Err(error) => {
-                        this.mission_workspace.error =
-                            Some(action_failure("resume the mission", error));
+                        this.error = Some(action_failure("resume the mission", error));
                     }
                 }
-                this.focus_active_mission_terminal(window);
+                this.focus_active_mission_terminal(window, cx);
                 cx.notify();
             });
         })
@@ -1562,17 +1875,17 @@ impl NativeRoot {
     }
 
     fn archive_open_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mission_id) = self.mission_workspace.mission_id.clone() else {
+        let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
-        if self.mission_workspace.lifecycle_busy() {
+        if self.lifecycle_busy() {
             return;
         }
-        self.mission_workspace.archiving = true;
-        self.sidebar_archiving_missions.insert(mission_id.clone());
+        self.archiving = true;
+        self.set_sidebar_archiving(&mission_id, true, cx);
         self.root_focus.focus(window);
         cx.notify();
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let archive_id = mission_id.clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::mission::mission_archive_impl(&core, archive_id)
@@ -1582,25 +1895,29 @@ impl NativeRoot {
         cx.spawn_in(window, async move |weak, cx| {
             let result = task.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                this.sidebar_archiving_missions.remove(&mission_id);
-                if this.mission_workspace.mission_id.as_deref() != Some(mission_id.as_str()) {
+                this.set_sidebar_archiving(&mission_id, false, cx);
+                if this.mission_id.as_deref() != Some(mission_id.as_str()) {
                     return;
                 }
                 match result {
                     Ok(_) => {
-                        this.settings.last_mission_terminal_ids.remove(&mission_id);
-                        this.save_settings();
-                        this.refresh_sidebar(SidebarRefreshKind::All, cx);
-                        this.core.events.emit(
+                        let removed_mission_id = mission_id.clone();
+                        this.update_app_settings(cx, true, move |settings| {
+                            settings
+                                .last_mission_terminal_ids
+                                .remove(&removed_mission_id);
+                            true
+                        });
+                        this.refresh_store(StoreRefreshKind::All, cx);
+                        this.core(cx).events.emit(
                             "mission/changed",
                             &serde_json::json!({ "mission_id": mission_id }),
                         );
                         this.open_runners(window, cx);
                     }
                     Err(error) => {
-                        this.mission_workspace.archiving = false;
-                        this.mission_workspace.error =
-                            Some(action_failure("archive the mission", error));
+                        this.archiving = false;
+                        this.error = Some(action_failure("archive the mission", error));
                         cx.notify();
                     }
                 }
@@ -1610,7 +1927,7 @@ impl NativeRoot {
     }
 
     fn open_mission_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mission) = self.mission_workspace.mission.as_ref() else {
+        let Some(mission) = self.mission.as_ref() else {
             return;
         };
         let original = mission.title.clone();
@@ -1625,7 +1942,7 @@ impl NativeRoot {
         });
         input.update(cx, |input, input_cx| input.select_all(input_cx));
         let input_focus = input.read(cx).focus_handle();
-        self.mission_workspace.rename_modal = Some(MissionRenameModal {
+        self.rename_modal = Some(MissionRenameModal {
             mission_id: mission.id.clone(),
             original: mission.title.clone(),
             input,
@@ -1641,20 +1958,19 @@ impl NativeRoot {
 
     fn close_mission_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
-            .mission_workspace
             .rename_modal
             .as_ref()
             .is_some_and(|modal| modal.submitting)
         {
             return;
         }
-        self.mission_workspace.rename_modal = None;
-        self.focus_active_mission_terminal(window);
+        self.rename_modal = None;
+        self.focus_active_mission_terminal(window, cx);
         cx.notify();
     }
 
     fn submit_mission_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(modal) = self.mission_workspace.rename_modal.as_mut() else {
+        let Some(modal) = self.rename_modal.as_mut() else {
             return;
         };
         if modal.submitting || modal.input.read(cx).is_composing() {
@@ -1669,7 +1985,7 @@ impl NativeRoot {
         modal.error = None;
         let mission_id = modal.mission_id.clone();
         cx.notify();
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let rename_id = mission_id.clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::mission::mission_rename_impl(&core, rename_id, title)
@@ -1679,22 +1995,22 @@ impl NativeRoot {
         cx.spawn_in(window, async move |weak, cx| {
             let result = task.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                if this.mission_workspace.mission_id.as_deref() != Some(mission_id.as_str()) {
+                if this.mission_id.as_deref() != Some(mission_id.as_str()) {
                     return;
                 }
                 match result {
                     Ok(mission) => {
-                        this.mission_workspace.mission = Some(mission);
-                        this.mission_workspace.rename_modal = None;
-                        this.refresh_sidebar(SidebarRefreshKind::All, cx);
-                        this.core.events.emit(
+                        this.mission = Some(mission);
+                        this.rename_modal = None;
+                        this.refresh_store(StoreRefreshKind::All, cx);
+                        this.core(cx).events.emit(
                             "mission/changed",
                             &serde_json::json!({ "mission_id": mission_id }),
                         );
-                        this.focus_active_mission_terminal(window);
+                        this.focus_active_mission_terminal(window, cx);
                     }
                     Err(error) => {
-                        if let Some(modal) = this.mission_workspace.rename_modal.as_mut() {
+                        if let Some(modal) = this.rename_modal.as_mut() {
                             modal.submitting = false;
                             modal.error = Some(error);
                         }
@@ -1714,7 +2030,6 @@ impl NativeRoot {
     ) {
         if event.keystroke.key == "enter"
             && self
-                .mission_workspace
                 .rename_modal
                 .as_ref()
                 .is_some_and(|modal| !modal.input.read(cx).is_composing())
@@ -1725,26 +2040,26 @@ impl NativeRoot {
     }
 
     fn close_mission_reset_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.mission_workspace.resetting {
+        if self.resetting {
             return;
         }
-        self.mission_workspace.reset_confirm_open = false;
-        self.focus_active_mission_terminal(window);
+        self.reset_confirm_open = false;
+        self.focus_active_mission_terminal(window, cx);
         cx.notify();
     }
 
     fn submit_mission_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mission_id) = self.mission_workspace.mission_id.clone() else {
+        let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
-        if self.mission_workspace.resetting {
+        if self.resetting {
             return;
         }
-        self.mission_workspace.resetting = true;
-        self.mission_workspace.error = None;
-        let generation = self.mission_workspace.generation;
-        let size = self.current_mission_terminal_size(window);
-        let core = self.core.clone();
+        self.resetting = true;
+        self.error = None;
+        let generation = self.generation;
+        let size = self.current_mission_terminal_size(window, cx);
+        let core = self.core(cx).clone();
         let reset_id = mission_id.clone();
         let task = cx.background_spawn(async move {
             let mission = runner_backend::ops::mission::mission_reset_impl_with_size(
@@ -1763,45 +2078,48 @@ impl NativeRoot {
         cx.spawn_in(window, async move |weak, cx| {
             let result = task.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                if !this.mission_workspace.is_current(&mission_id, generation) {
+                if !this.is_current(&mission_id, generation) {
                     return;
                 }
-                this.mission_workspace.resetting = false;
+                this.resetting = false;
                 match result {
                     Ok((mission, sessions, events)) => {
-                        let old_ids = this.mission_workspace.session_ids();
+                        let old_ids = this.session_ids();
                         for session_id in old_ids {
                             this.attached.remove(&session_id);
                         }
-                        this.mission_workspace.mission = Some(mission);
-                        this.mission_workspace.sessions = sessions;
-                        this.mission_workspace.events = events;
-                        this.mission_workspace.rebuild_event_projection();
-                        this.mission_workspace.feed_scroll.scroll_to_bottom();
-                        this.mission_workspace.feed_was_near_bottom = true;
-                        this.mission_workspace.feed_has_new_messages = false;
-                        this.mission_workspace.delivery_blocked.clear();
-                        this.mission_workspace.transitions.clear();
-                        this.mission_workspace.open_tabs = this
-                            .mission_workspace
+                        this.mission = Some(mission);
+                        this.sessions = sessions;
+                        this.events = events;
+                        this.rebuild_event_projection();
+                        this.feed_scroll.scroll_to_bottom();
+                        this.feed_was_near_bottom = true;
+                        this.feed_has_new_messages = false;
+                        this.delivery_blocked.clear();
+                        this.transitions.clear();
+                        this.open_tabs = this
                             .sessions
                             .iter()
                             .map(|session| session.session.id.clone())
                             .collect();
-                        this.mission_workspace.active_tab = MissionTab::Feed;
-                        this.mission_workspace.reset_confirm_open = false;
-                        this.settings.last_mission_terminal_ids.remove(&mission_id);
-                        this.save_settings();
+                        this.active_tab = MissionTab::Feed;
+                        this.reset_confirm_open = false;
+                        let removed_mission_id = mission_id.clone();
+                        this.update_app_settings(cx, true, move |settings| {
+                            settings
+                                .last_mission_terminal_ids
+                                .remove(&removed_mission_id);
+                            true
+                        });
                         this.sync_mission_copy_entities(cx);
                         if let Err(error) = this.ensure_mission_terminals_attached(window, cx) {
-                            this.mission_workspace.error = Some(error.to_string());
+                            this.error = Some(error.to_string());
                         }
-                        this.refresh_sidebar(SidebarRefreshKind::All, cx);
+                        this.refresh_store(StoreRefreshKind::All, cx);
                         window.focus(&this.root_focus);
                     }
                     Err(error) => {
-                        this.mission_workspace.error =
-                            Some(action_failure("reset the mission", error));
+                        this.error = Some(action_failure("reset the mission", error));
                     }
                 }
                 cx.notify();
@@ -1813,20 +2131,19 @@ impl NativeRoot {
 
     pub(crate) fn render_mission_reset_confirm(&self, cx: &mut Context<Self>) -> AnyElement {
         let title = self
-            .mission_workspace
             .mission
             .as_ref()
             .map(|mission| mission.title.clone())
             .unwrap_or_default();
-        let resetting = self.mission_workspace.resetting;
+        let resetting = self.resetting;
         let root = cx.entity();
         let dismiss_root = root.clone();
         let dismiss_key_root = root.clone();
         let cancel_root = root.clone();
         let confirm_root = root;
         let focus_order = [
-            self.mission_workspace.reset_cancel_focus.clone(),
-            self.mission_workspace.reset_confirm_focus.clone(),
+            self.reset_cancel_focus.clone(),
+            self.reset_confirm_focus.clone(),
         ];
         let tab_focus_order = focus_order.clone();
         let consequence = |id: &'static str, text: &'static str| {
@@ -2046,34 +2363,27 @@ fn action_failure(action: &str, error: impl AsRef<str>) -> String {
     format!("Couldn't {action}: {detail}")
 }
 
-impl NativeRoot {
+impl MissionWorkspace {
     pub(crate) fn cycle_mission_tab(
         &mut self,
         direction: isize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !matches!(self.route, AppRoute::Mission(_)) {
-            return;
-        }
         let mut tabs = vec![MissionTab::Feed];
-        if !self.mission_workspace.archived() && !self.mission_workspace.secondary {
+        if !self.archived() && !self.secondary {
             tabs.extend(
-                self.mission_workspace
-                    .open_tabs
+                self.open_tabs
                     .iter()
                     .filter(|session_id| {
-                        self.mission_workspace
-                            .sessions
+                        self.sessions
                             .iter()
                             .any(|session| session.session.id == session_id.as_str())
                     })
                     .map(|session_id| MissionTab::Session(session_id.clone())),
             );
         }
-        let Some(next) =
-            mission_tab_in_direction(&tabs, &self.mission_workspace.active_tab, direction)
-        else {
+        let Some(next) = mission_tab_in_direction(&tabs, &self.active_tab, direction) else {
             return;
         };
         match next {
@@ -2085,10 +2395,10 @@ impl NativeRoot {
     }
 
     fn select_mission_feed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.mission_workspace.active_tab = MissionTab::Feed;
-        if self.mission_workspace.feed_was_near_bottom {
-            self.mission_workspace.feed_scroll.scroll_to_bottom();
-            self.mission_workspace.feed_has_new_messages = false;
+        self.active_tab = MissionTab::Feed;
+        if self.feed_was_near_bottom {
+            self.feed_scroll.scroll_to_bottom();
+            self.feed_has_new_messages = false;
         }
         window.focus(&self.root_focus);
         cx.notify();
@@ -2100,11 +2410,10 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.mission_workspace.archived() || self.mission_workspace.secondary {
+        if self.archived() || self.secondary {
             return;
         }
         let valid = self
-            .mission_workspace
             .sessions
             .iter()
             .any(|session| session.session.id == session_id);
@@ -2112,25 +2421,24 @@ impl NativeRoot {
             self.select_mission_feed(window, cx);
             return;
         }
-        if !self
-            .mission_workspace
-            .open_tabs
-            .iter()
-            .any(|open| open == session_id)
-        {
-            self.mission_workspace.open_tabs.push(session_id.to_owned());
+        if !self.open_tabs.iter().any(|open| open == session_id) {
+            self.open_tabs.push(session_id.to_owned());
         }
-        if let Some(mission_id) = &self.mission_workspace.mission_id {
-            self.settings
-                .last_mission_terminal_ids
-                .insert(mission_id.clone(), session_id.to_owned());
-            self.save_settings();
+        if let Some(mission_id) = &self.mission_id {
+            let mission_id = mission_id.clone();
+            let session_id = session_id.to_owned();
+            self.update_app_settings(cx, true, move |settings| {
+                settings
+                    .last_mission_terminal_ids
+                    .insert(mission_id, session_id);
+                true
+            });
         }
-        self.mission_workspace.active_tab = MissionTab::Session(session_id.to_owned());
+        self.active_tab = MissionTab::Session(session_id.to_owned());
         if let Err(error) = self.ensure_mission_terminals_attached(window, cx) {
-            self.mission_workspace.error = Some(error.to_string());
+            self.error = Some(error.to_string());
         }
-        self.focus_active_mission_terminal(window);
+        self.focus_active_mission_terminal(window, cx);
         cx.notify();
     }
 
@@ -2140,22 +2448,23 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.mission_workspace
-            .open_tabs
-            .retain(|open| open != session_id);
-        if let Some(mission_id) = &self.mission_workspace.mission_id {
+        self.open_tabs.retain(|open| open != session_id);
+        if let Some(mission_id) = &self.mission_id {
             if self
-                .settings
+                .settings(cx)
                 .last_mission_terminal_ids
                 .get(mission_id)
                 .is_some_and(|remembered| remembered == session_id)
             {
-                self.settings.last_mission_terminal_ids.remove(mission_id);
-                self.save_settings();
+                let mission_id = mission_id.clone();
+                self.update_app_settings(cx, true, move |settings| {
+                    settings.last_mission_terminal_ids.remove(&mission_id);
+                    true
+                });
             }
         }
-        if self.mission_workspace.active_tab == MissionTab::Session(session_id.to_owned()) {
-            self.mission_workspace.active_tab = MissionTab::Feed;
+        if self.active_tab == MissionTab::Session(session_id.to_owned()) {
+            self.active_tab = MissionTab::Feed;
             window.focus(&self.root_focus);
         }
         self.attached.remove(session_id);
@@ -2192,13 +2501,13 @@ impl NativeRoot {
         ) {
             Ok(true) => {
                 chat.terminal.scroll_to_bottom();
-                self.mission_workspace.error = None;
+                self.error = None;
                 cx.stop_propagation();
                 cx.notify();
             }
             Ok(false) => {}
             Err(error) => {
-                self.mission_workspace.error = Some(error.to_string());
+                self.error = Some(error.to_string());
                 cx.stop_propagation();
                 cx.notify();
             }
@@ -2260,8 +2569,8 @@ impl NativeRoot {
                 let result = paste.await;
                 let _ = weak.update(cx, |this, cx| {
                     match result {
-                        Ok(()) => this.mission_workspace.error = None,
-                        Err(error) => this.mission_workspace.error = Some(error.to_string()),
+                        Ok(()) => this.error = None,
+                        Err(error) => this.error = Some(error.to_string()),
                     }
                     cx.notify();
                 });
@@ -2276,7 +2585,7 @@ impl NativeRoot {
             return;
         };
         if let Err(error) = chat.terminal.paste(&text) {
-            self.mission_workspace.error = Some(error.to_string());
+            self.error = Some(error.to_string());
         }
     }
 
@@ -2287,12 +2596,12 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         let Some(chat) = self.attached.get(session_id) else {
-            self.mission_workspace.error = Some("Terminal is not attached.".into());
+            self.error = Some("Terminal is not attached.".into());
             cx.notify();
             return;
         };
         if let Err(error) = chat.terminal.write_user_bytes(b"\r") {
-            self.mission_workspace.error = Some(error.to_string());
+            self.error = Some(error.to_string());
         }
         chat.terminal_focus.focus(window);
         cx.notify();
@@ -2303,22 +2612,22 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if self.mission_workspace.mission.is_some() {
+        if self.mission.is_some() {
             self.configure_mission_action_menu(cx);
         }
         let header = self.render_mission_header(window, cx);
         let notices = self.render_mission_notices(cx);
-        let body = if self.mission_workspace.loading {
+        let body = if self.loading {
             div()
                 .relative()
                 .flex_1()
                 .min_h(px(0.))
-                .children(self.mission_workspace.loading_overlay_visible.then(|| {
+                .children(self.loading_overlay_visible.then(|| {
                     SessionOverlay::transition("mission-loading", SessionOverlayKind::Starting)
                         .label("Loading mission…")
                 }))
                 .into_any_element()
-        } else if self.mission_workspace.mission.is_none() {
+        } else if self.mission.is_none() {
             self.render_mission_load_error(cx)
         } else {
             self.render_loaded_mission(window, cx)
@@ -2345,24 +2654,40 @@ impl NativeRoot {
             .on_drag_move::<MissionRailResizeDrag>(cx.listener(
                 |this, event: &DragMoveEvent<MissionRailResizeDrag>, _, cx| {
                     let width = f32::from(event.bounds.right() - event.event.position.x)
-                        / this.settings.app_zoom;
-                    this.settings.mission_rail_width =
-                        app_settings::clamp_mission_rail_width(width);
-                    cx.notify();
+                        / this.settings(cx).app_zoom;
+                    let width = app_settings::clamp_mission_rail_width(width);
+                    this.update_app_settings(cx, false, |settings| {
+                        if settings.mission_rail_width == width {
+                            return false;
+                        }
+                        settings.mission_rail_width = width;
+                        true
+                    });
                 },
             ))
-            .on_drop(cx.listener(|this, _: &MissionRailResizeDrag, _, _| {
-                this.save_settings();
+            .on_drop(cx.listener(|this, _: &MissionRailResizeDrag, _, cx| {
+                this.save_settings(cx);
             }))
             .into_any_element()
     }
 
+    pub(crate) fn render_mission_overlays(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut overlays = Vec::new();
+        if self.rename_modal.is_some() {
+            overlays.push(self.render_mission_rename_modal(cx));
+        }
+        if self.reset_confirm_open {
+            overlays.push(self.render_mission_reset_confirm(cx));
+        }
+        overlays
+    }
+
     fn render_mission_header(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let mission = self.mission_workspace.mission.clone();
-        let busy = self.mission_workspace.lifecycle_busy();
-        let secondary = self.mission_workspace.secondary;
-        let all_live = self.mission_workspace.all_sessions_live();
-        let any_stopped = !self.mission_workspace.sessions.is_empty() && !all_live;
+        let mission = self.mission.clone();
+        let busy = self.lifecycle_busy();
+        let secondary = self.secondary;
+        let all_live = self.all_sessions_live();
+        let any_stopped = !self.sessions.is_empty() && !all_live;
         let root = cx.entity();
         let resume_root = root.clone();
         let stop_root = root.clone();
@@ -2373,10 +2698,7 @@ impl NativeRoot {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .children(
-                        (!self.mission_workspace.resuming)
-                            .then(|| self.mission_workspace.action_menu.clone()),
-                    )
+                    .children((!self.resuming).then(|| self.action_menu.clone()))
                     .children((any_stopped && !busy).then(|| {
                         SessionControl::new("mission-resume", SessionControlKind::Resume)
                             .variant(SessionControlVariant::Header)
@@ -2399,7 +2721,7 @@ impl NativeRoot {
         let row = div()
             .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
             .flex_none()
-            .pl(px(self.workspace_titlebar_padding(window)))
+            .pl(px(self.workspace_titlebar_padding(window, cx)))
             .pr_4()
             .flex()
             .items_center()
@@ -2408,7 +2730,7 @@ impl NativeRoot {
             .border_color(theme::border())
             .bg(theme::panel())
             .children(self.render_open_sidebar_button(cx))
-            .children(self.settings.sidebar_collapsed.then(|| {
+            .children(self.settings(cx).sidebar_collapsed.then(|| {
                 div()
                     .mx_1()
                     .h(rems(20. / 16.))
@@ -2437,14 +2759,16 @@ impl NativeRoot {
                     ),
             )
             .children(controls)
-            .children((!self.settings.mission_rail_open).then(|| {
+            .children((!self.settings(cx).mission_rail_open).then(|| {
                 div().ml_auto().child(
                     IconButton::new("open-mission-rail", "panel-right-hollow.svg")
                         .tooltip("Open runners panel")
                         .on_press(move |_, cx| {
                             open_rail_root.update(cx, |this, cx| {
-                                this.settings.mission_rail_open = true;
-                                this.save_settings();
+                                this.update_app_settings(cx, true, |settings| {
+                                    settings.mission_rail_open = true;
+                                    true
+                                });
                                 cx.notify();
                             });
                         }),
@@ -2456,19 +2780,19 @@ impl NativeRoot {
 
     fn render_mission_notices(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut notices = Vec::new();
-        if let Some(error) = self.mission_workspace.error.clone() {
+        if let Some(error) = self.error.clone() {
             let root = cx.entity();
             notices.push(
                 mission_notice("error", error, theme::danger(), "Dismiss", move |_, cx| {
                     root.update(cx, |this, cx| {
-                        this.mission_workspace.error = None;
+                        this.error = None;
                         cx.notify();
                     });
                 })
                 .into_any_element(),
             );
         }
-        if let Some(warning) = self.mission_workspace.warning.clone() {
+        if let Some(warning) = self.warning.clone() {
             let root = cx.entity();
             notices.push(
                 mission_notice(
@@ -2478,7 +2802,7 @@ impl NativeRoot {
                     "Dismiss",
                     move |_, cx| {
                         root.update(cx, |this, cx| {
-                            this.mission_workspace.warning = None;
+                            this.warning = None;
                             cx.notify();
                         });
                     },
@@ -2490,7 +2814,7 @@ impl NativeRoot {
     }
 
     fn render_mission_load_error(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(mission_id) = self.mission_workspace.mission_id.clone() else {
+        let Some(mission_id) = self.mission_id.clone() else {
             return div().into_any_element();
         };
         let root = cx.entity();
@@ -2532,16 +2856,14 @@ impl NativeRoot {
     }
 
     fn render_loaded_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let feed_active = self.mission_workspace.secondary
-            || self.mission_workspace.active_tab == MissionTab::Feed;
+        let feed_active = self.secondary || self.active_tab == MissionTab::Feed;
         let tabs = self.render_mission_tabs(feed_active, cx);
         let pane = if feed_active {
             self.render_mission_feed_surface(window, cx)
         } else {
-            match &self.mission_workspace.active_tab {
+            match &self.active_tab {
                 MissionTab::Session(session_id) => {
                     let session = self
-                        .mission_workspace
                         .sessions
                         .iter()
                         .find(|session| session.session.id == *session_id)
@@ -2559,13 +2881,13 @@ impl NativeRoot {
             .flex_1()
             .overflow_hidden()
             .child(pane);
-        if self.mission_workspace.archiving {
+        if self.archiving {
             panes = panes.child(SessionOverlay::transition(
                 "mission-archiving",
                 SessionOverlayKind::Archiving,
             ));
         }
-        if self.mission_workspace.secondary && !self.mission_workspace.duplicate_dismissed {
+        if self.secondary && !self.duplicate_dismissed {
             panes = panes.child(self.render_duplicate_mission_overlay(cx));
         }
         div()
@@ -2584,18 +2906,15 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mission_running = self
-            .mission_workspace
             .mission
             .as_ref()
             .is_some_and(|mission| mission.status == MissionStatus::Running);
-        let can_compose = mission_running
-            && !self.mission_workspace.archived()
-            && !self.mission_workspace.secondary;
+        let can_compose = mission_running && !self.archived() && !self.secondary;
         let paused = mission_running
-            && !self.mission_workspace.all_sessions_live()
-            && !self.mission_workspace.resuming
-            && !self.mission_workspace.archiving
-            && !self.mission_workspace.secondary;
+            && !self.all_sessions_live()
+            && !self.resuming
+            && !self.archiving
+            && !self.secondary;
         div()
             .absolute()
             .inset_0()
@@ -2628,18 +2947,16 @@ impl NativeRoot {
                     },
                 ),
             );
-        if !self.mission_workspace.archived() && !self.mission_workspace.secondary {
-            for session_id in &self.mission_workspace.open_tabs {
+        if !self.archived() && !self.secondary {
+            for session_id in &self.open_tabs {
                 let Some(session) = self
-                    .mission_workspace
                     .sessions
                     .iter()
                     .find(|session| &session.session.id == session_id)
                 else {
                     continue;
                 };
-                let active =
-                    self.mission_workspace.active_tab == MissionTab::Session(session_id.clone());
+                let active = self.active_tab == MissionTab::Session(session_id.clone());
                 let select_id = session_id.clone();
                 let close_id = session_id.clone();
                 let select_root = root.clone();
@@ -2732,11 +3049,11 @@ impl NativeRoot {
     }
 
     fn render_mission_feed(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        self.mission_workspace.feed_was_near_bottom = self.mission_workspace.feed_is_near_bottom();
-        if self.mission_workspace.feed_was_near_bottom {
-            self.mission_workspace.feed_has_new_messages = false;
+        self.feed_was_near_bottom = self.feed_is_near_bottom();
+        if self.feed_was_near_bottom {
+            self.feed_has_new_messages = false;
         }
-        let blocks = self.mission_workspace.feed_blocks.clone();
+        let blocks = self.feed_blocks.clone();
         let rows = if blocks.is_empty() {
             vec![div()
                 .px_4()
@@ -2765,7 +3082,7 @@ impl NativeRoot {
                     .min_h(px(0.))
                     .flex_1()
                     .overflow_y_scroll()
-                    .track_scroll(&self.mission_workspace.feed_scroll)
+                    .track_scroll(&self.feed_scroll)
                     .px_6()
                     .py_6()
                     .flex()
@@ -2773,7 +3090,7 @@ impl NativeRoot {
                     .gap(rems(18. / 16.))
                     .children(rows),
             )
-            .children(self.mission_workspace.feed_has_new_messages.then(|| {
+            .children(self.feed_has_new_messages.then(|| {
                 div()
                     .absolute()
                     .bottom_4()
@@ -2796,9 +3113,9 @@ impl NativeRoot {
                             .hover(|pill| pill.opacity(0.9))
                             .on_click(move |_, _, cx| {
                                 pill_root.update(cx, |this, cx| {
-                                    this.mission_workspace.feed_scroll.scroll_to_bottom();
-                                    this.mission_workspace.feed_was_near_bottom = true;
-                                    this.mission_workspace.feed_has_new_messages = false;
+                                    this.feed_scroll.scroll_to_bottom();
+                                    this.feed_was_near_bottom = true;
+                                    this.feed_has_new_messages = false;
                                     cx.notify();
                                 });
                             })
@@ -2809,8 +3126,7 @@ impl NativeRoot {
     }
 
     fn mission_composer_roster(&self) -> Vec<ComposerRosterEntry> {
-        self.mission_workspace
-            .roster
+        self.roster
             .iter()
             .map(|member| ComposerRosterEntry {
                 handle: member.slot.slot_handle.clone(),
@@ -2830,21 +3146,20 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let roster = self.mission_composer_roster();
-        let options = mention_options(&self.mission_workspace.composer, &roster);
+        let options = mention_options(&self.composer, &roster);
         let picker_open = !options.is_empty();
         let active_index = self
-            .mission_workspace
             .composer
             .active_index
             .min(options.len().saturating_sub(1));
-        let target = self.mission_workspace.composer.target.clone();
-        let posting = self.mission_workspace.composer_posting;
-        let can_send = !posting && !self.mission_workspace.composer.draft.trim().is_empty();
+        let target = self.composer.target.clone();
+        let posting = self.composer_posting;
+        let can_send = !posting && !self.composer.draft.trim().is_empty();
         let root = cx.entity();
         let anchor_root = root.clone();
         let target_root = root.clone();
         let send_root = root.clone();
-        let input = self.mission_workspace.composer_input.clone();
+        let input = self.composer_input.clone();
         let mut field = div()
             .id("mission-composer-field")
             .relative()
@@ -2907,16 +3222,14 @@ impl NativeRoot {
                 canvas(
                     |_, _, _| {},
                     move |bounds, _, _, cx| {
-                        anchor_root.update(cx, |this, _| {
-                            this.mission_workspace.composer_anchor = Some(bounds)
-                        });
+                        anchor_root.update(cx, |this, _| this.composer_anchor = Some(bounds));
                     },
                 )
                 .absolute()
                 .inset_0(),
             );
 
-        if let (true, Some(anchor)) = (picker_open, self.mission_workspace.composer_anchor) {
+        if let (true, Some(anchor)) = (picker_open, self.composer_anchor) {
             let picker_root = root.clone();
             let rows = options.into_iter().enumerate().map(|(index, entry)| {
                 let option_root = picker_root.clone();
@@ -3007,14 +3320,14 @@ impl NativeRoot {
             let dismiss_root = root.clone();
             let dismiss: runner_app::ui::menu::DismissHandler = Rc::new(move |_, cx| {
                 dismiss_root.update(cx, |this, cx| {
-                    this.mission_workspace.composer.picker_dismissed = true;
+                    this.composer.picker_dismissed = true;
                     cx.notify();
                 });
             });
             field = field.child(runner_app::ui::menu::popup_layer(
                 anchor,
                 window,
-                px(380. * self.settings.app_zoom),
+                px(380. * self.settings(cx).app_zoom),
                 menu,
                 dismiss,
             ));
@@ -3039,31 +3352,22 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let transition = composer_key_down(
-            &self.mission_workspace.composer,
-            &self.mission_composer_roster(),
-            key,
-            shift,
-        );
+        let transition =
+            composer_key_down(&self.composer, &self.mission_composer_roster(), key, shift);
         if !transition.prevent_default {
             return;
         }
-        let draft_changed = transition.state.draft != self.mission_workspace.composer.draft;
-        self.mission_workspace.composer = transition.state;
+        let draft_changed = transition.state.draft != self.composer.draft;
+        self.composer = transition.state;
         if draft_changed {
-            let draft = self.mission_workspace.composer.draft.clone();
-            self.mission_workspace
-                .composer_input
+            let draft = self.composer.draft.clone();
+            self.composer_input
                 .update(cx, |input, input_cx| input.reset(draft, input_cx));
         }
         if let Some(post) = transition.post {
             self.post_mission_composer(post, window, cx);
         } else {
-            self.mission_workspace
-                .composer_input
-                .read(cx)
-                .focus_handle()
-                .focus(window);
+            self.composer_input.read(cx).focus_handle().focus(window);
             cx.notify();
         }
     }
@@ -3074,43 +3378,34 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.mission_workspace.composer_posting {
+        if self.composer_posting {
             return;
         }
-        self.mission_workspace.composer = select_composer_target(handle);
-        self.mission_workspace
-            .composer_input
+        self.composer = select_composer_target(handle);
+        self.composer_input
             .update(cx, |input, input_cx| input.reset("", input_cx));
-        self.mission_workspace
-            .composer_input
-            .read(cx)
-            .focus_handle()
-            .focus(window);
+        self.composer_input.read(cx).focus_handle().focus(window);
         cx.notify();
     }
 
     fn clear_mission_composer_target(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.mission_workspace.composer_posting {
+        if self.composer_posting {
             return;
         }
-        self.mission_workspace.composer.target = None;
-        self.mission_workspace
-            .composer_input
-            .read(cx)
-            .focus_handle()
-            .focus(window);
+        self.composer.target = None;
+        self.composer_input.read(cx).focus_handle().focus(window);
         cx.notify();
     }
 
     fn post_current_mission_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.mission_workspace.composer.draft.trim().to_owned();
+        let text = self.composer.draft.trim().to_owned();
         if text.is_empty() {
             return;
         }
         self.post_mission_composer(
             ComposerPost {
                 text,
-                to: self.mission_workspace.composer.target.clone(),
+                to: self.composer.target.clone(),
             },
             window,
             cx,
@@ -3123,19 +3418,18 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(mission_id) = self.mission_workspace.mission_id.clone() else {
+        let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
-        if self.mission_workspace.composer_posting {
+        if self.composer_posting {
             return;
         }
-        self.mission_workspace.composer_posting = true;
-        self.mission_workspace
-            .composer_input
+        self.composer_posting = true;
+        self.composer_input
             .update(cx, |input, input_cx| input.set_disabled(true, input_cx));
         cx.notify();
-        let generation = self.mission_workspace.generation;
-        let core = self.core.clone();
+        let generation = self.generation;
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::mission::mission_post_human_message_impl(
                 &core,
@@ -3152,34 +3446,28 @@ impl NativeRoot {
         cx.spawn_in(window, async move |weak, cx| {
             let result = task.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                let current = result.as_ref().ok().is_some_and(|mission_id| {
-                    this.mission_workspace.is_current(mission_id, generation)
-                }) || result.is_err()
-                    && this.mission_workspace.generation == generation;
+                let current = result
+                    .as_ref()
+                    .ok()
+                    .is_some_and(|mission_id| this.is_current(mission_id, generation))
+                    || result.is_err() && this.generation == generation;
                 if !current {
                     return;
                 }
-                this.mission_workspace.composer_posting = false;
-                this.mission_workspace
-                    .composer_input
+                this.composer_posting = false;
+                this.composer_input
                     .update(cx, |input, input_cx| input.set_disabled(false, input_cx));
                 match result {
                     Ok(_) => {
-                        this.mission_workspace.composer = ComposerState::default();
-                        this.mission_workspace
-                            .composer_input
+                        this.composer = ComposerState::default();
+                        this.composer_input
                             .update(cx, |input, input_cx| input.reset("", input_cx));
                     }
                     Err(error) => {
-                        this.mission_workspace.error =
-                            Some(action_failure("send the mission message", error));
+                        this.error = Some(action_failure("send the mission message", error));
                     }
                 }
-                this.mission_workspace
-                    .composer_input
-                    .read(cx)
-                    .focus_handle()
-                    .focus(window);
+                this.composer_input.read(cx).focus_handle().focus(window);
                 cx.notify();
             });
         })
@@ -3229,7 +3517,7 @@ impl NativeRoot {
     fn render_mission_message_group(&self, author: String, events: Vec<Event>) -> AnyElement {
         let first = &events[0];
         let human = author == "human";
-        let target = message_target(first, &self.mission_workspace.askers_by_question);
+        let target = message_target(first, &self.askers_by_question);
         let goal = first.kind == EventKind::Signal
             && first.signal_type.as_ref().map(|kind| kind.as_str()) == Some("mission_goal");
         div()
@@ -3325,10 +3613,7 @@ impl NativeRoot {
             .map(|kind| kind.as_str())
             .unwrap_or("?");
         let warning = signal == "mission_warning";
-        let expanded = self
-            .mission_workspace
-            .expanded_signal_payloads
-            .contains(&event_id);
+        let expanded = self.expanded_signal_payloads.contains(&event_id);
         let root = cx.entity();
         let payload = if signal == "ask_lead" {
             event
@@ -3360,14 +3645,8 @@ impl NativeRoot {
                     .text_size(rems(11. / 16.))
                     .on_click(move |_, _, cx| {
                         root.update(cx, |this, cx| {
-                            if !this
-                                .mission_workspace
-                                .expanded_signal_payloads
-                                .remove(&event_id)
-                            {
-                                this.mission_workspace
-                                    .expanded_signal_payloads
-                                    .insert(event_id.clone());
+                            if !this.expanded_signal_payloads.remove(&event_id) {
+                                this.expanded_signal_payloads.insert(event_id.clone());
                             }
                             cx.notify();
                         });
@@ -3473,7 +3752,6 @@ impl NativeRoot {
     fn render_mission_ask_card(&self, event: Event, cx: &mut Context<Self>) -> AnyElement {
         let question_id = event.id.clone();
         let asker = self
-            .mission_workspace
             .askers_by_question
             .get(&question_id)
             .cloned()
@@ -3505,20 +3783,9 @@ impl NativeRoot {
             || "→ you".to_owned(),
             |handle| format!("@{handle} → @{asker} → you"),
         );
-        let resolved = self
-            .mission_workspace
-            .resolved_asks
-            .get(&question_id)
-            .cloned();
-        let pending_choice = self
-            .mission_workspace
-            .pending_ask_choices
-            .get(&question_id)
-            .cloned();
-        let submitting = self
-            .mission_workspace
-            .submitting_asks
-            .contains(&question_id);
+        let resolved = self.resolved_asks.get(&question_id).cloned();
+        let pending_choice = self.pending_ask_choices.get(&question_id).cloned();
+        let submitting = self.submitting_asks.contains(&question_id);
         let root = cx.entity();
         let mut buttons = div().mt_3().flex().flex_col().gap_1();
         for (index, choice) in choices.into_iter().enumerate() {
@@ -3676,25 +3943,18 @@ impl NativeRoot {
         choice: String,
         cx: &mut Context<Self>,
     ) {
-        let Some(mission_id) = self.mission_workspace.mission_id.clone() else {
+        let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
-        if self
-            .mission_workspace
-            .resolved_asks
-            .contains_key(&question_id)
-            || !self
-                .mission_workspace
-                .submitting_asks
-                .insert(question_id.clone())
+        if self.resolved_asks.contains_key(&question_id)
+            || !self.submitting_asks.insert(question_id.clone())
         {
             return;
         }
-        self.mission_workspace
-            .pending_ask_choices
+        self.pending_ask_choices
             .insert(question_id.clone(), choice.clone());
         cx.notify();
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let post_question = question_id.clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::mission::mission_post_human_signal_impl(
@@ -3714,13 +3974,10 @@ impl NativeRoot {
         cx.spawn(async move |weak, cx| {
             let result = task.await;
             let _ = weak.update(cx, |this, cx| {
-                this.mission_workspace.submitting_asks.remove(&question_id);
+                this.submitting_asks.remove(&question_id);
                 if let Err(error) = result {
-                    this.mission_workspace
-                        .pending_ask_choices
-                        .remove(&question_id);
-                    this.mission_workspace.error =
-                        Some(action_failure("answer the question", error));
+                    this.pending_ask_choices.remove(&question_id);
+                    this.error = Some(action_failure("answer the question", error));
                 }
                 cx.notify();
             });
@@ -3736,11 +3993,11 @@ impl NativeRoot {
     ) -> AnyElement {
         let session_id = session.session.id.clone();
         let overlay = resolve_slot_overlay(
-            self.mission_workspace.archiving,
-            if self.mission_workspace.resuming {
+            self.archiving,
+            if self.resuming {
                 Some(MissionTransitionKind::Resuming)
             } else {
-                self.mission_workspace.transition_kind(&session_id)
+                self.transition_kind(&session_id)
             },
             session.session.status,
         );
@@ -3759,8 +4016,8 @@ impl NativeRoot {
         let terminal_focus = chat.terminal_focus.clone();
         let terminal_scrollbar = chat.terminal_scrollbar.clone();
         let terminal_background =
-            crate::terminal::element::to_hsla(self.terminal_style().palette.background, 1.);
-        let interactive = self.mission_terminal_interactive(&session_id);
+            crate::terminal::element::to_hsla(self.terminal_style(cx).palette.background, 1.);
+        let interactive = self.mission_terminal_interactive(&session_id, cx);
         let key_id = session_id.clone();
         let scroll_id = session_id.clone();
         let paste_id = session_id.clone();
@@ -3792,7 +4049,7 @@ impl NativeRoot {
                         terminal_input,
                         terminal_focus,
                         true,
-                        self.terminal_style(),
+                        self.terminal_style(cx),
                     ))
                     .child(terminal_scrollbar),
             );
@@ -3824,38 +4081,30 @@ impl NativeRoot {
             .bg(terminal_background)
             .child(terminal_surface);
         if let Some(blocked) = (session.session.status == SessionStatus::Running)
-            .then(|| {
-                self.mission_workspace
-                    .delivery_blocked
-                    .get(&session_id)
-                    .cloned()
-            })
+            .then(|| self.delivery_blocked.get(&session_id).cloned())
             .flatten()
         {
-            let idle = self
-                .mission_workspace
-                .runner_statuses()
-                .get(&session.handle)
-                == Some(&SessionActivityState::Idle);
-            let sidebar_width = if self.settings.sidebar_collapsed {
+            let idle =
+                self.runner_statuses().get(&session.handle) == Some(&SessionActivityState::Idle);
+            let sidebar_width = if self.settings(cx).sidebar_collapsed {
                 0.
             } else {
-                self.settings.sidebar_width * self.settings.app_zoom
+                self.settings(cx).sidebar_width * self.settings(cx).app_zoom
             };
-            let rail_width = if self.settings.mission_rail_open {
-                self.settings.mission_rail_width * self.settings.app_zoom
+            let rail_width = if self.settings(cx).mission_rail_open {
+                self.settings(cx).mission_rail_width * self.settings(cx).app_zoom
             } else {
                 0.
             };
             let pane_width = f32::from(window.viewport_size().width)
                 - sidebar_width
                 - rail_width
-                - 16. * self.settings.app_zoom;
+                - 16. * self.settings(cx).app_zoom;
             pane = pane.child(self.render_inbox_blocked_pill(
                 session_id.clone(),
                 blocked.unread_count,
                 idle,
-                pane_width < 600. * self.settings.app_zoom,
+                pane_width < 600. * self.settings(cx).app_zoom,
                 cx,
             ));
         }
@@ -3959,7 +4208,7 @@ impl NativeRoot {
     }
 
     fn render_mission_paused_overlay(&self, cx: &mut Context<Self>) -> AnyElement {
-        let any_live = self.mission_workspace.any_session_live();
+        let any_live = self.any_session_live();
         let root = cx.entity();
         let resume_root = root.clone();
         let archive_root = root;
@@ -4114,7 +4363,7 @@ impl NativeRoot {
                                 Button::new("stay-in-duplicate-mission", "Stay here").on_press(
                                     move |_, cx| {
                                         root.update(cx, |this, cx| {
-                                            this.mission_workspace.duplicate_dismissed = true;
+                                            this.duplicate_dismissed = true;
                                             cx.notify();
                                         });
                                     },
@@ -4126,14 +4375,14 @@ impl NativeRoot {
     }
 
     fn render_mission_rail(&self, cx: &mut Context<Self>) -> AnyElement {
-        if !self.settings.mission_rail_open {
+        if !self.settings(cx).mission_rail_open {
             return div().w(px(0.)).h_full().flex_none().into_any_element();
         }
         let root = cx.entity();
         let runners_root = root.clone();
         let meta_root = root.clone();
         let collapse_root = root;
-        let rail_view = self.mission_workspace.rail_view;
+        let rail_view = self.rail_view;
         let header = div()
             .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
             .flex_none()
@@ -4178,8 +4427,10 @@ impl NativeRoot {
                         .tooltip("Collapse runners panel")
                         .on_press(move |_, cx| {
                             collapse_root.update(cx, |this, cx| {
-                                this.settings.mission_rail_open = false;
-                                this.save_settings();
+                                this.update_app_settings(cx, true, |settings| {
+                                    settings.mission_rail_open = false;
+                                    true
+                                });
                                 cx.notify();
                             });
                         }),
@@ -4192,7 +4443,7 @@ impl NativeRoot {
         let drag = MissionRailResizeDrag;
         div()
             .relative()
-            .w(rems(self.settings.mission_rail_width / 16.))
+            .w(rems(self.settings(cx).mission_rail_width / 16.))
             .h_full()
             .flex_none()
             .flex()
@@ -4221,24 +4472,29 @@ impl NativeRoot {
     }
 
     fn set_mission_rail_view(&mut self, view: MissionRailView, cx: &mut Context<Self>) {
-        self.mission_workspace.rail_view = view;
-        self.settings.mission_rail_view = view.setting().into();
-        self.save_settings();
+        self.rail_view = view;
+        self.update_app_settings(cx, true, |settings| {
+            let value = view.setting().to_owned();
+            if settings.mission_rail_view == value {
+                return false;
+            }
+            settings.mission_rail_view = value;
+            true
+        });
         cx.notify();
     }
 
     fn render_runners_rail(&self, cx: &mut Context<Self>) -> AnyElement {
-        let statuses = self.mission_workspace.runner_statuses();
-        let selected = match &self.mission_workspace.active_tab {
+        let statuses = self.runner_statuses();
+        let selected = match &self.active_tab {
             MissionTab::Session(session_id) => Some(session_id.as_str()),
             MissionTab::Feed => None,
         };
         let lead_handle = self
-            .mission_workspace
             .sessions
             .iter()
             .find(|session| session.lead)
-            .or_else(|| self.mission_workspace.sessions.first())
+            .or_else(|| self.sessions.first())
             .map(|session| session.handle.as_str())
             .unwrap_or_default()
             .to_owned();
@@ -4253,7 +4509,7 @@ impl NativeRoot {
             .flex_col()
             .gap_3()
             .child(rail_section_label("Runner sessions"));
-        if self.mission_workspace.sessions.is_empty() {
+        if self.sessions.is_empty() {
             return list
                 .child(
                     div()
@@ -4264,7 +4520,7 @@ impl NativeRoot {
                 .into_any_element();
         }
         let root = cx.entity();
-        for session in &self.mission_workspace.sessions {
+        for session in &self.sessions {
             let session_id = session.session.id.clone();
             let open_id = session_id.clone();
             let open_root = root.clone();
@@ -4292,11 +4548,7 @@ impl NativeRoot {
                 SessionStatus::Running if activity == Some(SessionActivityState::Busy) => "busy",
                 SessionStatus::Running => "running",
             };
-            let copy = self
-                .mission_workspace
-                .session_key_copies
-                .get(&session_id)
-                .cloned();
+            let copy = self.session_key_copies.get(&session_id).cloned();
             let active = selected == Some(session_id.as_str());
             list = list.child(
                 div()
@@ -4495,8 +4747,7 @@ impl NativeRoot {
             let result = task.await;
             let _ = weak.update(cx, |this, cx| {
                 if let Err(error) = result {
-                    this.mission_workspace.error =
-                        Some(format!("Couldn't reveal the working directory: {error}"));
+                    this.error = Some(format!("Couldn't reveal the working directory: {error}"));
                     cx.notify();
                 }
             });
@@ -4505,13 +4756,13 @@ impl NativeRoot {
     }
 
     fn render_mission_meta_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(mission) = self.mission_workspace.mission.clone() else {
+        let Some(mission) = self.mission.clone() else {
             return div().into_any_element();
         };
         let root = cx.entity();
         let crew_root = root.clone();
         let cwd_root = root;
-        let goal = self.mission_workspace.goal();
+        let goal = self.goal();
         let mut panel = div()
             .id("mission-meta-scroll")
             .flex_1()
@@ -4538,7 +4789,7 @@ impl NativeRoot {
                             .text_color(theme::muted())
                             .child(mission.id.clone()),
                     )
-                    .child(self.mission_workspace.mission_id_copy.clone()),
+                    .child(self.mission_id_copy.clone()),
             ))
             .child(meta_section(
                 "Goal",
@@ -4605,7 +4856,6 @@ impl NativeRoot {
             ),
         ));
         let crew_name = self
-            .mission_workspace
             .crew
             .as_ref()
             .map(|crew| crew.name.clone())
@@ -4657,11 +4907,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn render_mission_rename_modal(&self, cx: &mut Context<Self>) -> AnyElement {
-        let modal = self
-            .mission_workspace
-            .rename_modal
-            .as_ref()
-            .expect("mission rename modal");
+        let modal = self.rename_modal.as_ref().expect("mission rename modal");
         let submitting = modal.submitting;
         let valid = !modal.input.read(cx).text().trim().is_empty();
         let root = cx.entity();
@@ -4943,6 +5189,13 @@ fn mission_tab_in_direction(
         (current as isize + direction).rem_euclid(tabs.len() as isize) as usize
     });
     Some(tabs[next].clone())
+}
+
+impl Render for MissionWorkspace {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_mission_grid_hint(window, cx);
+        self.render_mission_workspace(window, cx)
+    }
 }
 
 #[cfg(test)]

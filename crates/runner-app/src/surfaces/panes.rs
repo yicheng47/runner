@@ -29,7 +29,7 @@ impl NativeRoot {
                 .items_center()
                 .justify_center()
                 .text_color(theme::muted())
-                .child(if self.sessions.is_empty() {
+                .child(if self.app_store.read(cx).sessions.is_empty() {
                     "No direct chats yet — press ⌘T"
                 } else {
                     "No active tab"
@@ -40,24 +40,24 @@ impl NativeRoot {
         let session_ids = layout.session_ids();
         let grouped = layout.root.leaves().len() > 1;
         let label = if grouped {
-            self.tab_label(&layout)
+            self.tab_label(&layout, cx)
         } else {
             session_ids
                 .first()
-                .and_then(|session_id| self.session_entry(session_id))
+                .and_then(|session_id| self.session_entry(session_id, cx))
                 .map(session_label)
                 .unwrap_or_else(|| "Empty tab".into())
         };
         let lifecycle_busy = session_ids
             .iter()
-            .any(|session_id| self.session_lifecycle_disabled(session_id));
+            .any(|session_id| self.session_lifecycle_disabled(session_id, cx));
         self.configure_chat_action_menu(&layout, lifecycle_busy, cx);
         let pane_tree = self.render_pane_node(&layout.root, &layout, window, cx);
         let picker = self
             .layout_picker_open
             .then(|| self.render_layout_picker(preset, cx));
         let sidebar_toggle = self.render_open_sidebar_button(cx);
-        let sidebar_divider = self.settings.sidebar_collapsed.then(|| {
+        let sidebar_divider = self.settings(cx).sidebar_collapsed.then(|| {
             div()
                 .mx_1()
                 .h(rems(20. / 16.))
@@ -109,7 +109,7 @@ impl NativeRoot {
         let header = div()
             .flex_none()
             .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
-            .pl(px(self.workspace_titlebar_padding(window)))
+            .pl(px(self.workspace_titlebar_padding(window, cx)))
             .pr_2()
             .flex()
             .items_center()
@@ -151,14 +151,16 @@ impl NativeRoot {
                                     });
                                 }),
                             )
-                            .when(!self.settings.chat_panel_open, |actions| {
+                            .when(!self.settings(cx).chat_panel_open, |actions| {
                                 actions.child(
                                     IconButton::new("open-chat-panel", "panel-right-hollow.svg")
                                         .tooltip("Open side panel")
                                         .on_press(move |_, cx| {
                                             panel_root.update(cx, |this, cx| {
-                                                this.settings.chat_panel_open = true;
-                                                this.save_settings();
+                                                this.update_app_settings(cx, true, |settings| {
+                                                    settings.chat_panel_open = true;
+                                                    true
+                                                });
                                                 cx.notify();
                                             });
                                         }),
@@ -227,7 +229,7 @@ impl NativeRoot {
                 if this.layout_picker_open && event.keystroke.key == "escape" {
                     cx.stop_propagation();
                     this.layout_picker_open = false;
-                    this.focus_active_terminal(window);
+                    this.focus_active_terminal(window, cx);
                     cx.notify();
                 }
             }))
@@ -236,7 +238,7 @@ impl NativeRoot {
             .children(warning_banner)
             .child(div().relative().flex_1().min_h(px(0.)).child(pane_tree))
             .children(picker);
-        let panel_open = self.settings.chat_panel_open;
+        let panel_open = self.settings(cx).chat_panel_open;
         let (panel_visibility, panel_animating) = self.chat_panel_visibility.animate_to(
             if panel_open { 1. } else { 0. },
             Instant::now(),
@@ -271,22 +273,28 @@ impl NativeRoot {
             )
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.finish_split_resize()),
+                cx.listener(|this, _, _, cx| this.finish_split_resize(cx)),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.finish_split_resize()),
+                cx.listener(|this, _, _, cx| this.finish_split_resize(cx)),
             )
             .on_drag_move::<ChatPanelResizeDrag>(cx.listener(
                 |this, event: &DragMoveEvent<ChatPanelResizeDrag>, _, cx| {
                     let width = f32::from(event.bounds.right() - event.event.position.x)
-                        / this.settings.app_zoom;
-                    this.settings.chat_panel_width = app_settings::clamp_chat_panel_width(width);
-                    cx.notify();
+                        / this.settings(cx).app_zoom;
+                    let width = app_settings::clamp_chat_panel_width(width);
+                    this.update_app_settings(cx, false, |settings| {
+                        if settings.chat_panel_width == width {
+                            return false;
+                        }
+                        settings.chat_panel_width = width;
+                        true
+                    });
                 },
             ))
-            .on_drop(cx.listener(|this, _: &ChatPanelResizeDrag, _, _| {
-                this.save_settings();
+            .on_drop(cx.listener(|this, _: &ChatPanelResizeDrag, _, cx| {
+                this.save_settings(cx);
             }))
             .into_any_element()
     }
@@ -319,7 +327,7 @@ impl NativeRoot {
             );
             actions.push(ChatMenuAction::Archive(session_ids));
         } else if let Some(session_id) = session_ids.first() {
-            if let Some(entry) = self.session_entry(session_id) {
+            if let Some(entry) = self.session_entry(session_id, cx) {
                 let current = session_label(entry);
                 items.push(
                     UiMenuItem::new(if entry.pinned { "Unpin" } else { "Pin" })
@@ -370,9 +378,9 @@ impl NativeRoot {
         let grouped = layout.root.leaves().len() > 1;
         let lifecycle_busy = session_ids
             .iter()
-            .any(|session_id| self.session_lifecycle_disabled(session_id));
+            .any(|session_id| self.session_lifecycle_disabled(session_id, cx));
         let any_running = session_ids.iter().any(|session_id| {
-            self.session_entry(session_id)
+            self.session_entry(session_id, cx)
                 .is_some_and(|entry| entry.status == SessionStatus::Running)
         });
         let any_resuming = session_ids.iter().any(|session_id| {
@@ -421,7 +429,9 @@ impl NativeRoot {
             }
         } else {
             let session_id = session_ids[0].clone();
-            let status = self.session_entry(&session_id).map(|entry| entry.status)?;
+            let status = self
+                .session_entry(&session_id, cx)
+                .map(|entry| entry.status)?;
             if any_resuming {
                 Some(
                     SessionControl::new("resume-chat-header", SessionControlKind::Resuming)
@@ -464,7 +474,7 @@ impl NativeRoot {
         border_on: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let width = self.settings.chat_panel_width;
+        let width = self.settings(cx).chat_panel_width;
         let visible_width = width * visibility;
         if !show_panel {
             return div()
@@ -479,7 +489,14 @@ impl NativeRoot {
         let detail = self.active_chat_detail.as_ref();
         let runner = detail
             .and_then(|detail| detail.runner_id.as_deref())
-            .and_then(|runner_id| self.runners.iter().find(|runner| runner.id == runner_id));
+            .and_then(|runner_id| {
+                self.app_store
+                    .read(cx)
+                    .runners
+                    .iter()
+                    .find(|runner| runner.id == runner_id)
+                    .cloned()
+            });
         let collapse_root = cx.entity();
         let header = self.render_titlebar_drag_area(
             "chat-panel-titlebar-drag",
@@ -498,8 +515,10 @@ impl NativeRoot {
                         .tooltip("Collapse side panel")
                         .on_press(move |_, cx| {
                             collapse_root.update(cx, |this, cx| {
-                                this.settings.chat_panel_open = false;
-                                this.save_settings();
+                                this.update_app_settings(cx, true, |settings| {
+                                    settings.chat_panel_open = false;
+                                    true
+                                });
                                 cx.notify();
                             });
                         }),
@@ -516,7 +535,7 @@ impl NativeRoot {
                 command,
                 cwd,
                 system_prompt,
-            ) = if let Some(runner) = runner {
+            ) = if let Some(runner) = runner.as_ref() {
                 (
                     "Runner",
                     format!("@{}", runner.handle),
@@ -824,7 +843,7 @@ impl NativeRoot {
             ),
         ];
         let root = cx.entity();
-        let picker_right = if self.settings.chat_panel_open {
+        let picker_right = if self.settings(cx).chat_panel_open {
             8.
         } else {
             44.
@@ -1009,8 +1028,8 @@ impl NativeRoot {
                             }
                         },
                     ))
-                    .on_drop(cx.listener(|this, _: &SplitResizeDrag, _, _| {
-                        this.finish_split_resize();
+                    .on_drop(cx.listener(|this, _: &SplitResizeDrag, _, cx| {
+                        this.finish_split_resize(cx);
                     }))
                     .into_any_element()
             }
@@ -1079,7 +1098,7 @@ impl NativeRoot {
         let entry = leaf
             .session_id
             .as_deref()
-            .and_then(|session_id| self.session_entry(session_id))
+            .and_then(|session_id| self.session_entry(session_id, cx))
             .cloned();
         let pane_session_for_focus = entry.as_ref().map(|entry| entry.session_id.clone());
         let close_root = cx.entity();
@@ -1090,12 +1109,18 @@ impl NativeRoot {
                 .map(session_label)
                 .unwrap_or_else(|| "Empty pane".into());
             let status = entry.as_ref().map(|entry| {
-                direct_chat_display_status(entry, self.session_activity.get(&entry.session_id))
+                direct_chat_display_status(
+                    entry,
+                    self.app_store
+                        .read(cx)
+                        .session_activity
+                        .get(&entry.session_id),
+                )
             });
             let controls = entry.as_ref().map(|entry| {
                 let session_id = entry.session_id.clone();
                 let transition = self.chat_transitions.get(&session_id).map(|item| item.kind);
-                let disabled = self.session_lifecycle_disabled(&session_id);
+                let disabled = self.session_lifecycle_disabled(&session_id, cx);
                 let control_root = cx.entity();
                 let lifecycle = if transition == Some(TransitionKind::Resuming) {
                     SessionControl::new(
@@ -1203,17 +1228,17 @@ impl NativeRoot {
             let session_id = entry.session_id.clone();
             let transition = self.chat_transitions.get(&session_id).map(|item| item.kind);
             let overlay = resolve_pane_overlay(
-                self.sidebar_archiving_sessions.contains(&session_id),
+                self.sidebar_archiving_session(&session_id, cx),
                 transition,
                 entry.status,
                 entry.resumable,
                 self.session_exit_codes.get(&session_id).copied().flatten(),
             );
-            let interactive = self.session_is_interactive(&session_id);
+            let interactive = self.session_is_interactive(&session_id, cx);
             let scrollable = self.route == AppRoute::Chat
                 && transition.is_none()
-                && !self.sidebar_archiving_sessions.contains(&session_id);
-            let terminal_style = self.terminal_style();
+                && !self.sidebar_archiving_session(&session_id, cx);
+            let terminal_style = self.terminal_style(cx);
             let terminal_background =
                 crate::terminal::element::to_hsla(terminal_style.palette.background, 1.);
             let terminal_surface = if let Some(chat) = self.attached.get(&session_id) {

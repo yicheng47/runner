@@ -250,7 +250,7 @@ impl NativeRoot {
     pub(crate) fn load_crew_page(&mut self, cx: &mut Context<Self>) {
         let request = self.crew_surfaces.list.begin_load();
         let request_id = request.request_id;
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::crew::crew_list(
                 &core,
@@ -640,7 +640,7 @@ impl NativeRoot {
                 ..Default::default()
             };
         }
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             let requested = crew_id.clone();
             let result = (|| {
@@ -1121,7 +1121,7 @@ impl NativeRoot {
         }
         editor.saving_name = true;
         let crew_id = crew.id.clone();
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             let result = runner_backend::ops::crew::crew_update(
                 &core,
@@ -1384,7 +1384,7 @@ impl NativeRoot {
         editor.saving_goal = true;
         let crew_id = crew.id.clone();
         let value = trimmed_option(input.read(cx).text());
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             let result = runner_backend::ops::crew::crew_update(
                 &core,
@@ -1445,7 +1445,7 @@ impl NativeRoot {
         editor.saving_conventions = true;
         let crew_id = crew.id.clone();
         let value = trimmed_option(input.read(cx).text());
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             let result = runner_backend::ops::crew::crew_update(
                 &core,
@@ -1558,7 +1558,7 @@ impl NativeRoot {
             goal: trimmed_option(form.goal.read(cx).text()),
             system_prompt_addendum: None,
         };
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::crew::crew_create(&core, input).map_err(|error| error.to_string())
         });
@@ -1763,7 +1763,7 @@ impl NativeRoot {
             .map(|slot| slot.slot.slot_handle.clone())
             .collect::<HashSet<_>>();
         let runtimes =
-            runner_backend::ops::runtime::runtime_catalog(&self.core).unwrap_or_default();
+            runner_backend::ops::runtime::runtime_catalog(self.core(cx)).unwrap_or_default();
         let query = cx.new(|input_cx| {
             TextField::new(input_cx.focus_handle(), "", "Search runners...", false).text_size(13.)
         });
@@ -1855,7 +1855,7 @@ impl NativeRoot {
             return;
         };
         let crew_id = form.crew_id.clone();
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::runner::runner_list_with_activity(&core, 1, 1_000_000, "")
                 .map(|page| page.items)
@@ -2057,7 +2057,7 @@ impl NativeRoot {
                 .then(|| trimmed_option(form.model_override.read(cx).text()))
                 .flatten(),
         };
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::slot::slot_create(&core, input).map_err(|error| error.to_string())
         });
@@ -2767,7 +2767,7 @@ impl NativeRoot {
 
     fn set_crew_lead(&mut self, slot_id: String, cx: &mut Context<Self>) {
         let crew_id = self.crew_surfaces.editor.crew_id.clone();
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             let result = runner_backend::ops::slot::slot_set_lead(&core, &slot_id)
                 .map_err(|error| error.to_string());
@@ -2829,7 +2829,7 @@ impl NativeRoot {
         let crew_id = self.crew_surfaces.editor.crew_id.clone();
         self.crew_surfaces.editor.slots = reordered;
         self.crew_surfaces.editor.reordering = true;
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             let requested_crew_id = crew_id.clone();
             runner_backend::ops::slot::slot_reorder(&core, &crew_id, ordered_ids)
@@ -2917,7 +2917,7 @@ impl NativeRoot {
         self.crew_surfaces.slot_remove_busy = true;
         let slot_id = confirm.slot.slot.id.clone();
         let crew_id = confirm.slot.slot.crew_id.clone();
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             let result = runner_backend::ops::slot::slot_delete(&core, &slot_id)
                 .map_err(|error| error.to_string());
@@ -2971,7 +2971,7 @@ impl NativeRoot {
         self.crew_surfaces.delete_busy = true;
         let id = confirm.id.clone();
         let name = confirm.name.clone();
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::crew::crew_delete(&core, &id).map_err(|error| error.to_string())
         });

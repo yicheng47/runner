@@ -171,7 +171,7 @@ impl RunnerSurfaces {
 impl NativeRoot {
     pub(crate) fn refresh_runner_form_runtimes(&mut self, cx: &mut Context<Self>) {
         let (selectable, agents_checking, agents_error) =
-            crate::surfaces::start_chat::load_selectable_runtimes(&self.core, &self.settings);
+            crate::surfaces::start_chat::load_selectable_runtimes(self.core(cx), self.settings(cx));
         let catalog_loaded = agents_error.is_none();
         let placeholder = if agents_checking {
             "Detecting agents…"
@@ -224,12 +224,13 @@ impl NativeRoot {
             }
         }
 
+        let core = self.core(cx).clone();
         if let Some(form) = self.runner_surfaces.edit.as_mut() {
             form.agents_checking = agents_checking;
             form.agents_error = agents_error;
             if catalog_loaded {
                 let mut runtimes = selectable;
-                ensure_runtime_present(&self.core, &mut runtimes, &form.runtime);
+                ensure_runtime_present(&core, &mut runtimes, &form.runtime);
                 form.runtimes = runtimes;
                 let runtime_value = if form.slot.is_some() && !form.runtime_pinned {
                     String::new()
@@ -272,7 +273,7 @@ impl NativeRoot {
             return;
         }
         let (runtimes, agents_checking, agents_error) =
-            crate::surfaces::start_chat::load_selectable_runtimes(&self.core, &self.settings);
+            crate::surfaces::start_chat::load_selectable_runtimes(self.core(cx), self.settings(cx));
         let runtime = runtimes
             .first()
             .map(|runtime| runtime.name.clone())
@@ -305,13 +306,9 @@ impl NativeRoot {
         model_field.update(cx, |field, field_cx| {
             field.set_disabled(runtime.is_empty(), field_cx)
         });
+        let default_working_dir = self.settings(cx).default_working_dir.clone();
         let working_dir = cx.new(|input_cx| {
-            working_dir_text_field(
-                input_cx.focus_handle(),
-                self.settings.default_working_dir.clone(),
-                "",
-            )
-            .text_size(13.)
+            working_dir_text_field(input_cx.focus_handle(), default_working_dir, "").text_size(13.)
         });
         let system_prompt = cx.new(|input_cx| {
             TextField::textarea(
@@ -450,9 +447,9 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         let (mut runtimes, agents_checking, agents_error) =
-            crate::surfaces::start_chat::load_selectable_runtimes(&self.core, &self.settings);
+            crate::surfaces::start_chat::load_selectable_runtimes(self.core(cx), self.settings(cx));
         let mut resolution = resolve_runner_edit(&runner, slot.as_ref());
-        ensure_runtime_present(&self.core, &mut runtimes, &resolution.runtime);
+        ensure_runtime_present(self.core(cx), &mut runtimes, &resolution.runtime);
         if !runtime_efforts(&runtimes, &resolution.runtime)
             .iter()
             .any(|option| option.value == resolution.effort)
@@ -665,14 +662,14 @@ impl NativeRoot {
         if self.runner_surfaces.delete_confirm.is_some() {
             overlays.push(self.render_runner_delete_confirm(cx));
         }
-        if self.mission_workspace.rename_modal.is_some() {
-            overlays.push(self.render_mission_rename_modal(cx));
-        }
-        if self.mission_workspace.reset_confirm_open {
-            overlays.push(self.render_mission_reset_confirm(cx));
-        }
         if self.start_mission_modal.is_some() {
             overlays.push(self.render_start_mission_modal(cx));
+        }
+        if matches!(self.route, AppRoute::Mission(_)) {
+            let workspace = self.mission_workspace.clone();
+            overlays.extend(workspace.update(cx, |workspace, workspace_cx| {
+                workspace.render_mission_overlays(workspace_cx)
+            }));
         }
         overlays.extend(self.render_crew_overlays(cx));
         overlays
@@ -777,7 +774,7 @@ impl NativeRoot {
             effort: None,
             permission_mode: form.permission_mode,
         };
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::runner::runner_create(&core, input)
                 .map_err(|error| error.to_string())
@@ -789,8 +786,11 @@ impl NativeRoot {
                     Ok(runner) => {
                         let handle = runner.handle.clone();
                         this.runner_surfaces.create = None;
-                        if let Ok(runners) = runner_backend::ops::runner::runner_list(&this.core) {
-                            this.runners = runners;
+                        if let Ok(runners) = runner_backend::ops::runner::runner_list(this.core(cx))
+                        {
+                            this.app_store.update(cx, |store, store_cx| {
+                                store.replace_runners(runners, store_cx)
+                            });
                         }
                         this.load_runner_page(cx);
                         this.open_runner_detail(handle, window, cx);
@@ -1218,7 +1218,7 @@ impl NativeRoot {
             )
         });
         let runner_id = form.runner.id.clone();
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::runner::runner_update(&core, &runner_id, update)
                 .map_err(|error| error.to_string())?;
@@ -1237,8 +1237,11 @@ impl NativeRoot {
                 match result {
                     Ok(crew_id) => {
                         this.runner_surfaces.edit = None;
-                        if let Ok(runners) = runner_backend::ops::runner::runner_list(&this.core) {
-                            this.runners = runners;
+                        if let Ok(runners) = runner_backend::ops::runner::runner_list(this.core(cx))
+                        {
+                            this.app_store.update(cx, |store, store_cx| {
+                                store.replace_runners(runners, store_cx)
+                            });
                         }
                         this.load_runner_page(cx);
                         match this.route.clone() {
@@ -1512,7 +1515,7 @@ impl NativeRoot {
         self.runner_surfaces.delete_busy = true;
         let id = confirm.id.clone();
         let handle = confirm.handle.clone();
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::runner::runner_delete(&core, &id)
                 .map_err(|error| error.to_string())
@@ -1524,8 +1527,11 @@ impl NativeRoot {
                 match result {
                     Ok(()) => {
                         this.runner_surfaces.delete_confirm = None;
-                        if let Ok(runners) = runner_backend::ops::runner::runner_list(&this.core) {
-                            this.runners = runners;
+                        if let Ok(runners) = runner_backend::ops::runner::runner_list(this.core(cx))
+                        {
+                            this.app_store.update(cx, |store, store_cx| {
+                                store.replace_runners(runners, store_cx)
+                            });
                         }
                         this.load_runner_page(cx);
                         this.show_toast(
@@ -1579,10 +1585,10 @@ impl NativeRoot {
         self.dismiss_sidebar_transients(cx);
         self.runner_surfaces.context_menu = None;
         self.crew_surfaces.context_menu = None;
-        self.core.windows.set_subjects("main", Vec::new());
-        self.core.windows.mark_blurred("main");
-        self.core.broadcast_focus_map();
-        self.route = route;
+        self.core(cx).windows.set_subjects("main", Vec::new());
+        self.core(cx).windows.mark_blurred("main");
+        self.core(cx).broadcast_focus_map();
+        self.set_route(route, cx);
         window.focus(&self.root_focus);
         cx.notify();
     }
@@ -1618,7 +1624,7 @@ impl NativeRoot {
     pub(crate) fn load_runner_page(&mut self, cx: &mut Context<Self>) {
         let request = self.runner_surfaces.list.begin_load();
         let request_id = request.request_id;
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::runner::runner_list_with_activity(
                 &core,
@@ -1659,7 +1665,7 @@ impl NativeRoot {
                 ..Default::default()
             };
         }
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             let requested = handle.clone();
             let result = (|| {
@@ -1732,7 +1738,7 @@ impl NativeRoot {
             AppRoute::Runners => self.render_runners_page(cx),
             AppRoute::RunnerDetail(_) => self.render_runner_detail(cx),
             AppRoute::Crews | AppRoute::CrewEditor(_) => self.render_crew_surface(window, cx),
-            AppRoute::Mission(_) => self.render_mission_workspace(window, cx),
+            AppRoute::Mission(_) => self.mission_workspace.clone().into_any_element(),
             AppRoute::Settings => self.render_active_tab(window, cx),
         }
     }
@@ -2535,12 +2541,12 @@ impl NativeRoot {
         let detail_origin = matches!(self.route, AppRoute::RunnerDetail(_));
         self.runner_surfaces.chat_pending = Some(runner.id.clone());
         let cwd = if runner.working_dir.is_none() {
-            let default = self.settings.default_working_dir.trim();
+            let default = self.settings(cx).default_working_dir.trim();
             (!default.is_empty()).then(|| default.to_owned())
         } else {
             None
         };
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let runner_id = runner.id.clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::session::session_start_direct(
@@ -2563,18 +2569,18 @@ impl NativeRoot {
                 match result {
                     Ok(spawned) => {
                         let attach = (|| -> Result<()> {
-                            this.refresh_sessions();
-                            this.reload_tabs()?;
+                            this.refresh_sessions(cx);
+                            this.reload_tabs(cx)?;
                             this.tabs.activate_session(&spawned.id);
-                            this.sync_active_project_from_active_tab();
-                            this.route = AppRoute::Chat;
+                            this.sync_active_project_from_active_tab(cx);
+                            this.set_route(AppRoute::Chat, cx);
                             this.ensure_active_tab_attached(window, cx)?;
                             Ok(())
                         })();
                         match attach {
                             Ok(()) => {
-                                this.remember_active_runner();
-                                this.mark_active_tab_viewed(window);
+                                this.remember_active_runner(cx);
+                                this.mark_active_tab_viewed(window, cx);
                                 this.sync_active_chat_detail(cx);
                                 this.begin_chat_transition(
                                     &spawned.id,

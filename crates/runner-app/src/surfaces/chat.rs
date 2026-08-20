@@ -30,7 +30,7 @@ impl NativeRoot {
                         .insert(session_id.clone(), exit_code);
                     self.chat_transitions.remove(&session_id);
                     self.stopping_sessions.remove(&session_id);
-                    self.refresh_sessions();
+                    self.refresh_sessions(cx);
                     self.sync_active_chat_detail(cx);
                     if self.active_focused_session_id().as_deref() == Some(session_id.as_str()) {
                         self.root_focus.focus(window);
@@ -56,7 +56,7 @@ impl NativeRoot {
                 }
             }
             "session/updated" => {
-                self.refresh_sessions();
+                self.refresh_sessions(cx);
                 self.sync_active_chat_detail(cx);
             }
             _ => {}
@@ -68,7 +68,7 @@ impl NativeRoot {
             return;
         };
         self.active_chat_detail =
-            runner_backend::ops::session::session_get(&self.core, &session_id)
+            runner_backend::ops::session::session_get(self.core(cx), &session_id)
                 .ok()
                 .flatten();
         let session_key = self
@@ -154,7 +154,7 @@ impl NativeRoot {
                         this.chat_transitions.remove(&tracked_id);
                         if this.active_focused_session_id().as_deref() == Some(tracked_id.as_str())
                         {
-                            this.focus_active_terminal(window);
+                            this.focus_active_terminal(window, cx);
                         }
                         cx.notify();
                     }
@@ -179,12 +179,14 @@ impl NativeRoot {
             return;
         }
         self.chat_error = None;
-        self.session_activity.remove(session_id);
+        self.app_store.update(cx, |store, store_cx| {
+            store.remove_session_activity(session_id, store_cx)
+        });
         if self.active_focused_session_id().as_deref() == Some(session_id) {
             self.root_focus.focus(window);
         }
         cx.notify();
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let target = session_id.to_owned();
         let stop_target = target.clone();
         let stop = cx.background_spawn(async move {
@@ -196,7 +198,7 @@ impl NativeRoot {
             let _ = weak.update_in(cx, |this, window, cx| {
                 this.stopping_sessions.remove(&target);
                 this.chat_transitions.remove(&target);
-                this.refresh_sessions();
+                this.refresh_sessions(cx);
                 this.sync_active_chat_detail(cx);
                 match result {
                     Ok(()) => {}
@@ -219,7 +221,7 @@ impl NativeRoot {
     ) {
         for session_id in session_ids {
             if self
-                .session_entry(&session_id)
+                .session_entry(&session_id, cx)
                 .is_some_and(|entry| entry.status == SessionStatus::Running)
             {
                 self.stop_chat(&session_id, window, cx);
@@ -251,7 +253,7 @@ impl NativeRoot {
             .unwrap_or_default();
         for session_id in session_ids {
             let resumable = self
-                .session_entry(&session_id)
+                .session_entry(&session_id, cx)
                 .is_some_and(|entry| entry.status != SessionStatus::Running)
                 && !self.chat_transitions.contains_key(&session_id);
             if resumable {
@@ -269,13 +271,9 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         let next = !pinned;
-        if let Some(entry) = self
-            .sessions
-            .iter_mut()
-            .find(|entry| entry.session_id == session_id)
-        {
-            entry.pinned = next;
-        }
+        self.app_store.update(cx, |store, store_cx| {
+            store.set_session_pinned(&session_id, next, store_cx)
+        });
         if let Some(detail) = self
             .active_chat_detail
             .as_mut()
@@ -285,7 +283,7 @@ impl NativeRoot {
         }
         self.chat_error = None;
         cx.notify();
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let target = session_id.clone();
         let pin = cx.background_spawn(async move {
             runner_backend::ops::session::session_pin(&core, &target, next)
@@ -296,7 +294,7 @@ impl NativeRoot {
             let _ = weak.update(cx, |this, cx| {
                 if let Err(error) = result {
                     this.chat_error = Some(error);
-                    this.refresh_sessions();
+                    this.refresh_sessions(cx);
                 }
                 this.sync_active_chat_detail(cx);
                 cx.notify();
@@ -382,7 +380,7 @@ impl NativeRoot {
             return;
         }
         self.chat_rename_modal = None;
-        self.focus_active_terminal(window);
+        self.focus_active_terminal(window, cx);
         cx.notify();
     }
 
@@ -408,7 +406,7 @@ impl NativeRoot {
         modal.error = None;
         cx.notify();
 
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let rename = cx.background_spawn(async move {
             match target {
                 ChatRenameTarget::Session { session_id, .. } => {
@@ -427,12 +425,12 @@ impl NativeRoot {
                 match result {
                     Ok(()) => {
                         this.chat_rename_modal = None;
-                        this.refresh_sessions();
-                        if let Err(error) = this.reload_tabs() {
+                        this.refresh_sessions(cx);
+                        if let Err(error) = this.reload_tabs(cx) {
                             this.chat_error = Some(error.to_string());
                         }
                         this.sync_active_chat_detail(cx);
-                        this.focus_active_terminal(window);
+                        this.focus_active_terminal(window, cx);
                     }
                     Err(error) => {
                         if let Some(modal) = this.chat_rename_modal.as_mut() {
@@ -478,7 +476,7 @@ impl NativeRoot {
                 errors.push(error.to_string());
             }
         }
-        self.refresh_sessions();
+        self.refresh_sessions(cx);
         if errors.is_empty() {
             Ok(())
         } else {
@@ -493,7 +491,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        let _entry = runner_backend::ops::session::session_get(&self.core, session_id)?
+        let _entry = runner_backend::ops::session::session_get(self.core(cx), session_id)?
             .with_context(|| format!("direct chat not found: {session_id}"))?;
         let pane_id = layout
             .root
@@ -502,7 +500,7 @@ impl NativeRoot {
             .find(|leaf| leaf.session_id.as_deref() == Some(session_id))
             .map(|leaf| leaf.id.as_str());
         let estimated = pane_id
-            .map(|pane_id| self.estimated_terminal_size(layout, pane_id, window))
+            .map(|pane_id| self.estimated_terminal_size(layout, pane_id, window, cx))
             .unwrap_or((INITIAL_COLS, INITIAL_ROWS));
         let size = self
             .attached
@@ -515,16 +513,16 @@ impl NativeRoot {
         }
 
         let terminal = TerminalSession::attach(
-            self.core.clone(),
+            self.core(cx).clone(),
             session_id.to_owned(),
             size.0,
             size.1,
-            Arc::clone(&self.waker),
+            Arc::clone(&self.app_store.read(cx).waker),
         )?;
-        terminal.set_palette(self.settings.terminal_theme.palette());
+        terminal.set_palette(self.settings(cx).terminal_theme.palette());
         terminal.configure(
-            self.settings.terminal_scrollback,
-            match self.settings.terminal_cursor_style {
+            self.settings(cx).terminal_scrollback,
+            match self.settings(cx).terminal_cursor_style {
                 app_settings::TerminalCursorStyle::Block => {
                     alacritty_terminal::vte::ansi::CursorShape::Block
                 }
@@ -536,7 +534,10 @@ impl NativeRoot {
                 }
             },
         );
-        self.bridge.attach(Arc::clone(&terminal))?;
+        self.app_store
+            .read(cx)
+            .bridge
+            .attach(Arc::clone(&terminal))?;
         let terminal_scrollbar = cx.new(|_| Scrollbar::terminal(Arc::clone(&terminal)));
         let terminal_focus = cx.focus_handle();
         let terminal_input = cx.new(|_| TerminalInput::new(Arc::clone(&terminal)));
@@ -579,32 +580,34 @@ impl NativeRoot {
         layout: &PaneLayout,
         pane_id: &str,
         window: &Window,
+        cx: &App,
     ) -> (u16, u16) {
         let (width_fraction, height_fraction) =
             pane_fractions(&layout.root, pane_id).unwrap_or((1., 1.));
         let bounds = window.bounds().size;
-        let sidebar_width = if self.settings.sidebar_collapsed {
+        let sidebar_width = if self.settings(cx).sidebar_collapsed {
             0.
         } else {
-            self.settings.sidebar_width * self.settings.app_zoom
+            self.settings(cx).sidebar_width * self.settings(cx).app_zoom
         };
-        let chat_panel_width = if self.settings.chat_panel_open {
-            self.settings.chat_panel_width * self.settings.app_zoom
+        let chat_panel_width = if self.settings(cx).chat_panel_open {
+            self.settings(cx).chat_panel_width * self.settings(cx).app_zoom
         } else {
             0.
         };
         let pane_width =
             (f32::from(bounds.width) - sidebar_width - chat_panel_width).max(200.) * width_fraction;
         let grouped = layout.root.leaves().len() > 1;
-        let pane_height =
-            (f32::from(bounds.height) - WORKSPACE_HEADER_HEIGHT * self.settings.app_zoom).max(160.)
-                * height_fraction
-                - if grouped {
-                    PANE_HEADER_HEIGHT * self.settings.app_zoom
-                } else {
-                    0.
-                };
-        let font_size = self.settings.terminal_font_size as f32 * self.settings.app_zoom;
+        let pane_height = (f32::from(bounds.height)
+            - WORKSPACE_HEADER_HEIGHT * self.settings(cx).app_zoom)
+            .max(160.)
+            * height_fraction
+            - if grouped {
+                PANE_HEADER_HEIGHT * self.settings(cx).app_zoom
+            } else {
+                0.
+            };
+        let font_size = self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom;
         let cell_width = font_size * 0.6;
         let line_height = (font_size * crate::terminal::element::LINE_HEIGHT_FACTOR).round();
         (
@@ -620,26 +623,26 @@ impl NativeRoot {
             .map(str::to_owned)
     }
 
-    pub(crate) fn session_lifecycle_disabled(&self, session_id: &str) -> bool {
+    pub(crate) fn session_lifecycle_disabled(&self, session_id: &str, cx: &App) -> bool {
         self.stopping_sessions.contains(session_id)
-            || self.sidebar_archiving_sessions.contains(session_id)
+            || self.sidebar_archiving_session(session_id, cx)
             || self.chat_transitions.contains_key(session_id)
     }
 
-    pub(crate) fn session_is_interactive(&self, session_id: &str) -> bool {
+    pub(crate) fn session_is_interactive(&self, session_id: &str, cx: &App) -> bool {
         self.route == AppRoute::Chat
             && self
-                .session_entry(session_id)
+                .session_entry(session_id, cx)
                 .is_some_and(|entry| entry.status == SessionStatus::Running)
-            && !self.session_lifecycle_disabled(session_id)
+            && !self.session_lifecycle_disabled(session_id, cx)
     }
 
-    pub(crate) fn focus_active_terminal(&self, window: &mut Window) {
+    pub(crate) fn focus_active_terminal(&self, window: &mut Window, cx: &App) {
         let Some(session_id) = self.active_focused_session_id() else {
             self.root_focus.focus(window);
             return;
         };
-        if self.session_is_interactive(&session_id) {
+        if self.session_is_interactive(&session_id, cx) {
             if let Some(chat) = self.attached.get(&session_id) {
                 chat.terminal_focus.focus(window);
                 return;
@@ -657,15 +660,15 @@ impl NativeRoot {
         if !self.tabs.activate(tab_id) {
             return;
         }
-        self.sync_active_project_from_active_tab();
+        self.sync_active_project_from_active_tab(cx);
         self.layout_picker_open = false;
         match self.ensure_active_tab_attached(window, cx) {
             Ok(()) => {
                 self.chat_error = None;
-                self.remember_active_runner();
+                self.remember_active_runner(cx);
                 self.sync_active_chat_detail(cx);
-                self.mark_active_tab_viewed(window);
-                self.focus_active_terminal(window);
+                self.mark_active_tab_viewed(window, cx);
+                self.focus_active_terminal(window, cx);
             }
             Err(error) => self.chat_error = Some(error.to_string()),
         }
@@ -681,7 +684,7 @@ impl NativeRoot {
                 .find(|leaf| leaf.id == pane_id)
                 .and_then(|leaf| leaf.session_id.as_deref())
                 .map(|session_id| {
-                    self.session_entry(session_id)
+                    self.session_entry(session_id, cx)
                         .and_then(|entry| entry.runner_id.clone())
                 })
         });
@@ -784,9 +787,9 @@ impl NativeRoot {
     ) {
         self.focus_pane(pane_id, cx);
         self.last_focused_runner_id = self
-            .session_entry(session_id)
+            .session_entry(session_id, cx)
             .and_then(|entry| entry.runner_id.clone());
-        if self.session_is_interactive(session_id) {
+        if self.session_is_interactive(session_id, cx) {
             if let Some(chat) = self.attached.get(session_id) {
                 chat.terminal_focus.focus(window);
             } else {
@@ -795,7 +798,7 @@ impl NativeRoot {
         } else {
             self.root_focus.focus(window);
         }
-        self.mark_active_tab_viewed(window);
+        self.mark_active_tab_viewed(window, cx);
     }
 
     pub(crate) fn on_key_down(
@@ -878,7 +881,7 @@ impl NativeRoot {
             ClipboardEntry::Image(image) => Some(image.clone()),
             ClipboardEntry::String(_) | ClipboardEntry::ExternalPaths(_) => None,
         }) {
-            let core = self.core.clone();
+            let core = self.core(cx).clone();
             let session_id = session_id.to_owned();
             let paste = cx.background_spawn(async move {
                 runner_backend::ops::session::session_paste_image(
@@ -937,7 +940,7 @@ impl NativeRoot {
             .attached
             .get(session_id)
             .map(|chat| chat.terminal.size())
-            .unwrap_or_else(|| self.estimated_terminal_size(&layout, pane_id, window));
+            .unwrap_or_else(|| self.estimated_terminal_size(&layout, pane_id, window, cx));
         self.begin_chat_transition(
             session_id,
             chat_lifecycle::TransitionKind::Resuming,
@@ -946,9 +949,11 @@ impl NativeRoot {
             cx,
         );
         self.chat_error = None;
-        self.session_activity.remove(session_id);
+        self.app_store.update(cx, |store, store_cx| {
+            store.remove_session_activity(session_id, store_cx)
+        });
         self.session_exit_codes.remove(session_id);
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let target = session_id.to_owned();
         let resume_target = target.clone();
         let resume = cx.background_spawn(async move {
@@ -966,7 +971,7 @@ impl NativeRoot {
             let _ = weak.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(()) => {
-                        this.refresh_sessions();
+                        this.refresh_sessions(cx);
                         if let Err(error) = this.ensure_attached(&layout, &target, window, cx) {
                             this.chat_transitions.remove(&target);
                             this.chat_error = Some(error.to_string());
@@ -976,7 +981,7 @@ impl NativeRoot {
                     Err(error) => {
                         this.chat_transitions.remove(&target);
                         this.chat_error = Some(error);
-                        this.refresh_sessions();
+                        this.refresh_sessions(cx);
                         this.sync_active_chat_detail(cx);
                         if this.active_focused_session_id().as_deref() == Some(target.as_str()) {
                             this.root_focus.focus(window);
@@ -1007,8 +1012,8 @@ impl NativeRoot {
                 .into_iter()
                 .find(|leaf| leaf.session_id.is_none())
                 .map(|leaf| leaf.id.clone());
-            self.persist_active_tab()?;
-            self.reload_tabs()?;
+            self.persist_active_tab(cx)?;
+            self.reload_tabs(cx)?;
             self.ensure_active_tab_attached(window, cx)?;
             Ok(empty_pane_id)
         })();
@@ -1019,9 +1024,9 @@ impl NativeRoot {
                 if let Some(pane_id) = empty_pane_id {
                     self.open_pane_chat_modal(&pane_id, window, cx);
                 } else {
-                    self.remember_active_runner();
-                    self.mark_active_tab_viewed(window);
-                    self.focus_active_terminal(window);
+                    self.remember_active_runner(cx);
+                    self.mark_active_tab_viewed(window, cx);
+                    self.focus_active_terminal(window, cx);
                 }
             }
             Err(error) => self.chat_error = Some(error.to_string()),
@@ -1029,13 +1034,13 @@ impl NativeRoot {
         cx.notify();
     }
 
-    pub(crate) fn persist_active_tab(&self) -> Result<()> {
+    pub(crate) fn persist_active_tab(&self, cx: &App) -> Result<()> {
         let input = self
             .tabs
             .active()
             .context("active tab is missing")?
             .upsert_input()?;
-        runner_backend::ops::node::node_tab_upsert(&self.core, input)?;
+        runner_backend::ops::node::node_tab_upsert(self.core(cx), input)?;
         Ok(())
     }
 
@@ -1052,17 +1057,17 @@ impl NativeRoot {
             if !layout.close_pane(pane_id) {
                 return Ok(false);
             }
-            self.persist_active_tab()?;
-            self.reload_tabs()?;
+            self.persist_active_tab(cx)?;
+            self.reload_tabs(cx)?;
             self.ensure_active_tab_attached(window, cx)?;
             Ok(true)
         })();
         match result {
             Ok(true) => {
                 self.chat_error = None;
-                self.remember_active_runner();
-                self.mark_active_tab_viewed(window);
-                self.focus_active_terminal(window);
+                self.remember_active_runner(cx);
+                self.mark_active_tab_viewed(window, cx);
+                self.focus_active_terminal(window, cx);
             }
             Ok(false) => {}
             Err(error) => self.chat_error = Some(error.to_string()),
@@ -1099,12 +1104,12 @@ impl NativeRoot {
         }
     }
 
-    pub(crate) fn finish_split_resize(&mut self) {
+    pub(crate) fn finish_split_resize(&mut self, cx: &mut Context<Self>) {
         if !self.split_sizes_dirty {
             return;
         }
         self.split_sizes_dirty = false;
-        if let Err(error) = self.persist_active_tab() {
+        if let Err(error) = self.persist_active_tab(cx) {
             self.chat_error = Some(error.to_string());
         }
     }
