@@ -100,6 +100,18 @@ pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
 
     session::pty_runtime::cleanup_stale_running_rows_on_startup(&pool)
         .context("clean up stale PTY sessions")?;
+    match pool.get() {
+        Ok(conn) => match repo::node::clear_unread_on_startup(&conn, chrono::Utc::now()) {
+            Ok(cleared) if cleared > 0 => {
+                eprintln!(
+                    "Runner startup cleanup: cleared {cleared} stale unread tab completion(s)"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!("Runner tab unread startup cleanup failed: {error}"),
+        },
+        Err(error) => eprintln!("Runner tab unread startup cleanup failed: {error}"),
+    }
     session::pty_runtime::cleanup_orphan_processes_on_startup(&pool)
         .context("clean up orphan PTY processes")?;
     runtime_status::start_background_discovery(

@@ -212,6 +212,45 @@ pub fn session_paste_image(bytes: Vec<u8>, mime_type: &str) -> Result<()> {
     }
 }
 
+/// POSIX paths of files referenced by the general pasteboard, in
+/// pasteboard order.
+///
+/// The consumer is the GPUI terminal paste path
+/// (`runner-app/src/chat.rs::on_paste`), which is M4 work: it should call
+/// this only after its image scan and plain-text check both come up empty,
+/// so file URLs fill the existing no-op paste case without changing image
+/// or text precedence.
+pub fn session_clipboard_file_paths() -> Vec<String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL};
+        use objc2_foundation::NSURL;
+
+        // SAFETY: AppKit's own flavor constant, read-only.
+        let file_url_type = unsafe { NSPasteboardTypeFileURL };
+        let Some(items) = NSPasteboard::generalPasteboard().pasteboardItems() else {
+            return Vec::new();
+        };
+        items
+            .to_vec()
+            .into_iter()
+            .filter_map(|item| {
+                let url_string = item.stringForType(file_url_type)?;
+                let url = NSURL::URLWithString(&url_string)?;
+                if !url.isFileURL() {
+                    return None;
+                }
+                Some(url.path()?.to_string())
+            })
+            .collect()
+    }
+}
+
 /// One row per direct-chat *session* in the sidebar SESSION tray. Each
 /// runner can host multiple parallel chats — see
 /// docs/impls/archive/0003-direct-chats.md — so the tray is flat (not collapsed per
