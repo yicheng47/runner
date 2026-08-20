@@ -310,8 +310,11 @@ impl SettingsState {
         });
         let working_dir_subscription = cx.observe(&default_working_dir, |this, input, cx| {
             let value = input.read(cx).text().trim().to_owned();
-            if this.settings.default_working_dir != value {
-                this.settings.default_working_dir = value;
+            if this.settings(cx).default_working_dir != value {
+                this.update_app_settings(cx, false, |settings| {
+                    settings.default_working_dir = value;
+                    true
+                });
                 this.schedule_settings_save(cx);
             }
         });
@@ -369,7 +372,7 @@ fn settings_select(
 
 impl NativeRoot {
     fn refresh_settings_crews(&self, cx: &mut Context<Self>) {
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             let conn = core.db.get().map_err(|error| error.to_string())?;
             runner_backend::ops::crew::list(&conn)
@@ -413,9 +416,9 @@ impl NativeRoot {
             cx.background_executor()
                 .timer(Duration::from_millis(SETTINGS_SAVE_DELAY_MS))
                 .await;
-            let _ = weak.update(cx, |this, _| {
+            let _ = weak.update(cx, |this, root_cx| {
                 if this.settings_page.save_generation == generation {
-                    this.save_settings();
+                    this.save_settings(root_cx);
                 }
             });
         })
@@ -423,7 +426,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn start_launch_auto_resume(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let enabled = self.settings.resume_on_launch;
+        let enabled = self.settings(cx).resume_on_launch;
         let mut direct_sizes = HashMap::new();
         for layout in self.tabs.tabs() {
             for leaf in layout.root.leaves() {
@@ -434,12 +437,12 @@ impl NativeRoot {
                     .attached
                     .get(session_id)
                     .map(|chat| chat.terminal.size())
-                    .unwrap_or_else(|| self.estimated_terminal_size(layout, &leaf.id, window));
+                    .unwrap_or_else(|| self.estimated_terminal_size(layout, &leaf.id, window, cx));
                 direct_sizes.insert(session_id.to_owned(), size);
             }
         }
-        let mission_size = self.estimated_mission_terminal_size(window);
-        let core = self.core.clone();
+        let mission_size = self.estimated_mission_terminal_size(window, cx);
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             runner_app::bootstrap::consume_resume_on_launch(&core, enabled, |session_id| {
                 launch_dims_for(session_id, &direct_sizes, mission_size)
@@ -452,8 +455,8 @@ impl NativeRoot {
                 }
                 if !report.resumed.is_empty() {
                     let _ = weak.update_in(cx, |this, _, cx| {
-                        this.refresh_sessions();
-                        this.refresh_sidebar(SidebarRefreshKind::All, cx);
+                        this.refresh_sessions(cx);
+                        this.refresh_store(StoreRefreshKind::All, cx);
                         cx.notify();
                     });
                 }
@@ -476,9 +479,9 @@ impl NativeRoot {
                 .search
                 .update(cx, |input, input_cx| input.reset("", input_cx));
             self.dismiss_sidebar_transients(cx);
-            self.core.windows.set_subjects("main", Vec::new());
-            self.core.broadcast_focus_map();
-            self.route = AppRoute::Settings;
+            self.core(cx).windows.set_subjects("main", Vec::new());
+            self.core(cx).broadcast_focus_map();
+            self.set_route(AppRoute::Settings, cx);
         }
         self.settings_page.pane = pane;
         if pane == SettingsPane::General {
@@ -504,84 +507,70 @@ impl NativeRoot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let changed = match selection {
+        let changed = self.update_app_settings(cx, true, |settings| match selection {
             SettingsSelection::DefaultCrew => {
-                update_if_changed(&mut self.settings.default_crew_id, value.to_owned())
+                update_if_changed(&mut settings.default_crew_id, value.to_owned())
             }
             SettingsSelection::LightTheme => parse_light_theme(value)
-                .is_some_and(|value| update_if_changed(&mut self.settings.light_app_theme, value)),
+                .is_some_and(|value| update_if_changed(&mut settings.light_app_theme, value)),
             SettingsSelection::DarkTheme => parse_dark_theme(value)
-                .is_some_and(|value| update_if_changed(&mut self.settings.dark_app_theme, value)),
+                .is_some_and(|value| update_if_changed(&mut settings.dark_app_theme, value)),
             SettingsSelection::AppFont => parse_app_font(value)
-                .is_some_and(|value| update_if_changed(&mut self.settings.app_font_family, value)),
+                .is_some_and(|value| update_if_changed(&mut settings.app_font_family, value)),
             SettingsSelection::TerminalTheme => parse_terminal_theme(value)
-                .is_some_and(|value| update_if_changed(&mut self.settings.terminal_theme, value)),
-            SettingsSelection::TerminalFont => parse_terminal_font(value).is_some_and(|value| {
-                update_if_changed(&mut self.settings.terminal_font_family, value)
-            }),
-            SettingsSelection::TerminalCursor => {
-                parse_terminal_cursor(value).is_some_and(|value| {
-                    update_if_changed(&mut self.settings.terminal_cursor_style, value)
-                })
-            }
+                .is_some_and(|value| update_if_changed(&mut settings.terminal_theme, value)),
+            SettingsSelection::TerminalFont => parse_terminal_font(value)
+                .is_some_and(|value| update_if_changed(&mut settings.terminal_font_family, value)),
+            SettingsSelection::TerminalCursor => parse_terminal_cursor(value)
+                .is_some_and(|value| update_if_changed(&mut settings.terminal_cursor_style, value)),
             SettingsSelection::TerminalScrollback => value
                 .parse::<usize>()
                 .ok()
                 .filter(|value| TERMINAL_SCROLLBACK_OPTIONS.contains(value))
-                .is_some_and(|value| {
-                    update_if_changed(&mut self.settings.terminal_scrollback, value)
-                }),
-        };
+                .is_some_and(|value| update_if_changed(&mut settings.terminal_scrollback, value)),
+        });
         if !changed {
             return;
         }
-        if matches!(
-            selection,
-            SettingsSelection::TerminalTheme
-                | SettingsSelection::TerminalFont
-                | SettingsSelection::TerminalCursor
-                | SettingsSelection::TerminalScrollback
-        ) {
-            self.apply_terminal_settings();
-        }
-        self.save_settings();
         cx.notify();
     }
 
     fn set_theme_intent(&mut self, intent: ThemeIntent, cx: &mut Context<Self>) {
-        if update_if_changed(&mut self.settings.app_theme, intent) {
-            self.save_settings();
+        if self.update_app_settings(cx, true, |settings| {
+            update_if_changed(&mut settings.app_theme, intent)
+        }) {
             cx.notify();
         }
     }
 
     fn set_terminal_font_size(&mut self, size: u16, cx: &mut Context<Self>) {
         let size = size.clamp(TERMINAL_FONT_SIZE_MIN, TERMINAL_FONT_SIZE_MAX);
-        if update_if_changed(&mut self.settings.terminal_font_size, size) {
-            self.apply_terminal_settings();
-            self.save_settings();
+        if self.update_app_settings(cx, true, |settings| {
+            update_if_changed(&mut settings.terminal_font_size, size)
+        }) {
             cx.notify();
         }
     }
 
     fn set_resume_on_launch(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        if update_if_changed(&mut self.settings.resume_on_launch, enabled) {
-            self.save_settings();
+        if self.update_app_settings(cx, true, |settings| {
+            update_if_changed(&mut settings.resume_on_launch, enabled)
+        }) {
             cx.notify();
         }
     }
 
-    fn apply_terminal_settings(&self) {
-        let cursor = match self.settings.terminal_cursor_style {
+    pub(crate) fn apply_terminal_settings(&self, cx: &mut Context<Self>) {
+        let cursor = match self.settings(cx).terminal_cursor_style {
             TerminalCursorStyle::Block => alacritty_terminal::vte::ansi::CursorShape::Block,
             TerminalCursorStyle::Underline => alacritty_terminal::vte::ansi::CursorShape::Underline,
             TerminalCursorStyle::Bar => alacritty_terminal::vte::ansi::CursorShape::Beam,
         };
         for chat in self.attached.values() {
             chat.terminal
-                .set_palette(self.settings.terminal_theme.palette());
+                .set_palette(self.settings(cx).terminal_theme.palette());
             chat.terminal
-                .configure(self.settings.terminal_scrollback, cursor);
+                .configure(self.settings(cx).terminal_scrollback, cursor);
         }
     }
 
@@ -614,7 +603,7 @@ impl NativeRoot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let width = self.settings.sidebar_width * self.settings.app_zoom;
+        let width = self.settings(cx).sidebar_width * self.settings(cx).app_zoom;
         let groups = filtered_nav_groups(&self.settings_page.search_query);
         let active = self.settings_page.pane;
         let nav = if groups.is_empty() {
@@ -653,7 +642,7 @@ impl NativeRoot {
                     .border_color(theme::border())
                     .child(self.render_titlebar_drag_area(
                         "settings-sidebar-titlebar-drag",
-                        div().h(px(32. * self.settings.app_zoom)).flex_none(),
+                        div().h(px(32. * self.settings(cx).app_zoom)).flex_none(),
                         cx,
                     ))
                     .child(
@@ -713,7 +702,7 @@ impl NativeRoot {
                             )
                             .child(self.settings_page.nav_scrollbar.clone()),
                     )
-                    .child(self.render_sidebar_resize_handle()),
+                    .child(self.render_sidebar_resize_handle(cx)),
             )
             .child(
                 div()
@@ -730,7 +719,7 @@ impl NativeRoot {
                                 .top_0()
                                 .left_0()
                                 .right_0()
-                                .h(px(TITLEBAR_DRAG_HEIGHT * self.settings.app_zoom)),
+                                .h(px(TITLEBAR_DRAG_HEIGHT * self.settings(cx).app_zoom)),
                             cx,
                         ),
                     )
@@ -920,7 +909,7 @@ impl NativeRoot {
     }
 
     fn render_general_settings(&self, cx: &mut Context<Self>) -> AnyElement {
-        let zoom_value = normalize_zoom(self.settings.app_zoom);
+        let zoom_value = normalize_zoom(self.settings(cx).app_zoom);
         let zoom_index = ZOOM_STEPS
             .iter()
             .position(|step| *step == zoom_value)
@@ -1004,7 +993,7 @@ impl NativeRoot {
                         "Resume running agents on launch",
                         Toggle::new(
                             "settings-resume-on-launch",
-                            self.settings.resume_on_launch,
+                            self.settings(cx).resume_on_launch,
                         )
                         .on_change(move |enabled, _, cx| {
                             toggle_root.update(cx, |this, root_cx| {
@@ -1063,7 +1052,7 @@ impl NativeRoot {
                 ]
                 .into_iter()
                 .map(|(intent, label, icon)| {
-                    let active = intent == self.settings.app_theme;
+                    let active = intent == self.settings(cx).app_theme;
                     let foreground = if active {
                         theme::text()
                     } else {
@@ -1122,7 +1111,7 @@ impl NativeRoot {
 
     fn render_terminal_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let size = self
-            .settings
+            .settings(cx)
             .terminal_font_size
             .clamp(TERMINAL_FONT_SIZE_MIN, TERMINAL_FONT_SIZE_MAX);
         let decrement_root = cx.entity();

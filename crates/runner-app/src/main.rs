@@ -1,4 +1,5 @@
 mod app_settings;
+mod app_store;
 mod assets;
 mod list_controls;
 mod mac_chrome;
@@ -6,8 +7,7 @@ mod surfaces;
 mod terminal;
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -31,16 +31,14 @@ use runner_app::ui::{
     MenuItem as UiMenuItem, PopoverMenu, Scrollbar, SessionControl, SessionControlKind,
 };
 use runner_app::{theme, Copy, Cut, Paste, SelectAll};
-use runner_backend::model::{Runner, SessionStatus};
-use runner_backend::ops::mission::MissionSummary;
+use runner_backend::model::SessionStatus;
 use runner_backend::ops::session::DirectSessionEntry;
-use runner_backend::repo::node::NodeRow;
-use runner_backend::repo::project::ProjectRow;
 use runner_backend::session::manager::SessionActivityState;
 use runner_backend::AppCore;
-use runner_terminal::terminal::{TerminalBridge, TerminalSession};
+use runner_terminal::terminal::TerminalSession;
 
 use app_settings::{settings_path, AppSettings};
+use app_store::{global_app_store, AppStore, GlobalAppStore, StoreRefreshKind, StoreRevisions};
 use assets::{
     Assets, INTER_FONT, MESLO_FONT_BOLD, MESLO_FONT_BOLD_ITALIC, MESLO_FONT_ITALIC,
     MESLO_FONT_REGULAR,
@@ -74,8 +72,8 @@ actions!(
 mod toast;
 
 use surfaces::{
-    AppRoute, CrewSurfaces, DropTarget, MissionWorkspaceState, ProjectModal, RunnerSurfaces,
-    SettingsState, SidebarRefreshKind, SidebarRename, StartChatModal, StartMissionModalState,
+    AppRoute, CrewSurfaces, MissionWorkspace, ProjectModal, RunnerSurfaces, SettingsState, Sidebar,
+    StartChatModal, StartMissionModalState,
 };
 
 const INITIAL_COLS: u16 = 100;
@@ -109,41 +107,6 @@ struct SidebarVisibilityTransition {
     start: f32,
     target: f32,
     started_at: Option<Instant>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum EntityRefreshKind {
-    None,
-    Runners,
-    All,
-}
-
-impl EntityRefreshKind {
-    fn for_event(event: &runner_backend::events::AppEvent) -> Self {
-        match event.name {
-            "runner/activity" => Self::Runners,
-            "runner/changed" | "crew/changed" | "slot/changed" => Self::All,
-            _ => Self::None,
-        }
-    }
-
-    fn merge(self, other: Self) -> Self {
-        if self == Self::None || self == other {
-            return other;
-        }
-        if other == Self::None {
-            return self;
-        }
-        Self::All
-    }
-
-    fn runners(self) -> bool {
-        matches!(self, Self::Runners | Self::All)
-    }
-
-    fn crews(self) -> bool {
-        self == Self::All
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -233,31 +196,18 @@ impl SidebarVisibilityTransition {
 }
 
 struct NativeRoot {
-    core: AppCore,
-    bridge: Arc<TerminalBridge>,
-    sessions: Vec<DirectSessionEntry>,
-    runners: Vec<Runner>,
-    nodes: Vec<NodeRow>,
-    projects: Vec<ProjectRow>,
-    missions: Vec<MissionSummary>,
-    session_activity: BTreeMap<String, SessionActivityState>,
+    app_store: Entity<AppStore>,
+    store_revisions: StoreRevisions,
     tabs: TabSet,
     attached: HashMap<String, AttachedChat>,
     root_focus: FocusHandle,
     layout_picker_focus: FocusHandle,
-    sidebar_scroll: ScrollHandle,
-    sidebar_scrollbar: Entity<Scrollbar>,
-    waker: Arc<dyn Fn() + Send + Sync>,
+    sidebar: Entity<Sidebar>,
     start_chat_modal: Option<StartChatModal>,
     start_mission_modal: Option<StartMissionModalState>,
-    sidebar_create_menu: Entity<PopoverMenu>,
-    sidebar_context_menu: Option<Entity<ContextMenu>>,
-    sidebar_rename: Option<SidebarRename>,
     project_modal: Option<ProjectModal>,
     project_delete_confirm: Option<String>,
     project_delete_busy: bool,
-    sidebar_archiving_sessions: HashSet<String>,
-    sidebar_archiving_missions: HashSet<String>,
     stopping_sessions: HashSet<String>,
     chat_transitions: HashMap<String, ChatTransition>,
     next_chat_transition_generation: u64,
@@ -270,16 +220,10 @@ struct NativeRoot {
     chat_menu_actions: Vec<ChatMenuAction>,
     pane_action_menus: HashMap<String, Entity<PopoverMenu>>,
     chat_rename_modal: Option<ChatRenameModal>,
-    active_project_id: Option<String>,
-    sidebar_dragged_id: Option<String>,
-    sidebar_drop_target: Option<DropTarget>,
-    sidebar_drop_marker: Option<String>,
     last_focused_runner_id: Option<String>,
     layout_picker_open: bool,
     split_sizes_dirty: bool,
     error: Option<String>,
-    settings: AppSettings,
-    settings_path: PathBuf,
     settings_page: SettingsState,
     route: AppRoute,
     settings_return_route: AppRoute,
@@ -292,46 +236,22 @@ struct NativeRoot {
     toasts: ToastHost,
     runner_surfaces: RunnerSurfaces,
     crew_surfaces: CrewSurfaces,
-    mission_workspace: MissionWorkspaceState,
+    mission_workspace: Entity<MissionWorkspace>,
     _appearance_subscription: Option<Subscription>,
     _activation_subscription: Option<Subscription>,
     _bounds_subscription: Option<Subscription>,
-    _sidebar_rename_focus_subscription: Option<Subscription>,
     _project_cwd_subscription: Option<Subscription>,
+    _store_subscription: Subscription,
 }
 
 impl NativeRoot {
-    fn new(
-        core: AppCore,
-        settings_path: PathBuf,
-        settings: AppSettings,
-        settings_error: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let (wake_tx, mut wake_rx) = futures::channel::mpsc::unbounded::<()>();
-        let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            let _ = wake_tx.unbounded_send(());
-        });
-        let bridge =
-            TerminalBridge::new(core.clone(), Arc::clone(&waker)).expect("start event bridge");
-
-        cx.spawn(async move |weak, cx| {
-            while wake_rx.next().await.is_some() {
-                while wake_rx.try_recv().is_ok() {}
-                if weak
-                    .update(cx, |this, cx| {
-                        if this.route.terminal_visible() {
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
+    fn new(app_store: Entity<AppStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let core = app_store.read(cx).core.clone();
+        let settings = app_store.read(cx).settings.clone();
+        let sessions = app_store.read(cx).sessions.clone();
+        let nodes = app_store.read(cx).nodes.clone();
+        let store_revisions = app_store.read(cx).revisions;
+        let mut errors: Vec<_> = app_store.read(cx).error.clone().into_iter().collect();
 
         let (chat_event_tx, mut chat_event_rx) =
             futures::channel::mpsc::unbounded::<runner_backend::events::AppEvent>();
@@ -361,119 +281,6 @@ impl NativeRoot {
                     .update_in(cx, |this, window, cx| {
                         this.handle_chat_lifecycle_event(event, window, cx);
                         cx.notify();
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
-
-        let (mission_event_tx, mut mission_event_rx) =
-            futures::channel::mpsc::unbounded::<runner_backend::events::AppEvent>();
-        let mut mission_events = core.events.subscribe();
-        cx.background_spawn(async move {
-            loop {
-                match mission_events.recv().await {
-                    Ok(event)
-                        if matches!(
-                            event.name,
-                            "event/appended"
-                                | "mission/changed"
-                                | "router/delivery-blocked"
-                                | "session/exit"
-                                | "session/updated"
-                                | "session/warning"
-                                | "session/input-error"
-                                | "window_focus_map"
-                        ) =>
-                    {
-                        if mission_event_tx.unbounded_send(event).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        if mission_event_tx
-                            .unbounded_send(runner_backend::events::AppEvent {
-                                name: "mission/resync",
-                                payload: serde_json::Value::Null,
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        })
-        .detach();
-        cx.spawn_in(window, async move |weak, cx| {
-            while let Some(event) = mission_event_rx.next().await {
-                if weak
-                    .update_in(cx, |this, window, cx| {
-                        this.handle_mission_workspace_event(event, window, cx);
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
-
-        let (sidebar_event_tx, mut sidebar_event_rx) =
-            futures::channel::mpsc::unbounded::<(SidebarRefreshKind, EntityRefreshKind)>();
-        let mut sidebar_events = core.events.subscribe();
-        cx.background_spawn(async move {
-            loop {
-                let refresh = match sidebar_events.recv().await {
-                    Ok(event) => SidebarRefreshKind::for_event(&event)
-                        .map(|sidebar| (sidebar, EntityRefreshKind::for_event(&event))),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        Some((SidebarRefreshKind::All, EntityRefreshKind::All))
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                };
-                if refresh.is_some_and(|refresh| sidebar_event_tx.unbounded_send(refresh).is_err())
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
-        cx.spawn(async move |weak, cx| {
-            while let Some((mut sidebar_refresh, mut entity_refresh)) =
-                sidebar_event_rx.next().await
-            {
-                while let Ok(next) = sidebar_event_rx.try_recv() {
-                    sidebar_refresh = sidebar_refresh.merge(next.0);
-                    entity_refresh = entity_refresh.merge(next.1);
-                }
-                if weak
-                    .update(cx, |this, cx| {
-                        this.refresh_sidebar(sidebar_refresh, cx);
-                        match this.route.clone() {
-                            AppRoute::Runners if entity_refresh.runners() => {
-                                this.load_runner_page(cx)
-                            }
-                            AppRoute::RunnerDetail(handle) if entity_refresh.runners() => {
-                                this.load_runner_detail(handle, cx)
-                            }
-                            AppRoute::Crews if entity_refresh.crews() => this.load_crew_page(cx),
-                            AppRoute::CrewEditor(crew_id) if entity_refresh.crews() => {
-                                this.load_crew_editor(crew_id, cx)
-                            }
-                            AppRoute::Chat
-                            | AppRoute::Runners
-                            | AppRoute::RunnerDetail(_)
-                            | AppRoute::Crews
-                            | AppRoute::CrewEditor(_)
-                            | AppRoute::Mission(_)
-                            | AppRoute::Settings => {}
-                        }
                     })
                     .is_err()
                 {
@@ -515,29 +322,7 @@ impl NativeRoot {
         })
         .detach();
 
-        let mut errors: Vec<_> = settings_error.into_iter().collect();
         window.set_rem_size(px(16. * settings.app_zoom));
-        let sessions = match runner_backend::ops::session::session_list_recent_direct(&core) {
-            Ok(sessions) => sessions,
-            Err(error) => {
-                errors.push(error.to_string());
-                Vec::new()
-            }
-        };
-        let runners = match runner_backend::ops::runner::runner_list(&core) {
-            Ok(runners) => runners,
-            Err(error) => {
-                errors.push(error.to_string());
-                Vec::new()
-            }
-        };
-        let nodes = match runner_backend::ops::node::node_list(&core) {
-            Ok(nodes) => nodes,
-            Err(error) => {
-                errors.push(error.to_string());
-                Vec::new()
-            }
-        };
         let tabs = match TabSet::from_rows(&nodes) {
             Ok(tabs) => tabs,
             Err(error) => {
@@ -545,29 +330,9 @@ impl NativeRoot {
                 TabSet::default()
             }
         };
-        let projects = match runner_backend::ops::project::project_list(&core) {
-            Ok(projects) => projects,
-            Err(error) => {
-                errors.push(error.to_string());
-                Vec::new()
-            }
-        };
-        let missions = match futures::executor::block_on(
-            runner_backend::ops::mission::mission_list_summary_impl(&core, None),
-        ) {
-            Ok(missions) => missions,
-            Err(error) => {
-                errors.push(error.to_string());
-                Vec::new()
-            }
-        };
-        let session_activity = runner_backend::ops::session::session_activity_snapshot(&core);
 
         let root_focus = cx.focus_handle();
         let layout_picker_focus = cx.focus_handle();
-        let sidebar_scroll = ScrollHandle::new();
-        let scroll_owner = cx.entity_id();
-        let sidebar_scrollbar = cx.new(|_| Scrollbar::app(sidebar_scroll.clone(), scroll_owner));
         let active_chat_detail = tabs
             .active()
             .and_then(PaneLayout::focused_session_id)
@@ -605,28 +370,6 @@ impl NativeRoot {
             .trigger_icon("more-horizontal.svg")
             .trigger_tooltip("Chat actions")
         });
-        let create_root = cx.entity();
-        let sidebar_create_menu = cx.new(move |menu_cx| {
-            let action_root = create_root.clone();
-            PopoverMenu::new(
-                "sidebar-create",
-                menu_cx.focus_handle(),
-                vec![
-                    UiMenuItem::new("New chat").icon("message-square-plus.svg"),
-                    UiMenuItem::new("New mission").icon("flag.svg"),
-                ],
-                Rc::new(move |index, window, cx| {
-                    action_root.update(cx, |this, cx| {
-                        this.handle_sidebar_create_action(index, window, cx);
-                    });
-                }),
-                menu_cx,
-            )
-            .min_width(px(160.))
-            .trigger_size(IconButtonSize::Sm)
-            .trigger_icon("plus.svg")
-            .without_trigger_tooltip()
-        });
         let last_focused_runner_id = tabs
             .active()
             .and_then(PaneLayout::focused_session_id)
@@ -647,34 +390,37 @@ impl NativeRoot {
         let chat_panel_visibility = SidebarVisibilityTransition::new(settings.chat_panel_open);
         let runner_surfaces = RunnerSurfaces::new(cx.entity(), cx);
         let crew_surfaces = CrewSurfaces::new(cx.entity(), cx);
-        let mission_workspace = MissionWorkspaceState::new(cx.entity(), cx);
+        let sidebar_shell = cx.entity().downgrade();
+        let sidebar_store = app_store.clone();
+        let sidebar = cx.new(move |sidebar_cx| {
+            Sidebar::new(sidebar_shell, sidebar_store, active_project_id, sidebar_cx)
+        });
+        let mission_shell = cx.entity().downgrade();
+        let mission_store = app_store.clone();
+        let mission_root_focus = root_focus.clone();
+        let mission_workspace = cx.new(|workspace_cx| {
+            MissionWorkspace::new(
+                mission_shell,
+                mission_store,
+                mission_root_focus,
+                window,
+                workspace_cx,
+            )
+        });
         let settings_page = SettingsState::new(cx.entity(), &settings, cx);
         let mut root = Self {
-            core,
-            bridge,
-            sessions,
-            runners,
-            nodes,
-            projects,
-            missions,
-            session_activity,
+            app_store: app_store.clone(),
+            store_revisions,
             tabs,
             attached: HashMap::new(),
             root_focus,
             layout_picker_focus,
-            sidebar_scroll,
-            sidebar_scrollbar,
-            waker,
+            sidebar,
             start_chat_modal: None,
             start_mission_modal: None,
-            sidebar_create_menu,
-            sidebar_context_menu: None,
-            sidebar_rename: None,
             project_modal: None,
             project_delete_confirm: None,
             project_delete_busy: false,
-            sidebar_archiving_sessions: HashSet::new(),
-            sidebar_archiving_missions: HashSet::new(),
             stopping_sessions: HashSet::new(),
             chat_transitions: HashMap::new(),
             next_chat_transition_generation: 0,
@@ -687,16 +433,10 @@ impl NativeRoot {
             chat_menu_actions: Vec::new(),
             pane_action_menus: HashMap::new(),
             chat_rename_modal: None,
-            active_project_id,
-            sidebar_dragged_id: None,
-            sidebar_drop_target: None,
-            sidebar_drop_marker: None,
             last_focused_runner_id,
             layout_picker_open: false,
             split_sizes_dirty: false,
             error: (!errors.is_empty()).then(|| errors.join("\n")),
-            settings,
-            settings_path,
             settings_page,
             route: AppRoute::Chat,
             settings_return_route: AppRoute::Chat,
@@ -713,14 +453,15 @@ impl NativeRoot {
             _appearance_subscription: None,
             _activation_subscription: None,
             _bounds_subscription: None,
-            _sidebar_rename_focus_subscription: None,
             _project_cwd_subscription: None,
+            _store_subscription: cx
+                .observe(&app_store, |this, _, cx| this.handle_app_store_update(cx)),
         };
         root._appearance_subscription = Some(cx.observe_window_appearance(window, |_, _, cx| {
             cx.notify();
         }));
         root._bounds_subscription = Some(cx.observe_window_bounds(window, |this, window, cx| {
-            mac_chrome::sync_traffic_lights(window, this.settings.app_zoom);
+            mac_chrome::sync_traffic_lights(window, this.settings(cx).app_zoom);
             this.schedule_window_size_save(window, cx);
             cx.notify();
         }));
@@ -728,36 +469,96 @@ impl NativeRoot {
             Some(cx.observe_window_activation(window, |this, window, cx| {
                 this.sync_sidebar_window_activation(window, cx)
             }));
-        mac_chrome::sync_traffic_lights(window, root.settings.app_zoom);
+        mac_chrome::sync_traffic_lights(window, root.settings(cx).app_zoom);
         if let Err(error) = root.ensure_active_tab_attached(window, cx) {
             root.error = Some(error.to_string());
         }
-        root.focus_active_terminal(window);
+        root.focus_active_terminal(window, cx);
         root.sync_sidebar_window_activation(window, cx);
         root.start_launch_auto_resume(window, cx);
         root
     }
 
-    fn refresh_sessions(&mut self) {
-        match runner_backend::ops::session::session_list_recent_direct(&self.core) {
-            Ok(sessions) => self.sessions = sessions,
-            Err(error) => self.error = Some(error.to_string()),
-        }
+    fn core<'a>(&self, cx: &'a App) -> &'a AppCore {
+        &self.app_store.read(cx).core
     }
 
-    fn reload_tabs(&mut self) -> Result<()> {
-        let rows = runner_backend::ops::node::node_list(&self.core)?;
-        self.tabs.replace_rows(&rows)?;
-        self.nodes = rows;
-        self.sync_active_project_from_active_tab();
-        self.prune_sidebar_collapse_state();
+    fn settings<'a>(&self, cx: &'a App) -> &'a AppSettings {
+        &self.app_store.read(cx).settings
+    }
+
+    fn refresh_sessions(&self, cx: &mut Context<Self>) {
+        self.app_store
+            .update(cx, |store, store_cx| store.refresh_sessions(store_cx));
+    }
+
+    fn refresh_store(&self, refresh: StoreRefreshKind, cx: &mut Context<Self>) {
+        self.app_store
+            .update(cx, |store, store_cx| store.refresh(refresh, store_cx));
+    }
+
+    fn reload_tabs(&mut self, cx: &mut Context<Self>) -> Result<()> {
+        self.app_store
+            .update(cx, |store, store_cx| store.refresh_nodes(store_cx))?;
+        self.apply_tab_rows(cx)
+    }
+
+    fn apply_tab_rows(&mut self, cx: &mut Context<Self>) -> Result<()> {
+        self.tabs.replace_rows(&self.app_store.read(cx).nodes)?;
+        self.sync_active_project_from_active_tab(cx);
+        self.prune_sidebar_collapse_state(cx);
         Ok(())
     }
 
-    fn session_entry(&self, session_id: &str) -> Option<&DirectSessionEntry> {
-        self.sessions
+    fn session_entry<'a>(&self, session_id: &str, cx: &'a App) -> Option<&'a DirectSessionEntry> {
+        self.app_store
+            .read(cx)
+            .sessions
             .iter()
             .find(|entry| entry.session_id == session_id)
+    }
+
+    fn handle_app_store_update(&mut self, cx: &mut Context<Self>) {
+        let revisions = self.app_store.read(cx).revisions;
+        let previous = self.store_revisions;
+        self.store_revisions = revisions;
+        let reactions = revisions.reactions_since(previous);
+
+        if reactions.sync_error {
+            self.error = self.app_store.read(cx).error.clone();
+        }
+        if reactions.reload_tabs {
+            if let Err(error) = self.apply_tab_rows(cx) {
+                self.error = Some(error.to_string());
+            }
+        }
+        if reactions.prune_sidebar {
+            self.prune_sidebar_collapse_state(cx);
+        }
+        if reactions.prune_window_state {
+            self.prune_store_dependent_window_state(cx);
+        }
+        if reactions.reload_runner_surfaces {
+            match self.route.clone() {
+                AppRoute::Runners => self.load_runner_page(cx),
+                AppRoute::RunnerDetail(handle) => self.load_runner_detail(handle, cx),
+                _ => {}
+            }
+        }
+        if reactions.reload_crew_surfaces {
+            match self.route.clone() {
+                AppRoute::Crews => self.load_crew_page(cx),
+                AppRoute::CrewEditor(crew_id) => self.load_crew_editor(crew_id, cx),
+                _ => {}
+            }
+        }
+        if reactions.apply_terminal_settings {
+            self.apply_terminal_settings(cx);
+        }
+
+        if reactions.notify_shell() || (reactions.terminal_wake && self.route.terminal_visible()) {
+            cx.notify();
+        }
     }
 }
 
@@ -809,13 +610,28 @@ fn run() -> Result<()> {
             #[cfg(target_os = "macos")]
             runner_backend::wake::install(&core.events);
 
+            let (settings, settings_error) = match AppSettings::load(&ui_settings_path) {
+                Ok(settings) => (settings, None),
+                Err(error) => (AppSettings::default(), Some(error.to_string())),
+            };
+            let app_store = cx.new(|cx| {
+                AppStore::new(
+                    core.clone(),
+                    ui_settings_path.clone(),
+                    settings,
+                    settings_error,
+                    cx,
+                )
+            });
+            cx.set_global(GlobalAppStore(app_store));
+
             let quit_core = core.clone();
             cx.on_action(move |_: &Quit, cx| {
                 if let Some(window) = cx
                     .active_window()
                     .and_then(|window| window.downcast::<NativeRoot>())
                 {
-                    let _ = window.update(cx, |this, _, _| this.save_settings());
+                    let _ = window.update(cx, |this, _, cx| this.save_settings(cx));
                 }
                 if let Err(error) = stop_running_sessions_on_quit(&quit_core) {
                     eprintln!("Runner quit session teardown failed: {error:#}");
@@ -905,8 +721,7 @@ fn run() -> Result<()> {
                 },
             ]);
 
-            open_runner_window(core.clone(), ui_settings_path.clone(), cx)
-                .expect("open Runner window");
+            open_runner_window(cx).expect("open Runner window");
             cx.activate(true);
         });
 
@@ -914,11 +729,9 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-fn open_runner_window(core: AppCore, settings_path: PathBuf, cx: &mut App) -> Result<()> {
-    let (settings, settings_error) = match AppSettings::load(&settings_path) {
-        Ok(settings) => (settings, None),
-        Err(error) => (AppSettings::default(), Some(error.to_string())),
-    };
+fn open_runner_window(cx: &mut App) -> Result<()> {
+    let app_store = global_app_store(cx);
+    let settings = &app_store.read(cx).settings;
     let (window_width, window_height) = cx
         .primary_display()
         .map(|display| {
@@ -945,21 +758,12 @@ fn open_runner_window(core: AppCore, settings_path: PathBuf, cx: &mut App) -> Re
             ..Default::default()
         },
         |window, cx| {
-            let root = cx.new(|cx| {
-                NativeRoot::new(
-                    core.clone(),
-                    settings_path.clone(),
-                    settings.clone(),
-                    settings_error.clone(),
-                    window,
-                    cx,
-                )
-            });
+            let root = cx.new(|cx| NativeRoot::new(app_store.clone(), window, cx));
             let weak = root.downgrade();
             window.on_window_should_close(cx, move |window, cx| {
-                let _ = weak.update(cx, |this, _| {
-                    this.save_window_size(window);
-                    this.save_settings();
+                let _ = weak.update(cx, |this, cx| {
+                    this.save_window_size(window, cx);
+                    this.save_settings(cx);
                 });
                 true
             });
@@ -996,51 +800,10 @@ mod native_root_tests {
             AppRoute::RunnerDetail("runner".into()),
             AppRoute::Crews,
             AppRoute::CrewEditor("crew".into()),
+            AppRoute::Mission("mission".into()),
             AppRoute::Settings,
         ] {
             assert!(!route.terminal_visible());
-        }
-    }
-
-    #[test]
-    fn entity_refresh_events_match_runner_and_crew_dependencies() {
-        let event = |name| runner_backend::events::AppEvent {
-            name,
-            payload: serde_json::Value::Null,
-        };
-
-        assert_eq!(
-            EntityRefreshKind::for_event(&event("runner/activity")),
-            EntityRefreshKind::Runners
-        );
-        for name in ["runner/changed", "crew/changed", "slot/changed"] {
-            assert_eq!(
-                EntityRefreshKind::for_event(&event(name)),
-                EntityRefreshKind::All
-            );
-        }
-        assert_eq!(
-            EntityRefreshKind::for_event(&event("session/status")),
-            EntityRefreshKind::None
-        );
-    }
-
-    #[test]
-    fn entity_refresh_merge_covers_every_pair() {
-        use EntityRefreshKind::{All, None, Runners};
-
-        for (left, right, expected) in [
-            (None, None, None),
-            (None, Runners, Runners),
-            (None, All, All),
-            (Runners, None, Runners),
-            (Runners, Runners, Runners),
-            (Runners, All, All),
-            (All, None, All),
-            (All, Runners, All),
-            (All, All, All),
-        ] {
-            assert_eq!(left.merge(right), expected, "{left:?} + {right:?}");
         }
     }
 

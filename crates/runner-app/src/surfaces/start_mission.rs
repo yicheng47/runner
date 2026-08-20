@@ -10,7 +10,6 @@ use runner_backend::model::SlotWithRunner;
 use runner_backend::ops::crew::CrewListItem;
 use runner_backend::repo::project::ProjectRow;
 
-use super::*;
 use crate::*;
 
 pub(crate) struct StartMissionModalState {
@@ -45,12 +44,18 @@ impl NativeRoot {
     ) {
         let project = project_id
             .as_deref()
-            .and_then(|id| self.projects.iter().find(|project| project.id == id))
+            .and_then(|id| {
+                self.app_store
+                    .read(cx)
+                    .projects
+                    .iter()
+                    .find(|project| project.id == id)
+            })
             .cloned();
         let cwd = project
             .as_ref()
             .map(|project| project.cwd.clone())
-            .unwrap_or_else(|| self.settings.default_working_dir.clone());
+            .unwrap_or_else(|| self.settings(cx).default_working_dir.clone());
         let title = cx.new(|input_cx| {
             TextField::new(
                 input_cx.focus_handle(),
@@ -120,7 +125,7 @@ impl NativeRoot {
         crew_focus.focus(window);
         cx.notify();
 
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::crew::crew_list(&core, 1, 10_000, "")
                 .map(|page| page.items)
@@ -189,7 +194,7 @@ impl NativeRoot {
     }
 
     fn load_start_mission_roster(&mut self, crew_id: String, cx: &mut Context<Self>) {
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let load_id = crew_id.clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::slot::slot_list(&core, &load_id).map_err(|error| error.to_string())
@@ -318,8 +323,8 @@ impl NativeRoot {
         modal.submitting = true;
         modal.error = None;
         set_start_mission_fields_disabled(modal, true, cx);
-        let size = self.estimated_mission_terminal_size(window);
-        let core = self.core.clone();
+        let size = self.estimated_mission_terminal_size(window, cx);
+        let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             runner_backend::ops::mission::mission_start_impl_with_size(&core, input, Some(size))
                 .await
@@ -331,7 +336,7 @@ impl NativeRoot {
                 match result {
                     Ok(output) => {
                         this.start_mission_modal = None;
-                        this.refresh_sidebar(SidebarRefreshKind::All, cx);
+                        this.refresh_store(StoreRefreshKind::All, cx);
                         this.open_mission(output.mission.id, window, cx);
                     }
                     Err(error) => {

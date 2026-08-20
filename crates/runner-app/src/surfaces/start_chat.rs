@@ -162,10 +162,16 @@ impl NativeRoot {
         if self.start_chat_modal.is_some() {
             return;
         }
-        let project = self
-            .active_project_id
+        let active_project_id = self.active_project_id(cx);
+        let project = active_project_id
             .as_deref()
-            .and_then(|id| self.projects.iter().find(|project| project.id == id))
+            .and_then(|id| {
+                self.app_store
+                    .read(cx)
+                    .projects
+                    .iter()
+                    .find(|project| project.id == id)
+            })
             .cloned();
         self.open_start_chat_modal(ChatTarget::NewTab, None, project, window, cx);
     }
@@ -180,7 +186,13 @@ impl NativeRoot {
             return;
         }
         let project = project_id
-            .and_then(|id| self.projects.iter().find(|project| project.id == id))
+            .and_then(|id| {
+                self.app_store
+                    .read(cx)
+                    .projects
+                    .iter()
+                    .find(|project| project.id == id)
+            })
             .cloned();
         self.open_start_chat_modal(ChatTarget::NewTab, None, project, window, cx);
     }
@@ -194,10 +206,16 @@ impl NativeRoot {
         let Some(tab_id) = self.tabs.active_tab_id().map(str::to_owned) else {
             return;
         };
-        let project = self
-            .active_project_id
+        let active_project_id = self.active_project_id(cx);
+        let project = active_project_id
             .as_deref()
-            .and_then(|id| self.projects.iter().find(|project| project.id == id))
+            .and_then(|id| {
+                self.app_store
+                    .read(cx)
+                    .projects
+                    .iter()
+                    .find(|project| project.id == id)
+            })
             .cloned();
         self.open_start_chat_modal(
             ChatTarget::Pane {
@@ -220,31 +238,51 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         let mut error = None;
-        match runner_backend::ops::runner::runner_list(&self.core) {
-            Ok(runners) => self.runners = runners,
+        match runner_backend::ops::runner::runner_list(self.core(cx)) {
+            Ok(runners) => self.app_store.update(cx, |store, store_cx| {
+                store.replace_runners(runners, store_cx)
+            }),
             Err(load_error) => error = Some(load_error.to_string()),
         }
 
         let (runtimes, agents_checking, agents_error) =
-            load_selectable_runtimes(&self.core, &self.settings);
-        let persisted_mode = read_start_chat_mode(&self.core.app_data_dir);
+            load_selectable_runtimes(self.core(cx), self.settings(cx));
+        let persisted_mode = read_start_chat_mode(&self.core(cx).app_data_dir);
         let mode = if default_runner_id.is_some() {
             ChatMode::Runner
         } else {
             persisted_mode
         };
         let runner_id = default_runner_id
-            .filter(|runner_id| self.runners.iter().any(|runner| runner.id == *runner_id))
-            .or_else(|| self.runners.first().map(|runner| runner.id.clone()));
+            .filter(|runner_id| {
+                self.app_store
+                    .read(cx)
+                    .runners
+                    .iter()
+                    .any(|runner| runner.id == *runner_id)
+            })
+            .or_else(|| {
+                self.app_store
+                    .read(cx)
+                    .runners
+                    .first()
+                    .map(|runner| runner.id.clone())
+            });
         let runtime_name = runtimes
             .iter()
-            .find(|runtime| runtime.name == self.settings.default_runtime)
+            .find(|runtime| runtime.name == self.settings(cx).default_runtime)
             .or_else(|| runtimes.first())
             .map(|runtime| runtime.name.clone());
         let title = match mode {
             ChatMode::Runner => runner_id
                 .as_deref()
-                .and_then(|runner_id| self.runners.iter().find(|runner| runner.id == runner_id))
+                .and_then(|runner_id| {
+                    self.app_store
+                        .read(cx)
+                        .runners
+                        .iter()
+                        .find(|runner| runner.id == runner_id)
+                })
                 .map(|runner| default_title_for_runner(&runner.handle))
                 .unwrap_or_default(),
             ChatMode::Runtime => runtime_name
@@ -255,10 +293,14 @@ impl NativeRoot {
         };
         let cwd_placeholder = cwd_placeholder(
             mode,
-            runner_id
-                .as_deref()
-                .and_then(|runner_id| self.runners.iter().find(|runner| runner.id == runner_id)),
-            &self.settings.default_working_dir,
+            runner_id.as_deref().and_then(|runner_id| {
+                self.app_store
+                    .read(cx)
+                    .runners
+                    .iter()
+                    .find(|runner| runner.id == runner_id)
+            }),
+            &self.settings(cx).default_working_dir,
         );
         let title_input = cx.new(|input_cx| {
             TextField::new(input_cx.focus_handle(), title, "e.g. quick-debug", false).text_size(13.)
@@ -273,12 +315,13 @@ impl NativeRoot {
         });
         let root = cx.entity();
         let runner_handler = selection_handler(&root, StartChatSelection::Runner);
+        let runners = self.app_store.read(cx).runners.clone();
         let runner_select = cx.new(|select_cx| {
             StyledSelect::new(
                 "start-chat-runner",
                 select_cx.focus_handle(),
                 runner_id.clone().unwrap_or_default(),
-                runner_options(&self.runners),
+                runner_options(&runners),
                 runner_handler,
                 select_cx,
             )
@@ -287,13 +330,17 @@ impl NativeRoot {
             .detailed(true)
             .monospace(true)
             .placeholder("No runners yet")
-            .disabled(self.runners.is_empty())
+            .disabled(runners.is_empty())
         });
         let runner_runtime_options = runner_runtime_options(
             &runtimes,
-            runner_id
-                .as_deref()
-                .and_then(|id| self.runners.iter().find(|runner| runner.id == id)),
+            runner_id.as_deref().and_then(|id| {
+                self.app_store
+                    .read(cx)
+                    .runners
+                    .iter()
+                    .find(|runner| runner.id == id)
+            }),
         );
         let runner_runtime_handler = selection_handler(&root, StartChatSelection::RunnerRuntime);
         let runner_runtime_select = cx.new(|select_cx| {
@@ -353,7 +400,7 @@ impl NativeRoot {
             target,
             project_id,
             mode,
-            runners: self.runners.clone(),
+            runners: self.app_store.read(cx).runners.clone(),
             runtimes,
             runner_id,
             runtime_name,
@@ -388,11 +435,11 @@ impl NativeRoot {
     }
 
     pub(crate) fn refresh_start_chat_runtimes(&mut self, cx: &mut Context<Self>) {
+        let (runtimes, agents_checking, agents_error) =
+            load_selectable_runtimes(self.core(cx), self.settings(cx));
         let Some(modal) = self.start_chat_modal.as_mut() else {
             return;
         };
-        let (runtimes, agents_checking, agents_error) =
-            load_selectable_runtimes(&self.core, &self.settings);
         let catalog_loaded = agents_error.is_none();
         let previous_runtime = modal.runtime_name.clone();
         let previous_override = modal.runner_runtime_override.clone();
@@ -449,12 +496,12 @@ impl NativeRoot {
         cx.notify();
     }
 
-    pub(crate) fn remember_active_runner(&mut self) {
+    pub(crate) fn remember_active_runner(&mut self, cx: &App) {
         let Some(session_id) = self.active_focused_session_id() else {
             return;
         };
         self.last_focused_runner_id = self
-            .session_entry(&session_id)
+            .session_entry(&session_id, cx)
             .and_then(|entry| entry.runner_id.clone());
     }
 
@@ -467,11 +514,13 @@ impl NativeRoot {
             return;
         }
         self.start_chat_modal = None;
-        self.focus_active_terminal(window);
+        self.focus_active_terminal(window, cx);
         cx.notify();
     }
 
     fn set_start_chat_mode(&mut self, mode: ChatMode, cx: &mut Context<Self>) {
+        let default_working_dir = self.settings(cx).default_working_dir.clone();
+        let app_data_dir = self.core(cx).app_data_dir.clone();
         let Some(modal) = self.start_chat_modal.as_mut() else {
             return;
         };
@@ -496,15 +545,11 @@ impl NativeRoot {
                 .unwrap_or_default(),
         };
         update_auto_title(&modal.title, derived, cx);
-        let placeholder = cwd_placeholder(
-            mode,
-            modal.selected_runner(),
-            &self.settings.default_working_dir,
-        );
+        let placeholder = cwd_placeholder(mode, modal.selected_runner(), &default_working_dir);
         modal.cwd.update(cx, |input, input_cx| {
             input.set_placeholder(placeholder, input_cx)
         });
-        let _ = write_start_chat_mode(&self.core.app_data_dir, mode);
+        let _ = write_start_chat_mode(&app_data_dir, mode);
         cx.notify();
     }
 
@@ -514,6 +559,7 @@ impl NativeRoot {
         value: &str,
         cx: &mut Context<Self>,
     ) {
+        let default_working_dir = self.settings(cx).default_working_dir.clone();
         let Some(modal) = self.start_chat_modal.as_mut() else {
             return;
         };
@@ -525,11 +571,8 @@ impl NativeRoot {
                     .map(|runner| default_title_for_runner(&runner.handle))
                     .unwrap_or_default();
                 update_auto_title(&modal.title, derived, cx);
-                let placeholder = cwd_placeholder(
-                    modal.mode,
-                    modal.selected_runner(),
-                    &self.settings.default_working_dir,
-                );
+                let placeholder =
+                    cwd_placeholder(modal.mode, modal.selected_runner(), &default_working_dir);
                 modal.cwd.update(cx, |input, input_cx| {
                     input.set_placeholder(placeholder, input_cx)
                 });
@@ -653,7 +696,7 @@ impl NativeRoot {
                     .selected_runner()
                     .and_then(|runner| runner.working_dir.as_deref())
                     .is_some_and(|path| !path.trim().is_empty()),
-            &self.settings.default_working_dir,
+            &self.settings(cx).default_working_dir,
         );
         let model = normalized_value(modal.model.read(cx).text());
         let effort = normalized_value(&modal.effort);
@@ -678,7 +721,7 @@ impl NativeRoot {
             {
                 self.tabs
                     .active()
-                    .map(|layout| self.estimated_terminal_size(layout, pane_id, window))
+                    .map(|layout| self.estimated_terminal_size(layout, pane_id, window, cx))
                     .unwrap_or((INITIAL_COLS, INITIAL_ROWS))
             }
             ChatTarget::Pane { .. } => {
@@ -707,7 +750,7 @@ impl NativeRoot {
                     effort,
                     cwd,
                 } => runner_backend::ops::session::session_start_direct(
-                    &self.core,
+                    self.core(cx),
                     runner_id,
                     runtime,
                     model,
@@ -723,7 +766,7 @@ impl NativeRoot {
                     effort,
                     cwd,
                 } => runner_backend::ops::session::session_start_runtime(
-                    &self.core,
+                    self.core(cx),
                     &runtime,
                     project_id,
                     cwd,
@@ -736,7 +779,7 @@ impl NativeRoot {
             spawned_id = Some(spawned.id.clone());
             if !title.is_empty() {
                 if let Err(error) = runner_backend::ops::session::session_rename(
-                    &self.core,
+                    self.core(cx),
                     &spawned.id,
                     Some(title),
                 ) {
@@ -745,19 +788,19 @@ impl NativeRoot {
                     ));
                 }
             }
-            self.refresh_sessions();
+            self.refresh_sessions(cx);
             match target {
                 ChatTarget::NewTab => {
-                    self.reload_tabs()?;
+                    self.reload_tabs(cx)?;
                     self.tabs.activate_session(&spawned.id);
-                    self.sync_active_project_from_active_tab();
+                    self.sync_active_project_from_active_tab(cx);
                 }
                 ChatTarget::Pane { pane_id, .. } => {
                     self.tabs.assign_to_active(&pane_id, &spawned.id)?;
-                    self.persist_active_tab()?;
-                    self.reload_tabs()?;
+                    self.persist_active_tab(cx)?;
+                    self.reload_tabs(cx)?;
                     self.tabs.activate_session(&spawned.id);
-                    self.sync_active_project_from_active_tab();
+                    self.sync_active_project_from_active_tab(cx);
                 }
             }
             self.ensure_active_tab_attached(window, cx)?;
@@ -767,10 +810,10 @@ impl NativeRoot {
         match result {
             Ok(session_id) => {
                 self.start_chat_modal = None;
-                self.route = AppRoute::Chat;
+                self.set_route(AppRoute::Chat, cx);
                 self.error = rename_error;
-                self.remember_active_runner();
-                self.mark_active_tab_viewed(window);
+                self.remember_active_runner(cx);
+                self.mark_active_tab_viewed(window, cx);
                 self.sync_active_chat_detail(cx);
                 self.begin_chat_transition(
                     &session_id,
@@ -783,12 +826,12 @@ impl NativeRoot {
             Err(start_error) => {
                 if let Some(session_id) = spawned_id {
                     self.start_chat_modal = None;
-                    let _ = self.reload_tabs();
+                    let _ = self.reload_tabs(cx);
                     self.tabs.activate_session(&session_id);
-                    self.sync_active_project_from_active_tab();
+                    self.sync_active_project_from_active_tab(cx);
                     let _ = self.ensure_active_tab_attached(window, cx);
-                    self.remember_active_runner();
-                    self.mark_active_tab_viewed(window);
+                    self.remember_active_runner(cx);
+                    self.mark_active_tab_viewed(window, cx);
                     self.sync_active_chat_detail(cx);
                     self.begin_chat_transition(
                         &session_id,

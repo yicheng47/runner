@@ -2,12 +2,13 @@
 
 use std::path::Path;
 
-use gpui::{radians, svg, DragMoveEvent, FontWeight, PathPromptOptions, Transformation};
+use gpui::{
+    radians, svg, DragMoveEvent, FontWeight, PathPromptOptions, Transformation, WeakEntity,
+};
 use runner_app::ui::{
     working_dir_text_field, ButtonVariant, ConfirmDialog, Field, Modal, OverlayWidth, TextField,
     Tooltip, WorkingDirField,
 };
-use runner_backend::events::AppEvent;
 use runner_backend::ops::mission::{MissionActivityState, MissionSummary};
 use runner_backend::repo::node::{NodeRow, NodeType};
 use runner_backend::windows::Subject;
@@ -17,64 +18,16 @@ use crate::surfaces::sidebar_logic::{
     attention_rollups, complete_unpinned_scope_order, container_drop_target, list_drop_target,
     mission_attention_state, ordered_pinned_node_ids_after_drop,
     ordered_root_node_ids_after_project_drop, ordered_visible_node_ids_after_drop,
-    rollup_attention_state, tab_attention_state, AttentionState, DropKind,
+    rollup_attention_state, tab_attention_state, AttentionState, DropKind, DropTarget,
 };
 use crate::*;
 
 const SIDEBAR_ROW_FONT_SIZE: f32 = 13.;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SidebarRefreshKind {
-    Activity,
-    Nodes,
-    Missions,
-    All,
-}
-
 #[derive(Clone, Copy)]
 enum ArchiveErrorTarget {
     App,
     Chat,
-}
-
-impl SidebarRefreshKind {
-    pub(crate) fn for_event(event: &AppEvent) -> Option<Self> {
-        match event.name {
-            "session/status" => Some(Self::Activity),
-            "chat/tab-attention-changed" | "chat/layout-changed" => Some(Self::Nodes),
-            "event/appended"
-                if event
-                    .payload
-                    .get("event")
-                    .and_then(|event| event.get("type"))
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|signal| {
-                        matches!(
-                            signal,
-                            "mission_start"
-                                | "mission_stopped"
-                                | "ask_human"
-                                | "human_question"
-                                | "human_response"
-                                | "runner_status"
-                        )
-                    }) =>
-            {
-                Some(Self::Missions)
-            }
-            "session/exit" | "session/archived" | "session/updated" | "runner/activity"
-            | "runner/changed" | "crew/changed" | "slot/changed" | "mission/changed"
-            | "project/changed" => Some(Self::All),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn merge(self, other: Self) -> Self {
-        if self == other {
-            return self;
-        }
-        Self::All
-    }
 }
 
 #[derive(Clone)]
@@ -195,15 +148,161 @@ enum SidebarMenuAction {
     DeleteProject(String),
 }
 
+pub(crate) struct Sidebar {
+    shell: WeakEntity<NativeRoot>,
+    app_store: Entity<AppStore>,
+    store_revisions: StoreRevisions,
+    scroll: ScrollHandle,
+    scrollbar: Entity<Scrollbar>,
+    create_menu: Entity<PopoverMenu>,
+    context_menu: Option<Entity<ContextMenu>>,
+    rename: Option<SidebarRename>,
+    archiving_sessions: HashSet<String>,
+    archiving_missions: HashSet<String>,
+    active_project_id: Option<String>,
+    dragged_id: Option<String>,
+    drop_target: Option<DropTarget>,
+    drop_marker: Option<String>,
+    _rename_focus_subscription: Option<Subscription>,
+    _store_subscription: Subscription,
+}
+
+impl Sidebar {
+    pub(crate) fn new(
+        shell: WeakEntity<NativeRoot>,
+        app_store: Entity<AppStore>,
+        active_project_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let scroll = ScrollHandle::new();
+        let scroll_owner = cx.entity_id();
+        let scrollbar = cx.new(|_| Scrollbar::app(scroll.clone(), scroll_owner));
+        let root = cx.entity();
+        let create_menu = cx.new(move |menu_cx| {
+            let action_root = root.clone();
+            PopoverMenu::new(
+                "sidebar-create",
+                menu_cx.focus_handle(),
+                vec![
+                    UiMenuItem::new("New chat").icon("message-square-plus.svg"),
+                    UiMenuItem::new("New mission").icon("flag.svg"),
+                ],
+                Rc::new(move |index, window, cx| {
+                    action_root.update(cx, |this, cx| {
+                        this.handle_sidebar_create_action(index, window, cx);
+                    });
+                }),
+                menu_cx,
+            )
+            .min_width(px(160.))
+            .trigger_size(IconButtonSize::Sm)
+            .trigger_icon("plus.svg")
+            .without_trigger_tooltip()
+        });
+        let store_revisions = app_store.read(cx).revisions;
+        Self {
+            shell,
+            app_store: app_store.clone(),
+            store_revisions,
+            scroll,
+            scrollbar,
+            create_menu,
+            context_menu: None,
+            rename: None,
+            archiving_sessions: HashSet::new(),
+            archiving_missions: HashSet::new(),
+            active_project_id,
+            dragged_id: None,
+            drop_target: None,
+            drop_marker: None,
+            _rename_focus_subscription: None,
+            _store_subscription: cx.observe(&app_store, |this, _, cx| {
+                this.handle_store_update(cx);
+            }),
+        }
+    }
+
+    fn core<'a>(&self, cx: &'a App) -> &'a AppCore {
+        &self.app_store.read(cx).core
+    }
+
+    fn settings<'a>(&self, cx: &'a App) -> &'a AppSettings {
+        &self.app_store.read(cx).settings
+    }
+
+    fn update_app_settings(
+        &self,
+        cx: &mut Context<Self>,
+        persist: bool,
+        update: impl FnOnce(&mut AppSettings) -> bool,
+    ) -> bool {
+        self.app_store.update(cx, |store, store_cx| {
+            store.update_settings(update, persist, store_cx)
+        })
+    }
+
+    fn refresh_store(&self, refresh: StoreRefreshKind, cx: &mut Context<Self>) {
+        self.app_store
+            .update(cx, |store, store_cx| store.refresh(refresh, store_cx));
+    }
+
+    fn handle_store_update(&mut self, cx: &mut Context<Self>) {
+        let revisions = self.app_store.read(cx).revisions;
+        let previous = self.store_revisions;
+        self.store_revisions = revisions;
+        if revisions.nodes != previous.nodes
+            || revisions.projects != previous.projects
+            || revisions.missions != previous.missions
+            || revisions.sessions != previous.sessions
+            || revisions.activity != previous.activity
+            || revisions.settings != previous.settings
+        {
+            cx.notify();
+        }
+    }
+
+    fn report_error(&self, error: String, cx: &mut Context<Self>) {
+        let Some(shell) = self.shell.upgrade() else {
+            return;
+        };
+        cx.defer(move |cx| {
+            shell.update(cx, |shell, shell_cx| {
+                shell.error = Some(error);
+                shell_cx.notify();
+            });
+        });
+    }
+
+    fn schedule_shell_notify(&self, cx: &mut Context<Self>) {
+        let Some(shell) = self.shell.upgrade() else {
+            return;
+        };
+        cx.defer(move |cx| {
+            shell.update(cx, |_, shell_cx| shell_cx.notify());
+        });
+    }
+
+    fn focus_shell_terminal(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(shell) = self.shell.upgrade() else {
+            return;
+        };
+        window.defer(cx, move |window, cx| {
+            shell.update(cx, |shell, shell_cx| {
+                shell.focus_active_terminal(window, shell_cx);
+            });
+        });
+    }
+}
+
 impl NativeRoot {
-    pub(crate) fn tab_label(&self, layout: &PaneLayout) -> String {
+    pub(crate) fn tab_label(&self, layout: &PaneLayout, cx: &App) -> String {
         if let Some(name) = &layout.name {
             return name.clone();
         }
         let labels = layout
             .session_ids()
             .into_iter()
-            .filter_map(|session_id| self.session_entry(&session_id))
+            .filter_map(|session_id| self.session_entry(&session_id, cx))
             .map(session_label)
             .collect::<Vec<_>>();
         if labels.is_empty() {
@@ -213,94 +312,54 @@ impl NativeRoot {
         }
     }
 
-    pub(crate) fn refresh_sidebar(&mut self, refresh: SidebarRefreshKind, cx: &mut Context<Self>) {
-        if matches!(
-            refresh,
-            SidebarRefreshKind::Activity | SidebarRefreshKind::All
-        ) {
-            self.session_activity =
-                runner_backend::ops::session::session_activity_snapshot(&self.core);
-        }
-        if matches!(refresh, SidebarRefreshKind::Nodes | SidebarRefreshKind::All) {
-            if matches!(refresh, SidebarRefreshKind::All) {
-                self.refresh_sessions();
-            }
-            if let Err(error) = self.reload_tabs() {
-                self.error = Some(error.to_string());
-            }
-        }
-        if matches!(refresh, SidebarRefreshKind::All) {
-            match runner_backend::ops::project::project_list(&self.core) {
-                Ok(projects) => self.projects = projects,
-                Err(error) => self.error = Some(error.to_string()),
-            }
-            let mut visible = self
-                .sessions
-                .iter()
-                .map(|session| session.session_id.clone())
-                .collect::<std::collections::HashSet<_>>();
-            if matches!(self.route, AppRoute::Mission(_)) {
-                visible.extend(self.mission_workspace.session_ids());
-            }
-            self.attached.retain(|id, _| visible.contains(id));
-            let direct_visible = self
-                .sessions
-                .iter()
-                .map(|session| session.session_id.as_str())
-                .collect::<std::collections::HashSet<_>>();
-            self.pane_action_menus
-                .retain(|id, _| direct_visible.contains(id.as_str()));
-            self.session_exit_codes
-                .retain(|id, _| direct_visible.contains(id.as_str()));
-        }
-        if matches!(
-            refresh,
-            SidebarRefreshKind::Missions | SidebarRefreshKind::All
-        ) {
-            let core = self.core.clone();
-            cx.spawn(async move |weak, cx| {
-                let result =
-                    runner_backend::ops::mission::mission_list_summary_impl(&core, None).await;
-                let _ = weak.update(cx, |this, cx| {
-                    match result {
-                        Ok(missions) => this.missions = missions,
-                        Err(error) => this.error = Some(error.to_string()),
-                    }
-                    cx.notify();
-                });
-            })
-            .detach();
-        }
-        self.prune_sidebar_collapse_state();
-        cx.notify();
-    }
-
-    pub(crate) fn prune_sidebar_collapse_state(&mut self) {
-        let previous_projects = self.settings.sidebar_collapsed_projects.len();
+    pub(crate) fn prune_sidebar_collapse_state(&mut self, cx: &mut Context<Self>) {
         let project_ids = self
+            .app_store
+            .read(cx)
             .projects
             .iter()
-            .map(|project| project.id.as_str())
+            .map(|project| project.id.clone())
             .collect::<std::collections::HashSet<_>>();
-        self.settings
-            .sidebar_collapsed_projects
-            .retain(|id| project_ids.contains(id.as_str()));
-        if previous_projects != self.settings.sidebar_collapsed_projects.len() {
-            self.save_settings();
-        }
+        self.app_store.update(cx, |store, store_cx| {
+            store.update_settings(
+                |settings| {
+                    let previous = settings.sidebar_collapsed_projects.len();
+                    settings
+                        .sidebar_collapsed_projects
+                        .retain(|id| project_ids.contains(id));
+                    previous != settings.sidebar_collapsed_projects.len()
+                },
+                true,
+                store_cx,
+            );
+        });
+    }
+
+    pub(crate) fn prune_store_dependent_window_state(&mut self, cx: &mut Context<Self>) {
+        let sessions = &self.app_store.read(cx).sessions;
+        let visible = sessions
+            .iter()
+            .map(|session| session.session_id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        self.attached.retain(|id, _| visible.contains(id));
+        let direct_visible = sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        self.pane_action_menus
+            .retain(|id, _| direct_visible.contains(id.as_str()));
+        self.session_exit_codes
+            .retain(|id, _| direct_visible.contains(id.as_str()));
     }
 
     pub(crate) fn dismiss_sidebar_transients(&mut self, cx: &mut Context<Self>) {
-        self.sidebar_create_menu
-            .update(cx, |menu, menu_cx| menu.close(menu_cx));
-        self.sidebar_context_menu = None;
-        self.sidebar_rename = None;
-        self._sidebar_rename_focus_subscription = None;
+        self.sidebar.update(cx, |sidebar, sidebar_cx| {
+            sidebar.dismiss_transients(sidebar_cx)
+        });
         self.project_modal = None;
         self._project_cwd_subscription = None;
         self.project_delete_confirm = None;
         self.project_delete_busy = false;
-        self.clear_sidebar_drag(cx);
         cx.notify();
     }
 
@@ -311,24 +370,24 @@ impl NativeRoot {
     ) {
         if let AppRoute::Mission(mission_id) = &self.route {
             let subject = Subject::Mission(mission_id.clone());
-            self.core.windows.set_subjects("main", vec![subject]);
+            self.core(cx).windows.set_subjects("main", vec![subject]);
             if window.is_window_active() {
-                self.core.windows.mark_focused("main");
+                self.core(cx).windows.mark_focused("main");
             } else {
-                self.core.windows.mark_blurred("main");
+                self.core(cx).windows.mark_blurred("main");
             }
-            self.core.broadcast_focus_map();
+            self.core(cx).broadcast_focus_map();
             self.sync_mission_subject_ownership(window, cx);
             return;
         }
         if self.route != AppRoute::Chat {
-            self.core.windows.set_subjects("main", Vec::new());
-            self.core.windows.mark_blurred("main");
-            self.core.broadcast_focus_map();
+            self.core(cx).windows.set_subjects("main", Vec::new());
+            self.core(cx).windows.mark_blurred("main");
+            self.core(cx).broadcast_focus_map();
             return;
         }
         if window.is_window_active() {
-            self.mark_active_tab_viewed(window);
+            self.mark_active_tab_viewed(window, cx);
         } else {
             let subjects = self
                 .tabs
@@ -337,57 +396,207 @@ impl NativeRoot {
                 .flat_map(PaneLayout::session_ids)
                 .map(Subject::DirectChat)
                 .collect();
-            self.core.windows.set_subjects("main", subjects);
-            self.core.windows.mark_blurred("main");
-            self.core.broadcast_focus_map();
+            self.core(cx).windows.set_subjects("main", subjects);
+            self.core(cx).windows.mark_blurred("main");
+            self.core(cx).broadcast_focus_map();
         }
         cx.notify();
     }
 
-    pub(crate) fn mark_active_tab_viewed(&mut self, window: &Window) {
+    pub(crate) fn mark_active_tab_viewed(&mut self, window: &Window, cx: &mut Context<Self>) {
         let Some(layout) = self.tabs.active() else {
-            self.core.windows.set_subjects("main", Vec::new());
+            self.core(cx).windows.set_subjects("main", Vec::new());
             return;
         };
         let tab_id = layout.id.clone();
         let member_ids = layout.session_ids();
         if !window.is_window_active() {
-            self.core.windows.set_subjects(
+            self.core(cx).windows.set_subjects(
                 "main",
                 member_ids.into_iter().map(Subject::DirectChat).collect(),
             );
-            self.core.windows.mark_blurred("main");
-            self.core.broadcast_focus_map();
+            self.core(cx).windows.mark_blurred("main");
+            self.core(cx).broadcast_focus_map();
             return;
         }
-        match runner_backend::ops::node::node_mark_viewed(&self.core, "main", &tab_id, member_ids) {
+        match runner_backend::ops::node::node_mark_viewed(
+            self.core(cx),
+            "main",
+            &tab_id,
+            member_ids,
+        ) {
             Ok(updated) => {
-                if let Some(node) = self.nodes.iter_mut().find(|node| node.id == tab_id) {
-                    *node = updated;
-                }
+                self.app_store
+                    .update(cx, |store, store_cx| store.replace_node(updated, store_cx));
             }
             Err(error) => self.error = Some(error.to_string()),
         }
     }
 
-    fn resolved_sidebar_rows(&self) -> Vec<SidebarRow> {
-        let layouts = self
+    pub(crate) fn sync_active_project_from_active_tab(&mut self, cx: &mut Context<Self>) {
+        let active_project_id = self.tabs.active_tab_id().and_then(|tab_id| {
+            let node = self
+                .app_store
+                .read(cx)
+                .nodes
+                .iter()
+                .find(|node| node.id == tab_id)?;
+            node_project_id(&self.app_store.read(cx).nodes, node)
+        });
+        self.sidebar.update(cx, |sidebar, sidebar_cx| {
+            sidebar.set_active_project(active_project_id, sidebar_cx)
+        });
+    }
+
+    pub(crate) fn active_project_id(&self, cx: &App) -> Option<String> {
+        self.sidebar.read(cx).active_project_id.clone()
+    }
+
+    pub(crate) fn sidebar_archiving_session(&self, session_id: &str, cx: &App) -> bool {
+        self.sidebar
+            .read(cx)
+            .archiving_sessions
+            .contains(session_id)
+    }
+
+    pub(crate) fn set_sidebar_mission_archiving(
+        &mut self,
+        mission_id: String,
+        archiving: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar.update(cx, |sidebar, sidebar_cx| {
+            sidebar.set_mission_archiving(mission_id, archiving, sidebar_cx)
+        });
+    }
+
+    pub(crate) fn clear_sidebar_drag(&mut self, cx: &mut Context<Self>) {
+        self.sidebar.update(cx, |sidebar, sidebar_cx| {
+            sidebar.clear_sidebar_drag(sidebar_cx)
+        });
+    }
+
+    pub(crate) fn archive_chat_sessions(
+        &mut self,
+        session_ids: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let active = self.active_focused_session_id();
+        self.sidebar.update(cx, |sidebar, sidebar_cx| {
+            sidebar.archive_sessions(
+                session_ids,
+                ArchiveErrorTarget::Chat,
+                active,
+                window,
+                sidebar_cx,
+            )
+        });
+    }
+
+    fn activate_sidebar_session(
+        &mut self,
+        tab_id: &str,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.tabs.activate(tab_id) {
+            return;
+        }
+        self.set_route(AppRoute::Chat, cx);
+        if let Some(layout) = self.tabs.active_mut() {
+            layout.focus_session(session_id);
+        }
+        self.activate_tab(tab_id, window, cx);
+    }
+}
+
+impl Sidebar {
+    fn dismiss_transients(&mut self, cx: &mut Context<Self>) {
+        self.create_menu
+            .update(cx, |menu, menu_cx| menu.close(menu_cx));
+        let had_context_menu = self.context_menu.take().is_some();
+        self.rename = None;
+        self._rename_focus_subscription = None;
+        self.clear_sidebar_drag(cx);
+        if had_context_menu {
+            self.schedule_shell_notify(cx);
+        }
+        cx.notify();
+    }
+
+    fn set_active_project(&mut self, project_id: Option<String>, cx: &mut Context<Self>) {
+        self.active_project_id = project_id;
+        cx.notify();
+    }
+
+    fn set_mission_archiving(
+        &mut self,
+        mission_id: String,
+        archiving: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = if archiving {
+            self.archiving_missions.insert(mission_id)
+        } else {
+            self.archiving_missions.remove(&mission_id)
+        };
+        if changed {
+            cx.notify();
+        }
+    }
+
+    fn open_project_modal(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(shell) = self.shell.upgrade() else {
+            return;
+        };
+        window.defer(cx, move |window, cx| {
+            shell.update(cx, |shell, shell_cx| {
+                shell.open_project_modal(window, shell_cx)
+            });
+        });
+    }
+
+    fn open_mission(&self, mission_id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(shell) = self.shell.upgrade() else {
+            return;
+        };
+        window.defer(cx, move |window, cx| {
+            shell.update(cx, |shell, shell_cx| {
+                shell.open_mission(mission_id, window, shell_cx)
+            });
+        });
+    }
+
+    fn resolved_sidebar_rows(&self, cx: &App) -> Vec<SidebarRow> {
+        let Some(shell) = self.shell.upgrade() else {
+            return Vec::new();
+        };
+        let shell = shell.read(cx);
+        let layouts = shell
             .tabs
             .tabs()
             .iter()
             .map(|layout| (layout.id.as_str(), layout))
             .collect::<HashMap<_, _>>();
         let sessions = self
+            .app_store
+            .read(cx)
             .sessions
             .iter()
             .map(|session| (session.session_id.as_str(), session))
             .collect::<HashMap<_, _>>();
         let missions = self
+            .app_store
+            .read(cx)
             .missions
             .iter()
             .map(|summary| (summary.mission.id.as_str(), summary))
             .collect::<HashMap<_, _>>();
-        self.nodes
+        self.app_store
+            .read(cx)
+            .nodes
             .iter()
             .filter_map(|node| match node.node_type {
                 NodeType::Tab => {
@@ -401,9 +610,13 @@ impl NativeRoot {
                         return None;
                     }
                     let working = members.iter().any(|member| {
-                        self.sidebar_archiving_sessions.contains(&member.session_id)
+                        self.archiving_sessions.contains(&member.session_id)
                             || (member.status == SessionStatus::Running
-                                && self.session_activity.get(&member.session_id)
+                                && self
+                                    .app_store
+                                    .read(cx)
+                                    .session_activity
+                                    .get(&member.session_id)
                                     == Some(&SessionActivityState::Busy))
                     });
                     Some(SidebarRow::Tab {
@@ -420,10 +633,7 @@ impl NativeRoot {
                 NodeType::Mission => {
                     let summary = missions.get(node.ref_id.as_deref()?)?;
                     let idle = summary.activity == Some(MissionActivityState::Idle);
-                    let attention = if self
-                        .sidebar_archiving_missions
-                        .contains(&summary.mission.id)
-                    {
+                    let attention = if self.archiving_missions.contains(&summary.mission.id) {
                         AttentionState::Working
                     } else {
                         mission_attention_state(summary.any_session_live, idle)
@@ -455,31 +665,27 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.tabs.activate(tab_id) {
+        let Some(shell) = self.shell.upgrade() else {
             return;
-        }
-        self.route = AppRoute::Chat;
-        if let Some(layout) = self.tabs.active_mut() {
-            layout.focus_session(session_id);
-        }
-        self.activate_tab(tab_id, window, cx);
-    }
-
-    pub(crate) fn sync_active_project_from_active_tab(&mut self) {
-        self.active_project_id = self.tabs.active_tab_id().and_then(|tab_id| {
-            let node = self.nodes.iter().find(|node| node.id == tab_id)?;
-            node_project_id(&self.nodes, node)
+        };
+        let tab_id = tab_id.to_owned();
+        let session_id = session_id.to_owned();
+        window.defer(cx, move |window, cx| {
+            shell.update(cx, |shell, shell_cx| {
+                shell.activate_sidebar_session(&tab_id, &session_id, window, shell_cx)
+            });
         });
     }
 
     fn toggle_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
         self.active_project_id = Some(project_id.to_owned());
-        if !self.settings.sidebar_collapsed_projects.remove(project_id) {
-            self.settings
-                .sidebar_collapsed_projects
-                .insert(project_id.to_owned());
-        }
-        self.save_settings();
+        let project_id = project_id.to_owned();
+        self.update_app_settings(cx, true, move |settings| {
+            if !settings.sidebar_collapsed_projects.remove(&project_id) {
+                settings.sidebar_collapsed_projects.insert(project_id);
+            }
+            true
+        });
         cx.notify();
     }
 
@@ -490,8 +696,18 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         match index {
-            0 => self.open_sidebar_chat_modal(None, window, cx),
-            1 => self.open_start_mission_modal(None, None, window, cx),
+            0 | 1 => {
+                let Some(shell) = self.shell.upgrade() else {
+                    return;
+                };
+                window.defer(cx, move |window, cx| {
+                    shell.update(cx, |shell, shell_cx| match index {
+                        0 => shell.open_sidebar_chat_modal(None, window, shell_cx),
+                        1 => shell.open_start_mission_modal(None, None, window, shell_cx),
+                        _ => unreachable!(),
+                    });
+                });
+            }
             _ => unreachable!("sidebar create menu index"),
         }
     }
@@ -515,27 +731,27 @@ impl NativeRoot {
         });
         let focus = input.read(cx).focus_handle();
         let root = cx.entity();
-        self._sidebar_rename_focus_subscription =
+        self._rename_focus_subscription =
             Some(cx.on_focus_out(&focus, window, move |_, _, window, cx| {
                 root.update(cx, |this, cx| this.submit_sidebar_rename(window, cx));
             }));
-        self.sidebar_rename = Some(SidebarRename { target, input });
+        self.rename = Some(SidebarRename { target, input });
         focus.focus(window);
         cx.notify();
     }
 
     fn submit_sidebar_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(rename) = self.sidebar_rename.take() else {
+        let Some(rename) = self.rename.take() else {
             return;
         };
-        self._sidebar_rename_focus_subscription = None;
+        self._rename_focus_subscription = None;
         let next = rename.input.read(cx).text().trim().to_owned();
         let result = match rename.target {
             SidebarRenameTarget::Tab { node_id, original } => {
                 if next == original.trim() {
                     Ok(())
                 } else {
-                    runner_backend::ops::node::node_rename(&self.core, node_id, next).map(drop)
+                    runner_backend::ops::node::node_rename(self.core(cx), node_id, next).map(drop)
                 }
             }
             SidebarRenameTarget::Project {
@@ -545,7 +761,7 @@ impl NativeRoot {
                 if next.is_empty() || next == original.trim() {
                     Ok(())
                 } else {
-                    runner_backend::ops::project::project_rename(&self.core, project_id, next)
+                    runner_backend::ops::project::project_rename(self.core(cx), project_id, next)
                         .map(drop)
                 }
             }
@@ -557,24 +773,26 @@ impl NativeRoot {
                     Ok(())
                 } else {
                     futures::executor::block_on(runner_backend::ops::mission::mission_rename_impl(
-                        &self.core, mission_id, next,
+                        self.core(cx),
+                        mission_id,
+                        next,
                     ))
                     .map(drop)
                 }
             }
         };
         match result {
-            Ok(()) => self.refresh_sidebar(SidebarRefreshKind::All, cx),
-            Err(error) => self.error = Some(error.to_string()),
+            Ok(()) => self.refresh_store(StoreRefreshKind::All, cx),
+            Err(error) => self.report_error(error.to_string(), cx),
         }
-        self.focus_active_terminal(window);
+        self.focus_shell_terminal(window, cx);
         cx.notify();
     }
 
     fn cancel_sidebar_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.sidebar_rename = None;
-        self._sidebar_rename_focus_subscription = None;
-        self.focus_active_terminal(window);
+        self.rename = None;
+        self._rename_focus_subscription = None;
+        self.focus_shell_terminal(window, cx);
         cx.notify();
     }
 
@@ -612,7 +830,8 @@ impl NativeRoot {
                 }),
                 Rc::new(move |_, cx| {
                     dismiss_root.update(cx, |this, cx| {
-                        this.sidebar_context_menu = None;
+                        this.context_menu = None;
+                        this.schedule_shell_notify(cx);
                         cx.notify();
                     });
                 }),
@@ -620,8 +839,9 @@ impl NativeRoot {
             .width(px(width))
         });
         let focus = menu.read(cx).focus_handle();
-        self.sidebar_context_menu = Some(menu);
+        self.context_menu = Some(menu);
         focus.focus(window);
+        self.schedule_shell_notify(cx);
         cx.notify();
     }
 
@@ -655,7 +875,7 @@ impl NativeRoot {
                 }),
             ),
         ];
-        if node_project_id(&self.nodes, &node).is_some() {
+        if node_project_id(&self.app_store.read(cx).nodes, &node).is_some() {
             entries.push((
                 UiMenuItem::new("Remove from project").icon("folder-minus.svg"),
                 SidebarMenuAction::RemoveTabFromProject(
@@ -776,34 +996,55 @@ impl NativeRoot {
     ) {
         match action {
             SidebarMenuAction::NewChat(project_id) => {
-                self.active_project_id = project_id.clone();
+                self.set_active_project(project_id.clone(), cx);
                 if let Some(project_id) = project_id.as_deref() {
-                    self.settings.sidebar_projects_open = true;
-                    self.settings.sidebar_collapsed_projects.remove(project_id);
-                    self.save_settings();
+                    let project_id = project_id.to_owned();
+                    self.update_app_settings(cx, true, move |settings| {
+                        settings.sidebar_projects_open = true;
+                        settings.sidebar_collapsed_projects.remove(&project_id);
+                        true
+                    });
                 }
-                self.open_sidebar_chat_modal(project_id.as_deref(), window, cx);
+                if let Some(shell) = self.shell.upgrade() {
+                    window.defer(cx, move |window, cx| {
+                        shell.update(cx, |shell, shell_cx| {
+                            shell.open_sidebar_chat_modal(project_id.as_deref(), window, shell_cx)
+                        });
+                    });
+                }
             }
             SidebarMenuAction::NewMission(project_id) => {
-                self.active_project_id = project_id.clone();
-                self.open_start_mission_modal(None, project_id, window, cx);
+                self.set_active_project(project_id.clone(), cx);
+                if let Some(shell) = self.shell.upgrade() {
+                    window.defer(cx, move |window, cx| {
+                        shell.update(cx, |shell, shell_cx| {
+                            shell.open_start_mission_modal(None, project_id, window, shell_cx)
+                        });
+                    });
+                }
             }
             SidebarMenuAction::OpenMissionWindow => {}
             SidebarMenuAction::TogglePin { node_id, pinned } => {
-                match runner_backend::ops::node::node_set_pinned(&self.core, node_id, !pinned) {
-                    Ok(_) => self.refresh_sidebar(SidebarRefreshKind::All, cx),
-                    Err(error) => self.error = Some(error.to_string()),
+                match runner_backend::ops::node::node_set_pinned(self.core(cx), node_id, !pinned) {
+                    Ok(_) => self.refresh_store(StoreRefreshKind::All, cx),
+                    Err(error) => self.report_error(error.to_string(), cx),
                 }
             }
             SidebarMenuAction::Rename(target) => {
                 let (value, placeholder) = match &target {
                     SidebarRenameTarget::Tab { original, node_id } => {
                         let placeholder = self
-                            .tabs
-                            .tabs()
-                            .iter()
-                            .find(|layout| layout.id == *node_id)
-                            .map(|layout| self.tab_label(layout))
+                            .shell
+                            .upgrade()
+                            .and_then(|shell| {
+                                let shell = shell.read(cx);
+                                shell
+                                    .tabs
+                                    .tabs()
+                                    .iter()
+                                    .find(|layout| layout.id == *node_id)
+                                    .map(|layout| shell.tab_label(layout, cx))
+                            })
                             .unwrap_or_else(|| "Chat tab".into());
                         (original.clone(), placeholder)
                     }
@@ -816,33 +1057,33 @@ impl NativeRoot {
             }
             SidebarMenuAction::RemoveTabFromProject(session_ids) => {
                 match runner_backend::ops::session::session_set_project(
-                    &self.core,
+                    self.core(cx),
                     session_ids,
                     None,
                 ) {
-                    Ok(()) => self.refresh_sidebar(SidebarRefreshKind::All, cx),
-                    Err(error) => self.error = Some(error.to_string()),
+                    Ok(()) => self.refresh_store(StoreRefreshKind::All, cx),
+                    Err(error) => self.report_error(error.to_string(), cx),
                 }
             }
             SidebarMenuAction::RemoveMissionFromProject(mission_id) => {
                 match runner_backend::ops::mission::mission_set_project(
-                    &self.core,
+                    self.core(cx),
                     &mission_id,
                     None,
                 ) {
-                    Ok(_) => self.refresh_sidebar(SidebarRefreshKind::All, cx),
-                    Err(error) => self.error = Some(error.to_string()),
+                    Ok(_) => self.refresh_store(StoreRefreshKind::All, cx),
+                    Err(error) => self.report_error(error.to_string(), cx),
                 }
             }
             SidebarMenuAction::ArchiveTab(session_ids) => {
                 self.archive_sidebar_tab(session_ids, window, cx)
             }
             SidebarMenuAction::ArchiveMission(mission_id) => {
-                if !self.sidebar_archiving_missions.insert(mission_id.clone()) {
+                if !self.archiving_missions.insert(mission_id.clone()) {
                     return;
                 }
                 cx.notify();
-                let core = self.core.clone();
+                let core = self.core(cx).clone();
                 let archive_id = mission_id.clone();
                 let archive_task = cx.background_spawn(async move {
                     runner_backend::ops::mission::mission_archive_impl(&core, archive_id)
@@ -853,19 +1094,23 @@ impl NativeRoot {
                 cx.spawn(async move |weak, cx| {
                     let result = archive_task.await;
                     let _ = weak.update(cx, |this, cx| {
-                        this.sidebar_archiving_missions.remove(&mission_id);
+                        this.archiving_missions.remove(&mission_id);
                         match result {
-                            Ok(()) => this.core.events.emit("mission/changed", &()),
-                            Err(error) => this.error = Some(error),
+                            Ok(()) => this.core(cx).events.emit("mission/changed", &()),
+                            Err(error) => this.report_error(error, cx),
                         }
-                        this.refresh_sidebar(SidebarRefreshKind::All, cx);
+                        this.refresh_store(StoreRefreshKind::All, cx);
                     });
                 })
                 .detach();
             }
             SidebarMenuAction::DeleteProject(project_id) => {
-                self.project_delete_confirm = Some(project_id);
-                cx.notify();
+                if let Some(shell) = self.shell.upgrade() {
+                    shell.update(cx, |shell, shell_cx| {
+                        shell.project_delete_confirm = Some(project_id);
+                        shell_cx.notify();
+                    });
+                }
             }
         }
     }
@@ -876,48 +1121,47 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.archive_sessions(session_ids, ArchiveErrorTarget::App, window, cx);
-    }
-
-    pub(crate) fn archive_chat_sessions(
-        &mut self,
-        session_ids: Vec<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.archive_sessions(session_ids, ArchiveErrorTarget::Chat, window, cx);
+        let active = self
+            .shell
+            .upgrade()
+            .and_then(|shell| shell.read(cx).active_focused_session_id());
+        self.archive_sessions(session_ids, ArchiveErrorTarget::App, active, window, cx);
     }
 
     fn archive_sessions(
         &mut self,
         mut session_ids: Vec<String>,
         error_target: ArchiveErrorTarget,
+        active: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if session_ids
             .iter()
-            .any(|id| self.sidebar_archiving_sessions.contains(id))
+            .any(|id| self.archiving_sessions.contains(id))
         {
             return;
         }
-        let active = self.active_focused_session_id();
         session_ids.sort_by_key(|id| active.as_deref() == Some(id.as_str()));
         let entries = session_ids
             .iter()
             .map(|id| {
                 (
                     id.clone(),
-                    self.session_entry(id)
+                    self.app_store
+                        .read(cx)
+                        .sessions
+                        .iter()
+                        .find(|session| session.session_id == *id)
                         .is_some_and(|session| session.status == SessionStatus::Running),
                 )
             })
             .collect::<Vec<_>>();
-        self.sidebar_archiving_sessions
-            .extend(session_ids.iter().cloned());
+        self.archiving_sessions.extend(session_ids.iter().cloned());
+        self.schedule_shell_notify(cx);
         cx.notify();
 
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let pending_ids = session_ids;
         let archive_task = cx.background_spawn(async move {
             let mut archived = Vec::new();
@@ -938,38 +1182,64 @@ impl NativeRoot {
             let (archived, archive_error) = archive_task.await;
             let _ = weak.update_in(cx, |this, window, cx| {
                 for session_id in &pending_ids {
-                    this.sidebar_archiving_sessions.remove(session_id);
-                }
-                for session_id in archived {
-                    this.attached.remove(&session_id);
-                }
-                let refresh_result = (|| -> Result<()> {
-                    this.refresh_sessions();
-                    this.reload_tabs()?;
-                    this.ensure_active_tab_attached(window, cx)?;
-                    Ok(())
-                })();
-                if refresh_result.is_ok() {
-                    this.mark_active_tab_viewed(window);
-                    this.focus_active_terminal(window);
-                }
-                let error = archive_error.or_else(|| {
-                    refresh_result
-                        .err()
-                        .map(|refresh_error| refresh_error.to_string())
-                });
-                match error_target {
-                    ArchiveErrorTarget::App => this.error = error,
-                    ArchiveErrorTarget::Chat => this.chat_error = error,
+                    this.archiving_sessions.remove(session_id);
                 }
                 cx.notify();
+                if let Some(shell) = this.shell.upgrade() {
+                    window.defer(cx, move |window, cx| {
+                        shell.update(cx, |shell, shell_cx| {
+                            shell.finish_sidebar_archive(
+                                archived,
+                                archive_error,
+                                error_target,
+                                window,
+                                shell_cx,
+                            )
+                        });
+                    });
+                }
             });
         })
         .detach();
     }
+}
+
+impl NativeRoot {
+    fn finish_sidebar_archive(
+        &mut self,
+        archived: Vec<String>,
+        archive_error: Option<String>,
+        error_target: ArchiveErrorTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for session_id in archived {
+            self.attached.remove(&session_id);
+        }
+        let refresh_result = (|| -> Result<()> {
+            self.refresh_sessions(cx);
+            self.reload_tabs(cx)?;
+            self.ensure_active_tab_attached(window, cx)?;
+            Ok(())
+        })();
+        if refresh_result.is_ok() {
+            self.mark_active_tab_viewed(window, cx);
+            self.focus_active_terminal(window, cx);
+        }
+        let error = archive_error.or_else(|| {
+            refresh_result
+                .err()
+                .map(|refresh_error| refresh_error.to_string())
+        });
+        match error_target {
+            ArchiveErrorTarget::App => self.error = error,
+            ArchiveErrorTarget::Chat => self.chat_error = error,
+        }
+        cx.notify();
+    }
 
     fn open_project_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let cwd = self.settings.default_working_dir.trim().to_owned();
+        let cwd = self.settings(cx).default_working_dir.trim().to_owned();
         let name = project_name_from_path(&cwd);
         let cwd_input = cx.new(|input_cx| {
             working_dir_text_field(input_cx.focus_handle(), cwd, "/Users/you/projects/runner")
@@ -1001,8 +1271,10 @@ impl NativeRoot {
             error: None,
             submitting: false,
         });
-        self.settings.sidebar_projects_open = true;
-        self.save_settings();
+        self.update_app_settings(cx, true, |settings| {
+            settings.sidebar_projects_open = true;
+            true
+        });
         cwd_focus.focus(window);
         cx.notify();
     }
@@ -1056,7 +1328,7 @@ impl NativeRoot {
         }
         self.project_modal = None;
         self._project_cwd_subscription = None;
-        self.focus_active_terminal(window);
+        self.focus_active_terminal(window, cx);
         cx.notify();
     }
 
@@ -1071,13 +1343,15 @@ impl NativeRoot {
         }
         modal.submitting = true;
         modal.error = None;
-        match runner_backend::ops::project::project_create(&self.core, name, cwd) {
+        match runner_backend::ops::project::project_create(self.core(cx), name, cwd) {
             Ok(project) => {
                 self.project_modal = None;
                 self._project_cwd_subscription = None;
-                self.refresh_sidebar(SidebarRefreshKind::All, cx);
-                self.active_project_id = Some(project.id);
-                self.focus_active_terminal(window);
+                self.refresh_store(StoreRefreshKind::All, cx);
+                self.sidebar.update(cx, |sidebar, sidebar_cx| {
+                    sidebar.set_active_project(Some(project.id), sidebar_cx)
+                });
+                self.focus_active_terminal(window, cx);
             }
             Err(error) => {
                 if let Some(modal) = self.project_modal.as_mut() {
@@ -1112,20 +1386,26 @@ impl NativeRoot {
         let deleting_active_chat = self
             .tabs
             .active_tab_id()
-            .and_then(|tab_id| self.nodes.iter().find(|node| node.id == tab_id))
-            .and_then(|node| node_project_id(&self.nodes, node))
+            .and_then(|tab_id| {
+                self.app_store
+                    .read(cx)
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == tab_id)
+            })
+            .and_then(|node| node_project_id(&self.app_store.read(cx).nodes, node))
             .as_deref()
             == Some(project_id.as_str());
         if deleting_active_chat {
-            self.core.windows.set_subjects("main", Vec::new());
-            self.core.windows.mark_blurred("main");
-            self.core.broadcast_focus_map();
-            self.route = AppRoute::Runners;
+            self.core(cx).windows.set_subjects("main", Vec::new());
+            self.core(cx).windows.mark_blurred("main");
+            self.core(cx).broadcast_focus_map();
+            self.set_route(AppRoute::Runners, cx);
             self.load_runner_page(cx);
             window.focus(&self.root_focus);
         }
         self.project_delete_busy = true;
-        let core = self.core.clone();
+        let core = self.core(cx).clone();
         let deleting_project_id = project_id.clone();
         cx.spawn(async move |weak, cx| {
             let result = runner_backend::ops::project::project_delete(&core, project_id).await;
@@ -1135,20 +1415,26 @@ impl NativeRoot {
                     this.error = Some(error.to_string());
                 } else {
                     this.project_delete_confirm = None;
-                    if this.active_project_id.as_deref() == Some(deleting_project_id.as_str()) {
-                        this.active_project_id = None;
-                    }
+                    this.sidebar.update(cx, |sidebar, sidebar_cx| {
+                        if sidebar.active_project_id.as_deref()
+                            == Some(deleting_project_id.as_str())
+                        {
+                            sidebar.set_active_project(None, sidebar_cx);
+                        }
+                    });
                 }
-                this.refresh_sidebar(SidebarRefreshKind::All, cx);
+                this.refresh_store(StoreRefreshKind::All, cx);
             });
         })
         .detach();
     }
+}
 
+impl Sidebar {
     pub(crate) fn clear_sidebar_drag(&mut self, cx: &mut Context<Self>) {
-        if self.sidebar_dragged_id.take().is_some()
-            || self.sidebar_drop_target.take().is_some()
-            || self.sidebar_drop_marker.take().is_some()
+        if self.dragged_id.take().is_some()
+            || self.drop_target.take().is_some()
+            || self.drop_marker.take().is_some()
         {
             cx.notify();
         }
@@ -1166,9 +1452,9 @@ impl NativeRoot {
         marker: String,
         cx: &mut Context<Self>,
     ) {
-        self.sidebar_dragged_id = Some(dragged_id.to_owned());
-        self.sidebar_drop_target = list_drop_target(
-            &self.nodes,
+        self.dragged_id = Some(dragged_id.to_owned());
+        self.drop_target = list_drop_target(
+            &self.app_store.read(cx).nodes,
             kind,
             parent_id,
             visible_ids,
@@ -1176,7 +1462,7 @@ impl NativeRoot {
             hovered_id,
             after,
         );
-        self.sidebar_drop_marker = self.sidebar_drop_target.as_ref().map(|_| marker);
+        self.drop_marker = self.drop_target.as_ref().map(|_| marker);
         cx.notify();
     }
 
@@ -1187,26 +1473,30 @@ impl NativeRoot {
         visible_ids: &[String],
         cx: &mut Context<Self>,
     ) {
-        self.sidebar_dragged_id = Some(dragged_id.to_owned());
-        self.sidebar_drop_target =
-            container_drop_target(&self.nodes, visible_ids, dragged_id, project_node_id);
-        self.sidebar_drop_marker = self
-            .sidebar_drop_target
+        self.dragged_id = Some(dragged_id.to_owned());
+        self.drop_target = container_drop_target(
+            &self.app_store.read(cx).nodes,
+            visible_ids,
+            dragged_id,
+            project_node_id,
+        );
+        self.drop_marker = self
+            .drop_target
             .as_ref()
             .map(|_| format!("container:{project_node_id}"));
         cx.notify();
     }
 
     fn commit_sidebar_drop(&mut self, dragged_id: &str, cx: &mut Context<Self>) {
-        if self.sidebar_dragged_id.as_deref() != Some(dragged_id) {
+        if self.dragged_id.as_deref() != Some(dragged_id) {
             self.clear_sidebar_drag(cx);
             return;
         }
-        let Some(target) = self.sidebar_drop_target.clone() else {
+        let Some(target) = self.drop_target.clone() else {
             self.clear_sidebar_drag(cx);
             return;
         };
-        let rows = self.resolved_sidebar_rows();
+        let rows = self.resolved_sidebar_rows(cx);
         let result = match target.kind {
             DropKind::Pinned => {
                 let visible = rows
@@ -1215,17 +1505,25 @@ impl NativeRoot {
                     .map(|row| row.node().id.clone())
                     .collect::<Vec<_>>();
                 let order = ordered_pinned_node_ids_after_drop(
-                    &self.nodes,
+                    &self.app_store.read(cx).nodes,
                     &visible,
                     dragged_id,
                     target.index,
                 );
-                runner_backend::ops::node::node_reorder_pinned(&self.core, order)
+                runner_backend::ops::node::node_reorder_pinned(self.core(cx), order)
             }
             DropKind::Project => {
-                let order =
-                    ordered_root_node_ids_after_project_drop(&self.nodes, dragged_id, target.index);
-                runner_backend::ops::node::node_move(&self.core, dragged_id.to_owned(), None, order)
+                let order = ordered_root_node_ids_after_project_drop(
+                    &self.app_store.read(cx).nodes,
+                    dragged_id,
+                    target.index,
+                );
+                runner_backend::ops::node::node_move(
+                    self.core(cx),
+                    dragged_id.to_owned(),
+                    None,
+                    order,
+                )
             }
             DropKind::Leaf => {
                 let visible = self
@@ -1236,13 +1534,13 @@ impl NativeRoot {
                 let visible =
                     ordered_visible_node_ids_after_drop(&visible, dragged_id, target.index);
                 let order = complete_unpinned_scope_order(
-                    &self.nodes,
+                    &self.app_store.read(cx).nodes,
                     target.parent_id.as_deref(),
                     dragged_id,
                     &visible,
                 );
                 runner_backend::ops::node::node_move(
-                    &self.core,
+                    self.core(cx),
                     dragged_id.to_owned(),
                     target.parent_id,
                     order,
@@ -1251,19 +1549,30 @@ impl NativeRoot {
         };
         match result {
             Ok(nodes) => {
-                self.nodes = nodes;
-                if let Err(error) = self.tabs.replace_rows(&self.nodes) {
-                    self.error = Some(error.to_string());
+                if let Some(shell) = self.shell.upgrade() {
+                    shell.update(cx, |shell, shell_cx| {
+                        if let Err(error) = shell.tabs.replace_rows(&nodes) {
+                            shell.error = Some(error.to_string());
+                            shell_cx.notify();
+                        }
+                    });
                 }
-                self.refresh_sidebar(SidebarRefreshKind::All, cx);
+                self.app_store
+                    .update(cx, |store, store_cx| store.replace_nodes(nodes, store_cx));
+                self.refresh_store(StoreRefreshKind::All, cx);
             }
-            Err(error) => self.error = Some(error.to_string()),
+            Err(error) => self.report_error(error.to_string(), cx),
         }
         self.clear_sidebar_drag(cx);
     }
 
     pub(crate) fn render_sidebar_contents(&self, cx: &mut Context<Self>) -> AnyElement {
-        let rows = self.resolved_sidebar_rows();
+        let route = self
+            .shell
+            .upgrade()
+            .map(|shell| shell.read(cx).route.clone())
+            .unwrap_or_default();
+        let rows = self.resolved_sidebar_rows(cx);
         let mut pinned = rows
             .iter()
             .filter(|row| row.node().pinned_position.is_some())
@@ -1273,6 +1582,8 @@ impl NativeRoot {
         let has_pinned = !pinned.is_empty();
         let root_rows = self.scope_rows(&rows, None);
         let project_nodes = self
+            .app_store
+            .read(cx)
             .nodes
             .iter()
             .filter(|node| {
@@ -1302,7 +1613,7 @@ impl NativeRoot {
             .flex_1()
             .overflow_y_scroll()
             .scrollbar_width(px(0.))
-            .track_scroll(&self.sidebar_scroll);
+            .track_scroll(&self.scroll);
         if !pinned.is_empty() {
             let visible = pinned
                 .iter()
@@ -1321,7 +1632,8 @@ impl NativeRoot {
                             .flex_col()
                             .gap(rems(2. / 16.))
                             .children(pinned.into_iter().map(|row| {
-                                let project_id = node_project_id(&self.nodes, row.node());
+                                let project_id =
+                                    node_project_id(&self.app_store.read(cx).nodes, row.node());
                                 self.render_sidebar_row(
                                     row,
                                     project_id,
@@ -1331,14 +1643,14 @@ impl NativeRoot {
                                     cx,
                                 )
                             }))
-                            .children(self.sidebar_dragged_id.is_some().then(|| {
+                            .children(self.dragged_id.is_some().then(|| {
                                 self.render_end_drop_divider(DropKind::Pinned, None, visible, cx)
                             })),
                     ),
             );
         }
 
-        let projects_open = self.settings.sidebar_projects_open;
+        let projects_open = self.settings(cx).sidebar_projects_open;
         let project_header_root = cx.entity();
         let project_add_root = project_header_root.clone();
         scroll = scroll.child(
@@ -1356,8 +1668,11 @@ impl NativeRoot {
                     (!projects_open).then_some(project_attention),
                     "Add project",
                     move |this, cx| {
-                        this.settings.sidebar_projects_open = !this.settings.sidebar_projects_open;
-                        this.save_settings();
+                        let open = !this.settings(cx).sidebar_projects_open;
+                        this.update_app_settings(cx, true, |settings| {
+                            settings.sidebar_projects_open = open;
+                            true
+                        });
                         cx.notify();
                     },
                     move |window, cx| {
@@ -1384,6 +1699,8 @@ impl NativeRoot {
                                 .into_iter()
                                 .filter_map(|node| {
                                     let project = self
+                                        .app_store
+                                        .read(cx)
                                         .projects
                                         .iter()
                                         .find(|project| {
@@ -1406,21 +1723,19 @@ impl NativeRoot {
                                 })
                                 .collect()
                         })
-                        .children(
-                            (has_projects && self.sidebar_dragged_id.is_some()).then(|| {
-                                self.render_end_drop_divider(
-                                    DropKind::Project,
-                                    None,
-                                    visible_projects,
-                                    cx,
-                                )
-                            }),
-                        )
+                        .children((has_projects && self.dragged_id.is_some()).then(|| {
+                            self.render_end_drop_divider(
+                                DropKind::Project,
+                                None,
+                                visible_projects,
+                                cx,
+                            )
+                        }))
                 })),
         );
 
-        let chats_open = self.settings.sidebar_chats_open;
-        let create_menu = self.sidebar_create_menu.clone();
+        let chats_open = self.settings(cx).sidebar_chats_open;
+        let create_menu = self.create_menu.clone();
         scroll = scroll.child(
             div()
                 .mt_5()
@@ -1468,9 +1783,11 @@ impl NativeRoot {
                                         }),
                                 )
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.settings.sidebar_chats_open =
-                                        !this.settings.sidebar_chats_open;
-                                    this.save_settings();
+                                    let open = !this.settings(cx).sidebar_chats_open;
+                                    this.update_app_settings(cx, true, |settings| {
+                                        settings.sidebar_chats_open = open;
+                                        true
+                                    });
                                     cx.notify();
                                 })),
                         )
@@ -1517,7 +1834,7 @@ impl NativeRoot {
                                 })
                                 .collect()
                         })
-                        .children((has_rows && self.sidebar_dragged_id.is_some()).then(|| {
+                        .children((has_rows && self.dragged_id.is_some()).then(|| {
                             self.render_end_drop_divider(DropKind::Leaf, None, visible, cx)
                         }))
                         .on_mouse_down(
@@ -1556,11 +1873,15 @@ impl NativeRoot {
                             "workspace-runner",
                             "terminal.svg",
                             "runner",
-                            matches!(self.route, AppRoute::Runners | AppRoute::RunnerDetail(_)),
+                            matches!(&route, AppRoute::Runners | AppRoute::RunnerDetail(_)),
                             {
-                                let root = cx.entity();
+                                let shell = self.shell.clone();
                                 move |window, cx| {
-                                    root.update(cx, |this, cx| this.open_runners(window, cx));
+                                    if let Some(shell) = shell.upgrade() {
+                                        shell.update(cx, |shell, shell_cx| {
+                                            shell.open_runners(window, shell_cx)
+                                        });
+                                    }
                                 }
                             },
                         ))
@@ -1568,11 +1889,15 @@ impl NativeRoot {
                             "workspace-crew",
                             "users.svg",
                             "crew",
-                            matches!(self.route, AppRoute::Crews | AppRoute::CrewEditor(_)),
+                            matches!(&route, AppRoute::Crews | AppRoute::CrewEditor(_)),
                             {
-                                let root = cx.entity();
+                                let shell = self.shell.clone();
                                 move |window, cx| {
-                                    root.update(cx, |this, cx| this.open_crews(window, cx));
+                                    if let Some(shell) = shell.upgrade() {
+                                        shell.update(cx, |shell, shell_cx| {
+                                            shell.open_crews(window, shell_cx)
+                                        });
+                                    }
                                 }
                             },
                         )),
@@ -1593,7 +1918,7 @@ impl NativeRoot {
                     .min_h(px(0.))
                     .flex_1()
                     .child(scroll)
-                    .child(self.sidebar_scrollbar.clone()),
+                    .child(self.scrollbar.clone()),
             )
             .into_any_element()
     }
@@ -1610,7 +1935,7 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement
     where
-        F: Fn(&mut NativeRoot, &mut Context<NativeRoot>) + 'static,
+        F: Fn(&mut Sidebar, &mut Context<Sidebar>) + 'static,
         G: Fn(&mut Window, &mut App) + 'static,
     {
         div()
@@ -1723,7 +2048,10 @@ impl NativeRoot {
         visible_ids: Vec<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let active = self.tabs.active_tab_id() == Some(node.id.as_str());
+        let active = self
+            .shell
+            .upgrade()
+            .is_some_and(|shell| shell.read(cx).tabs.active_tab_id() == Some(node.id.as_str()));
         let live = members
             .iter()
             .any(|member| member.status == SessionStatus::Running);
@@ -1741,7 +2069,7 @@ impl NativeRoot {
             .unwrap_or_default()
             .to_owned();
         let renaming = self
-            .sidebar_rename
+            .rename
             .as_ref()
             .is_some_and(|rename| rename.target.matches(NodeType::Tab, &node.id));
         let target = members
@@ -1843,11 +2171,13 @@ impl NativeRoot {
         visible_ids: Vec<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let active = matches!(
-            &self.route,
-            AppRoute::Mission(active_id) if active_id == &summary.mission.id
-        );
-        let renaming = self.sidebar_rename.as_ref().is_some_and(|rename| {
+        let active = self.shell.upgrade().is_some_and(|shell| {
+            matches!(
+                &shell.read(cx).route,
+                AppRoute::Mission(active_id) if active_id == &summary.mission.id
+            )
+        });
+        let renaming = self.rename.as_ref().is_some_and(|rename| {
             rename
                 .target
                 .matches(NodeType::Mission, &summary.mission.id)
@@ -1934,13 +2264,13 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let collapsed = self
-            .settings
+            .settings(cx)
             .sidebar_collapsed_projects
             .contains(&project.id);
         let live = nested.iter().any(SidebarRow::is_live);
         let selected = self.active_project_id.as_deref() == Some(project.id.as_str());
         let renaming = self
-            .sidebar_rename
+            .rename
             .as_ref()
             .is_some_and(|rename| rename.target.matches(NodeType::Project, &project.id));
         let menu_root = cx.entity();
@@ -2051,7 +2381,7 @@ impl NativeRoot {
                     },
                     move |drag: &SidebarNodeDrag, _, _, cx| {
                         drag_root.update(cx, |this, cx| {
-                            this.sidebar_dragged_id = Some(drag.node_id.clone());
+                            this.dragged_id = Some(drag.node_id.clone());
                             cx.notify();
                         });
                         cx.new(|_| drag.clone())
@@ -2064,6 +2394,8 @@ impl NativeRoot {
                         }
                         let dragged = event.drag(cx).node_id.clone();
                         let dragged_type = this
+                            .app_store
+                            .read(cx)
                             .nodes
                             .iter()
                             .find(|node| node.id == dragged)
@@ -2097,14 +2429,14 @@ impl NativeRoot {
         let container_marker = format!("container:{}", node.id);
         let before_marker = format!("project:{}:false", node.id);
         let after_marker = format!("project:{}:true", node.id);
-        if self.sidebar_drop_marker.as_deref() == Some(container_marker.as_str()) {
+        if self.drop_marker.as_deref() == Some(container_marker.as_str()) {
             header_wrap = header_wrap
                 .border_1()
                 .border_color(theme::accent())
                 .rounded_sm();
-        } else if self.sidebar_drop_marker.as_deref() == Some(before_marker.as_str()) {
+        } else if self.drop_marker.as_deref() == Some(before_marker.as_str()) {
             header_wrap = header_wrap.border_t_2().border_color(theme::accent());
-        } else if self.sidebar_drop_marker.as_deref() == Some(after_marker.as_str()) {
+        } else if self.drop_marker.as_deref() == Some(after_marker.as_str()) {
             header_wrap = header_wrap.border_b_2().border_color(theme::accent());
         }
         div()
@@ -2122,7 +2454,7 @@ impl NativeRoot {
                     .border_l_1()
                     .border_color(theme::border())
                     .children(if nested.is_empty() {
-                        if self.sidebar_dragged_id.is_some() {
+                        if self.dragged_id.is_some() {
                             vec![self.render_empty_project_drop_area(node.id.clone(), cx)]
                         } else {
                             vec![empty_sidebar_label("No chats or missions yet.")]
@@ -2142,7 +2474,7 @@ impl NativeRoot {
                             })
                             .collect()
                     })
-                    .children((has_nested && self.sidebar_dragged_id.is_some()).then(|| {
+                    .children((has_nested && self.dragged_id.is_some()).then(|| {
                         self.render_end_drop_divider(
                             DropKind::Leaf,
                             Some(node.id.clone()),
@@ -2160,7 +2492,7 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let marker = format!("container:{project_node_id}");
-        let active = self.sidebar_drop_marker.as_deref() == Some(marker.as_str());
+        let active = self.drop_marker.as_deref() == Some(marker.as_str());
         let drop_project_id = project_node_id.clone();
         let mut area = div()
             .id(SharedString::from(format!(
@@ -2205,7 +2537,7 @@ impl NativeRoot {
         };
         let scope = parent_id.as_deref().unwrap_or("root");
         let marker = format!("end:{marker_prefix}:{scope}");
-        let active = self.sidebar_drop_marker.as_deref() == Some(marker.as_str());
+        let active = self.drop_marker.as_deref() == Some(marker.as_str());
         let drop_marker = marker.clone();
         let mut divider = div()
             .id(SharedString::from(format!(
@@ -2265,8 +2597,8 @@ impl NativeRoot {
         };
         let marker_before = format!("{marker_prefix}:{}:false", node.id);
         let marker_after = format!("{marker_prefix}:{}:true", node.id);
-        let active_before = self.sidebar_drop_marker.as_deref() == Some(marker_before.as_str());
-        let active_after = self.sidebar_drop_marker.as_deref() == Some(marker_after.as_str());
+        let active_before = self.drop_marker.as_deref() == Some(marker_before.as_str());
+        let active_after = self.drop_marker.as_deref() == Some(marker_after.as_str());
         let mut wrapper = div()
             .id(SharedString::from(format!("sidebar-drag-{}", node.id)))
             .relative()
@@ -2274,7 +2606,7 @@ impl NativeRoot {
             .child(row)
             .on_drag(drag, move |drag: &SidebarNodeDrag, _, _, cx| {
                 drag_root.update(cx, |this, cx| {
-                    this.sidebar_dragged_id = Some(drag.node_id.clone());
+                    this.dragged_id = Some(drag.node_id.clone());
                     cx.notify();
                 });
                 cx.new(|_| drag.clone())
@@ -2319,7 +2651,7 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(rename) = self
-            .sidebar_rename
+            .rename
             .as_ref()
             .filter(|rename| rename.target.matches(kind, id))
         else {
@@ -2357,10 +2689,18 @@ impl NativeRoot {
         }))
         .into_any_element()
     }
+}
 
+impl Render for Sidebar {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.render_sidebar_contents(cx)
+    }
+}
+
+impl NativeRoot {
     pub(crate) fn render_sidebar_overlays(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut overlays = Vec::new();
-        if let Some(menu) = &self.sidebar_context_menu {
+        if let Some(menu) = &self.sidebar.read(cx).context_menu {
             overlays.push(menu.clone().into_any_element());
         }
         if self.project_modal.is_some() {
@@ -2368,9 +2708,12 @@ impl NativeRoot {
         }
         if let Some(project_id) = &self.project_delete_confirm {
             if let Some(project) = self
+                .app_store
+                .read(cx)
                 .projects
                 .iter()
                 .find(|project| project.id == *project_id)
+                .cloned()
             {
                 let confirm_root = cx.entity();
                 let cancel_root = confirm_root.clone();
@@ -2812,6 +3155,7 @@ pub(crate) fn session_label(entry: &DirectSessionEntry) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use runner_backend::events::AppEvent;
 
     fn appended_event(signal: &str) -> AppEvent {
         AppEvent {
@@ -2831,16 +3175,16 @@ mod tests {
             "runner_status",
         ] {
             assert_eq!(
-                SidebarRefreshKind::for_event(&appended_event(signal)),
-                Some(SidebarRefreshKind::Missions)
+                StoreRefreshKind::for_event(&appended_event(signal)),
+                Some(StoreRefreshKind::Missions)
             );
         }
         assert_eq!(
-            SidebarRefreshKind::for_event(&appended_event("inbox_read")),
+            StoreRefreshKind::for_event(&appended_event("inbox_read")),
             None
         );
         assert_eq!(
-            SidebarRefreshKind::for_event(&AppEvent {
+            StoreRefreshKind::for_event(&AppEvent {
                 name: "event/appended",
                 payload: serde_json::json!({ "event": { "kind": "message" } }),
             }),
