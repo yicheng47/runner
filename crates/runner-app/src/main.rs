@@ -7,6 +7,7 @@ mod mac_chrome;
 mod mission_composer;
 mod mission_feed;
 mod mission_markdown;
+mod settings_page;
 mod sidebar_logic;
 mod terminal_element;
 
@@ -47,7 +48,10 @@ use runner_terminal::terminal::{TerminalBridge, TerminalSession};
 
 use app_settings::{settings_path, AppSettings};
 use app_shell::AppRoute;
-use assets::{Assets, INTER_FONT};
+use assets::{
+    Assets, INTER_FONT, MESLO_FONT_BOLD, MESLO_FONT_BOLD_ITALIC, MESLO_FONT_ITALIC,
+    MESLO_FONT_REGULAR,
+};
 use terminal_element::TerminalElement;
 use toast::ToastHost;
 
@@ -88,6 +92,7 @@ use crews::CrewSurfaces;
 use mission_workspace::MissionWorkspaceState;
 use panes::{adjacent_pane_index, pane_fractions};
 use runners::RunnerSurfaces;
+use settings_page::SettingsState;
 use sidebar::{session_label, ProjectModal, SidebarRefreshKind, SidebarRename};
 use sidebar_logic::DropTarget;
 use start_chat::StartChatModal;
@@ -295,6 +300,7 @@ struct NativeRoot {
     error: Option<String>,
     settings: AppSettings,
     settings_path: PathBuf,
+    settings_page: SettingsState,
     route: AppRoute,
     settings_return_route: AppRoute,
     sidebar_visibility: SidebarVisibilityTransition,
@@ -662,6 +668,7 @@ impl NativeRoot {
         let runner_surfaces = RunnerSurfaces::new(cx.entity(), cx);
         let crew_surfaces = CrewSurfaces::new(cx.entity(), cx);
         let mission_workspace = MissionWorkspaceState::new(cx.entity(), cx);
+        let settings_page = SettingsState::new(cx.entity(), &settings, cx);
         let mut root = Self {
             core,
             bridge,
@@ -710,6 +717,7 @@ impl NativeRoot {
             error: (!errors.is_empty()).then(|| errors.join("\n")),
             settings,
             settings_path,
+            settings_page,
             route: AppRoute::Chat,
             settings_return_route: AppRoute::Chat,
             sidebar_visibility,
@@ -746,6 +754,7 @@ impl NativeRoot {
         }
         root.focus_active_terminal(window);
         root.sync_sidebar_window_activation(window, cx);
+        root.start_launch_auto_resume(window, cx);
         root
     }
 
@@ -803,8 +812,14 @@ fn run() -> Result<()> {
         .with_assets(Assets)
         .run(move |cx: &mut App| {
             cx.text_system()
-                .add_fonts(vec![Cow::Borrowed(INTER_FONT)])
-                .expect("bundled Inter font must be valid");
+                .add_fonts(vec![
+                    Cow::Borrowed(INTER_FONT),
+                    Cow::Borrowed(MESLO_FONT_REGULAR),
+                    Cow::Borrowed(MESLO_FONT_BOLD),
+                    Cow::Borrowed(MESLO_FONT_ITALIC),
+                    Cow::Borrowed(MESLO_FONT_BOLD_ITALIC),
+                ])
+                .expect("bundled fonts must be valid");
 
             #[cfg(target_os = "macos")]
             install_app_icon();
@@ -816,6 +831,12 @@ fn run() -> Result<()> {
 
             let quit_core = core.clone();
             cx.on_action(move |_: &Quit, cx| {
+                if let Some(window) = cx
+                    .active_window()
+                    .and_then(|window| window.downcast::<NativeRoot>())
+                {
+                    let _ = window.update(cx, |this, _, _| this.save_settings());
+                }
                 if let Err(error) = stop_running_sessions_on_quit(&quit_core) {
                     eprintln!("Runner quit session teardown failed: {error:#}");
                 }
@@ -956,7 +977,10 @@ fn open_runner_window(core: AppCore, settings_path: PathBuf, cx: &mut App) -> Re
             });
             let weak = root.downgrade();
             window.on_window_should_close(cx, move |window, cx| {
-                let _ = weak.update(cx, |this, _| this.save_window_size(window));
+                let _ = weak.update(cx, |this, _| {
+                    this.save_window_size(window);
+                    this.save_settings();
+                });
                 true
             });
             root

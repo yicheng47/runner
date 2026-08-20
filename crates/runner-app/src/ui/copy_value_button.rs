@@ -81,14 +81,16 @@ impl Focusable for CopyValueButton {
 }
 
 impl Render for CopyValueButton {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(_) = self.value else {
             return div().into_any_element();
         };
         let copied = self.copied;
+        let focused = self.focus_handle.is_focused(window);
         let entity = cx.entity();
         let button = div()
             .id("copy-value-button")
+            .group("copy-value-button")
             .track_focus(&self.focus_handle)
             .tab_index(0)
             .flex_none()
@@ -118,7 +120,13 @@ impl Render for CopyValueButton {
             .child(
                 svg()
                     .path(if copied { "check.svg" } else { "copy.svg" })
-                    .size(rems(12. / 16.)),
+                    .size(rems(12. / 16.))
+                    .text_color(if focused {
+                        theme::text()
+                    } else {
+                        theme::faint()
+                    })
+                    .group_hover("copy-value-button", |icon| icon.text_color(theme::text())),
             );
         Tooltip::new(
             SharedString::from(format!("copy-value-tooltip-{}", self.label)),

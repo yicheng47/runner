@@ -482,6 +482,7 @@ pub struct TextField {
     text_layout: Rc<RefCell<Option<TextFieldLayout>>>,
     auto_grow_rows: Option<u8>,
     key_interceptor: Option<KeyDownInterceptor>,
+    truncate_unfocused: bool,
 }
 
 impl TextField {
@@ -513,6 +514,7 @@ impl TextField {
             text_layout: Rc::new(RefCell::new(None)),
             auto_grow_rows: None,
             key_interceptor: None,
+            truncate_unfocused: false,
         }
     }
 
@@ -538,6 +540,11 @@ impl TextField {
 
     pub fn key_interceptor(mut self, interceptor: KeyDownInterceptor) -> Self {
         self.key_interceptor = Some(interceptor);
+        self
+    }
+
+    pub fn truncate_unfocused(mut self) -> Self {
+        self.truncate_unfocused = true;
         self
     }
 
@@ -790,6 +797,15 @@ impl TextField {
                 })
                 .when(focused, |text| text.child(input_caret()))
                 .child(self.placeholder.clone())
+                .into_any_element();
+        }
+
+        if self.kind == TextFieldKind::Input && self.truncate_unfocused && !focused {
+            return div()
+                .min_w(px(0.))
+                .w_full()
+                .truncate()
+                .child(self.buffer.text.clone())
                 .into_any_element();
         }
 
@@ -1371,7 +1387,7 @@ impl RenderOnce for WorkingDirField {
             .gap(rems(8. / 16.))
             .child(div().flex_1().min_w(px(0.)).child(self.input))
             .child(
-                Button::new("working-dir-browse", "Browse")
+                Button::new("working-dir-browse", "Browse…")
                     .when_some(self.browse_focus, |button, focus| {
                         button.focus_handle(focus)
                     })

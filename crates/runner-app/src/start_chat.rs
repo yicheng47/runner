@@ -894,7 +894,11 @@ impl NativeRoot {
                                                 .on_click(move |_, window, cx| {
                                                     root.update(cx, |this, cx| {
                                                         this.start_chat_modal = None;
-                                                        this.enter_settings(window, cx);
+                                                        this.enter_settings_route(
+                                                            Some("agents"),
+                                                            window,
+                                                            cx,
+                                                        );
                                                     });
                                                 }),
                                         )

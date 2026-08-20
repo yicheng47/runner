@@ -164,7 +164,13 @@ impl RenderOnce for SessionControl {
         } else {
             icon_color
         };
-        let icon_size = if header { 13. } else { 12. };
+        let icon_size = if header && self.kind == SessionControlKind::Stop {
+            15.
+        } else if header {
+            13.
+        } else {
+            12.
+        };
         let icon_element = match self.kind {
             SessionControlKind::Resuming => Some(spinner(spinner_id, icon_size, icon_color)),
             _ => icon.map(|icon| {

@@ -442,7 +442,7 @@ impl Element for TerminalElement {
             });
         } else if let Some((cursor_bounds, shape)) = prepaint.cursor {
             let focused = self.focus_handle.is_focused(window);
-            let color = to_hsla(self.style.palette.cursor, if focused { 0.55 } else { 0.3 });
+            let color = to_hsla(self.style.palette.cursor, if focused { 1. } else { 0.5 });
             match shape {
                 CursorShape::Block if focused => {
                     window.paint_quad(fill(cursor_bounds, color));

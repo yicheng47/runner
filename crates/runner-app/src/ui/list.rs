@@ -344,8 +344,16 @@ fn pager_icon_button(
 ) -> AnyElement {
     let on_press = Rc::new(on_press);
     let key_press = Rc::clone(&on_press);
+    let icon = svg()
+        .path(icon)
+        .size(rems(14. / 16.))
+        .text_color(theme::muted())
+        .when(!disabled, |icon| {
+            icon.group_hover(id, |icon| icon.text_color(theme::text()))
+        });
     let mut button = div()
         .id(id)
+        .when(!disabled, |button| button.group(id))
         .tab_index(0)
         .tab_stop(!disabled)
         .size(rems(28. / 16.))
@@ -370,10 +378,10 @@ fn pager_icon_button(
                 spread_radius: px(2.),
             }])
         })
-        .child(svg().path(icon).size(rems(14. / 16.)));
+        .child(icon);
     if !disabled {
         button = button
-            .hover(|button| button.bg(theme::raised()).text_color(theme::text()))
+            .hover(|button| button.bg(theme::raised()))
             .on_click(move |_, window, cx| on_press(window, cx))
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
                 if matches!(event.keystroke.key.as_str(), "enter" | "space") {

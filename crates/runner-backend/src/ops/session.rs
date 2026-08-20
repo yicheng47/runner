@@ -628,6 +628,43 @@ pub fn session_resume(
     Ok(spawned)
 }
 
+pub fn session_resume_on_launch(
+    state: &AppCore,
+    session_id: &str,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<SpawnedSession> {
+    log::info!("session_resume: session={session_id} cols={cols:?} rows={rows:?} automatic=true");
+    let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
+    let result = state.sessions.resume_on_launch(
+        session_id,
+        cols,
+        rows,
+        &state.app_data_dir,
+        state.db.clone(),
+        emitter,
+    );
+    match state.db.get() {
+        Ok(conn) => {
+            if let Err(error) = repo::session::finish_resume_on_launch(&conn, session_id) {
+                log::warn!("session_resume: launch claim update failed for {session_id}: {error}");
+            }
+        }
+        Err(error) => {
+            log::warn!("session_resume: launch claim connection failed for {session_id}: {error}");
+        }
+    }
+    let spawned = result.map_err(|error| Error::msg(format!("session_resume: {error}")))?;
+    state.events.emit(
+        "session/updated",
+        &crate::session::manager::SessionUpdatedEvent {
+            session_id: session_id.to_string(),
+            mission_id: spawned.mission_id.clone(),
+        },
+    );
+    Ok(spawned)
+}
+
 /// Spawn a "direct chat" session for a runner — a PTY with no parent
 /// mission, no orchestrator, no event log (C8.5). Used by the Runner
 /// Detail page's "Chat now" button: the user picks a working directory

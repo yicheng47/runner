@@ -7,9 +7,9 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, rems, svg, AnyElement, App, Bounds, CursorStyle, DragMoveEvent, Entity,
-    FontWeight, KeyDownEvent, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent, SharedString,
-    Window,
+    canvas, div, px, rems, svg, AnyElement, App, Bounds, BoxShadow, CursorStyle, DragMoveEvent,
+    Entity, FontWeight, KeyDownEvent, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
+    SharedString, Window,
 };
 use runner_app::terminal_ime::TerminalInput;
 use runner_app::ui::{
@@ -36,7 +36,6 @@ use crate::mission_feed::{
 };
 
 const WORKSPACE_TABS_HEIGHT: f32 = 38.;
-const WORKSPACE_TAB_WIDTH: f32 = 136.;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum MissionTab {
@@ -2650,10 +2649,9 @@ impl NativeRoot {
                     div()
                         .id(SharedString::from(format!("mission-tab-{session_id}")))
                         .relative()
-                        .w(rems(WORKSPACE_TAB_WIDTH / 16.))
                         .h(rems(32. / 16.))
                         .flex_none()
-                        .px_3()
+                        .px(rems(14. / 16.))
                         .flex()
                         .items_center()
                         .gap_2()
@@ -2664,7 +2662,7 @@ impl NativeRoot {
                             gpui::transparent_black()
                         })
                         .cursor_pointer()
-                        .text_size(rems(12. / 16.))
+                        .text_size(rems(13. / 16.))
                         .text_color(if active {
                             theme::text()
                         } else {
@@ -2685,7 +2683,7 @@ impl NativeRoot {
                         .child(
                             div()
                                 .min_w(px(0.))
-                                .flex_1()
+                                .max_w(rems(140. / 16.))
                                 .truncate()
                                 .font_family("JetBrains Mono")
                                 .child(format!("@{}", session.handle)),
@@ -2696,7 +2694,7 @@ impl NativeRoot {
                                     "close-mission-tab-{session_id}"
                                 )))
                                 .group("mission-tab-close")
-                                .size(rems(18. / 16.))
+                                .size_4()
                                 .flex()
                                 .items_center()
                                 .justify_center()
@@ -2714,7 +2712,7 @@ impl NativeRoot {
                                 .child(
                                     svg()
                                         .path("close.svg")
-                                        .size(rems(10. / 16.))
+                                        .size(rems(12. / 16.))
                                         .text_color(theme::faint())
                                         .group_hover("mission-tab-close", |icon| {
                                             icon.text_color(theme::text())
@@ -4265,6 +4263,14 @@ impl NativeRoot {
             let session_id = session.session.id.clone();
             let open_id = session_id.clone();
             let open_root = root.clone();
+            let card_key_id = session_id.clone();
+            let card_key_root = root.clone();
+            let button_open_id = session_id.clone();
+            let button_key_id = session_id.clone();
+            let button_open_root = root.clone();
+            let button_key_root = root.clone();
+            let terminal_group =
+                SharedString::from(format!("mission-runner-open-terminal-{session_id}"));
             let activity = statuses.get(&session.handle).copied();
             let presence = match session.session.status {
                 SessionStatus::Crashed => RunnerPresence::Crashed,
@@ -4293,10 +4299,11 @@ impl NativeRoot {
                         "mission-runner-card-{session_id}"
                     )))
                     .w_full()
+                    .tab_index(0)
                     .p_3()
                     .flex()
                     .flex_col()
-                    .gap_2()
+                    .gap(rems(6. / 16.))
                     .rounded_md()
                     .border_1()
                     .border_color(if active {
@@ -4306,38 +4313,73 @@ impl NativeRoot {
                     })
                     .bg(theme::bg())
                     .cursor_pointer()
-                    .hover(|card| card.border_color(theme::border_strong()))
+                    .when(!active, |card| {
+                        card.hover(|card| card.border_color(theme::border_strong()))
+                    })
+                    .focus_visible(|card| {
+                        card.border_color(theme::accent()).shadow(vec![BoxShadow {
+                            color: theme::with_alpha(theme::accent(), 0.5),
+                            offset: gpui::point(px(0.), px(0.)),
+                            blur_radius: px(0.),
+                            spread_radius: px(1.),
+                        }])
+                    })
                     .on_click(move |_, window, cx| {
                         open_root.update(cx, |this, cx| {
                             this.select_mission_session(&open_id, window, cx)
                         });
                     })
+                    .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            cx.stop_propagation();
+                            card_key_root.update(cx, |this, cx| {
+                                this.select_mission_session(&card_key_id, window, cx)
+                            });
+                        }
+                    })
                     .child(
                         div()
                             .flex()
                             .items_center()
+                            .justify_between()
                             .gap_2()
-                            .child(
-                                RunnerAvatar::new(session.handle.clone(), 25.).presence(presence),
-                            )
                             .child(
                                 div()
                                     .min_w(px(0.))
-                                    .truncate()
-                                    .font_family("Menlo")
-                                    .text_size(rems(13. / 16.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(
-                                        runner_app::ui::hue_for_seed(&session.handle).color(),
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        RunnerAvatar::new(session.handle.clone(), 25.)
+                                            .presence(presence),
                                     )
-                                    .child(format!("@{}", session.handle)),
+                                    .child(
+                                        div()
+                                            .min_w(px(0.))
+                                            .truncate()
+                                            .font_family("JetBrains Mono")
+                                            .text_size(rems(13. / 16.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(
+                                                runner_app::ui::hue_for_seed(&session.handle)
+                                                    .color(),
+                                            )
+                                            .child(format!("@{}", session.handle)),
+                                    )
+                                    .children(
+                                        (session.handle == lead_handle)
+                                            .then(runner_app::ui::lead_badge),
+                                    ),
                             )
-                            .children(
-                                (session.handle == lead_handle).then(runner_app::ui::lead_badge),
-                            )
-                            .child(
+                            .child(Tooltip::new(
+                                SharedString::from(format!(
+                                    "mission-runner-open-terminal-tooltip-{session_id}"
+                                )),
+                                "Open PTY",
                                 div()
-                                    .ml_auto()
+                                    .id(terminal_group.clone())
+                                    .group(terminal_group.clone())
+                                    .tab_index(0)
                                     .size(rems(24. / 16.))
                                     .flex()
                                     .items_center()
@@ -4346,8 +4388,40 @@ impl NativeRoot {
                                     .border_1()
                                     .border_color(theme::border())
                                     .text_color(theme::faint())
-                                    .child(svg().path("terminal.svg").size(rems(12. / 16.))),
-                            ),
+                                    .cursor_pointer()
+                                    .hover(|button| button.border_color(theme::border_strong()))
+                                    .focus_visible(|button| {
+                                        button.border_color(theme::border_strong())
+                                    })
+                                    .on_click(move |_, window, cx| {
+                                        cx.stop_propagation();
+                                        button_open_root.update(cx, |this, cx| {
+                                            this.select_mission_session(&button_open_id, window, cx)
+                                        });
+                                    })
+                                    .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                        {
+                                            cx.stop_propagation();
+                                            button_key_root.update(cx, |this, cx| {
+                                                this.select_mission_session(
+                                                    &button_key_id,
+                                                    window,
+                                                    cx,
+                                                )
+                                            });
+                                        }
+                                    })
+                                    .child(
+                                        svg()
+                                            .path("terminal.svg")
+                                            .size(rems(12. / 16.))
+                                            .text_color(theme::faint())
+                                            .group_hover(terminal_group, |icon| {
+                                                icon.text_color(theme::text())
+                                            }),
+                                    ),
+                            )),
                     )
                     .child(
                         div()
@@ -4363,6 +4437,7 @@ impl NativeRoot {
                             .border_t_1()
                             .border_color(theme::with_alpha(theme::border(), 0.7))
                             .text_size(rems(10. / 16.))
+                            .line_height(rems(14. / 16.))
                             .child(
                                 div()
                                     .w(rems(72. / 16.))
@@ -4376,12 +4451,12 @@ impl NativeRoot {
                                     .flex_1()
                                     .flex()
                                     .items_start()
-                                    .gap_1()
+                                    .gap(rems(6. / 16.))
                                     .child(
                                         div()
                                             .min_w(px(0.))
                                             .flex_1()
-                                            .font_family("Menlo")
+                                            .font_family("JetBrains Mono")
                                             .text_color(theme::muted())
                                             .child(
                                                 session
@@ -4720,13 +4795,11 @@ fn mission_tab(
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
-        .w(rems(WORKSPACE_TAB_WIDTH / 16.))
         .h(rems(32. / 16.))
         .flex_none()
-        .px_3()
+        .px(rems(14. / 16.))
         .flex()
         .items_center()
-        .justify_center()
         .border_b_2()
         .border_color(if active {
             theme::accent()
@@ -4734,7 +4807,7 @@ fn mission_tab(
             gpui::transparent_black()
         })
         .cursor_pointer()
-        .text_size(rems(12. / 16.))
+        .text_size(rems(13. / 16.))
         .text_color(if active {
             theme::text()
         } else {
@@ -4792,7 +4865,7 @@ fn rail_section_label(label: &'static str) -> AnyElement {
         .text_size(rems(10. / 16.))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::faint())
-        .child(label.to_uppercase())
+        .child(tracked_uppercase(label))
         .into_any_element()
 }
 
@@ -4806,10 +4879,19 @@ fn meta_section(label: &'static str, body: impl IntoElement) -> AnyElement {
                 .text_size(rems(10. / 16.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme::faint())
-                .child(label.to_uppercase()),
+                .child(tracked_uppercase(label)),
         )
         .child(body)
         .into_any_element()
+}
+
+fn tracked_uppercase(label: &str) -> String {
+    label
+        .to_uppercase()
+        .chars()
+        .map(|character| character.to_string())
+        .collect::<Vec<_>>()
+        .join("\u{2009}")
 }
 
 fn format_relative_time(started_at: chrono::DateTime<Utc>) -> String {
