@@ -93,6 +93,8 @@ pub enum TerminalFontFamily {
     JetBrainsMono,
     #[serde(rename = "Fira Code")]
     FiraCode,
+    #[serde(rename = "Meslo Nerd Font")]
+    MesloNerdFont,
 }
 
 impl TerminalFontFamily {
@@ -103,6 +105,7 @@ impl TerminalFontFamily {
             Self::SfMono => "SF Mono",
             Self::JetBrainsMono => "JetBrains Mono",
             Self::FiraCode => "Fira Code",
+            Self::MesloNerdFont => "MesloLGSDZ Nerd Font",
         }
     }
 }
