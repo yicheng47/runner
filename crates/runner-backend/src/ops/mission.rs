@@ -299,28 +299,23 @@ pub fn stop(conn: &mut Connection, app_data_dir: &Path, id: &str) -> Result<Miss
     // fails, the mission stays `running` and the operator can retry.
     let tx = conn.transaction()?;
 
-    // Conditional UPDATE binds the status check and the transition into one
-    // atomic SQL statement. Without this, two racing `mission_stop` calls
-    // could each observe `running`, both commit `completed`, and both append
-    // a `mission_stopped` event (duplicate terminal). With `WHERE status =
-    // 'running'`, the slower of the two updates 0 rows and is rejected
-    // below, so only one writer ever reaches the log append.
-    //
-    // `archived_at` is set in the same UPDATE: `stop()` is reached only
-    // via `mission_archive`, so a terminal stop is by definition an
-    // archive. Atomic with the status flip means a row never observes
-    // `status='completed' AND archived_at IS NULL` (other than
-    // pre-existing rows the migration backfilled).
+    // Two entry states, one guarded UPDATE each (#376). A running
+    // mission takes the terminal-stop path: the status flip and the
+    // archive stamp bind into one atomic statement so two racing
+    // `mission_archive` calls can't both append the `mission_stopped`
+    // terminal event — the slower UPDATE hits 0 rows and falls
+    // through. A mission already out of `running` (restored from the
+    // Archived pane, or an aborted spawn) archives on the visibility
+    // axis alone: `archived_at` stamps, the lifecycle columns stay,
+    // and no second `mission_stopped` is appended — its terminal stop
+    // already happened.
     let stopped_at = now();
-    let affected = repo::mission::complete_and_archive_if_running(&tx, id, stopped_at)?;
-    if affected == 0 {
-        // Either the id doesn't exist or the mission isn't running anymore
-        // (a concurrent stop won the race). Fetch for a precise error.
-        let mission = get(&tx, id)?;
-        return Err(Error::msg(format!(
-            "mission {id} is not running; status = {:?}",
-            mission.status
-        )));
+    let was_running = repo::mission::complete_and_archive_if_running(&tx, id, stopped_at)? == 1;
+    if !was_running && repo::mission::archive_if_stopped(&tx, id, stopped_at)? == 0 {
+        // Unknown ids error out of the `get`; a row that both UPDATEs
+        // refused can only be here because it's already archived.
+        let _ = get(&tx, id)?;
+        return Err(Error::msg(format!("mission {id} is already archived")));
     }
 
     // Archiving removes the mission from the sidebar tree; unarchive
@@ -331,17 +326,19 @@ pub fn stop(conn: &mut Connection, app_data_dir: &Path, id: &str) -> Result<Miss
     // transition; used for the mission-dir path below.
     let mission = get(&tx, id)?;
 
-    let mission_dir = event_log::mission_dir(app_data_dir, &mission.crew_id, id);
-    let log = EventLog::open(&mission_dir)?;
-    log.append(EventDraft {
-        crew_id: mission.crew_id.clone(),
-        mission_id: id.to_string(),
-        kind: EventKind::Signal,
-        from: "system".into(),
-        to: None,
-        signal_type: Some(SignalType::new("mission_stopped")),
-        payload: serde_json::json!({}),
-    })?;
+    if was_running {
+        let mission_dir = event_log::mission_dir(app_data_dir, &mission.crew_id, id);
+        let log = EventLog::open(&mission_dir)?;
+        log.append(EventDraft {
+            crew_id: mission.crew_id.clone(),
+            mission_id: id.to_string(),
+            kind: EventKind::Signal,
+            from: "system".into(),
+            to: None,
+            signal_type: Some(SignalType::new("mission_stopped")),
+            payload: serde_json::json!({}),
+        })?;
+    }
 
     tx.commit()?;
     Ok(mission)
@@ -401,6 +398,16 @@ pub struct PostHumanSignalInput {
     pub payload: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PostHumanMessageInput {
+    pub mission_id: String,
+    pub text: String,
+    /// Omit for a crew-wide channel post; set to a slot handle for a
+    /// targeted message.
+    #[serde(default)]
+    pub to: Option<String>,
+}
+
 /// Replay the full event log for a mission. Used by the workspace UI when
 /// it first mounts (or remounts after navigation): it folds the historical
 /// envelopes into its feed before subscribing to `event/appended` for live
@@ -430,9 +437,9 @@ pub async fn mission_post_human_signal_impl(
     state: &AppCore,
     input: PostHumanSignalInput,
 ) -> Result<runner_core::model::Event> {
-    // Whitelist: only the two signal types the workspace UI is supposed
-    // to emit. The router treats `from = "human"` as authoritative for
-    // these, so a buggy frontend that posted `mission_goal` or `ask_lead`
+    // Whitelist: only human_said from MCP and human_response from the
+    // workspace UI. The router treats `from = "human"` as authoritative
+    // for these, so a buggy client that posted `mission_goal` or `ask_lead`
     // could trigger handler side-effects from the wrong identity.
     let allowed = matches!(input.signal_type.as_str(), "human_said" | "human_response");
     if !allowed {
@@ -465,6 +472,59 @@ pub async fn mission_post_human_signal_impl(
         payload: input.payload,
     })?;
     Ok(event)
+}
+
+fn post_human_message(
+    app_data_dir: &Path,
+    conn: &Connection,
+    input: PostHumanMessageInput,
+) -> Result<runner_core::model::Event> {
+    let text = input.text.trim().to_string();
+    if text.is_empty() {
+        return Err(Error::msg("mission message text must not be empty"));
+    }
+
+    let mission = get(conn, &input.mission_id)?;
+    if !matches!(mission.status, MissionStatus::Running) {
+        return Err(Error::msg(format!(
+            "mission {} is not running (status = {:?}); cannot post messages",
+            mission.id, mission.status
+        )));
+    }
+
+    if let Some(target) = input.to.as_deref() {
+        if target == "human" {
+            return Err(Error::msg("cannot address a mission message to @human"));
+        }
+        let roster = slot::list(conn, &mission.crew_id)?;
+        if !roster
+            .iter()
+            .any(|member| member.slot.slot_handle == target)
+        {
+            return Err(Error::msg(format!(
+                "runner @{target} is not in the mission crew roster"
+            )));
+        }
+    }
+
+    let mission_dir = event_log::mission_dir(app_data_dir, &mission.crew_id, &mission.id);
+    let log = EventLog::open(&mission_dir)?;
+    let event = log.append(EventDraft::message(
+        mission.crew_id,
+        mission.id,
+        "human",
+        input.to,
+        text,
+    ))?;
+    Ok(event)
+}
+
+pub async fn mission_post_human_message_impl(
+    state: &AppCore,
+    input: PostHumanMessageInput,
+) -> Result<runner_core::model::Event> {
+    let conn = state.db.get()?;
+    post_human_message(&state.app_data_dir, &conn, input)
 }
 
 pub async fn mission_start_impl(
@@ -1795,6 +1855,26 @@ mod tests {
             .id
     }
 
+    fn start_message_test_mission(conn: &mut Connection, app_data_dir: &Path) -> (String, String) {
+        let crew_id = seed_crew(conn, "Message crew", None);
+        add_runner(conn, &crew_id, "lead");
+        add_runner(conn, &crew_id, "reviewer");
+        let mission = start(
+            conn,
+            app_data_dir,
+            StartMissionInput {
+                project_id: None,
+                crew_id: crew_id.clone(),
+                title: "Message mission".into(),
+                goal_override: Some("Ship it".into()),
+                cwd: None,
+            },
+        )
+        .unwrap()
+        .mission;
+        (crew_id, mission.id)
+    }
+
     fn append_runner_status(
         log: &EventLog,
         crew_id: &str,
@@ -1911,6 +1991,162 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{err}").contains("title must not be empty"));
+    }
+
+    #[test]
+    fn post_human_message_appends_broadcast_message() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
+
+        let event = post_human_message(
+            tmp.path(),
+            &conn,
+            PostHumanMessageInput {
+                mission_id: mission_id.clone(),
+                text: "Heads up".into(),
+                to: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(event.kind, EventKind::Message);
+        assert_eq!(event.crew_id, crew_id);
+        assert_eq!(event.mission_id, mission_id);
+        assert_eq!(event.from, "human");
+        assert_eq!(event.to, None);
+        assert_eq!(event.signal_type, None);
+        assert_eq!(event.payload, serde_json::json!({ "text": "Heads up" }));
+
+        let mission_dir = event_log::mission_dir(tmp.path(), &crew_id, &event.mission_id);
+        let entries = EventLog::open(&mission_dir).unwrap().read_from(0).unwrap();
+        assert_eq!(entries.last().unwrap().event.id, event.id);
+    }
+
+    #[test]
+    fn post_human_message_appends_targeted_roster_message() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (_crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
+
+        let event = post_human_message(
+            tmp.path(),
+            &conn,
+            PostHumanMessageInput {
+                mission_id,
+                text: "  Please review\n".into(),
+                to: Some("reviewer".into()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(event.kind, EventKind::Message);
+        assert_eq!(event.from, "human");
+        assert_eq!(event.to.as_deref(), Some("reviewer"));
+        assert_eq!(
+            event.payload,
+            serde_json::json!({ "text": "Please review" })
+        );
+    }
+
+    #[test]
+    fn post_human_message_rejects_unknown_target() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (_crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
+
+        let err = post_human_message(
+            tmp.path(),
+            &conn,
+            PostHumanMessageInput {
+                mission_id,
+                text: "Hello?".into(),
+                to: Some("missing".into()),
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("@missing"),
+            "error must name the unknown handle; got {err}"
+        );
+    }
+
+    #[test]
+    fn post_human_message_rejects_human_target() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (_crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
+
+        let err = post_human_message(
+            tmp.path(),
+            &conn,
+            PostHumanMessageInput {
+                mission_id,
+                text: "Echo".into(),
+                to: Some("human".into()),
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("@human"),
+            "error must explain the refused target; got {err}"
+        );
+    }
+
+    #[test]
+    fn post_human_message_rejects_empty_or_whitespace_text() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (_crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
+
+        for text in ["", "  \n\t"] {
+            let err = post_human_message(
+                tmp.path(),
+                &conn,
+                PostHumanMessageInput {
+                    mission_id: mission_id.clone(),
+                    text: text.into(),
+                    to: None,
+                },
+            )
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("must not be empty"),
+                "error must explain the text guard; got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn post_human_message_rejects_non_running_mission() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (_crew_id, mission_id) = start_message_test_mission(&mut conn, tmp.path());
+        stop(&mut conn, tmp.path(), &mission_id).unwrap();
+
+        let err = post_human_message(
+            tmp.path(),
+            &conn,
+            PostHumanMessageInput {
+                mission_id,
+                text: "Too late".into(),
+                to: None,
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("not running"),
+            "error must explain the mission guard; got {err}"
+        );
     }
 
     #[test]
@@ -2216,7 +2452,84 @@ mod tests {
         stop(&mut conn, tmp.path(), &out.mission.id).unwrap();
 
         let err = stop(&mut conn, tmp.path(), &out.mission.id).unwrap_err();
-        assert!(format!("{err}").contains("not running"));
+        assert!(format!("{err}").contains("already archived"));
+    }
+
+    // #376: a restored mission (completed + unarchived, the state
+    // Settings → Archived → Restore creates) must archive again. The
+    // visibility-only path stamps archived_at, leaves the lifecycle
+    // columns alone, drops the sidebar node, and appends no second
+    // mission_stopped — the terminal event from the first archive is
+    // the only one in the log.
+    #[test]
+    fn restored_mission_archives_again_without_second_terminal_event() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew_id = seed_crew(&conn, "A", None);
+        add_runner(&mut conn, &crew_id, "lead");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = start(
+            &mut conn,
+            tmp.path(),
+            StartMissionInput {
+                project_id: None,
+                crew_id: crew_id.clone(),
+                title: "m".into(),
+                goal_override: Some("go".into()),
+                cwd: None,
+            },
+        )
+        .unwrap();
+        let id = out.mission.id.clone();
+        let archived = stop(&mut conn, tmp.path(), &id).unwrap();
+        let first_stop_at = archived
+            .stopped_at
+            .expect("first archive stamps stopped_at");
+
+        // Restore (mission_unarchive_impl): clear the marker, re-create
+        // the sidebar node.
+        assert_eq!(repo::mission::unarchive(&conn, &id).unwrap(), 1);
+        repo::node::ensure_mission_node(&conn, &id, None).unwrap();
+
+        let rearchived = stop(&mut conn, tmp.path(), &id).unwrap();
+        assert!(
+            rearchived.archived_at.is_some(),
+            "re-archive must stamp archived_at"
+        );
+        assert_eq!(
+            rearchived.status,
+            MissionStatus::Completed,
+            "re-archive must not touch the lifecycle status"
+        );
+        assert_eq!(
+            rearchived.stopped_at,
+            Some(first_stop_at),
+            "re-archive must not move stopped_at"
+        );
+        assert!(
+            repo::node::find_by_ref(&conn, repo::node::NodeType::Mission, &id)
+                .unwrap()
+                .is_none(),
+            "re-archive must drop the sidebar node"
+        );
+
+        let log = EventLog::open(&event_log::mission_dir(tmp.path(), &crew_id, &id)).unwrap();
+        let stops = log
+            .read_from(0)
+            .unwrap()
+            .iter()
+            .filter(|e| {
+                e.event
+                    .signal_type
+                    .as_ref()
+                    .is_some_and(|t| t.as_str() == "mission_stopped")
+            })
+            .count();
+        assert_eq!(
+            stops, 1,
+            "re-archive must not append a second mission_stopped"
+        );
     }
 
     #[test]
@@ -2410,13 +2723,16 @@ mod tests {
         let r1 = h1.join().unwrap();
         let r2 = h2.join().unwrap();
 
-        // Exactly one succeeded and exactly one failed with "not running".
+        // Exactly one succeeded; the loser found the row already
+        // archived by the winner (#376: the not-running fallthrough
+        // archives on the visibility axis, and the archived_at guard
+        // rejects it).
         let (ok_count, err_count) = [&r1, &r2].iter().fold((0, 0), |(o, e), r| match r {
             Ok(_) => (o + 1, e),
             Err(err) => {
                 assert!(
-                    format!("{err}").contains("not running"),
-                    "loser should report not-running, got {err}"
+                    format!("{err}").contains("already archived"),
+                    "loser should report already-archived, got {err}"
                 );
                 (o, e + 1)
             }
@@ -2805,9 +3121,10 @@ mod tests {
     #[test]
     fn stop_sets_archived_at_alongside_status() {
         // stop() is the only path to status='completed' (only called
-        // from mission_archive); the same UPDATE must stamp
-        // archived_at so a future row can never be observed as
-        // completed-but-not-archived.
+        // from mission_archive); for a running mission the same UPDATE
+        // stamps archived_at, so completed-but-unarchived only ever
+        // arises from an explicit restore (impl 0026, re-archived via
+        // the visibility-only path — #376).
         let pool = pool();
         let mut conn = pool.get().unwrap();
         let crew_id = seed_crew(&conn, "A", None);
