@@ -1757,8 +1757,7 @@ impl NativeRoot {
             TextField::new(input_cx.focus_handle(), "", "default", true).placeholder_as_value(true)
         });
         let model_field = cx.new(|model_cx| ModelField::new(model_override.clone(), &[], model_cx));
-        let root = cx.entity();
-        let runtime_root = root.clone();
+        let runtime_root = cx.entity();
         let runtime_select = cx.new(|select_cx| {
             StyledSelect::new(
                 "add-slot-runtime",
@@ -1776,10 +1775,9 @@ impl NativeRoot {
         let scroll = ScrollHandle::new();
         let owner = cx.entity_id();
         let scrollbar = cx.new(|_| Scrollbar::app(scroll.clone(), owner));
-        let query_root = root;
         let mut subscriptions = Vec::new();
-        subscriptions.push(cx.observe(&query, move |_, _, cx| {
-            query_root.update(cx, |this, cx| this.sync_add_slot_filter(cx));
+        subscriptions.push(cx.observe(&query, |this, _, cx| {
+            this.sync_add_slot_filter(cx);
         }));
         subscriptions.push(cx.observe(&slot_handle, |this, input, cx| {
             let text = input.read(cx).text().to_owned();
