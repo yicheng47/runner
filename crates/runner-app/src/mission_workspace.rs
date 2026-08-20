@@ -729,6 +729,30 @@ impl NativeRoot {
         )
     }
 
+    pub(crate) fn current_mission_terminal_size(&self, window: &Window) -> (u16, u16) {
+        match &self.mission_workspace.active_tab {
+            MissionTab::Session(session_id) => self
+                .attached
+                .get(session_id)
+                .map(|chat| chat.terminal.size())
+                .unwrap_or_else(|| self.estimated_mission_terminal_size(window)),
+            MissionTab::Feed => self.estimated_mission_terminal_size(window),
+        }
+    }
+
+    pub(crate) fn sync_mission_grid_hint(&self, window: &Window) {
+        let (cols, rows) = if matches!(&self.route, AppRoute::Mission(_)) {
+            self.current_mission_terminal_size(window)
+        } else {
+            self.estimated_mission_terminal_size(window)
+        };
+        if let Err(error) =
+            runner_backend::ops::mission::mission_grid_hint_set(&self.core, cols, rows)
+        {
+            eprintln!("Runner mission grid hint update failed for {cols}x{rows}: {error}");
+        }
+    }
+
     fn ensure_mission_terminals_attached(
         &mut self,
         window: &mut Window,
@@ -737,7 +761,7 @@ impl NativeRoot {
         if self.mission_workspace.archived() || self.mission_workspace.secondary {
             return Ok(());
         }
-        let size = self.estimated_mission_terminal_size(window);
+        let size = self.current_mission_terminal_size(window);
         let mut errors = Vec::new();
         for session in self.mission_workspace.sessions.clone() {
             if !self
@@ -1443,7 +1467,7 @@ impl NativeRoot {
         if stopped.is_empty() {
             return;
         }
-        let size = self.estimated_mission_terminal_size(window);
+        let size = self.current_mission_terminal_size(window);
         self.mission_workspace.resuming = true;
         for session_id in &stopped {
             self.begin_mission_transition(
@@ -1724,12 +1748,17 @@ impl NativeRoot {
         self.mission_workspace.resetting = true;
         self.mission_workspace.error = None;
         let generation = self.mission_workspace.generation;
+        let size = self.current_mission_terminal_size(window);
         let core = self.core.clone();
         let reset_id = mission_id.clone();
         let task = cx.background_spawn(async move {
-            let mission = runner_backend::ops::mission::mission_reset_impl(&core, reset_id.clone())
-                .await
-                .map_err(|error| error.to_string())?;
+            let mission = runner_backend::ops::mission::mission_reset_impl_with_size(
+                &core,
+                reset_id.clone(),
+                Some(size),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
             let sessions = runner_backend::ops::session::session_list(&core, &reset_id)
                 .map_err(|error| error.to_string())?;
             let events = runner_backend::ops::mission::mission_events_replay(&core, &reset_id)

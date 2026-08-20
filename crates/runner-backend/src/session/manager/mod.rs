@@ -740,6 +740,9 @@ pub struct PendingMissionSpawn {
     mission: Mission,
     runner: Runner,
     slot_handle: String,
+    /// Where `spec.initial_size` came from (caller-supplied / mission-hint /
+    /// DEFAULT_PTY_SIZE), for the post-spawn fork log line (#366).
+    size_source: &'static str,
     plan: router::runtime::ResumePlan,
     first_turn_delivered_via_argv: bool,
     resolved_cwd: Option<String>,

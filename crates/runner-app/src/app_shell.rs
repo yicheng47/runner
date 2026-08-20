@@ -53,6 +53,7 @@ impl NativeRoot {
     ) -> AnyElement {
         self.sync_theme(window);
         window.set_rem_size(px(16. * self.settings.app_zoom));
+        self.sync_mission_grid_hint(window);
         if self.bridge.take_session_refresh() {
             self.refresh_sessions();
         }

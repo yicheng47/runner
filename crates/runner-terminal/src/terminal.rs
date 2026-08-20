@@ -614,6 +614,7 @@ mod tests {
             runtime_discovery,
             buses: runner_backend::event_bus::BusRegistry::new(),
             routers: runner_backend::router::RouterRegistry::new(),
+            mission_grid_hint: Arc::new(std::sync::Mutex::new(None)),
             mcp: Arc::new(runner_backend::mcp::McpHandle::new()),
             windows,
             events: runner_backend::events::EventChannel::new(),
