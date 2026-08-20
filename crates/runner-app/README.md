@@ -14,14 +14,14 @@ GPUI requires the Xcode 26 Metal Toolchain component, already installed on the d
 
 ## Fixture corpus (regression harness)
 
-Recorded PTY byte logs in `fixtures/*.ndjson` (header line + base64 data/input/exit events), replayed into a headless `Term` and compared against blessed `*.snapshot.txt` grids:
+Recorded PTY byte logs in `../runner-terminal/fixtures/*.ndjson` (header line + base64 data/input/exit events), replayed into a headless `Term` and compared against blessed `*.snapshot.txt` grids:
 
 ```sh
-cargo test -p runner-app
-UPDATE_SNAPSHOTS=1 cargo test -p runner-app
+cargo test -p runner-terminal
+UPDATE_SNAPSHOTS=1 cargo test -p runner-terminal
 ```
 
-Current corpus: `claude-session` (real interactive TUI boot → prompt → streamed reply → /exit palette), `top-busy` (full-screen redraw churn), `width-torture` (CJK/emoji/ZWJ/box-drawing/SGR glyph classes).
+Current corpus: `claude-session` (real interactive TUI boot → prompt → streamed reply → /exit palette), `top-busy` (full-screen redraw churn), `width-torture` (CJK/emoji/ZWJ/box-drawing/SGR glyph classes), and `procedural-glyphs` (block art, shades, box borders, Braille, Powerline, and legacy computing symbols).
 
 ## Smoke test
 
