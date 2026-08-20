@@ -58,7 +58,7 @@ pub enum AppFontFamily {
 impl AppFontFamily {
     pub fn font(self) -> Font {
         let (family, named_fallback) = match self {
-            Self::Inter => ("Inter Variable", Some("Inter")),
+            Self::Inter => ("Inter", Some("Inter Variable")),
             Self::Geist => ("Geist Variable", Some("Geist")),
             Self::Roboto => ("Roboto Variable", Some("Roboto")),
             Self::SystemUi => (".SystemUIFont", None),
@@ -133,7 +133,6 @@ pub struct AppSettings {
     pub sidebar_projects_open: bool,
     pub sidebar_chats_open: bool,
     pub sidebar_collapsed_projects: BTreeSet<String>,
-    pub sidebar_collapsed_tabs: BTreeSet<String>,
     pub chat_panel_open: bool,
     pub chat_panel_width: f32,
     pub default_working_dir: String,
@@ -162,7 +161,6 @@ impl Default for AppSettings {
             sidebar_projects_open: true,
             sidebar_chats_open: true,
             sidebar_collapsed_projects: BTreeSet::new(),
-            sidebar_collapsed_tabs: BTreeSet::new(),
             chat_panel_open: true,
             chat_panel_width: CHAT_PANEL_DEFAULT,
             default_working_dir: String::new(),
@@ -210,8 +208,6 @@ impl AppSettings {
         self.default_runtime = self.default_runtime.trim().to_owned();
         self.sidebar_collapsed_projects =
             normalize_agent_set(std::mem::take(&mut self.sidebar_collapsed_projects));
-        self.sidebar_collapsed_tabs =
-            normalize_agent_set(std::mem::take(&mut self.sidebar_collapsed_tabs));
         self.disabled_agents = normalize_agent_set(std::mem::take(&mut self.disabled_agents));
         self.enabled_agents = normalize_agent_set(std::mem::take(&mut self.enabled_agents));
     }
@@ -451,11 +447,11 @@ mod tests {
     #[test]
     fn app_fonts_preserve_the_react_fallback_chain() {
         let inter = AppFontFamily::Inter.font();
-        assert_eq!(inter.family.as_ref(), "Inter Variable");
+        assert_eq!(inter.family.as_ref(), "Inter");
         assert_eq!(
             inter.fallbacks.unwrap().fallback_list(),
             [
-                "Inter",
+                "Inter Variable",
                 ".SystemUIFont",
                 "Segoe UI",
                 "PingFang SC",

@@ -9,13 +9,25 @@ const TITLEBAR_DRAG_HEIGHT: f32 = 28.;
 const SIDEBAR_TOGGLE_GLYPH_X: f32 = 94.3;
 const SIDEBAR_TOGGLE_GLYPH_INSET: f32 = 6.3;
 const SIDEBAR_TRANSITION_MS: u64 = 200;
+// Deliberately differs from main's inherited 19.5px line box to align both footer dividers.
+const SETTINGS_FOOTER_LINE_HEIGHT: f32 = 18.;
 const WINDOW_SIZE_SAVE_DELAY_MS: u64 = 300;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum AppRoute {
     #[default]
     Chat,
+    Runners,
+    RunnerDetail(String),
+    Crews,
+    CrewEditor(String),
     Settings,
+}
+
+impl AppRoute {
+    pub(crate) fn terminal_visible(&self) -> bool {
+        matches!(self, Self::Chat)
+    }
 }
 
 #[derive(Clone)]
@@ -62,7 +74,7 @@ impl NativeRoot {
             self.show_toast(error, ToastTone::Error, cx);
         }
 
-        let workspace = self.render_active_tab(window, cx);
+        let workspace = self.render_entity_surface(window, cx);
         let sidebar = self.render_app_sidebar(window, cx);
         let preview_trigger = self.render_sidebar_preview_trigger(cx);
         let modal = (self.route != AppRoute::Settings)
@@ -75,6 +87,11 @@ impl NativeRoot {
             .map(|_| self.render_chat_rename_modal(cx));
         let sidebar_overlays = if self.route != AppRoute::Settings {
             self.render_sidebar_overlays(cx)
+        } else {
+            Vec::new()
+        };
+        let entity_overlays = if self.route != AppRoute::Settings {
+            self.render_entity_overlays(cx)
         } else {
             Vec::new()
         };
@@ -108,7 +125,8 @@ impl NativeRoot {
             .children(preview_trigger)
             .children(modal)
             .children(chat_rename_modal)
-            .children(sidebar_overlays);
+            .children(sidebar_overlays)
+            .children(entity_overlays);
         let settings =
             (self.route == AppRoute::Settings).then(|| self.render_settings_takeover(window, cx));
         let toast = self
@@ -139,11 +157,17 @@ impl NativeRoot {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.clear_sidebar_drag(cx)),
+                cx.listener(|this, _, _, cx| {
+                    this.clear_sidebar_drag(cx);
+                    this.clear_crew_slot_drag(cx);
+                }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.clear_sidebar_drag(cx)),
+                cx.listener(|this, _, _, cx| {
+                    this.clear_sidebar_drag(cx);
+                    this.clear_crew_slot_drag(cx);
+                }),
             )
             .on_action(cx.listener(Self::open_new_tab_modal))
             .on_action(cx.listener(Self::close_focused_chat_pane))
@@ -310,7 +334,7 @@ impl NativeRoot {
         let settings_button = div()
             .flex_none()
             .px_3()
-            .pt_1()
+            .pt_2()
             .border_t_1()
             .border_color(theme::sidebar_selected_border())
             .child(
@@ -328,6 +352,7 @@ impl NativeRoot {
                     .border_color(gpui::transparent_black())
                     .cursor_pointer()
                     .text_color(theme::muted())
+                    .line_height(px(SETTINGS_FOOTER_LINE_HEIGHT * self.settings.app_zoom))
                     .hover(|button| {
                         button
                             .border_color(theme::sidebar_selected_border())
@@ -361,7 +386,7 @@ impl NativeRoot {
             .flex_none()
             .flex()
             .flex_col()
-            .pb_2()
+            .pb_3()
             .overflow_hidden()
             .opacity(visibility)
             .bg(theme::sidebar())
@@ -762,6 +787,7 @@ impl NativeRoot {
 
     pub(crate) fn enter_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.route != AppRoute::Settings {
+            self.settings_return_route = self.route.clone();
             self.dismiss_sidebar_transients(cx);
             self.core.windows.set_subjects("main", Vec::new());
             self.core.broadcast_focus_map();
@@ -772,10 +798,18 @@ impl NativeRoot {
     }
 
     fn leave_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.route = AppRoute::Chat;
-        self.mark_active_tab_viewed(window);
-        self.focus_active_terminal(window);
-        cx.notify();
+        match self.settings_return_route.clone() {
+            AppRoute::Chat | AppRoute::Settings => {
+                self.route = AppRoute::Chat;
+                self.mark_active_tab_viewed(window);
+                self.focus_active_terminal(window);
+                cx.notify();
+            }
+            AppRoute::Runners => self.open_runners(window, cx),
+            AppRoute::RunnerDetail(handle) => self.open_runner_detail(handle, window, cx),
+            AppRoute::Crews => self.open_crews(window, cx),
+            AppRoute::CrewEditor(crew_id) => self.open_crew_editor(crew_id, window, cx),
+        }
     }
 
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {

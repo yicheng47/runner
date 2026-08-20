@@ -1,10 +1,11 @@
-//! Native sidebar: durable node tree, project containers, tab groups, and attention.
+//! Native sidebar: durable node tree, project containers, tab rows, and attention.
 
 use std::path::Path;
 
 use gpui::{radians, svg, DragMoveEvent, FontWeight, PathPromptOptions, Transformation};
 use runner_app::ui::{
-    ButtonVariant, ConfirmDialog, Field, Modal, OverlayWidth, TextField, Tooltip, WorkingDirField,
+    working_dir_text_field, ButtonVariant, ConfirmDialog, Field, Modal, OverlayWidth, TextField,
+    Tooltip, WorkingDirField,
 };
 use runner_backend::events::AppEvent;
 use runner_backend::ops::mission::{MissionActivityState, MissionSummary};
@@ -61,7 +62,8 @@ impl SidebarRefreshKind {
                 Some(Self::Missions)
             }
             "session/exit" | "session/archived" | "session/updated" | "runner/activity"
-            | "mission/changed" | "project/changed" => Some(Self::All),
+            | "runner/changed" | "crew/changed" | "slot/changed" | "mission/changed"
+            | "project/changed" => Some(Self::All),
             _ => None,
         }
     }
@@ -266,7 +268,6 @@ impl NativeRoot {
 
     pub(crate) fn prune_sidebar_collapse_state(&mut self) {
         let previous_projects = self.settings.sidebar_collapsed_projects.len();
-        let previous_tabs = self.settings.sidebar_collapsed_tabs.len();
         let project_ids = self
             .projects
             .iter()
@@ -275,18 +276,7 @@ impl NativeRoot {
         self.settings
             .sidebar_collapsed_projects
             .retain(|id| project_ids.contains(id.as_str()));
-        let tab_ids = self
-            .tabs
-            .tabs()
-            .iter()
-            .map(|tab| tab.id.as_str())
-            .collect::<std::collections::HashSet<_>>();
-        self.settings
-            .sidebar_collapsed_tabs
-            .retain(|id| tab_ids.contains(id.as_str()));
-        if previous_projects != self.settings.sidebar_collapsed_projects.len()
-            || previous_tabs != self.settings.sidebar_collapsed_tabs.len()
-        {
+        if previous_projects != self.settings.sidebar_collapsed_projects.len() {
             self.save_settings();
         }
     }
@@ -447,6 +437,7 @@ impl NativeRoot {
         if !self.tabs.activate(tab_id) {
             return;
         }
+        self.route = AppRoute::Chat;
         if let Some(layout) = self.tabs.active_mut() {
             layout.focus_session(session_id);
         }
@@ -466,16 +457,6 @@ impl NativeRoot {
             self.settings
                 .sidebar_collapsed_projects
                 .insert(project_id.to_owned());
-        }
-        self.save_settings();
-        cx.notify();
-    }
-
-    fn toggle_tab_group(&mut self, tab_id: &str, cx: &mut Context<Self>) {
-        if !self.settings.sidebar_collapsed_tabs.remove(tab_id) {
-            self.settings
-                .sidebar_collapsed_tabs
-                .insert(tab_id.to_owned());
         }
         self.save_settings();
         cx.notify();
@@ -966,13 +947,8 @@ impl NativeRoot {
         let cwd = self.settings.default_working_dir.trim().to_owned();
         let name = project_name_from_path(&cwd);
         let cwd_input = cx.new(|input_cx| {
-            TextField::new(
-                input_cx.focus_handle(),
-                cwd,
-                "/Users/you/projects/runner",
-                true,
-            )
-            .text_size(12.)
+            working_dir_text_field(input_cx.focus_handle(), cwd, "/Users/you/projects/runner")
+                .text_size(12.)
         });
         let name_input = cx.new(|input_cx| {
             TextField::new(input_cx.focus_handle(), name, "runner", false).text_size(13.)
@@ -1104,10 +1080,25 @@ impl NativeRoot {
         }
     }
 
-    fn confirm_delete_project(&mut self, cx: &mut Context<Self>) {
+    fn confirm_delete_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(project_id) = self.project_delete_confirm.clone() else {
             return;
         };
+        let deleting_active_chat = self
+            .tabs
+            .active_tab_id()
+            .and_then(|tab_id| self.nodes.iter().find(|node| node.id == tab_id))
+            .and_then(|node| node_project_id(&self.nodes, node))
+            .as_deref()
+            == Some(project_id.as_str());
+        if deleting_active_chat {
+            self.core.windows.set_subjects("main", Vec::new());
+            self.core.windows.mark_blurred("main");
+            self.core.broadcast_focus_map();
+            self.route = AppRoute::Runners;
+            self.load_runner_page(cx);
+            window.focus(&self.root_focus);
+        }
         self.project_delete_busy = true;
         let core = self.core.clone();
         let deleting_project_id = project_id.clone();
@@ -1286,8 +1277,7 @@ impl NativeRoot {
             .flex_1()
             .overflow_y_scroll()
             .scrollbar_width(px(0.))
-            .track_scroll(&self.sidebar_scroll)
-            .pb_3();
+            .track_scroll(&self.sidebar_scroll);
         if !pinned.is_empty() {
             let visible = pinned
                 .iter()
@@ -1523,12 +1513,12 @@ impl NativeRoot {
                         )
                 })),
         );
-
         div()
             .min_h(px(0.))
             .flex_1()
             .flex()
             .flex_col()
+            .pb_3()
             .child(
                 div().flex_none().child(section_title("WORKSPACE")).child(
                     div()
@@ -1537,8 +1527,30 @@ impl NativeRoot {
                         .flex()
                         .flex_col()
                         .gap(rems(2. / 16.))
-                        .child(workspace_row("workspace-runner", "terminal.svg", "runner"))
-                        .child(workspace_row("workspace-crew", "users.svg", "crew")),
+                        .child(workspace_row(
+                            "workspace-runner",
+                            "terminal.svg",
+                            "runner",
+                            matches!(self.route, AppRoute::Runners | AppRoute::RunnerDetail(_)),
+                            {
+                                let root = cx.entity();
+                                move |window, cx| {
+                                    root.update(cx, |this, cx| this.open_runners(window, cx));
+                                }
+                            },
+                        ))
+                        .child(workspace_row(
+                            "workspace-crew",
+                            "users.svg",
+                            "crew",
+                            matches!(self.route, AppRoute::Crews | AppRoute::CrewEditor(_)),
+                            {
+                                let root = cx.entity();
+                                move |window, cx| {
+                                    root.update(cx, |this, cx| this.open_crews(window, cx));
+                                }
+                            },
+                        )),
                 ),
             )
             .child(
@@ -1707,221 +1719,10 @@ impl NativeRoot {
             .sidebar_rename
             .as_ref()
             .is_some_and(|rename| rename.target.matches(NodeType::Tab, &node.id));
-        if members.len() > 1 {
-            let collapsed = self.settings.sidebar_collapsed_tabs.contains(&node.id);
-            let header_node = node.clone();
-            let header_layout = layout.clone();
-            let header_members = members.clone();
-            let menu_root = cx.entity();
-            let click_tab_id = node.id.clone();
-            let click_session_id = focused.clone();
-            let chevron_tab_id = node.id.clone();
-            let chevron_root = cx.entity();
-            let context_node = node.clone();
-            let context_layout = layout.clone();
-            let context_members = members.clone();
-            let header = if renaming {
-                self.render_inline_rename_row(
-                    NodeType::Tab,
-                    &node.id,
-                    Some(if collapsed {
-                        "chevron-right.svg"
-                    } else {
-                        "chevron-down.svg"
-                    }),
-                    (
-                        if pane_count >= 3 {
-                            "columns-3.svg"
-                        } else {
-                            "columns-2.svg"
-                        },
-                        live,
-                    ),
-                    attention,
-                    cx,
-                )
-            } else {
-                div()
-                    .id(SharedString::from(format!("tab-group-header-{}", node.id)))
-                    .group("sidebar-row-actions")
-                    .relative()
-                    .w_full()
-                    .px(rems(10. / 16.))
-                    .py(rems(6. / 16.))
-                    .flex()
-                    .items_center()
-                    .gap(rems(6. / 16.))
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(if active {
-                        theme::sidebar_selected_border()
-                    } else {
-                        gpui::transparent_black()
-                    })
-                    .text_size(rems(SIDEBAR_ROW_FONT_SIZE / 16.))
-                    .text_color(if active {
-                        theme::text()
-                    } else {
-                        theme::muted()
-                    })
-                    .when(active, |row| row.bg(theme::sidebar_selected()))
-                    .hover(|row| {
-                        row.border_color(theme::sidebar_selected_border())
-                            .bg(theme::with_alpha(theme::sidebar_selected(), 0.4))
-                            .text_color(theme::text())
-                    })
-                    .child(
-                        IconButton::new(
-                            SharedString::from(format!("tab-group-toggle-{}", node.id)),
-                            if collapsed {
-                                "chevron-right.svg"
-                            } else {
-                                "chevron-down.svg"
-                            },
-                        )
-                        .size(IconButtonSize::Xs)
-                        .stop_click_propagation(true)
-                        .tooltip(if collapsed {
-                            "Expand tab"
-                        } else {
-                            "Collapse tab"
-                        })
-                        .on_press(move |_, cx| {
-                            chevron_root.update(cx, |this, cx| {
-                                this.toggle_tab_group(&chevron_tab_id, cx);
-                            });
-                        }),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!(
-                                "tab-group-toggle-area-{}",
-                                node.id
-                            )))
-                            .min_w(px(0.))
-                            .flex_1()
-                            .flex()
-                            .items_center()
-                            .gap(rems(6. / 16.))
-                            .cursor_pointer()
-                            .children(node.pinned_position.is_some().then(pin_indicator))
-                            .child(sidebar_icon(
-                                if pane_count >= 3 {
-                                    "columns-3.svg"
-                                } else {
-                                    "columns-2.svg"
-                                },
-                                live,
-                            ))
-                            .child(
-                                div()
-                                    .min_w(px(0.))
-                                    .flex_1()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .font_weight(if active {
-                                        FontWeight::SEMIBOLD
-                                    } else {
-                                        FontWeight::NORMAL
-                                    })
-                                    .text_color(theme::text())
-                                    .child(label.clone()),
-                            )
-                            .child(attention_indicator(attention))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.activate_sidebar_session(
-                                    &click_tab_id,
-                                    &click_session_id,
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    )
-                    .child(
-                        IconButton::new(
-                            SharedString::from(format!("tab-group-actions-{}", node.id)),
-                            "more-horizontal.svg",
-                        )
-                        .size(IconButtonSize::Xs)
-                        .stop_click_propagation(true)
-                        .reveal_on_group_hover("sidebar-row-actions")
-                        .tooltip("More actions")
-                        .on_press(move |window, cx| {
-                            let position = window.mouse_position();
-                            menu_root.update(cx, |this, cx| {
-                                this.open_tab_menu(
-                                    header_node.clone(),
-                                    header_layout.clone(),
-                                    header_members.clone(),
-                                    position,
-                                    window,
-                                    cx,
-                                )
-                            });
-                        }),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                            cx.stop_propagation();
-                            this.open_tab_menu(
-                                context_node.clone(),
-                                context_layout.clone(),
-                                context_members.clone(),
-                                event.position,
-                                window,
-                                cx,
-                            );
-                        }),
-                    )
-                    .into_any_element()
-            };
-            let group = div()
-                .flex()
-                .flex_col()
-                .gap(rems(2. / 16.))
-                .child(header)
-                .children((!collapsed).then(|| {
-                    div()
-                        .ml_3()
-                        .pl(rems(13. / 16.))
-                        .flex()
-                        .flex_col()
-                        .gap(rems(2. / 16.))
-                        .border_l_2()
-                        .border_color(if active {
-                            theme::with_alpha(theme::accent(), 0.3)
-                        } else {
-                            theme::border()
-                        })
-                        .children(members.iter().enumerate().map(|(member_index, member)| {
-                            self.render_group_member(
-                                &node.id,
-                                member,
-                                active
-                                    && layout.focused_session_id()
-                                        == Some(member.session_id.as_str()),
-                                member_index,
-                                cx,
-                            )
-                        }))
-                }))
-                .into_any_element();
-            if renaming {
-                return group;
-            }
-            return self.decorate_draggable_row(
-                group,
-                &node,
-                label,
-                drop_kind,
-                parent_id,
-                visible_ids,
-                cx,
-            );
-        }
-
-        let target = members[0].clone();
+        let target = members
+            .iter()
+            .find(|member| member.session_id == focused)
+            .unwrap_or(&members[0]);
         let click_tab = node.id.clone();
         let click_session = target.session_id.clone();
         let leaf_icon = if pane_count >= 3 {
@@ -2003,35 +1804,6 @@ impl NativeRoot {
             return base;
         }
         self.decorate_draggable_row(base, &node, label, drop_kind, parent_id, visible_ids, cx)
-    }
-
-    fn render_group_member(
-        &self,
-        tab_id: &str,
-        member: &DirectSessionEntry,
-        focused: bool,
-        index: usize,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let status =
-            direct_chat_display_status(member, self.session_activity.get(&member.session_id));
-        let click_tab = tab_id.to_owned();
-        let click_session = member.session_id.clone();
-        sidebar_row_shell(
-            SharedString::from(format!("sidebar-tab-member-{tab_id}-{index}")),
-            focused,
-            focused,
-        )
-        .child(status_dot(status))
-        .child(sidebar_row_label(
-            session_row_label(member),
-            focused,
-            member.handle.is_some(),
-        ))
-        .on_click(cx.listener(move |this, _, window, cx| {
-            this.activate_sidebar_session(&click_tab, &click_session, window, cx);
-        }))
-        .into_any_element()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2580,8 +2352,10 @@ impl NativeRoot {
                         "Delete project",
                         "Archiving…",
                         self.project_delete_busy,
-                        Rc::new(move |_, cx| {
-                            confirm_root.update(cx, |this, cx| this.confirm_delete_project(cx));
+                        Rc::new(move |window, cx| {
+                            confirm_root.update(cx, |this, cx| {
+                                this.confirm_delete_project(window, cx)
+                            });
                         }),
                         Rc::new(move |_, cx| {
                             cancel_root.update(cx, |this, cx| {
@@ -2668,7 +2442,6 @@ impl NativeRoot {
                     WorkingDirField::new(
                         modal.cwd.clone(),
                         submitting,
-                        true,
                         Rc::new(move |_, cx| {
                             browse_root.update(cx, |this, cx| this.browse_project_cwd(cx));
                         }),
@@ -2768,9 +2541,18 @@ fn section_title(label: &'static str) -> AnyElement {
         .into_any_element()
 }
 
-fn workspace_row(id: &'static str, icon: &'static str, label: &'static str) -> AnyElement {
+fn workspace_row(
+    id: &'static str,
+    icon: &'static str,
+    label: &'static str,
+    active: bool,
+    on_click: impl Fn(&mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let on_click = Rc::new(on_click);
+    let key_click = Rc::clone(&on_click);
     div()
         .id(id)
+        .tab_index(0)
         .px(rems(10. / 16.))
         .py(rems(6. / 16.))
         .flex()
@@ -2778,11 +2560,30 @@ fn workspace_row(id: &'static str, icon: &'static str, label: &'static str) -> A
         .gap_2()
         .rounded_sm()
         .border_1()
-        .border_color(gpui::transparent_black())
+        .border_color(if active {
+            theme::sidebar_selected_border()
+        } else {
+            gpui::transparent_black()
+        })
+        .when(active, |row| row.bg(theme::sidebar_selected()).shadow_sm())
         .cursor_pointer()
         .text_sm()
-        .text_color(theme::muted())
+        .font_weight(if active {
+            FontWeight::SEMIBOLD
+        } else {
+            FontWeight::NORMAL
+        })
+        .text_color(if active {
+            theme::text()
+        } else {
+            theme::muted()
+        })
         .hover(|row| {
+            row.border_color(theme::sidebar_selected_border())
+                .bg(theme::with_alpha(theme::sidebar_selected(), 0.4))
+                .text_color(theme::text())
+        })
+        .focus_visible(|row| {
             row.border_color(theme::sidebar_selected_border())
                 .bg(theme::with_alpha(theme::sidebar_selected(), 0.4))
                 .text_color(theme::text())
@@ -2792,9 +2593,20 @@ fn workspace_row(id: &'static str, icon: &'static str, label: &'static str) -> A
                 .path(icon)
                 .size(rems(12. / 16.))
                 .flex_none()
-                .text_color(theme::muted()),
+                .text_color(if active {
+                    theme::text()
+                } else {
+                    theme::muted()
+                }),
         )
         .child(label)
+        .on_click(move |_, window, cx| on_click(window, cx))
+        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                cx.stop_propagation();
+                key_click(window, cx);
+            }
+        })
         .into_any_element()
 }
 
@@ -2958,21 +2770,6 @@ pub(crate) fn direct_chat_display_status(
     }
 }
 
-fn status_dot(status: DirectChatDisplayStatus) -> AnyElement {
-    let color = match status {
-        DirectChatDisplayStatus::Busy => theme::accent(),
-        DirectChatDisplayStatus::Idle => theme::with_alpha(theme::accent(), 0.3),
-        DirectChatDisplayStatus::Stopped => theme::faint(),
-        DirectChatDisplayStatus::Crashed => theme::danger(),
-    };
-    div()
-        .size(rems(6. / 16.))
-        .flex_none()
-        .rounded_full()
-        .bg(color)
-        .into_any_element()
-}
-
 pub(crate) fn session_label(entry: &DirectSessionEntry) -> String {
     entry.title.clone().unwrap_or_else(|| {
         entry
@@ -2981,27 +2778,6 @@ pub(crate) fn session_label(entry: &DirectSessionEntry) -> String {
             .map(|handle| format!("@{handle}"))
             .unwrap_or_else(|| entry.display_name.clone())
     })
-}
-
-fn session_row_label(entry: &DirectSessionEntry) -> String {
-    if let Some(title) = &entry.title {
-        return title.clone();
-    }
-    let owner = entry
-        .handle
-        .as_ref()
-        .map(|handle| format!("@{handle}"))
-        .unwrap_or_else(|| entry.display_name.clone());
-    let Some(timestamp) = entry.started_at.as_ref().or(entry.stopped_at.as_ref()) else {
-        return format!("{owner} · session");
-    };
-    let local = timestamp.with_timezone(&chrono::Local);
-    let when = if local.date_naive() == chrono::Local::now().date_naive() {
-        local.format("%H:%M").to_string()
-    } else {
-        local.format("%b %-d").to_string()
-    };
-    format!("{owner} · {when}")
 }
 
 #[cfg(test)]

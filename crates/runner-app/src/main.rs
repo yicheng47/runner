@@ -2,10 +2,12 @@ mod app_settings;
 mod app_shell;
 mod assets;
 mod chat_lifecycle;
+mod list_controls;
 mod mac_chrome;
 mod sidebar_logic;
 mod terminal_element;
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -42,7 +44,7 @@ use runner_terminal::terminal::{TerminalBridge, TerminalSession};
 
 use app_settings::{settings_path, AppSettings};
 use app_shell::AppRoute;
-use assets::Assets;
+use assets::{Assets, INTER_FONT};
 use terminal_element::TerminalElement;
 use toast::ToastHost;
 
@@ -70,12 +72,16 @@ actions!(
 );
 
 mod chat;
+mod crews;
 mod panes;
+mod runners;
 mod sidebar;
 mod start_chat;
 mod toast;
 
+use crews::CrewSurfaces;
 use panes::{adjacent_pane_index, pane_fractions};
+use runners::RunnerSurfaces;
 use sidebar::{session_label, ProjectModal, SidebarRefreshKind, SidebarRename};
 use sidebar_logic::DropTarget;
 use start_chat::StartChatModal;
@@ -111,6 +117,41 @@ struct SidebarVisibilityTransition {
     start: f32,
     target: f32,
     started_at: Option<Instant>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EntityRefreshKind {
+    None,
+    Runners,
+    All,
+}
+
+impl EntityRefreshKind {
+    fn for_event(event: &runner_backend::events::AppEvent) -> Self {
+        match event.name {
+            "runner/activity" => Self::Runners,
+            "runner/changed" | "crew/changed" | "slot/changed" => Self::All,
+            _ => Self::None,
+        }
+    }
+
+    fn merge(self, other: Self) -> Self {
+        if self == Self::None || self == other {
+            return other;
+        }
+        if other == Self::None {
+            return self;
+        }
+        Self::All
+    }
+
+    fn runners(self) -> bool {
+        matches!(self, Self::Runners | Self::All)
+    }
+
+    fn crews(self) -> bool {
+        self == Self::All
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -247,6 +288,7 @@ struct NativeRoot {
     settings: AppSettings,
     settings_path: PathBuf,
     route: AppRoute,
+    settings_return_route: AppRoute,
     sidebar_visibility: SidebarVisibilityTransition,
     chat_panel_visibility: SidebarVisibilityTransition,
     sidebar_preview_open: bool,
@@ -254,6 +296,8 @@ struct NativeRoot {
     titlebar_drag_armed: bool,
     window_size_save_generation: u64,
     toasts: ToastHost,
+    runner_surfaces: RunnerSurfaces,
+    crew_surfaces: CrewSurfaces,
     _appearance_subscription: Option<Subscription>,
     _activation_subscription: Option<Subscription>,
     _bounds_subscription: Option<Subscription>,
@@ -280,7 +324,14 @@ impl NativeRoot {
         cx.spawn(async move |weak, cx| {
             while wake_rx.next().await.is_some() {
                 while wake_rx.try_recv().is_ok() {}
-                if weak.update(cx, |_, cx| cx.notify()).is_err() {
+                if weak
+                    .update(cx, |this, cx| {
+                        if this.route.terminal_visible() {
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -325,14 +376,15 @@ impl NativeRoot {
         .detach();
 
         let (sidebar_event_tx, mut sidebar_event_rx) =
-            futures::channel::mpsc::unbounded::<SidebarRefreshKind>();
+            futures::channel::mpsc::unbounded::<(SidebarRefreshKind, EntityRefreshKind)>();
         let mut sidebar_events = core.events.subscribe();
         cx.background_spawn(async move {
             loop {
                 let refresh = match sidebar_events.recv().await {
-                    Ok(event) => SidebarRefreshKind::for_event(&event),
+                    Ok(event) => SidebarRefreshKind::for_event(&event)
+                        .map(|sidebar| (sidebar, EntityRefreshKind::for_event(&event))),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        Some(SidebarRefreshKind::All)
+                        Some((SidebarRefreshKind::All, EntityRefreshKind::All))
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 };
@@ -344,12 +396,35 @@ impl NativeRoot {
         })
         .detach();
         cx.spawn(async move |weak, cx| {
-            while let Some(mut refresh) = sidebar_event_rx.next().await {
+            while let Some((mut sidebar_refresh, mut entity_refresh)) =
+                sidebar_event_rx.next().await
+            {
                 while let Ok(next) = sidebar_event_rx.try_recv() {
-                    refresh = refresh.merge(next);
+                    sidebar_refresh = sidebar_refresh.merge(next.0);
+                    entity_refresh = entity_refresh.merge(next.1);
                 }
                 if weak
-                    .update(cx, |this, cx| this.refresh_sidebar(refresh, cx))
+                    .update(cx, |this, cx| {
+                        this.refresh_sidebar(sidebar_refresh, cx);
+                        match this.route.clone() {
+                            AppRoute::Runners if entity_refresh.runners() => {
+                                this.load_runner_page(cx)
+                            }
+                            AppRoute::RunnerDetail(handle) if entity_refresh.runners() => {
+                                this.load_runner_detail(handle, cx)
+                            }
+                            AppRoute::Crews if entity_refresh.crews() => this.load_crew_page(cx),
+                            AppRoute::CrewEditor(crew_id) if entity_refresh.crews() => {
+                                this.load_crew_editor(crew_id, cx)
+                            }
+                            AppRoute::Chat
+                            | AppRoute::Runners
+                            | AppRoute::RunnerDetail(_)
+                            | AppRoute::Crews
+                            | AppRoute::CrewEditor(_)
+                            | AppRoute::Settings => {}
+                        }
+                    })
                     .is_err()
                 {
                     break;
@@ -378,7 +453,10 @@ impl NativeRoot {
             while runtime_event_rx.next().await.is_some() {
                 while runtime_event_rx.try_recv().is_ok() {}
                 if weak
-                    .update(cx, |this, cx| this.refresh_start_chat_runtimes(cx))
+                    .update(cx, |this, cx| {
+                        this.refresh_start_chat_runtimes(cx);
+                        this.refresh_runner_form_runtimes(cx);
+                    })
                     .is_err()
                 {
                     break;
@@ -517,6 +595,8 @@ impl NativeRoot {
         });
         let sidebar_visibility = SidebarVisibilityTransition::new(!settings.sidebar_collapsed);
         let chat_panel_visibility = SidebarVisibilityTransition::new(settings.chat_panel_open);
+        let runner_surfaces = RunnerSurfaces::new(cx.entity(), cx);
+        let crew_surfaces = CrewSurfaces::new(cx.entity(), cx);
         let mut root = Self {
             core,
             bridge,
@@ -565,6 +645,7 @@ impl NativeRoot {
             settings,
             settings_path,
             route: AppRoute::Chat,
+            settings_return_route: AppRoute::Chat,
             sidebar_visibility,
             chat_panel_visibility,
             sidebar_preview_open: false,
@@ -572,6 +653,8 @@ impl NativeRoot {
             titlebar_drag_armed: false,
             window_size_save_generation: 0,
             toasts: ToastHost::default(),
+            runner_surfaces,
+            crew_surfaces,
             _appearance_subscription: None,
             _activation_subscription: None,
             _bounds_subscription: None,
@@ -628,6 +711,20 @@ impl Render for NativeRoot {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn install_app_icon() {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let main_thread = MainThreadMarker::new().expect("Runner must start on the main thread");
+    let data = NSData::with_bytes(include_bytes!("../../../assets/icon.png"));
+    let image = NSImage::initWithData(NSImage::alloc(), &data).expect("invalid app icon");
+    unsafe {
+        NSApplication::sharedApplication(main_thread).setApplicationIconImage(Some(&image));
+    }
+}
+
 fn run() -> Result<()> {
     let paths = native_paths()?;
     let core = boot_core(&paths)?;
@@ -638,6 +735,13 @@ fn run() -> Result<()> {
     Application::new()
         .with_assets(Assets)
         .run(move |cx: &mut App| {
+            cx.text_system()
+                .add_fonts(vec![Cow::Borrowed(INTER_FONT)])
+                .expect("bundled Inter font must be valid");
+
+            #[cfg(target_os = "macos")]
+            install_app_icon();
+
             let quit_core = core.clone();
             cx.on_action(move |_: &Quit, cx| {
                 if let Err(error) = stop_running_sessions_on_quit(&quit_core) {
@@ -805,8 +909,64 @@ fn main() {
 }
 
 #[cfg(test)]
-mod sidebar_visibility_tests {
+mod native_root_tests {
     use super::*;
+
+    #[test]
+    fn terminal_repaints_only_when_the_chat_surface_is_visible() {
+        assert!(AppRoute::Chat.terminal_visible());
+        for route in [
+            AppRoute::Runners,
+            AppRoute::RunnerDetail("runner".into()),
+            AppRoute::Crews,
+            AppRoute::CrewEditor("crew".into()),
+            AppRoute::Settings,
+        ] {
+            assert!(!route.terminal_visible());
+        }
+    }
+
+    #[test]
+    fn entity_refresh_events_match_runner_and_crew_dependencies() {
+        let event = |name| runner_backend::events::AppEvent {
+            name,
+            payload: serde_json::Value::Null,
+        };
+
+        assert_eq!(
+            EntityRefreshKind::for_event(&event("runner/activity")),
+            EntityRefreshKind::Runners
+        );
+        for name in ["runner/changed", "crew/changed", "slot/changed"] {
+            assert_eq!(
+                EntityRefreshKind::for_event(&event(name)),
+                EntityRefreshKind::All
+            );
+        }
+        assert_eq!(
+            EntityRefreshKind::for_event(&event("session/status")),
+            EntityRefreshKind::None
+        );
+    }
+
+    #[test]
+    fn entity_refresh_merge_covers_every_pair() {
+        use EntityRefreshKind::{All, None, Runners};
+
+        for (left, right, expected) in [
+            (None, None, None),
+            (None, Runners, Runners),
+            (None, All, All),
+            (Runners, None, Runners),
+            (Runners, Runners, Runners),
+            (Runners, All, All),
+            (All, None, All),
+            (All, Runners, All),
+            (All, All, All),
+        ] {
+            assert_eq!(left.merge(right), expected, "{left:?} + {right:?}");
+        }
+    }
 
     #[test]
     fn collapse_transition_eases_from_open_to_closed() {

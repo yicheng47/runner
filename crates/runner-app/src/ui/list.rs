@@ -117,6 +117,13 @@ impl SearchInput {
             .update(cx, |input, input_cx| input.reset(value, input_cx));
     }
 
+    pub fn reset_value(&mut self, value: impl Into<String>, cx: &mut Context<Self>) {
+        let value = value.into();
+        self.last_value.clone_from(&value);
+        self.input
+            .update(cx, |input, input_cx| input.reset(value, input_cx));
+    }
+
     pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
         self.disabled = disabled;
         self.input
@@ -315,6 +322,7 @@ impl RenderOnce for Pager {
                                         key_handler(page, window, cx);
                                     }
                                 })
+                                .child(page.to_string())
                                 .into_any_element()
                         }
                     }),

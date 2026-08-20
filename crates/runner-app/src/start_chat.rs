@@ -264,7 +264,7 @@ impl NativeRoot {
         });
         let (project_id, project_cwd) = project_start_scope(project.as_ref());
         let cwd_input = cx.new(|input_cx| {
-            working_dir_text_field(input_cx.focus_handle(), project_cwd, cwd_placeholder, true)
+            working_dir_text_field(input_cx.focus_handle(), project_cwd, cwd_placeholder)
                 .text_size(12.)
         });
         let model_input = cx.new(|input_cx| {
@@ -766,6 +766,7 @@ impl NativeRoot {
         match result {
             Ok(session_id) => {
                 self.start_chat_modal = None;
+                self.route = AppRoute::Chat;
                 self.error = rename_error;
                 self.remember_active_runner();
                 self.mark_active_tab_viewed(window);
@@ -980,7 +981,6 @@ impl NativeRoot {
                     "Working directory",
                     WorkingDirField::new(
                         modal.cwd.clone(),
-                        true,
                         submitting,
                         Rc::new(move |_, cx| {
                             browse_root.update(cx, |this, cx| this.browse_start_chat_cwd(cx));
@@ -1304,7 +1304,7 @@ fn render_shared_model_effort_fields(
         .into_any_element()
 }
 
-fn load_selectable_runtimes(
+pub(crate) fn load_selectable_runtimes(
     core: &AppCore,
     settings: &AppSettings,
 ) -> (Vec<RuntimeCatalogEntry>, bool, Option<String>) {

@@ -112,6 +112,63 @@ pub fn status_badge(label: impl Into<SharedString>, tone: Tone) -> Badge {
     Badge::new(label, tone).dot(true)
 }
 
+#[derive(IntoElement)]
+pub struct RuntimeBadge {
+    label: SharedString,
+    overridden: bool,
+    uppercase: bool,
+}
+
+impl RuntimeBadge {
+    pub fn new(label: impl Into<SharedString>) -> Self {
+        Self {
+            label: label.into(),
+            overridden: false,
+            uppercase: false,
+        }
+    }
+
+    pub fn overridden(mut self, overridden: bool) -> Self {
+        self.overridden = overridden;
+        self
+    }
+
+    pub fn uppercase(mut self, uppercase: bool) -> Self {
+        self.uppercase = uppercase;
+        self
+    }
+}
+
+impl RenderOnce for RuntimeBadge {
+    fn render(self, _window: &mut Window, _cx: &mut gpui::App) -> impl IntoElement {
+        let label: SharedString = if self.uppercase {
+            self.label.to_uppercase().into()
+        } else {
+            self.label
+        };
+        div()
+            .flex()
+            .items_center()
+            .h(rems(19. / 16.))
+            .px(rems(6. / 16.))
+            .rounded(rems(4. / 16.))
+            .bg(if self.overridden {
+                theme::with_alpha(theme::accent(), 0.1)
+            } else {
+                theme::raised()
+            })
+            .text_size(rems(10. / 16.))
+            .line_height(rems(15. / 16.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(if self.overridden {
+                theme::accent()
+            } else {
+                theme::muted()
+            })
+            .child(label)
+    }
+}
+
 pub fn pill(label: impl Into<SharedString>, tone: Tone) -> AnyElement {
     let color = tone_color(tone);
     div()
