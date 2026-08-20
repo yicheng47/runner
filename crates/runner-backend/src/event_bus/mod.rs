@@ -27,9 +27,10 @@
 //     emitter (Tauri or test fake) so the bus is unit-testable without a
 //     running app.
 //
-//   - Per-runner inbox projection is `events where to == null OR to == handle`.
-//     We track every matching event id per handle so unread_count after a
-//     watermark advance is just `len - read_idx` — no log rescans.
+//   - Per-runner inbox projection is incoming messages where `to == null OR
+//     to == handle`. We track every matching event id per handle so
+//     unread_count after a watermark advance is just `len - read_idx` — no
+//     log rescans.
 //
 //   - Watermarks come exclusively from `inbox_read` signals (per arch §5.3 and
 //     0001-v0-mvp.md C7), never inferred from `--since` or wall time. The signal's
@@ -321,7 +322,7 @@ impl BusState {
             // inbox_read signals advance watermarks; handle them and move on.
             // Other signals (mission_start, mission_goal, ask_lead, …) never
             // project into inboxes — per arch §2.7 the inbox is strictly
-            // `kind = "message" AND (to = null OR to = h)`.
+            // `kind = "message" AND from != h AND (to = null OR to = h)`.
             if Self::is_inbox_read(&event) {
                 self.handle_inbox_read(&event, emitter);
                 continue;
@@ -331,7 +332,8 @@ impl BusState {
             }
 
             // Project into matching inboxes. Broadcasts (`to == null`) land in
-            // every roster member's inbox; directs land in exactly one.
+            // every roster member's inbox except the sender; directs land in
+            // the addressee's inbox unless they sent the message to themself.
             for handle in self.handles.clone() {
                 if event_targets(&event, &handle) {
                     let inbox = self.inbox.entry(handle.clone()).or_default();
@@ -426,6 +428,9 @@ impl BusState {
 
 /// Returns true when `event` should appear in `handle`'s inbox.
 fn event_targets(event: &Event, handle: &str) -> bool {
+    if event.from == handle {
+        return false;
+    }
     match event.to.as_deref() {
         None => true,
         Some(target) => target == handle,
@@ -621,13 +626,14 @@ mod tests {
     }
 
     #[test]
-    fn projection_includes_broadcasts_and_directed_only_for_target() {
-        // Two runners on roster. A broadcast event must inbox into both;
-        // a directed event must inbox into only the addressee. The other
-        // runner sees nothing for the directed event.
+    fn projection_excludes_sender_and_directs_only_to_target() {
+        // Two runners on roster. The sender's broadcast stays out of their
+        // own inbox; the other runner receives both it and the direct.
         let dir = fresh_mission_dir();
         let log = EventLog::open(dir.path()).unwrap();
-        log.append(message("lead", None, "broadcast")).unwrap(); // both
+        log.append(message("lead", None, "broadcast")).unwrap();
+        log.append(message("lead", Some("lead"), "self direct"))
+            .unwrap();
         log.append(message("lead", Some("impl"), "to impl"))
             .unwrap(); // impl only
 
@@ -640,17 +646,15 @@ mod tests {
         )
         .unwrap();
 
-        wait_until(1000, || cap.inbox.lock().unwrap().len() >= 3);
+        wait_until(1000, || cap.inbox.lock().unwrap().len() >= 2);
         let inbox = cap.inbox.lock().unwrap().clone();
 
         let lead_updates: Vec<_> = inbox.iter().filter(|u| u.runner_handle == "lead").collect();
         let impl_updates: Vec<_> = inbox.iter().filter(|u| u.runner_handle == "impl").collect();
 
-        // Lead sees only the broadcast. Impl sees broadcast + directed.
-        assert_eq!(
-            lead_updates.len(),
-            1,
-            "lead should only inbox the broadcast"
+        assert!(
+            lead_updates.is_empty(),
+            "sender must not inbox its own message"
         );
         assert_eq!(
             impl_updates.len(),
@@ -667,7 +671,7 @@ mod tests {
         // unread_count must drop to zero.
         let dir = fresh_mission_dir();
         let log = EventLog::open(dir.path()).unwrap();
-        let bcast = log.append(message("lead", None, "broadcast")).unwrap();
+        let bcast = log.append(message("human", None, "broadcast")).unwrap();
 
         let cap = Arc::new(Capture::default());
         let _bus = EventBus::for_mission(
@@ -707,7 +711,7 @@ mod tests {
         // time. Without this guard, every CLI heartbeat would spam the UI.
         let dir = fresh_mission_dir();
         let log = EventLog::open(dir.path()).unwrap();
-        let m = log.append(message("lead", None, "x")).unwrap();
+        let m = log.append(message("human", None, "x")).unwrap();
         log.append(signal(
             "lead",
             "inbox_read",
@@ -821,7 +825,7 @@ mod tests {
         );
 
         // Now post a real message — it must inbox normally for both runners.
-        log.append(message("lead", None, "broadcast")).unwrap();
+        log.append(message("human", None, "broadcast")).unwrap();
         wait_until(3000, || cap.inbox.lock().unwrap().len() == 2);
         assert_eq!(
             cap.inbox.lock().unwrap().len(),
@@ -838,7 +842,8 @@ mod tests {
         // The signal must be silently dropped so the watermark stays put.
         let dir = fresh_mission_dir();
         let log = EventLog::open(dir.path()).unwrap();
-        log.append(message("lead", None, "real broadcast")).unwrap();
+        log.append(message("human", None, "real broadcast"))
+            .unwrap();
         log.append(signal(
             "lead",
             "inbox_read",

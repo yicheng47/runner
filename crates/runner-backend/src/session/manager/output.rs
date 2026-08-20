@@ -262,67 +262,128 @@ impl SessionManager {
         self.write_stdin(session_id, &rt_session, bytes)
     }
 
+    pub fn inject_reserved(&self, session_id: &str, token: u64, bytes: &[u8]) -> Result<bool> {
+        let Some(session) = self.session_state(session_id) else {
+            return Ok(false);
+        };
+        let gate = session.lock().unwrap().delivery_gate.clone();
+        let delivery = gate.state.lock().unwrap();
+        let session = session.lock().unwrap();
+        if !delivery.in_flight || delivery.generation != token {
+            return Ok(false);
+        }
+        let Some(rt_session) = session
+            .handle
+            .as_ref()
+            .map(|handle| handle.runtime_session.clone())
+        else {
+            return Ok(false);
+        };
+        self.write_stdin_bytes(&rt_session, bytes)?;
+        drop(session);
+        drop(delivery);
+        if bytes == b"\r" {
+            self.capture_codex_session_key(session_id);
+        }
+        Ok(true)
+    }
+
     pub fn inject_direct_stdin(
         &self,
         session_id: &str,
         bytes: &[u8],
         events: &dyn SessionEvents,
     ) -> Result<()> {
-        let rt_session = self.live_runtime_session(session_id)?;
         let submitted = bytes == b"\r";
         let input_class = classify_local_input(bytes);
-        let session = self.session_state(session_id);
-        let (transition, mission_status_sink, mission_scoped) =
-            if let Some(session) = session.as_ref() {
-                let mut session = session.lock().unwrap();
-                let previous_activity = session.activity;
-                let previous_suppression = session.suppress_local_input_busy;
-                let previous_input_pending = session.local_input_pending;
-                let previous_input_at = session.last_local_input_at;
-                let mission_status_sink = session.mission_status_sink.clone();
-                let mission_scoped = session
-                    .handle
-                    .as_ref()
-                    .is_some_and(|handle| handle.mission_id.is_some());
-                let transition = if previous_activity.is_some() && submitted {
-                    session.suppress_local_input_busy = false;
-                    if previous_activity == Some(SessionActivityState::Idle) {
-                        session.activity = Some(SessionActivityState::Busy);
-                        Some(SessionActivityEvent {
-                            session_id: session_id.to_string(),
-                            state: SessionActivityState::Busy,
-                            source: "input-submit".to_string(),
-                        })
-                    } else {
-                        None
-                    }
+        let session = self
+            .session_state(session_id)
+            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+        let gate = session.lock().unwrap().delivery_gate.clone();
+        let mut delivery = gate.state.lock().unwrap();
+        let generation = delivery.generation;
+        let ticket = delivery.next_ticket;
+        delivery.next_ticket = delivery.next_ticket.wrapping_add(1);
+        while delivery.generation == generation
+            && (delivery.in_flight || delivery.next_served != ticket)
+        {
+            delivery = gate.ready.wait(delivery).unwrap();
+        }
+        if delivery.generation != generation {
+            return Err(Error::msg(format!(
+                "session changed while input was queued: {session_id}"
+            )));
+        }
+
+        let outcome = (|| {
+            let mut session = session.lock().unwrap();
+            let rt_session = session
+                .handle
+                .as_ref()
+                .map(|handle| handle.runtime_session.clone())
+                .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+            let previous_activity = session.activity;
+            let previous_suppression = session.suppress_local_input_busy;
+            let previous_input_pending = session.local_input_pending;
+            let previous_input_at = session.last_local_input_at;
+            let mission_status_sink = session.mission_status_sink.clone();
+            let mission_scoped = session
+                .handle
+                .as_ref()
+                .is_some_and(|handle| handle.mission_id.is_some());
+            let transition = if previous_activity.is_some() && submitted {
+                session.suppress_local_input_busy = false;
+                if previous_activity == Some(SessionActivityState::Idle) {
+                    session.activity = Some(SessionActivityState::Busy);
+                    Some(SessionActivityEvent {
+                        session_id: session_id.to_string(),
+                        state: SessionActivityState::Busy,
+                        source: "input-submit".to_string(),
+                    })
                 } else {
-                    if previous_activity == Some(SessionActivityState::Idle) {
-                        session.suppress_local_input_busy = true;
-                    }
                     None
-                };
-                // The deferred router slice will consume the clear transition and
-                // recent-input timestamp when it ports delivery gating.
-                let _input_cleared =
-                    update_local_input_state(&mut session, input_class, Instant::now());
-                if let Err(error) = self.write_stdin_bytes(&rt_session, bytes) {
-                    session.activity = previous_activity;
-                    session.suppress_local_input_busy = previous_suppression;
-                    session.local_input_pending = previous_input_pending;
-                    session.last_local_input_at = previous_input_at;
-                    return Err(error);
                 }
-                if submitted {
-                    session.completion_armed = true;
-                }
-                (transition, mission_status_sink, mission_scoped)
             } else {
-                self.write_stdin_bytes(&rt_session, bytes)?;
-                (None, None, false)
+                if previous_activity == Some(SessionActivityState::Idle) {
+                    session.suppress_local_input_busy = true;
+                }
+                None
             };
+            let input_cleared = update_local_input_state(&mut session, input_class, Instant::now());
+            if let Err(error) = self.write_stdin_bytes(&rt_session, bytes) {
+                session.activity = previous_activity;
+                session.suppress_local_input_busy = previous_suppression;
+                session.local_input_pending = previous_input_pending;
+                session.last_local_input_at = previous_input_at;
+                return Err(error);
+            }
+            if submitted {
+                session.completion_armed = true;
+            }
+            Ok((
+                transition,
+                mission_status_sink,
+                mission_scoped,
+                input_cleared,
+            ))
+        })();
+
+        delivery.next_served = delivery.next_served.wrapping_add(1);
+        let input_queue_drained = delivery.next_served == delivery.next_ticket;
+        let successful_clear = outcome
+            .as_ref()
+            .is_ok_and(|(_, _, _, input_cleared)| *input_cleared);
+        gate.ready.notify_all();
+        drop(delivery);
+        if input_queue_drained && !successful_clear {
+            self.notify_delivery_event(session_id, router::SessionDeliveryEvent::InputQueueDrained);
+        }
+        let (transition, mission_status_sink, mission_scoped, input_cleared) = outcome?;
         if submitted {
             self.capture_codex_session_key(session_id);
+        }
+        if input_cleared {
+            self.notify_delivery_event(session_id, router::SessionDeliveryEvent::InputCleared);
         }
         if let Some(transition) = transition.as_ref() {
             if let Some(sink) = mission_status_sink.as_ref() {

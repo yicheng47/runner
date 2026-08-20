@@ -6,13 +6,17 @@
 // Bus integration is covered separately (mission lifecycle + mission_e2e).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use runner_core::event_log::EventLog;
 use runner_core::model::{Event, EventDraft, EventKind, SignalType};
 
-use super::{Router, RouterRegistry, StdinInjector};
+use super::{
+    DeliveryBlockedEvent, DeliveryReservation, Router, RouterRegistry, RouterUiNotifier,
+    SessionDeliveryEvent, SessionDeliveryListener, StdinInjector,
+};
 use crate::error::Result;
 use crate::model::{Runner, Slot, SlotWithRunner};
 
@@ -30,15 +34,43 @@ enum InjectKind {
 
 /// Records every `inject` / `inject_paste_with_verify` call so
 /// handler outputs can be asserted.
-#[derive(Default)]
 struct RecordingInjector {
+    status_log: Arc<EventLog>,
+    activity: Mutex<HashMap<String, super::RunnerStatus>>,
     pushes: Mutex<Vec<(String, InjectKind, Vec<u8>)>>,
+    blocked_events: Mutex<Vec<DeliveryBlockedEvent>>,
     /// Optional `dead_session` set — `inject` errors when called with one
     /// of these ids, simulating a crashed PTY for `mission_warning` tests.
     dead: Mutex<Vec<String>>,
+    input: Mutex<HashMap<String, RecordingInputState>>,
+    listeners: Mutex<HashMap<String, Vec<Weak<dyn SessionDeliveryListener>>>>,
+}
+
+#[derive(Default)]
+struct RecordingInputState {
+    pending: bool,
+    last_input_at: Option<Instant>,
+    in_flight: bool,
+    generation: u64,
 }
 
 impl RecordingInjector {
+    fn new(status_log: Arc<EventLog>) -> Self {
+        Self {
+            status_log,
+            activity: Mutex::new(HashMap::new()),
+            pushes: Mutex::new(Vec::new()),
+            blocked_events: Mutex::new(Vec::new()),
+            dead: Mutex::new(Vec::new()),
+            input: Mutex::new(HashMap::new()),
+            listeners: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn activity_for(&self, session_id: &str) -> Option<super::RunnerStatus> {
+        self.activity.lock().unwrap().get(session_id).copied()
+    }
+
     fn pushes_for(&self, session_id: &str) -> Vec<String> {
         self.pushes
             .lock()
@@ -86,8 +118,100 @@ impl RecordingInjector {
             .collect()
     }
 
+    fn submitted_bodies_for(&self, session_id: &str) -> Vec<String> {
+        self.pushes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(s, kind, bytes)| {
+                s == session_id && *kind == InjectKind::Raw && bytes.as_slice() != b"\r"
+            })
+            .map(|(_, _, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .collect()
+    }
+
+    fn clear_pushes(&self) {
+        self.pushes.lock().unwrap().clear();
+    }
+
     fn mark_dead(&self, session_id: &str) {
         self.dead.lock().unwrap().push(session_id.to_string());
+    }
+
+    fn set_pending(&self, session_id: &str) {
+        let mut input = self.input.lock().unwrap();
+        let input = input.entry(session_id.to_string()).or_default();
+        input.pending = true;
+        input.last_input_at = Some(Instant::now());
+    }
+
+    fn set_recent_typing(&self, session_id: &str) {
+        let mut input = self.input.lock().unwrap();
+        let input = input.entry(session_id.to_string()).or_default();
+        input.pending = false;
+        input.last_input_at = Some(Instant::now() - Duration::from_millis(1950));
+    }
+
+    fn set_in_flight(&self, session_id: &str) {
+        let mut input = self.input.lock().unwrap();
+        input.entry(session_id.to_string()).or_default().in_flight = true;
+    }
+
+    fn blocked_events(&self) -> Vec<DeliveryBlockedEvent> {
+        self.blocked_events.lock().unwrap().clone()
+    }
+
+    fn clear_pending(&self, session_id: &str) {
+        if let Some(input) = self.input.lock().unwrap().get_mut(session_id) {
+            input.pending = false;
+            input.last_input_at = None;
+        }
+        self.notify(session_id, SessionDeliveryEvent::InputCleared);
+    }
+
+    fn respawn(&self, session_id: &str) {
+        self.dead.lock().unwrap().retain(|dead| dead != session_id);
+        {
+            let mut input = self.input.lock().unwrap();
+            let input = input.entry(session_id.to_string()).or_default();
+            input.generation = input.generation.wrapping_add(1);
+            input.in_flight = false;
+            input.pending = false;
+            input.last_input_at = None;
+        }
+        self.notify(session_id, SessionDeliveryEvent::Respawned);
+    }
+
+    fn exit(&self, session_id: &str) {
+        self.mark_dead(session_id);
+        if let Some(input) = self.input.lock().unwrap().get_mut(session_id) {
+            input.generation = input.generation.wrapping_add(1);
+            input.in_flight = false;
+            input.pending = false;
+            input.last_input_at = None;
+        }
+        self.notify(session_id, SessionDeliveryEvent::Exited);
+    }
+
+    fn notify(&self, session_id: &str, event: SessionDeliveryEvent) {
+        let listeners = self
+            .listeners
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .into_iter()
+            .flatten()
+            .filter_map(Weak::upgrade)
+            .collect::<Vec<_>>();
+        for listener in listeners {
+            listener.session_delivery_event(session_id, event);
+        }
+    }
+}
+
+impl RouterUiNotifier for RecordingInjector {
+    fn delivery_blocked(&self, event: &DeliveryBlockedEvent) {
+        self.blocked_events.lock().unwrap().push(event.clone());
     }
 }
 
@@ -117,6 +241,140 @@ impl StdinInjector for RecordingInjector {
             body.to_vec(),
         ));
         Ok(())
+    }
+
+    fn input_quiescent(&self, session_id: &str) -> bool {
+        if self
+            .dead
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|dead| dead == session_id)
+        {
+            return false;
+        }
+        self.input
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .is_some_and(|input| {
+                !input.in_flight
+                    && !input.pending
+                    && input
+                        .last_input_at
+                        .is_none_or(|last| last.elapsed() >= Duration::from_secs(2))
+            })
+    }
+
+    fn session_live(&self, session_id: &str) -> bool {
+        !self
+            .dead
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|dead| dead == session_id)
+    }
+
+    fn reserve_delivery(&self, session_id: &str) -> Result<DeliveryReservation> {
+        if self
+            .dead
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|dead| dead == session_id)
+        {
+            return Err(crate::error::Error::msg(format!(
+                "test: session {session_id} is dead"
+            )));
+        }
+        let mut input = self.input.lock().unwrap();
+        let input = input.entry(session_id.to_string()).or_default();
+        if input.in_flight {
+            return Ok(DeliveryReservation::InFlight);
+        }
+        if input.pending {
+            return Ok(DeliveryReservation::PendingInput);
+        }
+        if let Some(last) = input.last_input_at {
+            let elapsed = last.elapsed();
+            if elapsed < Duration::from_secs(2) {
+                return Ok(DeliveryReservation::RecentlyTyping(
+                    Duration::from_secs(2) - elapsed,
+                ));
+            }
+        }
+        input.in_flight = true;
+        Ok(DeliveryReservation::Ready(input.generation))
+    }
+
+    fn inject_reserved(&self, session_id: &str, token: u64, bytes: &[u8]) -> Result<bool> {
+        if self
+            .dead
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|dead| dead == session_id)
+        {
+            return Ok(false);
+        }
+        let input = self.input.lock().unwrap();
+        let Some(input) = input.get(session_id) else {
+            return Ok(false);
+        };
+        if !input.in_flight || input.generation != token {
+            return Ok(false);
+        }
+        self.pushes
+            .lock()
+            .unwrap()
+            .push((session_id.to_string(), InjectKind::Raw, bytes.to_vec()));
+        Ok(true)
+    }
+
+    fn finish_delivery(&self, session_id: &str, token: u64) {
+        let finished = self
+            .input
+            .lock()
+            .unwrap()
+            .get_mut(session_id)
+            .is_some_and(|input| {
+                if input.in_flight && input.generation == token {
+                    input.in_flight = false;
+                    true
+                } else {
+                    false
+                }
+            });
+        if finished {
+            self.notify(session_id, SessionDeliveryEvent::DeliveryFinished);
+        }
+    }
+
+    fn synthesize_wake_busy(&self, session_id: &str, draft: EventDraft) -> Result<()> {
+        self.status_log.append(draft)?;
+        self.activity
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), super::RunnerStatus::Busy);
+        Ok(())
+    }
+
+    fn register_delivery_listener(
+        &self,
+        session_id: &str,
+        listener: Weak<dyn SessionDeliveryListener>,
+    ) {
+        self.input
+            .lock()
+            .unwrap()
+            .entry(session_id.to_string())
+            .or_default();
+        self.listeners
+            .lock()
+            .unwrap()
+            .entry(session_id.to_string())
+            .or_default()
+            .push(listener);
     }
 }
 
@@ -172,8 +430,9 @@ fn fixture(
 ) {
     let dir = tempfile::tempdir().unwrap();
     let log = Arc::new(EventLog::open(dir.path()).unwrap());
-    let injector = Arc::new(RecordingInjector::default());
+    let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
     let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
+    let notifier: Arc<dyn RouterUiNotifier> = injector.clone();
     let router = Router::new(
         "mission-1".into(),
         "crew-1".into(),
@@ -183,6 +442,7 @@ fn fixture(
         None,
         log.clone(),
         injector_dyn,
+        notifier,
     )
     .unwrap();
     let session_pairs: Vec<(String, String)> = sessions
@@ -212,6 +472,589 @@ fn read_signals(log: &EventLog) -> Vec<Event> {
         .collect()
 }
 
+fn wait_until(timeout: Duration, predicate: impl Fn() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while !predicate() {
+        assert!(Instant::now() < deadline, "condition did not become true");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn set_unread(router: &Router, handle: &str, unread_count: usize) {
+    router.update_inbox(&crate::event_bus::InboxUpdate {
+        mission_id: "mission-1".into(),
+        runner_handle: handle.into(),
+        last_id: None,
+        watermark: None,
+        unread_count,
+    });
+}
+
+#[test]
+fn delivery_blocked_transition_dedupes_repeated_parks_and_reemits_count_changes() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    set_unread(&router, "impl", 1);
+    injector.set_pending("S-IMPL");
+
+    router.inject_inbox_nudge("impl", b"[inbox] first").unwrap();
+    router
+        .inject_inbox_nudge("impl", b"[inbox] second")
+        .unwrap();
+    assert_eq!(
+        injector.blocked_events(),
+        [DeliveryBlockedEvent {
+            mission_id: "mission-1".into(),
+            session_id: "S-IMPL".into(),
+            handle: "impl".into(),
+            unread_count: 1,
+            blocked: true,
+        }]
+    );
+
+    set_unread(&router, "impl", 2);
+    set_unread(&router, "impl", 2);
+    assert_eq!(
+        injector.blocked_events().last(),
+        Some(&DeliveryBlockedEvent {
+            mission_id: "mission-1".into(),
+            session_id: "S-IMPL".into(),
+            handle: "impl".into(),
+            unread_count: 2,
+            blocked: true,
+        })
+    );
+    assert_eq!(injector.blocked_events().len(), 2);
+    injector.exit("S-IMPL");
+}
+
+#[test]
+fn transient_delivery_reservations_do_not_emit_blocked() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    set_unread(&router, "impl", 1);
+    injector.set_recent_typing("S-IMPL");
+    router
+        .inject_inbox_nudge("impl", b"[inbox] recent")
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(injector.blocked_events().is_empty());
+    injector.exit("S-IMPL");
+
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    set_unread(&router, "impl", 1);
+    injector.set_in_flight("S-IMPL");
+    router
+        .inject_inbox_nudge("impl", b"[inbox] in flight")
+        .unwrap();
+    assert!(injector.blocked_events().is_empty());
+    injector.exit("S-IMPL");
+}
+
+#[test]
+fn delivery_blocked_clears_when_parked_delivery_flushes() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    set_unread(&router, "impl", 1);
+    injector.set_pending("S-IMPL");
+    router
+        .inject_inbox_nudge("impl", b"[inbox] waiting")
+        .unwrap();
+
+    injector.clear_pending("S-IMPL");
+    wait_until(Duration::from_secs(1), || {
+        injector
+            .blocked_events()
+            .last()
+            .is_some_and(|event| !event.blocked)
+    });
+    assert_eq!(injector.blocked_events().len(), 2);
+}
+
+#[test]
+fn delivery_blocked_clears_when_watermark_reaches_zero() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    set_unread(&router, "impl", 1);
+    injector.set_pending("S-IMPL");
+    router
+        .inject_inbox_nudge("impl", b"[inbox] waiting")
+        .unwrap();
+
+    set_unread(&router, "impl", 0);
+    assert_eq!(injector.blocked_events().len(), 2);
+    assert_eq!(
+        injector.blocked_events().last(),
+        Some(&DeliveryBlockedEvent {
+            mission_id: "mission-1".into(),
+            session_id: "S-IMPL".into(),
+            handle: "impl".into(),
+            unread_count: 0,
+            blocked: false,
+        })
+    );
+    injector.exit("S-IMPL");
+}
+
+#[test]
+fn delivery_blocked_clears_on_session_exit_and_router_unmount() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    set_unread(&router, "impl", 1);
+    injector.set_pending("S-IMPL");
+    router
+        .inject_inbox_nudge("impl", b"[inbox] waiting")
+        .unwrap();
+    injector.exit("S-IMPL");
+    assert_eq!(injector.blocked_events().len(), 2);
+    assert!(!injector.blocked_events().last().unwrap().blocked);
+
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    set_unread(&router, "impl", 1);
+    injector.set_pending("S-IMPL");
+    router
+        .inject_inbox_nudge("impl", b"[inbox] waiting")
+        .unwrap();
+    let registry = RouterRegistry::new();
+    registry.register("mission-1".into(), router);
+    registry.unregister("mission-1");
+    assert_eq!(injector.blocked_events().len(), 2);
+    assert!(!injector.blocked_events().last().unwrap().blocked);
+}
+
+#[test]
+fn concurrent_parks_emit_one_delivery_blocked_transition() {
+    use std::sync::Barrier;
+
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    set_unread(&router, "impl", 1);
+    injector.set_pending("S-IMPL");
+    let barrier = Arc::new(Barrier::new(5));
+    let mut threads = Vec::new();
+    for _ in 0..4 {
+        let router = Arc::clone(&router);
+        let barrier = Arc::clone(&barrier);
+        threads.push(std::thread::spawn(move || {
+            barrier.wait();
+            router
+                .inject_inbox_nudge("impl", b"[inbox] concurrent")
+                .unwrap();
+        }));
+    }
+    barrier.wait();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+
+    assert_eq!(injector.blocked_events().len(), 1);
+    injector.exit("S-IMPL");
+}
+
+#[test]
+fn reconciliation_tick_does_not_churn_blocked_notifications() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    set_unread(&router, "impl", 1);
+    injector.set_pending("S-IMPL");
+    router
+        .inject_inbox_nudge("impl", b"[inbox] waiting")
+        .unwrap();
+    router.set_status("impl".into(), super::RunnerStatus::Idle);
+
+    assert_eq!(
+        router.reconcile_inbox_at(Instant::now(), Duration::from_secs(120)),
+        0
+    );
+    assert_eq!(injector.blocked_events().len(), 1);
+    injector.exit("S-IMPL");
+}
+
+#[test]
+fn reconciliation_tick_is_silent_for_empty_inbox() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    router.set_status("impl".into(), super::RunnerStatus::Idle);
+
+    assert_eq!(
+        router.reconcile_inbox_at(Instant::now(), Duration::from_secs(120)),
+        0
+    );
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+}
+
+#[test]
+fn reconciliation_tick_is_silent_for_busy_session() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    router.update_inbox(&crate::event_bus::InboxUpdate {
+        mission_id: "mission-1".into(),
+        runner_handle: "impl".into(),
+        last_id: None,
+        watermark: None,
+        unread_count: 1,
+    });
+    router.set_status("impl".into(), super::RunnerStatus::Busy);
+
+    assert_eq!(
+        router.reconcile_inbox_at(Instant::now(), Duration::from_secs(120)),
+        0
+    );
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+}
+
+#[test]
+fn reconciliation_tick_renudges_idle_session_with_unread_mail() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    router.update_inbox(&crate::event_bus::InboxUpdate {
+        mission_id: "mission-1".into(),
+        runner_handle: "impl".into(),
+        last_id: None,
+        watermark: None,
+        unread_count: 1,
+    });
+    router.set_status("impl".into(), super::RunnerStatus::Idle);
+
+    assert_eq!(
+        router.reconcile_inbox_at(Instant::now(), Duration::from_secs(120)),
+        1
+    );
+    assert_eq!(
+        injector.submitted_bodies_for("S-IMPL"),
+        ["[inbox] unread messages — run `runner msg read` to view."]
+    );
+    assert!(matches!(
+        router.state.lock().unwrap().status.get("impl"),
+        Some(super::RunnerStatus::Busy)
+    ));
+}
+
+#[test]
+fn reconciliation_tick_does_not_park_when_input_is_pending() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_pending("S-IMPL");
+    router.update_inbox(&crate::event_bus::InboxUpdate {
+        mission_id: "mission-1".into(),
+        runner_handle: "impl".into(),
+        last_id: None,
+        watermark: None,
+        unread_count: 1,
+    });
+    router.set_status("impl".into(), super::RunnerStatus::Idle);
+
+    assert_eq!(
+        router.reconcile_inbox_at(Instant::now(), Duration::from_secs(120)),
+        0
+    );
+    {
+        let state = router.state.lock().unwrap();
+        assert!(!state.outbox_by_session.contains_key("S-IMPL"));
+        assert!(!state.last_reconciliation_nudge.contains_key("impl"));
+    }
+
+    router.update_inbox(&crate::event_bus::InboxUpdate {
+        mission_id: "mission-1".into(),
+        runner_handle: "impl".into(),
+        last_id: None,
+        watermark: Some("watermark".into()),
+        unread_count: 0,
+    });
+    router.set_status("impl".into(), super::RunnerStatus::Busy);
+    injector.clear_pending("S-IMPL");
+    std::thread::sleep(Duration::from_millis(550));
+    assert!(
+        injector.pushes_for("S-IMPL").is_empty(),
+        "a deferred clock nudge must not escape the busy and unread gates"
+    );
+}
+
+#[test]
+fn reconciliation_tick_does_not_duplicate_a_parked_nudge() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_pending("S-IMPL");
+    router
+        .inject_inbox_nudge("impl", b"[inbox] original nudge")
+        .unwrap();
+    router.update_inbox(&crate::event_bus::InboxUpdate {
+        mission_id: "mission-1".into(),
+        runner_handle: "impl".into(),
+        last_id: None,
+        watermark: None,
+        unread_count: 1,
+    });
+    router.set_status("impl".into(), super::RunnerStatus::Idle);
+
+    assert_eq!(
+        router.reconcile_inbox_at(Instant::now(), Duration::from_secs(120)),
+        0
+    );
+    let state = router.state.lock().unwrap();
+    let outbox = state.outbox_by_session.get("S-IMPL").unwrap();
+    assert_eq!(outbox.deliveries.len(), 1);
+    assert_eq!(outbox.deliveries.front().unwrap().count, 1);
+    assert!(!state.last_reconciliation_nudge.contains_key("impl"));
+    drop(state);
+    injector.exit("S-IMPL");
+}
+
+#[test]
+fn reconciliation_reservation_error_does_not_start_backoff() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    router.update_inbox(&crate::event_bus::InboxUpdate {
+        mission_id: "mission-1".into(),
+        runner_handle: "impl".into(),
+        last_id: None,
+        watermark: None,
+        unread_count: 1,
+    });
+    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    injector.mark_dead("S-IMPL");
+
+    assert_eq!(
+        router.reconcile_inbox_at(Instant::now(), Duration::from_secs(120)),
+        0
+    );
+    assert!(!router
+        .state
+        .lock()
+        .unwrap()
+        .last_reconciliation_nudge
+        .contains_key("impl"));
+}
+
+#[test]
+fn reconciliation_tick_honors_per_handle_backoff() {
+    let (router, _injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    router.update_inbox(&crate::event_bus::InboxUpdate {
+        mission_id: "mission-1".into(),
+        runner_handle: "impl".into(),
+        last_id: None,
+        watermark: None,
+        unread_count: 1,
+    });
+    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    let now = Instant::now();
+    let backoff = Duration::from_secs(120);
+
+    assert_eq!(router.reconcile_inbox_at(now, backoff), 1);
+    wait_until(Duration::from_millis(300), || {
+        !router
+            .state
+            .lock()
+            .unwrap()
+            .outbox_by_session
+            .contains_key("S-IMPL")
+    });
+    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    assert_eq!(
+        router.reconcile_inbox_at(now + Duration::from_secs(119), backoff),
+        0
+    );
+    assert_eq!(
+        router.reconcile_inbox_at(now + Duration::from_secs(120), backoff),
+        1
+    );
+}
+
+#[test]
+fn reconciliation_tick_quiesces_after_watermark_advance() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    let now = Instant::now();
+    router.update_inbox(&crate::event_bus::InboxUpdate {
+        mission_id: "mission-1".into(),
+        runner_handle: "impl".into(),
+        last_id: None,
+        watermark: None,
+        unread_count: 1,
+    });
+    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    assert_eq!(router.reconcile_inbox_at(now, Duration::from_secs(120)), 1);
+    wait_until(Duration::from_millis(300), || {
+        !router
+            .state
+            .lock()
+            .unwrap()
+            .outbox_by_session
+            .contains_key("S-IMPL")
+    });
+    injector.clear_pushes();
+    router.update_inbox(&crate::event_bus::InboxUpdate {
+        mission_id: "mission-1".into(),
+        runner_handle: "impl".into(),
+        last_id: None,
+        watermark: Some("watermark".into()),
+        unread_count: 0,
+    });
+    router.set_status("impl".into(), super::RunnerStatus::Idle);
+
+    assert_eq!(
+        router.reconcile_inbox_at(now + Duration::from_secs(120), Duration::from_secs(120)),
+        0
+    );
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+}
+
+#[test]
+fn reconciliation_clock_stops_with_mission_and_skips_stopped_sessions() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    router.update_inbox(&crate::event_bus::InboxUpdate {
+        mission_id: "mission-1".into(),
+        runner_handle: "impl".into(),
+        last_id: None,
+        watermark: None,
+        unread_count: 1,
+    });
+    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    let registry = RouterRegistry::new();
+    registry.register_with_timings(
+        "mission-1".into(),
+        Arc::clone(&router),
+        Duration::from_millis(10),
+        Duration::ZERO,
+    );
+    wait_until(Duration::from_millis(100), || {
+        injector.submitted_bodies_for("S-IMPL").len() == 1
+    });
+    wait_until(Duration::from_millis(300), || {
+        !router
+            .state
+            .lock()
+            .unwrap()
+            .outbox_by_session
+            .contains_key("S-IMPL")
+    });
+
+    injector.clear_pushes();
+    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    injector.exit("S-IMPL");
+    std::thread::sleep(Duration::from_millis(40));
+    assert!(
+        injector.pushes_for("S-IMPL").is_empty(),
+        "clock must not nudge an exited session"
+    );
+
+    injector.respawn("S-IMPL");
+    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    wait_until(Duration::from_millis(100), || {
+        injector.submitted_bodies_for("S-IMPL").len() == 1
+    });
+    wait_until(Duration::from_millis(300), || {
+        !router
+            .state
+            .lock()
+            .unwrap()
+            .outbox_by_session
+            .contains_key("S-IMPL")
+    });
+    registry.unregister("mission-1");
+    injector.clear_pushes();
+    router.set_status("impl".into(), super::RunnerStatus::Idle);
+    std::thread::sleep(Duration::from_millis(40));
+    assert!(
+        injector.pushes_for("S-IMPL").is_empty(),
+        "clock must halt when the mission router unmounts"
+    );
+}
+
 #[test]
 fn directed_message_nudges_target_only() {
     // Pull-based inbox routing strands the worker without a stdin
@@ -236,6 +1079,182 @@ fn directed_message_nudges_target_only() {
 }
 
 #[test]
+fn input_clear_flush_reparks_when_typing_resumes_during_grace() {
+    let (router, injector, log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_pending("S-IMPL");
+
+    let direct = log.append(message("lead", Some("impl"), "go")).unwrap();
+    router.handle_event(&direct);
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+    assert!(!matches!(
+        router.state.lock().unwrap().status.get("impl"),
+        Some(super::RunnerStatus::Busy)
+    ));
+
+    injector.clear_pending("S-IMPL");
+    assert!(
+        injector.pushes_for("S-IMPL").is_empty(),
+        "flush must leave a grace period before writing the deferred body"
+    );
+    injector.set_pending("S-IMPL");
+    std::thread::sleep(Duration::from_millis(550));
+    assert!(
+        injector.pushes_for("S-IMPL").is_empty(),
+        "typing a new draft during the grace period must keep the delivery parked"
+    );
+    injector.exit("S-IMPL");
+}
+
+#[test]
+fn input_clear_flushes_after_quiet_500ms_grace() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_pending("S-IMPL");
+    router.inject_and_submit("impl", b"deferred relay").unwrap();
+
+    let cleared_at = Instant::now();
+    injector.clear_pending("S-IMPL");
+    std::thread::sleep(Duration::from_millis(450));
+    assert!(injector.submitted_bodies_for("S-IMPL").is_empty());
+    wait_until(Duration::from_millis(200), || {
+        injector.submitted_bodies_for("S-IMPL") == ["deferred relay"]
+    });
+    assert!(cleared_at.elapsed() >= Duration::from_millis(500));
+}
+
+#[test]
+fn recent_typing_retries_after_quiet_window() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_recent_typing("S-IMPL");
+    router.inject_and_submit("impl", b"after quiet").unwrap();
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+
+    wait_until(Duration::from_millis(300), || {
+        injector.submitted_bodies_for("S-IMPL") == ["after quiet"]
+    });
+}
+
+#[test]
+fn deferred_nudges_coalesce_while_relays_preserve_order() {
+    let (router, injector, log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_pending("S-IMPL");
+
+    for event in [
+        log.append(message("lead", Some("impl"), "first")).unwrap(),
+        log.append(signal(
+            "human",
+            "human_said",
+            serde_json::json!({ "target": "impl", "text": "relay one" }),
+        ))
+        .unwrap(),
+        log.append(message("lead", Some("impl"), "second")).unwrap(),
+        log.append(signal(
+            "human",
+            "human_said",
+            serde_json::json!({ "target": "impl", "text": "relay two" }),
+        ))
+        .unwrap(),
+    ] {
+        router.handle_event(&event);
+    }
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+
+    injector.clear_pending("S-IMPL");
+    wait_until(Duration::from_secs(1), || {
+        injector.submitted_bodies_for("S-IMPL").len() == 3
+    });
+    let bodies = injector.submitted_bodies_for("S-IMPL");
+    assert!(bodies[0].contains("2 new messages"));
+    assert_eq!(bodies[1], "relay one");
+    assert_eq!(bodies[2], "relay two");
+}
+
+#[test]
+fn deferred_delivery_flushes_on_respawn() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_pending("S-IMPL");
+    router
+        .inject_and_submit("impl", b"relay after respawn")
+        .unwrap();
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+
+    injector.respawn("S-IMPL");
+    wait_until(Duration::from_millis(250), || {
+        injector.submitted_bodies_for("S-IMPL") == ["relay after respawn"]
+    });
+}
+
+#[test]
+fn session_exit_drops_deferred_delivery() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_pending("S-IMPL");
+    router
+        .inject_and_submit("impl", b"must be dropped")
+        .unwrap();
+
+    injector.exit("S-IMPL");
+    injector.respawn("S-IMPL");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+}
+
+#[test]
+fn blocked_empty_body_does_not_flush_a_stray_enter() {
+    let (router, injector, _log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_pending("S-IMPL");
+    router.inject_and_submit("impl", b"").unwrap();
+    injector.clear_pending("S-IMPL");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+
+    router.inject_and_submit("impl", b"").unwrap();
+    wait_until(Duration::from_millis(250), || {
+        injector.raw_pushes_for("S-IMPL") == ["\r"]
+    });
+}
+
+#[test]
 fn broadcast_message_nudges_every_slot_except_sender() {
     let (router, injector, log, _dir) = fixture(
         vec![
@@ -254,6 +1273,83 @@ fn broadcast_message_nudges_every_slot_except_sender() {
     assert_eq!(injector.pushes_for("S-IMPL").len(), 1);
     assert_eq!(injector.pushes_for("S-REV").len(), 1);
     assert!(injector.pushes_for("S-LEAD").is_empty());
+}
+
+#[test]
+fn human_messages_nudge_the_broadcast_roster_or_target_only() {
+    let roster = || {
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+            slot_with_runner("reviewer", false),
+        ]
+    };
+    let sessions = &[
+        ("lead", "S-LEAD"),
+        ("impl", "S-IMPL"),
+        ("reviewer", "S-REV"),
+    ];
+
+    {
+        let (router, injector, log, _dir) = fixture(roster(), sessions);
+        let broadcast = log
+            .append(message("human", None, "Message the crew"))
+            .unwrap();
+        router.handle_event(&broadcast);
+        assert_eq!(injector.pushes_for("S-LEAD").len(), 1);
+        assert_eq!(injector.pushes_for("S-IMPL").len(), 1);
+        assert_eq!(injector.pushes_for("S-REV").len(), 1);
+    }
+
+    let (router, injector, log, _dir) = fixture(roster(), sessions);
+    let targeted = log
+        .append(message("human", Some("reviewer"), "Please review"))
+        .unwrap();
+    router.handle_event(&targeted);
+    assert!(injector.pushes_for("S-LEAD").is_empty());
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+    assert_eq!(injector.pushes_for("S-REV").len(), 1);
+}
+
+#[test]
+fn human_broadcast_waits_for_sessions_still_starting() {
+    let sessions = &[
+        ("lead", "S-LEAD"),
+        ("impl", "S-IMPL"),
+        ("reviewer", "S-REV"),
+    ];
+    let (router, injector, log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+            slot_with_runner("reviewer", false),
+        ],
+        sessions,
+    );
+    let pending: Vec<(String, String)> = sessions
+        .iter()
+        .map(|(handle, session)| (handle.to_string(), session.to_string()))
+        .collect();
+    router.register_pending_sessions(&pending);
+
+    let broadcast = log
+        .append(message("human", None, "Message the crew"))
+        .unwrap();
+    router.handle_event(&broadcast);
+    assert!(injector.all_pushes().is_empty());
+    assert!(!read_signals(&log).iter().any(|event| {
+        event
+            .signal_type
+            .as_ref()
+            .is_some_and(|signal| signal.as_str() == "mission_warning")
+    }));
+
+    for (_, session_id) in sessions {
+        injector.respawn(session_id);
+        wait_until(Duration::from_millis(100), || {
+            injector.submitted_bodies_for(session_id).len() == 1
+        });
+    }
 }
 
 #[test]
@@ -676,7 +1772,7 @@ fn pending_ask_map_reconstructs_from_log_on_reopen() {
 
     // First mount handles the ask live (appends human_question).
     {
-        let injector = Arc::new(RecordingInjector::default());
+        let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
         let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
         let router = Router::new(
             "mission-1".into(),
@@ -687,6 +1783,7 @@ fn pending_ask_map_reconstructs_from_log_on_reopen() {
             None,
             log.clone(),
             injector_dyn,
+            injector.clone(),
         )
         .unwrap();
         router.register_sessions(&[
@@ -707,10 +1804,12 @@ fn pending_ask_map_reconstructs_from_log_on_reopen() {
         })
         .expect("router #1 must have appended human_question")
         .id;
+    log.append(message("lead", Some("impl"), "historical mail"))
+        .unwrap();
 
     // Reopen: build router #2, fold projection state from history. This
     // is the path mission_resume / mount-on-app-restart will follow.
-    let injector = Arc::new(RecordingInjector::default());
+    let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
     let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
     let router2 = Router::new(
         "mission-1".into(),
@@ -721,6 +1820,7 @@ fn pending_ask_map_reconstructs_from_log_on_reopen() {
         None,
         log.clone(),
         injector_dyn,
+        injector.clone(),
     )
     .unwrap();
     router2.register_sessions(&[
@@ -816,7 +1916,7 @@ fn reconstruct_recovers_latest_runner_status_only() {
     ))
     .unwrap();
 
-    let injector = Arc::new(RecordingInjector::default());
+    let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
     let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
     let router = Router::new(
         "mission-1".into(),
@@ -827,6 +1927,7 @@ fn reconstruct_recovers_latest_runner_status_only() {
         None,
         log.clone(),
         injector_dyn,
+        injector.clone(),
     )
     .unwrap();
     router.register_sessions(&[
@@ -905,7 +2006,7 @@ fn fresh_mission_start_does_not_call_reconstruct() {
     ))
     .unwrap();
 
-    let injector = Arc::new(RecordingInjector::default());
+    let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
     let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
     let router = Router::new(
         "mission-1".into(),
@@ -916,6 +2017,7 @@ fn fresh_mission_start_does_not_call_reconstruct() {
         None,
         log.clone(),
         injector_dyn,
+        injector.clone(),
     )
     .unwrap();
     router.register_sessions(&[("lead".into(), "S-LEAD".into())]);
@@ -1002,7 +2104,7 @@ fn reconstruct_tolerates_malformed_lines_like_the_bus() {
     let roster = vec![slot_with_runner("lead", true)];
     // First mount handles the ask live — appends human_question.
     {
-        let injector = Arc::new(RecordingInjector::default());
+        let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
         let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
         let router = Router::new(
             "mission-1".into(),
@@ -1013,6 +2115,7 @@ fn reconstruct_tolerates_malformed_lines_like_the_bus() {
             None,
             log.clone(),
             injector_dyn,
+            injector.clone(),
         )
         .unwrap();
         router.register_sessions(&[("lead".into(), "S-LEAD".into())]);
@@ -1030,7 +2133,7 @@ fn reconstruct_tolerates_malformed_lines_like_the_bus() {
         .id;
 
     // Reopen + reconstruct: must not fail despite the malformed middle line.
-    let injector = Arc::new(RecordingInjector::default());
+    let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
     let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
     let router2 = Router::new(
         "mission-1".into(),
@@ -1041,6 +2144,7 @@ fn reconstruct_tolerates_malformed_lines_like_the_bus() {
         None,
         log.clone(),
         injector_dyn,
+        injector.clone(),
     )
     .unwrap();
     router2.register_sessions(&[("lead".into(), "S-LEAD".into())]);
@@ -1074,7 +2178,7 @@ fn directed_wake_synthesizes_busy_and_idle_clears_it() {
     // `idle` was emitted. The router now synthesizes `runner_status busy`
     // (with `from = recipient`) for any wake nudge, and the existing
     // worker-emitted `idle` clears it.
-    let (router, _injector, log, _dir) = fixture(
+    let (router, injector, log, _dir) = fixture(
         vec![
             slot_with_runner("lead", true),
             slot_with_runner("impl", false),
@@ -1109,6 +2213,11 @@ fn directed_wake_synthesizes_busy_and_idle_clears_it() {
         router.state.lock().unwrap().status.get("impl"),
         Some(super::RunnerStatus::Busy),
     ));
+    assert_eq!(
+        injector.activity_for("S-IMPL"),
+        Some(super::RunnerStatus::Busy),
+        "synthetic busy must update the session-side activity store",
+    );
 
     // A second directed wake while still busy must not churn another
     // busy event into the log — the dedupe guard suppresses it.
@@ -1140,6 +2249,7 @@ fn directed_wake_synthesizes_busy_and_idle_clears_it() {
     // exact regression issue #32 calls out.
     let direct_followup = log.append(message("lead", Some("impl"), "next")).unwrap();
     router.handle_event(&direct_followup);
+    wait_until(Duration::from_secs(1), || busy_for_impl(&log) == 2);
     assert_eq!(
         busy_for_impl(&log),
         2,
@@ -1167,7 +2277,7 @@ fn synthetic_busy_replays_through_existing_runner_status_projection() {
 
     // First mount: drive a directed message to synthesize busy.
     {
-        let injector = Arc::new(RecordingInjector::default());
+        let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
         let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
         let router = Router::new(
             "mission-1".into(),
@@ -1178,6 +2288,7 @@ fn synthetic_busy_replays_through_existing_runner_status_projection() {
             None,
             log.clone(),
             injector_dyn,
+            injector.clone(),
         )
         .unwrap();
         router.register_sessions(&[
@@ -1189,7 +2300,7 @@ fn synthetic_busy_replays_through_existing_runner_status_projection() {
     }
 
     // Reopen + reconstruct.
-    let injector = Arc::new(RecordingInjector::default());
+    let injector = Arc::new(RecordingInjector::new(Arc::clone(&log)));
     let injector_dyn: Arc<dyn StdinInjector> = injector.clone();
     let router2 = Router::new(
         "mission-1".into(),
@@ -1200,6 +2311,7 @@ fn synthetic_busy_replays_through_existing_runner_status_projection() {
         None,
         log.clone(),
         injector_dyn,
+        injector.clone(),
     )
     .unwrap();
     router2.register_sessions(&[

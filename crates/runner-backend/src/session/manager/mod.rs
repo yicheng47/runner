@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -48,6 +48,9 @@ mod spawn;
 mod tests;
 
 const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
+const RECENT_LOCAL_INPUT_WINDOW: Duration = Duration::from_secs(2);
+const RUNNER_STATUS_APPEND_MAX_ATTEMPTS: usize = 8;
+const RUNNER_STATUS_APPEND_RETRY_DELAY: Duration = Duration::from_millis(5);
 
 pub(crate) const DEFAULT_PTY_SIZE: (u16, u16) = (80, 24);
 
@@ -260,14 +263,24 @@ impl ForwarderEmitCtx {
     /// `cli/src/signal.rs::run_status` so router / UI projections
     /// can't tell the two apart except by `payload.source`.
     fn try_append_runner_status(&self, state: RunnerStatus, source: &'static str) -> AppendOutcome {
-        match self
-            .event_log
-            .try_append(self.runner_status_draft(state, source))
-        {
-            Ok(_) => AppendOutcome::Ok,
+        match self.try_append_with_retry(self.runner_status_draft(state, source)) {
+            Ok(()) => AppendOutcome::Ok,
             Err(TryAppendError::Contended) => AppendOutcome::Contended,
             Err(TryAppendError::Failed(_)) => AppendOutcome::Failed,
         }
+    }
+
+    fn try_append_with_retry(&self, draft: EventDraft) -> std::result::Result<(), TryAppendError> {
+        for attempt in 1..=RUNNER_STATUS_APPEND_MAX_ATTEMPTS {
+            match self.event_log.try_append(draft.clone()) {
+                Ok(_) => return Ok(()),
+                Err(TryAppendError::Contended) if attempt < RUNNER_STATUS_APPEND_MAX_ATTEMPTS => {
+                    thread::sleep(RUNNER_STATUS_APPEND_RETRY_DELAY);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("bounded append loop always returns")
     }
 
     fn append_runner_status(
@@ -542,6 +555,24 @@ struct CodexCaptureContext {
     events: Arc<dyn SessionEvents>,
 }
 
+#[derive(Default)]
+struct DeliveryGateState {
+    /// Generation invalidates a delayed Enter when the session exits or
+    /// respawns with the same database id.
+    generation: u64,
+    /// Held from router body injection through its delayed Enter so local
+    /// keystrokes and another router delivery cannot join the same draft.
+    in_flight: bool,
+    next_ticket: u64,
+    next_served: u64,
+}
+
+#[derive(Default)]
+struct DeliveryGate {
+    state: Mutex<DeliveryGateState>,
+    ready: Condvar,
+}
+
 /// Latest PTY size waiting for a resize storm to quiesce.
 struct PendingResize {
     cols: u16,
@@ -559,6 +590,7 @@ struct SessionState {
     suppress_local_input_busy: bool,
     local_input_pending: bool,
     last_local_input_at: Option<Instant>,
+    delivery_gate: Arc<DeliveryGate>,
     mission_status_sink: Option<ForwarderEmitCtx>,
     completion_armed: bool,
     output_buffer: VecDeque<OutputEvent>,
@@ -618,6 +650,7 @@ pub struct SessionManager {
     /// PTY output for one busy session does not block lifecycle work on
     /// other sessions.
     sessions: Mutex<HashMap<String, Arc<Mutex<SessionState>>>>,
+    delivery_listeners: Mutex<HashMap<String, Vec<Weak<dyn router::SessionDeliveryListener>>>>,
     /// User's current login-shell env snapshot. Discovery swaps this
     /// handle after a successful background probe; spawns clone one
     /// coherent value under a short read lock.
@@ -745,6 +778,7 @@ impl SessionManager {
     ) -> Arc<Self> {
         Arc::new(Self {
             sessions: Mutex::new(HashMap::new()),
+            delivery_listeners: Mutex::new(HashMap::new()),
             shell_env,
             discovery_state,
             claude_launch_gate: Mutex::new(None),
@@ -772,6 +806,118 @@ impl SessionManager {
             .clone()
     }
 
+    pub fn register_delivery_listener(
+        &self,
+        session_id: &str,
+        listener: Weak<dyn router::SessionDeliveryListener>,
+    ) {
+        let mut listeners = self.delivery_listeners.lock().unwrap();
+        let listeners = listeners.entry(session_id.to_string()).or_default();
+        if !listeners.iter().any(|existing| existing.ptr_eq(&listener)) {
+            listeners.push(listener);
+        }
+    }
+
+    fn notify_delivery_event(&self, session_id: &str, event: router::SessionDeliveryEvent) {
+        let listeners = {
+            let mut listeners_by_session = self.delivery_listeners.lock().unwrap();
+            let (live, remove_entry) = {
+                let Some(listeners) = listeners_by_session.get_mut(session_id) else {
+                    return;
+                };
+                let mut live = Vec::with_capacity(listeners.len());
+                listeners.retain(|listener| {
+                    if let Some(listener) = listener.upgrade() {
+                        live.push(listener);
+                        true
+                    } else {
+                        false
+                    }
+                });
+                (live, listeners.is_empty())
+            };
+            if remove_entry {
+                listeners_by_session.remove(session_id);
+            }
+            live
+        };
+        for listener in listeners {
+            listener.session_delivery_event(session_id, event);
+        }
+    }
+
+    pub fn input_quiescent(&self, session_id: &str) -> bool {
+        let Some(session) = self.session_state(session_id) else {
+            return false;
+        };
+        let gate = session.lock().unwrap().delivery_gate.clone();
+        let delivery = gate.state.lock().unwrap();
+        let session = session.lock().unwrap();
+        session.handle.is_some()
+            && !delivery.in_flight
+            && delivery.next_ticket == delivery.next_served
+            && !session.local_input_pending
+            && session
+                .last_local_input_at
+                .is_none_or(|last| last.elapsed() >= RECENT_LOCAL_INPUT_WINDOW)
+    }
+
+    pub fn session_live(&self, session_id: &str) -> bool {
+        self.session_state(session_id)
+            .is_some_and(|session| session.lock().unwrap().handle.is_some())
+    }
+
+    pub fn reserve_delivery(&self, session_id: &str) -> Result<router::DeliveryReservation> {
+        let session = self
+            .session_state(session_id)
+            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+        let gate = session.lock().unwrap().delivery_gate.clone();
+        let mut delivery = gate.state.lock().unwrap();
+        let session = session.lock().unwrap();
+        if session.handle.is_none() {
+            return Err(Error::msg(format!("session not found: {session_id}")));
+        }
+        if delivery.in_flight {
+            return Ok(router::DeliveryReservation::InFlight);
+        }
+        if delivery.next_ticket != delivery.next_served {
+            return Ok(router::DeliveryReservation::InFlight);
+        }
+        if session.local_input_pending {
+            return Ok(router::DeliveryReservation::PendingInput);
+        }
+        if let Some(last) = session.last_local_input_at {
+            let elapsed = last.elapsed();
+            if elapsed < RECENT_LOCAL_INPUT_WINDOW {
+                return Ok(router::DeliveryReservation::RecentlyTyping(
+                    RECENT_LOCAL_INPUT_WINDOW - elapsed,
+                ));
+            }
+        }
+        delivery.in_flight = true;
+        Ok(router::DeliveryReservation::Ready(delivery.generation))
+    }
+
+    pub fn finish_delivery(&self, session_id: &str, token: u64) {
+        let Some(session) = self.session_state(session_id) else {
+            return;
+        };
+        let gate = session.lock().unwrap().delivery_gate.clone();
+        let finished = {
+            let mut delivery = gate.state.lock().unwrap();
+            if !delivery.in_flight || delivery.generation != token {
+                false
+            } else {
+                delivery.in_flight = false;
+                gate.ready.notify_all();
+                true
+            }
+        };
+        if finished {
+            self.notify_delivery_event(session_id, router::SessionDeliveryEvent::DeliveryFinished);
+        }
+    }
+
     fn prune_empty_session_state(&self, session_id: &str) {
         let mut sessions = self.sessions.lock().unwrap();
         let should_remove = sessions
@@ -791,21 +937,28 @@ impl SessionManager {
         initial_size: Option<(u16, u16)>,
     ) {
         let state = self.session_state_or_insert(session_id);
-        let mut state = state.lock().unwrap();
-        state.local_input_pending = false;
-        state.last_local_input_at = None;
-        state.handle = Some(handle);
-        state.mission_status_sink = mission_status_sink;
-        state.killed = false;
-        // Seed the resize purge gate with the cols the PTY actually
-        // opened at, so the first same-width resize after spawn/resume
-        // doesn't purge the ring.
-        state.last_pty_cols = Some(
-            initial_size
-                .expect("spawn size must be resolved before handle install")
-                .0,
-        );
-        state.pending_resize = None;
+        let gate = state.lock().unwrap().delivery_gate.clone();
+        {
+            let mut delivery = gate.state.lock().unwrap();
+            let mut state = state.lock().unwrap();
+            delivery.generation = delivery.generation.wrapping_add(1);
+            delivery.in_flight = false;
+            delivery.next_ticket = 0;
+            delivery.next_served = 0;
+            gate.ready.notify_all();
+            state.local_input_pending = false;
+            state.last_local_input_at = None;
+            state.handle = Some(handle);
+            state.mission_status_sink = mission_status_sink;
+            state.killed = false;
+            state.last_pty_cols = Some(
+                initial_size
+                    .expect("spawn size must be resolved before handle install")
+                    .0,
+            );
+            state.pending_resize = None;
+        }
+        self.notify_delivery_event(session_id, router::SessionDeliveryEvent::Respawned);
     }
 
     fn install_forwarder(&self, session_id: &str, forwarder: thread::JoinHandle<()>) {
@@ -838,6 +991,23 @@ impl SessionManager {
         }
         session.activity = Some(state);
         true
+    }
+
+    pub(crate) fn synthesize_wake_busy(&self, session_id: &str, draft: EventDraft) -> Result<()> {
+        let session = self
+            .session_state(session_id)
+            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+        let mut session = session.lock().unwrap();
+        let sink = session.mission_status_sink.as_ref().ok_or_else(|| {
+            Error::msg(format!("session has no mission status sink: {session_id}"))
+        })?;
+        match sink.try_append_with_retry(draft) {
+            Ok(()) => {}
+            Err(TryAppendError::Contended) => return Err(Error::msg("event log busy")),
+            Err(TryAppendError::Failed(error)) => return Err(error.into()),
+        }
+        session.activity = Some(SessionActivityState::Busy);
+        Ok(())
     }
 
     pub(crate) fn publish_direct_activity(

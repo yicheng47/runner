@@ -481,7 +481,8 @@ pub async fn mission_start_impl_with_size(
 ) -> Result<StartMissionOutput> {
     use crate::event_bus::{BusEmitter, ChannelBusEvents};
     use crate::router::{
-        open_log_for_mission, CompositeBusEmitter, Router, RouterSubscriber, StdinInjector,
+        open_log_for_mission, ChannelRouterUiNotifier, CompositeBusEmitter, Router,
+        RouterSubscriber, StdinInjector,
     };
     use crate::session::manager::SessionEvents;
     use std::sync::Arc;
@@ -623,6 +624,7 @@ pub async fn mission_start_impl_with_size(
         crew_addendum.clone(),
         Arc::clone(&log_arc),
         injector,
+        Arc::new(ChannelRouterUiNotifier(state.events.clone())),
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -698,7 +700,7 @@ pub async fn mission_start_impl_with_size(
     // Register the full session map BEFORE the bus mount. From this point
     // any event the bus's initial replay delivers to the router will land
     // on a fully-wired handle map.
-    router.register_sessions(&spawned_pairs);
+    router.register_pending_sessions(&spawned_pairs);
 
     // Now mount the bus. Initial replay from offset 0 picks up the opening
     // events (durable since `start()` committed them under the DB tx),
@@ -870,7 +872,8 @@ pub async fn mission_attach(state: &AppCore, mission_id: &str) -> Result<Mission
 pub(crate) async fn ensure_mission_router_mounted(state: &AppCore, mission_id: &str) -> Result<()> {
     use crate::event_bus::{BusEmitter, ChannelBusEvents};
     use crate::router::{
-        open_log_for_mission, CompositeBusEmitter, Router, RouterSubscriber, StdinInjector,
+        open_log_for_mission, ChannelRouterUiNotifier, CompositeBusEmitter, Router,
+        RouterSubscriber, StdinInjector,
     };
     use std::sync::Arc;
 
@@ -945,6 +948,7 @@ pub(crate) async fn ensure_mission_router_mounted(state: &AppCore, mission_id: &
         crew_addendum,
         Arc::clone(&log_arc),
         injector,
+        Arc::new(ChannelRouterUiNotifier(state.events.clone())),
     )?;
     router.register_sessions(&session_pairs);
 
@@ -1106,7 +1110,8 @@ pub fn mission_set_project(
 pub async fn mission_reset_impl(state: &AppCore, id: String) -> Result<Mission> {
     use crate::event_bus::{BusEmitter, ChannelBusEvents};
     use crate::router::{
-        open_log_for_mission, CompositeBusEmitter, Router, RouterSubscriber, StdinInjector,
+        open_log_for_mission, ChannelRouterUiNotifier, CompositeBusEmitter, Router,
+        RouterSubscriber, StdinInjector,
     };
     use crate::session::manager::SessionEvents;
     use std::sync::Arc;
@@ -1302,6 +1307,7 @@ pub async fn mission_reset_impl(state: &AppCore, id: String) -> Result<Mission> 
         crew_addendum.clone(),
         Arc::clone(&log_arc),
         injector,
+        Arc::new(ChannelRouterUiNotifier(state.events.clone())),
     )?;
 
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
@@ -1347,7 +1353,7 @@ pub async fn mission_reset_impl(state: &AppCore, id: String) -> Result<Mission> 
             }
         }
     }
-    router.register_sessions(&spawned_pairs);
+    router.register_pending_sessions(&spawned_pairs);
 
     let roster_handles: Vec<String> = roster.iter().map(|m| m.slot.slot_handle.clone()).collect();
     let channel_emitter: Arc<dyn BusEmitter> = Arc::new(ChannelBusEvents(state.events.clone()));
