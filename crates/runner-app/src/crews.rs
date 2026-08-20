@@ -789,7 +789,6 @@ impl NativeRoot {
     }
 
     fn render_crew_editor(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let _trace = crate::app_shell::RenderTrace::new("crew-editor");
         let editor = &self.crew_surfaces.editor;
         let crew = editor.crew.clone();
         let slots = editor.slots.clone();
@@ -2070,7 +2069,6 @@ impl NativeRoot {
     }
 
     fn render_add_slot_modal(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let _trace = crate::app_shell::RenderTrace::new("add-slot-modal");
         let form = self.crew_surfaces.add_slot.as_ref().expect("add slot form");
         let query = form.query.read(cx).text().trim().to_lowercase();
         let filtered = form

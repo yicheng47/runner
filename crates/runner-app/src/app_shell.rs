@@ -13,35 +13,6 @@ const SIDEBAR_TRANSITION_MS: u64 = 200;
 const SETTINGS_FOOTER_LINE_HEIGHT: f32 = 18.;
 const WINDOW_SIZE_SAVE_DELAY_MS: u64 = 300;
 
-pub(crate) struct RenderTrace {
-    label: &'static str,
-    started: Option<std::time::Instant>,
-}
-
-impl RenderTrace {
-    pub(crate) fn new(label: &'static str) -> Self {
-        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let enabled = *ENABLED
-            .get_or_init(|| std::env::var("RUNNER_FRAME_TRACE").is_ok_and(|value| value == "1"));
-        Self {
-            label,
-            started: enabled.then(std::time::Instant::now),
-        }
-    }
-}
-
-impl Drop for RenderTrace {
-    fn drop(&mut self) {
-        if let Some(started) = self.started {
-            eprintln!(
-                "runner-frame-trace section={} elapsed_us={}",
-                self.label,
-                started.elapsed().as_micros()
-            );
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum AppRoute {
     #[default]

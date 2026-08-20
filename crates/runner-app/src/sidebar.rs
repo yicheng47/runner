@@ -1238,7 +1238,6 @@ impl NativeRoot {
     }
 
     pub(crate) fn render_sidebar_contents(&self, cx: &mut Context<Self>) -> AnyElement {
-        let _trace = crate::app_shell::RenderTrace::new("sidebar");
         let rows = self.resolved_sidebar_rows();
         let mut pinned = rows
             .iter()

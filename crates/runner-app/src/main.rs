@@ -707,7 +707,6 @@ impl NativeRoot {
 
 impl Render for NativeRoot {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let _trace = crate::app_shell::RenderTrace::new("root");
         self.render_app_shell(window, cx)
     }
 }
