@@ -2,12 +2,11 @@
 //! backgrounds as quads, glyphs as shaped lines, cursor on top.
 //!
 //! Alignment strategy: same-style ASCII spans are shaped as one run
-//! (monospace advance == cell width, so columns stay true); anything
-//! else — wide CJK, emoji, box drawing — is shaped per cell and
-//! painted at its own column origin, so a fallback font's advance can
-//! never skew the grid (the xterm garble class this spike exists to
-//! kill). gpui caches shaped lines, so per-cell shaping of repetitive
-//! glyphs stays cheap.
+//! (monospace advance == cell width, so columns stay true); custom
+//! terminal graphics are painted procedurally; remaining non-ASCII is
+//! shaped per cell and painted at its own column origin, so a fallback
+//! font's advance can never skew the grid. gpui caches shaped lines,
+//! so per-cell shaping of repetitive glyphs stays cheap.
 
 use std::sync::Arc;
 
@@ -28,6 +27,8 @@ use runner_app::terminal_resize::{
 };
 use runner_terminal::palette::{self, TerminalPalette};
 use runner_terminal::terminal::TerminalSession;
+
+use crate::terminal_glyphs::{snapped_cell_bounds, ProceduralCell};
 
 pub const LINE_HEIGHT_FACTOR: f32 = 1.4;
 
@@ -73,6 +74,7 @@ impl TerminalElement {
 
 pub struct GridPrepaint {
     backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
+    procedural: Vec<ProceduralCell>,
     lines: Vec<(Point<Pixels>, ShapedLine)>,
     cursor: Option<(Bounds<Pixels>, CursorShape)>,
     cursor_cell: Option<Bounds<Pixels>>,
@@ -154,6 +156,7 @@ impl Element for TerminalElement {
             SizePushVerdict::SuppressedUnplaced => {
                 return GridPrepaint {
                     backgrounds: Vec::new(),
+                    procedural: Vec::new(),
                     lines: Vec::new(),
                     cursor: None,
                     cursor_cell: None,
@@ -168,6 +171,7 @@ impl Element for TerminalElement {
         let terminal_palette = self.style.palette;
         let base = palette::base_palette_for(terminal_palette);
         let mut backgrounds: Vec<(Bounds<Pixels>, Hsla)> = Vec::new();
+        let mut procedural = Vec::new();
         let mut spans: Vec<(usize, StyledSpan)> = Vec::new();
         let mut cursor = None;
         let mut cursor_cell = None;
@@ -246,6 +250,29 @@ impl Element for TerminalElement {
                     || (cell.c == ' ' && cell.zerowidth().is_none())
                 {
                     continue;
+                }
+
+                let uses_text_decorations = cell
+                    .flags
+                    .intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT);
+                if !uses_text_decorations {
+                    if let Some(procedural_cell) = ProceduralCell::new(
+                        cell.c,
+                        snapped_cell_bounds(
+                            bounds,
+                            cell_width,
+                            line_height,
+                            row,
+                            col,
+                            window.scale_factor(),
+                        ),
+                        to_hsla(fg, 1.),
+                        to_hsla(bg, 1.),
+                        font_size,
+                    ) {
+                        procedural.push(procedural_cell);
+                        continue;
+                    }
                 }
 
                 let mut cell_font: Font = base_font.clone();
@@ -403,6 +430,7 @@ impl Element for TerminalElement {
 
         GridPrepaint {
             backgrounds,
+            procedural,
             lines,
             cursor,
             cursor_cell,
@@ -425,6 +453,9 @@ impl Element for TerminalElement {
         window.paint_quad(fill(bounds, to_hsla(self.style.palette.background, 1.)));
         for (quad_bounds, color) in &prepaint.backgrounds {
             window.paint_quad(fill(*quad_bounds, *color));
+        }
+        for cell in &prepaint.procedural {
+            cell.paint(window);
         }
         for (origin, line) in &prepaint.lines {
             let _ = line.paint(*origin, prepaint.line_height, window, cx);

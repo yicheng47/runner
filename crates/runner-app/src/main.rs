@@ -10,6 +10,7 @@ mod mission_markdown;
 mod settings_page;
 mod sidebar_logic;
 mod terminal_element;
+mod terminal_glyphs;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
