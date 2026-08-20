@@ -1,16 +1,9 @@
 mod app_settings;
-mod app_shell;
 mod assets;
-mod chat_lifecycle;
 mod list_controls;
 mod mac_chrome;
-mod mission_composer;
-mod mission_feed;
-mod mission_markdown;
-mod settings_page;
-mod sidebar_logic;
-mod terminal_element;
-mod terminal_glyphs;
+mod surfaces;
+mod terminal;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -48,12 +41,11 @@ use runner_backend::AppCore;
 use runner_terminal::terminal::{TerminalBridge, TerminalSession};
 
 use app_settings::{settings_path, AppSettings};
-use app_shell::AppRoute;
 use assets::{
     Assets, INTER_FONT, MESLO_FONT_BOLD, MESLO_FONT_BOLD_ITALIC, MESLO_FONT_ITALIC,
     MESLO_FONT_REGULAR,
 };
-use terminal_element::TerminalElement;
+use terminal::TerminalElement;
 use toast::ToastHost;
 
 actions!(
@@ -79,25 +71,12 @@ actions!(
     ]
 );
 
-mod chat;
-mod crews;
-mod mission_workspace;
-mod panes;
-mod runners;
-mod sidebar;
-mod start_chat;
-mod start_mission;
 mod toast;
 
-use crews::CrewSurfaces;
-use mission_workspace::MissionWorkspaceState;
-use panes::{adjacent_pane_index, pane_fractions};
-use runners::RunnerSurfaces;
-use settings_page::SettingsState;
-use sidebar::{session_label, ProjectModal, SidebarRefreshKind, SidebarRename};
-use sidebar_logic::DropTarget;
-use start_chat::StartChatModal;
-use start_mission::StartMissionModalState;
+use surfaces::{
+    AppRoute, CrewSurfaces, DropTarget, MissionWorkspaceState, ProjectModal, RunnerSurfaces,
+    SettingsState, SidebarRefreshKind, SidebarRename, StartChatModal, StartMissionModalState,
+};
 
 const INITIAL_COLS: u16 = 100;
 const INITIAL_ROWS: u16 = 30;
@@ -169,7 +148,7 @@ impl EntityRefreshKind {
 
 #[derive(Clone, Copy)]
 struct ChatTransition {
-    kind: chat_lifecycle::TransitionKind,
+    kind: surfaces::chat_lifecycle::TransitionKind,
     started_at: Instant,
     baseline_seq: u64,
     generation: u64,
