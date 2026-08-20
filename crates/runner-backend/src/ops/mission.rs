@@ -539,7 +539,7 @@ pub async fn mission_start_impl(
 /// mission pane grid fills in so backend-initiated starts/resets do not fork
 /// at 80x24. `None` means no hint was ever recorded and registration falls
 /// back to `DEFAULT_PTY_SIZE`.
-pub fn mission_fork_size(
+pub(crate) fn mission_fork_size(
     caller: Option<(u16, u16)>,
     hint: Option<(u16, u16)>,
 ) -> (Option<(u16, u16)>, &'static str) {

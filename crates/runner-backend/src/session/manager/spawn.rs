@@ -506,6 +506,8 @@ impl SessionManager {
             return Ok(CompleteSpawnOutcome::Cancelled);
         }
 
+        // The PTY exists and survived both cancellation windows — this
+        // reports a fork that actually happened, not an attempt.
         if let Some((cols, rows)) = initial_size {
             log::info!(
                 "mission slot fork: session={session_id} runtime={} \
@@ -1427,6 +1429,10 @@ impl SessionManager {
             }
         };
 
+        // The PTY exists — this line reports a fork that actually
+        // happened, not an attempt. One per resume so a production log
+        // shows the width every resumed session started at and where it
+        // came from (#366).
         log::info!(
             "{} fork: session={session_id} runtime={} size={}x{} source={size_source}",
             if allow_fresh_fallback {
