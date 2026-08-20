@@ -390,6 +390,15 @@ pub fn session_get(state: &AppCore, session_id: &str) -> Result<Option<DirectSes
     get_direct(&conn, session_id)
 }
 
+/// The PTY geometry the manager last recorded for the session: the fork
+/// size, then every applied or persisted resize. Terminals attach and
+/// replay retained output at this size rather than at a layout estimate,
+/// so the replay reflows the way the agent painted it.
+pub fn session_last_size(state: &AppCore, session_id: &str) -> Result<Option<(u16, u16)>> {
+    let conn = state.db.get()?;
+    Ok(repo::session::get_row(&conn, session_id)?.and_then(|row| row.last_cols.zip(row.last_rows)))
+}
+
 fn get_direct(conn: &rusqlite::Connection, session_id: &str) -> Result<Option<DirectSessionEntry>> {
     repo::session::get_direct(conn, session_id)?
         .map(|d| direct_entry_from_repo(d, /*ship_key*/ true))

@@ -85,3 +85,69 @@ pub fn screen_snapshot<T>(term: &Term<T>) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    //! Why terminals attach at the PTY's recorded size rather than a
+    //! layout estimate: alacritty never reflows the alternate screen, so
+    //! output replayed into a grid of the wrong width keeps its wrap
+    //! damage through every later resize.
+    use super::*;
+    use alacritty_terminal::index::Point;
+    use alacritty_terminal::vte::ansi::{Color, Rgb};
+
+    const GRAY: Color = Color::Spec(Rgb {
+        r: 50,
+        g: 50,
+        b: 56,
+    });
+
+    /// One full-width row as a TUI paints it for a `width`-column PTY:
+    /// background-filled cells, then a newline.
+    fn painted_row(width: usize) -> Vec<u8> {
+        let mut bytes = b"\x1b[48;2;50;50;56m".to_vec();
+        bytes.extend(std::iter::repeat_n(b' ', width));
+        bytes.extend_from_slice(b"\x1b[0m\r\n");
+        bytes
+    }
+
+    fn column_zero_painted(term: &Term<VoidListener>) -> Vec<bool> {
+        (0..6)
+            .map(|line| term.grid()[Point::new(Line(line), Column(0))].bg == GRAY)
+            .collect()
+    }
+
+    fn alt_screen_replay(grid_cols: u16, pty_cols: usize) -> Term<VoidListener> {
+        let mut term = new_term(grid_cols, 10);
+        feed(&mut term, b"\x1b[?1049h");
+        for _ in 0..3 {
+            feed(&mut term, &painted_row(pty_cols));
+        }
+        term
+    }
+
+    #[test]
+    fn alt_screen_replay_narrower_than_the_pty_keeps_its_wrap_tails_after_growing() {
+        let mut term = alt_screen_replay(111, 112);
+        assert_eq!(
+            column_zero_painted(&term),
+            [true; 6],
+            "every row wrapped its last cell onto the next line"
+        );
+        term.resize(TermSize::new(112, 10));
+        assert_eq!(
+            column_zero_painted(&term),
+            [true; 6],
+            "the alt screen does not reflow, so growing cannot rejoin them"
+        );
+    }
+
+    #[test]
+    fn alt_screen_replay_at_the_pty_width_is_clean() {
+        let term = alt_screen_replay(112, 112);
+        assert_eq!(
+            column_zero_painted(&term),
+            [true, true, true, false, false, false]
+        );
+    }
+}

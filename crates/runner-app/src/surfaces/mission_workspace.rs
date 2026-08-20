@@ -1093,13 +1093,15 @@ impl MissionWorkspace {
         if self.archived() || self.secondary {
             return Ok(());
         }
-        let size = self.current_mission_terminal_size(window, cx);
+        let fallback = self.current_mission_terminal_size(window, cx);
         let mut errors = Vec::new();
         for session in self.sessions.clone() {
             if !self.open_tabs.contains(&session.session.id) {
                 continue;
             }
-            if let Err(error) = self.ensure_mission_terminal_attached(&session, size, window, cx) {
+            if let Err(error) =
+                self.ensure_mission_terminal_attached(&session, fallback, window, cx)
+            {
                 errors.push(error.to_string());
             }
         }
@@ -1113,7 +1115,7 @@ impl MissionWorkspace {
     fn ensure_mission_terminal_attached(
         &mut self,
         session: &SessionRow,
-        size: (u16, u16),
+        fallback: (u16, u16),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
@@ -1121,6 +1123,14 @@ impl MissionWorkspace {
         if self.attached.contains_key(&session_id) {
             return Ok(());
         }
+        // Attach at the PTY's recorded geometry so retained output replays
+        // at the width it was painted for (the alt screen never reflows);
+        // the element then corrects the size through the PTY once it has
+        // measured itself.
+        let size = runner_backend::ops::session::session_last_size(self.core(cx), &session_id)
+            .ok()
+            .flatten()
+            .unwrap_or(fallback);
         // Mission delivery can wait on the draft gate, so PTY input must never run on GPUI's
         // render thread. The queued mode preserves input order on a per-session worker.
         let terminal = TerminalSession::attach_with_input_mode(
