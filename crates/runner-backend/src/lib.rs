@@ -20,6 +20,8 @@ pub mod router;
 pub mod runtime_status;
 pub mod session;
 pub mod shell_path;
+#[cfg(target_os = "macos")]
+pub mod wake;
 pub mod windows;
 
 use std::path::PathBuf;

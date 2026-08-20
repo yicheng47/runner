@@ -742,6 +742,11 @@ fn run() -> Result<()> {
             #[cfg(target_os = "macos")]
             install_app_icon();
 
+            // Installed here, rather than in `boot_core`, so AppKit
+            // registration happens on GPUI's process main thread.
+            #[cfg(target_os = "macos")]
+            runner_backend::wake::install(&core.events);
+
             let quit_core = core.clone();
             cx.on_action(move |_: &Quit, cx| {
                 if let Err(error) = stop_running_sessions_on_quit(&quit_core) {
