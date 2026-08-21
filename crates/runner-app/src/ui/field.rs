@@ -1050,6 +1050,7 @@ impl Render for TextField {
                     .bg(theme::bg())
             })
             .track_focus(&self.focus_handle)
+            .key_context("TextInput")
             .tab_index(0)
             .tab_stop(!self.disabled)
             .cursor(if self.disabled {

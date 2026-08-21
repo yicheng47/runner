@@ -32,8 +32,10 @@ impl NativeRoot {
                     self.stopping_sessions.remove(&session_id);
                     self.refresh_sessions(cx);
                     self.sync_active_chat_detail(cx);
-                    if self.active_focused_session_id().as_deref() == Some(session_id.as_str()) {
-                        self.root_focus.focus(window);
+                    if self.route == AppRoute::Chat
+                        && self.active_focused_session_id().as_deref() == Some(session_id.as_str())
+                    {
+                        self.chat_focus.focus(window);
                     }
                 }
             }
@@ -115,8 +117,10 @@ impl NativeRoot {
                 generation,
             },
         );
-        if self.active_focused_session_id().as_deref() == Some(session_id) {
-            self.root_focus.focus(window);
+        if self.route == AppRoute::Chat
+            && self.active_focused_session_id().as_deref() == Some(session_id)
+        {
+            self.chat_focus.focus(window);
         }
         let tracked_id = session_id.to_owned();
         cx.spawn_in(window, async move |weak, cx| loop {
@@ -152,7 +156,9 @@ impl NativeRoot {
                     );
                     if settled {
                         this.chat_transitions.remove(&tracked_id);
-                        if this.active_focused_session_id().as_deref() == Some(tracked_id.as_str())
+                        if this.route == AppRoute::Chat
+                            && this.active_focused_session_id().as_deref()
+                                == Some(tracked_id.as_str())
                         {
                             this.focus_active_terminal(window, cx);
                         }
@@ -182,8 +188,10 @@ impl NativeRoot {
         self.app_store.update(cx, |store, store_cx| {
             store.remove_session_activity(session_id, store_cx)
         });
-        if self.active_focused_session_id().as_deref() == Some(session_id) {
-            self.root_focus.focus(window);
+        if self.route == AppRoute::Chat
+            && self.active_focused_session_id().as_deref() == Some(session_id)
+        {
+            self.chat_focus.focus(window);
         }
         cx.notify();
         let core = self.core(cx).clone();
@@ -204,8 +212,10 @@ impl NativeRoot {
                     Ok(()) => {}
                     Err(error) => this.chat_error = Some(error),
                 }
-                if this.active_focused_session_id().as_deref() == Some(target.as_str()) {
-                    this.root_focus.focus(window);
+                if this.route == AppRoute::Chat
+                    && this.active_focused_session_id().as_deref() == Some(target.as_str())
+                {
+                    this.chat_focus.focus(window);
                 }
                 cx.notify();
             });
@@ -644,7 +654,7 @@ impl NativeRoot {
 
     pub(crate) fn focus_active_terminal(&self, window: &mut Window, cx: &App) {
         let Some(session_id) = self.active_focused_session_id() else {
-            self.root_focus.focus(window);
+            self.chat_focus.focus(window);
             return;
         };
         if self.session_is_interactive(&session_id, cx) {
@@ -653,7 +663,7 @@ impl NativeRoot {
                 return;
             }
         }
-        self.root_focus.focus(window);
+        self.chat_focus.focus(window);
     }
 
     pub(crate) fn activate_tab(
@@ -720,10 +730,8 @@ impl NativeRoot {
         if self.route == AppRoute::Chat {
             if let Some(pane_id) = pane_id {
                 self.close_pane(&pane_id, window, cx);
-                return;
             }
         }
-        window.remove_window();
     }
 
     pub(crate) fn focus_previous_chat_pane(
@@ -732,11 +740,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if matches!(self.route, AppRoute::Mission(_)) {
-            self.cycle_mission_tab(-1, window, cx);
-        } else {
-            self.cycle_chat_pane(-1, window, cx);
-        }
+        self.cycle_chat_pane(-1, window, cx);
     }
 
     pub(crate) fn focus_next_chat_pane(
@@ -745,11 +749,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if matches!(self.route, AppRoute::Mission(_)) {
-            self.cycle_mission_tab(1, window, cx);
-        } else {
-            self.cycle_chat_pane(1, window, cx);
-        }
+        self.cycle_chat_pane(1, window, cx);
     }
 
     fn cycle_chat_pane(&mut self, direction: isize, window: &mut Window, cx: &mut Context<Self>) {
@@ -798,12 +798,13 @@ impl NativeRoot {
             if let Some(chat) = self.attached.get(session_id) {
                 chat.terminal_focus.focus(window);
             } else {
-                self.root_focus.focus(window);
+                self.chat_focus.focus(window);
             }
         } else {
-            self.root_focus.focus(window);
+            self.chat_focus.focus(window);
         }
         self.mark_active_tab_viewed(window, cx);
+        self.record_current_runtime_location();
     }
 
     pub(crate) fn on_key_down(
@@ -988,8 +989,10 @@ impl NativeRoot {
                         this.chat_error = Some(error);
                         this.refresh_sessions(cx);
                         this.sync_active_chat_detail(cx);
-                        if this.active_focused_session_id().as_deref() == Some(target.as_str()) {
-                            this.root_focus.focus(window);
+                        if this.route == AppRoute::Chat
+                            && this.active_focused_session_id().as_deref() == Some(target.as_str())
+                        {
+                            this.chat_focus.focus(window);
                         }
                     }
                 }
@@ -1073,6 +1076,7 @@ impl NativeRoot {
                 self.remember_active_runner(cx);
                 self.mark_active_tab_viewed(window, cx);
                 self.focus_active_terminal(window, cx);
+                self.record_current_runtime_location();
             }
             Ok(false) => {}
             Err(error) => self.chat_error = Some(error.to_string()),

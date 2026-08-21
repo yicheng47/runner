@@ -7,6 +7,7 @@ use gpui::{font, Font, FontFallbacks};
 use runner_terminal::palette::{self, TerminalPalette};
 use serde::{Deserialize, Serialize};
 
+use crate::keymap::{self, KeymapOverrides};
 use crate::theme::{DarkTheme, LightTheme, ThemeIntent};
 
 pub const SIDEBAR_MIN: f32 = 200.;
@@ -145,6 +146,8 @@ pub struct AppSettings {
     pub default_runtime: String,
     pub disabled_agents: BTreeSet<String>,
     pub enabled_agents: BTreeSet<String>,
+    #[serde(default, deserialize_with = "keymap::deserialize_overrides")]
+    pub keymap_overrides: KeymapOverrides,
 }
 
 impl Default for AppSettings {
@@ -179,6 +182,7 @@ impl Default for AppSettings {
             default_runtime: String::new(),
             disabled_agents: BTreeSet::new(),
             enabled_agents: BTreeSet::new(),
+            keymap_overrides: KeymapOverrides::new(),
         }
     }
 }
@@ -229,6 +233,7 @@ impl AppSettings {
             normalize_agent_set(std::mem::take(&mut self.sidebar_collapsed_projects));
         self.disabled_agents = normalize_agent_set(std::mem::take(&mut self.disabled_agents));
         self.enabled_agents = normalize_agent_set(std::mem::take(&mut self.enabled_agents));
+        keymap::normalize_overrides(&mut self.keymap_overrides);
     }
 
     pub fn is_agent_enabled(&self, name: &str, default_enabled: bool) -> bool {
@@ -492,6 +497,53 @@ mod tests {
         assert_eq!(value["defaultWorkingDir"], "");
         assert_eq!(value["resumeOnLaunch"], false);
         assert_eq!(value["defaultRuntime"], "");
+        assert_eq!(value["keymapOverrides"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn keymap_overrides_round_trip_null_and_normalize_bad_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("ui-settings.json");
+        fs::write(
+            &path,
+            r#"{
+                "keymapOverrides": {
+                    "command-palette": null,
+                    "toggle-sidebar": {
+                        "meta": true,
+                        "ctrl": false,
+                        "alt": false,
+                        "shift": false,
+                        "code": "KeyP"
+                    },
+                    "zoom-in": { "meta": "yes", "code": "Equal" },
+                    "future-action": null
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = AppSettings::load(&path).unwrap();
+        assert_eq!(loaded.keymap_overrides.len(), 2);
+        assert!(loaded.keymap_overrides["command-palette"].is_none());
+        assert_eq!(
+            loaded.keymap_overrides["toggle-sidebar"]
+                .as_ref()
+                .unwrap()
+                .code,
+            "KeyP"
+        );
+        loaded.save(&path).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(saved["keymapOverrides"]["command-palette"].is_null());
+        assert!(saved["keymapOverrides"].get("future-action").is_none());
+
+        fs::write(&path, r#"{"keymapOverrides": ["bad"]}"#).unwrap();
+        assert!(AppSettings::load(&path)
+            .unwrap()
+            .keymap_overrides
+            .is_empty());
     }
 
     #[test]

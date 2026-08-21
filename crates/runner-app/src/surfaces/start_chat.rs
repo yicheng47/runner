@@ -159,7 +159,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.start_chat_modal.is_some() {
+        if self.route == AppRoute::Settings || self.start_chat_modal.is_some() {
             return;
         }
         let active_project_id = self.active_project_id(cx);

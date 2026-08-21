@@ -209,10 +209,10 @@ impl MissionWorkspace {
     pub(crate) fn new(
         shell: WeakEntity<NativeRoot>,
         app_store: Entity<AppStore>,
-        root_focus: FocusHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let root_focus = cx.focus_handle();
         let workspace = cx.entity();
         let menu_root = workspace.clone();
         let action_menu = cx.new(move |menu_cx| {
@@ -769,6 +769,7 @@ impl NativeRoot {
         let leaving_mission =
             matches!(self.route, AppRoute::Mission(_)) && !matches!(route, AppRoute::Mission(_));
         self.route = route;
+        self.record_current_runtime_location();
         if route_changed {
             let sidebar = self.sidebar.clone();
             cx.defer(move |cx| {
@@ -796,6 +797,82 @@ impl NativeRoot {
         }
     }
 
+    pub(crate) fn record_current_runtime_location(&mut self) {
+        let location = match &self.route {
+            AppRoute::Chat => self.active_focused_session_id().map(RuntimeLocation::Chat),
+            AppRoute::Mission(mission_id) => Some(RuntimeLocation::Mission(mission_id.clone())),
+            _ => None,
+        };
+        let Some(location) = location else {
+            return;
+        };
+        if self
+            .runtime_navigation_index
+            .and_then(|index| self.runtime_navigation_history.get(index))
+            == Some(&location)
+        {
+            return;
+        }
+        let keep = self.runtime_navigation_index.map_or(0, |index| index + 1);
+        self.runtime_navigation_history.truncate(keep);
+        self.runtime_navigation_history.push(location);
+        if self.runtime_navigation_history.len() > RUNTIME_NAVIGATION_HISTORY_LIMIT {
+            let excess = self.runtime_navigation_history.len() - RUNTIME_NAVIGATION_HISTORY_LIMIT;
+            self.runtime_navigation_history.drain(..excess);
+        }
+        self.runtime_navigation_index = self.runtime_navigation_history.len().checked_sub(1);
+    }
+
+    pub(crate) fn navigate_runtime_page(
+        &mut self,
+        direction: isize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.route == AppRoute::Settings || self.runtime_navigation_history.len() < 2 {
+            return;
+        }
+        let Some(index) = self.runtime_navigation_index else {
+            return;
+        };
+        let mut candidate = index as isize + direction;
+        while candidate >= 0 && (candidate as usize) < self.runtime_navigation_history.len() {
+            let next_index = candidate as usize;
+            let location = self.runtime_navigation_history[next_index].clone();
+            let available = match &location {
+                RuntimeLocation::Chat(session_id) => self
+                    .app_store
+                    .read(cx)
+                    .sessions
+                    .iter()
+                    .any(|session| &session.session_id == session_id),
+                RuntimeLocation::Mission(mission_id) => self
+                    .app_store
+                    .read(cx)
+                    .missions
+                    .iter()
+                    .any(|mission| &mission.mission.id == mission_id),
+            };
+            if available {
+                self.runtime_navigation_index = Some(next_index);
+                let navigated = match location {
+                    RuntimeLocation::Chat(session_id) => {
+                        self.open_chat_session(&session_id, window, cx)
+                    }
+                    RuntimeLocation::Mission(mission_id) => {
+                        self.open_mission(mission_id, window, cx);
+                        true
+                    }
+                };
+                if navigated {
+                    return;
+                }
+                self.runtime_navigation_index = Some(index);
+            }
+            candidate += direction;
+        }
+    }
+
     pub(crate) fn open_mission(
         &mut self,
         mission_id: String,
@@ -815,18 +892,6 @@ impl NativeRoot {
             workspace.open_mission(mission_id, window, workspace_cx)
         });
         cx.notify();
-    }
-
-    pub(crate) fn cycle_mission_tab(
-        &mut self,
-        direction: isize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let workspace = self.mission_workspace.clone();
-        workspace.update(cx, |workspace, workspace_cx| {
-            workspace.cycle_mission_tab(direction, window, workspace_cx)
-        });
     }
 
     pub(crate) fn estimated_mission_terminal_size(&self, window: &Window, cx: &App) -> (u16, u16) {
@@ -2654,6 +2719,8 @@ impl MissionWorkspace {
         let rail = self.render_mission_rail(cx);
         div()
             .relative()
+            .key_context("Mission")
+            .track_focus(&self.root_focus)
             .flex_1()
             .min_w(px(0.))
             .h_full()
@@ -2661,6 +2728,8 @@ impl MissionWorkspace {
             .bg(theme::bg())
             .child(center)
             .child(rail)
+            .on_action(cx.listener(Self::focus_previous_mission_tab))
+            .on_action(cx.listener(Self::focus_next_mission_tab))
             .on_drag_move::<MissionRailResizeDrag>(cx.listener(
                 |this, event: &DragMoveEvent<MissionRailResizeDrag>, _, cx| {
                     let width = f32::from(event.bounds.right() - event.event.position.x)
@@ -2679,6 +2748,24 @@ impl MissionWorkspace {
                 this.save_settings(cx);
             }))
             .into_any_element()
+    }
+
+    fn focus_previous_mission_tab(
+        &mut self,
+        _: &MissionTabPrevious,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cycle_mission_tab(-1, window, cx);
+    }
+
+    fn focus_next_mission_tab(
+        &mut self,
+        _: &MissionTabNext,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cycle_mission_tab(1, window, cx);
     }
 
     pub(crate) fn render_mission_overlays(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -4222,83 +4309,21 @@ impl MissionWorkspace {
         let root = cx.entity();
         let resume_root = root.clone();
         let archive_root = root;
-        div()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_end()
-            .justify_center()
-            .pb(rems(56. / 16.))
-            .px_4()
-            .bg(theme::with_alpha(theme::bg(), 0.7))
-            .child(
-                div()
-                    .w_full()
-                    .max_w(rems(672. / 16.))
-                    .flex()
-                    .flex_col()
-                    .gap(rems(14. / 16.))
-                    .rounded_xl()
-                    .border_1()
-                    .border_color(theme::border())
-                    .bg(theme::panel())
-                    .p_5()
-                    .shadow_lg()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                svg()
-                                    .path("pause.svg")
-                                    .size(rems(1.))
-                                    .text_color(theme::faint()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(rems(15. / 16.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Mission paused"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_size(rems(13. / 16.))
-                            .line_height(rems(18. / 16.))
-                            .text_color(theme::muted())
-                            .child(if any_live {
-                                "One or more slots are paused. Resume the mission to respawn every paused slot — partial-mission states aren't a valid run."
-                            } else {
-                                "All slots are paused. Resume to respawn every slot and pick up the conversation — the event log is preserved."
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                Button::new("resume-paused-mission", "Resume")
-                                    .icon("play.svg")
-                                    .variant(ButtonVariant::Primary)
-                                    .on_press(move |window, cx| {
-                                        resume_root.update(cx, |this, cx| {
-                                            this.resume_open_mission(window, cx)
-                                        });
-                                    }),
-                            )
-                            .child(
-                                Button::new("archive-paused-mission", "Archive")
-                                    .icon("archive.svg")
-                                    .on_press(move |window, cx| {
-                                        archive_root.update(cx, |this, cx| {
-                                            this.archive_open_mission(window, cx)
-                                        });
-                                    }),
-                            ),
-                    ),
-            )
+        SessionOverlay::ended(
+            "mission-paused",
+            if any_live {
+                "One or more slots are paused. Resume the mission to respawn every paused slot — partial-mission states aren't a valid run."
+            } else {
+                "All slots are paused. Resume to respawn every slot and pick up the conversation — the event log is preserved."
+            },
+            move |window, cx| {
+                resume_root.update(cx, |this, cx| this.resume_open_mission(window, cx));
+            },
+            move |window, cx| {
+                archive_root.update(cx, |this, cx| this.archive_open_mission(window, cx));
+            },
+        )
+        .title("Mission paused")
             .into_any_element()
     }
 

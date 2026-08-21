@@ -366,6 +366,8 @@ impl Render for PopoverMenu {
         let mut root = div()
             .id(self.id.clone())
             .relative()
+            .size(rems(self.trigger_size.button_size() / 16.))
+            .flex_none()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
             .child(trigger)

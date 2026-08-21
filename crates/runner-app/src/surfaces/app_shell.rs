@@ -127,12 +127,14 @@ impl NativeRoot {
             .children(entity_overlays);
         let settings =
             (self.route == AppRoute::Settings).then(|| self.render_settings_takeover(window, cx));
+        let command_palette = deferred(self.command_palette.clone()).with_priority(50);
         let toast = self
             .render_toast(cx)
             .map(|toast| deferred(toast).with_priority(3));
 
         div()
             .relative()
+            .key_context("Root")
             .size_full()
             .overflow_hidden()
             .track_focus(&self.root_focus)
@@ -141,6 +143,7 @@ impl NativeRoot {
             .text_color(theme::text())
             .child(chrome)
             .children(settings)
+            .child(command_palette)
             .children(toast)
             .on_drag_move::<SidebarResizeDrag>(cx.listener(
                 |this, event: &DragMoveEvent<SidebarResizeDrag>, _, cx| {
@@ -178,7 +181,10 @@ impl NativeRoot {
             .on_action(cx.listener(Self::focus_previous_chat_pane))
             .on_action(cx.listener(Self::focus_next_chat_pane))
             .on_action(cx.listener(Self::toggle_sidebar))
+            .on_action(cx.listener(Self::open_command_palette))
             .on_action(cx.listener(Self::open_settings))
+            .on_action(cx.listener(Self::navigate_previous_page))
+            .on_action(cx.listener(Self::navigate_next_page))
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::zoom_reset))
@@ -289,6 +295,48 @@ impl NativeRoot {
                 ),
             cx,
         );
+        let search_button = div()
+            .id("sidebar-search")
+            .group("sidebar-search")
+            .tab_index(0)
+            .flex_none()
+            .size(px(24. * self.settings(cx).app_zoom))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_sm()
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .cursor_pointer()
+            .text_color(theme::muted())
+            .hover(|button| {
+                button
+                    .border_color(theme::sidebar_selected_border())
+                    .bg(alpha(theme::sidebar_selected(), 0.4))
+                    .text_color(theme::text())
+            })
+            .focus_visible(|button| {
+                button
+                    .border_color(theme::sidebar_selected_border())
+                    .bg(alpha(theme::sidebar_selected(), 0.4))
+                    .text_color(theme::text())
+            })
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.show_command_palette(window, cx);
+            }))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    cx.stop_propagation();
+                    this.show_command_palette(window, cx);
+                }
+            }))
+            .child(
+                svg()
+                    .path("search.svg")
+                    .size(px(14. * self.settings(cx).app_zoom))
+                    .text_color(theme::muted())
+                    .group_hover("sidebar-search", |icon| icon.text_color(theme::text())),
+            );
         let brand = div()
             .flex_none()
             .px_5()
@@ -312,34 +360,11 @@ impl NativeRoot {
                     .text_color(theme::text())
                     .child("Runner"),
             )
-            .child(
-                div()
-                    .id("sidebar-search")
-                    .group("sidebar-search")
-                    .flex_none()
-                    .size(px(24. * self.settings(cx).app_zoom))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(gpui::transparent_black())
-                    .cursor_pointer()
-                    .text_color(theme::muted())
-                    .hover(|button| {
-                        button
-                            .border_color(theme::sidebar_selected_border())
-                            .bg(alpha(theme::sidebar_selected(), 0.4))
-                            .text_color(theme::text())
-                    })
-                    .child(
-                        svg()
-                            .path("search.svg")
-                            .size(px(14. * self.settings(cx).app_zoom))
-                            .text_color(theme::muted())
-                            .group_hover("sidebar-search", |icon| icon.text_color(theme::text())),
-                    ),
-            );
+            .child(Tooltip::new(
+                "sidebar-search-tooltip",
+                "Search (⌘K)",
+                search_button,
+            ));
         let settings_button = div()
             .flex_none()
             .px_3()
@@ -722,6 +747,9 @@ impl NativeRoot {
     }
 
     pub(crate) fn leave_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.shortcut_recording_active() {
+            self.finish_shortcut_recording(window, cx);
+        }
         self.save_settings(cx);
         match self.settings_return_route.clone() {
             AppRoute::Chat | AppRoute::Settings => {
@@ -754,8 +782,46 @@ impl NativeRoot {
         cx.notify();
     }
 
+    fn show_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.route == AppRoute::Settings {
+            return;
+        }
+        self.command_palette
+            .update(cx, |palette, palette_cx| palette.open(window, palette_cx));
+    }
+
+    fn open_command_palette(
+        &mut self,
+        _: &CommandPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_command_palette(window, cx);
+    }
+
     fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        if self.route == AppRoute::Settings {
+            return;
+        }
         self.enter_settings_route(None, window, cx);
+    }
+
+    fn navigate_previous_page(
+        &mut self,
+        _: &NavigatePreviousPage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.navigate_runtime_page(-1, window, cx);
+    }
+
+    fn navigate_next_page(
+        &mut self,
+        _: &NavigateNextPage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.navigate_runtime_page(1, window, cx);
     }
 
     fn zoom_in(&mut self, _: &ZoomIn, window: &mut Window, cx: &mut Context<Self>) {

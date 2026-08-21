@@ -256,6 +256,8 @@ impl NativeRoot {
 
         div()
             .relative()
+            .when(grouped, |surface| surface.key_context("ChatSplit"))
+            .track_focus(&self.chat_focus)
             .flex_1()
             .min_w(px(0.))
             .h_full()
@@ -1153,14 +1155,15 @@ impl NativeRoot {
                         });
                     })
                 };
-                div()
-                    .ml_auto()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(lifecycle)
-                    .child(self.pane_action_menu(&session_id, disabled, cx))
+                div().ml_auto().pl_2().flex_none().child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(lifecycle)
+                        .child(self.pane_action_menu(&session_id, disabled, cx)),
+                )
             });
             div()
                 .flex_none()
@@ -1168,7 +1171,6 @@ impl NativeRoot {
                 .px(rems(14. / 16.))
                 .flex()
                 .items_center()
-                .gap_2()
                 .border_b_1()
                 .border_color(theme::border())
                 .bg(theme::panel())
@@ -1177,7 +1179,6 @@ impl NativeRoot {
                         .path("terminal.svg")
                         .size(rems(13. / 16.))
                         .flex_none()
-                        .mr_1()
                         .text_color(if focused {
                             theme::accent()
                         } else {
@@ -1186,8 +1187,7 @@ impl NativeRoot {
                 )
                 .child(
                     div()
-                        .relative()
-                        .top(rems(1. / 16.))
+                        .ml_2()
                         .min_w(px(0.))
                         .truncate()
                         .text_size(rems(13. / 16.))
@@ -1199,27 +1199,30 @@ impl NativeRoot {
                         })
                         .child(label),
                 )
-                .child(chat_badge("Chat"))
-                .children(status.map(render_pane_status))
+                .child(pane_header_chat_badge("Chat"))
+                .children(status.map(render_pane_header_status))
                 .children(controls)
                 .when(entry.is_none(), |header| {
                     header.child(
-                        div()
-                            .ml_auto()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .child(
-                                IconButton::new(
-                                    SharedString::from(format!("close-pane-{close_pane_id}")),
-                                    "close.svg",
-                                )
-                                .size(IconButtonSize::Sm)
-                                .tooltip("Close pane")
-                                .on_press(move |window, cx| {
-                                    close_root.update(cx, |this, cx| {
-                                        this.close_pane(&close_pane_id, window, cx);
-                                    });
-                                }),
-                            ),
+                        div().ml_auto().pl_2().flex_none().child(
+                            div()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .child(
+                                    IconButton::new(
+                                        SharedString::from(format!("close-pane-{close_pane_id}")),
+                                        "close.svg",
+                                    )
+                                    .size(IconButtonSize::Sm)
+                                    .tooltip("Close pane")
+                                    .on_press(
+                                        move |window, cx| {
+                                            close_root.update(cx, |this, cx| {
+                                                this.close_pane(&close_pane_id, window, cx);
+                                            });
+                                        },
+                                    ),
+                                ),
+                        ),
                     )
                 })
         });
@@ -1442,9 +1445,10 @@ impl NativeRoot {
     }
 }
 
-fn chat_badge(label: impl Into<SharedString>) -> AnyElement {
+fn pane_header_chat_badge(label: impl Into<SharedString>) -> AnyElement {
     let label = label.into();
     div()
+        .ml_2()
         .flex_none()
         .rounded(rems(3. / 16.))
         .bg(theme::border_strong())
@@ -1472,7 +1476,7 @@ fn runtime_badge(label: impl Into<SharedString>) -> AnyElement {
         .into_any_element()
 }
 
-fn render_pane_status(status: DirectChatDisplayStatus) -> AnyElement {
+fn render_pane_header_status(status: DirectChatDisplayStatus) -> AnyElement {
     let (label, color) = match status {
         DirectChatDisplayStatus::Busy => ("busy", theme::accent()),
         DirectChatDisplayStatus::Idle => ("idle", theme::with_alpha(theme::accent(), 0.35)),
@@ -1480,6 +1484,7 @@ fn render_pane_status(status: DirectChatDisplayStatus) -> AnyElement {
         DirectChatDisplayStatus::Crashed => ("crashed", theme::danger()),
     };
     div()
+        .ml_2()
         .flex_none()
         .flex()
         .items_center()
