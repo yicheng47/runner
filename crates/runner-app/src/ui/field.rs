@@ -5,8 +5,8 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{
     canvas, div, point, px, rems, svg, AnyElement, App, Bounds, BoxShadow, ClipboardItem, Context,
-    CursorStyle, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
-    FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle,
+    Focusable, FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, Render, RenderOnce, ScrollHandle, SharedString, UTF16Selection,
     Window, WrappedLine,
 };
@@ -1356,21 +1356,35 @@ impl RenderOnce for Field {
 }
 
 #[derive(IntoElement)]
-pub struct WorkingDirField {
+pub struct BrowseField {
     input: Entity<TextField>,
     disabled: bool,
+    browse_id: ElementId,
+    browse_label: SharedString,
     browse_focus: Option<FocusHandle>,
     on_browse: PressHandler,
 }
 
-impl WorkingDirField {
+impl BrowseField {
     pub fn new(input: Entity<TextField>, disabled: bool, on_browse: PressHandler) -> Self {
         Self {
             input,
             disabled,
+            browse_id: "working-dir-browse".into(),
+            browse_label: "Browse…".into(),
             browse_focus: None,
             on_browse,
         }
+    }
+
+    pub fn browse_id(mut self, browse_id: impl Into<ElementId>) -> Self {
+        self.browse_id = browse_id.into();
+        self
+    }
+
+    pub fn browse_label(mut self, browse_label: impl Into<SharedString>) -> Self {
+        self.browse_label = browse_label.into();
+        self
     }
 
     pub fn browse_focus(mut self, browse_focus: FocusHandle) -> Self {
@@ -1379,7 +1393,7 @@ impl WorkingDirField {
     }
 }
 
-impl RenderOnce for WorkingDirField {
+impl RenderOnce for BrowseField {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let browse = Rc::clone(&self.on_browse);
         div()
@@ -1388,7 +1402,7 @@ impl RenderOnce for WorkingDirField {
             .gap(rems(8. / 16.))
             .child(div().flex_1().min_w(px(0.)).child(self.input))
             .child(
-                Button::new("working-dir-browse", "Browse…")
+                Button::new(self.browse_id, self.browse_label)
                     .when_some(self.browse_focus, |button, focus| {
                         button.focus_handle(focus)
                     })
@@ -1397,6 +1411,8 @@ impl RenderOnce for WorkingDirField {
             )
     }
 }
+
+pub type WorkingDirField = BrowseField;
 
 pub fn working_dir_placeholder(owner_path: Option<&str>, default_path: &str) -> String {
     owner_path

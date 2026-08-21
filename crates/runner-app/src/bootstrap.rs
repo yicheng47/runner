@@ -22,6 +22,38 @@ pub struct NativePaths {
     pub log_dir: PathBuf,
 }
 
+pub struct NativeMcpServer {
+    core: AppCore,
+    _runtime: tokio::runtime::Runtime,
+}
+
+impl NativeMcpServer {
+    pub fn start(core: &AppCore) -> Result<Self> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .thread_name("runner-mcp")
+            .enable_all()
+            .build()
+            .context("create native MCP runtime")?;
+        core.mcp
+            .start(
+                &core.app_data_dir.join("mcp.sock"),
+                core.clone(),
+                runtime.handle(),
+            )
+            .context("start native MCP listener")?;
+        Ok(Self {
+            core: core.clone(),
+            _runtime: runtime,
+        })
+    }
+}
+
+impl Drop for NativeMcpServer {
+    fn drop(&mut self) {
+        self.core.mcp.stop();
+    }
+}
+
 impl NativePaths {
     pub fn new(app_data_dir: PathBuf, log_dir: PathBuf) -> Self {
         Self {
@@ -229,6 +261,27 @@ mod tests {
         let debug = paths_for_home(Path::new("/Users/tester"), true);
         assert!(debug.app_data_dir.ends_with("com.wycstudios.runner-dev"));
         assert!(debug.log_dir.ends_with("com.wycstudios.runner-dev"));
+    }
+
+    #[test]
+    fn native_mcp_server_binds_and_removes_the_app_data_socket() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = NativePaths::new(temp.path().join("data"), temp.path().join("logs"));
+        let core = boot_core(&paths).unwrap();
+        let socket_path = paths.app_data_dir.join("mcp.sock");
+
+        let server = NativeMcpServer::start(&core).unwrap();
+        assert_eq!(
+            core.mcp.socket_path().as_deref(),
+            Some(socket_path.as_path())
+        );
+        assert!(socket_path.exists());
+        server._runtime.block_on(async {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        });
+
+        drop(server);
+        assert!(!socket_path.exists());
     }
 
     #[test]

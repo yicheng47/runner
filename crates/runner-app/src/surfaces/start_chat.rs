@@ -496,6 +496,39 @@ impl NativeRoot {
         cx.notify();
     }
 
+    pub(crate) fn sync_start_chat_default_runtime(&mut self, cx: &mut Context<Self>) {
+        let default_runtime = self.settings(cx).default_runtime.clone();
+        let Some(modal) = self.start_chat_modal.as_mut() else {
+            return;
+        };
+        let runtime_name = modal
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.name == default_runtime)
+            .or_else(|| modal.runtimes.first())
+            .map(|runtime| runtime.name.clone());
+        if modal.runtime_name == runtime_name {
+            return;
+        }
+        modal.runtime_name = runtime_name;
+        modal.effort.clear();
+        modal
+            .model
+            .update(cx, |input, input_cx| input.reset("", input_cx));
+        if modal.mode == ChatMode::Runtime {
+            let derived = modal
+                .selected_runtime()
+                .map(|runtime| default_title_for_runtime(&runtime.display_name))
+                .unwrap_or_default();
+            update_auto_title(&modal.title, derived, cx);
+        }
+        modal.runtime_select.update(cx, |select, select_cx| {
+            select.set_value(modal.runtime_name.clone().unwrap_or_default(), select_cx)
+        });
+        sync_runtime_controls(modal, cx);
+        cx.notify();
+    }
+
     pub(crate) fn remember_active_runner(&mut self, cx: &App) {
         let Some(session_id) = self.active_focused_session_id() else {
             return;

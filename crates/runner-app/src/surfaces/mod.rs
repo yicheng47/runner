@@ -11,6 +11,7 @@ pub(crate) mod mission_markdown;
 pub(crate) mod mission_workspace;
 pub(crate) mod panes;
 pub(crate) mod runners;
+pub(crate) mod settings;
 pub(crate) mod settings_page;
 pub(crate) mod sidebar;
 pub(crate) mod sidebar_logic;

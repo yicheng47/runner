@@ -181,6 +181,9 @@ pub(crate) struct SettingsState {
     terminal_font: Entity<StyledSelect>,
     terminal_cursor: Entity<StyledSelect>,
     terminal_scrollback: Entity<StyledSelect>,
+    agents: Option<Entity<settings::agents::AgentsPane>>,
+    mcp: Option<Entity<settings::mcp::McpPane>>,
+    archived: Option<Entity<settings::archived::ArchivedPane>>,
     nav_scroll: ScrollHandle,
     nav_scrollbar: Entity<Scrollbar>,
     content_scroll: ScrollHandle,
@@ -338,7 +341,6 @@ impl SettingsState {
                 this.schedule_settings_save(cx);
             }
         });
-
         Self {
             pane: SettingsPane::General,
             focus: cx.focus_handle(),
@@ -359,6 +361,9 @@ impl SettingsState {
             terminal_font,
             terminal_cursor,
             terminal_scrollback,
+            agents: None,
+            mcp: None,
+            archived: None,
             nav_scroll,
             nav_scrollbar,
             content_scroll,
@@ -535,8 +540,48 @@ impl NativeRoot {
             self.set_route(AppRoute::Settings, cx);
         }
         self.settings_page.pane = pane;
-        if pane == SettingsPane::General {
-            self.refresh_settings_crews(cx);
+        match pane {
+            SettingsPane::General => self.refresh_settings_crews(cx),
+            SettingsPane::Agents => {
+                if self.settings_page.agents.is_none() {
+                    let shell = cx.entity().downgrade();
+                    let app_store = self.app_store.clone();
+                    self.settings_page.agents = Some(cx.new(|pane_cx| {
+                        settings::agents::AgentsPane::new(shell, app_store, window, pane_cx)
+                    }));
+                }
+                if let Some(agents) = self.settings_page.agents.clone() {
+                    agents.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
+                }
+            }
+            SettingsPane::Mcp => {
+                if self.settings_page.mcp.is_none() {
+                    let app_store = self.app_store.clone();
+                    self.settings_page.mcp =
+                        Some(cx.new(|pane_cx| settings::mcp::McpPane::new(app_store, pane_cx)));
+                }
+                if let Some(mcp) = self.settings_page.mcp.clone() {
+                    mcp.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
+                }
+            }
+            SettingsPane::Archived => {
+                if self.settings_page.archived.is_none() {
+                    let shell = cx.entity().downgrade();
+                    let app_store = self.app_store.clone();
+                    self.settings_page.archived = Some(cx.new(|pane_cx| {
+                        settings::archived::ArchivedPane::new(shell, app_store, pane_cx)
+                    }));
+                }
+                if let Some(archived) = self.settings_page.archived.clone() {
+                    archived.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
+                }
+            }
+            SettingsPane::Appearance
+            | SettingsPane::Terminal
+            | SettingsPane::Shortcuts
+            | SettingsPane::Updates
+            | SettingsPane::Diagnostics
+            | SettingsPane::About => {}
         }
         window.focus(&self.settings_page.focus);
         cx.notify();
@@ -952,13 +997,39 @@ impl NativeRoot {
             SettingsPane::Appearance => Some(self.render_appearance_settings(cx)),
             SettingsPane::Terminal => Some(self.render_terminal_settings(cx)),
             SettingsPane::Shortcuts => Some(self.render_shortcuts_settings(cx)),
-            SettingsPane::Agents
-            | SettingsPane::Mcp
-            | SettingsPane::Updates
-            | SettingsPane::Diagnostics
-            | SettingsPane::About
-            | SettingsPane::Archived => None,
+            SettingsPane::Agents => self
+                .settings_page
+                .agents
+                .clone()
+                .map(IntoElement::into_any_element),
+            SettingsPane::Mcp => self
+                .settings_page
+                .mcp
+                .clone()
+                .map(IntoElement::into_any_element),
+            SettingsPane::Archived => self
+                .settings_page
+                .archived
+                .clone()
+                .map(IntoElement::into_any_element),
+            SettingsPane::Updates | SettingsPane::Diagnostics | SettingsPane::About => None,
         }
+    }
+
+    pub(crate) fn refresh_agents_pane(&self, cx: &mut Context<Self>) {
+        if let Some(agents) = self.settings_page.agents.clone() {
+            agents.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
+        }
+    }
+
+    pub(crate) fn settings_confirm_overlay(
+        &self,
+        cx: &App,
+    ) -> Option<Entity<settings::archived::ArchivedConfirmOverlay>> {
+        (self.route == AppRoute::Settings)
+            .then_some(self.settings_page.archived.as_ref())
+            .flatten()
+            .map(|archived| archived.read(cx).confirm_overlay())
     }
 
     fn render_shortcuts_settings(&self, cx: &mut Context<Self>) -> AnyElement {

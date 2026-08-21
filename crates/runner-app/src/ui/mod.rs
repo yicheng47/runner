@@ -31,8 +31,8 @@ pub use avatar::{
 pub use button::{Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize, PressHandler};
 pub use copy_value_button::CopyValueButton;
 pub use field::{
-    effective_working_dir, working_dir_placeholder, working_dir_text_field, Field, FieldError,
-    FieldValidation, Label, TextField, TextFieldKind, WorkingDirField,
+    effective_working_dir, working_dir_placeholder, working_dir_text_field, BrowseField, Field,
+    FieldError, FieldValidation, Label, TextField, TextFieldKind, WorkingDirField,
 };
 pub use list::{
     clamp_page, page_window, EmptyStateCard, PageHandler, PageWindowItem, Pager, PaginatedListPage,
@@ -40,7 +40,7 @@ pub use list::{
 };
 pub use menu::{ContextMenu, MenuAction, MenuItem, MenuKey, MenuState, PopoverMenu};
 pub use model_field::ModelField;
-pub use overlay::{ConfirmDialog, Drawer, Modal, OverlayWidth};
+pub use overlay::{ConfirmDialog, ConfirmDialogState, Drawer, Modal, OverlayWidth};
 pub use scrollbar::{Scrollbar, ScrollbarKind, ScrollbarMetrics};
 pub use select::{
     runtime_select_options, RuntimeSelect, SelectHandler, SelectOption, SelectState, StyledSelect,

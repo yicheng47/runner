@@ -15,6 +15,161 @@ use crate::surfaces::sidebar::{direct_chat_display_status, DirectChatDisplayStat
 const CHAT_PANEL_TRANSITION_MS: u64 = 200;
 
 impl NativeRoot {
+    pub(crate) fn render_archived_chat(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(detail) = self.archived_chat_detail.as_ref() else {
+            return div().into_any_element();
+        };
+        let label = session_label(detail);
+        let back_label = if detail.handle.is_some() {
+            "Back to runner"
+        } else {
+            "Back to runners"
+        };
+        let handle = detail.handle.clone();
+        let root = cx.entity();
+        let panel_root = root.clone();
+        let sidebar_toggle = self.render_open_sidebar_button(cx);
+        let sidebar_divider = self.settings(cx).sidebar_collapsed.then(|| {
+            div()
+                .mx_1()
+                .h(rems(20. / 16.))
+                .w(rems(1. / 16.))
+                .flex_none()
+                .bg(theme::border())
+        });
+        let header = div()
+            .flex_none()
+            .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
+            .pl(px(self.workspace_titlebar_padding(window, cx)))
+            .pr_2()
+            .flex()
+            .items_center()
+            .gap_2()
+            .border_b_1()
+            .border_color(theme::border())
+            .bg(theme::panel())
+            .children(sidebar_toggle)
+            .children(sidebar_divider)
+            .child(
+                svg()
+                    .path("terminal.svg")
+                    .size(rems(15. / 16.))
+                    .flex_none()
+                    .text_color(theme::accent()),
+            )
+            .child(
+                div()
+                    .min_w(px(0.))
+                    .truncate()
+                    .text_size(rems(13. / 16.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(label),
+            )
+            .child(
+                Button::new("archived-chat-back", back_label)
+                    .size(ButtonSize::Sm)
+                    .variant(ButtonVariant::Ghost)
+                    .on_press(move |window, cx| {
+                        let handle = handle.clone();
+                        root.update(cx, |this, root_cx| {
+                            this.archived_chat_detail = None;
+                            if let Some(handle) = handle {
+                                this.open_runner_detail(handle, window, root_cx);
+                            } else {
+                                this.open_runners(window, root_cx);
+                            }
+                        });
+                    }),
+            )
+            .child(div().min_w(px(0.)).flex_1())
+            .when(!self.settings(cx).chat_panel_open, |header| {
+                header.child(
+                    IconButton::new("open-archived-chat-panel", "panel-right-hollow.svg")
+                        .tooltip("Open side panel")
+                        .on_press(move |_, cx| {
+                            panel_root.update(cx, |this, cx| {
+                                this.update_app_settings(cx, true, |settings| {
+                                    settings.chat_panel_open = true;
+                                    true
+                                });
+                                cx.notify();
+                            });
+                        }),
+                )
+            });
+        let chat_column = div()
+            .flex_1()
+            .min_w(px(0.))
+            .h_full()
+            .flex()
+            .flex_col()
+            .child(self.render_titlebar_drag_area("archived-chat-titlebar-drag", header, cx))
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .max_w(rems(448. / 16.))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap_2()
+                            .rounded(rems(4. / 16.))
+                            .border_1()
+                            .border_color(theme::border())
+                            .bg(theme::raised())
+                            .px_6()
+                            .py_5()
+                            .text_center()
+                            .child(
+                                div()
+                                    .text_size(rems(13. / 16.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Session ended — terminal closed"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(12. / 16.))
+                                    .text_color(theme::muted())
+                                    .child("This chat was archived. The PTY is gone and the workspace is read-only."),
+                            ),
+                    ),
+            );
+        let panel_open = self.settings(cx).chat_panel_open;
+        let (panel_visibility, panel_animating) = self.chat_panel_visibility.animate_to(
+            if panel_open { 1. } else { 0. },
+            Instant::now(),
+            Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
+        );
+        if panel_animating {
+            window.request_animation_frame();
+        }
+        let side_panel = self.render_chat_side_panel(
+            self.archived_chat_detail.as_ref(),
+            self.archived_session_key_copy.clone(),
+            panel_visibility,
+            panel_open || panel_animating,
+            panel_open && !panel_animating,
+            cx,
+        );
+        div()
+            .track_focus(&self.chat_focus)
+            .flex_1()
+            .min_w(px(0.))
+            .h_full()
+            .flex()
+            .child(chat_column)
+            .child(side_panel)
+            .into_any_element()
+    }
+
     pub(crate) fn render_active_tab(
         &mut self,
         window: &mut Window,
@@ -30,7 +185,7 @@ impl NativeRoot {
                 .justify_center()
                 .text_color(theme::muted())
                 .child(if self.app_store.read(cx).sessions.is_empty() {
-                    "No direct chats yet — press ⌘T"
+                    "No direct chats yet — press ⌘N"
                 } else {
                     "No active tab"
                 })
@@ -248,6 +403,8 @@ impl NativeRoot {
             window.request_animation_frame();
         }
         let side_panel = self.render_chat_side_panel(
+            self.active_chat_detail.as_ref(),
+            self.session_key_copy.clone(),
             panel_visibility,
             panel_open || panel_animating,
             panel_open && !panel_animating,
@@ -471,6 +628,8 @@ impl NativeRoot {
 
     fn render_chat_side_panel(
         &self,
+        detail: Option<&DirectSessionEntry>,
+        session_key_copy: Entity<CopyValueButton>,
         visibility: f32,
         show_panel: bool,
         border_on: bool,
@@ -488,7 +647,6 @@ impl NativeRoot {
                 .overflow_hidden()
                 .into_any_element();
         }
-        let detail = self.active_chat_detail.as_ref();
         let runner = detail
             .and_then(|detail| detail.runner_id.as_deref())
             .and_then(|runner_id| {
@@ -634,7 +792,7 @@ impl NativeRoot {
                                                                 .unwrap_or_else(|| "NULL".into()),
                                                         ),
                                                 )
-                                                .child(self.session_key_copy.clone()),
+                                                .child(session_key_copy),
                                         )),
                                 ),
                         ),
