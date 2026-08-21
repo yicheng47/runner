@@ -7,6 +7,7 @@ use futures::StreamExt as _;
 use gpui::{App, AppContext as _, Context, Entity, Global};
 use runner_backend::events::AppEvent;
 use runner_backend::model::Runner;
+use runner_backend::ops::crew::CrewListItem;
 use runner_backend::ops::mission::MissionSummary;
 use runner_backend::ops::session::DirectSessionEntry;
 use runner_backend::repo::node::NodeRow;
@@ -209,6 +210,7 @@ impl From<&AppSettings> for ShellSettingsSnapshot {
         settings.default_runtime.hash(&mut hasher);
         settings.disabled_agents.hash(&mut hasher);
         settings.enabled_agents.hash(&mut hasher);
+        settings.keymap_overrides.hash(&mut hasher);
         Self(hasher.finish())
     }
 }
@@ -219,6 +221,7 @@ pub(crate) struct AppStore {
     pub(crate) waker: Arc<dyn Fn() + Send + Sync>,
     pub(crate) sessions: Vec<DirectSessionEntry>,
     pub(crate) runners: Vec<Runner>,
+    pub(crate) crews: Vec<CrewListItem>,
     pub(crate) nodes: Vec<NodeRow>,
     pub(crate) projects: Vec<ProjectRow>,
     pub(crate) missions: Vec<MissionSummary>,
@@ -297,7 +300,7 @@ impl AppStore {
                                 this.revisions.runner_surfaces.wrapping_add(1);
                         }
                         if entity_refresh.crews() {
-                            this.revisions.crews = this.revisions.crews.wrapping_add(1);
+                            this.refresh_crews_inner();
                         }
                         cx.notify();
                     })
@@ -315,6 +318,7 @@ impl AppStore {
             waker,
             sessions: Vec::new(),
             runners: Vec::new(),
+            crews: Vec::new(),
             nodes: Vec::new(),
             projects: Vec::new(),
             missions: Vec::new(),
@@ -330,6 +334,7 @@ impl AppStore {
         }
         store.refresh_sessions_inner();
         store.refresh_runners_inner();
+        store.refresh_crews_inner();
         store.refresh_nodes_inner();
         store.refresh_projects_inner();
         store.refresh_missions_blocking_inner();
@@ -488,6 +493,22 @@ impl AppStore {
             Ok(runners) => {
                 self.runners = runners;
                 self.revisions.runners = self.revisions.runners.wrapping_add(1);
+            }
+            Err(error) => self.record_error(error.to_string()),
+        }
+    }
+
+    fn refresh_crews_inner(&mut self) {
+        let result = self
+            .core
+            .db
+            .get()
+            .map_err(runner_backend::error::Error::from)
+            .and_then(|conn| runner_backend::ops::crew::list(&conn));
+        match result {
+            Ok(crews) => {
+                self.crews = crews;
+                self.revisions.crews = self.revisions.crews.wrapping_add(1);
             }
             Err(error) => self.record_error(error.to_string()),
         }

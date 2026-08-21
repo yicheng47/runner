@@ -264,6 +264,25 @@ pub enum IconButtonSize {
     Lg,
 }
 
+impl IconButtonSize {
+    pub fn button_size(self) -> f32 {
+        match self {
+            Self::Xs => 16.,
+            Self::Sm => 24.,
+            Self::Md => 28.,
+            Self::Lg => 32.,
+        }
+    }
+
+    fn icon_size(self) -> f32 {
+        match self {
+            Self::Xs => 12.,
+            Self::Sm | Self::Md => 14.,
+            Self::Lg => 16.,
+        }
+    }
+}
+
 #[derive(IntoElement)]
 pub struct IconButton {
     id: ElementId,
@@ -351,12 +370,8 @@ impl IconButton {
 
 impl RenderOnce for IconButton {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let (button_size, icon_size) = match self.size {
-            IconButtonSize::Xs => (16., 12.),
-            IconButtonSize::Sm => (24., 14.),
-            IconButtonSize::Md => (28., 14.),
-            IconButtonSize::Lg => (32., 16.),
-        };
+        let button_size = self.size.button_size();
+        let icon_size = self.size.icon_size();
         let tooltip_focus = self.focus_handle.clone();
         let mouse_focus = self.focus_handle.clone();
         let tooltip_id = (self.id.clone(), "tooltip");

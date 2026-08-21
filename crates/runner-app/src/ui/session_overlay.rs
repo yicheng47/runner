@@ -7,7 +7,7 @@ use gpui::{
 };
 
 use crate::theme;
-use crate::ui::button::{spinner, Button, ButtonSize, ButtonVariant, PressHandler};
+use crate::ui::button::{spinner, Button, ButtonVariant, PressHandler};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionOverlayKind {
@@ -22,6 +22,7 @@ pub struct SessionOverlay {
     id: SharedString,
     kind: SessionOverlayKind,
     label: Option<SharedString>,
+    title: Option<SharedString>,
     subtitle: Option<SharedString>,
     on_resume: Option<PressHandler>,
     on_archive: Option<PressHandler>,
@@ -34,6 +35,7 @@ impl SessionOverlay {
             id: id.into(),
             kind,
             label: None,
+            title: None,
             subtitle: None,
             on_resume: None,
             on_archive: None,
@@ -50,6 +52,7 @@ impl SessionOverlay {
             id: id.into(),
             kind: SessionOverlayKind::Ended,
             label: None,
+            title: None,
             subtitle: Some(subtitle.into()),
             on_resume: Some(Rc::new(on_resume)),
             on_archive: Some(Rc::new(on_archive)),
@@ -58,6 +61,11 @@ impl SessionOverlay {
 
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    pub fn title(mut self, title: impl Into<SharedString>) -> Self {
+        self.title = Some(title.into());
         self
     }
 }
@@ -150,6 +158,7 @@ impl RenderOnce for SessionOverlay {
             SessionOverlayKind::Ended => {
                 let resume = self.on_resume.expect("ended overlay resume action");
                 let archive = self.on_archive.expect("ended overlay archive action");
+                let title = self.title.unwrap_or_else(|| "Chat paused".into());
                 let resume_click = Rc::clone(&resume);
                 let archive_click = Rc::clone(&archive);
                 div()
@@ -163,6 +172,7 @@ impl RenderOnce for SessionOverlay {
                     .bg(theme::with_alpha(theme::bg(), 0.7))
                     .child(
                         div()
+                            .debug_selector(|| "SESSION_ENDED_CARD".into())
                             .w_full()
                             .max_w(rems(672. / 16.))
                             .flex()
@@ -190,11 +200,14 @@ impl RenderOnce for SessionOverlay {
                                             .text_size(rems(15. / 16.))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(theme::text())
-                                            .child("Chat paused"),
+                                            .child(title),
                                     ),
                             )
                             .child(
                                 div()
+                                    .flex()
+                                    .w_full()
+                                    .whitespace_normal()
                                     .text_size(rems(13. / 16.))
                                     .line_height(rems(18. / 16.))
                                     .text_color(theme::muted())
@@ -202,8 +215,7 @@ impl RenderOnce for SessionOverlay {
                             )
                             .child(
                                 div()
-                                    .h(rems(ButtonSize::Md.height(true) / 16.))
-                                    .flex_none()
+                                    .debug_selector(|| "SESSION_ENDED_ACTIONS".into())
                                     .flex()
                                     .items_center()
                                     .gap_2()
@@ -229,5 +241,42 @@ impl RenderOnce for SessionOverlay {
                     .into_any_element()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{px, Context, Render, TestAppContext, VisualTestContext};
+
+    struct EndedOverlayTest;
+
+    impl Render for EndedOverlayTest {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(SessionOverlay::ended(
+                "test-ended",
+                "The PTY is closed. Resume to start a fresh agent process — there's no saved conversation to pick up from this row.",
+                |_, _| {},
+                |_, _| {},
+            ))
+        }
+    }
+
+    #[test]
+    fn wrapped_ended_overlay_preserves_bottom_padding() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|window, _| {
+            window.set_rem_size(px(20.8));
+            EndedOverlayTest
+        });
+        cx.run_until_parked();
+        let mut window = VisualTestContext::from_window(window.into(), &cx);
+        let card = window
+            .debug_bounds("SESSION_ENDED_CARD")
+            .expect("card bounds");
+        let actions = window
+            .debug_bounds("SESSION_ENDED_ACTIONS")
+            .expect("actions bounds");
+        assert_eq!(card.bottom() - actions.bottom(), px(27.));
     }
 }

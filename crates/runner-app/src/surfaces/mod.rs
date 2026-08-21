@@ -3,6 +3,7 @@
 pub(crate) mod app_shell;
 pub(crate) mod chat;
 pub(crate) mod chat_lifecycle;
+pub(crate) mod command_palette;
 pub(crate) mod crews;
 pub(crate) mod mission_composer;
 pub(crate) mod mission_feed;
@@ -17,6 +18,7 @@ pub(crate) mod start_chat;
 pub(crate) mod start_mission;
 
 pub(crate) use app_shell::AppRoute;
+pub(crate) use command_palette::CommandPaletteState;
 pub(crate) use crews::CrewSurfaces;
 pub(crate) use mission_workspace::MissionWorkspace;
 pub(crate) use panes::{adjacent_pane_index, pane_fractions};

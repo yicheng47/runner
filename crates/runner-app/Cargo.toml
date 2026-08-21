@@ -31,4 +31,5 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["NSD
 raw-window-handle = "0.6"
 
 [dev-dependencies]
+gpui = { package = "gpui-ce", version = "0.3", features = ["test-support"] }
 tempfile = "3"

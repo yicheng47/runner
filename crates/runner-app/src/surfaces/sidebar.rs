@@ -504,11 +504,30 @@ impl NativeRoot {
         if !self.tabs.activate(tab_id) {
             return;
         }
-        self.set_route(AppRoute::Chat, cx);
         if let Some(layout) = self.tabs.active_mut() {
             layout.focus_session(session_id);
         }
+        self.set_route(AppRoute::Chat, cx);
         self.activate_tab(tab_id, window, cx);
+    }
+
+    pub(crate) fn open_chat_session(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let tab_id = self
+            .tabs
+            .tabs()
+            .iter()
+            .find(|layout| layout.session_ids().iter().any(|id| id == session_id))
+            .map(|layout| layout.id.clone());
+        let Some(tab_id) = tab_id else {
+            return false;
+        };
+        self.activate_sidebar_session(&tab_id, session_id, window, cx);
+        true
     }
 }
 
@@ -2457,7 +2476,7 @@ impl Sidebar {
                         if self.dragged_id.is_some() {
                             vec![self.render_empty_project_drop_area(node.id.clone(), cx)]
                         } else {
-                            vec![empty_sidebar_label("No chats or missions yet.")]
+                            vec![empty_sidebar_label("Empty")]
                         }
                     } else {
                         nested

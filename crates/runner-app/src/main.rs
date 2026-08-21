@@ -1,6 +1,7 @@
 mod app_settings;
 mod app_store;
 mod assets;
+mod keymap;
 mod list_controls;
 mod mac_chrome;
 mod surfaces;
@@ -16,10 +17,10 @@ use anyhow::{Context as _, Result};
 use futures::StreamExt as _;
 use gpui::{
     actions, div, point, prelude::*, px, relative, rems, size, AnyElement, App, Application,
-    Bounds, ClipboardEntry, Context, CursorStyle, DragMoveEvent, Entity, FocusHandle, KeyBinding,
-    KeyDownEvent, Menu, MenuItem, MouseButton, OsAction, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, SharedString, Subscription, SystemMenuType, TitlebarOptions, Window,
-    WindowBounds, WindowOptions,
+    Bounds, ClipboardEntry, Context, CursorStyle, DragMoveEvent, Entity, FocusHandle, KeyDownEvent,
+    Menu, MenuItem, MouseButton, OsAction, ScrollDelta, ScrollHandle, ScrollWheelEvent,
+    SharedString, Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds,
+    WindowOptions,
 };
 use runner_app::bootstrap::{boot_core, native_paths, stop_running_sessions_on_quit, NativePaths};
 use runner_app::pane_layout::{
@@ -28,7 +29,7 @@ use runner_app::pane_layout::{
 use runner_app::terminal_ime::TerminalInput;
 use runner_app::ui::{
     Button, ButtonSize, ContextMenu, CopyValueButton, IconButton, IconButtonSize,
-    MenuItem as UiMenuItem, PopoverMenu, Scrollbar, SessionControl, SessionControlKind,
+    MenuItem as UiMenuItem, PopoverMenu, Scrollbar, SessionControl, SessionControlKind, Tooltip,
 };
 use runner_app::{theme, Copy, Cut, Paste, SelectAll};
 use runner_backend::model::SessionStatus;
@@ -51,12 +52,17 @@ actions!(
     [
         CloseWindow,
         ClosePane,
+        CommandPalette,
         FocusNextPane,
         FocusPreviousPane,
         Hide,
         HideOthers,
         Maximize,
         Minimize,
+        MissionTabNext,
+        MissionTabPrevious,
+        NavigateNextPage,
+        NavigatePreviousPage,
         NewTab,
         OpenSettings,
         Quit,
@@ -72,8 +78,8 @@ actions!(
 mod toast;
 
 use surfaces::{
-    AppRoute, CrewSurfaces, MissionWorkspace, ProjectModal, RunnerSurfaces, SettingsState, Sidebar,
-    StartChatModal, StartMissionModalState,
+    AppRoute, CommandPaletteState, CrewSurfaces, MissionWorkspace, ProjectModal, RunnerSurfaces,
+    SettingsState, Sidebar, StartChatModal, StartMissionModalState,
 };
 
 const INITIAL_COLS: u16 = 100;
@@ -147,6 +153,14 @@ struct ChatRenameModal {
     error: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RuntimeLocation {
+    Chat(String),
+    Mission(String),
+}
+
+const RUNTIME_NAVIGATION_HISTORY_LIMIT: usize = 64;
+
 #[derive(Clone)]
 struct ChatPanelResizeDrag;
 
@@ -201,6 +215,7 @@ struct NativeRoot {
     tabs: TabSet,
     attached: HashMap<String, AttachedChat>,
     root_focus: FocusHandle,
+    chat_focus: FocusHandle,
     layout_picker_focus: FocusHandle,
     sidebar: Entity<Sidebar>,
     start_chat_modal: Option<StartChatModal>,
@@ -227,8 +242,11 @@ struct NativeRoot {
     settings_page: SettingsState,
     route: AppRoute,
     settings_return_route: AppRoute,
+    runtime_navigation_history: Vec<RuntimeLocation>,
+    runtime_navigation_index: Option<usize>,
     sidebar_visibility: SidebarVisibilityTransition,
     chat_panel_visibility: SidebarVisibilityTransition,
+    command_palette: Entity<CommandPaletteState>,
     sidebar_preview_open: bool,
     sidebar_preview_peeking: bool,
     titlebar_drag_armed: bool,
@@ -332,6 +350,7 @@ impl NativeRoot {
         };
 
         let root_focus = cx.focus_handle();
+        let chat_focus = cx.focus_handle();
         let layout_picker_focus = cx.focus_handle();
         let active_chat_detail = tabs
             .active()
@@ -397,23 +416,27 @@ impl NativeRoot {
         });
         let mission_shell = cx.entity().downgrade();
         let mission_store = app_store.clone();
-        let mission_root_focus = root_focus.clone();
         let mission_workspace = cx.new(|workspace_cx| {
-            MissionWorkspace::new(
-                mission_shell,
-                mission_store,
-                mission_root_focus,
-                window,
-                workspace_cx,
-            )
+            MissionWorkspace::new(mission_shell, mission_store, window, workspace_cx)
+        });
+        let palette_shell = cx.entity().downgrade();
+        let palette_store = app_store.clone();
+        let command_palette = cx.new(move |palette_cx| {
+            CommandPaletteState::new(palette_shell, palette_store, palette_cx)
         });
         let settings_page = SettingsState::new(cx.entity(), &settings, cx);
+        let runtime_navigation_history = active_chat_detail
+            .as_ref()
+            .map(|session| vec![RuntimeLocation::Chat(session.session_id.clone())])
+            .unwrap_or_default();
+        let runtime_navigation_index = (!runtime_navigation_history.is_empty()).then_some(0);
         let mut root = Self {
             app_store: app_store.clone(),
             store_revisions,
             tabs,
             attached: HashMap::new(),
             root_focus,
+            chat_focus,
             layout_picker_focus,
             sidebar,
             start_chat_modal: None,
@@ -440,8 +463,11 @@ impl NativeRoot {
             settings_page,
             route: AppRoute::Chat,
             settings_return_route: AppRoute::Chat,
+            runtime_navigation_history,
+            runtime_navigation_index,
             sidebar_visibility,
             chat_panel_visibility,
+            command_palette,
             sidebar_preview_open: false,
             sidebar_preview_peeking: false,
             titlebar_drag_armed: false,
@@ -623,6 +649,8 @@ fn run() -> Result<()> {
                     cx,
                 )
             });
+            let keymap_overrides = app_store.read(cx).settings.keymap_overrides.clone();
+            keymap::install_bindings(cx, &keymap_overrides, false);
             cx.set_global(GlobalAppStore(app_store));
 
             let quit_core = core.clone();
@@ -666,24 +694,6 @@ fn run() -> Result<()> {
                 }
             })
             .detach();
-            cx.bind_keys([
-                KeyBinding::new("cmd-q", Quit, None),
-                KeyBinding::new("cmd-h", Hide, None),
-                KeyBinding::new("cmd-alt-h", HideOthers, None),
-                KeyBinding::new("cmd-m", Minimize, None),
-                KeyBinding::new("cmd-w", ClosePane, None),
-                KeyBinding::new("cmd-[", FocusPreviousPane, None),
-                KeyBinding::new("cmd-]", FocusNextPane, None),
-                KeyBinding::new("cmd-t", NewTab, None),
-                KeyBinding::new("cmd-s", ToggleSidebar, None),
-                KeyBinding::new("cmd-,", OpenSettings, None),
-                KeyBinding::new("cmd-=", ZoomIn, None),
-                KeyBinding::new("cmd-shift-=", ZoomIn, None),
-                KeyBinding::new("cmd--", ZoomOut, None),
-                KeyBinding::new("cmd-0", ZoomReset, None),
-                KeyBinding::new("ctrl-cmd-f", ToggleFullscreen, None),
-                KeyBinding::new("cmd-v", Paste, Some("Terminal")),
-            ]);
             cx.set_menus(vec![
                 Menu {
                     name: "Runner".into(),

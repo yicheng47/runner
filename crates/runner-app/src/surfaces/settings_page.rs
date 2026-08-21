@@ -7,8 +7,9 @@ use gpui::{
     KeyDownEvent, PathPromptOptions, ScrollHandle, SharedString, Subscription, Window,
 };
 use runner_app::ui::{
-    working_dir_text_field, PaneHeader, Scrollbar, SelectHandler, SelectOption, SettingsCard,
-    SettingsRow, StepHandler, Stepper, StyledSelect, TextField, Toggle, WorkingDirField,
+    working_dir_text_field, Button, ButtonSize, IconButton, IconButtonSize, PaneHeader, Scrollbar,
+    SelectHandler, SelectOption, SettingsCard, SettingsRow, StepHandler, Stepper, StyledSelect,
+    TextField, Toggle, WorkingDirField,
 };
 
 use super::*;
@@ -162,8 +163,14 @@ enum SettingsSelection {
 
 pub(crate) struct SettingsState {
     pane: SettingsPane,
+    focus: FocusHandle,
     search_query: String,
     search: Entity<TextField>,
+    shortcut_query: String,
+    shortcut_search: Entity<TextField>,
+    shortcut_recording: Option<&'static str>,
+    shortcut_conflict: Option<ShortcutConflict>,
+    shortcut_recording_focus: FocusHandle,
     default_crew: Entity<StyledSelect>,
     default_working_dir: Entity<TextField>,
     working_dir_browse_focus: FocusHandle,
@@ -190,6 +197,12 @@ impl SettingsState {
     ) -> Self {
         let search = cx.new(|input_cx| {
             let mut input = TextField::new(input_cx.focus_handle(), "", "Search settings…", false)
+                .text_size(13.);
+            input.set_bare(true, input_cx);
+            input
+        });
+        let shortcut_search = cx.new(|input_cx| {
+            let mut input = TextField::new(input_cx.focus_handle(), "", "Search shortcuts", false)
                 .text_size(13.);
             input.set_bare(true, input_cx);
             input
@@ -308,6 +321,13 @@ impl SettingsState {
                 cx.notify();
             }
         });
+        let shortcut_search_subscription = cx.observe(&shortcut_search, |this, input, cx| {
+            let query = input.read(cx).text().to_owned();
+            if this.settings_page.shortcut_query != query {
+                this.settings_page.shortcut_query = query;
+                cx.notify();
+            }
+        });
         let working_dir_subscription = cx.observe(&default_working_dir, |this, input, cx| {
             let value = input.read(cx).text().trim().to_owned();
             if this.settings(cx).default_working_dir != value {
@@ -321,8 +341,14 @@ impl SettingsState {
 
         Self {
             pane: SettingsPane::General,
+            focus: cx.focus_handle(),
             search_query: String::new(),
             search,
+            shortcut_query: String::new(),
+            shortcut_search,
+            shortcut_recording: None,
+            shortcut_conflict: None,
+            shortcut_recording_focus: cx.focus_handle(),
             default_crew,
             default_working_dir,
             working_dir_browse_focus: cx.focus_handle(),
@@ -338,9 +364,18 @@ impl SettingsState {
             content_scroll,
             content_scrollbar,
             save_generation: 0,
-            _subscriptions: vec![search_subscription, working_dir_subscription],
+            _subscriptions: vec![
+                search_subscription,
+                shortcut_search_subscription,
+                working_dir_subscription,
+            ],
         }
     }
+}
+
+struct ShortcutConflict {
+    id: &'static str,
+    message: String,
 }
 
 fn settings_select(
@@ -371,6 +406,10 @@ fn settings_select(
 }
 
 impl NativeRoot {
+    pub(crate) fn shortcut_recording_active(&self) -> bool {
+        self.settings_page.shortcut_recording.is_some()
+    }
+
     fn refresh_settings_crews(&self, cx: &mut Context<Self>) {
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
@@ -472,6 +511,18 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if pane != SettingsPane::Shortcuts && self.settings_page.shortcut_recording.is_some() {
+            self.finish_shortcut_recording(window, cx);
+        }
+        if self.route != AppRoute::Settings
+            || (self.settings_page.pane == SettingsPane::Shortcuts)
+                != (pane == SettingsPane::Shortcuts)
+        {
+            self.settings_page.shortcut_query.clear();
+            self.settings_page
+                .shortcut_search
+                .update(cx, |input, input_cx| input.reset("", input_cx));
+        }
         if self.route != AppRoute::Settings {
             self.settings_return_route = self.route.clone();
             self.settings_page.search_query.clear();
@@ -487,7 +538,7 @@ impl NativeRoot {
         if pane == SettingsPane::General {
             self.refresh_settings_crews(cx);
         }
-        window.focus(&self.root_focus);
+        window.focus(&self.settings_page.focus);
         cx.notify();
     }
 
@@ -624,6 +675,8 @@ impl NativeRoot {
 
         div()
             .absolute()
+            .key_context("Settings")
+            .track_focus(&self.settings_page.focus)
             .inset_0()
             .flex()
             .overflow_hidden()
@@ -898,14 +951,397 @@ impl NativeRoot {
             SettingsPane::General => Some(self.render_general_settings(cx)),
             SettingsPane::Appearance => Some(self.render_appearance_settings(cx)),
             SettingsPane::Terminal => Some(self.render_terminal_settings(cx)),
-            SettingsPane::Shortcuts
-            | SettingsPane::Agents
+            SettingsPane::Shortcuts => Some(self.render_shortcuts_settings(cx)),
+            SettingsPane::Agents
             | SettingsPane::Mcp
             | SettingsPane::Updates
             | SettingsPane::Diagnostics
             | SettingsPane::About
             | SettingsPane::Archived => None,
         }
+    }
+
+    fn render_shortcuts_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        let overrides = self.settings(cx).keymap_overrides.clone();
+        let query = self.settings_page.shortcut_query.trim().to_lowercase();
+        let rows = keymap::entries()
+            .iter()
+            .filter(|entry| {
+                if query.is_empty() {
+                    return true;
+                }
+                let binding = keymap::effective_binding(entry.id, &overrides)
+                    .map(|combo| keymap::format_combo(&combo))
+                    .unwrap_or_else(|| "unassigned".into());
+                entry.title.to_lowercase().contains(&query)
+                    || entry.description.to_lowercase().contains(&query)
+                    || binding.to_lowercase().contains(&query)
+            })
+            .map(|entry| self.render_shortcut_row(entry, cx))
+            .collect::<Vec<_>>();
+        let has_overrides = !overrides.is_empty();
+        let reset_root = cx.entity();
+        let reset = Button::new("reset-keymap", "Reset all to defaults")
+            .icon("rotate-ccw.svg")
+            .size(ButtonSize::Sm)
+            .disabled(!has_overrides)
+            .on_press(move |window, cx| {
+                reset_root.update(cx, |this, root_cx| {
+                    this.reset_shortcut_overrides(window, root_cx)
+                });
+            });
+        let content = if rows.is_empty() {
+            div()
+                .text_size(rems(12. / 16.))
+                .text_color(theme::faint())
+                .child(format!(
+                    "No shortcuts match “{}”.",
+                    self.settings_page.shortcut_query.trim()
+                ))
+                .into_any_element()
+        } else {
+            SettingsCard::new(rows).into_any_element()
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_5()
+            .child(
+                PaneHeader::new(
+                    "Keyboard shortcuts",
+                    "Shortcuts must include ⌘, Control, or Option. Function keys can be used alone.",
+                )
+                .action(reset),
+            )
+            .child(
+                div()
+                    .h(rems(36. / 16.))
+                    .w(rems(280. / 16.))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded(rems(6. / 16.))
+                    .border_1()
+                    .border_color(theme::border())
+                    .bg(theme::panel())
+                    .px(rems(10. / 16.))
+                    .child(
+                        svg()
+                            .path("search.svg")
+                            .size(rems(14. / 16.))
+                            .flex_none()
+                            .text_color(theme::faint()),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .flex_1()
+                            .child(self.settings_page.shortcut_search.clone()),
+                    ),
+            )
+            .child(content)
+            .into_any_element()
+    }
+
+    fn render_shortcut_row(
+        &self,
+        entry: &'static keymap::KeymapEntry,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let binding = keymap::effective_binding(entry.id, &self.settings(cx).keymap_overrides);
+        let overridden = self.settings(cx).keymap_overrides.contains_key(entry.id);
+        let recording = self.settings_page.shortcut_recording == Some(entry.id);
+        let conflict = self
+            .settings_page
+            .shortcut_conflict
+            .as_ref()
+            .filter(|conflict| conflict.id == entry.id)
+            .map(|conflict| conflict.message.clone());
+        let label = div()
+            .min_w(px(0.))
+            .flex_1()
+            .flex()
+            .flex_col()
+            .gap(rems(2. / 16.))
+            .child(
+                div()
+                    .text_size(rems(13. / 16.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::text())
+                    .child(entry.title),
+            )
+            .child(
+                div()
+                    .text_size(rems(11. / 16.))
+                    .text_color(theme::muted())
+                    .child(entry.description),
+            )
+            .children(conflict.map(|message| {
+                div()
+                    .text_size(rems(11. / 16.))
+                    .text_color(theme::danger())
+                    .child(message)
+            }));
+
+        if recording {
+            let key_root = cx.entity();
+            let outside_root = key_root.clone();
+            return div()
+                .min_h(rems(58. / 16.))
+                .px_4()
+                .py_3()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(label)
+                .child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "shortcut-recorder-{}",
+                            entry.id
+                        )))
+                        .track_focus(&self.settings_page.shortcut_recording_focus)
+                        .h_8()
+                        .min_w(px(0.))
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(rems(6. / 16.))
+                        .border_1()
+                        .border_color(theme::border_strong())
+                        .bg(theme::bg())
+                        .text_size(rems(12. / 16.))
+                        .text_color(theme::muted())
+                        .child("Press keys…")
+                        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                            key_root.update(cx, |this, root_cx| {
+                                this.record_shortcut_key(entry.id, event, window, root_cx)
+                            });
+                        })
+                        .on_mouse_down_out(move |_, window, cx| {
+                            outside_root.update(cx, |this, root_cx| {
+                                this.finish_shortcut_recording(window, root_cx)
+                            });
+                        }),
+                )
+                .child(div().w_6().flex_none())
+                .into_any_element();
+        }
+
+        let binding_label = binding
+            .as_ref()
+            .map(keymap::format_combo)
+            .unwrap_or_else(|| "Unassigned".into());
+        let controls = if entry.fixed {
+            div()
+                .min_w(px(0.))
+                .flex_1()
+                .flex()
+                .items_center()
+                .child(shortcut_chip(binding_label, false))
+                .into_any_element()
+        } else {
+            let chip_root = cx.entity();
+            let edit_root = chip_root.clone();
+            let restore_root = chip_root.clone();
+            let mut controls = div()
+                .min_w(px(0.))
+                .flex_1()
+                .flex()
+                .items_center()
+                .gap(rems(6. / 16.))
+                .child(
+                    shortcut_chip(binding_label, true)
+                        .id(SharedString::from(format!("binding-shortcut-{}", entry.id)))
+                        .on_click(move |_, window, cx| {
+                            chip_root.update(cx, |this, root_cx| {
+                                this.start_shortcut_recording(entry.id, window, root_cx)
+                            });
+                        }),
+                )
+                .child(
+                    IconButton::new(format!("edit-shortcut-{}", entry.id), "pencil.svg")
+                        .size(IconButtonSize::Sm)
+                        .tooltip("Edit shortcut")
+                        .on_press(move |window, cx| {
+                            edit_root.update(cx, |this, root_cx| {
+                                this.start_shortcut_recording(entry.id, window, root_cx)
+                            });
+                        }),
+                );
+            if overridden {
+                controls = controls.child(
+                    IconButton::new(format!("restore-shortcut-{}", entry.id), "rotate-ccw.svg")
+                        .size(IconButtonSize::Sm)
+                        .tooltip("Restore default")
+                        .on_press(move |window, cx| {
+                            restore_root.update(cx, |this, root_cx| {
+                                this.restore_shortcut_default(entry.id, window, root_cx)
+                            });
+                        }),
+                );
+            }
+            controls.into_any_element()
+        };
+        let unbind = if entry.fixed {
+            div().w_6().flex_none().into_any_element()
+        } else {
+            let root = cx.entity();
+            IconButton::new(format!("unbind-shortcut-{}", entry.id), "trash.svg")
+                .size(IconButtonSize::Sm)
+                .tooltip("Unbind shortcut")
+                .on_press(move |window, cx| {
+                    root.update(cx, |this, root_cx| {
+                        this.set_shortcut_override(entry.id, None, window, root_cx)
+                    });
+                })
+                .into_any_element()
+        };
+
+        div()
+            .min_h(rems(58. / 16.))
+            .px_4()
+            .py_3()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(label)
+            .child(controls)
+            .child(unbind)
+            .into_any_element()
+    }
+
+    fn rebuild_key_bindings(&self, suspended: bool, cx: &mut Context<Self>) {
+        let overrides = self.settings(cx).keymap_overrides.clone();
+        keymap::install_bindings(cx, &overrides, suspended);
+    }
+
+    fn start_shortcut_recording(
+        &mut self,
+        id: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if keymap::entry(id).is_none_or(|entry| entry.fixed) {
+            return;
+        }
+        self.settings_page.shortcut_recording = Some(id);
+        self.settings_page.shortcut_conflict = None;
+        self.rebuild_key_bindings(true, cx);
+        self.settings_page.shortcut_recording_focus.focus(window);
+        cx.notify();
+    }
+
+    pub(crate) fn finish_shortcut_recording(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings_page.shortcut_recording.take().is_none() {
+            return;
+        }
+        self.settings_page.shortcut_conflict = None;
+        self.rebuild_key_bindings(false, cx);
+        self.settings_page.focus.focus(window);
+        cx.notify();
+    }
+
+    fn record_shortcut_key(
+        &mut self,
+        id: &'static str,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.stop_propagation();
+        if event.keystroke.key == "escape" {
+            self.finish_shortcut_recording(window, cx);
+            return;
+        }
+        let Some(combo) = keymap::combo_from_keystroke(&event.keystroke) else {
+            return;
+        };
+        if let Some(conflict) =
+            keymap::find_conflict(&combo, id, &self.settings(cx).keymap_overrides)
+        {
+            self.settings_page.shortcut_conflict = Some(ShortcutConflict {
+                id,
+                message: format!("Already used by {}", conflict.title),
+            });
+            cx.notify();
+            return;
+        }
+        self.set_shortcut_override(id, Some(combo), window, cx);
+    }
+
+    fn set_shortcut_override(
+        &mut self,
+        id: &'static str,
+        value: Option<keymap::KeyCombo>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if keymap::entry(id).is_none_or(|entry| entry.fixed) {
+            return;
+        }
+        self.update_app_settings(cx, true, |settings| {
+            if settings.keymap_overrides.get(id) == Some(&value) {
+                return false;
+            }
+            settings.keymap_overrides.insert(id.into(), value);
+            true
+        });
+        self.settings_page.shortcut_recording = None;
+        self.settings_page.shortcut_conflict = None;
+        self.rebuild_key_bindings(false, cx);
+        self.settings_page.focus.focus(window);
+        cx.notify();
+    }
+
+    fn restore_shortcut_default(
+        &mut self,
+        id: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut overrides = self.settings(cx).keymap_overrides.clone();
+        match keymap::clear_override(id, &mut overrides) {
+            Err(conflict) => {
+                self.settings_page.shortcut_conflict = Some(ShortcutConflict {
+                    id,
+                    message: format!("Already used by {}", conflict.title),
+                });
+                cx.notify();
+            }
+            Ok(false) => {}
+            Ok(true) => {
+                self.update_app_settings(cx, true, |settings| {
+                    settings.keymap_overrides = overrides;
+                    true
+                });
+                self.settings_page.shortcut_conflict = None;
+                self.rebuild_key_bindings(false, cx);
+                self.settings_page.focus.focus(window);
+                cx.notify();
+            }
+        }
+    }
+
+    fn reset_shortcut_overrides(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings(cx).keymap_overrides.is_empty() {
+            return;
+        }
+        self.update_app_settings(cx, true, |settings| {
+            settings.keymap_overrides.clear();
+            true
+        });
+        self.settings_page.shortcut_recording = None;
+        self.settings_page.shortcut_conflict = None;
+        self.rebuild_key_bindings(false, cx);
+        self.settings_page.focus.focus(window);
+        cx.notify();
     }
 
     fn render_general_settings(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1192,6 +1628,27 @@ impl NativeRoot {
             ]))
             .into_any_element()
     }
+}
+
+fn shortcut_chip(label: String, editable: bool) -> gpui::Div {
+    div()
+        .px_2()
+        .py_1()
+        .rounded(rems(4. / 16.))
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::raised())
+        .font_family("Menlo")
+        .text_size(rems(11. / 16.))
+        .line_height(rems(14. / 16.))
+        .text_color(theme::muted())
+        .when(editable, |chip| {
+            chip.cursor_pointer().hover(|chip| {
+                chip.border_color(theme::border_strong())
+                    .text_color(theme::text())
+            })
+        })
+        .child(label)
 }
 
 fn update_if_changed<T: PartialEq>(target: &mut T, value: T) -> bool {
