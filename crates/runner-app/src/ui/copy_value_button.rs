@@ -12,6 +12,8 @@ use crate::ui::tooltip::Tooltip;
 pub struct CopyValueButton {
     value: Option<String>,
     label: SharedString,
+    labeled: bool,
+    show_when_empty: bool,
     copied: bool,
     generation: u64,
     focus_handle: FocusHandle,
@@ -26,10 +28,22 @@ impl CopyValueButton {
         Self {
             value: value.filter(|value| !value.is_empty()),
             label: label.into(),
+            labeled: false,
+            show_when_empty: false,
             copied: false,
             generation: 0,
             focus_handle,
         }
+    }
+
+    pub fn labeled(mut self) -> Self {
+        self.labeled = true;
+        self
+    }
+
+    pub fn show_when_empty(mut self) -> Self {
+        self.show_when_empty = true;
+        self
     }
 
     pub fn set_value(&mut self, value: Option<String>, cx: &mut Context<Self>) {
@@ -82,10 +96,12 @@ impl Focusable for CopyValueButton {
 
 impl Render for CopyValueButton {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(_) = self.value else {
+        let available = self.value.is_some();
+        if !available && !self.show_when_empty {
             return div().into_any_element();
-        };
+        }
         let copied = self.copied;
+        let labeled = self.labeled;
         let focused = self.focus_handle.is_focused(window);
         let entity = cx.entity();
         let button = div()
@@ -93,18 +109,44 @@ impl Render for CopyValueButton {
             .group("copy-value-button")
             .track_focus(&self.focus_handle)
             .tab_index(0)
+            .tab_stop(available || labeled)
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
-            .size(rems(20. / 16.))
-            .rounded(rems(4. / 16.))
-            .text_color(theme::faint())
-            .cursor(CursorStyle::PointingHand)
-            .hover(|button| {
+            .gap(rems(6. / 16.))
+            .when(!labeled, |button| button.size(rems(20. / 16.)))
+            .when(labeled, |button| {
                 button
-                    .bg(theme::with_alpha(theme::border(), 0.6))
-                    .text_color(theme::text())
+                    .h(rems(26. / 16.))
+                    .rounded(rems(6. / 16.))
+                    .border_1()
+                    .border_color(theme::border())
+                    .bg(theme::raised())
+                    .px(rems(10. / 16.))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_size(rems(12. / 16.))
+                    .text_color(theme::muted())
+            })
+            .when(!labeled, |button| {
+                button.rounded(rems(4. / 16.)).text_color(theme::faint())
+            })
+            .cursor(if available || labeled {
+                CursorStyle::PointingHand
+            } else {
+                CursorStyle::OperationNotAllowed
+            })
+            .opacity(if !available && !labeled { 0.4 } else { 1. })
+            .hover(|button| {
+                if labeled {
+                    button
+                        .border_color(theme::border_strong())
+                        .text_color(theme::text())
+                } else {
+                    button
+                        .bg(theme::with_alpha(theme::border(), 0.6))
+                        .text_color(theme::text())
+                }
             })
             .focus_visible(|button| {
                 button
@@ -127,7 +169,14 @@ impl Render for CopyValueButton {
                         theme::faint()
                     })
                     .group_hover("copy-value-button", |icon| icon.text_color(theme::text())),
-            );
+            )
+            .children(labeled.then(|| {
+                if copied {
+                    "Copied".into()
+                } else {
+                    self.label.clone()
+                }
+            }));
         Tooltip::new(
             SharedString::from(format!("copy-value-tooltip-{}", self.label)),
             if copied {

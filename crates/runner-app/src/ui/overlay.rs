@@ -352,6 +352,50 @@ pub struct ConfirmDialog {
     on_cancel: PressHandler,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ConfirmDialogState {
+    #[default]
+    Closed,
+    Open,
+    Submitting,
+}
+
+impl ConfirmDialogState {
+    pub fn open(&mut self) {
+        if *self == Self::Closed {
+            *self = Self::Open;
+        }
+    }
+
+    pub fn cancel(&mut self) {
+        if *self == Self::Open {
+            *self = Self::Closed;
+        }
+    }
+
+    pub fn submit(&mut self) -> bool {
+        if *self != Self::Open {
+            return false;
+        }
+        *self = Self::Submitting;
+        true
+    }
+
+    pub fn finish(&mut self) {
+        if *self == Self::Submitting {
+            *self = Self::Closed;
+        }
+    }
+
+    pub fn is_open(self) -> bool {
+        self != Self::Closed
+    }
+
+    pub fn is_submitting(self) -> bool {
+        self == Self::Submitting
+    }
+}
+
 impl ConfirmDialog {
     pub fn new(
         title: impl Into<SharedString>,
@@ -546,6 +590,24 @@ fn confirm_action_button(
             });
     }
     button.into_any_element()
+}
+
+#[cfg(test)]
+mod confirm_tests {
+    use super::ConfirmDialogState;
+
+    #[test]
+    fn submitting_confirmation_ignores_cancel_and_duplicate_submit() {
+        let mut state = ConfirmDialogState::Closed;
+        state.open();
+        assert_eq!(state, ConfirmDialogState::Open);
+        assert!(state.submit());
+        assert!(!state.submit());
+        state.cancel();
+        assert_eq!(state, ConfirmDialogState::Submitting);
+        state.finish();
+        assert_eq!(state, ConfirmDialogState::Closed);
+    }
 }
 
 fn focus_target_index(len: usize, current: Option<usize>, backwards: bool) -> usize {

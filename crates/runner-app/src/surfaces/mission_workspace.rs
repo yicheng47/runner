@@ -768,6 +768,9 @@ impl NativeRoot {
         let route_changed = self.route != route;
         let leaving_mission =
             matches!(self.route, AppRoute::Mission(_)) && !matches!(route, AppRoute::Mission(_));
+        if !matches!(route, AppRoute::ArchivedChat | AppRoute::Settings) {
+            self.archived_chat_detail = None;
+        }
         self.route = route;
         self.record_current_runtime_location();
         if route_changed {

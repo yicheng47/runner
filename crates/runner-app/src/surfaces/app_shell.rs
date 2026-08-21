@@ -22,6 +22,7 @@ pub(crate) enum AppRoute {
     Crews,
     CrewEditor(String),
     Mission(String),
+    ArchivedChat,
     Settings,
 }
 
@@ -127,6 +128,9 @@ impl NativeRoot {
             .children(entity_overlays);
         let settings =
             (self.route == AppRoute::Settings).then(|| self.render_settings_takeover(window, cx));
+        let settings_confirm = self
+            .settings_confirm_overlay(cx)
+            .map(|overlay| deferred(overlay).with_priority(100));
         let command_palette = deferred(self.command_palette.clone()).with_priority(50);
         let toast = self
             .render_toast(cx)
@@ -143,6 +147,7 @@ impl NativeRoot {
             .text_color(theme::text())
             .child(chrome)
             .children(settings)
+            .children(settings_confirm)
             .child(command_palette)
             .children(toast)
             .on_drag_move::<SidebarResizeDrag>(cx.listener(
@@ -763,6 +768,11 @@ impl NativeRoot {
             AppRoute::Crews => self.open_crews(window, cx),
             AppRoute::CrewEditor(crew_id) => self.open_crew_editor(crew_id, window, cx),
             AppRoute::Mission(mission_id) => self.open_mission(mission_id, window, cx),
+            AppRoute::ArchivedChat => {
+                self.set_route(AppRoute::ArchivedChat, cx);
+                self.chat_focus.focus(window);
+                cx.notify();
+            }
         }
     }
 

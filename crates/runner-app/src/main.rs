@@ -22,7 +22,9 @@ use gpui::{
     SharedString, Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds,
     WindowOptions,
 };
-use runner_app::bootstrap::{boot_core, native_paths, stop_running_sessions_on_quit, NativePaths};
+use runner_app::bootstrap::{
+    boot_core, native_paths, stop_running_sessions_on_quit, NativeMcpServer, NativePaths,
+};
 use runner_app::pane_layout::{
     PaneLayout, PaneLeaf, PaneNode, PresetKind, SplitOrientation, TabSet,
 };
@@ -230,7 +232,9 @@ struct NativeRoot {
     chat_error: Option<String>,
     chat_warning: Option<String>,
     active_chat_detail: Option<DirectSessionEntry>,
+    archived_chat_detail: Option<DirectSessionEntry>,
     session_key_copy: Entity<CopyValueButton>,
+    archived_session_key_copy: Entity<CopyValueButton>,
     chat_action_menu: Entity<PopoverMenu>,
     chat_menu_actions: Vec<ChatMenuAction>,
     pane_action_menus: HashMap<String, Entity<PopoverMenu>>,
@@ -331,6 +335,7 @@ impl NativeRoot {
                     .update(cx, |this, cx| {
                         this.refresh_start_chat_runtimes(cx);
                         this.refresh_runner_form_runtimes(cx);
+                        this.refresh_agents_pane(cx);
                     })
                     .is_err()
                 {
@@ -370,6 +375,8 @@ impl NativeRoot {
                 "Copy session_key",
             )
         });
+        let archived_session_key_copy = cx
+            .new(|copy_cx| CopyValueButton::new(copy_cx.focus_handle(), None, "Copy session_key"));
         let chat_root = cx.entity();
         let chat_action_menu = cx.new(move |menu_cx| {
             let action_root = chat_root.clone();
@@ -451,7 +458,9 @@ impl NativeRoot {
             chat_error: None,
             chat_warning: None,
             active_chat_detail,
+            archived_chat_detail: None,
             session_key_copy,
+            archived_session_key_copy,
             chat_action_menu,
             chat_menu_actions: Vec::new(),
             pane_action_menus: HashMap::new(),
@@ -611,6 +620,13 @@ fn install_app_icon() {
 fn run() -> Result<()> {
     let paths = native_paths()?;
     let core = boot_core(&paths)?;
+    let mcp_server = match NativeMcpServer::start(&core) {
+        Ok(server) => Some(server),
+        Err(error) => {
+            eprintln!("Runner MCP listener failed to start: {error:#}");
+            None
+        }
+    };
     print_startup_paths(&paths);
     let shutdown_core = core.clone();
     let ui_settings_path = settings_path(&paths.app_data_dir);
@@ -735,8 +751,9 @@ fn run() -> Result<()> {
             cx.activate(true);
         });
 
-    stop_running_sessions_on_quit(&shutdown_core)?;
-    Ok(())
+    let shutdown_result = stop_running_sessions_on_quit(&shutdown_core);
+    drop(mcp_server);
+    shutdown_result
 }
 
 fn open_runner_window(cx: &mut App) -> Result<()> {
@@ -811,6 +828,7 @@ mod native_root_tests {
             AppRoute::Crews,
             AppRoute::CrewEditor("crew".into()),
             AppRoute::Mission("mission".into()),
+            AppRoute::ArchivedChat,
             AppRoute::Settings,
         ] {
             assert!(!route.terminal_visible());

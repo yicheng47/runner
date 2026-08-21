@@ -5,6 +5,25 @@ use super::*;
 use crate::*;
 
 impl NativeRoot {
+    pub(crate) fn open_archived_chat(
+        &mut self,
+        chat: DirectSessionEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.dismiss_sidebar_transients(cx);
+        self.core(cx).windows.set_subjects("main", Vec::new());
+        self.core(cx).windows.mark_blurred("main");
+        self.core(cx).broadcast_focus_map();
+        let session_key = chat.agent_session_key.clone();
+        self.archived_chat_detail = Some(chat);
+        self.archived_session_key_copy
+            .update(cx, |copy, copy_cx| copy.set_value(session_key, copy_cx));
+        self.set_route(AppRoute::ArchivedChat, cx);
+        self.chat_focus.focus(window);
+        cx.notify();
+    }
+
     pub(crate) fn handle_chat_lifecycle_event(
         &mut self,
         event: runner_backend::events::AppEvent,

@@ -1739,6 +1739,7 @@ impl NativeRoot {
             AppRoute::RunnerDetail(_) => self.render_runner_detail(cx),
             AppRoute::Crews | AppRoute::CrewEditor(_) => self.render_crew_surface(window, cx),
             AppRoute::Mission(_) => self.mission_workspace.clone().into_any_element(),
+            AppRoute::ArchivedChat => self.render_archived_chat(window, cx),
             AppRoute::Settings => self.render_active_tab(window, cx),
         }
     }

@@ -87,7 +87,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "New window",
                 description: "Open another Runner window.",
                 scope: KeymapScope::Global,
-                default: key_combo("KeyN", true, false, false, false, None, false),
+                default: key_combo("KeyN", true, false, false, true, None, false),
                 fixed: true,
             },
             KeymapEntry {
@@ -95,7 +95,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 title: "New chat",
                 description: "Start a chat in a new tab.",
                 scope: KeymapScope::Global,
-                default: key_combo("KeyT", true, false, false, false, None, false),
+                default: key_combo("KeyN", true, false, false, false, None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -747,7 +747,7 @@ mod tests {
         assert_eq!(entries().len(), 15);
         assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 1);
         assert!(entry("new-window").unwrap().fixed);
-        assert_eq!(format_combo(&entry("new-window").unwrap().default), "⌘N");
+        assert_eq!(format_combo(&entry("new-window").unwrap().default), "⇧⌘N");
         assert_eq!(
             format_combo(&entry("page-previous").unwrap().default),
             "⇧⌘["
@@ -771,7 +771,7 @@ mod tests {
         overrides.insert("new-window".into(), Some(combo_for("KeyP", false)));
         assert_eq!(
             effective_binding("new-window", &overrides),
-            Some(combo_for("KeyN", false))
+            Some(combo_for("KeyN", true))
         );
     }
 
@@ -899,8 +899,8 @@ mod tests {
         type ExpectedBinding<'a> = (&'a str, &'a str, bool);
         type ExpectedEntry<'a> = (&'a str, &'a [ExpectedBinding<'a>]);
         let expected: [ExpectedEntry<'_>; 15] = [
-            ("new-window", &[("cmd-n", "n", false)]),
-            ("new-chat", &[("cmd-t", "t", false)]),
+            ("new-window", &[("shift-cmd-n", "n", true)]),
+            ("new-chat", &[("cmd-n", "n", false)]),
             ("command-palette", &[("cmd-k", "k", false)]),
             ("toggle-sidebar", &[("cmd-s", "s", false)]),
             ("open-settings", &[("cmd-,", ",", false)]),

@@ -144,7 +144,6 @@ enum SidebarMenuAction {
     RemoveMissionFromProject(String),
     ArchiveTab(Vec<String>),
     ArchiveMission(String),
-    OpenMissionWindow,
     DeleteProject(String),
 }
 
@@ -951,10 +950,6 @@ impl Sidebar {
                     original: summary.mission.title.clone(),
                 }),
             ),
-            (
-                UiMenuItem::new("Open in New Window").icon("app-window.svg"),
-                SidebarMenuAction::OpenMissionWindow,
-            ),
         ];
         if summary.mission.project_id.is_some() {
             entries.push((
@@ -1042,7 +1037,6 @@ impl Sidebar {
                     });
                 }
             }
-            SidebarMenuAction::OpenMissionWindow => {}
             SidebarMenuAction::TogglePin { node_id, pinned } => {
                 match runner_backend::ops::node::node_set_pinned(self.core(cx), node_id, !pinned) {
                     Ok(_) => self.refresh_store(StoreRefreshKind::All, cx),
