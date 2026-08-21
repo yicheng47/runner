@@ -39,8 +39,7 @@ struct RecordingInjector {
     activity: Mutex<HashMap<String, super::RunnerStatus>>,
     pushes: Mutex<Vec<(String, InjectKind, Vec<u8>)>>,
     blocked_events: Mutex<Vec<DeliveryBlockedEvent>>,
-    /// Optional `dead_session` set — `inject` errors when called with one
-    /// of these ids, simulating a crashed PTY for `mission_warning` tests.
+    /// Optional `dead_session` set simulating a stopped or crashed PTY.
     dead: Mutex<Vec<String>>,
     input: Mutex<HashMap<String, RecordingInputState>>,
     listeners: Mutex<HashMap<String, Vec<Weak<dyn SessionDeliveryListener>>>>,
@@ -283,9 +282,7 @@ impl StdinInjector for RecordingInjector {
             .iter()
             .any(|dead| dead == session_id)
         {
-            return Err(crate::error::Error::msg(format!(
-                "test: session {session_id} is dead"
-            )));
+            return Ok(DeliveryReservation::Unavailable);
         }
         let mut input = self.input.lock().unwrap();
         let input = input.entry(session_id.to_string()).or_default();
@@ -2045,36 +2042,84 @@ fn fresh_mission_start_does_not_call_reconstruct() {
 }
 
 #[test]
-fn dead_session_for_handler_target_emits_mission_warning() {
-    // The pending-ask map persists past a session crash by design — better
-    // to surface the missed wake-up than to silently drop it. The router
-    // attempts the inject, fails, and writes a mission_warning.
+fn stopped_session_delivery_waits_for_respawn() {
     let (router, injector, log, _dir) =
         fixture(vec![slot_with_runner("lead", true)], &[("lead", "S-LEAD")]);
+    let ask = log
+        .append(signal(
+            "lead",
+            "ask_human",
+            serde_json::json!({
+                "prompt": "Continue?",
+                "choices": ["Resume", "Cancel mission"],
+            }),
+        ))
+        .unwrap();
+    router.handle_event(&ask);
+    let card_id = read_signals(&log)
+        .into_iter()
+        .find(|event| {
+            event
+                .signal_type
+                .as_ref()
+                .is_some_and(|signal| signal.as_str() == "human_question")
+        })
+        .expect("router must append human_question")
+        .id;
+
     injector.mark_dead("S-LEAD");
     let ev = log
         .append(signal(
             "human",
-            "human_said",
-            serde_json::json!({ "text": "hi" }),
+            "human_response",
+            serde_json::json!({
+                "question_id": card_id,
+                "choice": "Cancel mission",
+            }),
         ))
         .unwrap();
     router.handle_event(&ev);
 
-    let warnings: Vec<_> = read_signals(&log)
+    assert!(injector.pushes_for("S-LEAD").is_empty());
+    let warnings = read_signals(&log)
         .into_iter()
-        .filter(|s| {
-            s.signal_type
+        .filter(|event| {
+            event
+                .signal_type
                 .as_ref()
-                .map(|t| t.as_str() == "mission_warning")
-                .unwrap_or(false)
+                .is_some_and(|signal| signal.as_str() == "mission_warning")
         })
-        .collect();
+        .collect::<Vec<_>>();
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].payload["message"]
         .as_str()
         .unwrap()
-        .contains("human_said injection"));
+        .contains("queued until the session resumes"));
+
+    router
+        .inject_and_submit("lead", b"second deferred delivery")
+        .unwrap();
+    assert_eq!(
+        read_signals(&log)
+            .into_iter()
+            .filter(|event| {
+                event
+                    .signal_type
+                    .as_ref()
+                    .is_some_and(|signal| signal.as_str() == "mission_warning")
+            })
+            .count(),
+        1,
+        "only the first queued delivery should add a feed warning"
+    );
+
+    injector.respawn("S-LEAD");
+    wait_until(Duration::from_millis(100), || {
+        injector
+            .submitted_bodies_for("S-LEAD")
+            .iter()
+            .any(|body| body.contains("[human_response] Cancel mission"))
+    });
 }
 
 #[test]

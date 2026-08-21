@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
@@ -15,13 +15,11 @@ use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor};
 use anyhow::{Context as _, Result};
-use base64::engine::general_purpose::STANDARD as B64;
-use base64::Engine as _;
 use regex::Regex;
-use runner_backend::events::AppEvent;
-use runner_backend::session::manager::OutputEvent;
+use runner_backend::session::manager::{
+    ExitEvent, OutputEvent, SessionEvents, SessionSpawnedEvent, SessionUpdatedEvent,
+};
 use runner_backend::AppCore;
-use tokio::sync::broadcast::error::RecvError;
 
 use crate::palette;
 
@@ -84,7 +82,6 @@ pub fn query_color_for<T>(
 #[derive(Default)]
 struct SequenceState {
     last: u64,
-    synthetic_prefix_seen: bool,
     tui_ready_seq: u64,
     last_output_at: Option<Instant>,
 }
@@ -108,14 +105,24 @@ pub struct TerminalSession {
     pub term: Arc<FairMutex<Term<EventProxy>>>,
     core: AppCore,
     session_id: String,
-    feed_gate: Mutex<()>,
     parser: Mutex<Processor>,
     sequence: Mutex<SequenceState>,
     size: Arc<Mutex<(u16, u16)>>,
     title: Arc<Mutex<String>>,
     palette: Arc<Mutex<PaletteState>>,
     waker: Arc<dyn Fn() + Send + Sync>,
+    viewers: Arc<AtomicUsize>,
     user_input: UserInput,
+}
+
+pub struct TerminalView {
+    viewers: Arc<AtomicUsize>,
+}
+
+impl Drop for TerminalView {
+    fn drop(&mut self) {
+        self.viewers.fetch_sub(1, Ordering::Release);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -205,17 +212,18 @@ impl TerminalSession {
         let size = Arc::new(Mutex::new((cols, rows)));
         let title = Arc::new(Mutex::new(String::new()));
         let terminal_palette = Arc::new(Mutex::new(PaletteState::new(palette::RUNNER)));
+        let viewers = Arc::new(AtomicUsize::new(0));
         let session = Arc::new(Self {
             term: Arc::clone(&term),
             core: core.clone(),
             session_id: session_id.clone(),
-            feed_gate: Mutex::new(()),
             parser: Mutex::new(Processor::new()),
             sequence: Mutex::new(SequenceState::default()),
             size: Arc::clone(&size),
             title: Arc::clone(&title),
             palette: Arc::clone(&terminal_palette),
             waker,
+            viewers,
             user_input,
         });
 
@@ -279,6 +287,13 @@ impl TerminalSession {
         &self.session_id
     }
 
+    pub fn view(&self) -> TerminalView {
+        self.viewers.fetch_add(1, Ordering::AcqRel);
+        TerminalView {
+            viewers: Arc::clone(&self.viewers),
+        }
+    }
+
     pub fn title(&self) -> String {
         self.title.lock().unwrap().clone()
     }
@@ -319,55 +334,20 @@ impl TerminalSession {
     }
 
     pub fn feed_output(&self, event: &OutputEvent) -> Result<()> {
-        self.feed_encoded(event.seq, &event.data)
-    }
-
-    pub fn feed_snapshot(&self, events: &[OutputEvent]) -> Result<()> {
-        let _feed = self.feed_gate.lock().unwrap();
-        self.feed_snapshot_locked(events)
-    }
-
-    #[cfg(test)]
-    fn feed_snapshot_with_hook(&self, events: &[OutputEvent], hook: impl FnOnce()) -> Result<()> {
-        let _feed = self.feed_gate.lock().unwrap();
-        hook();
-        self.feed_snapshot_locked(events)
-    }
-
-    fn feed_snapshot_locked(&self, events: &[OutputEvent]) -> Result<()> {
-        for event in events {
-            self.feed_encoded_locked(event.seq, &event.data)?;
-        }
-        Ok(())
-    }
-
-    fn feed_encoded(&self, seq: u64, data: &str) -> Result<()> {
-        let _feed = self.feed_gate.lock().unwrap();
-        self.feed_encoded_locked(seq, data)
-    }
-
-    fn feed_encoded_locked(&self, seq: u64, data: &str) -> Result<()> {
-        let bytes = B64.decode(data).context("decode session output")?;
+        let bytes = &event.bytes;
         let mut sequence = self.sequence.lock().unwrap();
-        if seq == 0 {
-            if sequence.synthetic_prefix_seen {
-                return Ok(());
-            }
-            sequence.synthetic_prefix_seen = true;
-        } else {
-            if seq <= sequence.last {
-                return Ok(());
-            }
-            sequence.last = seq;
+        if event.seq <= sequence.last {
+            return Ok(());
         }
+        sequence.last = event.seq;
         sequence.last_output_at = Some(Instant::now());
-        if chunk_indicates_tui_ready(&bytes) {
-            sequence.tui_ready_seq = sequence.tui_ready_seq.max(seq);
+        if chunk_indicates_tui_ready(bytes) {
+            sequence.tui_ready_seq = sequence.tui_ready_seq.max(event.seq);
         }
         let mut parser = self.parser.lock().unwrap();
         let mut term = self.term.lock();
         let previous_mode = *term.mode();
-        parser.advance(&mut *term, &bytes);
+        parser.advance(&mut *term, bytes);
         let mode = *term.mode();
         if !previous_mode.intersects(TermMode::MOUSE_MODE) && mode.intersects(TermMode::MOUSE_MODE)
         {
@@ -376,7 +356,9 @@ impl TerminalSession {
         drop(term);
         drop(parser);
         drop(sequence);
-        (self.waker)();
+        if self.viewers.load(Ordering::Acquire) > 0 {
+            (self.waker)();
+        }
         Ok(())
     }
 
@@ -711,113 +693,125 @@ fn chunk_indicates_tui_ready(bytes: &[u8]) -> bool {
 
 pub struct TerminalBridge {
     core: AppCore,
-    attached: Mutex<HashMap<String, Weak<TerminalSession>>>,
-    refresh_sessions: AtomicBool,
+    sessions: Mutex<HashMap<String, Arc<TerminalSession>>>,
     waker: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl TerminalBridge {
     pub fn new(core: AppCore, waker: Arc<dyn Fn() + Send + Sync>) -> Result<Arc<Self>> {
-        let mut receiver = core.events.subscribe();
         let bridge = Arc::new(Self {
             core,
-            attached: Mutex::new(HashMap::new()),
-            refresh_sessions: AtomicBool::new(false),
+            sessions: Mutex::new(HashMap::new()),
             waker,
         });
-        let weak: Weak<Self> = Arc::downgrade(&bridge);
-        thread::Builder::new()
-            .name("native-app-events".into())
-            .spawn(move || loop {
-                match receiver.blocking_recv() {
-                    Ok(event) => {
-                        let Some(bridge) = weak.upgrade() else {
-                            break;
-                        };
-                        bridge.handle_event(event);
-                    }
-                    Err(RecvError::Lagged(_)) => {
-                        let Some(bridge) = weak.upgrade() else {
-                            break;
-                        };
-                        bridge.resync_attached();
-                        bridge.refresh_sessions.store(true, Ordering::Release);
-                        (bridge.waker)();
-                    }
-                    Err(RecvError::Closed) => break,
-                }
-            })
-            .context("spawn app event thread")?;
+        let observer: Arc<dyn SessionEvents> = bridge.clone();
+        bridge
+            .core
+            .session_event_observer
+            .install(Arc::downgrade(&observer));
         Ok(bridge)
     }
 
-    pub fn attach(&self, session: Arc<TerminalSession>) -> Result<()> {
-        let session_id = session.session_id().to_owned();
-        let _feed = session.feed_gate.lock().unwrap();
-        self.attached
+    pub fn session(&self, session_id: &str) -> Option<Arc<TerminalSession>> {
+        self.sessions.lock().unwrap().get(session_id).cloned()
+    }
+
+    pub fn live_session_count(&self) -> usize {
+        self.sessions.lock().unwrap().len()
+    }
+
+    fn new_session(
+        &self,
+        session_id: &str,
+        mission_id: Option<&str>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Arc<TerminalSession>> {
+        TerminalSession::attach_with_input_mode(
+            self.core.clone(),
+            session_id.to_owned(),
+            cols,
+            rows,
+            Arc::clone(&self.waker),
+            if mission_id.is_some() {
+                UserInputMode::Queued
+            } else {
+                UserInputMode::Inline
+            },
+        )
+    }
+
+    fn replace_session(&self, event: &SessionSpawnedEvent) -> Result<()> {
+        let session = self.new_session(
+            &event.session_id,
+            event.mission_id.as_deref(),
+            event.cols,
+            event.rows,
+        )?;
+        self.sessions
             .lock()
             .unwrap()
-            .insert(session_id.clone(), Arc::downgrade(&session));
-        let snapshot =
-            runner_backend::ops::session::session_output_snapshot(&self.core, &session_id)
-                .context("load terminal output snapshot")?;
-        session.feed_snapshot_locked(&snapshot)?;
+            .insert(event.session_id.clone(), session);
         Ok(())
     }
 
-    pub fn take_session_refresh(&self) -> bool {
-        self.refresh_sessions.swap(false, Ordering::AcqRel)
+    fn remove_session(&self, session_id: &str) {
+        self.sessions.lock().unwrap().remove(session_id);
+        (self.waker)();
     }
+}
 
-    fn handle_event(&self, event: AppEvent) {
-        match event.name {
-            "session/output" => {
-                let Some(session_id) = event.payload.get("session_id").and_then(|v| v.as_str())
-                else {
-                    return;
-                };
-                let Some(seq) = event.payload.get("seq").and_then(|v| v.as_u64()) else {
-                    return;
-                };
-                let Some(data) = event.payload.get("data").and_then(|v| v.as_str()) else {
-                    return;
-                };
-                let session = self
-                    .attached
-                    .lock()
-                    .unwrap()
-                    .get(session_id)
-                    .and_then(Weak::upgrade);
-                if let Some(session) = session {
-                    let _ = session.feed_encoded(seq, data);
+impl SessionEvents for TerminalBridge {
+    fn output(&self, event: &OutputEvent) {
+        let session = self.session(&event.session_id).or_else(|| {
+            let (cols, rows) =
+                runner_backend::ops::session::session_last_size(&self.core, &event.session_id)
+                    .ok()
+                    .flatten()
+                    .unwrap_or((80, 24));
+            match self.new_session(&event.session_id, event.mission_id.as_deref(), cols, rows) {
+                Ok(session) => {
+                    self.sessions
+                        .lock()
+                        .unwrap()
+                        .insert(event.session_id.clone(), Arc::clone(&session));
+                    Some(session)
+                }
+                Err(error) => {
+                    log::error!(
+                        "create terminal for session {} output failed: {error}",
+                        event.session_id
+                    );
+                    None
                 }
             }
-            "session/exit" | "session/updated" | "session/archived" => {
-                self.refresh_sessions.store(true, Ordering::Release);
-                (self.waker)();
+        });
+        if let Some(session) = session {
+            if let Err(error) = session.feed_output(event) {
+                log::error!(
+                    "feed terminal for session {} failed: {error}",
+                    event.session_id
+                );
             }
-            _ => {}
         }
     }
 
-    fn resync_attached(&self) {
-        let sessions = {
-            let mut attached = self.attached.lock().unwrap();
-            attached.retain(|_, session| session.strong_count() > 0);
-            attached
-                .values()
-                .filter_map(Weak::upgrade)
-                .collect::<Vec<_>>()
-        };
-        for session in sessions {
-            let _feed = session.feed_gate.lock().unwrap();
-            if let Ok(snapshot) = runner_backend::ops::session::session_output_snapshot(
-                &self.core,
-                session.session_id(),
-            ) {
-                let _ = session.feed_snapshot_locked(&snapshot);
-            }
+    fn spawned(&self, event: &SessionSpawnedEvent) {
+        if let Err(error) = self.replace_session(event) {
+            log::error!(
+                "replace terminal for spawned session {} failed: {error}",
+                event.session_id
+            );
         }
+        (self.waker)();
+    }
+
+    fn exit(&self, event: &ExitEvent) {
+        self.remove_session(&event.session_id);
+    }
+
+    fn archived(&self, event: &SessionUpdatedEvent) {
+        self.remove_session(&event.session_id);
     }
 }
 
@@ -827,18 +821,15 @@ mod tests {
     use alacritty_terminal::index::{Column, Line, Point, Side};
     use alacritty_terminal::selection::SelectionType;
     use alacritty_terminal::term::cell::Flags;
-    use alacritty_terminal::term::TermMode;
     use alacritty_terminal::vte::ansi::CursorShape;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Barrier};
-    use std::thread;
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
 
-    use base64::engine::general_purpose::STANDARD as B64;
-    use base64::Engine as _;
-    use runner_backend::session::manager::OutputEvent;
+    use runner_backend::session::manager::{
+        ExitEvent, OutputEvent, SessionEvents, SessionSpawnedEvent, SessionUpdatedEvent,
+    };
 
-    use super::{TerminalSession, UserInputMode};
+    use super::{TerminalBridge, TerminalSession, UserInputMode};
     use crate::replay::visible_lines;
     use runner_backend::AppCore;
 
@@ -875,6 +866,7 @@ mod tests {
             mcp: Arc::new(runner_backend::mcp::McpHandle::new()),
             windows,
             events: runner_backend::events::EventChannel::new(),
+            session_event_observer: Default::default(),
             app_version: "0.0.0-test".into(),
         }
     }
@@ -884,7 +876,7 @@ mod tests {
             session_id: "replay-race".into(),
             mission_id: None,
             seq,
-            data: B64.encode(text),
+            bytes: text.as_bytes().to_vec(),
         }
     }
 
@@ -976,86 +968,143 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_batch_blocks_newer_live_output_until_replay_finishes() {
+    fn registry_creates_on_first_output_and_survives_view_drop() {
         let temp = tempfile::tempdir().unwrap();
         let core = test_core(temp.path());
-        let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
-        let terminal = TerminalSession::attach(core, "replay-race".into(), 80, 24, waker).unwrap();
-        let gate_held = Arc::new(Barrier::new(2));
-        let live_returned = Arc::new(AtomicBool::new(false));
+        let events = core.session_events();
+        let mut broadcast = core.events.subscribe();
+        let bridge = TerminalBridge::new(core, Arc::new(|| {})).unwrap();
+        assert_eq!(bridge.live_session_count(), 0);
 
-        let live_terminal = Arc::clone(&terminal);
-        let live_barrier = Arc::clone(&gate_held);
-        let live_done = Arc::clone(&live_returned);
-        let live = thread::spawn(move || {
-            live_barrier.wait();
-            live_terminal
-                .feed_output(&output(2, "live-marker"))
-                .unwrap();
-            live_done.store(true, Ordering::Release);
-        });
-        let replay_terminal = Arc::clone(&terminal);
-        let replay_barrier = Arc::clone(&gate_held);
-        let replay_live_returned = Arc::clone(&live_returned);
-        let replay = thread::spawn(move || {
-            replay_terminal
-                .feed_snapshot_with_hook(&[output(1, "snapshot-marker")], || {
-                    replay_barrier.wait();
-                    thread::sleep(Duration::from_millis(30));
-                    assert!(!replay_live_returned.load(Ordering::Acquire));
-                })
-                .unwrap();
-        });
-        replay.join().unwrap();
-        live.join().unwrap();
+        events.output(&output(1, "first-marker"));
+        assert!(broadcast.try_recv().is_err());
+        let view = bridge.session("replay-race").unwrap();
+        assert_eq!(bridge.live_session_count(), 1);
+        drop(view);
 
+        events.output(&output(2, "second-marker"));
+        let reopened = bridge.session("replay-race").unwrap();
         let rendered = {
-            let term = terminal.term.lock();
+            let term = reopened.term.lock();
             visible_lines(&*term).join("\n")
         };
-        assert!(rendered.contains("snapshot-markerlive-marker"));
+        assert!(rendered.contains("first-markersecond-marker"));
     }
 
     #[test]
-    fn native_terminal_applies_resume_seam_and_reset_bytes() {
+    fn hidden_terminal_output_does_not_wake_the_ui() {
         let temp = tempfile::tempdir().unwrap();
         let core = test_core(temp.path());
-        let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
-        let terminal = TerminalSession::attach(core, "replay-race".into(), 80, 24, waker).unwrap();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let wake_count = Arc::clone(&wakes);
+        let terminal = TerminalSession::attach(
+            core,
+            "replay-race".into(),
+            80,
+            24,
+            Arc::new(move || {
+                wake_count.fetch_add(1, Ordering::Relaxed);
+            }),
+        )
+        .unwrap();
 
-        terminal
-            .feed_output(&output(
-                1,
-                "history-marker\x1b[?2004h\x1b[?1000h\x1b[?1006h",
-            ))
-            .unwrap();
-        {
-            let term = terminal.term.lock();
-            assert!(term.mode().contains(TermMode::BRACKETED_PASTE));
-            assert!(term.mode().intersects(TermMode::MOUSE_MODE));
-            assert!(term.mode().contains(TermMode::SGR_MOUSE));
+        terminal.feed_output(&output(1, "hidden")).unwrap();
+        assert_eq!(wakes.load(Ordering::Relaxed), 0);
+
+        let view = terminal.view();
+        terminal.feed_output(&output(2, "visible")).unwrap();
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
+
+        drop(view);
+        terminal.feed_output(&output(3, "hidden-again")).unwrap();
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn registry_removes_exit_and_archive_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let events = core.session_events();
+        let bridge = TerminalBridge::new(core, Arc::new(|| {})).unwrap();
+        events.output(&output(1, "exit-marker"));
+        let exited = Arc::downgrade(&bridge.session("replay-race").unwrap());
+        events.exit(&ExitEvent {
+            session_id: "replay-race".into(),
+            mission_id: None,
+            exit_code: Some(0),
+            success: true,
+        });
+        assert!(bridge.session("replay-race").is_none());
+        assert!(exited.upgrade().is_none());
+
+        events.output(&output(2, "archive-marker"));
+        let archived = Arc::downgrade(&bridge.session("replay-race").unwrap());
+        events.archived(&SessionUpdatedEvent {
+            session_id: "replay-race".into(),
+            mission_id: None,
+        });
+        assert_eq!(bridge.live_session_count(), 0);
+        assert!(archived.upgrade().is_none());
+    }
+
+    #[test]
+    fn registry_replaces_terminal_on_respawn_and_keeps_ready_sequence() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let events = core.session_events();
+        let bridge = TerminalBridge::new(core, Arc::new(|| {})).unwrap();
+        events.spawned(&SessionSpawnedEvent {
+            session_id: "replay-race".into(),
+            mission_id: None,
+            cols: 80,
+            rows: 24,
+        });
+        events.output(&output(1, "old-child"));
+        let old = bridge.session("replay-race").unwrap();
+
+        events.spawned(&SessionSpawnedEvent {
+            session_id: "replay-race".into(),
+            mission_id: None,
+            cols: 100,
+            rows: 30,
+        });
+        let fresh = bridge.session("replay-race").unwrap();
+        assert!(!Arc::ptr_eq(&old, &fresh));
+        assert_eq!(fresh.size(), (100, 30));
+        events.output(&output(2, "\x1b[?2004hnew-child"));
+
+        let activity = fresh.output_activity();
+        assert_eq!(activity.last_seq, 2);
+        assert_eq!(activity.tui_ready_seq, 2);
+        let rendered = visible_lines(&*fresh.term.lock()).join("\n");
+        assert!(rendered.contains("new-child"));
+        assert!(!rendered.contains("old-child"));
+    }
+
+    #[test]
+    fn registry_has_zero_live_terminals_after_twenty_spawn_exit_cycles() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let events = core.session_events();
+        let bridge = TerminalBridge::new(core, Arc::new(|| {})).unwrap();
+
+        for seq in 1..=20 {
+            events.spawned(&SessionSpawnedEvent {
+                session_id: "replay-race".into(),
+                mission_id: None,
+                cols: 80,
+                rows: 24,
+            });
+            events.output(&output(seq, "cycle"));
+            assert_eq!(bridge.live_session_count(), 1);
+            events.exit(&ExitEvent {
+                session_id: "replay-race".into(),
+                mission_id: None,
+                exit_code: Some(0),
+                success: true,
+            });
+            assert_eq!(bridge.live_session_count(), 0);
         }
-
-        terminal
-            .feed_output(&output(
-                2,
-                "\x1b[0m\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\r\n",
-            ))
-            .unwrap();
-        {
-            let term = terminal.term.lock();
-            assert!(visible_lines(&*term).join("\n").contains("history-marker"));
-            assert!(!term.mode().contains(TermMode::BRACKETED_PASTE));
-            assert!(!term.mode().intersects(TermMode::MOUSE_MODE));
-            assert!(!term.mode().contains(TermMode::SGR_MOUSE));
-        }
-
-        terminal.feed_output(&output(3, "\x1bc")).unwrap();
-        let term = terminal.term.lock();
-        assert!(!visible_lines(&*term).join("\n").contains("history-marker"));
-        assert!(!term.mode().contains(TermMode::BRACKETED_PASTE));
-        assert!(!term.mode().intersects(TermMode::MOUSE_MODE));
-        assert!(!term.mode().contains(TermMode::SGR_MOUSE));
     }
 
     #[test]

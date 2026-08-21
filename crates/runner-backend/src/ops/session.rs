@@ -6,9 +6,8 @@
 //   - inject bytes into a live session's stdin
 //   - kill a live session
 //
-// `session/output` and `session/exit` events flow from the PTY reader threads
-// onto the app event channel; the frontend subscribes without going
-// through a command.
+// PTY output flows synchronously to the native terminal registry; lifecycle
+// events continue over the app event channel.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -21,7 +20,8 @@ use crate::{
     ops::{project, runner},
     repo,
     session::manager::{
-        runtime_direct_runner, OutputEvent, SessionActivityState, SessionEvents, SpawnedSession,
+        runtime_direct_runner, SessionActivityState, SessionEvents, SessionUpdatedEvent,
+        SpawnedSession,
     },
     AppCore,
 };
@@ -89,21 +89,6 @@ pub fn session_activity_snapshot(state: &AppCore) -> BTreeMap<String, SessionAct
 
 pub fn session_resize(state: &AppCore, session_id: &str, cols: u16, rows: u16) -> Result<()> {
     state.sessions.resize(session_id, cols, rows, &state.db)
-}
-
-pub fn session_output_snapshot(state: &AppCore, session_id: &str) -> Result<Vec<OutputEvent>> {
-    Ok(state.sessions.output_snapshot(session_id))
-}
-
-/// The seq the output ring had reached when the session's most
-/// recent resume started (0 for sessions that never resumed). A
-/// dedicated read command rather than a field on the snapshot or the
-/// resume RPC: the snapshot's return shape is consumed as a bare
-/// array by terminal replay, and a resume can be triggered from
-/// another window (impl 0018), so the pill effects can't rely on the
-/// resume response reaching them.
-pub fn session_replay_watermark(state: &AppCore, session_id: &str) -> Result<u64> {
-    Ok(state.sessions.replay_watermark(session_id))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -386,7 +371,7 @@ pub fn session_get(state: &AppCore, session_id: &str) -> Result<Option<DirectSes
 
 /// The PTY geometry the manager last recorded for the session: the fork
 /// size, then every applied or persisted resize. Terminals attach and
-/// replay retained output at this size rather than at a layout estimate,
+/// create its terminal grid at this size rather than at a layout estimate,
 /// so the replay reflows the way the agent painted it.
 pub fn session_last_size(state: &AppCore, session_id: &str) -> Result<Option<(u16, u16)>> {
     let conn = state.db.get()?;
@@ -419,15 +404,11 @@ pub fn session_archive(state: &AppCore, session_id: &str) -> Result<()> {
     }
     repo::node::remove_session(&tx, session_id)?;
     tx.commit()?;
-    // Drop the in-memory output buffer for this row. Forget intentionally
-    // keeps the buffer alive across PTY exits so the chat can be reopened
-    // and replayed; archive is the explicit "I'm done with this chat"
-    // signal, so we let the buffer go.
-    state.sessions.purge_session_buffers(session_id);
-    state.events.emit(
-        "session/archived",
-        &serde_json::json!({ "session_id": session_id }),
-    );
+    state.sessions.forget_session_state(session_id);
+    state.session_events().archived(&SessionUpdatedEvent {
+        session_id: session_id.to_owned(),
+        mission_id: None,
+    });
     Ok(())
 }
 

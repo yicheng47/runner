@@ -581,6 +581,7 @@ mod tests {
             mcp: Arc::new(McpHandle::new()),
             windows: Arc::new(WindowRegistry::new()),
             events: EventChannel::new(),
+            session_event_observer: Default::default(),
             app_version: "0.0.0-test".into(),
         }
     }

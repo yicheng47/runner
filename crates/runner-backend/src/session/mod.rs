@@ -2,7 +2,7 @@
 // via the `SessionRuntime` trait. v1 implementation:
 //   * `pty_runtime::PtyRuntime` (in-process, docs/impls/archive/0011)
 //
-// The `manager` submodule owns DB persistence, output buffering, and the
+// The `manager` submodule owns DB persistence, output delivery, and the
 // kill / resume state machine; it delegates every PTY-side operation to
 // the runtime. The tmux-backed runtime that powered earlier versions
 // has been retired — see docs/impls/archive/0011-pty-host-terminal-runtime.md

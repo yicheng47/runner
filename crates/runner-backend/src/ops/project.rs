@@ -1,6 +1,7 @@
 use crate::error::{Error, Result};
 use crate::repo;
 use crate::repo::project::ProjectRow;
+use crate::session::manager::{SessionEvents, SessionUpdatedEvent};
 use crate::AppCore;
 
 fn clean_value(value: String, label: &str) -> Result<String> {
@@ -133,7 +134,7 @@ pub(crate) async fn project_delete_impl(state: &AppCore, id: &str) -> Result<Vec
         archived
     };
     for session_id in &archived_ids {
-        state.sessions.purge_session_buffers(session_id);
+        state.sessions.forget_session_state(session_id);
     }
     Ok(archived_ids)
 }
@@ -151,10 +152,10 @@ pub async fn project_delete(state: &AppCore, id: String) -> Result<()> {
         .emit("chat/layout-changed", &serde_json::json!({}));
     let archived_ids = result?;
     for session_id in &archived_ids {
-        state.events.emit(
-            "session/archived",
-            &serde_json::json!({ "session_id": session_id }),
-        );
+        state.session_events().archived(&SessionUpdatedEvent {
+            session_id: session_id.clone(),
+            mission_id: None,
+        });
     }
     Ok(())
 }

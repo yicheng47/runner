@@ -53,19 +53,6 @@ impl NativeRoot {
     ) -> AnyElement {
         self.sync_theme(window, cx);
         window.set_rem_size(px(16. * self.settings(cx).app_zoom));
-        if self.route == AppRoute::Chat {
-            let needs_attach = self.tabs.active().is_some_and(|layout| {
-                layout.session_ids().iter().any(|session_id| {
-                    !self.chat_secondaries.contains_key(session_id)
-                        && !self.attached.contains_key(session_id)
-                })
-            });
-            if needs_attach {
-                if let Err(error) = self.ensure_owned_active_tab_attached(window, cx) {
-                    self.error = Some(error.to_string());
-                }
-            }
-        }
         if let Some(error) = self.error.take() {
             self.show_toast(error, ToastTone::Error, cx);
         }

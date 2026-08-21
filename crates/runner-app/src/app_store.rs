@@ -56,9 +56,9 @@ impl StoreRefreshKind {
             {
                 Some(Self::Missions)
             }
-            "session/exit" | "session/archived" | "session/updated" | "runner/activity"
-            | "runner/changed" | "crew/changed" | "slot/changed" | "mission/changed"
-            | "project/changed" => Some(Self::All),
+            "session/exit" | "session/spawned" | "session/archived" | "session/updated"
+            | "runner/activity" | "runner/changed" | "crew/changed" | "slot/changed"
+            | "mission/changed" | "project/changed" => Some(Self::All),
             _ => None,
         }
     }
@@ -212,7 +212,6 @@ impl From<&AppSettings> for ShellSettingsSnapshot {
 pub(crate) struct AppStore {
     pub(crate) core: AppCore,
     pub(crate) bridge: Arc<TerminalBridge>,
-    pub(crate) waker: Arc<dyn Fn() + Send + Sync>,
     pub(crate) sessions: Vec<DirectSessionEntry>,
     pub(crate) runners: Vec<Runner>,
     pub(crate) crews: Vec<CrewListItem>,
@@ -247,9 +246,6 @@ impl AppStore {
                 while wake_rx.try_recv().is_ok() {}
                 if weak
                     .update(cx, |this, cx| {
-                        if this.bridge.take_session_refresh() {
-                            this.refresh_sessions_inner();
-                        }
                         this.revisions.terminal_wake = this.revisions.terminal_wake.wrapping_add(1);
                         cx.notify();
                     })
@@ -309,7 +305,6 @@ impl AppStore {
         let mut store = Self {
             core,
             bridge,
-            waker,
             sessions: Vec::new(),
             runners: Vec::new(),
             crews: Vec::new(),

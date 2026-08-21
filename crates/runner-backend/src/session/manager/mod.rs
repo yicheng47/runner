@@ -8,7 +8,7 @@
 //   - A `RuntimeSession` that the manager hands back to the runtime
 //     for every operation.
 //   - A forwarder thread that drains the runtime's `OutputStream` into
-//     `session/output` Tauri events. When the channel closes, the
+//     the process-local terminal sink. When the channel closes, the
 //     thread queries the runtime for final exit code, emits
 //     `session/exit`, and updates the DB row.
 //
@@ -16,7 +16,7 @@
 // Startup cleanup demotes stale running DB rows to stopped; user-facing
 // resume respawns a fresh PTY with the same session row id.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
@@ -24,7 +24,6 @@ use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::{DateTime, Utc};
 use rusqlite::params;
 use serde::Serialize;
@@ -47,7 +46,6 @@ mod spawn;
 #[cfg(test)]
 mod tests;
 
-const MAX_OUTPUT_BUFFER_CHUNKS: usize = 4096;
 const RECENT_LOCAL_INPUT_WINDOW: Duration = Duration::from_secs(2);
 const RUNNER_STATUS_APPEND_MAX_ATTEMPTS: usize = 8;
 const RUNNER_STATUS_APPEND_RETRY_DELAY: Duration = Duration::from_millis(5);
@@ -83,91 +81,6 @@ const RESIZE_SETTLE_MS: u64 = 175;
 const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(1500);
 #[cfg(test)]
 const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(0);
-
-fn scan_mode_transition(bytes: &[u8], patterns: &[(&[u8], bool)]) -> Option<bool> {
-    let mut latest: Option<(usize, bool)> = None;
-    for (needle, state) in patterns {
-        if bytes.len() < needle.len() {
-            continue;
-        }
-        if let Some(pos) = bytes.windows(needle.len()).rposition(|w| w == *needle) {
-            latest = match latest {
-                Some((p, _)) if p >= pos => latest,
-                _ => Some((pos, *state)),
-            };
-        }
-    }
-    latest.map(|(_, state)| state)
-}
-
-/// Returns the resulting alt-screen state if `bytes` contains one or
-/// more enter/exit alt-screen escapes; `None` when no such escape is
-/// present. Recognized escapes: `\x1b[?1049h` / `\x1b[?1049l` (the
-/// modern combined save-cursor + alt-screen pair claude-code / codex
-/// emit) and `\x1b[?47h` / `\x1b[?47l` (the legacy alt-screen pair,
-/// kept for older TUIs).
-///
-/// The *latest* match in the slice wins — chunks that enter then exit
-/// within a single buffer (rare but legal) resolve to the trailing
-/// state, not whichever bracket happens to come first in the linear
-/// scan.
-fn scan_alt_screen_transition(bytes: &[u8]) -> Option<bool> {
-    const PATTERNS: &[(&[u8], bool)] = &[
-        (b"\x1bc", false),
-        (b"\x1b[?1049h", true),
-        (b"\x1b[?1049l", false),
-        (b"\x1b[?47h", true),
-        (b"\x1b[?47l", false),
-    ];
-    scan_mode_transition(bytes, PATTERNS)
-}
-
-fn scan_bracketed_paste_transition(bytes: &[u8]) -> Option<bool> {
-    const PATTERNS: &[(&[u8], bool)] = &[
-        (b"\x1bc", false),
-        (b"\x1b[?2004h", true),
-        (b"\x1b[?2004l", false),
-    ];
-    scan_mode_transition(bytes, PATTERNS)
-}
-
-fn scan_mouse_mode_transition(bytes: &[u8], mode: u16) -> Option<bool> {
-    match mode {
-        1000 => scan_mode_transition(
-            bytes,
-            &[
-                (b"\x1bc", false),
-                (b"\x1b[?1000h", true),
-                (b"\x1b[?1000l", false),
-            ],
-        ),
-        1002 => scan_mode_transition(
-            bytes,
-            &[
-                (b"\x1bc", false),
-                (b"\x1b[?1002h", true),
-                (b"\x1b[?1002l", false),
-            ],
-        ),
-        1003 => scan_mode_transition(
-            bytes,
-            &[
-                (b"\x1bc", false),
-                (b"\x1b[?1003h", true),
-                (b"\x1b[?1003l", false),
-            ],
-        ),
-        1006 => scan_mode_transition(
-            bytes,
-            &[
-                (b"\x1bc", false),
-                (b"\x1b[?1006h", true),
-                (b"\x1b[?1006l", false),
-            ],
-        ),
-        _ => None,
-    }
-}
 
 /// Inputs the forwarder consumer needs to translate a
 /// `RuntimeOutput::StatusTransition` into a real `runner_status`
@@ -307,7 +220,9 @@ fn drop_streak_is_loggable(streak: u64) -> bool {
 /// a no-op or a channel-capture impl.
 pub trait SessionEvents: Send + Sync + 'static {
     fn output(&self, ev: &OutputEvent);
+    fn spawned(&self, _ev: &SessionSpawnedEvent) {}
     fn exit(&self, ev: &ExitEvent);
+    fn archived(&self, _ev: &SessionUpdatedEvent) {}
     /// Persisted session metadata changed without a lifecycle event
     /// (e.g. async agent_session_key capture). Default no-op so test
     /// fakes don't have to opt in.
@@ -322,6 +237,25 @@ pub trait SessionEvents: Send + Sync + 'static {
     /// Non-fatal, user-facing advisory (resume fallback, etc.). Default
     /// no-op so test fakes don't have to opt in.
     fn warning(&self, _ev: &WarningEvent) {}
+}
+
+#[derive(Clone, Default)]
+pub struct SessionEventObserverRegistry {
+    observer: Arc<RwLock<Option<Weak<dyn SessionEvents>>>>,
+}
+
+impl SessionEventObserverRegistry {
+    pub fn install(&self, observer: Weak<dyn SessionEvents>) {
+        *self.observer.write().unwrap() = Some(observer);
+    }
+
+    fn observer(&self) -> Option<Arc<dyn SessionEvents>> {
+        self.observer
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(Weak::upgrade)
+    }
 }
 
 /// Payload for `runner/activity`. Derived from the same query
@@ -365,8 +299,8 @@ pub struct SessionActivityEvent {
     pub source: String,
 }
 
-/// Production emitter — emits `session/output`, `session/exit`,
-/// `session/updated`, and `runner/activity` on the app event channel.
+/// Production emitter. Raw output goes synchronously to the process-local
+/// observer; lifecycle and metadata changes stay on the app event channel.
 ///
 /// Holds the manager as `Weak`: instances get stored inside the manager's
 /// own session state (codex capture context, forwarder threads), so a
@@ -379,6 +313,7 @@ pub struct CoreSessionEvents {
     sessions: std::sync::Weak<SessionManager>,
     windows: Arc<crate::windows::WindowRegistry>,
     events: crate::events::EventChannel,
+    observer: SessionEventObserverRegistry,
 }
 
 impl CoreSessionEvents {
@@ -387,22 +322,41 @@ impl CoreSessionEvents {
         sessions: std::sync::Weak<SessionManager>,
         windows: Arc<crate::windows::WindowRegistry>,
         events: crate::events::EventChannel,
+        observer: SessionEventObserverRegistry,
     ) -> Self {
         Self {
             db,
             sessions,
             windows,
             events,
+            observer,
         }
     }
 }
 
 impl SessionEvents for CoreSessionEvents {
     fn output(&self, ev: &OutputEvent) {
-        self.events.emit("session/output", ev);
+        if let Some(observer) = self.observer.observer() {
+            observer.output(ev);
+        }
+    }
+    fn spawned(&self, ev: &SessionSpawnedEvent) {
+        if let Some(observer) = self.observer.observer() {
+            observer.spawned(ev);
+        }
+        self.events.emit("session/spawned", ev);
     }
     fn exit(&self, ev: &ExitEvent) {
+        if let Some(observer) = self.observer.observer() {
+            observer.exit(ev);
+        }
         self.events.emit("session/exit", ev);
+    }
+    fn archived(&self, ev: &SessionUpdatedEvent) {
+        if let Some(observer) = self.observer.observer() {
+            observer.archived(ev);
+        }
+        self.events.emit("session/archived", ev);
     }
     fn updated(&self, ev: &SessionUpdatedEvent) {
         self.events.emit("session/updated", ev);
@@ -434,22 +388,22 @@ impl SessionEvents for CoreSessionEvents {
     }
 }
 
-/// Contents of `session/output` events emitted to the frontend. The raw PTY
-/// bytes are base64-encoded so the event payload is valid JSON regardless of
-/// what the child wrote (ANSI escapes, split UTF-8 sequences, non-UTF-8, etc.).
-/// The frontend decodes before feeding xterm.js.
-///
-/// `mission_id` is `None` for direct-chat sessions (C8.5) — they have no
-/// parent mission and consumers should filter on `session_id` instead.
+/// Raw PTY output delivered synchronously to the process-local terminal sink.
 #[derive(Debug, Clone, Serialize)]
 pub struct OutputEvent {
     pub session_id: String,
     pub mission_id: Option<String>,
-    /// Monotonic per-session sequence number. Frontend attach uses this to
-    /// merge a replay snapshot with live events without duplicating chunks.
+    /// Monotonic per-session sequence number used by terminal readiness gates.
     pub seq: u64,
-    /// Base64-encoded raw bytes read from the PTY.
-    pub data: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionSpawnedEvent {
+    pub session_id: String,
+    pub mission_id: Option<String>,
+    pub cols: u16,
+    pub rows: u16,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -528,7 +482,7 @@ struct SessionHandle {
     /// capture after the runtime has actually created its rollout file.
     codex_capture: Option<CodexCaptureContext>,
     /// Forwarder thread that drains the runtime's `OutputStream`
-    /// into `session/output` events. `kill` joins on this so callers
+    /// into the process-local terminal sink. `kill` joins on this so callers
     /// (mission_stop) get the same "no live sessions after we
     /// return" contract the portable-pty path provided.
     forwarder: Option<thread::JoinHandle<()>>,
@@ -578,8 +532,6 @@ struct PendingResize {
     generation: u64,
     cols: u16,
     rows: u16,
-    initial_cols: Option<u16>,
-    width_changed: bool,
     deadline: Instant,
     suppressed: u32,
     ioctl_count: u32,
@@ -596,33 +548,12 @@ struct SessionState {
     delivery_gate: Arc<DeliveryGate>,
     mission_status_sink: Option<ForwarderEmitCtx>,
     completion_armed: bool,
-    output_buffer: VecDeque<OutputEvent>,
     output_seq: u64,
-    /// `output_seq` at the moment the most recent resume started.
-    /// The pill fast-paths only honor TUI-ready escapes in chunks
-    /// with `seq > resume_watermark_seq`, so pre-resume bytes kept
-    /// in the ring (claude-code) can never clear a resuming overlay
-    /// that's waiting on the *new* PTY. 0 outside resume flows.
-    resume_watermark_seq: u64,
-    alt_screen_on: bool,
-    bracketed_paste_on: bool,
-    mouse_1000_on: bool,
-    mouse_1002_on: bool,
-    mouse_1003_on: bool,
-    mouse_1006_on: bool,
-    /// Cols of the last PTY winsize applied (seeded at spawn, updated by
-    /// `resize`). Gates the resize ring purge: rows-only changes — the
-    /// frontend's SIGWINCH nudge dance on every tab return — can't garble
-    /// replay reflow (wrap depends on cols alone), so the ring survives
-    /// them; only a real width change still purges.
-    last_pty_cols: Option<u16>,
     /// Latest grid measurement, including pushes that arrive before a PTY
     /// handle exists. Spawn and resume reconcile this under the state lock.
     last_requested_size: Option<(u16, u16)>,
     last_requested_size_dirty: bool,
-    /// Cached from the effective agent runtime when the handle is installed.
-    clears_on_resize: bool,
-    /// Present while resize persistence and ring coherence await settlement.
+    /// Present while resize persistence awaits settlement.
     pending_resize: Option<PendingResize>,
     resuming: bool,
     killed: bool,
@@ -637,19 +568,9 @@ impl SessionState {
             && self.last_local_input_at.is_none()
             && self.mission_status_sink.is_none()
             && !self.completion_armed
-            && self.output_buffer.is_empty()
             && self.output_seq == 0
-            && self.resume_watermark_seq == 0
-            && !self.alt_screen_on
-            && !self.bracketed_paste_on
-            && !self.mouse_1000_on
-            && !self.mouse_1002_on
-            && !self.mouse_1003_on
-            && !self.mouse_1006_on
-            && self.last_pty_cols.is_none()
             && self.last_requested_size.is_none()
             && !self.last_requested_size_dirty
-            && !self.clears_on_resize
             && self.pending_resize.is_none()
             && !self.resuming
             && !self.killed
@@ -890,14 +811,14 @@ impl SessionManager {
     }
 
     pub fn reserve_delivery(&self, session_id: &str) -> Result<router::DeliveryReservation> {
-        let session = self
-            .session_state(session_id)
-            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+        let Some(session) = self.session_state(session_id) else {
+            return Ok(router::DeliveryReservation::Unavailable);
+        };
         let gate = session.lock().unwrap().delivery_gate.clone();
         let mut delivery = gate.state.lock().unwrap();
         let session = session.lock().unwrap();
         if session.handle.is_none() {
-            return Err(Error::msg(format!("session not found: {session_id}")));
+            return Ok(router::DeliveryReservation::Unavailable);
         }
         if delivery.in_flight {
             return Ok(router::DeliveryReservation::InFlight);
@@ -957,10 +878,12 @@ impl SessionManager {
         handle: SessionHandle,
         mission_status_sink: Option<ForwarderEmitCtx>,
         initial_size: Option<(u16, u16)>,
-        agent_runtime: &str,
         pool: &DbPool,
+        events: &dyn SessionEvents,
     ) {
         let initial_size = initial_size.expect("spawn size must be resolved before handle install");
+        let mission_id = handle.mission_id.clone();
+        let mut terminal_size = initial_size;
         let state = self.session_state_or_insert(session_id);
         let gate = state.lock().unwrap().delivery_gate.clone();
         {
@@ -976,8 +899,6 @@ impl SessionManager {
             state.handle = Some(handle);
             state.mission_status_sink = mission_status_sink;
             state.killed = false;
-            state.last_pty_cols = Some(initial_size.0);
-            state.clears_on_resize = output::runtime_clears_on_resize(agent_runtime);
 
             let requested_size = state.last_requested_size;
             if let Some((cols, rows)) = requested_size.filter(|size| *size != initial_size) {
@@ -989,7 +910,7 @@ impl SessionManager {
                     .clone();
                 match self.runtime.resize(&rt_session, cols, rows) {
                     Ok(()) => {
-                        state.last_pty_cols = Some(cols);
+                        terminal_size = (cols, rows);
                         log::info!(
                             "pty size reconciled after fork: session={session_id} {cols}x{rows} \
                              (pushed mid-fork)"
@@ -1024,6 +945,12 @@ impl SessionManager {
             }
             state.pending_resize = None;
         }
+        events.spawned(&SessionSpawnedEvent {
+            session_id: session_id.to_owned(),
+            mission_id,
+            cols: terminal_size.0,
+            rows: terminal_size.1,
+        });
         self.notify_delivery_event(session_id, router::SessionDeliveryEvent::Respawned);
     }
 

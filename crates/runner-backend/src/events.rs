@@ -16,7 +16,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 /// One frontend-observable event. `name` is the channel the webview
-/// subscribes to (`"session/output"`, `"chat/layout-changed"`, …); every
+/// subscribes to (`"session/exit"`, `"chat/layout-changed"`, …); every
 /// producer uses a static string so a typo is greppable.
 #[derive(Debug, Clone)]
 pub struct AppEvent {
@@ -24,10 +24,8 @@ pub struct AppEvent {
     pub payload: serde_json::Value,
 }
 
-/// Buffered events per subscriber. `session/output` is the high-rate
-/// producer (coalesced PTY chunks); the buffer must absorb a burst while
-/// the forwarder serializes into the webview. A lagged subscriber drops
-/// oldest-first and logs — same failure mode as any bounded queue.
+/// Buffered events per subscriber. A lagged subscriber drops oldest-first
+/// and logs — same failure mode as any bounded queue.
 const CHANNEL_CAPACITY: usize = 8192;
 
 /// Cheap-to-clone handle on the broadcast channel. Sending never blocks;

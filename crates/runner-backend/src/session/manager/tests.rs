@@ -79,7 +79,7 @@ fn manager_with_runtime(
 /// back what the manager handed to the runtime layer (env vars,
 /// argv, byte writes, key names, resize dimensions). Lets
 /// tests that depend on runtime-side behavior — DB writes after
-/// spawn, output buffer machinery, kill semantics, first-prompt
+/// spawn, output delivery, kill semantics, first-prompt
 /// scheduling, agent_session_key resume preservation — run
 /// without forking a real PTY.
 #[derive(Default)]
@@ -89,8 +89,6 @@ struct FakeRuntime {
     stops: std::sync::Mutex<Vec<String>>,
     stop_failures: std::sync::Mutex<HashSet<String>>,
     resizes: std::sync::Mutex<Vec<(String, u16, u16)>>,
-    resize_failures: std::sync::Mutex<HashSet<String>>,
-    output_on_resize: std::sync::Mutex<Option<Vec<u8>>>,
     /// Runs inside `spawn` once the fork is recorded — lets a test land
     /// work (a resize) between the fork and the handle install.
     spawn_hook: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
@@ -188,21 +186,6 @@ impl FakeRuntime {
 
     fn allow_stop_for(&self, session_id: &str) {
         self.stop_failures.lock().unwrap().remove(session_id);
-    }
-
-    fn fail_resize_for(&self, session_id: &str) {
-        self.resize_failures
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string());
-    }
-
-    fn allow_resize_for(&self, session_id: &str) {
-        self.resize_failures.lock().unwrap().remove(session_id);
-    }
-
-    fn emit_output_on_resize(&self, bytes: &[u8]) {
-        *self.output_on_resize.lock().unwrap() = Some(bytes.to_vec());
     }
 
     fn arm_stop_gate(&self) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
@@ -313,27 +296,6 @@ impl SessionRuntime for FakeRuntime {
             .lock()
             .unwrap()
             .push((session.session_id.clone(), cols, rows));
-        if self
-            .resize_failures
-            .lock()
-            .unwrap()
-            .contains(&session.session_id)
-        {
-            return Err(RuntimeError::Msg(format!(
-                "injected resize failure for {}",
-                session.session_id
-            )));
-        }
-        if let Some(bytes) = self.output_on_resize.lock().unwrap().clone() {
-            let spawns = self.spawns.lock().unwrap();
-            if let Some(tx) = spawns
-                .iter()
-                .find(|spawn| spawn.rt_session.session_id == session.session_id)
-                .and_then(|spawn| spawn.tx.as_ref())
-            {
-                let _ = tx.send(RuntimeOutput::Stream(bytes));
-            }
-        }
         Ok(())
     }
 
@@ -482,7 +444,7 @@ fn wait_for_output_event(cap: &Capture, session_id: &str) {
             return;
         }
         if Instant::now() > deadline {
-            panic!("session/output event never arrived for {session_id}");
+            panic!("session output never arrived for {session_id}");
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -2965,85 +2927,6 @@ fn login_shell_proxy_env_reaches_spawn_with_runner_env_taking_precedence() {
 }
 
 #[test]
-fn output_snapshot_replays_live_session_and_clears_after_forget() {
-    let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'buffered', 'Buffered', 'shell', '/bin/cat',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-    }
-
-    let mut runner = runner("/bin/cat", &[]);
-    runner.id = runner_id;
-    runner.handle = "buffered".into();
-
-    let fake = fake_runtime();
-    let mgr = mgr_with_fake(None, Arc::clone(&fake));
-    let spawned = mgr
-        .spawn_direct(
-            &runner,
-            None,
-            None,
-            None,
-            None,
-            Some("/tmp"),
-            None,
-            None,
-            std::path::Path::new("/tmp"),
-            Arc::clone(&pool),
-            capture(),
-            None,
-        )
-        .unwrap();
-
-    // Push fake output through the runtime → forwarder
-    // chain. The forwarder records it into the manager's
-    // output buffer; output_snapshot reads it back.
-    fake.push_output(0, b"hello snapshot");
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let snapshot = loop {
-        let snapshot = mgr.output_snapshot(&spawned.id);
-        if !snapshot.is_empty() {
-            break snapshot;
-        }
-        if Instant::now() > deadline {
-            panic!("session output snapshot never captured live output");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-
-    assert_eq!(snapshot[0].seq, 1);
-    assert!(
-        snapshot.iter().all(|ev| ev.session_id == spawned.id),
-        "snapshot must only include chunks for the requested session"
-    );
-
-    mgr.kill(&spawned.id).unwrap();
-    // After kill the buffer is intentionally preserved so a
-    // remount can replay the dead session's scrollback. Explicit
-    // cleanup is via `purge_session_buffers`.
-    assert!(
-        !mgr.output_snapshot(&spawned.id).is_empty(),
-        "kill must keep the output buffer for snapshot replay"
-    );
-    mgr.purge_session_buffers(&spawned.id);
-    assert!(
-        mgr.output_snapshot(&spawned.id).is_empty(),
-        "purge_session_buffers must drop the buffer"
-    );
-}
-
-#[test]
 fn resume_reuses_row_and_preserves_agent_session_key() {
     // Multi-chat-per-runner contract: a direct chat IS a
     // sessions row. spawn_direct creates the row and the
@@ -3194,23 +3077,6 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
     mgr.kill(&session_id).unwrap();
 }
 
-/// Poll `output_snapshot` until it holds at least `min_len` chunks.
-/// The forwarder thread records chunks asynchronously, so tests that
-/// push through FakeRuntime must wait for the ring to catch up.
-fn wait_for_snapshot(mgr: &SessionManager, session_id: &str, min_len: usize) -> Vec<OutputEvent> {
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        let snapshot = mgr.output_snapshot(session_id);
-        if snapshot.len() >= min_len {
-            return snapshot;
-        }
-        if Instant::now() > deadline {
-            panic!("snapshot for {session_id} never reached {min_len} chunks");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
 /// Poll the sessions row until the forwarder demotes it from
 /// `running` — `resume()` refuses rows that still look live.
 fn wait_for_db_stop(pool: &DbPool, session_id: &str) {
@@ -3232,254 +3098,6 @@ fn wait_for_db_stop(pool: &DbPool, session_id: &str) {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-}
-
-fn assert_resume_keeps_scrollback(runtime: &str) {
-    // Impl 0024: resuming an inline-repaint runtime must NOT drop the
-    // output ring — a terminal emulator keeps pre-resume scrollback
-    // above the resume repaint, and the ring has to agree with the
-    // mounted xterm so a later remount replay doesn't lose what the
-    // screen already showed. The pill race the old unconditional
-    // purge closed is carried by the resume watermark instead.
-    let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'keeper', 'K', ?2, '/bin/sh',
-                         NULL, NULL, NULL, NULL, ?3, ?3)",
-            params![runner_id, runtime, now],
-        )
-        .unwrap();
-    }
-    let mut runner = runner("/bin/sh", &[]);
-    runner.id = runner_id;
-    runner.handle = "keeper".into();
-    runner.runtime = runtime.into();
-
-    let fake = fake_runtime();
-    let mgr = mgr_with_fake(None, Arc::clone(&fake));
-    let events = capture();
-    let spawned = mgr
-        .spawn_direct(
-            &runner,
-            None,
-            None,
-            None,
-            None,
-            Some("/tmp"),
-            None,
-            None,
-            std::path::Path::new("/tmp"),
-            Arc::clone(&pool),
-            events.clone(),
-            None,
-        )
-        .unwrap();
-    let session_id = spawned.id.clone();
-
-    assert_eq!(
-        mgr.replay_watermark(&session_id),
-        0,
-        "fresh spawn must report watermark 0"
-    );
-
-    fake.push_output(0, b"\x1b[?2004h\x1b[?1000h\x1b[?1006hpre-resume scrollback");
-    let before_resume = wait_for_snapshot(&mgr, &session_id, 2);
-    assert_eq!(before_resume[0].seq, 0);
-    assert_eq!(
-        BASE64.decode(&before_resume[0].data).unwrap(),
-        b"\x1b[?2004h\x1b[?1000h\x1b[?1006h",
-        "snapshot prefix must restore tracked paste and mouse modes"
-    );
-    let pre_max_seq = before_resume.last().unwrap().seq;
-
-    fake.close_spawn(0);
-    wait_for_db_stop(&pool, &session_id);
-
-    let resumed = mgr
-        .resume(
-            &session_id,
-            None,
-            None,
-            std::path::Path::new("/tmp"),
-            Arc::clone(&pool),
-            events.clone(),
-        )
-        .unwrap();
-    assert_eq!(resumed.id, session_id);
-
-    assert_eq!(
-        mgr.replay_watermark(&session_id),
-        pre_max_seq,
-        "watermark must equal the pre-resume max seq"
-    );
-    let kept = BASE64.encode(b"\x1b[?2004h\x1b[?1000h\x1b[?1006hpre-resume scrollback");
-    let after_resume = mgr.output_snapshot(&session_id);
-    assert!(
-        after_resume.iter().any(|ev| ev.data == kept),
-        "{runtime} resume must keep pre-resume chunks in the ring"
-    );
-    assert_ne!(
-        after_resume.first().map(|ev| ev.seq),
-        Some(0),
-        "the seam must disable paste and mouse tracking immediately"
-    );
-    let seam = after_resume.last().unwrap();
-    assert_eq!(BASE64.decode(&seam.data).unwrap(), output::KEEP_RESUME_SEAM);
-    assert_eq!(seam.seq, pre_max_seq + 1);
-    assert!(
-        seam.seq > mgr.replay_watermark(&session_id),
-        "watermark must be stamped before the seam"
-    );
-    assert!(
-        [b"\x1b[?2004h".as_slice(), b"\x1b[?1049h", b"\x1b[?47h"]
-            .into_iter()
-            .all(|ready| !output::KEEP_RESUME_SEAM
-                .windows(ready.len())
-                .any(|window| window == ready)),
-        "seam must not contain a TUI-ready enable escape"
-    );
-    assert_eq!(
-        events.output.lock().unwrap().last().unwrap().data,
-        seam.data,
-        "synthetic seam must fan out through session/output"
-    );
-
-    // The new PTY (spawn index 1) continues the seq counter: its
-    // chunk lands after the kept scrollback and seam, strictly above
-    // the watermark, with no reset back to 1.
-    fake.push_output(1, b"post-resume repaint");
-    let snapshot = wait_for_snapshot(&mgr, &session_id, 3);
-    assert!(
-        snapshot.windows(2).all(|w| w[0].seq < w[1].seq),
-        "snapshot seqs must stay strictly monotonic across resume"
-    );
-    let new_chunk = snapshot.last().unwrap();
-    assert_eq!(new_chunk.data, BASE64.encode(b"post-resume repaint"));
-    assert!(
-        new_chunk.seq > pre_max_seq,
-        "post-resume chunk must continue above the watermark"
-    );
-
-    mgr.kill(&session_id).unwrap();
-    mgr.purge_session_buffers(&session_id);
-    assert_eq!(
-        mgr.replay_watermark(&session_id),
-        0,
-        "purge_session_buffers must reset the watermark with the rest of the state"
-    );
-}
-
-#[test]
-fn resume_keeps_scrollback_for_claude_code() {
-    assert_resume_keeps_scrollback("claude-code");
-}
-
-#[test]
-fn resume_keeps_scrollback_for_qoder() {
-    assert_resume_keeps_scrollback("qoder");
-}
-
-fn assert_resume_purges_scrollback(runtime: &str) {
-    // Codex-lineage runtimes keep the pre-0024 behavior: their full-frame repaint over
-    // retained scrollback is the stacking artifact the purge was
-    // added for, so resume still drops the ring — while the watermark
-    // is stamped uniformly (equal to the post-purge floor here).
-    let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'purger', 'P', ?2, '/bin/sh',
-                         NULL, NULL, NULL, NULL, ?3, ?3)",
-            params![runner_id, runtime, now],
-        )
-        .unwrap();
-    }
-    let mut runner = runner("/bin/sh", &[]);
-    runner.id = runner_id;
-    runner.handle = "purger".into();
-    runner.runtime = runtime.into();
-
-    let fake = fake_runtime();
-    let mgr = mgr_with_fake(None, Arc::clone(&fake));
-    let events = capture();
-    let spawned = mgr
-        .spawn_direct(
-            &runner,
-            None,
-            None,
-            None,
-            None,
-            Some("/tmp"),
-            None,
-            None,
-            std::path::Path::new("/tmp"),
-            Arc::clone(&pool),
-            events.clone(),
-            None,
-        )
-        .unwrap();
-    let session_id = spawned.id.clone();
-
-    fake.push_output(0, b"pre-resume frame");
-    let pre_max_seq = wait_for_snapshot(&mgr, &session_id, 1).last().unwrap().seq;
-
-    fake.close_spawn(0);
-    wait_for_db_stop(&pool, &session_id);
-
-    mgr.resume(
-        &session_id,
-        None,
-        None,
-        std::path::Path::new("/tmp"),
-        Arc::clone(&pool),
-        events.clone(),
-    )
-    .unwrap();
-
-    let reset_snapshot = mgr.output_snapshot(&session_id);
-    assert_eq!(
-        reset_snapshot.len(),
-        1,
-        "{runtime} resume must replace prior output with one reset chunk"
-    );
-    assert_eq!(
-        BASE64.decode(&reset_snapshot[0].data).unwrap(),
-        output::PURGE_RESUME_RESET
-    );
-    assert_eq!(reset_snapshot[0].seq, pre_max_seq + 1);
-    assert_eq!(
-        events.output.lock().unwrap().last().unwrap().data,
-        reset_snapshot[0].data,
-        "synthetic reset must fan out through session/output"
-    );
-    assert_eq!(
-        mgr.replay_watermark(&session_id),
-        pre_max_seq,
-        "watermark must equal the pre-resume max seq on the purge path too"
-    );
-
-    // Seq continuity across the purge: reset is `last + 1`, then the
-    // new PTY's first chunk follows it.
-    fake.push_output(1, b"fresh repaint");
-    let snapshot = wait_for_snapshot(&mgr, &session_id, 2);
-    assert_eq!(snapshot[0].seq, pre_max_seq + 1);
-    assert_eq!(snapshot[1].seq, pre_max_seq + 2);
-    assert_eq!(snapshot[1].data, BASE64.encode(b"fresh repaint"));
-
-    mgr.kill(&session_id).unwrap();
 }
 
 #[test]
@@ -3559,16 +3177,6 @@ fn resume_applies_a_size_pushed_mid_fork() {
     );
     *fake.spawn_hook.lock().unwrap() = None;
     mgr.kill(&session_id).unwrap();
-}
-
-#[test]
-fn resume_purges_scrollback_for_codex() {
-    assert_resume_purges_scrollback("codex");
-}
-
-#[test]
-fn resume_purges_scrollback_for_trae() {
-    assert_resume_purges_scrollback("trae");
 }
 
 #[test]
@@ -4375,262 +3983,6 @@ fn forwarder_status_emit_retries_brief_event_log_contention() {
 }
 
 #[test]
-fn scan_alt_screen_detects_modern_and_legacy_escapes() {
-    // No escape → no transition reported.
-    assert_eq!(scan_alt_screen_transition(b"hello world"), None);
-
-    // Modern combined pair (the one claude-code / codex emit).
-    assert_eq!(
-        scan_alt_screen_transition(b"prelude\x1b[?1049hbody"),
-        Some(true)
-    );
-    assert_eq!(
-        scan_alt_screen_transition(b"\x1b[?1049lcleanup"),
-        Some(false)
-    );
-
-    // Legacy 47h/l pair still covered (older TUIs).
-    assert_eq!(scan_alt_screen_transition(b"\x1b[?47h"), Some(true));
-    assert_eq!(scan_alt_screen_transition(b"\x1b[?47l"), Some(false));
-
-    // Latest match wins — enter followed by exit resolves to
-    // main-screen, not alt.
-    assert_eq!(
-        scan_alt_screen_transition(b"\x1b[?1049henter middle \x1b[?1049lexit"),
-        Some(false)
-    );
-    // …and exit followed by enter resolves to alt.
-    assert_eq!(
-        scan_alt_screen_transition(b"\x1b[?1049l\x1b[?1049h"),
-        Some(true)
-    );
-}
-
-#[test]
-fn scan_bracketed_paste_detects_enable_and_disable_escapes() {
-    assert_eq!(scan_bracketed_paste_transition(b"hello world"), None);
-    assert_eq!(
-        scan_bracketed_paste_transition(b"ready\x1b[?2004h"),
-        Some(true)
-    );
-    assert_eq!(
-        scan_bracketed_paste_transition(b"\x1b[?2004lprompt"),
-        Some(false)
-    );
-    assert_eq!(
-        scan_bracketed_paste_transition(b"\x1b[?2004hon\x1b[?2004loff"),
-        Some(false)
-    );
-    assert_eq!(
-        scan_bracketed_paste_transition(b"\x1b[?2004l\x1b[?2004h"),
-        Some(true)
-    );
-}
-
-#[test]
-fn scan_mouse_modes_detects_enable_disable_and_full_reset() {
-    for mode in [1000, 1002, 1003, 1006] {
-        let enable = format!("\x1b[?{mode}h");
-        let disable = format!("\x1b[?{mode}l");
-        assert_eq!(
-            scan_mouse_mode_transition(enable.as_bytes(), mode),
-            Some(true)
-        );
-        assert_eq!(
-            scan_mouse_mode_transition(disable.as_bytes(), mode),
-            Some(false)
-        );
-        assert_eq!(scan_mouse_mode_transition(b"\x1bc", mode), Some(false));
-    }
-}
-
-#[test]
-fn output_snapshot_prepends_alt_screen_enter_when_session_in_alt_screen() {
-    let pool = pool_with_schema();
-    let fake = fake_runtime();
-    let mgr = manager_with_runtime(
-        crate::shell_path::LoginShellEnv::default(),
-        Arc::clone(&fake) as Arc<dyn SessionRuntime>,
-    );
-    let runner = runner("/bin/sh", &["-c", "true"]);
-    {
-        let conn = pool.get().unwrap();
-        let now = Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'r', 'r', 'shell', '/bin/sh',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner.id, now],
-        )
-        .unwrap();
-    }
-    let spawned = mgr
-        .spawn_direct(
-            &runner,
-            None,
-            None,
-            None,
-            None,
-            Some("/tmp"),
-            None,
-            None,
-            std::path::Path::new("/tmp"),
-            Arc::clone(&pool),
-            capture(),
-            None,
-        )
-        .unwrap();
-    // Drive a chunk that enters alt-screen + some content, then
-    // a chunk of pure content (no transition) so we exercise the
-    // "scan no-ops on chunks without escapes" branch too.
-    fake.push_output(0, b"\x1b[?1049hinitial banner");
-    fake.push_output(0, b"more painted content");
-    // Give the forwarder a beat to drain both chunks.
-    std::thread::sleep(Duration::from_millis(50));
-
-    let snapshot = mgr.output_snapshot(&spawned.id);
-    assert!(!snapshot.is_empty(), "snapshot should contain chunks");
-    // First event is the synthetic alt-screen enter, seq=0.
-    assert_eq!(snapshot[0].seq, 0);
-    assert_eq!(
-        BASE64.decode(&snapshot[0].data).unwrap(),
-        b"\x1b[?1049h",
-        "synthetic prepend must be a single bare enter-alt-screen escape"
-    );
-
-    // After an exit-alt-screen chunk, the synthetic prepend
-    // disappears and the snapshot starts at the first real event.
-    fake.push_output(0, b"\x1b[?1049lback to main");
-    std::thread::sleep(Duration::from_millis(50));
-    let snapshot2 = mgr.output_snapshot(&spawned.id);
-    assert_ne!(
-        snapshot2.first().map(|e| e.seq),
-        Some(0),
-        "main-screen sessions must not prepend the alt-screen enter"
-    );
-}
-
-#[test]
-fn output_snapshot_prepends_bracketed_paste_enable_when_session_has_it_enabled() {
-    let pool = pool_with_schema();
-    let fake = fake_runtime();
-    let mgr = manager_with_runtime(
-        crate::shell_path::LoginShellEnv::default(),
-        Arc::clone(&fake) as Arc<dyn SessionRuntime>,
-    );
-    let runner = runner("/bin/sh", &["-c", "true"]);
-    {
-        let conn = pool.get().unwrap();
-        let now = Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'r', 'r', 'shell', '/bin/sh',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner.id, now],
-        )
-        .unwrap();
-    }
-    let spawned = mgr
-        .spawn_direct(
-            &runner,
-            None,
-            None,
-            None,
-            None,
-            Some("/tmp"),
-            None,
-            None,
-            std::path::Path::new("/tmp"),
-            Arc::clone(&pool),
-            capture(),
-            None,
-        )
-        .unwrap();
-
-    fake.push_output(0, b"\x1b[?2004hprompt ready");
-    std::thread::sleep(Duration::from_millis(50));
-
-    let snapshot = mgr.output_snapshot(&spawned.id);
-    assert!(!snapshot.is_empty(), "snapshot should contain chunks");
-    assert_eq!(snapshot[0].seq, 0);
-    assert_eq!(
-        BASE64.decode(&snapshot[0].data).unwrap(),
-        b"\x1b[?2004h",
-        "synthetic prepend must restore bracketed-paste mode"
-    );
-
-    fake.push_output(0, b"\x1b[?2004lplain prompt");
-    std::thread::sleep(Duration::from_millis(50));
-    let snapshot2 = mgr.output_snapshot(&spawned.id);
-    assert_ne!(
-        snapshot2.first().map(|e| e.seq),
-        Some(0),
-        "sessions with bracketed paste disabled must not prepend the enable escape"
-    );
-}
-
-#[test]
-fn output_snapshot_combines_alt_screen_and_bracketed_paste_prefixes() {
-    let pool = pool_with_schema();
-    let fake = fake_runtime();
-    let mgr = manager_with_runtime(
-        crate::shell_path::LoginShellEnv::default(),
-        Arc::clone(&fake) as Arc<dyn SessionRuntime>,
-    );
-    let runner = runner("/bin/sh", &["-c", "true"]);
-    {
-        let conn = pool.get().unwrap();
-        let now = Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'r', 'r', 'shell', '/bin/sh',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner.id, now],
-        )
-        .unwrap();
-    }
-    let spawned = mgr
-        .spawn_direct(
-            &runner,
-            None,
-            None,
-            None,
-            None,
-            Some("/tmp"),
-            None,
-            None,
-            std::path::Path::new("/tmp"),
-            Arc::clone(&pool),
-            capture(),
-            None,
-        )
-        .unwrap();
-
-    fake.push_output(0, b"\x1b[?1049h\x1b[?2004hpainted prompt");
-    std::thread::sleep(Duration::from_millis(50));
-
-    let snapshot = mgr.output_snapshot(&spawned.id);
-    assert!(!snapshot.is_empty(), "snapshot should contain chunks");
-    assert_eq!(snapshot[0].seq, 0);
-    assert_eq!(
-        BASE64.decode(&snapshot[0].data).unwrap(),
-        b"\x1b[?1049h\x1b[?2004h",
-        "synthetic prepend must restore every tracked terminal mode"
-    );
-}
-
-// ---- claude-code launch gate (issue #171) -----------------------------
-
-#[test]
 fn compute_gate_wait_returns_zero_when_no_prior_spawn() {
     // First claude through the gate — `last` is None, so the
     // caller pays nothing. This is the property that makes
@@ -4726,80 +4078,6 @@ fn enter_claude_launch_gate_first_claude_does_not_sleep() {
     );
 }
 
-// Keep the resize and resume policies distinct: all four agent TUIs repaint
-// on SIGWINCH, while only Codex and TRAE purge before a process resume.
-#[test]
-fn runtime_resize_and_resume_policies_cover_supported_runtimes() {
-    let pool = db::open_in_memory().unwrap();
-    let now = chrono::Utc::now().to_rfc3339();
-    let conn = pool.get().unwrap();
-    for (runner_id, runtime) in [
-        ("r-codex", "codex"),
-        ("r-qoder", "qoder"),
-        ("r-trae", "trae"),
-        ("r-shell", "shell"),
-    ] {
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, ?1, ?1, ?2, '/bin/cat',
-                         NULL, NULL, NULL, NULL, ?3, ?3)",
-            params![runner_id, runtime, now],
-        )
-        .unwrap();
-    }
-    // Runner-backed rows: agent_runtime stays NULL.
-    conn.execute(
-        "INSERT INTO sessions (id, mission_id, runner_id, cwd, status, started_at)
-             VALUES ('s-codex-runner', NULL, 'r-codex', '/tmp', 'running', ?1)",
-        params![now],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO sessions (id, mission_id, runner_id, cwd, status, started_at)
-             VALUES ('s-qoder-runner', NULL, 'r-qoder', '/tmp', 'running', ?1)",
-        params![now],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO sessions (id, mission_id, runner_id, cwd, status, started_at)
-             VALUES ('s-trae-runner', NULL, 'r-trae', '/tmp', 'running', ?1)",
-        params![now],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO sessions (id, mission_id, runner_id, cwd, status, started_at)
-             VALUES ('s-shell-runner', NULL, 'r-shell', '/tmp', 'running', ?1)",
-        params![now],
-    )
-    .unwrap();
-    // Runtime-only chat: no runner row, agent_runtime column set.
-    conn.execute(
-        "INSERT INTO sessions
-                (id, mission_id, runner_id, cwd, status, started_at, agent_runtime)
-             VALUES ('s-claude-runtime', NULL, NULL, '/tmp', 'running', ?1, 'claude-code')",
-        params![now],
-    )
-    .unwrap();
-    drop(conn);
-
-    for runtime in ["claude-code", "codex", "qoder", "trae"] {
-        assert!(super::output::runtime_clears_on_resize(runtime));
-    }
-    assert!(super::output::runtime_purges_on_resume(
-        "s-trae-runner",
-        &pool
-    ));
-    assert!(!super::output::runtime_purges_on_resume(
-        "s-qoder-runner",
-        &pool
-    ));
-    assert!(!super::output::runtime_clears_on_resize("shell"));
-    assert!(!super::output::runtime_clears_on_resize("future-runtime"));
-}
-
 #[test]
 fn spawn_argv_injects_claude_fullscreen_for_fresh_and_resume_only() {
     let compose = |runtime: &str, plan: router::runtime::ResumePlan| {
@@ -4841,142 +4119,6 @@ fn spawn_argv_injects_claude_fullscreen_for_fresh_and_resume_only() {
     assert!(!codex.iter().any(|arg| arg == "--settings"));
 }
 
-#[test]
-fn resize_purges_ring_only_on_cols_change() {
-    let pool = pool_with_schema();
-    let now = Utc::now().to_rfc3339();
-    let runner_id = ulid::Ulid::new().to_string();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "INSERT INTO runners
-                    (id, handle, display_name, runtime, command,
-                     args_json, working_dir, system_prompt, env_json,
-                     created_at, updated_at)
-                 VALUES (?1, 'colsgate', 'ColsGate', 'claude-code', '/bin/cat',
-                         NULL, NULL, NULL, NULL, ?2, ?2)",
-            params![runner_id, now],
-        )
-        .unwrap();
-    }
-
-    let mut runner = runner("/bin/cat", &[]);
-    runner.id = runner_id;
-    runner.handle = "colsgate".into();
-    runner.runtime = "claude-code".into();
-
-    let fake = fake_runtime();
-    let mgr = mgr_with_fake(None, Arc::clone(&fake));
-    mgr.set_resize_settle_ms(3_600_000);
-    let spawned = mgr
-        .spawn_direct(
-            &runner,
-            None,
-            None,
-            None,
-            None,
-            Some("/tmp"),
-            Some(120),
-            Some(30),
-            std::path::Path::new("/tmp"),
-            Arc::clone(&pool),
-            capture(),
-            None,
-        )
-        .unwrap();
-
-    fake.push_output(0, b"history to keep");
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while mgr.output_snapshot(&spawned.id).is_empty() {
-        if Instant::now() > deadline {
-            panic!("output never reached the ring");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "UPDATE runners SET runtime = 'shell' WHERE id = ?1",
-            params![runner.id],
-        )
-        .unwrap();
-        conn.execute_batch(
-            "CREATE TABLE resize_writes (count INTEGER NOT NULL);\n\
-             INSERT INTO resize_writes VALUES (0);\n\
-             CREATE TRIGGER count_resize_writes\n\
-             AFTER UPDATE OF last_cols, last_rows ON sessions\n\
-             BEGIN UPDATE resize_writes SET count = count + 1; END;",
-        )
-        .unwrap();
-    }
-
-    mgr.resize(&spawned.id, 120, 29, &pool).unwrap();
-    mgr.resize(&spawned.id, 120, 30, &pool).unwrap();
-    assert_eq!(fake.resizes.lock().unwrap().len(), 2);
-    assert!(
-        !mgr.output_snapshot(&spawned.id).is_empty(),
-        "rows-only resize must keep the replay ring"
-    );
-
-    mgr.resize(&spawned.id, 100, 30, &pool).unwrap();
-    assert_eq!(fake.resizes.lock().unwrap().len(), 3);
-    assert!(
-        !mgr.output_snapshot(&spawned.id).is_empty(),
-        "the ring must survive until the storm settles"
-    );
-    let persisted: (u16, u16) = pool
-        .get()
-        .unwrap()
-        .query_row(
-            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
-            params![spawned.id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        persisted,
-        (120, 30),
-        "the render-thread path must not persist before the settle"
-    );
-    let writes_before: i64 = pool
-        .get()
-        .unwrap()
-        .query_row("SELECT count FROM resize_writes", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(writes_before, 0);
-
-    mgr.settle_pending_resize_now(&spawned.id);
-    assert_eq!(
-        fake.resizes.lock().unwrap().clone(),
-        vec![
-            (spawned.id.clone(), 120, 29),
-            (spawned.id.clone(), 120, 30),
-            (spawned.id.clone(), 100, 30),
-            (spawned.id.clone(), 100, 29),
-            (spawned.id.clone(), 100, 30),
-        ]
-    );
-    assert!(
-        mgr.output_snapshot(&spawned.id).is_empty(),
-        "the settled width change purges without inserting a clear event"
-    );
-    let conn = pool.get().unwrap();
-    let settled: (u16, u16, i64) = conn
-        .query_row(
-            "SELECT s.last_cols, s.last_rows, w.count\n\
-               FROM sessions s CROSS JOIN resize_writes w\n\
-              WHERE s.id = ?1",
-            params![spawned.id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(settled, (100, 30, 1), "one persistence write per storm");
-    drop(conn);
-
-    mgr.kill(&spawned.id).unwrap();
-}
-
 fn spawn_claude_for_resize(
     handle: &str,
 ) -> (
@@ -4984,7 +4126,6 @@ fn spawn_claude_for_resize(
     Arc<FakeRuntime>,
     Arc<SessionManager>,
     String,
-    Arc<Capture>,
 ) {
     let pool = pool_with_schema();
     let now = Utc::now().to_rfc3339();
@@ -5009,7 +4150,6 @@ fn spawn_claude_for_resize(
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
-    let events = capture();
     let spawned = mgr
         .spawn_direct(
             &runner,
@@ -5022,91 +4162,168 @@ fn spawn_claude_for_resize(
             Some(30),
             std::path::Path::new("/tmp"),
             Arc::clone(&pool),
-            events.clone(),
+            capture(),
             None,
         )
         .unwrap();
-
-    fake.push_output(0, b"history to keep");
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while mgr.output_snapshot(&spawned.id).is_empty() {
-        if Instant::now() > deadline {
-            panic!("output never reached the ring");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    (pool, fake, mgr, spawned.id, events)
+    (pool, fake, mgr, spawned.id)
 }
 
 #[test]
-fn resize_storm_ioctls_every_push_then_nudges_once_after_purge() {
-    let (pool, fake, mgr, id, _events) = spawn_claude_for_resize("storm");
+fn resize_storm_ioctls_every_push_and_persists_once() {
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("storm");
     mgr.set_resize_settle_ms(3_600_000);
+    {
+        let conn = pool.get().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE resize_writes (count INTEGER NOT NULL);
+             INSERT INTO resize_writes VALUES (0);
+             CREATE TRIGGER count_resize_writes
+             AFTER UPDATE OF last_cols, last_rows ON sessions
+             BEGIN UPDATE resize_writes SET count = count + 1; END;",
+        )
+        .unwrap();
+    }
 
     for cols in [78u16, 76, 209, 76, 210] {
         mgr.resize(&id, cols, 30, &pool).unwrap();
     }
-    assert_eq!(
-        fake.resizes.lock().unwrap().clone(),
-        vec![
-            (id.clone(), 78, 30),
-            (id.clone(), 76, 30),
-            (id.clone(), 209, 30),
-            (id.clone(), 76, 30),
-            (id.clone(), 210, 30),
-        ]
-    );
-    assert!(!mgr.output_snapshot(&id).is_empty());
+    let expected = vec![
+        (id.clone(), 78, 30),
+        (id.clone(), 76, 30),
+        (id.clone(), 209, 30),
+        (id.clone(), 76, 30),
+        (id.clone(), 210, 30),
+    ];
+    assert_eq!(fake.resizes.lock().unwrap().clone(), expected);
+    let before: (u16, u16, i64) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT s.last_cols, s.last_rows, w.count
+               FROM sessions s CROSS JOIN resize_writes w
+              WHERE s.id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(before, (120, 30, 0));
 
     mgr.settle_pending_resize_now(&id);
-    assert_eq!(
-        fake.resizes.lock().unwrap().clone(),
-        vec![
-            (id.clone(), 78, 30),
-            (id.clone(), 76, 30),
-            (id.clone(), 209, 30),
-            (id.clone(), 76, 30),
-            (id.clone(), 210, 30),
-            (id.clone(), 210, 29),
-            (id.clone(), 210, 30),
-        ]
-    );
-    assert!(mgr.output_snapshot(&id).is_empty());
+    assert_eq!(fake.resizes.lock().unwrap().clone(), expected);
+    let settled: (u16, u16, i64) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT s.last_cols, s.last_rows, w.count
+               FROM sessions s CROSS JOIN resize_writes w
+              WHERE s.id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(settled, (210, 30, 1));
 
     mgr.kill(&id).unwrap();
 }
 
 #[test]
-fn round_trip_resize_storm_purges_intermediate_repaints() {
-    let (pool, fake, mgr, id, _events) = spawn_claude_for_resize("roundtrip");
+fn round_trip_resize_storm_preserves_the_immediate_width_chain() {
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("roundtrip");
     mgr.set_resize_settle_ms(3_600_000);
 
     for cols in [150u16, 209, 150, 120] {
         mgr.resize(&id, cols, 30, &pool).unwrap();
     }
+    let expected = vec![
+        (id.clone(), 150, 30),
+        (id.clone(), 209, 30),
+        (id.clone(), 150, 30),
+        (id.clone(), 120, 30),
+    ];
+    assert_eq!(fake.resizes.lock().unwrap().clone(), expected);
     mgr.settle_pending_resize_now(&id);
-    assert_eq!(
-        fake.resizes.lock().unwrap().clone(),
-        vec![
-            (id.clone(), 150, 30),
-            (id.clone(), 209, 30),
-            (id.clone(), 150, 30),
-            (id.clone(), 120, 30),
-            (id.clone(), 120, 29),
-            (id.clone(), 120, 30),
-        ]
-    );
-    assert!(
-        mgr.output_snapshot(&id).is_empty(),
-        "a round trip still emits intermediate full-frame repaints that must be purged"
-    );
+    assert_eq!(fake.resizes.lock().unwrap().clone(), expected);
 
     mgr.kill(&id).unwrap();
 }
 
 #[test]
-fn settle_during_inflight_kill_aborts_untouched() {
-    let (pool, fake, mgr, id, _events) = spawn_claude_for_resize("killwindow");
+fn stale_resize_settle_does_not_persist_after_respawn() {
+    let (pool, _fake, mgr, id) = spawn_claude_for_resize("stalegeneration");
+    mgr.set_resize_settle_ms(3_600_000);
+
+    mgr.resize(&id, 100, 30, &pool).unwrap();
+    let stale_generation = mgr
+        .session_state(&id)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .pending_resize
+        .as_ref()
+        .unwrap()
+        .generation;
+    mgr.kill(&id).unwrap();
+    mgr.resume(
+        &id,
+        None,
+        None,
+        std::path::Path::new("/tmp"),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+
+    mgr.resize(&id, 110, 30, &pool).unwrap();
+    let state = mgr.session_state(&id).unwrap();
+    let current_generation = state
+        .lock()
+        .unwrap()
+        .pending_resize
+        .as_ref()
+        .unwrap()
+        .generation;
+    assert_ne!(stale_generation, current_generation);
+
+    mgr.settle_pending_resize_generation_now(&id, stale_generation);
+    assert_eq!(
+        state
+            .lock()
+            .unwrap()
+            .pending_resize
+            .as_ref()
+            .map(|pending| pending.generation),
+        Some(current_generation)
+    );
+    let before: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(before, (120, 30));
+
+    mgr.settle_pending_resize_generation_now(&id, current_generation);
+    let settled: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(settled, (110, 30));
+
+    mgr.kill(&id).unwrap();
+}
+
+#[test]
+fn settle_during_inflight_kill_abandons_persistence() {
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("killwindow");
     mgr.set_resize_settle_ms(3_600_000);
 
     mgr.resize(&id, 100, 30, &pool).unwrap();
@@ -5120,119 +4337,28 @@ fn settle_during_inflight_kill_aborts_untouched() {
         .recv_timeout(Duration::from_secs(2))
         .expect("kill never reached runtime.stop");
     mgr.settle_pending_resize_now(&id);
+    let persisted: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(persisted, (120, 30));
     assert_eq!(
         fake.resizes.lock().unwrap().clone(),
         vec![(id.clone(), 100, 30)]
     );
-    assert!(!mgr.output_snapshot(&id).is_empty());
 
     stop_release.send(()).unwrap();
     kill.join().unwrap().unwrap();
-    assert!(!mgr.output_snapshot(&id).is_empty());
 }
 
 #[test]
-fn stale_settle_after_kill_and_respawn_touches_nothing() {
-    let (pool, fake, mgr, id, _events) = spawn_claude_for_resize("respawn");
-    mgr.set_resize_settle_ms(3_600_000);
-
-    mgr.resize(&id, 100, 30, &pool).unwrap();
-    mgr.kill(&id).unwrap();
-    mgr.install_handle(
-        &id,
-        SessionHandle {
-            id: id.clone(),
-            mission_id: None,
-            runner_id: None,
-            runtime_session: RuntimeSession {
-                runtime: "fake".into(),
-                session_id: id.clone(),
-            },
-            codex_capture: None,
-            forwarder: None,
-            stop: Arc::new(AtomicBool::new(false)),
-        },
-        None,
-        Some((199, 59)),
-        "claude-code",
-        &pool,
-    );
-    mgr.append_synthetic_output(&id, None, b"fresh resume repaint", capture().as_ref());
-
-    mgr.settle_pending_resize_now(&id);
-    assert_eq!(
-        fake.resizes.lock().unwrap().clone(),
-        vec![(id.clone(), 100, 30)]
-    );
-    assert_eq!(
-        mgr.session_state(&id)
-            .unwrap()
-            .lock()
-            .unwrap()
-            .last_pty_cols,
-        Some(199),
-        "handle install must preserve the caller-supplied resume width"
-    );
-    assert!(!mgr.output_snapshot(&id).is_empty());
-
-    mgr.resize(&id, 199, 58, &pool).unwrap();
-    assert_eq!(
-        fake.resizes.lock().unwrap().clone(),
-        vec![(id.clone(), 100, 30), (id.clone(), 199, 58)]
-    );
-    assert!(!mgr.output_snapshot(&id).is_empty());
-
-    mgr.kill(&id).unwrap();
-}
-
-#[test]
-fn failed_immediate_resize_cannot_purge() {
-    let (pool, fake, mgr, id, _events) = spawn_claude_for_resize("failioctl");
-    mgr.set_resize_settle_ms(3_600_000);
-
-    fake.fail_resize_for(&id);
-    mgr.resize(&id, 100, 30, &pool).unwrap_err();
-    mgr.settle_pending_resize_now(&id);
-    assert_eq!(
-        fake.resizes.lock().unwrap().clone(),
-        vec![(id.clone(), 100, 30)]
-    );
-    assert!(!mgr.output_snapshot(&id).is_empty());
-
-    fake.allow_resize_for(&id);
-    mgr.resize(&id, 100, 30, &pool).unwrap();
-    mgr.settle_pending_resize_now(&id);
-    assert!(mgr.output_snapshot(&id).is_empty());
-
-    mgr.kill(&id).unwrap();
-}
-
-#[test]
-fn purge_precedes_nudged_repaint_and_emits_no_clear() {
-    let (pool, fake, mgr, id, events) = spawn_claude_for_resize("stormemit");
-    mgr.set_resize_settle_ms(3_600_000);
-
-    mgr.resize(&id, 100, 30, &pool).unwrap();
-    fake.emit_output_on_resize(b"fresh repaint");
-    mgr.settle_pending_resize_now(&id);
-    let snapshot = wait_for_snapshot(&mgr, &id, 2);
-    assert_eq!(snapshot.len(), 2);
-    assert!(snapshot
-        .iter()
-        .all(|event| { BASE64.decode(&event.data).unwrap() == b"fresh repaint" }));
-    assert!(events
-        .output
-        .lock()
-        .unwrap()
-        .iter()
-        .all(|event| { BASE64.decode(&event.data).unwrap() != b"\x1b[2J\x1b[H" }));
-
-    mgr.kill(&id).unwrap();
-}
-
-#[test]
-fn resize_settle_thread_applies_without_manual_nudge() {
-    let (pool, fake, mgr, id, _events) = spawn_claude_for_resize("stormthread");
+fn resize_settle_thread_persists_without_extra_ioctls() {
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("stormthread");
     mgr.set_resize_settle_ms(25);
 
     for cols in [78u16, 209, 210] {
@@ -5240,25 +4366,34 @@ fn resize_settle_thread_applies_without_manual_nudge() {
     }
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        if mgr.output_snapshot(&id).is_empty() && fake.resizes.lock().unwrap().len() == 5 {
+        let persisted: (u16, u16) = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        if persisted == (210, 30) {
             break;
         }
         if Instant::now() > deadline {
-            panic!("settle thread never applied the storm");
+            panic!("settle thread never persisted the storm");
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(
-        fake.resizes.lock().unwrap().last().cloned(),
-        Some((id.clone(), 210, 30))
+        fake.resizes.lock().unwrap().clone(),
+        vec![
+            (id.clone(), 78, 30),
+            (id.clone(), 209, 30),
+            (id.clone(), 210, 30),
+        ]
     );
 
     mgr.kill(&id).unwrap();
 }
-
-// ---------------------------------------------------------------------
-// Feature 41 — runtime override (per slot / per direct chat)
-// ---------------------------------------------------------------------
 
 #[test]
 fn runtime_direct_runner_applies_model_and_effort() {
