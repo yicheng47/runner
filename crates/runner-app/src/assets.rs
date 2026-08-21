@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use gpui::{AssetSource, Result, SharedString};
+use gpui::{AssetSource, ImageSource, Resource, Result, SharedString};
 
 pub const INTER_FONT: &[u8] = include_bytes!("../../../assets/fonts/Inter-Variable.ttf");
 pub const MESLO_FONT_REGULAR: &[u8] =
@@ -9,6 +9,7 @@ pub const MESLO_FONT_BOLD: &[u8] = include_bytes!("../../../assets/fonts/MesloLG
 pub const MESLO_FONT_ITALIC: &[u8] = include_bytes!("../../../assets/fonts/MesloLGS-NF-Italic.ttf");
 pub const MESLO_FONT_BOLD_ITALIC: &[u8] =
     include_bytes!("../../../assets/fonts/MesloLGS-NF-Bold-Italic.ttf");
+const APP_ICON: &[u8] = include_bytes!("../../../assets/icon.png");
 
 const BRAND_MARK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><svg x="3" y="3" width="9" height="9" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".4"/></svg><svg x="9" y="9" width="14" height="14" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><svg x="3" y="20" width="9" height="9" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".4"/></svg></svg>"#;
 const PANEL_LEFT_FILLED: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -2 64 50" fill="none"><rect x="1.5" y="1.5" width="57" height="43" rx="7.5" stroke="currentColor" stroke-width="3"/><path d="M9 3 H19 V43 H9 Q3 43 3 37 V9 Q3 3 9 3 Z" fill="currentColor"/></svg>"#;
@@ -67,8 +68,15 @@ const ZAP: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 2
 const TRIANGLE_ALERT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>"#;
 const SHIELD_ALERT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>"#;
 const ROCKET: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.87 12.87 0 0 1 22 2c0 2.72-.78 7.5-6.05 11A22.35 22.35 0 0 1 12 15z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>"#;
+const DOWNLOAD: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>"#;
+const FOLDER_OPEN: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1-2a2 2 0 0 1 1.8-1H21a1 1 0 0 1 .9 1.4l-2.5 6A2 2 0 0 1 17.6 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v3"/></svg>"#;
+const BOOK_TEXT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/><path d="M8 7h6"/><path d="M8 11h8"/></svg>"#;
+const SCALE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 16 3-8 3 8a5 5 0 0 1-6 0"/><path d="m2 16 3-8 3 8a5 5 0 0 1-6 0"/><path d="M7 21h10"/><path d="M12 3v18"/><path d="M3 7h18"/></svg>"#;
+const EXTERNAL_LINK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>"#;
+const GITHUB: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.6.5.5 5.7.5 12.1c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2.1c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.7 2.7 1.2 3.4.9.1-.7.4-1.2.7-1.5-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2.9-.3 1.9-.4 2.9-.4s2 .1 2.9.4c2.3-1.5 3.3-1.2 3.3-1.2.7 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.4.5 12 .5z"/></svg>"#;
 
 const ASSETS: &[(&str, &[u8])] = &[
+    ("app-icon.png", APP_ICON),
     ("brand-mark.svg", BRAND_MARK),
     ("panel-left-filled.svg", PANEL_LEFT_FILLED),
     ("panel-left-hollow.svg", PANEL_LEFT_HOLLOW),
@@ -126,9 +134,19 @@ const ASSETS: &[(&str, &[u8])] = &[
     ("triangle-alert.svg", TRIANGLE_ALERT),
     ("shield-alert.svg", SHIELD_ALERT),
     ("rocket.svg", ROCKET),
+    ("download.svg", DOWNLOAD),
+    ("folder-open.svg", FOLDER_OPEN),
+    ("book-text.svg", BOOK_TEXT),
+    ("scale.svg", SCALE),
+    ("external-link.svg", EXTERNAL_LINK),
+    ("github.svg", GITHUB),
 ];
 
 pub struct Assets;
+
+pub fn app_icon_source() -> ImageSource {
+    ImageSource::Resource(Resource::Embedded("app-icon.png".into()))
+}
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
@@ -144,5 +162,18 @@ impl AssetSource for Assets {
             .filter(|(asset_path, _)| asset_path.starts_with(path))
             .map(|(asset_path, _)| SharedString::from(*asset_path))
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_icon_uses_the_embedded_asset_loader() {
+        assert!(matches!(
+            app_icon_source(),
+            ImageSource::Resource(Resource::Embedded(path)) if path.as_ref() == "app-icon.png"
+        ));
     }
 }

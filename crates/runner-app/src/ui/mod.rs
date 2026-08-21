@@ -15,6 +15,7 @@ pub mod settings;
 pub mod surfaces;
 pub mod toggle;
 pub mod tooltip;
+pub mod workspace_header;
 
 use gpui::{Pixels, Window};
 
@@ -53,6 +54,7 @@ pub use settings::{PaneHeader, SettingsCard, SettingsHeader, SettingsRow, StepHa
 pub use surfaces::{pill, status_badge, Badge, Card, RuntimeBadge, Tone};
 pub use toggle::{Toggle, ToggleHandler};
 pub use tooltip::Tooltip;
+pub use workspace_header::{WorkspaceHeader, WORKSPACE_HEADER_HEIGHT};
 
 #[cfg(test)]
 mod tests {

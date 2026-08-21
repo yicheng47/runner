@@ -152,12 +152,18 @@ impl Render for ModelField {
         let has_suggestions = !self.suggestions.is_empty();
         let entity = cx.entity();
         let click_entity = entity.clone();
+        let click_focus = self.input.read(cx).focus_handle();
+        let disabled = self.disabled;
         let mut root = div()
             .id("model-field")
             .relative()
             .w_full()
             .on_key_down(cx.listener(Self::on_key_down))
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            .capture_any_mouse_down(move |event, window, cx| {
+                if disabled || event.button != MouseButton::Left {
+                    return;
+                }
+                click_focus.focus(window);
                 click_entity.update(cx, |field, cx| field.toggle(cx));
             })
             .child(self.input.clone())
@@ -172,6 +178,7 @@ impl Render for ModelField {
                         .items_center()
                         .justify_center()
                         .text_color(theme::faint())
+                        .when(!self.disabled, |toggle| toggle.cursor_pointer())
                         .child(
                             svg()
                                 .path(if open {

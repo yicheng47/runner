@@ -586,7 +586,7 @@ impl NativeRoot {
         )?;
         terminal.set_palette(self.settings(cx).terminal_theme.palette());
         terminal.configure(
-            self.settings(cx).terminal_scrollback,
+            app_settings::TERMINAL_SCROLLBACK_LINES,
             match self.settings(cx).terminal_cursor_style {
                 app_settings::TerminalCursorStyle::Block => {
                     alacritty_terminal::vte::ansi::CursorShape::Block

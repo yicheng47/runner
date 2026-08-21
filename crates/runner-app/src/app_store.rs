@@ -144,7 +144,6 @@ struct TerminalSettingsSnapshot {
     font_family: TerminalFontFamily,
     font_size: u16,
     cursor_style: TerminalCursorStyle,
-    scrollback: usize,
 }
 
 impl From<&AppSettings> for TerminalSettingsSnapshot {
@@ -154,7 +153,6 @@ impl From<&AppSettings> for TerminalSettingsSnapshot {
             font_family: settings.terminal_font_family,
             font_size: settings.terminal_font_size,
             cursor_style: settings.terminal_cursor_style,
-            scrollback: settings.terminal_scrollback,
         }
     }
 }
@@ -194,7 +192,6 @@ impl From<&AppSettings> for ShellSettingsSnapshot {
         std::mem::discriminant(&settings.terminal_font_family).hash(&mut hasher);
         settings.terminal_font_size.hash(&mut hasher);
         std::mem::discriminant(&settings.terminal_cursor_style).hash(&mut hasher);
-        settings.terminal_scrollback.hash(&mut hasher);
         settings.sidebar_width.to_bits().hash(&mut hasher);
         settings.sidebar_projects_open.hash(&mut hasher);
         settings.sidebar_chats_open.hash(&mut hasher);

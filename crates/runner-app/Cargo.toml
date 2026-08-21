@@ -10,6 +10,9 @@ default-run = "runner-app"
 name = "runner-app"
 path = "src/main.rs"
 
+[features]
+updater = []
+
 [dependencies]
 alacritty_terminal = "0.26"
 anyhow = "1"
@@ -23,12 +26,14 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1", features = ["net", "rt-multi-thread", "sync", "time"] }
 tempfile = "3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-segmentation = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSButton", "NSControl", "NSImage", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSData", "NSGeometry"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSData", "NSDate", "NSGeometry"] }
 raw-window-handle = "0.6"
 
 [dev-dependencies]

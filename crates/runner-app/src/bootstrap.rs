@@ -86,9 +86,6 @@ fn paths_for_home(home: &Path, debug: bool) -> NativePaths {
 pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
     std::fs::create_dir_all(&paths.app_data_dir)
         .with_context(|| format!("create {}", paths.app_data_dir.display()))?;
-    std::fs::create_dir_all(&paths.log_dir)
-        .with_context(|| format!("create {}", paths.log_dir.display()))?;
-
     let pool = Arc::new(
         db::open_pool(&paths.app_data_dir.join("runner.db")).context("open Runner database")?,
     );
@@ -135,7 +132,7 @@ pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
         mcp: Arc::new(mcp::McpHandle::new()),
         windows: window_registry,
         events: event_channel.clone(),
-        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        app_version: crate::version::display_version(),
     };
 
     futures::executor::block_on(ops::mission::mount_all_running_mission_routers(&core));

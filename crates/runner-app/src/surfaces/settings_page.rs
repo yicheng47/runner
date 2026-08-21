@@ -15,7 +15,7 @@ use runner_app::ui::{
 use super::*;
 use crate::app_settings::{
     normalize_zoom, nudge_zoom, AppFontFamily, TerminalCursorStyle, TerminalFontFamily,
-    TerminalTheme, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, TERMINAL_SCROLLBACK_OPTIONS,
+    TerminalTheme, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, TERMINAL_SCROLLBACK_LINES,
     ZOOM_STEPS,
 };
 use crate::surfaces::app_shell::TITLEBAR_DRAG_HEIGHT;
@@ -158,7 +158,6 @@ enum SettingsSelection {
     TerminalTheme,
     TerminalFont,
     TerminalCursor,
-    TerminalScrollback,
 }
 
 pub(crate) struct SettingsState {
@@ -180,9 +179,11 @@ pub(crate) struct SettingsState {
     terminal_theme: Entity<StyledSelect>,
     terminal_font: Entity<StyledSelect>,
     terminal_cursor: Entity<StyledSelect>,
-    terminal_scrollback: Entity<StyledSelect>,
     agents: Option<Entity<settings::agents::AgentsPane>>,
     mcp: Option<Entity<settings::mcp::McpPane>>,
+    updates: Option<Entity<settings::updates::UpdatesPane>>,
+    diagnostics: Option<Entity<settings::diagnostics::DiagnosticsPane>>,
+    about: Option<Entity<settings::about::AboutPane>>,
     archived: Option<Entity<settings::archived::ArchivedPane>>,
     nav_scroll: ScrollHandle,
     nav_scrollbar: Entity<Scrollbar>,
@@ -300,17 +301,6 @@ impl SettingsState {
             SettingsSelection::TerminalCursor,
             cx,
         );
-        let terminal_scrollback = settings_select(
-            &root,
-            "settings-terminal-scrollback",
-            settings.terminal_scrollback.to_string(),
-            TERMINAL_SCROLLBACK_OPTIONS
-                .into_iter()
-                .map(|value| SelectOption::new(value.to_string(), formatted_count(value)))
-                .collect(),
-            SettingsSelection::TerminalScrollback,
-            cx,
-        );
         let owner = cx.entity_id();
         let nav_scroll = ScrollHandle::new();
         let nav_scrollbar = cx.new(|_| Scrollbar::app(nav_scroll.clone(), owner));
@@ -360,9 +350,11 @@ impl SettingsState {
             terminal_theme,
             terminal_font,
             terminal_cursor,
-            terminal_scrollback,
             agents: None,
             mcp: None,
+            updates: None,
+            diagnostics: None,
+            about: None,
             archived: None,
             nav_scroll,
             nav_scrollbar,
@@ -562,6 +554,30 @@ impl NativeRoot {
                     mcp.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
                 }
             }
+            SettingsPane::Updates => {
+                if self.settings_page.updates.is_none() {
+                    let app_store = self.app_store.clone();
+                    let updater = runner_app::updater::global_updater(cx);
+                    self.settings_page.updates = Some(cx.new(|pane_cx| {
+                        settings::updates::UpdatesPane::new(app_store, updater, pane_cx)
+                    }));
+                }
+                if let Some(updates) = self.settings_page.updates.clone() {
+                    updates.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
+                }
+            }
+            SettingsPane::Diagnostics => {
+                if self.settings_page.diagnostics.is_none() {
+                    let log_dir = self.log_dir.clone();
+                    self.settings_page.diagnostics =
+                        Some(cx.new(move |_| settings::diagnostics::DiagnosticsPane::new(log_dir)));
+                }
+            }
+            SettingsPane::About => {
+                if self.settings_page.about.is_none() {
+                    self.settings_page.about = Some(cx.new(|_| settings::about::AboutPane::new()));
+                }
+            }
             SettingsPane::Archived => {
                 if self.settings_page.archived.is_none() {
                     let shell = cx.entity().downgrade();
@@ -574,12 +590,7 @@ impl NativeRoot {
                     archived.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
                 }
             }
-            SettingsPane::Appearance
-            | SettingsPane::Terminal
-            | SettingsPane::Shortcuts
-            | SettingsPane::Updates
-            | SettingsPane::Diagnostics
-            | SettingsPane::About => {}
+            SettingsPane::Appearance | SettingsPane::Terminal | SettingsPane::Shortcuts => {}
         }
         window.focus(&self.settings_page.focus);
         cx.notify();
@@ -617,11 +628,6 @@ impl NativeRoot {
                 .is_some_and(|value| update_if_changed(&mut settings.terminal_font_family, value)),
             SettingsSelection::TerminalCursor => parse_terminal_cursor(value)
                 .is_some_and(|value| update_if_changed(&mut settings.terminal_cursor_style, value)),
-            SettingsSelection::TerminalScrollback => value
-                .parse::<usize>()
-                .ok()
-                .filter(|value| TERMINAL_SCROLLBACK_OPTIONS.contains(value))
-                .is_some_and(|value| update_if_changed(&mut settings.terminal_scrollback, value)),
         });
         if !changed {
             return;
@@ -663,8 +669,7 @@ impl NativeRoot {
         for chat in self.attached.values() {
             chat.terminal
                 .set_palette(self.settings(cx).terminal_theme.palette());
-            chat.terminal
-                .configure(self.settings(cx).terminal_scrollback, cursor);
+            chat.terminal.configure(TERMINAL_SCROLLBACK_LINES, cursor);
         }
     }
 
@@ -1005,12 +1010,26 @@ impl NativeRoot {
                 .mcp
                 .clone()
                 .map(IntoElement::into_any_element),
+            SettingsPane::Updates => self
+                .settings_page
+                .updates
+                .clone()
+                .map(IntoElement::into_any_element),
+            SettingsPane::Diagnostics => self
+                .settings_page
+                .diagnostics
+                .clone()
+                .map(IntoElement::into_any_element),
+            SettingsPane::About => self
+                .settings_page
+                .about
+                .clone()
+                .map(IntoElement::into_any_element),
             SettingsPane::Archived => self
                 .settings_page
                 .archived
                 .clone()
                 .map(IntoElement::into_any_element),
-            SettingsPane::Updates | SettingsPane::Diagnostics | SettingsPane::About => None,
         }
     }
 
@@ -1678,22 +1697,6 @@ impl NativeRoot {
                 SettingsRow::new("Cursor style", self.settings_page.terminal_cursor.clone())
                     .subtitle("Block, underline, or bar — affects the prompt caret only.")
                     .into_any_element(),
-                SettingsRow::new(
-                    "Scrollback",
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(self.settings_page.terminal_scrollback.clone())
-                        .child(
-                            div()
-                                .text_size(rems(12. / 16.))
-                                .text_color(theme::muted())
-                                .child("lines"),
-                        ),
-                )
-                .subtitle("Lines kept in history per session. Higher uses more memory.")
-                .into_any_element(),
             ]))
             .into_any_element()
     }
@@ -1823,16 +1826,6 @@ fn parse_terminal_cursor(value: &str) -> Option<TerminalCursorStyle> {
         "underline" => Some(TerminalCursorStyle::Underline),
         "bar" => Some(TerminalCursorStyle::Bar),
         _ => None,
-    }
-}
-
-fn formatted_count(value: usize) -> String {
-    match value {
-        1_000 => "1,000".into(),
-        5_000 => "5,000".into(),
-        10_000 => "10,000".into(),
-        50_000 => "50,000".into(),
-        value => value.to_string(),
     }
 }
 
