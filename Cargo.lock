@@ -5052,6 +5052,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "base64",
+ "regex",
  "runner-backend",
  "serde",
  "serde_json",

@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::ops::Range;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, rems, AnyElement, FontWeight, HighlightStyle, SharedString, StrikethroughStyle,
-    StyledText,
+    div, px, rems, AnyElement, App, FontWeight, Global, HighlightStyle, InteractiveText,
+    SharedString, StrikethroughStyle, StyledText, UnderlineStyle,
 };
 
 use crate::theme;
@@ -23,6 +24,44 @@ enum MarkdownBlock {
         rows: Vec<Vec<String>>,
     },
     Rule,
+}
+
+#[derive(Default)]
+struct MarkdownLinkHover {
+    active_line: Option<String>,
+    links: HashMap<String, usize>,
+}
+
+impl Global for MarkdownLinkHover {}
+
+impl MarkdownLinkHover {
+    fn link_for(&self, line: &str) -> Option<usize> {
+        (self.active_line.as_deref() == Some(line))
+            .then(|| self.links.get(line).copied())
+            .flatten()
+    }
+
+    fn set_link(&mut self, line: &str, link: Option<usize>) -> bool {
+        match link {
+            Some(link) => self.links.insert(line.to_owned(), link) != Some(link),
+            None => self.links.remove(line).is_some(),
+        }
+    }
+
+    fn set_line_active(&mut self, line: &str, active: bool) -> bool {
+        let next = if active {
+            Some(line.to_owned())
+        } else if self.active_line.as_deref() == Some(line) {
+            None
+        } else {
+            return false;
+        };
+        if self.active_line == next {
+            return false;
+        }
+        self.active_line = next;
+        true
+    }
 }
 
 fn parse_blocks(text: &str) -> Vec<MarkdownBlock> {
@@ -139,7 +178,7 @@ fn parse_table_row(line: &str) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn render_markdown(id: &str, text: &str) -> AnyElement {
+pub(crate) fn render_markdown(id: &str, text: &str, cx: &App) -> AnyElement {
     let blocks = parse_blocks(text);
     let id = id.to_owned();
     div()
@@ -151,25 +190,31 @@ pub(crate) fn render_markdown(id: &str, text: &str) -> AnyElement {
             blocks
                 .into_iter()
                 .enumerate()
-                .map(|(index, block)| render_block(&id, index, block)),
+                .map(|(index, block)| render_block(&id, index, block, cx)),
         )
         .into_any_element()
 }
 
-fn render_block(id: &str, index: usize, block: MarkdownBlock) -> AnyElement {
+fn render_block(id: &str, index: usize, block: MarkdownBlock, cx: &App) -> AnyElement {
     match block {
         MarkdownBlock::Paragraph(text) => div()
             .flex()
             .flex_col()
             .line_height(rems(20. / 16.))
-            .children(text.lines().map(render_inline_line))
+            .children(text.lines().enumerate().map(|(line, text)| {
+                render_inline_line(format!("{id}-{index}-paragraph-{line}"), text, cx)
+            }))
             .into_any_element(),
         MarkdownBlock::Heading(level, text) => div()
             .mt_2()
             .mb_1()
             .text_size(rems(if level == 1 { 14. / 16. } else { 13. / 16. }))
             .font_weight(FontWeight::SEMIBOLD)
-            .child(render_inline_line(&text))
+            .child(render_inline_line(
+                format!("{id}-{index}-heading"),
+                &text,
+                cx,
+            ))
             .into_any_element(),
         MarkdownBlock::ListItem { marker, text } => div()
             .pl_4()
@@ -178,12 +223,11 @@ fn render_block(id: &str, index: usize, block: MarkdownBlock) -> AnyElement {
             .gap_2()
             .line_height(rems(20. / 16.))
             .child(marker)
-            .child(
-                div()
-                    .min_w(gpui::px(0.))
-                    .flex_1()
-                    .child(render_inline_line(&text)),
-            )
+            .child(div().min_w(gpui::px(0.)).flex_1().child(render_inline_line(
+                format!("{id}-{index}-list"),
+                &text,
+                cx,
+            )))
             .into_any_element(),
         MarkdownBlock::Quote(text) => div()
             .my_1()
@@ -191,7 +235,7 @@ fn render_block(id: &str, index: usize, block: MarkdownBlock) -> AnyElement {
             .border_color(theme::border_strong())
             .pl_3()
             .text_color(theme::muted())
-            .child(render_inline_line(&text))
+            .child(render_inline_line(format!("{id}-{index}-quote"), &text, cx))
             .into_any_element(),
         MarkdownBlock::Code(text) => div()
             .id((SharedString::from(id.to_owned()), index))
@@ -218,8 +262,10 @@ fn render_block(id: &str, index: usize, block: MarkdownBlock) -> AnyElement {
                     .min_w(px(420.))
                     .flex()
                     .flex_col()
-                    .child(render_table_row(header, true))
-                    .children(rows.into_iter().map(|row| render_table_row(row, false))),
+                    .child(render_table_row(id, index, 0, header, true, cx))
+                    .children(rows.into_iter().enumerate().map(|(row_index, row)| {
+                        render_table_row(id, index, row_index + 1, row, false, cx)
+                    })),
             )
             .into_any_element(),
         MarkdownBlock::Rule => div()
@@ -231,10 +277,17 @@ fn render_block(id: &str, index: usize, block: MarkdownBlock) -> AnyElement {
     }
 }
 
-fn render_table_row(cells: Vec<String>, heading: bool) -> AnyElement {
+fn render_table_row(
+    id: &str,
+    block_index: usize,
+    row_index: usize,
+    cells: Vec<String>,
+    heading: bool,
+    cx: &App,
+) -> AnyElement {
     div()
         .flex()
-        .children(cells.into_iter().map(|cell| {
+        .children(cells.into_iter().enumerate().map(|(cell_index, cell)| {
             div()
                 .min_w(px(100.))
                 .flex_1()
@@ -251,51 +304,88 @@ fn render_table_row(cells: Vec<String>, heading: bool) -> AnyElement {
                 } else {
                     theme::muted()
                 })
-                .child(render_inline_line(&cell))
+                .child(render_inline_line(
+                    format!("{id}-{block_index}-table-{row_index}-{cell_index}"),
+                    &cell,
+                    cx,
+                ))
         }))
         .into_any_element()
 }
 
-fn render_inline_line(source: &str) -> AnyElement {
-    let mut children = Vec::new();
+fn render_inline_line(id: String, source: &str, cx: &App) -> AnyElement {
+    let hovered_link = cx
+        .try_global::<MarkdownLinkHover>()
+        .and_then(|hover| hover.link_for(&id));
+    let mut text = String::new();
+    let mut highlights = Vec::<(Range<usize>, HighlightStyle)>::new();
+    let mut link_ranges = Vec::new();
+    let mut urls = Vec::new();
     let mut rest = source;
     while let Some((start, label, url, consumed)) = next_link(rest) {
         if start > 0 {
-            children.push(
-                div()
-                    .whitespace_normal()
-                    .child(styled_inline(&rest[..start]))
-                    .into_any_element(),
-            );
+            append_styled_segment(&rest[..start], None, &mut text, &mut highlights);
         }
-        let open_url = url.to_owned();
-        children.push(
-            div()
-                .id(SharedString::from(format!("markdown-link-{open_url}")))
-                .cursor_pointer()
-                .text_color(theme::accent())
-                .underline()
-                .text_decoration_color(theme::with_alpha(theme::accent(), 0.4))
-                .hover(|link| link.text_decoration_color(theme::accent()))
-                .on_click(move |_, _, cx| cx.open_url(&open_url))
-                .child(label.to_owned())
-                .into_any_element(),
+        let link_start = text.len();
+        let link_index = link_ranges.len();
+        append_styled_segment(
+            label,
+            Some(HighlightStyle {
+                color: Some(theme::accent()),
+                underline: Some(UnderlineStyle {
+                    color: Some(if hovered_link == Some(link_index) {
+                        theme::accent()
+                    } else {
+                        theme::with_alpha(theme::accent(), 0.4)
+                    }),
+                    thickness: px(1.),
+                    wavy: false,
+                }),
+                ..Default::default()
+            }),
+            &mut text,
+            &mut highlights,
         );
+        link_ranges.push(link_start..text.len());
+        urls.push(url.to_owned());
         rest = &rest[start + consumed..];
     }
-    if !rest.is_empty() || children.is_empty() {
-        children.push(
-            div()
-                .whitespace_normal()
-                .child(styled_inline(rest))
-                .into_any_element(),
-        );
-    }
+    append_styled_segment(rest, None, &mut text, &mut highlights);
+
+    let styled = StyledText::new(text).with_highlights(highlights);
+    let hover_id = id.clone();
+    let hover_ranges = link_ranges.clone();
+    let interactive = InteractiveText::new(SharedString::from(id.clone()), styled)
+        .on_click(link_ranges, move |index, _, cx| cx.open_url(&urls[index]))
+        .on_hover(move |character, _, window, cx| {
+            let link = character.and_then(|character| {
+                hover_ranges
+                    .iter()
+                    .position(|range| range.contains(&character))
+            });
+            let hover = cx.default_global::<MarkdownLinkHover>();
+            if hover.set_link(&hover_id, link) {
+                cx.notify(window.current_view());
+            }
+        });
+    let leave_id = id.clone();
     div()
+        .id(SharedString::from(format!("{id}-hover")))
+        .w_full()
         .min_w(px(0.))
-        .flex()
-        .flex_wrap()
-        .children(children)
+        .whitespace_normal()
+        .on_hover(move |hovered, window, cx| {
+            if cx
+                .default_global::<MarkdownLinkHover>()
+                .set_line_active(&leave_id, *hovered)
+            {
+                cx.notify(window.current_view());
+            }
+        })
+        .when(cfg!(test), |line| {
+            line.debug_selector(|| "MISSION_MARKDOWN_LINE".into())
+        })
+        .child(interactive)
         .into_any_element()
 }
 
@@ -323,28 +413,58 @@ fn next_link(source: &str) -> Option<(usize, &str, &str, usize)> {
         .min_by_key(|candidate| candidate.0)
 }
 
-fn styled_inline(source: &str) -> StyledText {
-    let mut text = String::new();
-    let mut highlights = Vec::<(Range<usize>, HighlightStyle)>::new();
+fn append_styled_segment(
+    source: &str,
+    base: Option<HighlightStyle>,
+    text: &mut String,
+    highlights: &mut Vec<(Range<usize>, HighlightStyle)>,
+) {
     let mut rest = source;
     while !rest.is_empty() {
         let Some((start, marker, end_marker, style)) = next_marker(rest) else {
-            text.push_str(rest);
+            append_highlighted(rest, base, text, highlights);
             break;
         };
-        text.push_str(&rest[..start]);
+        append_highlighted(&rest[..start], base, text, highlights);
         let body_start = start + marker.len();
         let Some(relative_end) = rest[body_start..].find(end_marker) else {
-            text.push_str(&rest[start..]);
+            append_highlighted(&rest[start..], base, text, highlights);
             break;
         };
         let body_end = body_start + relative_end;
-        let rendered_start = text.len();
-        text.push_str(&rest[body_start..body_end]);
-        highlights.push((rendered_start..text.len(), style));
+        append_highlighted(
+            &rest[body_start..body_end],
+            Some(merge_highlight(base.unwrap_or_default(), style)),
+            text,
+            highlights,
+        );
         rest = &rest[body_end + end_marker.len()..];
     }
-    StyledText::new(text).with_highlights(highlights)
+}
+
+fn append_highlighted(
+    source: &str,
+    style: Option<HighlightStyle>,
+    text: &mut String,
+    highlights: &mut Vec<(Range<usize>, HighlightStyle)>,
+) {
+    let start = text.len();
+    text.push_str(source);
+    if let Some(style) = style.filter(|_| start < text.len()) {
+        highlights.push((start..text.len(), style));
+    }
+}
+
+fn merge_highlight(base: HighlightStyle, overlay: HighlightStyle) -> HighlightStyle {
+    HighlightStyle {
+        color: overlay.color.or(base.color),
+        font_weight: overlay.font_weight.or(base.font_weight),
+        font_style: overlay.font_style.or(base.font_style),
+        background_color: overlay.background_color.or(base.background_color),
+        underline: overlay.underline.or(base.underline),
+        strikethrough: overlay.strikethrough.or(base.strikethrough),
+        fade_out: overlay.fade_out.or(base.fade_out),
+    }
 }
 
 fn next_marker(source: &str) -> Option<(usize, &'static str, &'static str, HighlightStyle)> {
@@ -397,6 +517,22 @@ fn next_marker(source: &str) -> Option<(usize, &'static str, &'static str, Highl
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{Context, Render, TestAppContext, VisualTestContext, Window};
+
+    struct MarkdownWrapTest;
+
+    impl Render for MarkdownWrapTest {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(px(280.))
+                .debug_selector(|| "MISSION_MARKDOWN_CONTAINER".into())
+                .child(render_markdown(
+                    "wrap-test",
+                    "A narrow feed line with **styled text**, `inline code`, and [a link whose label also needs to wrap](https://example.com) before the final words.",
+                    cx,
+                ))
+        }
+    }
 
     #[test]
     fn block_parser_preserves_chat_markdown_structure() {
@@ -431,5 +567,39 @@ mod tests {
             next_link("See [Runner](https://example.com)."),
             Some((4, "Runner", "https://example.com", 29))
         );
+    }
+
+    #[test]
+    fn link_hover_returns_when_reentering_a_cached_line() {
+        let mut hover = MarkdownLinkHover::default();
+        assert!(hover.set_link("line-a", Some(1)));
+        assert!(hover.set_line_active("line-a", true));
+        assert_eq!(hover.link_for("line-a"), Some(1));
+
+        assert!(hover.set_line_active("line-a", false));
+        assert_eq!(hover.link_for("line-a"), None);
+        assert!(hover.set_link("line-b", Some(0)));
+        assert!(hover.set_line_active("line-b", true));
+        assert_eq!(hover.link_for("line-b"), Some(0));
+
+        assert!(hover.set_line_active("line-b", false));
+        assert!(hover.set_line_active("line-a", true));
+        assert_eq!(hover.link_for("line-a"), Some(1));
+    }
+
+    #[test]
+    fn inline_markdown_wraps_inside_a_narrow_feed() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|_, _| MarkdownWrapTest);
+        cx.run_until_parked();
+        let mut window = VisualTestContext::from_window(window.into(), &cx);
+        let container = window
+            .debug_bounds("MISSION_MARKDOWN_CONTAINER")
+            .expect("container bounds");
+        let line = window
+            .debug_bounds("MISSION_MARKDOWN_LINE")
+            .expect("line bounds");
+        assert_eq!(container.size.width, px(280.));
+        assert!(line.size.height > px(20.));
     }
 }

@@ -13,7 +13,10 @@ use crate::theme;
 pub(crate) struct UpdatesPane {
     app_store: Entity<AppStore>,
     updater: Entity<Updater>,
+    last_seen_check_at: Option<SystemTime>,
     check_refresh_generation: u64,
+    poll_generation: u64,
+    poll_active: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -25,16 +28,52 @@ impl UpdatesPane {
     ) -> Self {
         let updater_subscription = cx.observe(&updater, |_, _, cx| cx.notify());
         let settings_subscription = cx.observe(&app_store, |_, _, cx| cx.notify());
+        let last_seen_check_at = updater.read(cx).last_check_at();
         Self {
             app_store,
             updater,
+            last_seen_check_at,
             check_refresh_generation: 0,
+            poll_generation: 0,
+            poll_active: false,
             _subscriptions: vec![updater_subscription, settings_subscription],
         }
     }
 
-    pub(crate) fn refresh(&self, cx: &mut Context<Self>) {
+    pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
+        if !self.poll_active {
+            self.poll_active = true;
+            self.poll_generation = self.poll_generation.wrapping_add(1);
+            let generation = self.poll_generation;
+            cx.spawn(async move |weak, cx| loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(30))
+                    .await;
+                let keep_polling = weak
+                    .update(cx, |this, cx| {
+                        if !this.poll_active || this.poll_generation != generation {
+                            return false;
+                        }
+                        let checked_at = this.updater.read(cx).last_check_at();
+                        if checked_at != this.last_seen_check_at {
+                            this.last_seen_check_at = checked_at;
+                            cx.notify();
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep_polling {
+                    break;
+                }
+            })
+            .detach();
+        }
         cx.notify();
+    }
+
+    pub(crate) fn pause(&mut self) {
+        self.poll_active = false;
+        self.poll_generation = self.poll_generation.wrapping_add(1);
     }
 
     fn check_for_updates(&mut self, cx: &mut Context<Self>) {
@@ -53,7 +92,9 @@ impl UpdatesPane {
                         if this.check_refresh_generation != generation {
                             return true;
                         }
-                        let changed = this.updater.read(cx).last_check_at() != previous;
+                        let checked_at = this.updater.read(cx).last_check_at();
+                        let changed = checked_at != previous;
+                        this.last_seen_check_at = checked_at;
                         cx.notify();
                         changed
                     })

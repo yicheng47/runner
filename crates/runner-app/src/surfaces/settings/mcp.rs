@@ -1,6 +1,8 @@
 use gpui::prelude::*;
 use gpui::{div, rems, svg, AnyElement, Context, Entity, FontWeight, Render, SharedString, Window};
-use runner_app::ui::{Button, ButtonSize, ButtonVariant, CopyValueButton, PaneHeader, Toggle};
+use runner_app::ui::{
+    Button, ButtonSize, ButtonVariant, CopyValueButton, PaneHeader, Toggle, Tooltip,
+};
 use runner_backend::ops::mcp::{McpClientStatus, McpIntegrationStatus};
 
 use crate::app_store::AppStore;
@@ -256,6 +258,38 @@ impl McpPane {
             .as_ref()
             .map(|status| parent_path(&status.socket_path))
             .unwrap_or_default();
+        let binding_field = div()
+            .h_8()
+            .min_w_0()
+            .flex_1()
+            .flex()
+            .items_center()
+            .gap_2()
+            .rounded(rems(4. / 16.))
+            .bg(theme::raised())
+            .px_2()
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .font_family("JetBrains Mono")
+                    .text_size(rems(11. / 16.))
+                    .text_color(theme::muted())
+                    .child(if binding_dir.is_empty() {
+                        "Loading...".into()
+                    } else {
+                        binding_dir.clone()
+                    }),
+            )
+            .child(self.binding_copy.clone());
+        let binding_field = if binding_dir.is_empty() {
+            binding_field.into_any_element()
+        } else {
+            Tooltip::new("mcp-binding-dir-tooltip", binding_dir, binding_field)
+                .expand()
+                .into_any_element()
+        };
         div()
             .rounded(rems(12. / 16.))
             .border_1()
@@ -316,33 +350,7 @@ impl McpPane {
                             .text_color(theme::faint())
                             .child("Binding dir"),
                     )
-                    .child(
-                        div()
-                            .h_8()
-                            .min_w_0()
-                            .flex_1()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .rounded(rems(4. / 16.))
-                            .bg(theme::raised())
-                            .px_2()
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .truncate()
-                                    .font_family("JetBrains Mono")
-                                    .text_size(rems(11. / 16.))
-                                    .text_color(theme::muted())
-                                    .child(if binding_dir.is_empty() {
-                                        "Loading...".into()
-                                    } else {
-                                        binding_dir
-                                    }),
-                            )
-                            .child(self.binding_copy.clone()),
-                    ),
+                    .child(binding_field),
             )
             .into_any_element()
     }

@@ -9,6 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -16,30 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
-    runs-on: macos-15
-    timeout-minutes: 60
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        run: rustup show active-toolchain
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install Metal toolchain
-        run: xcodebuild -downloadComponent MetalToolchain
-
-      - name: Verify
-        run: make verify
-
   build-macos:
-    needs: verify
     runs-on: macos-15
     timeout-minutes: 60
     env:
@@ -74,6 +52,8 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Install Metal toolchain
         run: xcodebuild -downloadComponent MetalToolchain
@@ -129,7 +109,8 @@ jobs:
           if gh release view nightly >/dev/null 2>&1; then
             gh release download nightly --pattern '*.dmg' --dir "$appcast_dir"
           fi
-          cp "target/release/Runner-Nightly-${{ steps.build.outputs.short_version }}-arm64.dmg" "$appcast_dir/"
+          new_dmg="target/release/Runner-Nightly-${{ steps.build.outputs.short_version }}-arm64.dmg"
+          cp "$new_dmg" "$appcast_dir/"
           for dmg in "$appcast_dir"/*.dmg; do
             name=${dmg##*/}
             if [[ "$name" =~ ([0-9]{8})\.([0-9]{4})-arm64\.dmg$ ]]; then
@@ -139,6 +120,7 @@ jobs:
             rm -f "$stale"
           done
           echo "APPCAST_DIR=$appcast_dir" >> "$GITHUB_ENV"
+          echo "NEW_DMG=$new_dmg" >> "$GITHUB_ENV"
 
       - name: Generate signed rolling appcast
         env:
@@ -152,6 +134,21 @@ jobs:
             --maximum-versions 10 \
             "$APPCAST_DIR"
 
+      - name: Require CI green for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ci_run_id=""
+          for _ in {1..60}; do
+            ci_run_id=$(gh run list --commit "$GITHUB_SHA" --workflow ci.yaml --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+            if [[ -n "$ci_run_id" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          test -n "$ci_run_id" || { echo "error: no CI run found for $GITHUB_SHA" >&2; exit 1; }
+          gh run watch "$ci_run_id" --exit-status
+
       - name: Publish the rolling prerelease assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -161,7 +158,7 @@ jobs:
           else
             gh release create nightly --target gpui-nightly --title "Runner Nightly" --notes "Rolling prerelease feed for the GPUI nightly channel." --prerelease --latest=false
           fi
-          gh release upload nightly "$APPCAST_DIR"/*.dmg "$APPCAST_DIR/appcast.xml" --clobber
+          gh release upload nightly "$NEW_DMG" "$APPCAST_DIR/appcast.xml" --clobber
           gh api "repos/${{ github.repository }}/releases/tags/nightly" --jq '.assets[].name' | while IFS= read -r asset; do
             if [[ "$asset" == *.dmg && ! -f "$APPCAST_DIR/$asset" ]]; then
               gh release delete-asset nightly "$asset" --yes

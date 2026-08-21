@@ -32,7 +32,7 @@ use runner_terminal::mappings::{
     encode_mouse_motion, encode_mouse_press, encode_mouse_release, MouseButton, MouseModifiers,
 };
 use runner_terminal::palette::{self, TerminalPalette};
-use runner_terminal::terminal::TerminalSession;
+use runner_terminal::terminal::{TerminalLink, TerminalSession};
 
 use super::glyphs::{snapped_cell_bounds, ProceduralCell};
 
@@ -55,8 +55,13 @@ struct TerminalHit {
     viewport_row: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum DragKind {
+    Link {
+        initial: GridPoint,
+        uri: String,
+        moved: bool,
+    },
     Local {
         initial: TerminalHit,
         alt_click: bool,
@@ -69,7 +74,7 @@ enum DragKind {
     },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct DragState {
     generation: u64,
     button: MouseButton,
@@ -84,6 +89,9 @@ pub(crate) struct TerminalInteraction {
     session: Arc<TerminalSession>,
     drag: Option<DragState>,
     next_generation: u64,
+    hovered_link: Option<TerminalLink>,
+    hover_signature: Option<(GridPoint, u64, usize, (u16, u16))>,
+    hover_modifiers: Option<(bool, bool, bool, bool)>,
 }
 
 impl TerminalInteraction {
@@ -92,7 +100,57 @@ impl TerminalInteraction {
             session,
             drag: None,
             next_generation: 0,
+            hovered_link: None,
+            hover_signature: None,
+            hover_modifiers: None,
         }
+    }
+
+    fn refresh_hovered_link(
+        &mut self,
+        modifiers: gpui::Modifiers,
+        geometry: TerminalGeometry,
+        position: Point<Pixels>,
+        hovered: bool,
+        interactive: bool,
+    ) -> bool {
+        if !hovered {
+            self.hover_signature = None;
+            self.hover_modifiers = None;
+            return self.hovered_link.take().is_some();
+        }
+
+        let modifier_signature = (
+            modifiers.platform,
+            modifiers.control,
+            modifiers.alt,
+            modifiers.shift,
+        );
+        let modifiers_changed =
+            self.hover_modifiers.replace(modifier_signature) != Some(modifier_signature);
+        if !interactive || !link_modifier(modifiers) {
+            self.hover_signature = None;
+            return self.hovered_link.take().is_some() || modifiers_changed;
+        }
+
+        let point = hit_test(&self.session, geometry, position).point;
+        let activity = self.session.output_activity();
+        let display_offset = self.session.scroll_state().display_offset;
+        let signature = (
+            point,
+            activity.last_seq,
+            display_offset,
+            self.session.size(),
+        );
+        if self.hover_signature == Some(signature) {
+            return modifiers_changed;
+        }
+
+        self.hover_signature = Some(signature);
+        let hovered_link = self.session.link_at(point);
+        let changed = hovered_link != self.hovered_link;
+        self.hovered_link = hovered_link;
+        changed || modifiers_changed
     }
 
     fn mouse_down(
@@ -112,6 +170,25 @@ impl TerminalInteraction {
             interactive && mode.intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift;
         self.next_generation = self.next_generation.wrapping_add(1);
         let generation = self.next_generation;
+
+        if interactive && button == MouseButton::Left && link_modifier(event.modifiers) {
+            if let Some(link) = self.session.link_at(hit.point) {
+                self.drag = Some(DragState {
+                    generation,
+                    button,
+                    kind: DragKind::Link {
+                        initial: hit.point,
+                        uri: link.uri,
+                        moved: false,
+                    },
+                    autoscroll: 0,
+                    endpoint_column: hit.point.column.0,
+                    endpoint_side: hit.side,
+                    rows: geometry.rows,
+                });
+                return;
+            }
+        }
 
         if reporting {
             if let Some(bytes) = encode_mouse_press(
@@ -189,14 +266,18 @@ impl TerminalInteraction {
         geometry: TerminalGeometry,
         interactive: bool,
     ) {
-        let Some(mut drag) = self.drag else {
+        let Some(mut drag) = self.drag.take() else {
             return;
         };
         if event.pressed_button.and_then(mouse_button) != Some(drag.button) {
+            self.drag = Some(drag);
             return;
         }
         let mut hit = hit_test(&self.session, geometry, event.position);
         match &mut drag.kind {
+            DragKind::Link { initial, moved, .. } => {
+                *moved |= hit.point != *initial;
+            }
             DragKind::Reported { last } => {
                 let modifiers = mouse_modifiers(event.modifiers);
                 let current = (hit.viewport_column, hit.viewport_row, modifiers);
@@ -236,7 +317,13 @@ impl TerminalInteraction {
         self.drag = Some(drag);
     }
 
-    fn mouse_up(&mut self, event: &MouseUpEvent, geometry: TerminalGeometry, interactive: bool) {
+    fn mouse_up(
+        &mut self,
+        event: &MouseUpEvent,
+        geometry: TerminalGeometry,
+        interactive: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(button) = mouse_button(event.button) else {
             return;
         };
@@ -249,6 +336,18 @@ impl TerminalInteraction {
         }
         let hit = hit_test(&self.session, geometry, event.position);
         match drag.kind {
+            DragKind::Link {
+                uri, moved: false, ..
+            } if interactive
+                && link_modifier(event.modifiers)
+                && self
+                    .session
+                    .link_at(hit.point)
+                    .is_some_and(|link| link.uri == uri) =>
+            {
+                cx.open_url(&uri);
+            }
+            DragKind::Link { .. } => {}
             DragKind::Reported { .. } => {
                 let modifiers = mouse_modifiers(event.modifiers);
                 if interactive {
@@ -341,6 +440,10 @@ fn mouse_modifiers(modifiers: gpui::Modifiers) -> MouseModifiers {
         alt: modifiers.alt,
         control: modifiers.control,
     }
+}
+
+fn link_modifier(modifiers: gpui::Modifiers) -> bool {
+    modifiers.platform || modifiers.control
 }
 
 fn autoscroll_amount(bounds: Bounds<Pixels>, position: Point<Pixels>) -> i32 {
@@ -499,8 +602,25 @@ impl TerminalElement {
 
         let interaction = self.interaction.clone();
         let interactive = self.interactive;
-        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-            if phase != DispatchPhase::Capture || event.pressed_button.is_none() {
+        let move_hitbox = hitbox.clone();
+        let current_view = window.current_view();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+            if phase != DispatchPhase::Capture {
+                return;
+            }
+            let changed = interaction.update(cx, |interaction, _| {
+                interaction.refresh_hovered_link(
+                    event.modifiers,
+                    geometry,
+                    event.position,
+                    move_hitbox.is_hovered(window),
+                    interactive,
+                )
+            });
+            if changed {
+                cx.notify(current_view);
+            }
+            if event.pressed_button.is_none() {
                 return;
             }
             if interaction.read(cx).drag.is_none() {
@@ -517,9 +637,28 @@ impl TerminalElement {
             if phase != DispatchPhase::Capture || interaction.read(cx).drag.is_none() {
                 return;
             }
-            interaction.update(cx, |interaction, _| {
-                interaction.mouse_up(event, geometry, interactive);
+            interaction.update(cx, |interaction, interaction_cx| {
+                interaction.mouse_up(event, geometry, interactive, interaction_cx);
             });
+        });
+
+        let interaction = self.interaction.clone();
+        let modifier_hitbox = hitbox;
+        let current_view = window.current_view();
+        window.on_modifiers_changed(move |event, window, cx| {
+            let hovered = modifier_hitbox.is_hovered(window);
+            let changed = interaction.update(cx, |interaction, _| {
+                interaction.refresh_hovered_link(
+                    event.modifiers,
+                    geometry,
+                    window.mouse_position(),
+                    hovered,
+                    interactive,
+                )
+            });
+            if hovered || changed {
+                cx.notify(current_view);
+            }
         });
     }
 }
@@ -539,6 +678,7 @@ pub struct GridPrepaint {
     cols: usize,
     rows: usize,
     mode: TermMode,
+    hovered_link: Option<TerminalLink>,
     hitbox: Hitbox,
 }
 
@@ -629,11 +769,29 @@ impl Element for TerminalElement {
                     cols: last_cols as usize,
                     rows: last_rows as usize,
                     mode: TermMode::NONE,
+                    hovered_link: None,
                     hitbox,
                 };
             }
         }
         let (cols, rows) = self.session.size();
+        let geometry = TerminalGeometry {
+            bounds,
+            cell_width,
+            line_height,
+            cols: cols as usize,
+            rows: rows as usize,
+        };
+        let hovered_link = self.interaction.update(cx, |interaction, _| {
+            interaction.refresh_hovered_link(
+                window.modifiers(),
+                geometry,
+                window.mouse_position(),
+                hitbox.is_hovered(window),
+                self.interactive,
+            );
+            interaction.hovered_link.clone()
+        });
 
         let terminal_palette = self.style.palette;
         let base = palette::base_palette_for(terminal_palette);
@@ -753,9 +911,13 @@ impl Element for TerminalElement {
                     continue;
                 }
 
-                let uses_text_decorations = cell
-                    .flags
-                    .intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT);
+                let link_underlined = hovered_link
+                    .as_ref()
+                    .is_some_and(|link| link.contains(indexed.point));
+                let uses_text_decorations = link_underlined
+                    || cell
+                        .flags
+                        .intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT);
                 if !uses_text_decorations {
                     if let Some(procedural_cell) = ProceduralCell::new(
                         cell.c,
@@ -801,7 +963,13 @@ impl Element for TerminalElement {
                 if cell.flags.contains(Flags::ITALIC) {
                     cell_font = cell_font.italic();
                 }
-                let underline = if cell.flags.intersects(Flags::ALL_UNDERLINES) {
+                let underline = if link_underlined {
+                    Some(gpui::UnderlineStyle {
+                        color: Some(to_hsla(fg, 1.)),
+                        thickness: px(self.style.app_zoom),
+                        wavy: false,
+                    })
+                } else if cell.flags.intersects(Flags::ALL_UNDERLINES) {
                     Some(gpui::UnderlineStyle {
                         color: Some(to_hsla(
                             cell.underline_color()
@@ -982,6 +1150,7 @@ impl Element for TerminalElement {
             cols: cols as usize,
             rows: rows as usize,
             mode,
+            hovered_link,
             hitbox,
         }
     }
@@ -1069,7 +1238,15 @@ impl Element for TerminalElement {
             ElementInputHandler::new(input_bounds, self.input.clone()),
             cx,
         );
-        let cursor_style = if self.interactive && prepaint.mode.intersects(TermMode::MOUSE_MODE) {
+        let cursor_style = if prepaint.hovered_link.is_some() {
+            CursorStyle::PointingHand
+        } else if window.modifiers().alt
+            && !(self.interactive
+                && prepaint.mode.intersects(TermMode::MOUSE_MODE)
+                && !window.modifiers().shift)
+        {
+            CursorStyle::Crosshair
+        } else if self.interactive && prepaint.mode.intersects(TermMode::MOUSE_MODE) {
             CursorStyle::Arrow
         } else {
             CursorStyle::IBeam
@@ -1102,7 +1279,24 @@ mod tests {
     use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
     use gpui::{point, px, Bounds};
 
-    use super::{autoscroll_amount, cell_and_side, point_for_viewport};
+    use super::{autoscroll_amount, cell_and_side, link_modifier, point_for_viewport};
+
+    #[test]
+    fn terminal_links_require_the_platform_or_control_modifier() {
+        assert!(!link_modifier(gpui::Modifiers::default()));
+        assert!(!link_modifier(gpui::Modifiers {
+            alt: true,
+            ..Default::default()
+        }));
+        assert!(link_modifier(gpui::Modifiers {
+            platform: true,
+            ..Default::default()
+        }));
+        assert!(link_modifier(gpui::Modifiers {
+            control: true,
+            ..Default::default()
+        }));
+    }
 
     #[test]
     fn pixel_hit_testing_uses_half_cells_and_exact_edges() {

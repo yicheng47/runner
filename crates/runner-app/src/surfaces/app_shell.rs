@@ -764,6 +764,7 @@ impl NativeRoot {
         if self.shortcut_recording_active() {
             self.finish_shortcut_recording(window, cx);
         }
+        self.pause_updates_pane(cx);
         self.save_settings(cx);
         match self.settings_return_route.clone() {
             AppRoute::Chat | AppRoute::Settings => {

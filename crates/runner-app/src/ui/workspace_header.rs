@@ -1,11 +1,10 @@
 use gpui::prelude::*;
-use gpui::{div, px, rems, svg, AnyElement, FontWeight, Pixels, RenderOnce, SharedString, Window};
+use gpui::{div, px, rems, svg, AnyElement, FontWeight, Pixels, SharedString};
 
 use crate::theme;
 
 pub const WORKSPACE_HEADER_HEIGHT: f32 = 44.;
 
-#[derive(IntoElement)]
 pub struct WorkspaceHeader {
     left_padding: Pixels,
     icon: SharedString,
@@ -117,11 +116,5 @@ impl WorkspaceHeader {
                             .children(self.trailing_actions)
                     })),
             )
-    }
-}
-
-impl RenderOnce for WorkspaceHeader {
-    fn render(self, _window: &mut Window, _cx: &mut gpui::App) -> impl IntoElement {
-        self.into_div()
     }
 }

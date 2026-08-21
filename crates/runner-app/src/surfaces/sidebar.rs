@@ -2042,10 +2042,10 @@ impl Sidebar {
         visible_ids: Vec<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let active = self
-            .shell
-            .upgrade()
-            .is_some_and(|shell| shell.read(cx).tabs.active_tab_id() == Some(node.id.as_str()));
+        let active = self.shell.upgrade().is_some_and(|shell| {
+            let shell = shell.read(cx);
+            chat_tab_row_active(&shell.route, shell.tabs.active_tab_id(), node.id.as_str())
+        });
         let live = members
             .iter()
             .any(|member| member.status == SessionStatus::Running);
@@ -3051,6 +3051,10 @@ fn sidebar_row_label(label: String, selected: bool, monospace: bool) -> AnyEleme
         .into_any_element()
 }
 
+fn chat_tab_row_active(route: &AppRoute, active_tab_id: Option<&str>, node_id: &str) -> bool {
+    matches!(route, AppRoute::Chat) && active_tab_id == Some(node_id)
+}
+
 fn project_row_label(label: String) -> AnyElement {
     div()
         .min_w(px(0.))
@@ -3184,5 +3188,25 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn chat_tab_selection_only_appears_on_the_chat_route() {
+        assert!(chat_tab_row_active(&AppRoute::Chat, Some("tab-1"), "tab-1"));
+        assert!(!chat_tab_row_active(
+            &AppRoute::Chat,
+            Some("tab-2"),
+            "tab-1"
+        ));
+        assert!(!chat_tab_row_active(
+            &AppRoute::Mission("mission-1".into()),
+            Some("tab-1"),
+            "tab-1"
+        ));
+        assert!(!chat_tab_row_active(
+            &AppRoute::Settings,
+            Some("tab-1"),
+            "tab-1"
+        ));
     }
 }
