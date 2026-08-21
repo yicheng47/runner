@@ -1,15 +1,15 @@
 # M6 — Consolidation
 
-Milestone plan for the work that follows UI parity: the verified defects and structural debt from the 2026-08-20 technical audit, plus the reopened hook-based session status (#347). Sits after M5 (sweep + watermark) in the [program plan](plan.md) and runs during the Phase 6 daily-drive clock. Sizes: S < 50 lines, M 50–300, L > 300 or cross-cutting. Line numbers are as of `gpui-nightly` `9a2b218` and will drift.
+Milestone plan for the work that follows UI parity: the verified defects and structural debt from the 2026-08-20 technical audit, plus the reopened hook-based session status (#347). Sits after M4 — M5 was closed 2026-08-21 (plan decision 13) — in the [program plan](plan.md) and runs during the Phase 6 daily-drive clock. Sizes: S < 50 lines, M 50–300, L > 300 or cross-cutting. Line numbers are as of `gpui-nightly` `9a2b218` and will drift.
 
 ## Why a milestone, not a backlog
 
-M3–M5 are parity work: the gate is "same as `main`". Everything here is *beyond* `main` — fixes `main` also has, refactors the agentic build never volunteered, and one new capability. Left as a backlog it does not happen: the audit's own finding is that local patches accumulate and global refactors do not, unless someone schedules them. So M6 is a named stage with ordered missions and gates, like M4.
+M3–M4 are parity work: the gate is "same as `main`". Everything here is *beyond* `main` — fixes `main` also has, refactors the agentic build never volunteered, and one new capability. Left as a backlog it does not happen: the audit's own finding is that local patches accumulate and global refactors do not, unless someone schedules them. So M6 is a named stage with ordered missions and gates, like M4.
 
 Two items that look like M6 are deliberately placed elsewhere:
 
 - **Terminal selection and copy is M4.7**, not M6. xterm.js has selection and ⌘C natively, so its absence on the GPUI line is a parity gap and a daily-driver blocker, and it belongs under M4's exit gate.
-- **Hook-based session status (#347, feature 52) is M6.1, the first M6 mission** — not pulled forward onto `main`. `main` is feature-frozen (plan decision 11, 2026-08-20): Jason will not carry two versions; the rewrite finishes, then the switch happens, then the work beyond parity starts. Feature 52 was specced against `src-tauri` paths; the port mapping is `src-tauri/src/*` ↔ `crates/runner-backend/src/*`.
+- **Hook-based session status (#347, feature 52) is M6.2, right after the input-state mission (M6.1, promoted 2026-08-21)** — not pulled forward onto `main`. `main` is feature-frozen (plan decision 11, 2026-08-20): Jason will not carry two versions; the rewrite finishes, then the switch happens, then the work beyond parity starts. Feature 52 was specced against `src-tauri` paths; the port mapping is `src-tauri/src/*` ↔ `crates/runner-backend/src/*`.
 
 ## Landing rule
 
@@ -21,7 +21,11 @@ Sequencing with M4.6b (shell split): nothing in the app crate starts until it la
 
 Ordered by felt impact in the daily two-agent peer-coding loop (Claude Code + Codex in one mission, human typing into both PTYs) against cost.
 
-### M6.1 — Hook-based session status (#347 reopened 2026-08-20; spec `docs/features/52-hook-based-session-status.md`) — L, backend + status consumers, first M6 mission
+### M6.1 — Real input-state tracking for mission sessions — M, app + backend seam, **first M6 mission** (added and promoted 2026-08-21, Jason: inaccurate draft detection is the most annoying daily defect)
+
+Today "is the human typing in this slot" is inferred from bytes: printable input and pastes latch `local_input_pending`, Enter/Ctrl-C clear it, escape-prefixed traffic counts as activity only (M3.4), and the router's draft-aware DeliveryGate buffers deliveries behind that latch with a 10-minute abandonment backstop (M3.6). It was the only signal that could cross the Tauri webview boundary — xterm.js lived in the webview, the backend saw a byte stream — and it is wrong in the ways Jason hits daily: a draft typed then deleted still reads as pending; arrow-key navigation in a TUI menu reads as drafting; IME composition and mouse-mode clicks are invisible or misclassified; a TUI waiting on a y/n prompt looks like an idle agent with no human input. The native line removes the boundary: `TerminalInput` (IME), the key path (`send_key`), `TerminalSession`'s in-process alacritty `Term`, and pane focus are all Rust in the same process as the router, so the state can be observed instead of guessed. Design: a per-session `InputState` machine — `Idle`, `Drafting` (composer row non-empty, read from the grid relative to the cursor line, or IME marked text present), `Submitted`, `AwaitingHuman` (agent idle per M6.2's hooks while a prompt is on screen) — fed by key events before encoding, IME composition start/end, focus changes, and grid reads on the output edge; the DeliveryGate consumes it directly and the byte latch becomes the fallback tier for runtimes without hooks, the same shape as M6.2's `IdleDetector` demotion. What it retires: the 10-minute backstop (replaced by an explicit empty-composer observation), `suppress_local_input_busy` heuristics, and the activity-vs-draft guessing on escape sequences. Gate: a scripted two-agent mission where the human types, deletes, navigates a menu, composes Pinyin, and answers a y/n prompt, with the sidebar/feed status and nudge deferral correct at every step. Ships `Idle` / `Drafting` / `Submitted` from the native seam alone — no dependency on hooks; `AwaitingHuman` lands when M6.2 delivers the agents' own turn signals.
+
+### M6.2 — Hook-based session status (#347 reopened 2026-08-20; spec `docs/features/52-hook-based-session-status.md`) — L, backend + status consumers, second M6 mission (was first until 2026-08-21)
 
 The one structural fix on the coordination seam. Jason's 2026-08-01 won't-do is reversed: a reliable status detector needs the agents' own turn signals; the byte-flow `IdleDetector` (`session/pty_runtime.rs:37` 750 ms silence, `:49` 500 ms `RESIZE_GRACE`) cannot distinguish a permission prompt, a question, and an idle prompt — they are the same bytes-then-silence — and stays only as the fallback tier.
 
@@ -29,7 +33,7 @@ Scope as specced: spawn-scoped injection, nothing installed in the user's config
 
 What it retires downstream, confirmed per phase as it lands: the silence threshold and resize grace become fallback-only; turn-boundary delivery in the router (`DeliveryGate` / `SessionOutbox`, the 80 ms cooldown thread at `router/mod.rs:1179`, the 30 s reconciliation re-nudge at `:844`) keys off `done` instead of inferred idle. What it does **not** retire: `CLAUDE_LAUNCH_GATE_GRACE` 1500 ms, `SUBMIT_DELAY` 80 ms, the 120 ms paste sleep (`output.rs:449`), `RECENT_LOCAL_INPUT_WINDOW` 2 s — those cover input readiness of the agent's TUI, not status, and the renderer swap did not change them. Consumers ready today: sidebar attention rollups (needs-you tier), mission router nudge gating, blocked-inbox indicator, `mission_status` pending asks.
 
-### M6.2 — Backend hygiene bundle — S/M each, one mission
+### M6.3 — Backend hygiene bundle — S/M each, one mission
 
 All confirmed at file:line on 2026-08-20.
 
@@ -39,18 +43,20 @@ All confirmed at file:line on 2026-08-20.
 - Indexes on `sessions(mission_id)`, `missions(crew_id)`, `nodes(type, ref_id)` — five indexes exist today, none of these; migration allocated on `gpui-nightly`, deferred to cutover unless the A/B gate is re-run (landing rule above). `ops/slot.rs:168-177` one `runner::get` per slot — dedupe. **S.**
 - `event_bus/mod.rs:380-405` accepts a lowercase ULID in `inbox_read` (parse is case-insensitive, compare is raw bytes) and pins the watermark above every future event. Normalize through `parse::<Ulid>()?.to_string()`. Only a third-party writer triggers it today; `cli/src/msg.rs:174` emits uppercase. **S.**
 - `inject_direct_stdin` (`output.rs:304-313`) `Condvar::wait` with no timeout; only direct chat (`surfaces/chat.rs:515`, `UserInputMode::Inline`) can park on it — mission panes use `Queued`. `wait_timeout` + error. **S.**
+- Archive path (verified 2026-08-21, no leak — both are UX): the chat/tab archive in `surfaces/sidebar.rs` `archive_sessions` decides "running" from the `AppStore` snapshot, so a stale snapshot skips the kill and `session_archive` then fails with "still running" until the user retries — move kill-if-running into `ops::session::session_archive` (read the DB row, as `ops/node.rs kill_running_children` does) so the UI stops guessing; and the same closure swallows `session_kill`'s error (`let _ =`), so a child that survives SIGHUP+SIGKILL surfaces as the generic "still running" message instead of the kill failure — propagate it. **S.**
+- M3.7/M3.8 carries (verbatim ports, so `main` shares them): `to` validation has three disagreeing sources after a mid-mission crew edit (`post_human_message` reads the live crew table, the router its mount-time roster, the CLI `roster.json`) — pick one; human-channel text has no size cap where `runner msg post` caps at 32 KB; `app/woke` is an inert emit whose `main` consumer was a WebGL atlas clear — keep as insurance or drop (Jason's call). **S.**
 - Doc-comment fixes: `runner-core/src/event_log/ulid.rs:69-72` claims `increment()` rolls to the next ms (it returns `None` → hard error); `session/runtime.rs:145-149` claims the stop flag unblocks the reader (checked only at loop top; `runtime.stop` forcing EOF is what works). Stale-cursor guard in `event_bus/mod.rs:310` (reset when `offset > file_len`; latent because `mission_reset` unmounts first). **S.**
 - Test: two `EventLog` instances with skewed ULID floors appending concurrently — the app-plus-CLI claim that `log.rs:178-181 raise_floor_from_str` exists for; the only concurrent test today shares one `Arc<EventLog>`. **M.**
 
-### M6.3 — Mission feed incremental append — M, app crate, after M4.6b
+### M6.4 — Mission feed incremental append — M, app crate, after M4.6b
 
 `mission_workspace.rs:1060-1064` pushes then `sort_by`s the whole event vec and re-runs `rebuild_event_projection` (`group_feed_blocks` + `project_asks` from scratch) on every append; render clones `feed_blocks` (`:2776`) and materializes every block into a plain `overflow_y_scroll` div (`:2801-2810`). O(n) per event, and two chatty agents append fast. Insert in ULID order (events arrive nearly sorted), project incrementally, render with `uniform_list` / `list(ListState)`. No list in the app uses `uniform_list`; convert the feed and leave the rest unless felt.
 
-### M6.4 — `docs/arch/arch.md` rewrite — S, after M4.6b
+### M6.5 — `docs/arch/arch.md` rewrite — S, after M4.6b
 
 Says the app is Tauri + xterm.js (`:7`, `:106`, `:888`) and that "messages do not trigger router actions" (`:630`) while `router/mod.rs:535` dispatches `message_nudge` into the target PTY. Agents read this file as ground truth when planning missions, so it actively misleads. Also record the fsync decision (below) and the landing rule.
 
-### M6.5 — `RESIZE_SETTLE_MS` experiment — S, ten minutes, any time
+### M6.6 — `RESIZE_SETTLE_MS` experiment — S, ten minutes, any time
 
 `session/manager/mod.rs:58` (175 ms trailing debounce) absorbed xterm's fit-addon resize storms; GPUI drives resize from layout and may already coalesce. Runtime-tunable via `set_resize_settle_ms`: set 0, drag a window with Claude Code running, watch for repaint garble; keep, lower, or move to the app layer. Everything else in the timing-constant inventory is agent-TUI-side and survives the renderer swap.
 
@@ -75,7 +81,7 @@ Says the app is Tauri + xterm.js (`:7`, `:106`, `:888`) and that "messages do no
 ## Gates
 
 - Each mission: `make verify` green; reviewer clean on the working-tree diff; backend missions verified by their ported test suites plus the two-instance `EventLog` test once it exists; app missions daily-driven.
-- M6.1 specifically: status pills in sidebar and feed switch to hook-sourced for claude-code and codex with the `IdleDetector` demonstrably taking over when a hook is disabled; no nudge regressions in a two-agent mission over a full working day.
+- M6.2 specifically: status pills in sidebar and feed switch to hook-sourced for claude-code and codex with the `IdleDetector` demonstrably taking over when a hook is disabled; no nudge regressions in a two-agent mission over a full working day.
 - M6 does not gate Phase 6 cutover. Tier 1 runs during the daily-drive clock; anything in it that proves to be a daily-drive blocker is promoted into the cutover criteria explicitly in `plan.md`, not assumed.
 
 ## Provenance
