@@ -13,7 +13,7 @@ Orca reference (source re-checked at `~/repos/gui/orca`, `terminal-agent-session
 - **Native fork only.** Fork spawns a new direct chat with the same runner, cwd, model/effort as the source session, launched via the runtime's native fork flags (claude-code: `--resume <agent_session_key> --fork-session`). Full history, new session identity, source session untouched. No transcript-capture fallback tier — #348 refused that machinery and this spec keeps refusing it.
 - **Two destinations, chosen at the entry point** ("Fork to split pane" / "Fork to new tab"):
   - *Split pane*: the current tab's layout grows by one pane (same mechanism as the pane-level New chat affordance) and the forked session lands in it, focused, beside the source.
-  - *New tab*: a fresh single-pane tab in the same window (the ⌘T shape) holding the forked session; the source tab stays as-is.
+  - *New tab*: a fresh single-pane tab in the same window (the ⌘N shape) holding the forked session; the source tab stays as-is.
 - **Entry points**: chat pane header kebab and the sidebar chat context menu. Both actions disabled with an explanatory tooltip when the session's runtime has no native fork path or no `agent_session_key` has been captured yet.
 - **Naming**: forked chat titles derive from the source ("<title> (fork)"), editable like any chat.
 
