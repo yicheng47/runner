@@ -1585,9 +1585,6 @@ impl NativeRoot {
         self.dismiss_sidebar_transients(cx);
         self.runner_surfaces.context_menu = None;
         self.crew_surfaces.context_menu = None;
-        self.core(cx).windows.set_subjects("main", Vec::new());
-        self.core(cx).windows.mark_blurred("main");
-        self.core(cx).broadcast_focus_map();
         self.set_route(route, cx);
         window.focus(&self.root_focus);
         cx.notify();

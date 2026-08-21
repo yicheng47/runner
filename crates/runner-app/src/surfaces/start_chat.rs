@@ -836,6 +836,7 @@ impl NativeRoot {
                     self.sync_active_project_from_active_tab(cx);
                 }
             }
+            self.set_route(AppRoute::Chat, cx);
             self.ensure_active_tab_attached(window, cx)?;
             Ok(spawned.id)
         })();
@@ -843,7 +844,6 @@ impl NativeRoot {
         match result {
             Ok(session_id) => {
                 self.start_chat_modal = None;
-                self.set_route(AppRoute::Chat, cx);
                 self.error = rename_error;
                 self.remember_active_runner(cx);
                 self.mark_active_tab_viewed(window, cx);
@@ -862,6 +862,7 @@ impl NativeRoot {
                     let _ = self.reload_tabs(cx);
                     self.tabs.activate_session(&session_id);
                     self.sync_active_project_from_active_tab(cx);
+                    self.set_route(AppRoute::Chat, cx);
                     let _ = self.ensure_active_tab_attached(window, cx);
                     self.remember_active_runner(cx);
                     self.mark_active_tab_viewed(window, cx);

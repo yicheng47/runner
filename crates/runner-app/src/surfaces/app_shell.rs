@@ -11,7 +11,6 @@ pub(crate) const SIDEBAR_TOGGLE_GLYPH_INSET: f32 = 6.3;
 const SIDEBAR_TRANSITION_MS: u64 = 200;
 // Deliberately differs from main's inherited 19.5px line box to align both footer dividers.
 const SETTINGS_FOOTER_LINE_HEIGHT: f32 = 18.;
-const WINDOW_SIZE_SAVE_DELAY_MS: u64 = 300;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum AppRoute {
@@ -56,16 +55,14 @@ impl NativeRoot {
         window.set_rem_size(px(16. * self.settings(cx).app_zoom));
         if self.route == AppRoute::Chat {
             let needs_attach = self.tabs.active().is_some_and(|layout| {
-                layout
-                    .session_ids()
-                    .iter()
-                    .any(|session_id| !self.attached.contains_key(session_id))
+                layout.session_ids().iter().any(|session_id| {
+                    !self.chat_secondaries.contains_key(session_id)
+                        && !self.attached.contains_key(session_id)
+                })
             });
             if needs_attach {
-                if let Err(error) = self.ensure_active_tab_attached(window, cx) {
+                if let Err(error) = self.ensure_owned_active_tab_attached(window, cx) {
                     self.error = Some(error.to_string());
-                } else {
-                    self.mark_active_tab_viewed(window, cx);
                 }
             }
         }
@@ -182,7 +179,6 @@ impl NativeRoot {
                 }),
             )
             .on_action(cx.listener(Self::open_new_tab_modal))
-            .on_action(cx.listener(Self::close_focused_chat_pane))
             .on_action(cx.listener(Self::focus_previous_chat_pane))
             .on_action(cx.listener(Self::focus_next_chat_pane))
             .on_action(cx.listener(Self::toggle_sidebar))
@@ -202,7 +198,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let visible = !self.settings(cx).sidebar_collapsed || self.sidebar_preview_open;
+        let visible = !self.sidebar_collapsed || self.sidebar_preview_open;
         let visibility_target = if visible { 1. } else { 0. };
         let (visibility, animating) = self.sidebar_visibility.animate_to(
             visibility_target,
@@ -227,15 +223,15 @@ impl NativeRoot {
                     .into_any_element(),
             );
         }
-        let preview = self.settings(cx).sidebar_collapsed
-            && (self.sidebar_preview_open || self.sidebar_preview_peeking);
+        let preview =
+            self.sidebar_collapsed && (self.sidebar_preview_open || self.sidebar_preview_peeking);
         let fullscreen = window.is_fullscreen();
         let titlebar_padding = if fullscreen {
             8. * self.settings(cx).app_zoom
         } else {
             SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
         };
-        let panel_path = if self.settings(cx).sidebar_collapsed {
+        let panel_path = if self.sidebar_collapsed {
             "panel-left-hollow.svg"
         } else {
             "panel-left-filled.svg"
@@ -281,18 +277,12 @@ impl NativeRoot {
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             cx.stop_propagation();
-                            if this.settings(cx).sidebar_collapsed {
-                                this.update_app_settings(cx, true, |settings| {
-                                    settings.sidebar_collapsed = false;
-                                    true
-                                });
+                            if this.sidebar_collapsed {
+                                this.set_sidebar_collapsed(false, true, cx);
                                 this.sidebar_preview_open = false;
                                 this.sidebar_preview_peeking = false;
                             } else {
-                                this.update_app_settings(cx, true, |settings| {
-                                    settings.sidebar_collapsed = true;
-                                    true
-                                });
+                                this.set_sidebar_collapsed(true, true, cx);
                                 this.sidebar_preview_peeking = false;
                             }
                             cx.notify();
@@ -445,7 +435,7 @@ impl NativeRoot {
                 .rounded_br(px(12. * self.settings(cx).app_zoom))
                 .shadow_2xl()
                 .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                    if !*hovered && this.settings(cx).sidebar_collapsed {
+                    if !*hovered && this.sidebar_collapsed {
                         this.sidebar_preview_open = false;
                         cx.notify();
                     }
@@ -473,7 +463,7 @@ impl NativeRoot {
     }
 
     fn render_sidebar_preview_trigger(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        (self.settings(cx).sidebar_collapsed && self.route != AppRoute::Settings).then(|| {
+        (self.sidebar_collapsed && self.route != AppRoute::Settings).then(|| {
             div()
                 .id("sidebar-preview-trigger")
                 .absolute()
@@ -493,7 +483,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn render_open_sidebar_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        self.settings(cx).sidebar_collapsed.then(|| {
+        self.sidebar_collapsed.then(|| {
             div()
                 .id("open-sidebar")
                 .group("open-sidebar")
@@ -519,10 +509,7 @@ impl NativeRoot {
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     cx.stop_propagation();
-                    this.update_app_settings(cx, true, |settings| {
-                        settings.sidebar_collapsed = false;
-                        true
-                    });
+                    this.set_sidebar_collapsed(false, true, cx);
                     this.sidebar_preview_open = false;
                     this.sidebar_preview_peeking = false;
                     this.focus_active_terminal(window, cx);
@@ -679,7 +666,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn workspace_titlebar_padding(&self, window: &Window, cx: &App) -> f32 {
-        if self.settings(cx).sidebar_collapsed && !window.is_fullscreen() {
+        if self.sidebar_collapsed && !window.is_fullscreen() {
             SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
         } else {
             16. * self.settings(cx).app_zoom
@@ -714,41 +701,63 @@ impl NativeRoot {
         })
     }
 
-    pub(crate) fn schedule_window_size_save(
+    pub(crate) fn set_sidebar_collapsed(
+        &mut self,
+        collapsed: bool,
+        persist: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = self.sidebar_collapsed != collapsed;
+        self.sidebar_collapsed = collapsed;
+        self.mission_workspace
+            .update(cx, |workspace, workspace_cx| {
+                workspace.set_sidebar_collapsed(collapsed, workspace_cx)
+            });
+        self.update_app_settings(cx, persist, |settings| {
+            if settings.sidebar_collapsed == collapsed {
+                return false;
+            }
+            settings.sidebar_collapsed = collapsed;
+            true
+        });
+        if changed {
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn note_window_state(&mut self, window: &Window) {
+        self.window_state = window_state::snapshot(window, Some(self.window_state));
+    }
+
+    pub(crate) fn schedule_window_state_checkpoint(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.window_size_save_generation = self.window_size_save_generation.wrapping_add(1);
-        let generation = self.window_size_save_generation;
+        self.note_window_state(window);
+        self.window_state_save_generation = self.window_state_save_generation.wrapping_add(1);
+        let generation = self.window_state_save_generation;
         cx.spawn_in(window, async move |weak, cx| {
             cx.background_executor()
-                .timer(Duration::from_millis(WINDOW_SIZE_SAVE_DELAY_MS))
+                .timer(Duration::from_millis(WINDOW_STATE_SAVE_DELAY_MS))
                 .await;
-            let _ = weak.update_in(cx, |this, window, cx| {
-                if this.window_size_save_generation == generation {
-                    this.save_window_size(window, cx);
+            let _ = weak.update_in(cx, |this, _, cx| {
+                if this.window_state_save_generation == generation {
+                    checkpoint_window_layout_deferred(cx);
                 }
             });
         })
         .detach();
     }
 
-    pub(crate) fn save_window_size(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if window.is_fullscreen() || window.is_maximized() {
+    pub(crate) fn save_main_window_state(&mut self, window: &Window, cx: &App) {
+        if self.window_label != "main" {
             return;
         }
-        let size = window.viewport_size();
-        let width = f32::from(size.width);
-        let height = f32::from(size.height);
-        if self.settings(cx).window_width == width && self.settings(cx).window_height == height {
-            return;
+        self.note_window_state(window);
+        if let Err(error) = window_state::save(&self.core(cx).app_data_dir, self.window_state) {
+            eprintln!("Runner window-state save failed: {error:#}");
         }
-        self.update_app_settings(cx, true, |settings| {
-            settings.window_width = width;
-            settings.window_height = height;
-            true
-        });
     }
 
     pub(crate) fn leave_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -759,8 +768,13 @@ impl NativeRoot {
         match self.settings_return_route.clone() {
             AppRoute::Chat | AppRoute::Settings => {
                 self.set_route(AppRoute::Chat, cx);
-                self.mark_active_tab_viewed(window, cx);
-                self.focus_active_terminal(window, cx);
+                match self.ensure_active_tab_attached(window, cx) {
+                    Ok(()) => {
+                        self.mark_active_tab_viewed(window, cx);
+                        self.focus_active_terminal(window, cx);
+                    }
+                    Err(error) => self.chat_error = Some(error.to_string()),
+                }
                 cx.notify();
             }
             AppRoute::Runners => self.open_runners(window, cx),
@@ -780,11 +794,8 @@ impl NativeRoot {
         if self.route == AppRoute::Settings {
             return;
         }
-        let collapsed = !self.settings(cx).sidebar_collapsed;
-        self.update_app_settings(cx, true, |settings| {
-            settings.sidebar_collapsed = collapsed;
-            true
-        });
+        let collapsed = !self.sidebar_collapsed;
+        self.set_sidebar_collapsed(collapsed, true, cx);
         if !collapsed {
             self.sidebar_preview_open = false;
         }

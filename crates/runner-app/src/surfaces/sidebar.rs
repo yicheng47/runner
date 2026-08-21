@@ -2,6 +2,14 @@
 
 use std::path::Path;
 
+use super::*;
+use crate::surfaces::sidebar_logic::{
+    attention_rollups, complete_unpinned_scope_order, container_drop_target, list_drop_target,
+    mission_attention_state, ordered_pinned_node_ids_after_drop,
+    ordered_root_node_ids_after_project_drop, ordered_visible_node_ids_after_drop,
+    rollup_attention_state, tab_attention_state, AttentionState, DropKind, DropTarget,
+};
+use crate::*;
 use gpui::{
     radians, svg, DragMoveEvent, FontWeight, PathPromptOptions, Transformation, WeakEntity,
 };
@@ -11,16 +19,6 @@ use runner_app::ui::{
 };
 use runner_backend::ops::mission::{MissionActivityState, MissionSummary};
 use runner_backend::repo::node::{NodeRow, NodeType};
-use runner_backend::windows::Subject;
-
-use super::*;
-use crate::surfaces::sidebar_logic::{
-    attention_rollups, complete_unpinned_scope_order, container_drop_target, list_drop_target,
-    mission_attention_state, ordered_pinned_node_ids_after_drop,
-    ordered_root_node_ids_after_project_drop, ordered_visible_node_ids_after_drop,
-    rollup_attention_state, tab_attention_state, AttentionState, DropKind, DropTarget,
-};
-use crate::*;
 
 const SIDEBAR_ROW_FONT_SIZE: f32 = 13.;
 
@@ -138,6 +136,7 @@ impl Render for SidebarNodeDrag {
 enum SidebarMenuAction {
     NewChat(Option<String>),
     NewMission(Option<String>),
+    OpenInNewWindow(String),
     TogglePin { node_id: String, pinned: bool },
     Rename(SidebarRenameTarget),
     RemoveTabFromProject(Vec<String>),
@@ -367,60 +366,24 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let AppRoute::Mission(mission_id) = &self.route {
-            let subject = Subject::Mission(mission_id.clone());
-            self.core(cx).windows.set_subjects("main", vec![subject]);
-            if window.is_window_active() {
-                self.core(cx).windows.mark_focused("main");
-            } else {
-                self.core(cx).windows.mark_blurred("main");
-            }
-            self.core(cx).broadcast_focus_map();
-            self.sync_mission_subject_ownership(window, cx);
-            return;
-        }
-        if self.route != AppRoute::Chat {
-            self.core(cx).windows.set_subjects("main", Vec::new());
-            self.core(cx).windows.mark_blurred("main");
-            self.core(cx).broadcast_focus_map();
-            return;
-        }
-        if window.is_window_active() {
-            self.mark_active_tab_viewed(window, cx);
-        } else {
-            let subjects = self
-                .tabs
-                .active()
-                .into_iter()
-                .flat_map(PaneLayout::session_ids)
-                .map(Subject::DirectChat)
-                .collect();
-            self.core(cx).windows.set_subjects("main", subjects);
-            self.core(cx).windows.mark_blurred("main");
-            self.core(cx).broadcast_focus_map();
-        }
-        cx.notify();
+        self.sync_window_activation(window, cx);
     }
 
     pub(crate) fn mark_active_tab_viewed(&mut self, window: &Window, cx: &mut Context<Self>) {
         let Some(layout) = self.tabs.active() else {
-            self.core(cx).windows.set_subjects("main", Vec::new());
+            self.report_current_subjects(cx);
             return;
         };
         let tab_id = layout.id.clone();
         let member_ids = layout.session_ids();
         if !window.is_window_active() {
-            self.core(cx).windows.set_subjects(
-                "main",
-                member_ids.into_iter().map(Subject::DirectChat).collect(),
-            );
-            self.core(cx).windows.mark_blurred("main");
-            self.core(cx).broadcast_focus_map();
+            self.report_current_subjects(cx);
+            runner_backend::ops::window::mark_blurred(self.core(cx), &self.window_label);
             return;
         }
         match runner_backend::ops::node::node_mark_viewed(
             self.core(cx),
-            "main",
+            &self.window_label,
             &tab_id,
             member_ids,
         ) {
@@ -892,6 +855,15 @@ impl Sidebar {
                     original: layout.name.clone().unwrap_or_default(),
                 }),
             ),
+            (
+                UiMenuItem::new("Open in New Window").icon("app-window.svg"),
+                SidebarMenuAction::OpenInNewWindow(format!(
+                    "/chats/{}",
+                    layout
+                        .focused_session_id()
+                        .unwrap_or(&members[0].session_id)
+                )),
+            ),
         ];
         if node_project_id(&self.app_store.read(cx).nodes, &node).is_some() {
             entries.push((
@@ -949,6 +921,10 @@ impl Sidebar {
                     mission_id: summary.mission.id.clone(),
                     original: summary.mission.title.clone(),
                 }),
+            ),
+            (
+                UiMenuItem::new("Open in New Window").icon("app-window.svg"),
+                SidebarMenuAction::OpenInNewWindow(format!("/missions/{}", summary.mission.id)),
             ),
         ];
         if summary.mission.project_id.is_some() {
@@ -1036,6 +1012,14 @@ impl Sidebar {
                         });
                     });
                 }
+            }
+            SidebarMenuAction::OpenInNewWindow(route) => {
+                cx.defer(move |cx| {
+                    if let Err(error) = open_new_runner_window(Some(route), cx) {
+                        eprintln!("Runner new window failed: {error:#}");
+                    }
+                    cx.activate(true);
+                });
             }
             SidebarMenuAction::TogglePin { node_id, pinned } => {
                 match runner_backend::ops::node::node_set_pinned(self.core(cx), node_id, !pinned) {
@@ -1410,9 +1394,6 @@ impl NativeRoot {
             .as_deref()
             == Some(project_id.as_str());
         if deleting_active_chat {
-            self.core(cx).windows.set_subjects("main", Vec::new());
-            self.core(cx).windows.mark_blurred("main");
-            self.core(cx).broadcast_focus_map();
             self.set_route(AppRoute::Runners, cx);
             self.load_runner_page(cx);
             window.focus(&self.root_focus);

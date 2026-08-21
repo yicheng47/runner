@@ -1,6 +1,7 @@
 pub mod avatar;
 pub mod button;
 pub mod copy_value_button;
+pub mod duplicate_subject_overlay;
 pub mod field;
 pub mod list;
 pub mod menu;
@@ -30,6 +31,7 @@ pub use avatar::{
 };
 pub use button::{Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize, PressHandler};
 pub use copy_value_button::CopyValueButton;
+pub use duplicate_subject_overlay::{DuplicateSubjectKind, DuplicateSubjectOverlay};
 pub use field::{
     effective_working_dir, working_dir_placeholder, working_dir_text_field, BrowseField, Field,
     FieldError, FieldValidation, Label, TextField, TextFieldKind, WorkingDirField,

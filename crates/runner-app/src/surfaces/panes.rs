@@ -33,7 +33,7 @@ impl NativeRoot {
         let root = cx.entity();
         let panel_root = root.clone();
         let sidebar_toggle = self.render_open_sidebar_button(cx);
-        let sidebar_divider = self.settings(cx).sidebar_collapsed.then(|| {
+        let sidebar_divider = self.sidebar_collapsed.then(|| {
             div()
                 .mx_1()
                 .h(rems(20. / 16.))
@@ -194,6 +194,9 @@ impl NativeRoot {
         let preset = layout.preset;
         let session_ids = layout.session_ids();
         let grouped = layout.root.leaves().len() > 1;
+        let focused_secondary = layout
+            .focused_session_id()
+            .is_some_and(|session_id| self.cached_chat_secondary_state(session_id).secondary);
         let label = if grouped {
             self.tab_label(&layout, cx)
         } else {
@@ -212,7 +215,7 @@ impl NativeRoot {
             .layout_picker_open
             .then(|| self.render_layout_picker(preset, cx));
         let sidebar_toggle = self.render_open_sidebar_button(cx);
-        let sidebar_divider = self.settings(cx).sidebar_collapsed.then(|| {
+        let sidebar_divider = self.sidebar_collapsed.then(|| {
             div()
                 .mx_1()
                 .h(rems(20. / 16.))
@@ -223,7 +226,9 @@ impl NativeRoot {
         let root = cx.entity();
         let layout_root = root.clone();
         let panel_root = root.clone();
-        let control = self.render_topbar_session_control(&layout, window, cx);
+        let control = (!focused_secondary)
+            .then(|| self.render_topbar_session_control(&layout, window, cx))
+            .flatten();
         let title_group = div()
             .flex_1()
             .min_w(px(0.))
@@ -258,7 +263,10 @@ impl NativeRoot {
                             .text_color(theme::text())
                             .child(label),
                     )
-                    .children((!session_ids.is_empty()).then(|| self.chat_action_menu.clone()))
+                    .children(
+                        (!session_ids.is_empty() && !focused_secondary)
+                            .then(|| self.chat_action_menu.clone()),
+                    )
                     .children(control),
             );
         let header = div()
@@ -1260,6 +1268,9 @@ impl NativeRoot {
             .as_deref()
             .and_then(|session_id| self.session_entry(session_id, cx))
             .cloned();
+        let secondary = entry
+            .as_ref()
+            .map(|entry| self.cached_chat_secondary_state(&entry.session_id));
         let pane_session_for_focus = entry.as_ref().map(|entry| entry.session_id.clone());
         let close_root = cx.entity();
         let header = grouped.then(|| {
@@ -1277,52 +1288,56 @@ impl NativeRoot {
                         .get(&entry.session_id),
                 )
             });
-            let controls = entry.as_ref().map(|entry| {
-                let session_id = entry.session_id.clone();
-                let transition = self.chat_transitions.get(&session_id).map(|item| item.kind);
-                let disabled = self.session_lifecycle_disabled(&session_id, cx);
-                let control_root = cx.entity();
-                let lifecycle = if transition == Some(TransitionKind::Resuming) {
-                    SessionControl::new(
-                        SharedString::from(format!("pane-resuming-{session_id}")),
-                        SessionControlKind::Resuming,
+            let controls = entry
+                .as_ref()
+                .filter(|_| !secondary.as_ref().is_some_and(|state| state.secondary))
+                .map(|entry| {
+                    let session_id = entry.session_id.clone();
+                    let transition = self.chat_transitions.get(&session_id).map(|item| item.kind);
+                    let disabled = self.session_lifecycle_disabled(&session_id, cx);
+                    let control_root = cx.entity();
+                    let lifecycle = if transition == Some(TransitionKind::Resuming) {
+                        SessionControl::new(
+                            SharedString::from(format!("pane-resuming-{session_id}")),
+                            SessionControlKind::Resuming,
+                        )
+                    } else if entry.status == SessionStatus::Running {
+                        let stop_id = session_id.clone();
+                        SessionControl::new(
+                            SharedString::from(format!("pane-stop-{session_id}")),
+                            SessionControlKind::Stop,
+                        )
+                        .title("Stop this chat")
+                        .lifecycle_disabled(disabled)
+                        .on_press(move |window, cx| {
+                            control_root
+                                .update(cx, |this, cx| this.stop_chat(&stop_id, window, cx));
+                        })
+                    } else {
+                        let resume_id = session_id.clone();
+                        let resume_pane = pane_id.clone();
+                        SessionControl::new(
+                            SharedString::from(format!("pane-resume-{session_id}")),
+                            SessionControlKind::Resume,
+                        )
+                        .title("Resume this chat")
+                        .lifecycle_disabled(disabled)
+                        .on_press(move |window, cx| {
+                            control_root.update(cx, |this, cx| {
+                                this.resume_chat(&resume_pane, &resume_id, window, cx)
+                            });
+                        })
+                    };
+                    div().ml_auto().pl_2().flex_none().child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(lifecycle)
+                            .child(self.pane_action_menu(&session_id, disabled, cx)),
                     )
-                } else if entry.status == SessionStatus::Running {
-                    let stop_id = session_id.clone();
-                    SessionControl::new(
-                        SharedString::from(format!("pane-stop-{session_id}")),
-                        SessionControlKind::Stop,
-                    )
-                    .title("Stop this chat")
-                    .lifecycle_disabled(disabled)
-                    .on_press(move |window, cx| {
-                        control_root.update(cx, |this, cx| this.stop_chat(&stop_id, window, cx));
-                    })
-                } else {
-                    let resume_id = session_id.clone();
-                    let resume_pane = pane_id.clone();
-                    SessionControl::new(
-                        SharedString::from(format!("pane-resume-{session_id}")),
-                        SessionControlKind::Resume,
-                    )
-                    .title("Resume this chat")
-                    .lifecycle_disabled(disabled)
-                    .on_press(move |window, cx| {
-                        control_root.update(cx, |this, cx| {
-                            this.resume_chat(&resume_pane, &resume_id, window, cx)
-                        });
-                    })
-                };
-                div().ml_auto().pl_2().flex_none().child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(lifecycle)
-                        .child(self.pane_action_menu(&session_id, disabled, cx)),
-                )
-            });
+                });
             div()
                 .flex_none()
                 .h(rems(PANE_HEADER_HEIGHT / 16.))
@@ -1387,6 +1402,7 @@ impl NativeRoot {
 
         let body: AnyElement = if let Some(entry) = entry.as_ref() {
             let session_id = entry.session_id.clone();
+            let secondary_state = secondary.clone().unwrap_or_default();
             let transition = self.chat_transitions.get(&session_id).map(|item| item.kind);
             let overlay = resolve_pane_overlay(
                 self.sidebar_archiving_session(&session_id, cx),
@@ -1395,14 +1411,20 @@ impl NativeRoot {
                 entry.resumable,
                 self.session_exit_codes.get(&session_id).copied().flatten(),
             );
-            let interactive = self.session_is_interactive(&session_id, cx);
+            let interactive = self.cached_session_is_interactive(&session_id, cx);
             let scrollable = self.route == AppRoute::Chat
                 && transition.is_none()
                 && !self.sidebar_archiving_session(&session_id, cx);
             let terminal_style = self.terminal_style(cx);
             let terminal_background =
                 crate::terminal::element::to_hsla(terminal_style.palette.background, 1.);
-            let terminal_surface = if let Some(chat) = self.attached.get(&session_id) {
+            let terminal_surface = if secondary_state.secondary {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(terminal_background)
+                    .into_any_element()
+            } else if let Some(chat) = self.attached.get(&session_id) {
                 let terminal = Arc::clone(&chat.terminal);
                 let terminal_scrollbar = chat.terminal_scrollbar.clone();
                 let terminal_input = chat.terminal_input.clone();
@@ -1470,57 +1492,87 @@ impl NativeRoot {
                     .child("Unable to attach chat")
                     .into_any_element()
             };
-            let overlay_element = match overlay {
-                PaneOverlayState::Archiving => Some(
-                    SessionOverlay::transition(
-                        format!("archiving-{session_id}"),
-                        SessionOverlayKind::Archiving,
+            let overlay_element = if secondary_state.secondary
+                && !self.dismissed_duplicate_chats.contains(&session_id)
+            {
+                let focus_label = secondary_state.primary_label.clone();
+                let stay_root = cx.entity();
+                let stay_session_id = session_id.clone();
+                Some(
+                    DuplicateSubjectOverlay::new(
+                        SharedString::from(format!("duplicate-chat-{session_id}")),
+                        DuplicateSubjectKind::Chat,
+                        focus_label.is_some(),
+                        move |_, cx| {
+                            if let Some(label) = focus_label.as_deref() {
+                                focus_other_window(label, cx);
+                            }
+                        },
+                        move |_, cx| {
+                            stay_root.update(cx, |this, cx| {
+                                this.dismiss_duplicate_chat(&stay_session_id, cx)
+                            });
+                        },
                     )
                     .into_any_element(),
-                ),
-                PaneOverlayState::Resuming => Some(
-                    SessionOverlay::transition(
-                        format!("resuming-{session_id}"),
-                        SessionOverlayKind::Resuming,
-                    )
-                    .into_any_element(),
-                ),
-                PaneOverlayState::Starting => Some(
-                    SessionOverlay::transition(
-                        format!("starting-{session_id}"),
-                        SessionOverlayKind::Starting,
-                    )
-                    .into_any_element(),
-                ),
-                PaneOverlayState::Ended {
-                    status,
-                    resumable,
-                    exit_code,
-                } => {
-                    let resume_root = cx.entity();
-                    let archive_root = resume_root.clone();
-                    let resume_id = session_id.clone();
-                    let archive_id = session_id.clone();
-                    let resume_pane = pane_id.clone();
-                    Some(
-                        SessionOverlay::ended(
-                            format!("ended-{session_id}"),
-                            ended_subtitle(status, resumable, exit_code),
-                            move |window, cx| {
-                                resume_root.update(cx, |this, cx| {
-                                    this.resume_chat(&resume_pane, &resume_id, window, cx)
-                                });
-                            },
-                            move |window, cx| {
-                                archive_root.update(cx, |this, cx| {
-                                    this.archive_chat_sessions(vec![archive_id.clone()], window, cx)
-                                });
-                            },
+                )
+            } else {
+                match overlay {
+                    PaneOverlayState::Archiving => Some(
+                        SessionOverlay::transition(
+                            format!("archiving-{session_id}"),
+                            SessionOverlayKind::Archiving,
                         )
                         .into_any_element(),
-                    )
+                    ),
+                    PaneOverlayState::Resuming => Some(
+                        SessionOverlay::transition(
+                            format!("resuming-{session_id}"),
+                            SessionOverlayKind::Resuming,
+                        )
+                        .into_any_element(),
+                    ),
+                    PaneOverlayState::Starting => Some(
+                        SessionOverlay::transition(
+                            format!("starting-{session_id}"),
+                            SessionOverlayKind::Starting,
+                        )
+                        .into_any_element(),
+                    ),
+                    PaneOverlayState::Ended {
+                        status,
+                        resumable,
+                        exit_code,
+                    } => {
+                        let resume_root = cx.entity();
+                        let archive_root = resume_root.clone();
+                        let resume_id = session_id.clone();
+                        let archive_id = session_id.clone();
+                        let resume_pane = pane_id.clone();
+                        Some(
+                            SessionOverlay::ended(
+                                format!("ended-{session_id}"),
+                                ended_subtitle(status, resumable, exit_code),
+                                move |window, cx| {
+                                    resume_root.update(cx, |this, cx| {
+                                        this.resume_chat(&resume_pane, &resume_id, window, cx)
+                                    });
+                                },
+                                move |window, cx| {
+                                    archive_root.update(cx, |this, cx| {
+                                        this.archive_chat_sessions(
+                                            vec![archive_id.clone()],
+                                            window,
+                                            cx,
+                                        )
+                                    });
+                                },
+                            )
+                            .into_any_element(),
+                        )
+                    }
+                    PaneOverlayState::None => None,
                 }
-                PaneOverlayState::None => None,
             };
             div()
                 .relative()

@@ -535,8 +535,6 @@ impl NativeRoot {
                 .search
                 .update(cx, |input, input_cx| input.reset("", input_cx));
             self.dismiss_sidebar_transients(cx);
-            self.core(cx).windows.set_subjects("main", Vec::new());
-            self.core(cx).broadcast_focus_map();
             self.set_route(AppRoute::Settings, cx);
         }
         self.settings_page.pane = pane;

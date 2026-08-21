@@ -4,9 +4,10 @@ use gpui::{App, KeyBinding, Keystroke};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
-    ClosePane, CloseWindow, CommandPalette, FocusNextPane, FocusPreviousPane, Hide, HideOthers,
+    CloseWindowOrPane, CommandPalette, FocusNextPane, FocusPreviousPane, Hide, HideOthers,
     Minimize, MissionTabNext, MissionTabPrevious, NavigateNextPage, NavigatePreviousPage, NewTab,
-    OpenSettings, Paste, Quit, ToggleFullscreen, ToggleSidebar, ZoomIn, ZoomOut, ZoomReset,
+    NewWindow, OpenSettings, Paste, Quit, ToggleFullscreen, ToggleSidebar, ZoomIn, ZoomOut,
+    ZoomReset,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -181,10 +182,10 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
             KeymapEntry {
                 id: "close-pane",
                 title: "Close pane",
-                description: "Collapse the focused pane while a chat is split.",
+                description: "Close the focused pane while split; otherwise close the window.",
                 scope: KeymapScope::ChatSplit,
                 default: key_combo("KeyW", true, false, false, false, None, false),
-                fixed: false,
+                fixed: true,
             },
             KeymapEntry {
                 id: "mission-tab-previous",
@@ -703,7 +704,8 @@ pub(crate) fn install_bindings(
         KeyBinding::new("cmd-h", Hide, None),
         KeyBinding::new("cmd-alt-h", HideOthers, None),
         KeyBinding::new("cmd-m", Minimize, None),
-        KeyBinding::new("cmd-w", CloseWindow, Some("!ChatSplit")),
+        KeyBinding::new("cmd-w", CloseWindowOrPane, None),
+        KeyBinding::new("shift-cmd-n", NewWindow, None),
         KeyBinding::new("ctrl-cmd-f", ToggleFullscreen, None),
     ]);
     for entry in entries().iter().filter(|entry| !entry.fixed) {
@@ -724,7 +726,6 @@ pub(crate) fn install_bindings(
                 "zoom-reset" => KeyBinding::new(&binding, ZoomReset, context),
                 "pane-previous" => KeyBinding::new(&binding, FocusPreviousPane, context),
                 "pane-next" => KeyBinding::new(&binding, FocusNextPane, context),
-                "close-pane" => KeyBinding::new(&binding, ClosePane, context),
                 "mission-tab-previous" => KeyBinding::new(&binding, MissionTabPrevious, context),
                 "mission-tab-next" => KeyBinding::new(&binding, MissionTabNext, context),
                 _ => continue,
@@ -745,8 +746,9 @@ mod tests {
     #[test]
     fn registry_matches_the_shipped_defaults_and_fixed_entry() {
         assert_eq!(entries().len(), 15);
-        assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 1);
+        assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 2);
         assert!(entry("new-window").unwrap().fixed);
+        assert!(entry("close-pane").unwrap().fixed);
         assert_eq!(format_combo(&entry("new-window").unwrap().default), "⇧⌘N");
         assert_eq!(
             format_combo(&entry("page-previous").unwrap().default),
@@ -826,13 +828,10 @@ mod tests {
 
     #[test]
     fn conflicts_include_system_owned_shortcuts_without_blocking_split_close() {
-        let mut overrides = KeymapOverrides::new();
+        let overrides = KeymapOverrides::new();
         let conflict = find_conflict(&combo_for("KeyQ", false), "new-chat", &overrides).unwrap();
         assert_eq!(conflict.id, "system-quit");
-
-        overrides.insert("close-pane".into(), Some(combo_for("KeyP", false)));
-        assert!(clear_override("close-pane", &mut overrides).unwrap());
-        assert!(!overrides.contains_key("close-pane"));
+        assert!(find_conflict(&combo_for("KeyW", false), "close-pane", &overrides).is_none());
     }
 
     #[test]

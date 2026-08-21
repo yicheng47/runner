@@ -17,6 +17,7 @@ pub(crate) mod sidebar;
 pub(crate) mod sidebar_logic;
 pub(crate) mod start_chat;
 pub(crate) mod start_mission;
+pub(crate) mod windowing;
 
 pub(crate) use app_shell::AppRoute;
 pub(crate) use command_palette::CommandPaletteState;
@@ -24,7 +25,7 @@ pub(crate) use crews::CrewSurfaces;
 pub(crate) use mission_workspace::MissionWorkspace;
 pub(crate) use panes::{adjacent_pane_index, pane_fractions};
 pub(crate) use runners::RunnerSurfaces;
-pub(crate) use settings_page::SettingsState;
+pub(crate) use settings_page::{SettingsPane, SettingsState};
 pub(crate) use sidebar::{session_label, ProjectModal, Sidebar};
 pub(crate) use start_chat::StartChatModal;
 pub(crate) use start_mission::StartMissionModalState;
