@@ -77,6 +77,8 @@ impl SessionManager {
                     state.last_local_input_at = None;
                     state.mission_status_sink = None;
                     state.completion_armed = false;
+                    state.last_requested_size = None;
+                    state.last_requested_size_dirty = false;
                     state.pending_resize = None;
                     (h.stop.clone(), h.forwarder.take())
                 }

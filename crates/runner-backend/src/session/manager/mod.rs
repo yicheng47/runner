@@ -575,12 +575,15 @@ struct DeliveryGate {
 
 /// Latest PTY size waiting for a resize storm to quiesce.
 struct PendingResize {
+    generation: u64,
     cols: u16,
     rows: u16,
+    initial_cols: Option<u16>,
+    width_changed: bool,
     deadline: Instant,
     suppressed: u32,
-    clears_on_resize: bool,
-    events: Arc<dyn SessionEvents>,
+    ioctl_count: u32,
+    pool: Arc<DbPool>,
 }
 
 #[derive(Default)]
@@ -613,7 +616,13 @@ struct SessionState {
     /// replay reflow (wrap depends on cols alone), so the ring survives
     /// them; only a real width change still purges.
     last_pty_cols: Option<u16>,
-    /// Present only for a debounced width-change storm.
+    /// Latest grid measurement, including pushes that arrive before a PTY
+    /// handle exists. Spawn and resume reconcile this under the state lock.
+    last_requested_size: Option<(u16, u16)>,
+    last_requested_size_dirty: bool,
+    /// Cached from the effective agent runtime when the handle is installed.
+    clears_on_resize: bool,
+    /// Present while resize persistence and ring coherence await settlement.
     pending_resize: Option<PendingResize>,
     resuming: bool,
     killed: bool,
@@ -638,6 +647,9 @@ impl SessionState {
             && !self.mouse_1003_on
             && !self.mouse_1006_on
             && self.last_pty_cols.is_none()
+            && self.last_requested_size.is_none()
+            && !self.last_requested_size_dirty
+            && !self.clears_on_resize
             && self.pending_resize.is_none()
             && !self.resuming
             && !self.killed
@@ -685,6 +697,7 @@ pub struct SessionManager {
     /// directly.
     runtime: Arc<dyn SessionRuntime>,
     resize_settle_ms: AtomicU64,
+    resize_generation: AtomicU64,
 }
 
 /// RAII guard that releases a session state's `resuming` flag on drop. The
@@ -788,6 +801,7 @@ impl SessionManager {
             pending_mission_cancels: Mutex::new(HashMap::new()),
             runtime,
             resize_settle_ms: AtomicU64::new(RESIZE_SETTLE_MS),
+            resize_generation: AtomicU64::new(0),
         })
     }
 
@@ -807,6 +821,11 @@ impl SessionManager {
             .entry(session_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(SessionState::default())))
             .clone()
+    }
+
+    fn latest_requested_size(&self, session_id: &str) -> Option<(u16, u16)> {
+        self.session_state(session_id)
+            .and_then(|state| state.lock().unwrap().last_requested_size)
     }
 
     pub fn register_delivery_listener(
@@ -938,7 +957,10 @@ impl SessionManager {
         handle: SessionHandle,
         mission_status_sink: Option<ForwarderEmitCtx>,
         initial_size: Option<(u16, u16)>,
+        agent_runtime: &str,
+        pool: &DbPool,
     ) {
+        let initial_size = initial_size.expect("spawn size must be resolved before handle install");
         let state = self.session_state_or_insert(session_id);
         let gate = state.lock().unwrap().delivery_gate.clone();
         {
@@ -954,11 +976,52 @@ impl SessionManager {
             state.handle = Some(handle);
             state.mission_status_sink = mission_status_sink;
             state.killed = false;
-            state.last_pty_cols = Some(
-                initial_size
-                    .expect("spawn size must be resolved before handle install")
-                    .0,
-            );
+            state.last_pty_cols = Some(initial_size.0);
+            state.clears_on_resize = output::runtime_clears_on_resize(agent_runtime);
+
+            let requested_size = state.last_requested_size;
+            if let Some((cols, rows)) = requested_size.filter(|size| *size != initial_size) {
+                let rt_session = state
+                    .handle
+                    .as_ref()
+                    .expect("handle was just installed")
+                    .runtime_session
+                    .clone();
+                match self.runtime.resize(&rt_session, cols, rows) {
+                    Ok(()) => {
+                        state.last_pty_cols = Some(cols);
+                        log::info!(
+                            "pty size reconciled after fork: session={session_id} {cols}x{rows} \
+                             (pushed mid-fork)"
+                        );
+                    }
+                    Err(error) => log::warn!(
+                        "pty size reconcile after fork failed: session={session_id} \
+                         {cols}x{rows}: {error}"
+                    ),
+                }
+            }
+            if state.last_requested_size_dirty {
+                if let Some((cols, rows)) = state.last_requested_size {
+                    // This spawn/resume thread owns the state lock so a
+                    // newer resize cannot be overwritten by this dirty size.
+                    match pool.get() {
+                        Ok(conn) => match crate::repo::session::update_last_size(
+                            &conn, session_id, cols, rows,
+                        ) {
+                            Ok(_) => state.last_requested_size_dirty = false,
+                            Err(error) => log::warn!(
+                                "resize persistence after handle install failed: \
+                                 session={session_id} {cols}x{rows}: {error}"
+                            ),
+                        },
+                        Err(error) => log::warn!(
+                            "resize persistence after handle install pool checkout failed: \
+                             session={session_id} {cols}x{rows}: {error}"
+                        ),
+                    }
+                }
+            }
             state.pending_resize = None;
         }
         self.notify_delivery_event(session_id, router::SessionDeliveryEvent::Respawned);

@@ -154,6 +154,21 @@ pub fn model_effort_args(runtime: &str, model: Option<&str>, effort: Option<&str
     }
 }
 
+pub fn claude_settings_args(runtime: &str, runner_args: &[String]) -> Vec<String> {
+    if runtime != "claude-code"
+        || runner_args
+            .iter()
+            .any(|arg| arg == "--settings" || arg.starts_with("--settings="))
+    {
+        return Vec::new();
+    }
+    let settings = serde_json::json!({ "tui": "fullscreen" });
+    vec![
+        "--settings".into(),
+        serde_json::to_string(&settings).expect("static Claude settings must serialize"),
+    ]
+}
+
 /// Permission mode the runner-edit form's dropdown writes onto the
 /// runner row's `args` column. The mode space is per-runtime: each
 /// runtime exposes only the modes it natively supports.
@@ -547,8 +562,8 @@ pub fn first_turn_argv(runtime: &str, body: Option<&str>) -> Vec<String> {
     }
 }
 
-/// Compose the runtime-specific trailing args (model/effort flags +
-/// any `system_prompt` argv + first-turn body positional) in the
+/// Compose the runtime-specific trailing args (model/effort flags,
+/// Claude settings, any `system_prompt` argv, and first-turn body) in the
 /// order the runtime's CLI expects.
 ///
 /// `system_prompt_args` still returns empty for all four first-class
@@ -566,6 +581,7 @@ pub fn first_turn_argv(runtime: &str, body: Option<&str>) -> Vec<String> {
 /// `Router::fire_lead_launch_prompt` via paste delivery instead.
 pub fn trailing_runtime_args(
     runtime: &str,
+    runner_args: &[String],
     plan_resuming: bool,
     model: Option<&str>,
     effort: Option<&str>,
@@ -573,6 +589,7 @@ pub fn trailing_runtime_args(
     first_turn: Option<&str>,
 ) -> Vec<String> {
     let mut out = model_effort_args(runtime, model, effort);
+    out.extend(claude_settings_args(runtime, runner_args));
     let prompt_for_argv = if plan_resuming { None } else { system_prompt };
     out.extend(system_prompt_args(runtime, prompt_for_argv));
     let first_turn_for_argv = if plan_resuming { None } else { first_turn };
@@ -863,6 +880,36 @@ mod tests {
     }
 
     #[test]
+    fn claude_settings_injects_one_compact_fullscreen_object() {
+        let args = claude_settings_args("claude-code", &[]);
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "--settings");
+        assert_eq!(args.iter().filter(|arg| *arg == "--settings").count(), 1);
+        assert!(!args[1].chars().any(char::is_whitespace));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&args[1]).unwrap(),
+            serde_json::json!({ "tui": "fullscreen" }),
+        );
+    }
+
+    #[test]
+    fn claude_settings_respects_runner_settings_flags() {
+        for runner_args in [
+            vec!["--settings".into(), "custom.json".into()],
+            vec!["--settings=custom.json".into()],
+        ] {
+            assert!(claude_settings_args("claude-code", &runner_args).is_empty());
+        }
+    }
+
+    #[test]
+    fn claude_settings_do_not_leak_to_other_runtimes() {
+        for runtime in ["codex", "shell"] {
+            assert!(claude_settings_args(runtime, &[]).is_empty());
+        }
+    }
+
+    #[test]
     fn claude_code_fresh_self_assigns_session_id() {
         let plan = resume_plan("claude-code", None);
         assert!(!plan.resuming);
@@ -1092,6 +1139,7 @@ mod tests {
         for plan_resuming in [false, true] {
             let args = trailing_runtime_args(
                 "codex",
+                &[],
                 plan_resuming,
                 Some("gpt-5-codex"),
                 Some("high"),
@@ -1602,6 +1650,7 @@ mod tests {
         // are just the model/effort pair.
         let fresh = trailing_runtime_args(
             "claude-code",
+            &[],
             false,
             Some("claude-opus-4-7"),
             Some("xhigh"),
@@ -1610,6 +1659,7 @@ mod tests {
         );
         let resuming = trailing_runtime_args(
             "claude-code",
+            &[],
             true,
             Some("claude-opus-4-7"),
             Some("xhigh"),
@@ -1624,6 +1674,8 @@ mod tests {
                 "claude-opus-4-7".to_string(),
                 "--effort".to_string(),
                 "xhigh".to_string(),
+                "--settings".to_string(),
+                r#"{"tui":"fullscreen"}"#.to_string(),
             ]
         );
     }
@@ -1634,6 +1686,7 @@ mod tests {
             let body = "You are the architect. Goal: ship 0007.";
             let args = trailing_runtime_args(
                 runtime,
+                &[],
                 false,
                 Some("model-x"),
                 Some("high"),
@@ -1657,6 +1710,7 @@ mod tests {
             let body = "You are the architect. Goal: ship 0007.";
             let args = trailing_runtime_args(
                 runtime,
+                &[],
                 true,
                 Some("model-x"),
                 Some("high"),

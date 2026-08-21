@@ -483,104 +483,84 @@ impl SessionManager {
     /// xterm fits its container — without it, claude-code stays at
     /// the spawn-time grid regardless of how big the visible grid
     /// is.
-    pub fn resize(
-        &self,
-        session_id: &str,
-        cols: u16,
-        rows: u16,
-        pool: &DbPool,
-        events: Arc<dyn SessionEvents>,
-    ) -> Result<()> {
-        let state = self.session_state(session_id);
-        let rt_session = state.as_ref().and_then(|state| {
-            state
-                .lock()
-                .unwrap()
-                .handle
-                .as_ref()
-                .map(|handle| handle.runtime_session.clone())
-        });
-        match pool.get() {
-            Ok(conn) => match crate::repo::session::update_last_size(&conn, session_id, cols, rows)
-            {
-                Ok(0) if rt_session.is_none() => {
-                    return Err(Error::msg(format!("session not found: {session_id}")));
-                }
-                Ok(_) => {}
-                Err(error) if rt_session.is_none() => return Err(error.into()),
-                Err(_) => {}
-            },
-            Err(error) if rt_session.is_none() => return Err(error.into()),
-            Err(_) => {}
-        }
-        let Some(rt_session) = rt_session else {
-            return Ok(());
-        };
-        let Some(state) = state else {
-            return Ok(());
-        };
-
+    pub fn resize(&self, session_id: &str, cols: u16, rows: u16, pool: &Arc<DbPool>) -> Result<()> {
+        let state = self.session_state_or_insert(session_id);
         let settle_ms = self
             .resize_settle_ms
             .load(std::sync::atomic::Ordering::Relaxed);
-        {
+        let (settle_generation, resize_result) = {
             let mut session = state.lock().unwrap();
-            if let Some(pending) = session.pending_resize.as_mut() {
-                pending.cols = cols;
-                pending.rows = rows;
-                pending.deadline = Instant::now() + Duration::from_millis(settle_ms);
-                pending.suppressed += 1;
-                return Ok(());
-            }
-            // Same-width resizes include the rows nudge used to force a
-            // repaint, so they must stay synchronous.
-            if session.last_pty_cols == Some(cols) {
-                drop(session);
-                self.runtime.resize(&rt_session, cols, rows)?;
-                state.lock().unwrap().last_pty_cols = Some(cols);
-                return Ok(());
-            }
-        }
+            let initial_cols = session
+                .pending_resize
+                .as_ref()
+                .map_or(session.last_pty_cols, |pending| pending.initial_cols);
+            session.last_requested_size = Some((cols, rows));
+            session.last_requested_size_dirty = true;
 
-        let clears_on_resize = runtime_clears_on_resize(session_id, pool);
-        if !clears_on_resize {
-            // Shell history never purges, so delaying its ioctl buys nothing.
-            self.runtime.resize(&rt_session, cols, rows)?;
-            state.lock().unwrap().last_pty_cols = Some(cols);
-            return Ok(());
-        }
+            let mut ioctl_count = 0;
+            let previous_cols = session.last_pty_cols;
+            let mut width_changed = false;
+            let resize_result = if session.killed || session.resuming {
+                Ok(())
+            } else if let Some(rt_session) = session
+                .handle
+                .as_ref()
+                .map(|handle| handle.runtime_session.clone())
+            {
+                ioctl_count = 1;
+                let result = self.runtime.resize(&rt_session, cols, rows);
+                if result.is_ok() {
+                    width_changed = previous_cols != Some(cols);
+                    session.last_pty_cols = Some(cols);
+                }
+                result.map_err(Into::into)
+            } else {
+                Ok(())
+            };
 
-        let spawn_settle_thread = {
-            let mut state = state.lock().unwrap();
-            match state.pending_resize.as_mut() {
+            let settle_generation = match session.pending_resize.as_mut() {
                 Some(pending) => {
                     pending.cols = cols;
                     pending.rows = rows;
                     pending.deadline = Instant::now() + Duration::from_millis(settle_ms);
                     pending.suppressed += 1;
-                    false
+                    pending.ioctl_count += ioctl_count;
+                    pending.width_changed |= width_changed;
+                    None
                 }
                 None => {
-                    state.pending_resize = Some(PendingResize {
+                    let generation = self
+                        .resize_generation
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        .wrapping_add(1);
+                    session.pending_resize = Some(PendingResize {
+                        generation,
                         cols,
                         rows,
+                        initial_cols,
+                        width_changed,
                         deadline: Instant::now() + Duration::from_millis(settle_ms),
                         suppressed: 0,
-                        clears_on_resize,
-                        events,
+                        ioctl_count,
+                        pool: Arc::clone(pool),
                     });
-                    true
+                    Some(generation)
                 }
-            }
+            };
+            (settle_generation, resize_result)
         };
-        if spawn_settle_thread {
+        if let Some(generation) = settle_generation {
             let session_id = session_id.to_string();
             let state = Arc::clone(&state);
             let runtime = Arc::clone(&self.runtime);
             thread::spawn(move || loop {
                 let wait = {
                     let state = state.lock().unwrap();
-                    let Some(pending) = state.pending_resize.as_ref() else {
+                    let Some(pending) = state
+                        .pending_resize
+                        .as_ref()
+                        .filter(|pending| pending.generation == generation)
+                    else {
                         return;
                     };
                     pending.deadline.saturating_duration_since(Instant::now())
@@ -589,21 +569,35 @@ impl SessionManager {
                     thread::sleep(wait);
                     continue;
                 }
-                Self::settle_pending_resize(&session_id, &state, runtime.as_ref());
+                Self::settle_pending_resize(
+                    &session_id,
+                    &state,
+                    runtime.as_ref(),
+                    Some(generation),
+                );
                 return;
             });
         }
-        Ok(())
+        resize_result
     }
 
     fn settle_pending_resize(
         session_id: &str,
         state: &Arc<Mutex<SessionState>>,
         runtime: &dyn SessionRuntime,
+        expected_generation: Option<u64>,
     ) {
         // The runtime resolves a reusable session id to the live child. Keep
         // the state lock through the ioctl so kill/resume cannot retarget it.
         let mut state = state.lock().unwrap();
+        if expected_generation.is_some_and(|generation| {
+            state
+                .pending_resize
+                .as_ref()
+                .is_none_or(|pending| pending.generation != generation)
+        }) {
+            return;
+        }
         let Some(pending) = state.pending_resize.take() else {
             return;
         };
@@ -617,75 +611,115 @@ impl SessionManager {
             );
             return;
         }
-        let Some(handle) = state.handle.as_ref() else {
+
+        // Serialize this settled write with resize/install so an older storm
+        // can never overwrite a newer in-memory measurement.
+        let persisted = match pending.pool.get() {
+            Ok(conn) => match crate::repo::session::update_last_size(
+                &conn,
+                session_id,
+                pending.cols,
+                pending.rows,
+            ) {
+                Ok(0) => {
+                    log::warn!("resize persistence found no session row: session={session_id}");
+                    false
+                }
+                Ok(_) => {
+                    if state.last_requested_size == Some((pending.cols, pending.rows)) {
+                        state.last_requested_size_dirty = false;
+                    }
+                    true
+                }
+                Err(error) => {
+                    log::warn!(
+                        "resize persistence failed: session={session_id} {}x{}: {error}",
+                        pending.cols,
+                        pending.rows,
+                    );
+                    false
+                }
+            },
+            Err(error) => {
+                log::warn!(
+                    "resize persistence pool checkout failed: session={session_id} \
+                     {}x{}: {error}",
+                    pending.cols,
+                    pending.rows,
+                );
+                false
+            }
+        };
+
+        let Some(rt_session) = state
+            .handle
+            .as_ref()
+            .map(|handle| handle.runtime_session.clone())
+        else {
+            log::debug!(
+                "resize trace: session={session_id} pushes={} immediate_ioctls={} \
+                 settle_ioctls=0 total_ioctls={} persisted={persisted} purge=false",
+                pending.suppressed + 1,
+                pending.ioctl_count,
+                pending.ioctl_count,
+            );
             return;
         };
-        let rt_session = handle.runtime_session.clone();
-        let mission_id = handle.mission_id.clone();
-        let prev_cols = state.last_pty_cols;
-        let purge = pending.clears_on_resize && prev_cols != Some(pending.cols);
-        let ioctl = if purge {
-            runtime.resize(&rt_session, pending.cols, pending.rows)
-        } else {
+
+        let should_purge = state.clears_on_resize
+            && pending.width_changed
+            && state.last_pty_cols == Some(pending.cols);
+        let (settle_ioctl_count, purged) = if should_purge {
+            let retained_output = std::mem::take(&mut state.output_buffer);
             let nudged_rows = if pending.rows > 1 {
                 pending.rows - 1
             } else {
                 pending.rows + 1
             };
-            runtime
-                .resize(&rt_session, pending.cols, nudged_rows)
-                .and_then(|()| runtime.resize(&rt_session, pending.cols, pending.rows))
-        };
-        if let Err(error) = ioctl {
-            log::warn!(
-                "settled resize failed: session={session_id} {}x{} ({} coalesced): {error}",
-                pending.cols,
-                pending.rows,
-                pending.suppressed,
-            );
-            return;
-        }
-        state.last_pty_cols = Some(pending.cols);
-        if purge {
-            state.output_buffer.clear();
-            state.output_seq += 1;
-            let clear = OutputEvent {
-                session_id: session_id.to_string(),
-                mission_id,
-                seq: state.output_seq,
-                data: BASE64.encode(b"\x1b[2J\x1b[H"),
+            let (count, result) = match runtime.resize(&rt_session, pending.cols, nudged_rows) {
+                Ok(()) => (2, runtime.resize(&rt_session, pending.cols, pending.rows)),
+                Err(error) => (1, Err(error)),
             };
-            state.output_buffer.push_back(clear.clone());
-            // PTY ingestion takes this same state lock, so the clear is
-            // sequenced ahead of the SIGWINCH repaint bytes in the buffer.
-            // Broadcast delivery order is not guaranteed by the lock alone: a
-            // chunk sequenced under the lock can still be emitted after the
-            // clear, and the consumer's seq gate (terminal.rs
-            // feed_encoded_locked) drops it.
-            pending.events.output(&clear);
-        }
-        drop(state);
-        if purge {
-            log::info!(
-                "cols-gate purge: session={session_id} cols {} -> {} ({} coalesced)",
-                prev_cols.map_or_else(|| "none".to_string(), |cols| cols.to_string()),
-                pending.cols,
-                pending.suppressed,
-            );
+            if let Err(error) = result {
+                state.output_buffer = retained_output;
+                log::warn!(
+                    "resize repaint nudge failed: session={session_id} {}x{} \
+                     ({} coalesced): {error}",
+                    pending.cols,
+                    pending.rows,
+                    pending.suppressed,
+                );
+                (count, false)
+            } else {
+                (count, true)
+            }
         } else {
+            (0, false)
+        };
+        if purged {
             log::info!(
-                "cols-gate settle: session={session_id} cols {} round-trip, purge skipped, \
-                 repaint nudged ({} coalesced)",
+                "resize ring purge: session={session_id} cols {} -> {} ({} coalesced)",
+                pending
+                    .initial_cols
+                    .map_or_else(|| "none".to_string(), |cols| cols.to_string()),
                 pending.cols,
                 pending.suppressed,
             );
         }
+        log::debug!(
+            "resize trace: session={session_id} pushes={} immediate_ioctls={} \
+             settle_ioctls={settle_ioctl_count} total_ioctls={} persisted={persisted} \
+             purge={purged}",
+            pending.suppressed + 1,
+            pending.ioctl_count,
+            pending.ioctl_count + settle_ioctl_count,
+        );
     }
 
     #[cfg(test)]
     pub(crate) fn settle_pending_resize_now(&self, session_id: &str) {
         if let Some(state) = self.session_state(session_id) {
-            Self::settle_pending_resize(session_id, &state, self.runtime.as_ref());
+            Self::settle_pending_resize(session_id, &state, self.runtime.as_ref(), None);
         }
     }
 
@@ -765,6 +799,9 @@ impl SessionManager {
             state.mouse_1003_on = false;
             state.mouse_1006_on = false;
             state.last_pty_cols = None;
+            state.last_requested_size = None;
+            state.last_requested_size_dirty = false;
+            state.clears_on_resize = false;
             state.pending_resize = None;
         }
         self.prune_empty_session_state(session_id);
@@ -917,31 +954,10 @@ impl SessionManager {
     }
 }
 
-/// Whether the session's agent runtime fully repaints on SIGWINCH — the
-/// same set the frontend's `runtimeClearsOnResize` gates its local
-/// viewport clear on. Runner-backed sessions leave
-/// `sessions.agent_runtime` NULL and carry their runtime on the runner
-/// row, hence the COALESCE join (same pattern as the direct-chat
-/// queries). Best-effort: a DB miss keeps the buffer.
-pub(super) fn runtime_clears_on_resize(session_id: &str, pool: &DbPool) -> bool {
-    let Ok(conn) = pool.get() else {
-        return false;
-    };
-    let runtime = conn
-        .query_row(
-            "SELECT COALESCE(s.agent_runtime, r.runtime)
-               FROM sessions s
-               LEFT JOIN runners r ON r.id = s.runner_id
-              WHERE s.id = ?1",
-            params![session_id],
-            |r| r.get::<_, Option<String>>(0),
-        )
-        .ok()
-        .flatten();
-    matches!(
-        runtime.as_deref(),
-        Some("claude-code") | Some("codex") | Some("qoder") | Some("trae")
-    )
+/// Whether an agent runtime repaints its whole frame on SIGWINCH.
+/// Cached in `SessionState` when a spawn or resume installs its handle.
+pub(super) fn runtime_clears_on_resize(runtime: &str) -> bool {
+    matches!(runtime, "claude-code" | "codex" | "qoder" | "trae")
 }
 
 /// Whether `resume` should drop the session's output ring before

@@ -170,7 +170,7 @@ impl SessionManager {
     /// positional. Returns whether the body was delivered via argv
     /// so the caller can warn if a supported runtime somehow missed
     /// the deterministic path.
-    fn apply_runtime_args(
+    pub(super) fn apply_runtime_args(
         spec: &mut SpawnSpec,
         runner: &Runner,
         plan: &router::runtime::ResumePlan,
@@ -193,6 +193,7 @@ impl SessionManager {
         ));
         for extra in router::runtime::trailing_runtime_args(
             &runner.runtime,
+            &runner.args,
             plan.resuming,
             runner.model.as_deref(),
             runner.effort.as_deref(),
@@ -473,14 +474,16 @@ impl SessionManager {
         }
 
         let spawn_started_at_dt = Utc::now();
-        // The row has been visible (status running) since registration,
-        // and `resize` persists a frontend push even when there is no PTY
-        // to apply it to, so the row's last size can be newer than the
-        // hint captured into the spec. Fork at the newer one.
-        if let Some(persisted) = Self::persisted_size(&pool, &session_id) {
-            if spec.initial_size != Some(persisted) {
-                spec.initial_size = Some(persisted);
-                size_source = "persisted-last-size";
+        // The row has been visible since registration. A measurement can
+        // arrive before its trailing persistence settle, so manager memory
+        // wins over the row and the registration hint.
+        let latest_size = self
+            .latest_requested_size(&session_id)
+            .or_else(|| Self::persisted_size(&pool, &session_id));
+        if let Some(latest_size) = latest_size {
+            if spec.initial_size != Some(latest_size) {
+                spec.initial_size = Some(latest_size);
+                size_source = "latest-measured-size";
             }
         }
         let initial_size = spec.initial_size;
@@ -583,16 +586,9 @@ impl SessionManager {
             },
             spawn_emit_ctx.clone(),
             initial_size,
+            &runner.runtime,
+            &pool,
         );
-        // A push that landed after the pre-fork read found no handle and
-        // was only persisted; the handle exists now, so apply it. Reading
-        // after the install is what makes this race-free: `resize`
-        // persists before it looks for the handle.
-        if let Some(persisted) = Self::persisted_size(&pool, &session_id) {
-            if Some(persisted) != initial_size {
-                self.apply_persisted_size(&session_id, &rt_session, persisted);
-            }
-        }
         if first_turn_delivered_via_argv {
             self.arm_completion(&session_id);
         }
@@ -1010,6 +1006,8 @@ impl SessionManager {
             },
             None,
             initial_size,
+            &runner.runtime,
+            &pool,
         );
         if first_turn_delivered_via_argv {
             self.arm_completion(&session_id);
@@ -1520,14 +1518,9 @@ impl SessionManager {
             },
             resume_emit_ctx.clone(),
             Some(initial_size),
+            &runner.runtime,
+            &pool,
         );
-        // Same window as the mission fork: a push that landed while the
-        // row had no handle was persisted only. Apply it now.
-        if let Some(persisted) = Self::persisted_size(&pool, session_id) {
-            if persisted != initial_size {
-                self.apply_persisted_size(session_id, &rt_session, persisted);
-            }
-        }
         if snap.mission_id.is_none() {
             self.publish_direct_activity(
                 session_id,
@@ -1634,32 +1627,10 @@ impl SessionManager {
 
     /// The row's persisted last size: the hint from registration until a
     /// frontend push lands, then whatever `resize` recorded.
-    fn persisted_size(pool: &DbPool, session_id: &str) -> Option<(u16, u16)> {
+    pub(super) fn persisted_size(pool: &DbPool, session_id: &str) -> Option<(u16, u16)> {
         let conn = pool.get().ok()?;
         let row = crate::repo::session::get_row(&conn, session_id).ok()??;
         row.last_cols.zip(row.last_rows)
-    }
-
-    fn apply_persisted_size(
-        &self,
-        session_id: &str,
-        rt_session: &RuntimeSession,
-        (cols, rows): (u16, u16),
-    ) {
-        match self.runtime.resize(rt_session, cols, rows) {
-            Ok(()) => {
-                if let Some(state) = self.session_state(session_id) {
-                    state.lock().unwrap().last_pty_cols = Some(cols);
-                }
-                log::info!(
-                    "pty size reconciled after fork: session={session_id} {cols}x{rows} \
-                     (pushed mid-fork)"
-                );
-            }
-            Err(error) => log::warn!(
-                "pty size reconcile after fork failed: session={session_id} {cols}x{rows}: {error}"
-            ),
-        }
     }
 
     fn runtime_pid(&self, rt_session: &RuntimeSession) -> Option<i32> {

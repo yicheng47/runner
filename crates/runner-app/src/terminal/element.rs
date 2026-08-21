@@ -751,7 +751,23 @@ impl Element for TerminalElement {
             },
             self.resize_owner,
         ) {
-            SizePushVerdict::Push(size) => self.session.resize(size.cols, size.rows),
+            SizePushVerdict::Push(size) => {
+                // Keep timing and formatting out of release prepaint unless
+                // debug tracing is explicitly enabled.
+                if tracing::enabled!(tracing::Level::DEBUG) {
+                    let started = Instant::now();
+                    self.session.resize(size.cols, size.rows);
+                    tracing::debug!(
+                        "terminal resize prepaint: session={} size={}x{} push_us={}",
+                        self.session.session_id(),
+                        size.cols,
+                        size.rows,
+                        started.elapsed().as_micros(),
+                    );
+                } else {
+                    self.session.resize(size.cols, size.rows);
+                }
+            }
             SizePushVerdict::Unchanged | SizePushVerdict::SuppressedNonOwner => {}
             SizePushVerdict::SuppressedUnplaced => {
                 return GridPrepaint {
