@@ -39,6 +39,7 @@ use crate::surfaces::mission_feed::{
 use crate::*;
 
 const WORKSPACE_TABS_HEIGHT: f32 = 38.;
+const MISSION_RAIL_TRANSITION_MS: u64 = 200;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum MissionTab {
@@ -152,6 +153,7 @@ pub(crate) struct MissionWorkspace {
     attached: HashMap<String, AttachedChat>,
     active: bool,
     sidebar_collapsed: bool,
+    rail_visibility: SidebarVisibilityTransition,
     root_focus: FocusHandle,
     titlebar_drag_armed: bool,
     pub mission_id: Option<String>,
@@ -215,7 +217,9 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let sidebar_collapsed = app_store.read(cx).settings.sidebar_collapsed;
+        let settings = &app_store.read(cx).settings;
+        let sidebar_collapsed = settings.sidebar_collapsed;
+        let rail_visibility = SidebarVisibilityTransition::new(settings.mission_rail_open);
         let root_focus = cx.focus_handle();
         let workspace = cx.entity();
         let menu_root = workspace.clone();
@@ -341,6 +345,7 @@ impl MissionWorkspace {
             attached: HashMap::new(),
             active: false,
             sidebar_collapsed,
+            rail_visibility,
             root_focus,
             titlebar_drag_armed: false,
             mission_id: None,
@@ -642,7 +647,7 @@ impl MissionWorkspace {
             chat.terminal
                 .set_palette(self.settings(cx).terminal_theme.palette());
             chat.terminal
-                .configure(self.settings(cx).terminal_scrollback, cursor);
+                .configure(app_settings::TERMINAL_SCROLLBACK_LINES, cursor);
         }
     }
 
@@ -1251,7 +1256,7 @@ impl MissionWorkspace {
         )?;
         terminal.set_palette(self.settings(cx).terminal_theme.palette());
         terminal.configure(
-            self.settings(cx).terminal_scrollback,
+            app_settings::TERMINAL_SCROLLBACK_LINES,
             match self.settings(cx).terminal_cursor_style {
                 app_settings::TerminalCursorStyle::Block => {
                     alacritty_terminal::vte::ansi::CursorShape::Block
@@ -2816,7 +2821,21 @@ impl MissionWorkspace {
             .child(header)
             .children(notices)
             .child(body);
-        let rail = self.render_mission_rail(cx);
+        let rail_open = self.settings(cx).mission_rail_open;
+        let (rail_visibility, rail_animating) = self.rail_visibility.animate_to(
+            if rail_open { 1. } else { 0. },
+            Instant::now(),
+            Duration::from_millis(MISSION_RAIL_TRANSITION_MS),
+        );
+        if rail_animating {
+            window.request_animation_frame();
+        }
+        let rail = self.render_mission_rail(
+            rail_visibility,
+            rail_open || rail_animating,
+            rail_open && !rail_animating,
+            cx,
+        );
         div()
             .relative()
             .key_context("Mission")
@@ -2915,62 +2934,33 @@ impl MissionWorkspace {
                     }))
             })
         });
-        let row = div()
-            .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
-            .flex_none()
-            .pl(px(self.workspace_titlebar_padding(window, cx)))
-            .pr_4()
-            .flex()
-            .items_center()
-            .gap_2()
-            .border_b_1()
-            .border_color(theme::border())
-            .bg(theme::panel())
-            .children(self.render_open_sidebar_button(cx))
-            .children(self.sidebar_collapsed.then(|| {
-                div()
-                    .mx_1()
-                    .h(rems(20. / 16.))
-                    .w(rems(1. / 16.))
-                    .bg(theme::border())
-            }))
-            .child(
-                svg()
-                    .path("flag.svg")
-                    .size(rems(15. / 16.))
-                    .flex_none()
-                    .text_color(theme::accent()),
-            )
-            .child(
-                div()
-                    .min_w(px(0.))
-                    .truncate()
-                    .text_size(rems(13. / 16.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme::text())
-                    .child(
-                        mission
-                            .as_ref()
-                            .map(|mission| mission.title.clone())
-                            .unwrap_or_else(|| "…".into()),
-                    ),
-            )
-            .children(controls)
-            .children((!self.settings(cx).mission_rail_open).then(|| {
-                div().ml_auto().child(
-                    IconButton::new("open-mission-rail", "panel-right-hollow.svg")
-                        .tooltip("Open runners panel")
-                        .on_press(move |_, cx| {
-                            open_rail_root.update(cx, |this, cx| {
-                                this.update_app_settings(cx, true, |settings| {
-                                    settings.mission_rail_open = true;
-                                    true
-                                });
-                                cx.notify();
-                            });
-                        }),
-                )
-            }));
+        let title = mission
+            .as_ref()
+            .map(|mission| mission.title.clone())
+            .unwrap_or_else(|| "…".into());
+        let rail_action = (!self.settings(cx).mission_rail_open).then(|| {
+            IconButton::new("open-mission-rail", "panel-right-hollow.svg")
+                .tooltip("Open runners panel")
+                .on_press(move |_, cx| {
+                    open_rail_root.update(cx, |this, cx| {
+                        this.update_app_settings(cx, true, |settings| {
+                            settings.mission_rail_open = true;
+                            true
+                        });
+                        cx.notify();
+                    });
+                })
+                .into_any_element()
+        });
+        let row = WorkspaceHeader::new(
+            px(self.workspace_titlebar_padding(window, cx)),
+            "flag.svg",
+            title,
+        )
+        .sidebar_toggle(self.render_open_sidebar_button(cx))
+        .title_actions(controls.into_iter().map(IntoElement::into_any_element))
+        .trailing_actions(rail_action)
+        .into_div();
         self.render_titlebar_drag_area("mission-titlebar-drag", row, cx)
             .into_any_element()
     }
@@ -4462,9 +4452,23 @@ impl MissionWorkspace {
         .into_any_element()
     }
 
-    fn render_mission_rail(&self, cx: &mut Context<Self>) -> AnyElement {
-        if !self.settings(cx).mission_rail_open {
-            return div().w(px(0.)).h_full().flex_none().into_any_element();
+    fn render_mission_rail(
+        &self,
+        visibility: f32,
+        show_rail: bool,
+        border_on: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let width = self.settings(cx).mission_rail_width;
+        let visible_width = width * visibility;
+        if !show_rail {
+            return div()
+                .id("mission-rail")
+                .w(rems(visible_width / 16.))
+                .h_full()
+                .flex_none()
+                .overflow_hidden()
+                .into_any_element();
         }
         let root = cx.entity();
         let runners_root = root.clone();
@@ -4529,16 +4533,14 @@ impl MissionWorkspace {
             MissionRailView::Meta => self.render_mission_meta_panel(cx),
         };
         let drag = MissionRailResizeDrag;
-        div()
+        let rail = div()
             .relative()
-            .w(rems(self.settings(cx).mission_rail_width / 16.))
+            .w(rems(width / 16.))
             .h_full()
             .flex_none()
             .flex()
             .flex_col()
             .overflow_hidden()
-            .border_l_1()
-            .border_color(theme::border())
             .bg(theme::panel())
             .child(header)
             .child(body)
@@ -4555,7 +4557,19 @@ impl MissionWorkspace {
                     .on_drag(drag, |drag: &MissionRailResizeDrag, _, _, cx: &mut App| {
                         cx.new(|_| drag.clone())
                     }),
-            )
+            );
+        div()
+            .id("mission-rail")
+            .relative()
+            .w(rems(visible_width / 16.))
+            .h_full()
+            .flex_none()
+            .overflow_hidden()
+            .bg(theme::panel())
+            .when(border_on, |rail| {
+                rail.border_l_1().border_color(theme::border())
+            })
+            .child(rail)
             .into_any_element()
     }
 

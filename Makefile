@@ -14,6 +14,7 @@ fmt-check:
 
 clippy:
 	cargo clippy --workspace --all-targets -- -D warnings
+	cargo clippy -p runner-app --features updater --all-targets -- -D warnings
 
 test:
 	cargo test --workspace

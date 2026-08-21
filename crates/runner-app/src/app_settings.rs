@@ -17,8 +17,7 @@ pub const ZOOM_STEPS: [f32; 8] = [0.8, 0.9, 1., 1.1, 1.2, 1.3, 1.4, 1.5];
 pub const TERMINAL_FONT_SIZE_MIN: u16 = 10;
 pub const TERMINAL_FONT_SIZE_MAX: u16 = 20;
 pub const TERMINAL_FONT_SIZE_DEFAULT: u16 = 13;
-pub const TERMINAL_SCROLLBACK_DEFAULT: usize = 10_000;
-pub const TERMINAL_SCROLLBACK_OPTIONS: [usize; 4] = [1_000, 5_000, 10_000, 50_000];
+pub const TERMINAL_SCROLLBACK_LINES: usize = 10_000;
 pub const CHAT_PANEL_MIN: f32 = 200.;
 pub const CHAT_PANEL_MAX: f32 = 480.;
 pub const CHAT_PANEL_DEFAULT: f32 = 320.;
@@ -122,7 +121,6 @@ pub struct AppSettings {
     pub terminal_font_family: TerminalFontFamily,
     pub terminal_font_size: u16,
     pub terminal_cursor_style: TerminalCursorStyle,
-    pub terminal_scrollback: usize,
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
     pub sidebar_projects_open: bool,
@@ -137,6 +135,7 @@ pub struct AppSettings {
     pub default_crew_id: String,
     pub default_working_dir: String,
     pub resume_on_launch: bool,
+    pub automatically_check_for_updates: bool,
     pub default_runtime: String,
     pub disabled_agents: BTreeSet<String>,
     pub enabled_agents: BTreeSet<String>,
@@ -156,7 +155,6 @@ impl Default for AppSettings {
             terminal_font_family: TerminalFontFamily::MesloNerdFont,
             terminal_font_size: TERMINAL_FONT_SIZE_DEFAULT,
             terminal_cursor_style: TerminalCursorStyle::Block,
-            terminal_scrollback: TERMINAL_SCROLLBACK_DEFAULT,
             sidebar_width: SIDEBAR_DEFAULT,
             sidebar_collapsed: false,
             sidebar_projects_open: true,
@@ -171,6 +169,7 @@ impl Default for AppSettings {
             default_crew_id: String::new(),
             default_working_dir: String::new(),
             resume_on_launch: false,
+            automatically_check_for_updates: true,
             default_runtime: String::new(),
             disabled_agents: BTreeSet::new(),
             enabled_agents: BTreeSet::new(),
@@ -202,7 +201,6 @@ impl AppSettings {
     pub fn normalize(&mut self) {
         self.app_zoom = normalize_zoom(self.app_zoom);
         self.terminal_font_size = normalize_terminal_font_size(self.terminal_font_size);
-        self.terminal_scrollback = normalize_terminal_scrollback(self.terminal_scrollback);
         self.sidebar_width = normalize_sidebar_width(self.sidebar_width);
         self.chat_panel_width = normalize_chat_panel_width(self.chat_panel_width);
         self.mission_rail_width = normalize_mission_rail_width(self.mission_rail_width);
@@ -278,14 +276,6 @@ pub fn normalize_terminal_font_size(value: u16) -> u16 {
     }
 }
 
-pub fn normalize_terminal_scrollback(value: usize) -> usize {
-    if TERMINAL_SCROLLBACK_OPTIONS.contains(&value) {
-        value
-    } else {
-        TERMINAL_SCROLLBACK_DEFAULT
-    }
-}
-
 pub fn normalize_sidebar_width(value: f32) -> f32 {
     if value.is_finite() && (SIDEBAR_MIN..=SIDEBAR_MAX).contains(&value) {
         value
@@ -356,22 +346,19 @@ mod tests {
 
     #[test]
     fn terminal_and_chat_panel_settings_follow_the_shipped_domains() {
-        assert_eq!(normalize_terminal_scrollback(1_000), 1_000);
-        assert_eq!(normalize_terminal_scrollback(12_345), 10_000);
         assert_eq!(normalize_chat_panel_width(376.), 376.);
         assert_eq!(normalize_chat_panel_width(f32::NAN), 320.);
         assert_eq!(clamp_chat_panel_width(999.), 480.);
 
         let serialized = serde_json::to_value(AppSettings {
             terminal_cursor_style: TerminalCursorStyle::Bar,
-            terminal_scrollback: 50_000,
             chat_panel_open: false,
             chat_panel_width: 440.,
             ..AppSettings::default()
         })
         .unwrap();
         assert_eq!(serialized["terminalCursorStyle"], "bar");
-        assert_eq!(serialized["terminalScrollback"], 50_000);
+        assert!(serialized.get("terminalScrollback").is_none());
         assert_eq!(serialized["chatPanelOpen"], false);
         assert_eq!(serialized["chatPanelWidth"], 440.);
     }
@@ -438,6 +425,7 @@ mod tests {
         assert_eq!(value["defaultCrewId"], "");
         assert_eq!(value["defaultWorkingDir"], "");
         assert_eq!(value["resumeOnLaunch"], false);
+        assert_eq!(value["automaticallyCheckForUpdates"], true);
         assert_eq!(value["defaultRuntime"], "");
         assert_eq!(value["keymapOverrides"], serde_json::json!({}));
     }

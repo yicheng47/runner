@@ -10,6 +10,7 @@ mod window_state;
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,7 +34,8 @@ use runner_app::terminal_ime::TerminalInput;
 use runner_app::ui::{
     Button, ButtonSize, ContextMenu, CopyValueButton, DuplicateSubjectKind,
     DuplicateSubjectOverlay, IconButton, IconButtonSize, MenuItem as UiMenuItem, PopoverMenu,
-    Scrollbar, SessionControl, SessionControlKind, Tooltip,
+    Scrollbar, SessionControl, SessionControlKind, Tooltip, WorkspaceHeader,
+    WORKSPACE_HEADER_HEIGHT,
 };
 use runner_app::{theme, Copy, Cut, Paste, SelectAll};
 use runner_backend::model::SessionStatus;
@@ -48,6 +50,7 @@ use assets::{
     Assets, INTER_FONT, MESLO_FONT_BOLD, MESLO_FONT_BOLD_ITALIC, MESLO_FONT_ITALIC,
     MESLO_FONT_REGULAR,
 };
+use runner_app::updater::{global_updater, GlobalUpdater, Updater};
 use terminal::{TerminalElement, TerminalInteraction};
 use toast::ToastHost;
 
@@ -55,6 +58,7 @@ actions!(
     runner_app_ui,
     [
         CloseWindowOrPane,
+        CheckForUpdates,
         CommandPalette,
         FocusNextPane,
         FocusPreviousPane,
@@ -79,6 +83,11 @@ actions!(
     ]
 );
 
+#[derive(Clone)]
+struct GlobalNativePaths(NativePaths);
+
+impl Global for GlobalNativePaths {}
+
 mod toast;
 
 use surfaces::{
@@ -88,7 +97,6 @@ use surfaces::{
 
 const INITIAL_COLS: u16 = 100;
 const INITIAL_ROWS: u16 = 30;
-const WORKSPACE_HEADER_HEIGHT: f32 = 44.;
 const PANE_HEADER_HEIGHT: f32 = 34.;
 const WINDOW_STATE_SAVE_DELAY_MS: u64 = 300;
 
@@ -231,6 +239,7 @@ impl SidebarVisibilityTransition {
 
 struct NativeRoot {
     window_label: String,
+    log_dir: PathBuf,
     closing: bool,
     app_store: Entity<AppStore>,
     store_revisions: StoreRevisions,
@@ -293,6 +302,7 @@ struct NativeRoot {
 impl NativeRoot {
     fn new(
         window_label: String,
+        log_dir: PathBuf,
         initial_route_path: Option<String>,
         initial_window_state: Option<window_state::WindowState>,
         app_store: Entity<AppStore>,
@@ -523,6 +533,7 @@ impl NativeRoot {
         let runtime_navigation_index = (!runtime_navigation_history.is_empty()).then_some(0);
         let mut root = Self {
             window_label: window_label.clone(),
+            log_dir,
             closing: false,
             app_store: app_store.clone(),
             store_revisions,
@@ -895,6 +906,13 @@ fn save_window_settings(cx: &mut App) {
 
 fn run() -> Result<()> {
     let paths = native_paths()?;
+    if let Err(error) = runner_app::logging::install(&paths.log_dir) {
+        eprintln!("Runner file logging unavailable: {error:#}");
+    }
+    runner_app::logging::startup_banner(
+        &runner_app::version::display_version(),
+        &paths.app_data_dir,
+    );
     let core = boot_core(&paths)?;
     let mcp_server = match NativeMcpServer::start(&core) {
         Ok(server) => Some(server),
@@ -951,8 +969,13 @@ fn run() -> Result<()> {
             )
         });
         let keymap_overrides = app_store.read(cx).settings.keymap_overrides.clone();
+        let automatically_check_for_updates =
+            app_store.read(cx).settings.automatically_check_for_updates;
         keymap::install_bindings(cx, &keymap_overrides, false);
         cx.set_global(GlobalAppStore(app_store));
+        cx.set_global(GlobalNativePaths(paths.clone()));
+        let updater = cx.new(|_| Updater::new(automatically_check_for_updates));
+        cx.set_global(GlobalUpdater(updater));
         cx.set_global(WindowLayoutCheckpoint::default());
 
         // App::shutdown clears its windows before polling the returned future, so the
@@ -1027,10 +1050,15 @@ fn run() -> Result<()> {
                 cx.activate(true);
             });
         });
+        cx.on_action(|_: &CheckForUpdates, cx| {
+            global_updater(cx).update(cx, |updater, _| updater.check_for_updates());
+        });
         cx.set_menus(vec![
             Menu {
                 name: "Runner".into(),
                 items: vec![
+                    MenuItem::action("Check for Updates…", CheckForUpdates),
+                    MenuItem::separator(),
                     MenuItem::os_submenu("Services", SystemMenuType::Services),
                     MenuItem::separator(),
                     MenuItem::action("Hide Runner", Hide),
@@ -1129,6 +1157,7 @@ fn open_runner_window(
     cx: &mut App,
 ) -> Result<String> {
     let app_store = global_app_store(cx);
+    let log_dir = cx.global::<GlobalNativePaths>().0.log_dir.clone();
     let core = app_store.read(cx).core.clone();
     let default_size = size(px(1440.), px(900.));
     let fallback = Bounds::centered(None, default_size, cx);
@@ -1193,6 +1222,7 @@ fn open_runner_window(
             let root = cx.new(|cx| {
                 NativeRoot::new(
                     open_label.clone(),
+                    log_dir.clone(),
                     initial_route.clone(),
                     initial_window_state,
                     app_store.clone(),

@@ -215,122 +215,58 @@ impl NativeRoot {
             .layout_picker_open
             .then(|| self.render_layout_picker(preset, cx));
         let sidebar_toggle = self.render_open_sidebar_button(cx);
-        let sidebar_divider = self.sidebar_collapsed.then(|| {
-            div()
-                .mx_1()
-                .h(rems(20. / 16.))
-                .w(rems(1. / 16.))
-                .flex_none()
-                .bg(theme::border())
-        });
         let root = cx.entity();
         let layout_root = root.clone();
         let panel_root = root.clone();
         let control = (!focused_secondary)
             .then(|| self.render_topbar_session_control(&layout, window, cx))
             .flatten();
-        let title_group = div()
-            .flex_1()
-            .min_w(px(0.))
-            .flex()
-            .items_center()
-            .gap_3()
-            .child(
-                svg()
-                    .path(if grouped {
-                        "square-split-horizontal.svg"
-                    } else {
-                        "terminal.svg"
-                    })
-                    .size(rems(15. / 16.))
-                    .flex_none()
-                    .text_color(theme::accent()),
-            )
-            .child(
-                div()
-                    .min_w(px(0.))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .relative()
-                            .top(rems(1. / 16.))
-                            .min_w(px(0.))
-                            .truncate()
-                            .text_size(rems(13. / 16.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme::text())
-                            .child(label),
-                    )
-                    .children(
-                        (!session_ids.is_empty() && !focused_secondary)
-                            .then(|| self.chat_action_menu.clone()),
-                    )
-                    .children(control),
-            );
-        let header = div()
-            .flex_none()
-            .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
-            .pl(px(self.workspace_titlebar_padding(window, cx)))
-            .pr_2()
-            .flex()
-            .items_center()
-            .border_b_1()
-            .border_color(theme::border())
-            .bg(theme::panel())
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .children(sidebar_toggle)
-                    .children(sidebar_divider)
-                    .child(title_group)
-                    .child(
-                        div()
-                            .ml_auto()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                IconButton::new(
-                                    "layout-picker-toggle",
-                                    "square-split-horizontal.svg",
-                                )
-                                .focus_handle(self.layout_picker_focus.clone())
-                                .variant(if self.layout_picker_open {
-                                    ButtonVariant::Secondary
-                                } else {
-                                    ButtonVariant::Ghost
-                                })
-                                .tooltip("Layout")
-                                .on_press(move |_, cx| {
-                                    layout_root.update(cx, |this, cx| {
-                                        this.layout_picker_open = !this.layout_picker_open;
-                                        cx.notify();
-                                    });
-                                }),
-                            )
-                            .when(!self.settings(cx).chat_panel_open, |actions| {
-                                actions.child(
-                                    IconButton::new("open-chat-panel", "panel-right-hollow.svg")
-                                        .tooltip("Open side panel")
-                                        .on_press(move |_, cx| {
-                                            panel_root.update(cx, |this, cx| {
-                                                this.update_app_settings(cx, true, |settings| {
-                                                    settings.chat_panel_open = true;
-                                                    true
-                                                });
-                                                cx.notify();
-                                            });
-                                        }),
-                                )
-                            }),
-                    ),
-            );
+        let title_actions = (!session_ids.is_empty() && !focused_secondary)
+            .then(|| self.chat_action_menu.clone().into_any_element())
+            .into_iter()
+            .chain(control);
+        let layout_action = IconButton::new("layout-picker-toggle", "square-split-horizontal.svg")
+            .focus_handle(self.layout_picker_focus.clone())
+            .variant(if self.layout_picker_open {
+                ButtonVariant::Secondary
+            } else {
+                ButtonVariant::Ghost
+            })
+            .tooltip("Layout")
+            .on_press(move |_, cx| {
+                layout_root.update(cx, |this, cx| {
+                    this.layout_picker_open = !this.layout_picker_open;
+                    cx.notify();
+                });
+            })
+            .into_any_element();
+        let panel_action = (!self.settings(cx).chat_panel_open).then(|| {
+            IconButton::new("open-chat-panel", "panel-right-hollow.svg")
+                .tooltip("Open side panel")
+                .on_press(move |_, cx| {
+                    panel_root.update(cx, |this, cx| {
+                        this.update_app_settings(cx, true, |settings| {
+                            settings.chat_panel_open = true;
+                            true
+                        });
+                        cx.notify();
+                    });
+                })
+                .into_any_element()
+        });
+        let header = WorkspaceHeader::new(
+            px(self.workspace_titlebar_padding(window, cx)),
+            if grouped {
+                "square-split-horizontal.svg"
+            } else {
+                "terminal.svg"
+            },
+            label,
+        )
+        .sidebar_toggle(sidebar_toggle)
+        .title_actions(title_actions)
+        .trailing_actions(std::iter::once(layout_action).chain(panel_action))
+        .into_div();
 
         let error_banner = self.chat_error.clone().map(|error| {
             div()
