@@ -25,10 +25,6 @@ pub const CHAT_PANEL_DEFAULT: f32 = 320.;
 pub const MISSION_RAIL_MIN: f32 = 200.;
 pub const MISSION_RAIL_MAX: f32 = 480.;
 pub const MISSION_RAIL_DEFAULT: f32 = 288.;
-pub const WINDOW_WIDTH_DEFAULT: f32 = 1440.;
-pub const WINDOW_HEIGHT_DEFAULT: f32 = 900.;
-pub const WINDOW_WIDTH_MIN: f32 = 640.;
-pub const WINDOW_HEIGHT_MIN: f32 = 480.;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -122,8 +118,6 @@ pub struct AppSettings {
     pub dark_app_theme: DarkTheme,
     pub app_font_family: AppFontFamily,
     pub app_zoom: f32,
-    pub window_width: f32,
-    pub window_height: f32,
     pub terminal_theme: TerminalTheme,
     pub terminal_font_family: TerminalFontFamily,
     pub terminal_font_size: u16,
@@ -158,8 +152,6 @@ impl Default for AppSettings {
             dark_app_theme: DarkTheme::Runner,
             app_font_family: AppFontFamily::Inter,
             app_zoom: 1.,
-            window_width: WINDOW_WIDTH_DEFAULT,
-            window_height: WINDOW_HEIGHT_DEFAULT,
             terminal_theme: TerminalTheme::Runner,
             terminal_font_family: TerminalFontFamily::MesloNerdFont,
             terminal_font_size: TERMINAL_FONT_SIZE_DEFAULT,
@@ -209,13 +201,6 @@ impl AppSettings {
 
     pub fn normalize(&mut self) {
         self.app_zoom = normalize_zoom(self.app_zoom);
-        self.window_width =
-            normalize_window_dimension(self.window_width, WINDOW_WIDTH_DEFAULT, WINDOW_WIDTH_MIN);
-        self.window_height = normalize_window_dimension(
-            self.window_height,
-            WINDOW_HEIGHT_DEFAULT,
-            WINDOW_HEIGHT_MIN,
-        );
         self.terminal_font_size = normalize_terminal_font_size(self.terminal_font_size);
         self.terminal_scrollback = normalize_terminal_scrollback(self.terminal_scrollback);
         self.sidebar_width = normalize_sidebar_width(self.sidebar_width);
@@ -242,23 +227,6 @@ impl AppSettings {
         }
         default_enabled || self.enabled_agents.contains(name)
     }
-}
-
-fn normalize_window_dimension(value: f32, fallback: f32, minimum: f32) -> f32 {
-    if value.is_finite() && value > 0. {
-        value.max(minimum)
-    } else {
-        fallback
-    }
-}
-
-pub fn clamp_window_size_to_display(
-    width: f32,
-    height: f32,
-    display_width: f32,
-    display_height: f32,
-) -> (f32, f32) {
-    (width.min(display_width), height.min(display_height))
 }
 
 fn normalize_agent_set(values: BTreeSet<String>) -> BTreeSet<String> {
@@ -377,8 +345,6 @@ mod tests {
         let settings = AppSettings {
             sidebar_width: 376.,
             sidebar_collapsed: true,
-            window_width: 1280.,
-            window_height: 720.,
             ..AppSettings::default()
         };
         settings.save(&path).unwrap();
@@ -386,8 +352,6 @@ mod tests {
         let loaded = AppSettings::load(&path).unwrap();
         assert_eq!(loaded.sidebar_width, 376.);
         assert!(loaded.sidebar_collapsed);
-        assert_eq!(loaded.window_width, 1280.);
-        assert_eq!(loaded.window_height, 720.);
     }
 
     #[test]
@@ -452,8 +416,6 @@ mod tests {
 
         let loaded = AppSettings::load(&path).unwrap();
         assert_eq!(loaded.app_zoom, 1.3);
-        assert_eq!(loaded.window_width, WINDOW_WIDTH_DEFAULT);
-        assert_eq!(loaded.window_height, WINDOW_HEIGHT_DEFAULT);
         assert_eq!(loaded.terminal_font_size, TERMINAL_FONT_SIZE_MAX);
         assert_eq!(loaded.sidebar_width, SIDEBAR_DEFAULT);
         assert!(!loaded.sidebar_collapsed);
@@ -462,26 +424,6 @@ mod tests {
 
         assert_eq!(normalize_terminal_font_size(0), TERMINAL_FONT_SIZE_DEFAULT);
         assert_eq!(normalize_terminal_font_size(1), TERMINAL_FONT_SIZE_MIN);
-    }
-
-    #[test]
-    fn restored_window_size_has_a_floor_and_fits_the_current_display() {
-        assert_eq!(
-            normalize_window_dimension(1., WINDOW_WIDTH_DEFAULT, WINDOW_WIDTH_MIN),
-            WINDOW_WIDTH_MIN
-        );
-        assert_eq!(
-            normalize_window_dimension(f32::NAN, WINDOW_HEIGHT_DEFAULT, WINDOW_HEIGHT_MIN),
-            WINDOW_HEIGHT_DEFAULT
-        );
-        assert_eq!(
-            clamp_window_size_to_display(2400., 1400., 1440., 875.),
-            (1440., 875.)
-        );
-        assert_eq!(
-            clamp_window_size_to_display(1280., 720., 1440., 900.),
-            (1280., 720.)
-        );
     }
 
     #[test]

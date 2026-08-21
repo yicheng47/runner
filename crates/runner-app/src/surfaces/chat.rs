@@ -12,9 +12,6 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         self.dismiss_sidebar_transients(cx);
-        self.core(cx).windows.set_subjects("main", Vec::new());
-        self.core(cx).windows.mark_blurred("main");
-        self.core(cx).broadcast_focus_map();
         let session_key = chat.agent_session_key.clone();
         self.archived_chat_detail = Some(chat);
         self.archived_session_key_copy
@@ -200,6 +197,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.chat_secondary_state(session_id, cx).secondary {
+            return;
+        }
         if !self.stopping_sessions.insert(session_id.to_owned()) {
             return;
         }
@@ -338,6 +338,12 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .active_focused_session_id()
+            .is_some_and(|session_id| self.chat_secondary_state(&session_id, cx).secondary)
+        {
+            return;
+        }
         let Some(action) = self.chat_menu_actions.get(index).cloned() else {
             return;
         };
@@ -496,11 +502,33 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
+        self.report_current_subjects(cx);
+        self.ensure_owned_active_tab_attached(window, cx)
+    }
+
+    pub(crate) fn ensure_owned_active_tab_attached(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        if self.closing {
+            return Ok(());
+        }
+        self.refresh_chat_secondaries(cx);
         let Some(layout) = self.tabs.active().cloned() else {
+            self.attached.clear();
             return Ok(());
         };
+        let active_ids = layout.session_ids();
+        let owned_ids = active_ids
+            .iter()
+            .filter(|session_id| !self.chat_secondaries.contains_key(*session_id))
+            .cloned()
+            .collect::<HashSet<_>>();
+        self.attached
+            .retain(|session_id, _| owned_ids.contains(session_id));
         let mut errors = Vec::new();
-        for session_id in layout.session_ids() {
+        for session_id in active_ids {
             if let Err(error) = self.ensure_attached(&layout, &session_id, window, cx) {
                 errors.push(error.to_string());
             }
@@ -520,6 +548,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
+        if self.chat_secondary_state(session_id, cx).secondary {
+            return Ok(());
+        }
         let _entry = runner_backend::ops::session::session_get(self.core(cx), session_id)?
             .with_context(|| format!("direct chat not found: {session_id}"))?;
         let pane_id = layout
@@ -619,7 +650,7 @@ impl NativeRoot {
         let (width_fraction, height_fraction) =
             pane_fractions(&layout.root, pane_id).unwrap_or((1., 1.));
         let bounds = window.bounds().size;
-        let sidebar_width = if self.settings(cx).sidebar_collapsed {
+        let sidebar_width = if self.sidebar_collapsed {
             0.
         } else {
             self.settings(cx).sidebar_width * self.settings(cx).app_zoom
@@ -665,6 +696,16 @@ impl NativeRoot {
 
     pub(crate) fn session_is_interactive(&self, session_id: &str, cx: &App) -> bool {
         self.route == AppRoute::Chat
+            && !self.chat_secondary_state(session_id, cx).secondary
+            && self
+                .session_entry(session_id, cx)
+                .is_some_and(|entry| entry.status == SessionStatus::Running)
+            && !self.session_lifecycle_disabled(session_id, cx)
+    }
+
+    pub(crate) fn cached_session_is_interactive(&self, session_id: &str, cx: &App) -> bool {
+        self.route == AppRoute::Chat
+            && !self.cached_chat_secondary_state(session_id).secondary
             && self
                 .session_entry(session_id, cx)
                 .is_some_and(|entry| entry.status == SessionStatus::Running)
@@ -731,25 +772,8 @@ impl NativeRoot {
                 self.last_focused_runner_id = runner_id;
             }
             self.sync_active_chat_detail(cx);
+            checkpoint_window_layout_deferred(cx);
             cx.notify();
-        }
-    }
-
-    pub(crate) fn close_focused_chat_pane(
-        &mut self,
-        _: &ClosePane,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let pane_id = self
-            .tabs
-            .active()
-            .filter(|layout| layout.root.leaves().len() > 1)
-            .map(|layout| layout.focused_pane_id.clone());
-        if self.route == AppRoute::Chat {
-            if let Some(pane_id) = pane_id {
-                self.close_pane(&pane_id, window, cx);
-            }
         }
     }
 
@@ -833,6 +857,9 @@ impl NativeRoot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.session_is_interactive(session_id, cx) {
+            return;
+        }
         let Some(chat) = self.attached.get(session_id) else {
             return;
         };
@@ -899,6 +926,9 @@ impl NativeRoot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.chat_secondary_state(session_id, cx).secondary {
+            return;
+        }
         let Some(item) = cx.read_from_clipboard() else {
             return;
         };
@@ -953,6 +983,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.chat_secondary_state(session_id, cx).secondary {
+            return;
+        }
         if self.chat_transitions.contains_key(session_id) {
             return;
         }

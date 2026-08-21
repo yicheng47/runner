@@ -145,11 +145,13 @@ struct DeliveryBlocked {
 }
 
 pub(crate) struct MissionWorkspace {
+    window_label: String,
     shell: WeakEntity<NativeRoot>,
     app_store: Entity<AppStore>,
     store_revisions: StoreRevisions,
     attached: HashMap<String, AttachedChat>,
     active: bool,
+    sidebar_collapsed: bool,
     root_focus: FocusHandle,
     titlebar_drag_armed: bool,
     pub mission_id: Option<String>,
@@ -207,11 +209,13 @@ pub(crate) struct MissionWorkspace {
 
 impl MissionWorkspace {
     pub(crate) fn new(
+        window_label: String,
         shell: WeakEntity<NativeRoot>,
         app_store: Entity<AppStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let sidebar_collapsed = app_store.read(cx).settings.sidebar_collapsed;
         let root_focus = cx.focus_handle();
         let workspace = cx.entity();
         let menu_root = workspace.clone();
@@ -292,7 +296,6 @@ impl MissionWorkspace {
                                 | "session/updated"
                                 | "session/warning"
                                 | "session/input-error"
-                                | "window_focus_map"
                         ) =>
                     {
                         if mission_event_tx.unbounded_send(event).is_err() {
@@ -331,11 +334,13 @@ impl MissionWorkspace {
         .detach();
         let store_revisions = app_store.read(cx).revisions;
         Self {
+            window_label,
             shell,
             app_store: app_store.clone(),
             store_revisions,
             attached: HashMap::new(),
             active: false,
+            sidebar_collapsed,
             root_focus,
             titlebar_drag_armed: false,
             mission_id: None,
@@ -440,6 +445,12 @@ impl MissionWorkspace {
         self.generation
     }
 
+    pub(crate) fn release_window(&mut self, cx: &mut Context<Self>) {
+        self.active = false;
+        self.attached.clear();
+        cx.notify();
+    }
+
     fn is_current(&self, mission_id: &str, generation: u64) -> bool {
         self.generation == generation && self.mission_id.as_deref() == Some(mission_id)
     }
@@ -466,6 +477,17 @@ impl MissionWorkspace {
 
     fn lifecycle_busy(&self) -> bool {
         self.stopping || self.resuming || self.resetting || self.archiving
+    }
+
+    fn secondary_state(&self, cx: &App) -> runner_backend::ops::window::SecondaryState {
+        let Some(mission_id) = self.mission_id.as_ref() else {
+            return runner_backend::ops::window::SecondaryState::default();
+        };
+        runner_backend::ops::window::is_secondary_for(
+            &self.core(cx).windows.snapshot(),
+            &self.window_label,
+            &Subject::Mission(mission_id.clone()),
+        )
     }
 
     fn transition_kind(&self, session_id: &str) -> Option<MissionTransitionKind> {
@@ -575,6 +597,13 @@ impl MissionWorkspace {
         })
     }
 
+    pub(crate) fn set_sidebar_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+        if self.sidebar_collapsed != collapsed {
+            self.sidebar_collapsed = collapsed;
+            cx.notify();
+        }
+    }
+
     fn save_settings(&self, cx: &App) {
         self.app_store.read(cx).save_settings();
     }
@@ -633,7 +662,7 @@ impl MissionWorkspace {
     }
 
     fn workspace_titlebar_padding(&self, window: &Window, cx: &App) -> f32 {
-        if self.settings(cx).sidebar_collapsed && !window.is_fullscreen() {
+        if self.sidebar_collapsed && !window.is_fullscreen() {
             SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
         } else {
             16. * self.settings(cx).app_zoom
@@ -641,7 +670,7 @@ impl MissionWorkspace {
     }
 
     fn render_open_sidebar_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        self.settings(cx).sidebar_collapsed.then(|| {
+        self.sidebar_collapsed.then(|| {
             div()
                 .id("open-sidebar")
                 .group("open-sidebar")
@@ -667,14 +696,14 @@ impl MissionWorkspace {
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     cx.stop_propagation();
-                    this.update_app_settings(cx, true, |settings| {
-                        settings.sidebar_collapsed = false;
-                        true
-                    });
+                    this.sidebar_collapsed = false;
                     if let Some(shell) = this.shell.upgrade() {
-                        shell.update(cx, |shell, _| {
-                            shell.sidebar_preview_open = false;
-                            shell.sidebar_preview_peeking = false;
+                        cx.defer(move |cx| {
+                            shell.update(cx, |shell, shell_cx| {
+                                shell.set_sidebar_collapsed(false, true, shell_cx);
+                                shell.sidebar_preview_open = false;
+                                shell.sidebar_preview_peeking = false;
+                            });
                         });
                     }
                     this.focus_active_mission_terminal(window, cx);
@@ -772,6 +801,13 @@ impl NativeRoot {
             self.archived_chat_detail = None;
         }
         self.route = route;
+        if route_changed {
+            self.dismissed_duplicate_chats.clear();
+        }
+        if self.route != AppRoute::Chat {
+            self.attached.clear();
+        }
+        self.report_current_subjects(cx);
         self.record_current_runtime_location();
         if route_changed {
             let sidebar = self.sidebar.clone();
@@ -924,13 +960,14 @@ impl MissionWorkspace {
         cx: &mut Context<Self>,
     ) {
         self.active = true;
-        self.core(cx)
-            .windows
-            .set_subjects("main", vec![Subject::Mission(mission_id.clone())]);
+        self.core(cx).windows.set_subjects(
+            &self.window_label,
+            vec![Subject::Mission(mission_id.clone())],
+        );
         if window.is_window_active() {
-            self.core(cx).windows.mark_focused("main");
+            self.core(cx).windows.mark_focused(&self.window_label);
         } else {
-            self.core(cx).windows.mark_blurred("main");
+            self.core(cx).windows.mark_blurred(&self.window_label);
         }
         self.core(cx).broadcast_focus_map();
         let generation = self.reset(
@@ -1111,7 +1148,7 @@ impl MissionWorkspace {
 
     pub(crate) fn estimated_mission_terminal_size(&self, window: &Window, cx: &App) -> (u16, u16) {
         let bounds = window.bounds().size;
-        let sidebar_width = if self.settings(cx).sidebar_collapsed {
+        let sidebar_width = if self.sidebar_collapsed {
             0.
         } else {
             self.settings(cx).sidebar_width * self.settings(cx).app_zoom
@@ -1158,7 +1195,7 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        if self.archived() || self.secondary {
+        if self.archived() || self.secondary_state(cx).secondary {
             return Ok(());
         }
         let fallback = self.current_mission_terminal_size(window, cx);
@@ -1188,6 +1225,9 @@ impl MissionWorkspace {
         cx: &mut Context<Self>,
     ) -> Result<()> {
         let session_id = session.session.id.clone();
+        if self.secondary_state(cx).secondary {
+            return Ok(());
+        }
         if self.attached.contains_key(&session_id) {
             return Ok(());
         }
@@ -1377,16 +1417,19 @@ impl MissionWorkspace {
         let Some(mission_id) = self.mission_id.as_ref() else {
             return;
         };
-        let primary = self
-            .core(cx)
-            .windows
-            .primary_for(&Subject::Mission(mission_id.clone()));
-        let secondary = primary.as_deref().is_some_and(|label| label != "main");
+        let state = runner_backend::ops::window::is_secondary_for(
+            &self.core(cx).windows.snapshot(),
+            &self.window_label,
+            &Subject::Mission(mission_id.clone()),
+        );
+        let secondary = state.secondary;
+        let primary = state.primary_label;
         if secondary != self.secondary {
             self.secondary = secondary;
             self.duplicate_dismissed = false;
             self.primary_label = primary;
             if secondary {
+                self.attached.clear();
                 window.focus(&self.root_focus);
             } else if let Err(error) = self.ensure_mission_terminals_attached(window, cx) {
                 self.error = Some(error.to_string());
@@ -1415,6 +1458,20 @@ impl MissionWorkspace {
     }
 
     fn mission_terminal_interactive(&self, session_id: &str, cx: &App) -> bool {
+        self.is_active(cx)
+            && !self.secondary_state(cx).secondary
+            && !self.archiving
+            && self
+                .sessions
+                .iter()
+                .find(|session| session.session.id == session_id)
+                .is_some_and(|session| {
+                    session.session.status == SessionStatus::Running
+                        && self.transition_kind(session_id).is_none()
+                })
+    }
+
+    fn cached_mission_terminal_interactive(&self, session_id: &str, cx: &App) -> bool {
         self.is_active(cx)
             && !self.secondary
             && !self.archiving
@@ -1568,10 +1625,6 @@ impl MissionWorkspace {
                 }
             }
             "mission/resync" => self.resync_mission_events(cx),
-            "window_focus_map" => {
-                let active = self.is_active(cx);
-                self.sync_mission_subject_ownership(active, window, cx);
-            }
             _ => {}
         }
     }
@@ -1737,6 +1790,9 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.secondary_state(cx).secondary {
+            return;
+        }
         let Some(action) = self.menu_actions.get(index).cloned() else {
             return;
         };
@@ -1803,7 +1859,7 @@ impl MissionWorkspace {
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
-        if self.lifecycle_busy() {
+        if self.lifecycle_busy() || self.secondary_state(cx).secondary {
             return;
         }
         self.stopping = true;
@@ -1849,7 +1905,7 @@ impl MissionWorkspace {
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
-        if self.lifecycle_busy() {
+        if self.lifecycle_busy() || self.secondary_state(cx).secondary {
             return;
         }
         let stopped = self
@@ -1956,7 +2012,7 @@ impl MissionWorkspace {
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
-        if self.lifecycle_busy() {
+        if self.lifecycle_busy() || self.secondary_state(cx).secondary {
             return;
         }
         self.archiving = true;
@@ -2130,7 +2186,7 @@ impl MissionWorkspace {
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
-        if self.resetting {
+        if self.resetting || self.secondary_state(cx).secondary {
             return;
         }
         self.resetting = true;
@@ -2556,6 +2612,9 @@ impl MissionWorkspace {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.mission_terminal_interactive(session_id, cx) {
+            return;
+        }
         let Some(chat) = self.attached.get(session_id) else {
             return;
         };
@@ -2622,6 +2681,9 @@ impl MissionWorkspace {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.mission_terminal_interactive(session_id, cx) {
+            return;
+        }
         let Some(item) = cx.read_from_clipboard() else {
             return;
         };
@@ -2673,6 +2735,9 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.mission_terminal_interactive(session_id, cx) {
+            return;
+        }
         let Some(chat) = self.attached.get(session_id) else {
             self.error = Some("Terminal is not attached.".into());
             cx.notify();
@@ -2830,7 +2895,7 @@ impl MissionWorkspace {
             .border_color(theme::border())
             .bg(theme::panel())
             .children(self.render_open_sidebar_button(cx))
-            .children(self.settings(cx).sidebar_collapsed.then(|| {
+            .children(self.sidebar_collapsed.then(|| {
                 div()
                     .mx_1()
                     .h(rems(20. / 16.))
@@ -3478,7 +3543,7 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.composer_posting {
+        if self.composer_posting || self.secondary_state(cx).secondary {
             return;
         }
         self.composer = select_composer_target(handle);
@@ -3489,7 +3554,7 @@ impl MissionWorkspace {
     }
 
     fn clear_mission_composer_target(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.composer_posting {
+        if self.composer_posting || self.secondary_state(cx).secondary {
             return;
         }
         self.composer.target = None;
@@ -3521,7 +3586,7 @@ impl MissionWorkspace {
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
-        if self.composer_posting {
+        if self.composer_posting || self.secondary_state(cx).secondary {
             return;
         }
         self.composer_posting = true;
@@ -4046,6 +4111,9 @@ impl MissionWorkspace {
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
+        if self.secondary_state(cx).secondary {
+            return;
+        }
         if self.resolved_asks.contains_key(&question_id)
             || !self.submitting_asks.insert(question_id.clone())
         {
@@ -4117,7 +4185,7 @@ impl MissionWorkspace {
         let terminal_scrollbar = chat.terminal_scrollbar.clone();
         let terminal_background =
             crate::terminal::element::to_hsla(self.terminal_style(cx).palette.background, 1.);
-        let interactive = self.mission_terminal_interactive(&session_id, cx);
+        let interactive = self.cached_mission_terminal_interactive(&session_id, cx);
         let key_id = session_id.clone();
         let scroll_id = session_id.clone();
         let paste_id = session_id.clone();
@@ -4186,7 +4254,7 @@ impl MissionWorkspace {
         {
             let idle =
                 self.runner_statuses().get(&session.handle) == Some(&SessionActivityState::Idle);
-            let sidebar_width = if self.settings(cx).sidebar_collapsed {
+            let sidebar_width = if self.sidebar_collapsed {
                 0.
             } else {
                 self.settings(cx).sidebar_width * self.settings(cx).app_zoom
@@ -4331,85 +4399,25 @@ impl MissionWorkspace {
     }
 
     fn render_duplicate_mission_overlay(&self, cx: &mut Context<Self>) -> AnyElement {
-        let root = cx.entity();
-        div()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .p_6()
-            .bg(theme::with_alpha(theme::bg(), 0.85))
-            .child(
-                div()
-                    .w_full()
-                    .max_w(rems(448. / 16.))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap_4()
-                    .rounded_xl()
-                    .border_1()
-                    .border_color(theme::border())
-                    .bg(theme::panel())
-                    .p_6()
-                    .text_center()
-                    .shadow_2xl()
-                    .child(
-                        div()
-                            .size(rems(44. / 16.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(theme::border())
-                            .bg(theme::bg())
-                            .child(
-                                svg()
-                                    .path("app-window.svg")
-                                    .size(rems(20. / 16.))
-                                    .text_color(theme::accent()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_size(rems(15. / 16.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Open in another window"),
-                    )
-                    .child(
-                        div()
-                            .text_size(rems(13. / 16.))
-                            .line_height(rems(20. / 16.))
-                            .text_color(theme::muted())
-                            .child("Another window is already driving this mission. Only one window can own the terminal at a time, so this view is read-only until you focus it here."),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                Button::new("focus-duplicate-mission", "Focus that window")
-                                    .icon("app-window.svg")
-                                    .variant(ButtonVariant::Primary)
-                                    .disabled(true)
-                                    .tooltip("Available with native multi-window support"),
-                            )
-                            .child(
-                                Button::new("stay-in-duplicate-mission", "Stay here").on_press(
-                                    move |_, cx| {
-                                        root.update(cx, |this, cx| {
-                                            this.duplicate_dismissed = true;
-                                            cx.notify();
-                                        });
-                                    },
-                                ),
-                            ),
-                    ),
-            )
-            .into_any_element()
+        let stay_root = cx.entity();
+        let primary_label = self.primary_label.clone();
+        DuplicateSubjectOverlay::new(
+            "duplicate-mission",
+            DuplicateSubjectKind::Mission,
+            primary_label.is_some(),
+            move |_, cx| {
+                if let Some(label) = primary_label.as_deref() {
+                    focus_other_window(label, cx);
+                }
+            },
+            move |_, cx| {
+                stay_root.update(cx, |this, cx| {
+                    this.duplicate_dismissed = true;
+                    cx.notify();
+                });
+            },
+        )
+        .into_any_element()
     }
 
     fn render_mission_rail(&self, cx: &mut Context<Self>) -> AnyElement {

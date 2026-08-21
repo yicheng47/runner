@@ -22,14 +22,14 @@ runner-terminal = { path = "../runner-terminal" }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1", features = ["net", "rt-multi-thread", "sync", "time"] }
+tempfile = "3"
 unicode-segmentation = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSButton", "NSControl", "NSImage", "NSResponder", "NSView", "NSWindow"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSData"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSButton", "NSControl", "NSImage", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSData", "NSGeometry"] }
 raw-window-handle = "0.6"
 
 [dev-dependencies]
 gpui = { package = "gpui-ce", version = "0.3", features = ["test-support"] }
-tempfile = "3"

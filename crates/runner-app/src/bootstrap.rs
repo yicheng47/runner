@@ -121,7 +121,6 @@ pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
         runtime,
     );
     let window_registry = Arc::new(windows::WindowRegistry::new());
-    window_registry.register("main");
     let event_channel = events::EventChannel::new();
 
     let core = AppCore {

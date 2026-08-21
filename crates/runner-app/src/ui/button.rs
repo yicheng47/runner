@@ -491,7 +491,7 @@ pub fn is_activation_key(event: &KeyDownEvent) -> bool {
     matches!(event.keystroke.key.as_str(), "enter" | "space")
 }
 
-fn focus_ring(color: gpui::Hsla) -> Vec<BoxShadow> {
+pub(crate) fn focus_ring(color: gpui::Hsla) -> Vec<BoxShadow> {
     vec![
         BoxShadow {
             color: theme::bg(),

@@ -190,15 +190,12 @@ impl From<&AppSettings> for ShellSettingsSnapshot {
         std::mem::discriminant(&settings.dark_app_theme).hash(&mut hasher);
         std::mem::discriminant(&settings.app_font_family).hash(&mut hasher);
         settings.app_zoom.to_bits().hash(&mut hasher);
-        settings.window_width.to_bits().hash(&mut hasher);
-        settings.window_height.to_bits().hash(&mut hasher);
         std::mem::discriminant(&settings.terminal_theme).hash(&mut hasher);
         std::mem::discriminant(&settings.terminal_font_family).hash(&mut hasher);
         settings.terminal_font_size.hash(&mut hasher);
         std::mem::discriminant(&settings.terminal_cursor_style).hash(&mut hasher);
         settings.terminal_scrollback.hash(&mut hasher);
         settings.sidebar_width.to_bits().hash(&mut hasher);
-        settings.sidebar_collapsed.hash(&mut hasher);
         settings.sidebar_projects_open.hash(&mut hasher);
         settings.sidebar_chats_open.hash(&mut hasher);
         settings.sidebar_collapsed_projects.hash(&mut hasher);
