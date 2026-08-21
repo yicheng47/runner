@@ -3,7 +3,7 @@ use std::ops::Range;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, rems, AnyElement, App, FontWeight, Global, HighlightStyle, InteractiveText,
+    div, px, rems, AnyElement, App, EntityId, FontWeight, Global, HighlightStyle, InteractiveText,
     SharedString, StrikethroughStyle, StyledText, UnderlineStyle,
 };
 
@@ -178,7 +178,7 @@ fn parse_table_row(line: &str) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn render_markdown(id: &str, text: &str, cx: &App) -> AnyElement {
+pub(crate) fn render_markdown(id: &str, text: &str, view: EntityId, cx: &App) -> AnyElement {
     let blocks = parse_blocks(text);
     let id = id.to_owned();
     div()
@@ -190,19 +190,25 @@ pub(crate) fn render_markdown(id: &str, text: &str, cx: &App) -> AnyElement {
             blocks
                 .into_iter()
                 .enumerate()
-                .map(|(index, block)| render_block(&id, index, block, cx)),
+                .map(|(index, block)| render_block(&id, index, block, view, cx)),
         )
         .into_any_element()
 }
 
-fn render_block(id: &str, index: usize, block: MarkdownBlock, cx: &App) -> AnyElement {
+fn render_block(
+    id: &str,
+    index: usize,
+    block: MarkdownBlock,
+    view: EntityId,
+    cx: &App,
+) -> AnyElement {
     match block {
         MarkdownBlock::Paragraph(text) => div()
             .flex()
             .flex_col()
             .line_height(rems(20. / 16.))
             .children(text.lines().enumerate().map(|(line, text)| {
-                render_inline_line(format!("{id}-{index}-paragraph-{line}"), text, cx)
+                render_inline_line(format!("{id}-{index}-paragraph-{line}"), text, view, cx)
             }))
             .into_any_element(),
         MarkdownBlock::Heading(level, text) => div()
@@ -213,6 +219,7 @@ fn render_block(id: &str, index: usize, block: MarkdownBlock, cx: &App) -> AnyEl
             .child(render_inline_line(
                 format!("{id}-{index}-heading"),
                 &text,
+                view,
                 cx,
             ))
             .into_any_element(),
@@ -226,6 +233,7 @@ fn render_block(id: &str, index: usize, block: MarkdownBlock, cx: &App) -> AnyEl
             .child(div().min_w(gpui::px(0.)).flex_1().child(render_inline_line(
                 format!("{id}-{index}-list"),
                 &text,
+                view,
                 cx,
             )))
             .into_any_element(),
@@ -235,7 +243,12 @@ fn render_block(id: &str, index: usize, block: MarkdownBlock, cx: &App) -> AnyEl
             .border_color(theme::border_strong())
             .pl_3()
             .text_color(theme::muted())
-            .child(render_inline_line(format!("{id}-{index}-quote"), &text, cx))
+            .child(render_inline_line(
+                format!("{id}-{index}-quote"),
+                &text,
+                view,
+                cx,
+            ))
             .into_any_element(),
         MarkdownBlock::Code(text) => div()
             .id((SharedString::from(id.to_owned()), index))
@@ -262,9 +275,9 @@ fn render_block(id: &str, index: usize, block: MarkdownBlock, cx: &App) -> AnyEl
                     .min_w(px(420.))
                     .flex()
                     .flex_col()
-                    .child(render_table_row(id, index, 0, header, true, cx))
+                    .child(render_table_row(id, index, 0, header, true, view, cx))
                     .children(rows.into_iter().enumerate().map(|(row_index, row)| {
-                        render_table_row(id, index, row_index + 1, row, false, cx)
+                        render_table_row(id, index, row_index + 1, row, false, view, cx)
                     })),
             )
             .into_any_element(),
@@ -283,6 +296,7 @@ fn render_table_row(
     row_index: usize,
     cells: Vec<String>,
     heading: bool,
+    view: EntityId,
     cx: &App,
 ) -> AnyElement {
     div()
@@ -307,13 +321,14 @@ fn render_table_row(
                 .child(render_inline_line(
                     format!("{id}-{block_index}-table-{row_index}-{cell_index}"),
                     &cell,
+                    view,
                     cx,
                 ))
         }))
         .into_any_element()
 }
 
-fn render_inline_line(id: String, source: &str, cx: &App) -> AnyElement {
+fn render_inline_line(id: String, source: &str, view: EntityId, cx: &App) -> AnyElement {
     let hovered_link = cx
         .try_global::<MarkdownLinkHover>()
         .and_then(|hover| hover.link_for(&id));
@@ -357,7 +372,7 @@ fn render_inline_line(id: String, source: &str, cx: &App) -> AnyElement {
     let hover_ranges = link_ranges.clone();
     let interactive = InteractiveText::new(SharedString::from(id.clone()), styled)
         .on_click(link_ranges, move |index, _, cx| cx.open_url(&urls[index]))
-        .on_hover(move |character, _, window, cx| {
+        .on_hover(move |character, _, _, cx| {
             let link = character.and_then(|character| {
                 hover_ranges
                     .iter()
@@ -365,7 +380,7 @@ fn render_inline_line(id: String, source: &str, cx: &App) -> AnyElement {
             });
             let hover = cx.default_global::<MarkdownLinkHover>();
             if hover.set_link(&hover_id, link) {
-                cx.notify(window.current_view());
+                cx.notify(view);
             }
         });
     let leave_id = id.clone();
@@ -374,12 +389,12 @@ fn render_inline_line(id: String, source: &str, cx: &App) -> AnyElement {
         .w_full()
         .min_w(px(0.))
         .whitespace_normal()
-        .on_hover(move |hovered, window, cx| {
+        .on_hover(move |hovered, _, cx| {
             if cx
                 .default_global::<MarkdownLinkHover>()
                 .set_line_active(&leave_id, *hovered)
             {
-                cx.notify(window.current_view());
+                cx.notify(view);
             }
         })
         .when(cfg!(test), |line| {

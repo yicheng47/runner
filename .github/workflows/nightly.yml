@@ -1,11 +1,6 @@
 name: Nightly
 
 on:
-  push:
-    branches:
-      - gpui-nightly
-    paths-ignore:
-      - "docs/**"
   workflow_dispatch:
 
 permissions:
