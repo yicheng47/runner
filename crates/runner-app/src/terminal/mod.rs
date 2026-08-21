@@ -3,4 +3,4 @@
 pub(crate) mod element;
 pub(crate) mod glyphs;
 
-pub(crate) use element::TerminalElement;
+pub(crate) use element::{TerminalElement, TerminalInteraction};

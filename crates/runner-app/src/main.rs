@@ -18,7 +18,7 @@ use anyhow::{Context as _, Result};
 use futures::StreamExt as _;
 use gpui::{
     actions, div, point, prelude::*, px, relative, rems, size, AnyElement, App, Application,
-    Bounds, ClipboardEntry, Context, CursorStyle, DragMoveEvent, Entity, FocusHandle, Global,
+    Bounds, ClipboardItem, Context, CursorStyle, DragMoveEvent, Entity, FocusHandle, Global,
     KeyDownEvent, Menu, MenuItem, MouseButton, OsAction, QuitMode, ScrollDelta, ScrollHandle,
     ScrollWheelEvent, SharedString, Subscription, SystemMenuType, TitlebarOptions, Window,
     WindowBounds, WindowOptions,
@@ -48,7 +48,7 @@ use assets::{
     Assets, INTER_FONT, MESLO_FONT_BOLD, MESLO_FONT_BOLD_ITALIC, MESLO_FONT_ITALIC,
     MESLO_FONT_REGULAR,
 };
-use terminal::TerminalElement;
+use terminal::{TerminalElement, TerminalInteraction};
 use toast::ToastHost;
 
 actions!(
@@ -94,6 +94,7 @@ const WINDOW_STATE_SAVE_DELAY_MS: u64 = 300;
 
 struct AttachedChat {
     terminal: Arc<TerminalSession>,
+    terminal_interaction: Entity<TerminalInteraction>,
     terminal_scrollbar: Entity<Scrollbar>,
     terminal_input: Entity<TerminalInput>,
     _terminal_input_subscription: Subscription,

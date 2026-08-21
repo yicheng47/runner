@@ -32,6 +32,18 @@ pub fn terminal_key_route(
     }
 }
 
+pub fn swallows_option_copy(
+    platform: bool,
+    control: bool,
+    alt: bool,
+    key: &str,
+    key_char: Option<&str>,
+) -> bool {
+    alt && !platform
+        && !control
+        && (key.eq_ignore_ascii_case("c") || key == "ç" || key_char == Some("ç"))
+}
+
 fn is_raw_terminal_key(key: &str) -> bool {
     matches!(
         key,
@@ -278,5 +290,19 @@ impl EntityInputHandler for TerminalInput {
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::swallows_option_copy;
+
+    #[test]
+    fn option_copy_never_reaches_the_terminal() {
+        assert!(swallows_option_copy(false, false, true, "c", Some("ç")));
+        assert!(swallows_option_copy(false, false, true, "ç", Some("ç")));
+        assert!(!swallows_option_copy(true, false, true, "c", Some("ç")));
+        assert!(!swallows_option_copy(false, true, true, "c", Some("ç")));
+        assert!(!swallows_option_copy(false, false, true, "v", Some("√")));
     }
 }

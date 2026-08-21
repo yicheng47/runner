@@ -5,6 +5,27 @@
 
 use alacritty_terminal::term::TermMode;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MouseModifiers {
+    pub shift: bool,
+    pub alt: bool,
+    pub control: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MouseAction {
+    Press,
+    Release,
+    Motion,
+}
+
 /// Encode a non-text keystroke (or ctrl-chord) into PTY bytes.
 /// `app_cursor` selects the DECCKM application-cursor sequences for the
 /// arrow keys. Returns `None` when the key is not ours to handle (the
@@ -13,9 +34,14 @@ pub fn encode_key(
     key: &str,
     ctrl: bool,
     alt: bool,
+    shift: bool,
     key_char: Option<&str>,
     app_cursor: bool,
 ) -> Option<Vec<u8>> {
+    if key == "enter" && shift && !ctrl && !alt {
+        return Some(b"\x1b\r".to_vec());
+    }
+
     let mut bytes: Vec<u8> = Vec::new();
     if ctrl {
         let encoded = match key {
@@ -107,10 +133,124 @@ pub fn encode_scroll(mode: TermMode, delta_lines: i32, bypass_reporting: bool) -
     }
     if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
         let key = if up { "up" } else { "down" };
-        let arrow = encode_key(key, false, false, None, mode.contains(TermMode::APP_CURSOR))?;
+        let arrow = encode_key(
+            key,
+            false,
+            false,
+            false,
+            None,
+            mode.contains(TermMode::APP_CURSOR),
+        )?;
         return Some(arrow.repeat(count));
     }
     None
+}
+
+pub fn encode_mouse_press(
+    mode: TermMode,
+    button: MouseButton,
+    column: usize,
+    row: usize,
+    modifiers: MouseModifiers,
+    bypass_reporting: bool,
+) -> Option<Vec<u8>> {
+    encode_mouse(
+        mode,
+        MouseAction::Press,
+        button,
+        column,
+        row,
+        modifiers,
+        bypass_reporting,
+    )
+}
+
+pub fn encode_mouse_release(
+    mode: TermMode,
+    button: MouseButton,
+    column: usize,
+    row: usize,
+    modifiers: MouseModifiers,
+    bypass_reporting: bool,
+) -> Option<Vec<u8>> {
+    encode_mouse(
+        mode,
+        MouseAction::Release,
+        button,
+        column,
+        row,
+        modifiers,
+        bypass_reporting,
+    )
+}
+
+pub fn encode_mouse_motion(
+    mode: TermMode,
+    button: MouseButton,
+    column: usize,
+    row: usize,
+    modifiers: MouseModifiers,
+    bypass_reporting: bool,
+) -> Option<Vec<u8>> {
+    encode_mouse(
+        mode,
+        MouseAction::Motion,
+        button,
+        column,
+        row,
+        modifiers,
+        bypass_reporting,
+    )
+}
+
+fn encode_mouse(
+    mode: TermMode,
+    action: MouseAction,
+    button: MouseButton,
+    column: usize,
+    row: usize,
+    modifiers: MouseModifiers,
+    bypass_reporting: bool,
+) -> Option<Vec<u8>> {
+    if bypass_reporting || !mode.intersects(TermMode::MOUSE_MODE) {
+        return None;
+    }
+    if action == MouseAction::Motion
+        && !mode.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION)
+    {
+        return None;
+    }
+
+    let button_code = match button {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+    };
+    let modifier_code = (u8::from(modifiers.shift) * 4)
+        | (u8::from(modifiers.alt) * 8)
+        | (u8::from(modifiers.control) * 16);
+    let code = button_code | modifier_code | if action == MouseAction::Motion { 32 } else { 0 };
+    let column = column + 1;
+    let row = row + 1;
+
+    if mode.contains(TermMode::SGR_MOUSE) {
+        let suffix = if action == MouseAction::Release {
+            'm'
+        } else {
+            'M'
+        };
+        Some(format!("\x1b[<{code};{column};{row}{suffix}").into_bytes())
+    } else {
+        let code = if action == MouseAction::Release {
+            modifier_code | 3
+        } else {
+            code
+        };
+        let code = code.checked_add(32)?;
+        let column = u8::try_from(column).ok()?.checked_add(32)?;
+        let row = u8::try_from(row).ok()?.checked_add(32)?;
+        Some(vec![0x1b, b'[', b'M', code, column, row])
+    }
 }
 
 /// Encode pasted text, stripping raw escapes and wrapping in bracketed
@@ -129,7 +269,10 @@ pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_key, encode_scroll, TermMode};
+    use super::{
+        encode_key, encode_mouse_motion, encode_mouse_press, encode_mouse_release, encode_scroll,
+        MouseButton, MouseModifiers, TermMode,
+    };
 
     #[test]
     fn wheel_reports_go_to_mouse_mode_apps() {
@@ -171,18 +314,141 @@ mod tests {
     }
 
     #[test]
+    fn mouse_reports_cover_legacy_press_release_and_drag_modes() {
+        let click = TermMode::MOUSE_REPORT_CLICK;
+        assert_eq!(
+            encode_mouse_press(
+                TermMode::NONE,
+                MouseButton::Left,
+                4,
+                2,
+                MouseModifiers::default(),
+                false,
+            ),
+            None
+        );
+        assert_eq!(
+            encode_mouse_press(
+                click,
+                MouseButton::Left,
+                4,
+                2,
+                MouseModifiers::default(),
+                false,
+            ),
+            Some(vec![0x1b, b'[', b'M', 32, 37, 35])
+        );
+        assert_eq!(
+            encode_mouse_release(
+                click,
+                MouseButton::Left,
+                4,
+                2,
+                MouseModifiers::default(),
+                false,
+            ),
+            Some(vec![0x1b, b'[', b'M', 35, 37, 35])
+        );
+        assert_eq!(
+            encode_mouse_motion(
+                click,
+                MouseButton::Left,
+                4,
+                2,
+                MouseModifiers::default(),
+                false,
+            ),
+            None
+        );
+        assert_eq!(
+            encode_mouse_motion(
+                TermMode::MOUSE_DRAG,
+                MouseButton::Right,
+                4,
+                2,
+                MouseModifiers {
+                    alt: true,
+                    ..Default::default()
+                },
+                false,
+            ),
+            Some(vec![0x1b, b'[', b'M', 74, 37, 35])
+        );
+    }
+
+    #[test]
+    fn sgr_mouse_reports_preserve_button_modifiers_and_large_columns() {
+        let mode = TermMode::MOUSE_MOTION | TermMode::SGR_MOUSE;
+        let modifiers = MouseModifiers {
+            shift: true,
+            alt: true,
+            control: true,
+        };
+        assert_eq!(
+            encode_mouse_press(mode, MouseButton::Middle, 299, 4, modifiers, false),
+            Some(b"\x1b[<29;300;5M".to_vec())
+        );
+        assert_eq!(
+            encode_mouse_motion(mode, MouseButton::Middle, 299, 4, modifiers, false),
+            Some(b"\x1b[<61;300;5M".to_vec())
+        );
+        assert_eq!(
+            encode_mouse_release(mode, MouseButton::Middle, 299, 4, modifiers, false),
+            Some(b"\x1b[<29;300;5m".to_vec())
+        );
+        assert_eq!(
+            encode_mouse_press(
+                mode,
+                MouseButton::Left,
+                0,
+                0,
+                MouseModifiers::default(),
+                true,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn legacy_mouse_suppresses_unaddressable_coordinates() {
+        assert_eq!(
+            encode_mouse_press(
+                TermMode::MOUSE_REPORT_CLICK,
+                MouseButton::Left,
+                223,
+                0,
+                MouseModifiers::default(),
+                false,
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn function_keys_keep_their_terminal_sequences() {
         assert_eq!(
-            encode_key("f1", false, false, None, false),
+            encode_key("f1", false, false, false, None, false),
             Some(b"\x1bOP".to_vec())
         );
         assert_eq!(
-            encode_key("f12", false, false, None, false),
+            encode_key("f12", false, false, false, None, false),
             Some(b"\x1b[24~".to_vec())
         );
         assert_eq!(
-            encode_key("f20", false, false, None, false),
+            encode_key("f20", false, false, false, None, false),
             Some(b"\x1b[34~".to_vec())
+        );
+    }
+
+    #[test]
+    fn shift_enter_uses_runner_multiline_sequence() {
+        assert_eq!(
+            encode_key("enter", false, false, true, None, false),
+            Some(b"\x1b\r".to_vec())
+        );
+        assert_eq!(
+            encode_key("enter", false, false, false, None, false),
+            Some(b"\r".to_vec())
         );
     }
 }

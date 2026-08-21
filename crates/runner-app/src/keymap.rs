@@ -4,7 +4,7 @@ use gpui::{App, KeyBinding, Keystroke};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
-    CloseWindowOrPane, CommandPalette, FocusNextPane, FocusPreviousPane, Hide, HideOthers,
+    CloseWindowOrPane, CommandPalette, Copy, FocusNextPane, FocusPreviousPane, Hide, HideOthers,
     Minimize, MissionTabNext, MissionTabPrevious, NavigateNextPage, NavigatePreviousPage, NewTab,
     NewWindow, OpenSettings, Paste, Quit, ToggleFullscreen, ToggleSidebar, ZoomIn, ZoomOut,
     ZoomReset,
@@ -15,6 +15,7 @@ pub(crate) enum KeymapScope {
     Global,
     ChatSplit,
     Mission,
+    Terminal,
 }
 
 impl KeymapScope {
@@ -27,6 +28,7 @@ impl KeymapScope {
             Self::Global => None,
             Self::ChatSplit => Some("ChatSplit"),
             Self::Mission => Some("Mission"),
+            Self::Terminal => Some("Terminal"),
         }
     }
 }
@@ -185,6 +187,14 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description: "Close the focused pane while split; otherwise close the window.",
                 scope: KeymapScope::ChatSplit,
                 default: key_combo("KeyW", true, false, false, false, None, false),
+                fixed: true,
+            },
+            KeymapEntry {
+                id: "copy",
+                title: "Copy",
+                description: "Copy the current terminal selection.",
+                scope: KeymapScope::Terminal,
+                default: key_combo("KeyC", true, false, false, false, None, false),
                 fixed: true,
             },
             KeymapEntry {
@@ -695,7 +705,10 @@ pub(crate) fn install_bindings(
     shortcuts_suspended: bool,
 ) {
     cx.clear_key_bindings();
-    cx.bind_keys([KeyBinding::new("cmd-v", Paste, Some("Terminal"))]);
+    cx.bind_keys([
+        KeyBinding::new("cmd-c", Copy, Some("Terminal")),
+        KeyBinding::new("cmd-v", Paste, Some("Terminal")),
+    ]);
     if shortcuts_suspended {
         return;
     }
@@ -745,10 +758,11 @@ mod tests {
 
     #[test]
     fn registry_matches_the_shipped_defaults_and_fixed_entry() {
-        assert_eq!(entries().len(), 15);
-        assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 2);
+        assert_eq!(entries().len(), 16);
+        assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 3);
         assert!(entry("new-window").unwrap().fixed);
         assert!(entry("close-pane").unwrap().fixed);
+        assert!(entry("copy").unwrap().fixed);
         assert_eq!(format_combo(&entry("new-window").unwrap().default), "⇧⌘N");
         assert_eq!(
             format_combo(&entry("page-previous").unwrap().default),
@@ -897,7 +911,7 @@ mod tests {
     fn registry_defaults_compile_to_gpui_runtime_keystrokes() {
         type ExpectedBinding<'a> = (&'a str, &'a str, bool);
         type ExpectedEntry<'a> = (&'a str, &'a [ExpectedBinding<'a>]);
-        let expected: [ExpectedEntry<'_>; 15] = [
+        let expected: [ExpectedEntry<'_>; 16] = [
             ("new-window", &[("shift-cmd-n", "n", true)]),
             ("new-chat", &[("cmd-n", "n", false)]),
             ("command-palette", &[("cmd-k", "k", false)]),
@@ -911,6 +925,7 @@ mod tests {
             ("pane-previous", &[("cmd-[", "[", false)]),
             ("pane-next", &[("cmd-]", "]", false)]),
             ("close-pane", &[("cmd-w", "w", false)]),
+            ("copy", &[("cmd-c", "c", false)]),
             ("mission-tab-previous", &[("cmd-[", "[", false)]),
             ("mission-tab-next", &[("cmd-]", "]", false)]),
         ];
