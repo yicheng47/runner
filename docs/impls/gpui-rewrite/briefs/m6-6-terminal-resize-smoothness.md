@@ -1,0 +1,36 @@
+# Mission brief — M6.6 terminal resize smoothness
+
+Drafted 2026-08-21 for the first M6 mission; not started that day (the nightly app was closed; work continues on the laptop). Start it with `mission_start` on crew `codex-crew` (`01KVG1NCM4RJC23Q4ZQ5Z8SBHH`), project `runner` (`01KZGS24S5103N6B2HV72ZG1AD`), cwd the `runner-gpui` worktree, title `M6.6 — Terminal resize smoothness`, and the text below as `goal_override` (under the 8 KB cap). Before starting: pull `gpui-nightly`, confirm the docs PR carrying this file is merged, and do not take a Sparkle update while the crew runs.
+
+---
+
+Implement **M6.6 — terminal resize smoothness**, the first M6 consolidation mission (`docs/impls/gpui-rewrite/m6-consolidation.md` §M6.6, traced and recorded 2026-08-21). Goal: a window or split drag over a live claude/codex slot tracks the drag like Zed's embedded terminal, with no end-of-drag snap and no database work on the render thread. This is work beyond `main` (plan decision 11); `main`'s M3.3 resize contract is the thing being replaced, deliberately.
+
+## Context — read these first
+
+You are in the `runner-gpui` worktree of `yicheng47/runner`, branch `gpui-nightly` (M4 complete). Work on a new task-specific feature branch. If any doc file under `docs/impls/gpui-rewrite/` carries uncommitted edits, leave them — do not stage or revert them. This mission is hosted by the nightly app itself; nothing about that changes your work.
+
+1. `m6-consolidation.md` §M6.6 in full — the traced chain with file:line and the reasoning; §M6.7 for what is explicitly *not* this mission. `impl_log.md`: the M3.3 entry (the contract you are replacing), the 2026-08-21 "PTY and grid widths must never be guessed apart" entry (invariants you must keep), and the standing GPUI rules.
+2. The chain: `crates/runner-app/src/terminal/element.rs` (the resize owner's per-frame size push in `prepaint`) and `crates/runner-app/src/terminal_resize.rs`; `crates/runner-terminal/src/terminal.rs` `TerminalSession::resize`; `crates/runner-backend/src/ops/session.rs` `session_resize`; `crates/runner-backend/src/session/manager/output.rs` `SessionManager::resize`, `settle_pending_resize`, `runtime_clears_on_resize`, `PendingResize`; `crates/runner-backend/src/session/manager/mod.rs` `RESIZE_SETTLE_MS` and `set_resize_settle_ms`; `crates/runner-backend/src/session/pty_runtime.rs` `resize` (the ioctl) and the resize grace window for the idle detector; the manager/router tests that pin the M3.3 coalescing contract.
+3. Architecture reference only, GPL, copy nothing: `~/repos/gui/zed/crates/terminal/src/terminal.rs` (`set_size`, `InternalEvent::Resize`) and `~/repos/gui/zed/crates/terminal_view/src/terminal_element.rs` (`set_size` called from prepaint) — how a per-frame resize reaches the PTY immediately without blocking the UI.
+
+## What is wrong today
+
+Per frame of a drag, on the UI thread and synchronously: a SQLite `UPDATE` (`update_last_size`), then a second pooled connection running a `SELECT … LEFT JOIN runners` just to learn the runtime's resize policy, then — for full-repaint runtimes — the PTY ioctl is parked 175 ms behind a settle thread, so the TUI gets no SIGWINCH during the drag and the grid shows stale content reflowed into the new width until one settled repaint snaps it. The settle existed for `main`'s ring-coherence contract (purge + in-band `ESC[2J ESC[H` before the repaint bytes), not for the ioctl.
+
+## Scope
+
+1. **Ioctl immediately on every resize, all runtimes.** The PTY resize must not wait for a settle; it may run off the render thread (a dedicated resize thread/channel per manager is fine) but must preserve ordering per session. Keep the settle **only** for ring coherence: when the storm settles, purge the ring + sequence the in-band clear under the state lock + the existing rows-nudge round trip so the TUI's fresh full repaint lands in a clean ring. Same-width (rows-only) changes keep their current synchronous nudge semantics if still needed — justify either way.
+2. **No database work per frame.** Cache `clears_on_resize` in `SessionState` at spawn/resume (and on runtime override changes if that path exists). Persist `last_size` once per storm at settle, or from a background thread — never from `prepaint`. Invariants from the 2026-08-21 width-chain entry must hold: mission forks and resets read the persisted size when newer than the hint; a resize persisted before the PTY exists is still applied after `install_handle`; terminals still attach at the recorded PTY size. Prove it with the existing tests plus any you add.
+3. **Kill/resume/reset interplay**: the settle must still abandon on `killed || resuming`; an immediate ioctl must not race a kill or a resume fork — keep the handle lookup under the state lock as today.
+4. **Measure**: before and after, log at debug level (or behind `RUNNER_RESIZE_TRACE=1`) the per-drag ioctl count and the owner's `prepaint` resize-push duration; report the numbers from a width drag over a codex slot and over a shell chat in your handoff. No permanent instrumentation beyond a debug log line.
+5. **Tests**: rewrite the M3.3 coalescing tests to the new contract (ioctl per resize; one purge/clear/nudge per storm; persisted size once per storm; policy cached) rather than deleting them; keep `main`'s manager/router suites green otherwise (CI budgets ×10 under `CI=1` as today).
+
+Out of scope (M6.7): the per-frame grid rebuild, whole-window notify per PTY chunk, per-cell allocations, chunk scans/copies. Do not touch `element.rs` beyond what the push path needs. No `runner-terminal` replay changes unless the ring contract forces one — ask first.
+
+## Gates
+
+- `make verify` green. Handoff: the measured numbers, the new contract in one paragraph for the impl_log (the human writes the log), and a daily-drive checklist for Jason: drag a window over a live codex slot (tracks, no snap, no garbage rows after the drag), the same over a claude slot and a shell chat, a split-gutter drag in a four-pane tab, fork/reset a mission after resizing (correct width), quit and relaunch with resume-on-launch after a resize (correct width), kill during a drag.
+- **Do not commit, push, open a PR, or merge.** Stop at a clean working-tree review on the feature branch.
+
+reviewer: hunts — (1) any SQLite call reachable from `prepaint` or from `TerminalSession::resize` on the UI thread; (2) ordering: purge/clear sequenced after the last ioctl's repaint bytes could start arriving — the clear must precede the fresh repaint in the ring, never follow it; (3) persisted `last_size` stale or missing for the width-chain paths (fork, reset, resume, attach) — run those tests yourself; (4) ioctl after kill or during a resume fork; (5) the settle thread leaking or double-spawning across storms; (6) the idle detector's resize grace window still opening after each ioctl; (7) GPL — structure may mirror Zed, code may not.
