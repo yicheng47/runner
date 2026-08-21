@@ -28,7 +28,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use events::EventChannel;
-use session::manager::CoreSessionEvents;
+use session::manager::{CoreSessionEvents, SessionEventObserverRegistry};
 
 /// Shared application state. One instance per process, cheap to clone
 /// (every field is an `Arc` or small value) — the Tauri layer stores it in
@@ -72,6 +72,7 @@ pub struct AppCore {
     /// frontend subscribes and forwards to its own event surface (the
     /// Tauri layer re-emits to the webview verbatim).
     pub events: EventChannel,
+    pub session_event_observer: SessionEventObserverRegistry,
     /// The application's user-facing version (the Tauri crate's
     /// `CARGO_PKG_VERSION`, which the release bump updates). Advertised by
     /// the MCP server's `ServerInfo`.
@@ -88,6 +89,7 @@ impl AppCore {
             Arc::downgrade(&self.sessions),
             Arc::clone(&self.windows),
             self.events.clone(),
+            self.session_event_observer.clone(),
         )
     }
 

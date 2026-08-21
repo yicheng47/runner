@@ -132,6 +132,7 @@ pub fn boot_core(paths: &NativePaths) -> Result<AppCore> {
         mcp: Arc::new(mcp::McpHandle::new()),
         windows: window_registry,
         events: event_channel.clone(),
+        session_event_observer: Default::default(),
         app_version: crate::version::display_version(),
     };
 
@@ -327,6 +328,7 @@ mod tests {
             mcp: Arc::new(mcp::McpHandle::new()),
             windows: Arc::new(windows::WindowRegistry::new()),
             events: events::EventChannel::new(),
+            session_event_observer: Default::default(),
             app_version: "0.0.0-test".into(),
         };
 

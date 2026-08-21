@@ -42,7 +42,7 @@ use runner_backend::model::SessionStatus;
 use runner_backend::ops::session::DirectSessionEntry;
 use runner_backend::session::manager::SessionActivityState;
 use runner_backend::AppCore;
-use runner_terminal::terminal::TerminalSession;
+use runner_terminal::terminal::{TerminalSession, TerminalView};
 
 use app_settings::{settings_path, AppSettings};
 use app_store::{global_app_store, AppStore, GlobalAppStore, StoreRefreshKind, StoreRevisions};
@@ -102,6 +102,7 @@ const WINDOW_STATE_SAVE_DELAY_MS: u64 = 300;
 
 struct AttachedChat {
     terminal: Arc<TerminalSession>,
+    _terminal_view: TerminalView,
     terminal_interaction: Entity<TerminalInteraction>,
     terminal_scrollbar: Entity<Scrollbar>,
     terminal_input: Entity<TerminalInput>,
@@ -325,7 +326,11 @@ impl NativeRoot {
                     Ok(event)
                         if matches!(
                             event.name,
-                            "session/exit" | "session/updated" | "session/warning"
+                            "session/exit"
+                                | "session/spawned"
+                                | "session/updated"
+                                | "session/archived"
+                                | "session/warning"
                         ) =>
                     {
                         if chat_event_tx.unbounded_send(event).is_err() {

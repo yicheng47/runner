@@ -280,18 +280,8 @@ impl SessionManager {
         session_id: &str,
         runtime_session: &RuntimeSession,
     ) -> Result<()> {
-        // Only the live PTY handle is dropped here. We deliberately keep
-        // retained output and seq state alive so that:
-        //   - `session_output_snapshot` still returns the dead session's
-        //     scrollback after kill, so navigating off the chat and
-        //     coming back doesn't blank the terminal.
-        //   - When the row is later resumed via `SessionManager::resume`,
-        //     its synthetic seam and new PTY chunks continue above
-        //     `last` instead of restarting at 1, which the frontend's
-        //     seq-merge filter (`seq <= lastWrittenSeq`) would silently
-        //     drop, losing the entire post-resume head of output.
-        // Use `purge_session_buffers` for explicit cleanup paths
-        // (archive, runner delete).
+        // Keep the sequence counter monotonic across a later respawn under
+        // this database id. The terminal registry releases the exited Term.
         if let Some(state) = self.session_state(session_id) {
             let gate = state.lock().unwrap().delivery_gate.clone();
             let mut delivery = gate.state.lock().unwrap();

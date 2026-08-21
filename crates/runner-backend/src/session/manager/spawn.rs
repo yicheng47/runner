@@ -586,8 +586,8 @@ impl SessionManager {
             },
             spawn_emit_ctx.clone(),
             initial_size,
-            &runner.runtime,
             &pool,
+            events.as_ref(),
         );
         if first_turn_delivered_via_argv {
             self.arm_completion(&session_id);
@@ -1006,8 +1006,8 @@ impl SessionManager {
             },
             None,
             initial_size,
-            &runner.runtime,
             &pool,
+            events.as_ref(),
         );
         if first_turn_delivered_via_argv {
             self.arm_completion(&session_id);
@@ -1161,44 +1161,6 @@ impl SessionManager {
             }
             row
         };
-
-        // Stamp the resume watermark (and, for full-frame-repaint
-        // runtimes, purge the prior output buffer) up front. Two
-        // properties depend on this happening *before* any
-        // long-running step (gate, runtime.spawn, mission/runner
-        // re-lookup):
-        //
-        // 1. The frontend's resuming-pill effect calls
-        //    `session_output_snapshot` to catch a TUI-ready escape
-        //    that fired before its live listener attached. The old
-        //    PTY's chunks include the pre-stop `\x1b[?2004h`, so the
-        //    pill only honors ready escapes in chunks with
-        //    `seq > session_replay_watermark`. Stamping the watermark
-        //    at the top closes the window where the snapshot could
-        //    clear the resuming overlay before the new PTY exists.
-        // 2. The seq counter is never touched (see
-        //    `purge_output_buffer`'s contract), so the synthetic seam
-        //    and new PTY chunks continue above `last` and replay merge
-        //    filters don't drop them.
-        //
-        // Whether the ring itself survives is per-runtime: Claude and Qoder
-        // keep it because their resume flows do not replay the transcript;
-        // Codex, TRAE, and shells purge it. See `runtime_purges_on_resume`.
-        self.set_resume_watermark(session_id);
-        let purges_on_resume = output::runtime_purges_on_resume(session_id, &pool);
-        if purges_on_resume {
-            self.purge_output_buffer(session_id);
-        }
-        self.append_synthetic_output(
-            session_id,
-            snap.mission_id.as_deref(),
-            if purges_on_resume {
-                output::PURGE_RESUME_RESET
-            } else {
-                output::KEEP_RESUME_SEAM
-            },
-            events.as_ref(),
-        );
 
         // Mission resume: pull the slot + mission so we can stamp the
         // in-mission env (RUNNER_HANDLE = slot_handle, RUNNER_CREW_ID,
@@ -1518,8 +1480,8 @@ impl SessionManager {
             },
             resume_emit_ctx.clone(),
             Some(initial_size),
-            &runner.runtime,
             &pool,
+            events.as_ref(),
         );
         if snap.mission_id.is_none() {
             self.publish_direct_activity(
@@ -1529,12 +1491,6 @@ impl SessionManager {
                 events.as_ref(),
             );
         }
-
-        // (The pre-runtime.spawn purge moved up to right after
-        // snapshot collection so the frontend's snapshot fast-path
-        // can't read the stopped session's chunks during the resume
-        // window. See the call site above this function's mission
-        // lookup.)
 
         let forwarder = self.start_forwarder_thread(
             session_id.to_string(),

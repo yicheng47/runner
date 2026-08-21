@@ -1426,13 +1426,16 @@ impl NativeRoot {
                 div()
                     .absolute()
                     .inset_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
                     .bg(terminal_background)
                     .text_size(rems(12. / 16.))
                     .text_color(theme::faint())
-                    .child("Unable to attach chat")
+                    .when(matches!(overlay, PaneOverlayState::None), |surface| {
+                        surface
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child("Attaching terminal…")
+                    })
                     .into_any_element()
             };
             let overlay_element = if secondary_state.secondary

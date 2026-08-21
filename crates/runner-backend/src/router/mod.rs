@@ -144,6 +144,7 @@ impl StdinInjector for SessionManager {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryReservation {
+    Unavailable,
     Ready(u64),
     PendingInput,
     RecentlyTyping(Duration),
@@ -265,10 +266,8 @@ impl SessionOutbox {
 #[derive(Default)]
 struct RouterState {
     /// Resolved at mount from the spawned `SpawnedSession` rows. The map is
-    /// authoritative for the mission's lifetime; if a child crashes the
-    /// entry stays so subsequent injections fail visibly with a
-    /// `mission_warning` (the desired behavior — better than silently
-    /// dropping a `human_response`).
+    /// authoritative for the mission's lifetime; if a child is stopped the
+    /// entry stays so deliveries can wait for its next `Respawned` event.
     session_by_handle: HashMap<String, String>,
     /// `human_question.id` → asker handle. Populated when an `ask_human`
     /// is dispatched (the appended card's id is the canonical question_id
@@ -287,7 +286,7 @@ struct RouterState {
     blocked_unread_by_session: HashMap<String, usize>,
     /// Fresh mission rows registered before their background PTY spawn.
     /// Deliveries wait in the normal outbox until `Respawned` marks the
-    /// session live; stopped/crashed reopen sessions are not added here.
+    /// session live.
     pending_sessions: HashSet<String>,
     live_sessions: HashSet<String>,
     unread_by_handle: HashMap<String, usize>,
@@ -383,7 +382,7 @@ impl Router {
 
     /// Register existing session ids so handlers can find which PTY owns
     /// each handle. Reopen paths use this for already-live sessions; a
-    /// stopped/crashed row remains non-live so injection still warns.
+    /// stopped/crashed row remains non-live so injection waits for respawn.
     pub fn register_sessions(&self, sessions: &[(String, String)]) {
         self.register_sessions_inner(sessions, false);
     }
@@ -666,6 +665,7 @@ impl Router {
         // user's draft clears, so parking it would create a stray submit.
         let deferable = !delivery.body.is_empty();
         let mut retry = None;
+        let mut deferred_notice = None;
         let (session_id, ready) = {
             let mut state = self.state.lock().unwrap();
             let Some(session_id) = state.session_by_handle.get(handle).cloned() else {
@@ -698,7 +698,8 @@ impl Router {
                     return Ok(true);
                 }
             }
-            if state.pending_sessions.contains(&session_id) {
+            let pending_spawn = state.pending_sessions.contains(&session_id);
+            if pending_spawn || !state.live_sessions.contains(&session_id) {
                 if reconciliation.is_some() || !deferable {
                     return Ok(false);
                 }
@@ -706,12 +707,39 @@ impl Router {
                     .outbox_by_session
                     .entry(session_id.clone())
                     .or_default();
+                let first_deferred = outbox.deliveries.is_empty();
                 outbox.handle = handle.to_string();
+                outbox.pending_input_blocked = false;
                 outbox.enqueue(delivery);
                 self.blocked_transition(&mut state, &session_id);
+                drop(state);
+                if first_deferred && !pending_spawn {
+                    self.warn(format!(
+                        "delivery to @{handle} queued until the session resumes"
+                    ));
+                }
                 return Ok(true);
             }
             match self.injector.reserve_delivery(&session_id)? {
+                DeliveryReservation::Unavailable => {
+                    if reconciliation.is_some() || !deferable {
+                        return Ok(false);
+                    }
+                    state.live_sessions.remove(&session_id);
+                    let outbox = state
+                        .outbox_by_session
+                        .entry(session_id.clone())
+                        .or_default();
+                    let first_deferred = outbox.deliveries.is_empty();
+                    outbox.handle = handle.to_string();
+                    outbox.pending_input_blocked = false;
+                    outbox.enqueue(delivery);
+                    self.blocked_transition(&mut state, &session_id);
+                    if first_deferred {
+                        deferred_notice = Some(handle.to_string());
+                    }
+                    (session_id, None)
+                }
                 DeliveryReservation::Ready(token) => {
                     if let Some((now, _)) = reconciliation {
                         state
@@ -779,6 +807,11 @@ impl Router {
                 }
             }
         };
+        if let Some(handle) = deferred_notice {
+            self.warn(format!(
+                "delivery to @{handle} queued until the session resumes"
+            ));
+        }
         if let Some((session_id, delay)) = retry {
             self.schedule_outbox_retry(session_id, delay);
         }
@@ -1049,6 +1082,14 @@ impl Router {
             }
         };
         match reservation {
+            DeliveryReservation::Unavailable => {
+                let mut state = self.state.lock().unwrap();
+                state.live_sessions.remove(session_id);
+                if let Some(outbox) = state.outbox_by_session.get_mut(session_id) {
+                    outbox.pending_input_blocked = false;
+                }
+                self.blocked_transition(&mut state, session_id);
+            }
             DeliveryReservation::Ready(token) => {
                 let delivery = {
                     let mut state = self.state.lock().unwrap();
@@ -1378,8 +1419,8 @@ impl Router {
         self.state.lock().unwrap().status.insert(handle, status);
     }
 
-    /// Append a `mission_warning` event when a handler hits an unexpected
-    /// state (dead session, unmatched `human_response`, malformed payload).
+    /// Append a `mission_warning` event when a handler hits an unexpected or
+    /// deferred state (unavailable session, unmatched response, bad payload).
     /// Best-effort: a log-write failure here is logged but never panics
     /// the router thread.
     pub(crate) fn warn(&self, message: impl Into<String>) {

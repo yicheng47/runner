@@ -5052,12 +5052,12 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "base64",
+ "log",
  "regex",
  "runner-backend",
  "serde",
  "serde_json",
  "tempfile",
- "tokio",
 ]
 
 [[package]]

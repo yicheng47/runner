@@ -24,7 +24,6 @@ use runner_backend::model::{
 };
 use runner_backend::ops::session::SessionRow;
 use runner_backend::windows::Subject;
-use runner_terminal::terminal::{TerminalSession, UserInputMode};
 
 use super::*;
 use crate::surfaces::app_shell::{SIDEBAR_TOGGLE_GLYPH_INSET, SIDEBAR_TOGGLE_GLYPH_X};
@@ -110,6 +109,14 @@ fn resolve_slot_overlay(
     } else {
         SlotOverlayState::None
     }
+}
+
+fn transition_to_begin_on_spawn(
+    existing: Option<MissionTransitionKind>,
+) -> Option<MissionTransitionKind> {
+    existing
+        .is_none()
+        .then_some(MissionTransitionKind::Starting)
 }
 
 fn is_concurrent_resume_error(error: &str) -> bool {
@@ -298,7 +305,9 @@ impl MissionWorkspace {
                                 | "mission/changed"
                                 | "router/delivery-blocked"
                                 | "session/exit"
+                                | "session/spawned"
                                 | "session/updated"
+                                | "session/archived"
                                 | "session/warning"
                                 | "session/input-error"
                         ) =>
@@ -1234,15 +1243,12 @@ impl MissionWorkspace {
         if self.archived() || self.secondary_state(cx).secondary {
             return Ok(());
         }
-        let fallback = self.current_mission_terminal_size(window, cx);
         let mut errors = Vec::new();
         for session in self.sessions.clone() {
             if !self.open_tabs.contains(&session.session.id) {
                 continue;
             }
-            if let Err(error) =
-                self.ensure_mission_terminal_attached(&session, fallback, window, cx)
-            {
+            if let Err(error) = self.ensure_mission_terminal_attached(&session, window, cx) {
                 errors.push(error.to_string());
             }
         }
@@ -1256,7 +1262,6 @@ impl MissionWorkspace {
     fn ensure_mission_terminal_attached(
         &mut self,
         session: &SessionRow,
-        fallback: (u16, u16),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
@@ -1264,27 +1269,16 @@ impl MissionWorkspace {
         if self.secondary_state(cx).secondary {
             return Ok(());
         }
+        if session.session.status != SessionStatus::Running {
+            self.attached.remove(&session_id);
+            return Ok(());
+        }
         if self.attached.contains_key(&session_id) {
             return Ok(());
         }
-        // Attach at the PTY's recorded geometry so retained output replays
-        // at the width it was painted for (the alt screen never reflows);
-        // the element then corrects the size through the PTY once it has
-        // measured itself.
-        let size = runner_backend::ops::session::session_last_size(self.core(cx), &session_id)
-            .ok()
-            .flatten()
-            .unwrap_or(fallback);
-        // Mission delivery can wait on the draft gate, so PTY input must never run on GPUI's
-        // render thread. The queued mode preserves input order on a per-session worker.
-        let terminal = TerminalSession::attach_with_input_mode(
-            self.core(cx).clone(),
-            session_id.clone(),
-            size.0,
-            size.1,
-            Arc::clone(&self.app_store.read(cx).waker),
-            UserInputMode::Queued,
-        )?;
+        let Some(terminal) = self.app_store.read(cx).bridge.session(&session_id) else {
+            return Ok(());
+        };
         terminal.set_palette(self.settings(cx).terminal_theme.palette());
         terminal.configure(
             app_settings::TERMINAL_SCROLLBACK_LINES,
@@ -1300,10 +1294,6 @@ impl MissionWorkspace {
                 }
             },
         );
-        self.app_store
-            .read(cx)
-            .bridge
-            .attach(Arc::clone(&terminal))?;
         let terminal_scrollbar = cx.new(|_| Scrollbar::terminal(Arc::clone(&terminal)));
         let terminal_interaction = cx.new(|_| TerminalInteraction::new(Arc::clone(&terminal)));
         let terminal_focus = cx.focus_handle();
@@ -1332,10 +1322,10 @@ impl MissionWorkspace {
                     }
                 });
             });
-        let baseline = terminal.output_activity().last_seq;
         self.attached.insert(
             session_id.clone(),
             AttachedChat {
+                _terminal_view: terminal.view(),
                 terminal,
                 terminal_interaction,
                 terminal_scrollbar,
@@ -1346,23 +1336,6 @@ impl MissionWorkspace {
                 scroll_accumulator: 0.,
             },
         );
-        let fresh = session.session.status == SessionStatus::Running
-            && session.session.started_at.is_some_and(|started_at| {
-                Utc::now()
-                    .signed_duration_since(started_at)
-                    .num_seconds()
-                    .abs()
-                    <= 10
-            });
-        if fresh {
-            self.begin_mission_transition(
-                &session_id,
-                MissionTransitionKind::Starting,
-                Some(baseline.saturating_sub(1)),
-                window,
-                cx,
-            );
-        }
         Ok(())
     }
 
@@ -1632,7 +1605,25 @@ impl MissionWorkspace {
                     cx.notify();
                 }
             }
-            "session/exit" | "session/updated" => {
+            "session/archived" => {
+                if let Some(session_id) = event
+                    .payload
+                    .get("session_id")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    let relevant = self
+                        .sessions
+                        .iter()
+                        .any(|session| session.session.id == session_id);
+                    self.attached.remove(session_id);
+                    self.delivery_blocked.remove(session_id);
+                    self.transitions.remove(session_id);
+                    if relevant {
+                        self.refresh_open_mission(window, cx);
+                    }
+                }
+            }
+            "session/exit" | "session/spawned" | "session/updated" => {
                 if event
                     .payload
                     .get("mission_id")
@@ -1645,8 +1636,39 @@ impl MissionWorkspace {
                             .get("session_id")
                             .and_then(serde_json::Value::as_str)
                         {
+                            self.attached.remove(session_id);
                             self.delivery_blocked.remove(session_id);
                             self.transitions.remove(session_id);
+                        }
+                    } else if event.name == "session/spawned" {
+                        if let Some(session_id) = event
+                            .payload
+                            .get("session_id")
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            self.attached.remove(session_id);
+                            self.delivery_blocked.remove(session_id);
+                            if let Some(kind) = transition_to_begin_on_spawn(
+                                self.transitions
+                                    .get(session_id)
+                                    .map(|transition| transition.kind),
+                            ) {
+                                let baseline = self
+                                    .app_store
+                                    .read(cx)
+                                    .bridge
+                                    .session(session_id)
+                                    .map(|terminal| terminal.output_activity().last_seq)
+                                    .unwrap_or(0)
+                                    .saturating_sub(1);
+                                self.begin_mission_transition(
+                                    session_id,
+                                    kind,
+                                    Some(baseline),
+                                    window,
+                                    cx,
+                                );
+                            }
                         }
                     }
                     self.refresh_open_mission(window, cx);
@@ -3851,6 +3873,13 @@ impl MissionWorkspace {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_owned()
+        } else if warning {
+            event
+                .payload
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
         } else {
             serde_json::to_string_pretty(&event.payload)
                 .unwrap_or_else(|_| event.payload.to_string())
@@ -3908,15 +3937,19 @@ impl MissionWorkspace {
                             } else {
                                 theme::faint()
                             })
-                            .child(format!(
-                                "signal · {signal}{} · {}",
-                                event
-                                    .to
-                                    .as_ref()
-                                    .map(|to| format!(" → @{to}"))
-                                    .unwrap_or_default(),
-                                format_event_time(&event)
-                            )),
+                            .child(if warning {
+                                format!("warning · {}", format_event_time(&event))
+                            } else {
+                                format!(
+                                    "signal · {signal}{} · {}",
+                                    event
+                                        .to
+                                        .as_ref()
+                                        .map(|to| format!(" → @{to}"))
+                                        .unwrap_or_default(),
+                                    format_event_time(&event)
+                                )
+                            }),
                     )
                     .child(
                         div()
@@ -3931,7 +3964,7 @@ impl MissionWorkspace {
                             } else {
                                 theme::faint()
                             })
-                            .child("payload")
+                            .child(if warning { "details" } else { "payload" })
                             .child(
                                 svg()
                                     .path(if expanded {
@@ -3965,7 +3998,7 @@ impl MissionWorkspace {
                         theme::bg()
                     })
                     .p_3()
-                    .font_family("JetBrains Mono")
+                    .when(!warning, |payload| payload.font_family("JetBrains Mono"))
                     .text_size(rems(12. / 16.))
                     .line_height(rems(17. / 16.))
                     .text_color(if warning {
@@ -4236,23 +4269,44 @@ impl MissionWorkspace {
             },
             session.session.status,
         );
+        let terminal_background =
+            crate::terminal::element::to_hsla(self.terminal_style(cx).palette.background, 1.);
         let Some(chat) = self.attached.get(&session_id) else {
-            return div()
+            let pane = div()
                 .absolute()
                 .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child("Attaching terminal…")
-                .into_any_element();
+                .overflow_hidden()
+                .bg(terminal_background);
+            return match overlay {
+                SlotOverlayState::Resuming => pane
+                    .child(SessionOverlay::transition(
+                        SharedString::from(format!("mission-resuming-{session_id}")),
+                        SessionOverlayKind::Resuming,
+                    ))
+                    .into_any_element(),
+                SlotOverlayState::Starting => pane
+                    .child(SessionOverlay::transition(
+                        SharedString::from(format!("mission-starting-{session_id}")),
+                        SessionOverlayKind::Starting,
+                    ))
+                    .into_any_element(),
+                SlotOverlayState::Stopped => pane
+                    .child(self.render_mission_paused_overlay(cx))
+                    .into_any_element(),
+                SlotOverlayState::Archiving => pane.into_any_element(),
+                SlotOverlayState::None => pane
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child("Attaching terminal…")
+                    .into_any_element(),
+            };
         };
         let terminal = Arc::clone(&chat.terminal);
         let terminal_interaction = chat.terminal_interaction.clone();
         let terminal_input = chat.terminal_input.clone();
         let terminal_focus = chat.terminal_focus.clone();
         let terminal_scrollbar = chat.terminal_scrollbar.clone();
-        let terminal_background =
-            crate::terminal::element::to_hsla(self.terminal_style(cx).palette.background, 1.);
         let interactive = self.cached_mission_terminal_interactive(&session_id, cx);
         let key_id = session_id.clone();
         let copy_id = session_id.clone();
@@ -5403,6 +5457,22 @@ mod tests {
         assert_eq!(
             resolve_slot_overlay(false, None, SessionStatus::Running),
             SlotOverlayState::None
+        );
+    }
+
+    #[test]
+    fn session_spawn_does_not_replace_an_existing_resume_transition() {
+        assert_eq!(
+            transition_to_begin_on_spawn(None),
+            Some(MissionTransitionKind::Starting)
+        );
+        assert_eq!(
+            transition_to_begin_on_spawn(Some(MissionTransitionKind::Resuming)),
+            None
+        );
+        assert_eq!(
+            transition_to_begin_on_spawn(Some(MissionTransitionKind::Starting)),
+            None
         );
     }
 

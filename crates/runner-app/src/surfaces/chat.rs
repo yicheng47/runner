@@ -37,6 +37,7 @@ impl NativeRoot {
         match event.name {
             "session/exit" => {
                 if let Some(session_id) = session_id {
+                    self.attached.remove(&session_id);
                     let exit_code = event
                         .payload
                         .get("exit_code")
@@ -53,6 +54,32 @@ impl NativeRoot {
                     {
                         self.chat_focus.focus(window);
                     }
+                }
+            }
+            "session/archived" => {
+                if let Some(session_id) = session_id {
+                    self.attached.remove(&session_id);
+                    self.session_exit_codes.remove(&session_id);
+                    self.chat_transitions.remove(&session_id);
+                    self.stopping_sessions.remove(&session_id);
+                    self.refresh_sessions(cx);
+                    self.sync_active_chat_detail(cx);
+                }
+            }
+            "session/spawned" => {
+                if let Some(session_id) = session_id {
+                    self.attached.remove(&session_id);
+                    self.refresh_sessions(cx);
+                    if let Some(layout) =
+                        self.tabs.active().cloned().filter(|layout| {
+                            layout.session_ids().iter().any(|id| id == &session_id)
+                        })
+                    {
+                        if let Err(error) = self.ensure_attached(&layout, &session_id, window, cx) {
+                            self.chat_error = Some(error.to_string());
+                        }
+                    }
+                    self.sync_active_chat_detail(cx);
                 }
             }
             "session/warning" => {
@@ -533,7 +560,6 @@ impl NativeRoot {
                 errors.push(error.to_string());
             }
         }
-        self.refresh_sessions(cx);
         if errors.is_empty() {
             Ok(())
         } else {
@@ -543,7 +569,7 @@ impl NativeRoot {
 
     pub(crate) fn ensure_attached(
         &mut self,
-        layout: &PaneLayout,
+        _layout: &PaneLayout,
         session_id: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -551,39 +577,21 @@ impl NativeRoot {
         if self.chat_secondary_state(session_id, cx).secondary {
             return Ok(());
         }
-        let _entry = runner_backend::ops::session::session_get(self.core(cx), session_id)?
+        let status = self
+            .session_entry(session_id, cx)
+            .map(|entry| entry.status)
             .with_context(|| format!("direct chat not found: {session_id}"))?;
-        let pane_id = layout
-            .root
-            .leaves()
-            .into_iter()
-            .find(|leaf| leaf.session_id.as_deref() == Some(session_id))
-            .map(|leaf| leaf.id.as_str());
-        let estimated = pane_id
-            .map(|pane_id| self.estimated_terminal_size(layout, pane_id, window, cx))
-            .unwrap_or((INITIAL_COLS, INITIAL_ROWS));
-        let size = self
-            .attached
-            .get(session_id)
-            .map(|chat| chat.terminal.size())
-            .or_else(|| {
-                runner_backend::ops::session::session_last_size(self.core(cx), session_id)
-                    .ok()
-                    .flatten()
-            })
-            .unwrap_or(estimated);
-
+        if status != SessionStatus::Running {
+            self.attached.remove(session_id);
+            return Ok(());
+        }
         if self.attached.contains_key(session_id) {
             return Ok(());
         }
 
-        let terminal = TerminalSession::attach(
-            self.core(cx).clone(),
-            session_id.to_owned(),
-            size.0,
-            size.1,
-            Arc::clone(&self.app_store.read(cx).waker),
-        )?;
+        let Some(terminal) = self.app_store.read(cx).bridge.session(session_id) else {
+            return Ok(());
+        };
         terminal.set_palette(self.settings(cx).terminal_theme.palette());
         terminal.configure(
             app_settings::TERMINAL_SCROLLBACK_LINES,
@@ -599,10 +607,6 @@ impl NativeRoot {
                 }
             },
         );
-        self.app_store
-            .read(cx)
-            .bridge
-            .attach(Arc::clone(&terminal))?;
         let terminal_scrollbar = cx.new(|_| Scrollbar::terminal(Arc::clone(&terminal)));
         let terminal_interaction = cx.new(|_| TerminalInteraction::new(Arc::clone(&terminal)));
         let terminal_focus = cx.focus_handle();
@@ -629,6 +633,7 @@ impl NativeRoot {
         self.attached.insert(
             session_id.to_owned(),
             AttachedChat {
+                _terminal_view: terminal.view(),
                 terminal,
                 terminal_interaction,
                 terminal_scrollbar,
