@@ -1426,11 +1426,13 @@ impl NativeRoot {
                     .into_any_element()
             } else if let Some(chat) = self.attached.get(&session_id) {
                 let terminal = Arc::clone(&chat.terminal);
+                let terminal_interaction = chat.terminal_interaction.clone();
                 let terminal_scrollbar = chat.terminal_scrollbar.clone();
                 let terminal_input = chat.terminal_input.clone();
                 let terminal_focus = chat.terminal_focus.clone();
                 let resize_owner = scrollable && layout.is_resize_owner(&pane_id, &session_id);
                 let key_session_id = session_id.clone();
+                let copy_session_id = session_id.clone();
                 let scroll_session_id = session_id.clone();
                 let paste_session_id = session_id.clone();
                 div()
@@ -1449,6 +1451,9 @@ impl NativeRoot {
                         PaneOverlayState::Ended { .. } => 0.45,
                         PaneOverlayState::Archiving | PaneOverlayState::None => 1.,
                     })
+                    .on_action(cx.listener(move |this, action: &Copy, window, cx| {
+                        this.on_terminal_copy(&copy_session_id, action, window, cx);
+                    }))
                     .when(interactive, |surface| {
                         surface
                             .on_key_down(cx.listener(move |this, event, window, cx| {
@@ -1471,8 +1476,10 @@ impl NativeRoot {
                             .min_h(px(0.))
                             .child(TerminalElement::new(
                                 terminal,
+                                terminal_interaction,
                                 terminal_input,
                                 terminal_focus,
+                                interactive,
                                 resize_owner,
                                 terminal_style,
                             ))

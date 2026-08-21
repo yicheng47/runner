@@ -1269,6 +1269,7 @@ impl MissionWorkspace {
             .bridge
             .attach(Arc::clone(&terminal))?;
         let terminal_scrollbar = cx.new(|_| Scrollbar::terminal(Arc::clone(&terminal)));
+        let terminal_interaction = cx.new(|_| TerminalInteraction::new(Arc::clone(&terminal)));
         let terminal_focus = cx.focus_handle();
         let terminal_input = cx.new(|_| TerminalInput::new(Arc::clone(&terminal)));
         let input_session_id = session_id.clone();
@@ -1300,6 +1301,7 @@ impl MissionWorkspace {
             session_id.clone(),
             AttachedChat {
                 terminal,
+                terminal_interaction,
                 terminal_scrollbar,
                 terminal_input,
                 _terminal_input_subscription: terminal_input_subscription,
@@ -2619,6 +2621,16 @@ impl MissionWorkspace {
             return;
         };
         let keystroke = &event.keystroke;
+        if runner_app::terminal_ime::swallows_option_copy(
+            keystroke.modifiers.platform,
+            keystroke.modifiers.control,
+            keystroke.modifiers.alt,
+            &keystroke.key,
+            keystroke.key_char.as_deref(),
+        ) {
+            cx.stop_propagation();
+            return;
+        }
         if runner_app::terminal_ime::terminal_key_route(
             chat.terminal_input.read(cx).is_composing(),
             keystroke.modifiers.platform,
@@ -2634,6 +2646,7 @@ impl MissionWorkspace {
             &keystroke.key,
             keystroke.modifiers.control,
             keystroke.modifiers.alt,
+            keystroke.modifiers.shift,
             keystroke.key_char.as_deref(),
         ) {
             Ok(true) => {
@@ -2649,6 +2662,24 @@ impl MissionWorkspace {
                 cx.notify();
             }
         }
+    }
+
+    fn on_mission_terminal_copy(
+        &mut self,
+        session_id: &str,
+        _: &Copy,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(text) = self
+            .attached
+            .get(session_id)
+            .and_then(|chat| chat.terminal.selection_text())
+        else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        cx.stop_propagation();
     }
 
     fn on_mission_scroll(
@@ -2684,48 +2715,49 @@ impl MissionWorkspace {
         if !self.mission_terminal_interactive(session_id, cx) {
             return;
         }
-        let Some(item) = cx.read_from_clipboard() else {
+        let item = cx.read_from_clipboard();
+        let Some(paste) = runner_app::terminal_paste::resolve_terminal_paste(
+            item.as_ref(),
+            runner_backend::ops::session::session_clipboard_file_paths,
+        ) else {
             return;
         };
-        if let Some(image) = item.entries().iter().find_map(|entry| match entry {
-            ClipboardEntry::Image(image) => Some(image.clone()),
-            ClipboardEntry::String(_) | ClipboardEntry::ExternalPaths(_) => None,
-        }) {
-            let Some(terminal) = self
-                .attached
-                .get(session_id)
-                .map(|chat| Arc::clone(&chat.terminal))
-            else {
-                return;
-            };
-            let paste = cx.background_spawn(async move {
-                runner_backend::ops::session::session_paste_image(
-                    image.bytes,
-                    image.format.mime_type(),
-                )?;
-                terminal.write_user_bytes(b"\x16")
-            });
-            cx.spawn(async move |weak, cx| {
-                let result = paste.await;
-                let _ = weak.update(cx, |this, cx| {
-                    match result {
-                        Ok(()) => this.error = None,
-                        Err(error) => this.error = Some(error.to_string()),
-                    }
-                    cx.notify();
+        match paste {
+            runner_app::terminal_paste::TerminalPaste::Image(image) => {
+                let Some(terminal) = self
+                    .attached
+                    .get(session_id)
+                    .map(|chat| Arc::clone(&chat.terminal))
+                else {
+                    return;
+                };
+                let paste = cx.background_spawn(async move {
+                    runner_backend::ops::session::session_paste_image(
+                        image.bytes,
+                        image.format.mime_type(),
+                    )?;
+                    terminal.write_user_bytes(b"\x16")
                 });
-            })
-            .detach();
-            return;
-        }
-        let Some(text) = item.text() else {
-            return;
-        };
-        let Some(chat) = self.attached.get(session_id) else {
-            return;
-        };
-        if let Err(error) = chat.terminal.paste(&text) {
-            self.error = Some(error.to_string());
+                cx.spawn(async move |weak, cx| {
+                    let result = paste.await;
+                    let _ = weak.update(cx, |this, cx| {
+                        match result {
+                            Ok(()) => this.error = None,
+                            Err(error) => this.error = Some(error.to_string()),
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+            runner_app::terminal_paste::TerminalPaste::Text(text) => {
+                let Some(chat) = self.attached.get(session_id) else {
+                    return;
+                };
+                if let Err(error) = chat.terminal.paste(&text) {
+                    self.error = Some(error.to_string());
+                }
+            }
         }
     }
 
@@ -4180,6 +4212,7 @@ impl MissionWorkspace {
                 .into_any_element();
         };
         let terminal = Arc::clone(&chat.terminal);
+        let terminal_interaction = chat.terminal_interaction.clone();
         let terminal_input = chat.terminal_input.clone();
         let terminal_focus = chat.terminal_focus.clone();
         let terminal_scrollbar = chat.terminal_scrollbar.clone();
@@ -4187,9 +4220,11 @@ impl MissionWorkspace {
             crate::terminal::element::to_hsla(self.terminal_style(cx).palette.background, 1.);
         let interactive = self.cached_mission_terminal_interactive(&session_id, cx);
         let key_id = session_id.clone();
+        let copy_id = session_id.clone();
         let scroll_id = session_id.clone();
         let paste_id = session_id.clone();
         let root = cx.entity();
+        let copy_root = root.clone();
         let mut terminal_surface = div()
             .id(SharedString::from(format!("mission-terminal-{session_id}")))
             .absolute()
@@ -4206,6 +4241,11 @@ impl MissionWorkspace {
                 SlotOverlayState::Stopped => 0.45,
                 SlotOverlayState::Archiving | SlotOverlayState::None => 1.,
             })
+            .on_action(move |action: &Copy, window, cx| {
+                copy_root.update(cx, |this, cx| {
+                    this.on_mission_terminal_copy(&copy_id, action, window, cx)
+                });
+            })
             .child(
                 div()
                     .relative()
@@ -4214,8 +4254,10 @@ impl MissionWorkspace {
                     .min_h(px(0.))
                     .child(TerminalElement::new(
                         terminal,
+                        terminal_interaction,
                         terminal_input,
                         terminal_focus,
+                        interactive,
                         true,
                         self.terminal_style(cx),
                     ))

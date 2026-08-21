@@ -7,7 +7,10 @@ use std::time::Instant;
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions as _, Scroll};
+use alacritty_terminal::index::{Boundary, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
+use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor};
@@ -20,6 +23,8 @@ use runner_backend::AppCore;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::palette;
+
+pub const XTERM_WORD_SEPARATORS: &str = " ()[]{}',\"`";
 
 pub struct EventProxy {
     tx: Sender<Event>,
@@ -273,6 +278,7 @@ impl TerminalSession {
     pub fn configure(&self, scrollback: usize, cursor_shape: CursorShape) {
         self.term.lock().set_options(Config {
             scrolling_history: scrollback,
+            semantic_escape_chars: XTERM_WORD_SEPARATORS.to_owned(),
             default_cursor_style: CursorStyle {
                 shape: cursor_shape,
                 blinking: true,
@@ -339,7 +345,13 @@ impl TerminalSession {
         }
         let mut parser = self.parser.lock().unwrap();
         let mut term = self.term.lock();
+        let previous_mode = *term.mode();
         parser.advance(&mut *term, &bytes);
+        let mode = *term.mode();
+        if !previous_mode.intersects(TermMode::MOUSE_MODE) && mode.intersects(TermMode::MOUSE_MODE)
+        {
+            term.selection = None;
+        }
         drop(term);
         drop(parser);
         drop(sequence);
@@ -353,6 +365,7 @@ impl TerminalSession {
     }
 
     pub fn write_user_bytes(&self, bytes: &[u8]) -> runner_backend::error::Result<()> {
+        self.clear_selection();
         match &self.user_input {
             UserInput::Inline => self.core.sessions.inject_direct_stdin(
                 &self.session_id,
@@ -373,6 +386,7 @@ impl TerminalSession {
         key: &str,
         ctrl: bool,
         alt: bool,
+        shift: bool,
         key_char: Option<&str>,
     ) -> runner_backend::error::Result<bool> {
         let app_cursor = self
@@ -380,7 +394,7 @@ impl TerminalSession {
             .lock_unfair()
             .mode()
             .contains(TermMode::APP_CURSOR);
-        match crate::mappings::encode_key(key, ctrl, alt, key_char, app_cursor) {
+        match crate::mappings::encode_key(key, ctrl, alt, shift, key_char, app_cursor) {
             Some(bytes) => {
                 self.write_user_bytes(&bytes)?;
                 Ok(true)
@@ -401,18 +415,22 @@ impl TerminalSession {
     pub fn resize(&self, cols: u16, rows: u16) {
         let cols = cols.max(2);
         let rows = rows.max(2);
-        {
+        let rows_changed = {
             let mut size = self.size.lock().unwrap();
             if *size == (cols, rows) {
                 return;
             }
+            let rows_changed = size.1 != rows;
             *size = (cols, rows);
-        }
+            rows_changed
+        };
         let _ =
             runner_backend::ops::session::session_resize(&self.core, &self.session_id, cols, rows);
-        self.term
-            .lock()
-            .resize(TermSize::new(cols as usize, rows as usize));
+        let mut term = self.term.lock();
+        term.resize(TermSize::new(cols as usize, rows as usize));
+        if rows_changed {
+            term.selection = None;
+        }
     }
 
     pub fn size(&self) -> (u16, u16) {
@@ -425,12 +443,123 @@ impl TerminalSession {
             Some(bytes) => {
                 let _ = self.write_user_bytes(&bytes);
             }
-            None => self.term.lock().scroll_display(Scroll::Delta(delta_lines)),
+            None => {
+                self.term.lock().scroll_display(Scroll::Delta(delta_lines));
+                (self.waker)();
+            }
         }
     }
 
     pub fn scroll_to_bottom(&self) {
         self.term.lock().scroll_display(Scroll::Bottom);
+    }
+
+    pub fn mode(&self) -> TermMode {
+        *self.term.lock_unfair().mode()
+    }
+
+    pub fn start_selection(&self, ty: SelectionType, point: Point, side: Side) {
+        self.term.lock().selection = Some(Selection::new(ty, point, side));
+        (self.waker)();
+    }
+
+    pub fn update_selection(&self, point: Point, side: Side) -> bool {
+        let mut term = self.term.lock();
+        let Some(selection) = term.selection.as_mut() else {
+            return false;
+        };
+        selection.update(point, side);
+        drop(term);
+        (self.waker)();
+        true
+    }
+
+    pub fn clear_selection(&self) -> bool {
+        let cleared = self.term.lock().selection.take().is_some();
+        if cleared {
+            (self.waker)();
+        }
+        cleared
+    }
+
+    pub fn selection_text(&self) -> Option<String> {
+        self.term
+            .lock_unfair()
+            .selection_to_string()
+            .filter(|text| !text.is_empty())
+    }
+
+    pub fn selection_contains(&self, point: Point) -> bool {
+        let term = self.term.lock_unfair();
+        term.selection
+            .as_ref()
+            .and_then(|selection| selection.to_range(&*term))
+            .is_some_and(|range| range.contains(point))
+    }
+
+    pub fn selection_type(&self) -> Option<SelectionType> {
+        self.term
+            .lock_unfair()
+            .selection
+            .as_ref()
+            .map(|selection| selection.ty)
+    }
+
+    pub fn cell_is_whitespace(&self, point: Point) -> bool {
+        let term = self.term.lock_unfair();
+        let point = point.grid_clamp(&*term, Boundary::Grid);
+        let cell = &term.grid()[point];
+        !cell
+            .flags
+            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            && cell.c.is_whitespace()
+    }
+
+    pub fn move_cursor_to_viewport(&self, column: usize, row: usize) {
+        let (cursor, columns, mode, display_offset) = {
+            let term = self.term.lock_unfair();
+            (
+                term.grid().cursor.point,
+                term.columns(),
+                *term.mode(),
+                term.grid().display_offset(),
+            )
+        };
+        if display_offset != 0 || columns == 0 {
+            return;
+        }
+
+        let app_cursor = mode.contains(TermMode::APP_CURSOR);
+        let mut bytes = Vec::new();
+        if mode.contains(TermMode::ALT_SCREEN) {
+            let vertical = row as i32 - cursor.line.0;
+            let key = if vertical < 0 { "up" } else { "down" };
+            if let Some(sequence) =
+                crate::mappings::encode_key(key, false, false, false, None, app_cursor)
+            {
+                bytes.extend(sequence.repeat(vertical.unsigned_abs() as usize));
+            }
+            let horizontal = column as i64 - cursor.column.0 as i64;
+            let key = if horizontal < 0 { "left" } else { "right" };
+            if let Some(sequence) =
+                crate::mappings::encode_key(key, false, false, false, None, app_cursor)
+            {
+                bytes.extend(sequence.repeat(horizontal.unsigned_abs() as usize));
+            }
+        } else {
+            let cursor_index = cursor.line.0 as i64 * columns as i64 + cursor.column.0 as i64;
+            let target_index = row as i64 * columns as i64 + column as i64;
+            let delta = target_index - cursor_index;
+            let key = if delta < 0 { "left" } else { "right" };
+            if let Some(sequence) =
+                crate::mappings::encode_key(key, false, false, false, None, app_cursor)
+            {
+                bytes.extend(sequence.repeat(delta.unsigned_abs() as usize));
+            }
+        }
+        if !bytes.is_empty() {
+            let _ = self.write_user_bytes(&bytes);
+        }
     }
 
     pub fn scroll_state(&self) -> TerminalScrollState {
@@ -576,6 +705,9 @@ impl TerminalBridge {
 #[cfg(test)]
 mod tests {
     use alacritty_terminal::grid::Dimensions as _;
+    use alacritty_terminal::index::{Column, Line, Point, Side};
+    use alacritty_terminal::selection::SelectionType;
+    use alacritty_terminal::term::cell::Flags;
     use alacritty_terminal::term::TermMode;
     use alacritty_terminal::vte::ansi::CursorShape;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -789,6 +921,100 @@ mod tests {
         let term = terminal.term.lock();
         assert_eq!(term.history_size(), 3);
         assert_eq!(term.renderable_content().cursor.shape, CursorShape::Beam);
+    }
+
+    #[test]
+    fn terminal_selection_matches_xterm_words_wraps_and_line_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let terminal = TerminalSession::attach_with_input_mode(
+            core,
+            "replay-race".into(),
+            8,
+            3,
+            Arc::new(|| {}),
+            UserInputMode::Queued,
+        )
+        .unwrap();
+        terminal.configure(100, CursorShape::Block);
+        assert!(terminal.cell_is_whitespace(Point::new(Line(100), Column(100))));
+        {
+            let mut term = terminal.term.lock();
+            for (column, character) in "foo/bar,".chars().enumerate() {
+                term.grid_mut()[Line(0)][Column(column)].c = character;
+            }
+            for (column, character) in "abcdefgh".chars().enumerate() {
+                term.grid_mut()[Line(1)][Column(column)].c = character;
+            }
+            term.grid_mut()[Line(1)][Column(7)]
+                .flags
+                .insert(Flags::WRAPLINE);
+            for (column, character) in "ijk".chars().enumerate() {
+                term.grid_mut()[Line(2)][Column(column)].c = character;
+            }
+        }
+
+        terminal.start_selection(
+            SelectionType::Semantic,
+            Point::new(Line(0), Column(2)),
+            Side::Left,
+        );
+        assert_eq!(terminal.selection_text().as_deref(), Some("foo/bar"));
+        terminal.feed_output(&output(1, "\x1b[31m")).unwrap();
+        terminal.scroll(1, true);
+        assert_eq!(terminal.selection_text().as_deref(), Some("foo/bar"));
+
+        terminal.start_selection(
+            SelectionType::Simple,
+            Point::new(Line(1), Column(5)),
+            Side::Left,
+        );
+        terminal.update_selection(Point::new(Line(2), Column(1)), Side::Right);
+        assert_eq!(terminal.selection_text().as_deref(), Some("fghij"));
+
+        terminal.start_selection(
+            SelectionType::Lines,
+            Point::new(Line(2), Column(1)),
+            Side::Left,
+        );
+        assert_eq!(terminal.selection_text().as_deref(), Some("abcdefghijk\n"));
+    }
+
+    #[test]
+    fn user_input_vertical_resize_and_mouse_mode_clear_selection() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let terminal = TerminalSession::attach_with_input_mode(
+            core,
+            "replay-race".into(),
+            8,
+            3,
+            Arc::new(|| {}),
+            UserInputMode::Queued,
+        )
+        .unwrap();
+        let select = || {
+            terminal.start_selection(
+                SelectionType::Lines,
+                Point::new(Line(0), Column(0)),
+                Side::Left,
+            );
+            assert!(terminal.selection_text().is_some());
+        };
+
+        select();
+        terminal.write_user_bytes(b"x").unwrap();
+        assert!(terminal.selection_text().is_none());
+
+        select();
+        terminal.resize(8, 4);
+        assert!(terminal.selection_text().is_none());
+
+        select();
+        terminal
+            .feed_output(&output(1, "\x1b[?1000h\x1b[?1006h"))
+            .unwrap();
+        assert!(terminal.selection_text().is_none());
     }
 
     #[test]
