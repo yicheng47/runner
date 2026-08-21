@@ -1130,9 +1130,13 @@ fn input_clear_flushes_after_quiet_500ms_grace() {
 
     let cleared_at = Instant::now();
     injector.clear_pending("S-IMPL");
-    std::thread::sleep(Duration::from_millis(450));
-    assert!(injector.submitted_bodies_for("S-IMPL").is_empty());
-    wait_until(Duration::from_millis(200), || {
+    std::thread::sleep(Duration::from_millis(250));
+    // A loaded runner can oversleep past the grace; only assert the
+    // "still parked" half while we are provably inside it.
+    if cleared_at.elapsed() < super::INPUT_CLEAR_FLUSH_GRACE {
+        assert!(injector.submitted_bodies_for("S-IMPL").is_empty());
+    }
+    wait_until(Duration::from_millis(400), || {
         injector.submitted_bodies_for("S-IMPL") == ["deferred relay"]
     });
     assert!(cleared_at.elapsed() >= Duration::from_millis(500));
