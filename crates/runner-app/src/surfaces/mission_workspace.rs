@@ -3821,7 +3821,10 @@ impl MissionWorkspace {
                                     })
                                 } else {
                                     Some(crate::surfaces::mission_markdown::render_markdown(
-                                        &event.id, &text, cx,
+                                        &event.id,
+                                        &text,
+                                        cx.entity_id(),
+                                        cx,
                                     ))
                                 }
                             })),
@@ -4147,7 +4150,10 @@ impl MissionWorkspace {
                                     .into_any_element()
                             } else {
                                 crate::surfaces::mission_markdown::render_markdown(
-                                    &event.id, &prompt, cx,
+                                    &event.id,
+                                    &prompt,
+                                    cx.entity_id(),
+                                    cx,
                                 )
                             })
                             .child(buttons)
