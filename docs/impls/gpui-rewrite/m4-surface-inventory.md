@@ -139,3 +139,7 @@ Rows marked done may rely on a deliberate deviation already approved in the regi
 ## Pencil reconciliation retained by the exit audit
 
 Pencil-only Settings Chat, Remember window position, flat MISSION/CHAT rails, folders, and a Projects page remain intentionally absent because they are not in frozen `main`. Agents and Updates remain in the ten-pane Settings navigation; update UI remains separate from About; the four shipped app themes and three terminal palettes remain authoritative over the Carbon-only canvas variables.
+
+## Post-audit addendum
+
+- 2026-08-22 — **missed row**: `main`'s in-app update prompt (`src/components/UpdatePromptCard.tsx`: the pill above the sidebar Settings row, hover card, per-launch dismiss, auto-install checkbox) has no native counterpart; the Updates pane is the slim form and Sparkle's dialogs carry the flow. Tracked as M6.9 in `m6-consolidation.md`. The 75/0/0 count above therefore undercounts by one missing surface.

@@ -19,7 +19,7 @@ Sequencing with M4.6b (shell split): nothing in the app crate starts until it la
 
 ## Tier 1 — the missions
 
-Ordered by felt impact in the daily two-agent peer-coding loop (Claude Code + Codex in one mission, human typing into both PTYs) against cost. **Run order (Jason, 2026-08-21): M6.6 first — small, felt on every window drag (landed `0e5ea18`) — then M6.8 long-lived terminals (landed `3536c70` the same night), M6.5, M6.1, the M6.3 mutex item, then `v0.6.0`; M6.2, M6.7, M6.4 and the rest of M6.3 ride as post-GA updates.** Numbers are identifiers, not sequence.
+Ordered by felt impact in the daily two-agent peer-coding loop (Claude Code + Codex in one mission, human typing into both PTYs) against cost. **Run order (Jason, 2026-08-21): M6.6 first — small, felt on every window drag (landed `0e5ea18`) — then M6.8 long-lived terminals (landed `3536c70` the same night), M6.5 (landed 2026-08-22), M6.1, the M6.3 mutex item, M6.9 update-prompt card, then `v0.6.0`; M6.2, M6.7, M6.4 and the rest of M6.3 ride as post-GA updates.** Numbers are identifiers, not sequence.
 
 ### M6.1 — Real input-state tracking for mission sessions — M, app + backend seam, **second in run order, right after the small M6.6** (added and promoted 2026-08-21, Jason: inaccurate draft detection is the most annoying daily defect)
 
@@ -52,9 +52,13 @@ All confirmed at file:line on 2026-08-20.
 
 `mission_workspace.rs:1060-1064` pushes then `sort_by`s the whole event vec and re-runs `rebuild_event_projection` (`group_feed_blocks` + `project_asks` from scratch) on every append; render clones `feed_blocks` (`:2776`) and materializes every block into a plain `overflow_y_scroll` div (`:2801-2810`). O(n) per event, and two chatty agents append fast. Insert in ULID order (events arrive nearly sorted), project incrementally, render with `uniform_list` / `list(ListState)`. No list in the app uses `uniform_list`; convert the feed and leave the rest unless felt.
 
-### M6.5 — `docs/arch/arch.md` rewrite — S, after M4.6b
+### M6.5 — `docs/arch/arch.md` rewrite — S, **landed 2026-08-22** (rewritten end to end by the human; the update-prompt gap below was found doing it)
 
-Says the app is Tauri + xterm.js (`:7`, `:106`, `:888`) and that "messages do not trigger router actions" (`:630`) while `router/mod.rs:535` dispatches `message_nudge` into the target PTY. Agents read this file as ground truth when planning missions, so it actively misleads. Also record the fsync decision (below) and the landing rule.
+Said the app is Tauri + xterm.js (`:7`, `:106`, `:888`) and that "messages do not trigger router actions" (`:630`) while `router/mod.rs:535` dispatches `message_nudge` into the target PTY. Agents read this file as ground truth when planning missions, so it actively misleads. Also record the fsync decision (below) and the landing rule.
+
+### M6.9 — In-app update prompt (the sidebar pill + card) — S/M, app crate, before `v0.6.0` (found 2026-08-22 while rewriting `arch.md` §3.7; Jason: "the New version available card that's already implemented in the tauri version, I don't know whether we port that")
+
+Not ported, and the M4.8 inventory missed it. `main` shows an Arc-style pill directly above the sidebar Settings row once an update is ready — "New Runner version available" — that morphs into a card on hover/focus (install now, per-launch dismiss, an auto-install checkbox sharing the Updates pane's setting; `src/components/UpdatePromptCard.tsx`, `UpdateContext`). The native `Updater` (`runner-app/src/updater.rs`) wraps `SPUStandardUpdaterController` with `check_for_updates` and the automatic-checks flag only; nothing in the app learns that Sparkle found an update, so the only prompt is Sparkle's standard dialog. Scope: an `SPUUpdaterDelegate` through objc2 (`updater:didFindValidUpdate:`, `updaterDidNotFindUpdate:`, `updater:willInstallUpdateOnQuit:…`, the download/extract progress callbacks if the card shows progress) feeding an `available: Option<UpdateInfo>` state on the `Updater` entity; the pill + card rendered by the sidebar from that state, dismiss per launch, install = `checkForUpdates:` or the pending installer's resume; the auto-install checkbox wired to `automaticallyDownloadsUpdates`. Keep Sparkle's standard user driver for the actual install flow — the card is the hint, not a second updater. Gate: dispatch a nightly, watch the pill appear in the running app without opening Settings, install from the card; the Updates pane and the card must agree on the auto-install setting.
 
 ### M6.6 — Terminal resize smoothness (was the `RESIZE_SETTLE_MS` experiment) — S/M, backend + app, **landed 2026-08-21 (`6f020d4`)** (promoted 2026-08-21, Jason: resize feels worse than Zed's embedded terminal; small and felt on every window drag)
 
