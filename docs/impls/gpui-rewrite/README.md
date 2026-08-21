@@ -12,3 +12,4 @@ Standing decisions (dated in the plan):
 - Framework: `gpui-ce`; terminal architecture mirrors Zed's `terminal`/`terminal_view` split on upstream `alacritty_terminal` (plan §Framework, §Workstream C). Zed's terminal crates are GPL — architectural reference only.
 - Pulse (`~/repos/yicheng47/pulse`) is the window-level UI reference and the updater reference — Sparkle via the pulse pattern (plan §UI reference, §Phase 5).
 - Crate renames after the M3 session-hardening slice (landed 2026-08-18): `runner-app` → `runner-backend`, `runner-native` → `runner-app` (plan §Decisions).
+- Release channels and the cutover bridge: `CFBundleVersion` is always a build stamp, nightlies are prereleases on a rolling `nightly` feed (never the `releases/latest` alias the Tauri updater polls), and GA `v0.6.0` is the single cutover release carrying both Sparkle and Tauri-bridge artifacts (plan decision 12, §Release channels).
