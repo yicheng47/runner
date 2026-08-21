@@ -544,6 +544,7 @@ mod tests {
                 .child(render_markdown(
                     "wrap-test",
                     "A narrow feed line with **styled text**, `inline code`, and [a link whose label also needs to wrap](https://example.com) before the final words.",
+                    cx.entity_id(),
                     cx,
                 ))
         }
