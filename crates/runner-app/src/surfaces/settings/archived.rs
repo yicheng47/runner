@@ -15,6 +15,9 @@ use runner_app::ui::{
 use runner_backend::model::Mission;
 use runner_backend::ops::session::DirectSessionEntry;
 
+#[cfg(target_os = "macos")]
+use objc2_foundation::{NSDate, NSDateFormatter, NSString};
+
 use crate::app_store::AppStore;
 use crate::theme;
 use crate::NativeRoot;
@@ -720,10 +723,32 @@ fn cwd_basename(cwd: &str) -> String {
 
 fn format_timestamp(timestamp: DateTime<Utc>, now: DateTime<Local>) -> String {
     let timestamp = timestamp.with_timezone(&Local);
-    if timestamp.year() == now.year()
+    let same_day = timestamp.year() == now.year()
         && timestamp.month() == now.month()
-        && timestamp.day() == now.day()
-    {
+        && timestamp.day() == now.day();
+    localized_timestamp(timestamp, same_day)
+}
+
+fn localized_timestamp_template(time_only: bool) -> &'static str {
+    if time_only {
+        "jm"
+    } else {
+        "MMM d"
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn localized_timestamp(timestamp: DateTime<Local>, time_only: bool) -> String {
+    let date = NSDate::dateWithTimeIntervalSince1970(timestamp.timestamp_millis() as f64 / 1000.);
+    let formatter = NSDateFormatter::new();
+    let template = NSString::from_str(localized_timestamp_template(time_only));
+    formatter.setLocalizedDateFormatFromTemplate(&template);
+    formatter.stringFromDate(&date).to_string()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn localized_timestamp(timestamp: DateTime<Local>, time_only: bool) -> String {
+    if time_only {
         timestamp.format("%H:%M").to_string()
     } else {
         timestamp.format("%b %-d").to_string()
@@ -828,5 +853,13 @@ mod tests {
     fn untitled_chat_uses_sidebar_style_label() {
         let chat = chat("c1", None, "/work", "2026-08-21T01:00:00Z");
         assert!(chat_title(&chat).starts_with("@coder · "));
+    }
+
+    #[test]
+    fn archived_timestamps_use_the_platform_formatter() {
+        assert_eq!(localized_timestamp_template(true), "jm");
+        assert_eq!(localized_timestamp_template(false), "MMM d");
+        let now = Local::now();
+        assert!(!format_timestamp(now.with_timezone(&Utc), now).is_empty());
     }
 }

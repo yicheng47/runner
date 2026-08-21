@@ -187,6 +187,7 @@ pub(crate) struct MissionWorkspace {
     warning: Option<String>,
     active_tab: MissionTab,
     open_tabs: Vec<String>,
+    last_measured_terminal_size: Option<CachedTerminalSize>,
     delivery_blocked: HashMap<String, DeliveryBlocked>,
     transitions: HashMap<String, MissionTransition>,
     next_transition_generation: u64,
@@ -379,6 +380,7 @@ impl MissionWorkspace {
             warning: None,
             active_tab: MissionTab::Feed,
             open_tabs: Vec::new(),
+            last_measured_terminal_size: None,
             delivery_blocked: HashMap::new(),
             transitions: HashMap::new(),
             next_transition_generation: 0,
@@ -434,6 +436,7 @@ impl MissionWorkspace {
         self.warning = None;
         self.active_tab = MissionTab::Feed;
         self.open_tabs.clear();
+        self.last_measured_terminal_size = None;
         self.delivery_blocked.clear();
         self.transitions.clear();
         self.stopping = false;
@@ -1151,7 +1154,7 @@ impl MissionWorkspace {
         }
     }
 
-    pub(crate) fn estimated_mission_terminal_size(&self, window: &Window, cx: &App) -> (u16, u16) {
+    fn layout_estimated_mission_terminal_size(&self, window: &Window, cx: &App) -> (u16, u16) {
         let bounds = window.bounds().size;
         let sidebar_width = if self.sidebar_collapsed {
             0.
@@ -1176,14 +1179,42 @@ impl MissionWorkspace {
         )
     }
 
+    pub(crate) fn estimated_mission_terminal_size(&self, window: &Window, cx: &App) -> (u16, u16) {
+        preferred_terminal_size(
+            None,
+            self.last_measured_terminal_size,
+            self.layout_estimated_mission_terminal_size(window, cx),
+        )
+    }
+
     pub(crate) fn current_mission_terminal_size(&self, window: &Window, cx: &App) -> (u16, u16) {
-        match &self.active_tab {
+        let measured = match &self.active_tab {
             MissionTab::Session(session_id) => self
                 .attached
                 .get(session_id)
-                .map(|chat| chat.terminal.size())
-                .unwrap_or_else(|| self.estimated_mission_terminal_size(window, cx)),
-            MissionTab::Feed => self.estimated_mission_terminal_size(window, cx),
+                .map(|chat| chat.terminal.size()),
+            MissionTab::Feed => None,
+        };
+        preferred_terminal_size(
+            measured,
+            self.last_measured_terminal_size,
+            self.layout_estimated_mission_terminal_size(window, cx),
+        )
+    }
+
+    fn cache_active_terminal_size(&mut self, window: &Window, cx: &App) {
+        let MissionTab::Session(session_id) = &self.active_tab else {
+            return;
+        };
+        if let Some(measured) = self
+            .attached
+            .get(session_id)
+            .map(|chat| chat.terminal.size())
+        {
+            self.last_measured_terminal_size = Some(CachedTerminalSize {
+                measured,
+                layout_estimate: self.layout_estimated_mission_terminal_size(window, cx),
+            });
         }
     }
 
@@ -2536,6 +2567,7 @@ impl MissionWorkspace {
     }
 
     fn select_mission_feed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cache_active_terminal_size(window, cx);
         self.active_tab = MissionTab::Feed;
         if self.feed_was_near_bottom {
             self.feed_scroll.scroll_to_bottom();
@@ -2562,6 +2594,7 @@ impl MissionWorkspace {
             self.select_mission_feed(window, cx);
             return;
         }
+        self.cache_active_terminal_size(window, cx);
         if !self.open_tabs.iter().any(|open| open == session_id) {
             self.open_tabs.push(session_id.to_owned());
         }
@@ -2589,6 +2622,7 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cache_active_terminal_size(window, cx);
         self.open_tabs.retain(|open| open != session_id);
         if let Some(mission_id) = &self.mission_id {
             if self
@@ -3694,14 +3728,19 @@ impl MissionWorkspace {
                 )
                 .into_any_element(),
             FeedBlock::MessageGroup { author, events } => self
-                .render_mission_message_group(author, events)
+                .render_mission_message_group(author, events, cx)
                 .into_any_element(),
             FeedBlock::Signal(event) => self.render_mission_signal_row(event, cx),
             FeedBlock::AskCard(event) => self.render_mission_ask_card(event, cx),
         }
     }
 
-    fn render_mission_message_group(&self, author: String, events: Vec<Event>) -> AnyElement {
+    fn render_mission_message_group(
+        &self,
+        author: String,
+        events: Vec<Event>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let first = &events[0];
         let human = author == "human";
         let target = message_target(first, &self.askers_by_question);
@@ -3782,7 +3821,7 @@ impl MissionWorkspace {
                                     })
                                 } else {
                                     Some(crate::surfaces::mission_markdown::render_markdown(
-                                        &event.id, &text,
+                                        &event.id, &text, cx,
                                     ))
                                 }
                             })),
@@ -4108,7 +4147,7 @@ impl MissionWorkspace {
                                     .into_any_element()
                             } else {
                                 crate::surfaces::mission_markdown::render_markdown(
-                                    &event.id, &prompt,
+                                    &event.id, &prompt, cx,
                                 )
                             })
                             .child(buttons)
@@ -4464,6 +4503,7 @@ impl MissionWorkspace {
         if !show_rail {
             return div()
                 .id("mission-rail")
+                .relative()
                 .w(rems(visible_width / 16.))
                 .h_full()
                 .flex_none()
@@ -5300,6 +5340,26 @@ impl Render for MissionWorkspace {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CachedTerminalSize {
+    measured: (u16, u16),
+    layout_estimate: (u16, u16),
+}
+
+fn preferred_terminal_size(
+    measured: Option<(u16, u16)>,
+    cached: Option<CachedTerminalSize>,
+    estimated: (u16, u16),
+) -> (u16, u16) {
+    measured
+        .or_else(|| {
+            cached
+                .filter(|cached| cached.layout_estimate == estimated)
+                .map(|cached| cached.measured)
+        })
+        .unwrap_or(estimated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5349,6 +5409,27 @@ mod tests {
             "session abc is already running — attach instead"
         ));
         assert!(!is_concurrent_resume_error("session abc failed to spawn"));
+    }
+
+    #[test]
+    fn measured_mission_slot_size_wins_over_cache_and_layout_estimate() {
+        let cached = CachedTerminalSize {
+            measured: (100, 30),
+            layout_estimate: (80, 24),
+        };
+        assert_eq!(
+            preferred_terminal_size(Some((120, 40)), Some(cached), (80, 24)),
+            (120, 40)
+        );
+        assert_eq!(
+            preferred_terminal_size(None, Some(cached), (80, 24)),
+            (100, 30)
+        );
+        assert_eq!(
+            preferred_terminal_size(None, Some(cached), (90, 28)),
+            (90, 28)
+        );
+        assert_eq!(preferred_terminal_size(None, None, (80, 24)), (80, 24));
     }
 
     #[test]

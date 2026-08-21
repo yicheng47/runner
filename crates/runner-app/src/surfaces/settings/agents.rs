@@ -86,9 +86,8 @@ impl AgentsPane {
         let mut subscriptions = Vec::new();
         for runtime in runner_backend::ops::runtime::runtime_list() {
             let runtime_name = runtime.name.clone();
-            let commit_pane = cx.weak_entity();
+            let enter_shell = shell.clone();
             let escape_pane = cx.weak_entity();
-            let commit_name = runtime_name.clone();
             let escape_name = runtime_name.clone();
             let field = cx.new(|input_cx| {
                 TextField::new(
@@ -101,12 +100,10 @@ impl AgentsPane {
                 .key_interceptor(Rc::new(move |event, window, cx| {
                     match event.keystroke.key.as_str() {
                         "enter" => {
-                            let pane = commit_pane.clone();
-                            let runtime = commit_name.clone();
-                            window.defer(cx, move |_, cx| {
-                                let _ = pane.update(cx, |this, pane_cx| {
-                                    this.commit_override(&runtime, pane_cx)
-                                });
+                            let shell = enter_shell.clone();
+                            window.defer(cx, move |window, cx| {
+                                let _ =
+                                    shell.update(cx, |root, _| root.focus_settings_page(window));
                             });
                             true
                         }

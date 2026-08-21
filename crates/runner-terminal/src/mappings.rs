@@ -56,6 +56,7 @@ pub fn encode_key(
         };
         bytes.push(encoded?);
     } else {
+        let mut alt_letter = [0u8; 1];
         let sequence: &[u8] = match key {
             "enter" => b"\r",
             "backspace" => b"\x7f",
@@ -96,6 +97,14 @@ pub fn encode_key(
             "f19" => b"\x1b[33~",
             "f20" => b"\x1b[34~",
             "space" => b" ",
+            _ if alt && key.len() == 1 && key.as_bytes()[0].is_ascii_alphabetic() => {
+                alt_letter[0] = if shift {
+                    key.as_bytes()[0].to_ascii_uppercase()
+                } else {
+                    key.as_bytes()[0]
+                };
+                &alt_letter
+            }
             _ => match key_char {
                 Some(text) if !text.is_empty() => text.as_bytes(),
                 _ => return None,
@@ -273,6 +282,42 @@ mod tests {
         encode_key, encode_mouse_motion, encode_mouse_press, encode_mouse_release, encode_scroll,
         MouseButton, MouseModifiers, TermMode,
     };
+
+    #[test]
+    fn option_letter_chords_use_the_plain_key() {
+        assert_eq!(
+            encode_key("b", false, true, false, Some("∫"), false),
+            Some(b"\x1bb".to_vec())
+        );
+        assert_eq!(
+            encode_key("f", false, true, false, Some("ƒ"), false),
+            Some(b"\x1bf".to_vec())
+        );
+        assert_eq!(
+            encode_key("d", false, true, false, Some("∂"), false),
+            Some(b"\x1bd".to_vec())
+        );
+        assert_eq!(
+            encode_key("d", false, true, true, Some("Î"), false),
+            Some(b"\x1bD".to_vec())
+        );
+    }
+
+    #[test]
+    fn option_letter_fix_does_not_change_other_key_paths() {
+        assert_eq!(
+            encode_key("b", false, false, false, Some("∫"), false),
+            Some("∫".as_bytes().to_vec())
+        );
+        assert_eq!(
+            encode_key("b", true, true, false, Some("∫"), false),
+            Some(b"\x1b\x02".to_vec())
+        );
+        assert_eq!(
+            encode_key("1", false, true, false, Some("¡"), false),
+            Some("\x1b¡".as_bytes().to_vec())
+        );
+    }
 
     #[test]
     fn wheel_reports_go_to_mouse_mode_apps() {

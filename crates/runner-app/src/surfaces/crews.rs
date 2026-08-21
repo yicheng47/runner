@@ -2531,6 +2531,27 @@ impl NativeRoot {
         let draggable = total > 1 && !self.crew_surfaces.editor.reordering;
         let active_drop = self.crew_surfaces.editor.drop_target == Some(index)
             && self.crew_surfaces.editor.dragged_slot_id.as_deref() != Some(slot.slot.id.as_str());
+        let drag_handle = div()
+            .flex_none()
+            .text_size(rems(14. / 16.))
+            .text_color(theme::faint())
+            .opacity(if draggable { 1. } else { 0.4 })
+            .cursor(if draggable {
+                CursorStyle::OpenHand
+            } else {
+                CursorStyle::Arrow
+            })
+            .child("⋮⋮");
+        let drag_handle = if draggable {
+            Tooltip::new(
+                SharedString::from(format!("crew-slot-drag-tooltip-{}", slot.slot.id)),
+                "Drag to reorder",
+                drag_handle,
+            )
+            .into_any_element()
+        } else {
+            drag_handle.into_any_element()
+        };
         let menu_slot = slot.clone();
         let menu_root = cx.entity();
         let mut row = div()
@@ -2556,19 +2577,7 @@ impl NativeRoot {
             })
             .p_4()
             .hover(|row| row.border_color(theme::border_strong()))
-            .child(
-                div()
-                    .flex_none()
-                    .text_size(rems(14. / 16.))
-                    .text_color(theme::faint())
-                    .opacity(if draggable { 1. } else { 0.4 })
-                    .cursor(if draggable {
-                        CursorStyle::OpenHand
-                    } else {
-                        CursorStyle::Arrow
-                    })
-                    .child("⋮⋮"),
-            )
+            .child(drag_handle)
             .child(
                 div()
                     .min_w(px(0.))

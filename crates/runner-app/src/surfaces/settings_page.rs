@@ -403,6 +403,10 @@ fn settings_select(
 }
 
 impl NativeRoot {
+    pub(crate) fn focus_settings_page(&self, window: &mut Window) {
+        self.settings_page.focus.focus(window);
+    }
+
     pub(crate) fn shortcut_recording_active(&self) -> bool {
         self.settings_page.shortcut_recording.is_some()
     }
@@ -508,6 +512,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.settings_page.pane == SettingsPane::Updates && pane != SettingsPane::Updates {
+            self.pause_updates_pane(cx);
+        }
         if pane != SettingsPane::Shortcuts && self.settings_page.shortcut_recording.is_some() {
             self.finish_shortcut_recording(window, cx);
         }
@@ -1036,6 +1043,12 @@ impl NativeRoot {
     pub(crate) fn refresh_agents_pane(&self, cx: &mut Context<Self>) {
         if let Some(agents) = self.settings_page.agents.clone() {
             agents.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
+        }
+    }
+
+    pub(crate) fn pause_updates_pane(&self, cx: &mut Context<Self>) {
+        if let Some(updates) = self.settings_page.updates.clone() {
+            updates.update(cx, |pane, _| pane.pause());
         }
     }
 

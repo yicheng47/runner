@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions as _, Scroll};
-use alacritty_terminal::index::{Boundary, Point, Side};
+use alacritty_terminal::index::{Boundary, Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags;
@@ -17,6 +17,7 @@ use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor};
 use anyhow::{Context as _, Result};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
+use regex::Regex;
 use runner_backend::events::AppEvent;
 use runner_backend::session::manager::OutputEvent;
 use runner_backend::AppCore;
@@ -25,6 +26,26 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::palette;
 
 pub const XTERM_WORD_SEPARATORS: &str = " ()[]{}',\"`";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TerminalLink {
+    pub uri: String,
+    pub start: Point,
+    pub end: Point,
+}
+
+impl TerminalLink {
+    pub fn contains(&self, point: Point) -> bool {
+        if point.line < self.start.line || point.line > self.end.line {
+            return false;
+        }
+        if self.start.line == self.end.line {
+            return point.column >= self.start.column && point.column <= self.end.column;
+        }
+        (point.line != self.start.line || point.column >= self.start.column)
+            && (point.line != self.end.line || point.column <= self.end.column)
+    }
+}
 
 pub struct EventProxy {
     tx: Sender<Event>,
@@ -515,6 +536,10 @@ impl TerminalSession {
             && cell.c.is_whitespace()
     }
 
+    pub fn link_at(&self, point: Point) -> Option<TerminalLink> {
+        terminal_link_at(&*self.term.lock_unfair(), point)
+    }
+
     pub fn move_cursor_to_viewport(&self, column: usize, row: usize) {
         let (cursor, columns, mode, display_offset) = {
             let term = self.term.lock_unfair();
@@ -582,6 +607,100 @@ impl TerminalSession {
         drop(term);
         (self.waker)();
     }
+}
+
+struct LinkCell {
+    point: Point,
+    start: usize,
+    end: usize,
+    hyperlink: Option<(String, String)>,
+}
+
+fn terminal_link_at<T>(term: &Term<T>, point: Point) -> Option<TerminalLink> {
+    let mut point = point.grid_clamp(term, Boundary::Grid);
+    if term.grid()[point]
+        .flags
+        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+    {
+        point.column = Column(point.column.0.saturating_sub(1));
+    }
+
+    let start = term.line_search_left(point);
+    let end = term.line_search_right(point);
+    let mut text = String::new();
+    let mut cells = Vec::new();
+    for line in start.line.0..=end.line.0 {
+        for column in 0..term.columns() {
+            let cell_point = Point::new(Line(line), Column(column));
+            let cell = &term.grid()[cell_point];
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            let rendered_start = text.len();
+            text.push(cell.c);
+            if let Some(zerowidth) = cell.zerowidth() {
+                text.extend(zerowidth.iter());
+            }
+            cells.push(LinkCell {
+                point: cell_point,
+                start: rendered_start,
+                end: text.len(),
+                hyperlink: cell
+                    .hyperlink()
+                    .map(|link| (link.id().to_owned(), link.uri().to_owned())),
+            });
+        }
+    }
+
+    let hit = cells.iter().position(|cell| cell.point == point)?;
+    if let Some((id, uri)) = cells[hit].hyperlink.as_ref() {
+        let mut first = hit;
+        while first > 0
+            && cells[first - 1]
+                .hyperlink
+                .as_ref()
+                .is_some_and(|link| link.0 == *id)
+        {
+            first -= 1;
+        }
+        let mut last = hit;
+        while last + 1 < cells.len()
+            && cells[last + 1]
+                .hyperlink
+                .as_ref()
+                .is_some_and(|link| link.0 == *id)
+        {
+            last += 1;
+        }
+        return Some(TerminalLink {
+            uri: uri.clone(),
+            start: cells[first].point,
+            end: cells[last].point,
+        });
+    }
+
+    let hit_cell = &cells[hit];
+    let matched = url_regex()
+        .find_iter(&text)
+        .find(|matched| matched.start() < hit_cell.end && matched.end() > hit_cell.start)?;
+    let first = cells.iter().find(|cell| cell.end > matched.start())?;
+    let last = cells.iter().rev().find(|cell| cell.start < matched.end())?;
+    Some(TerminalLink {
+        uri: matched.as_str().to_owned(),
+        start: first.point,
+        end: last.point,
+    })
+}
+
+fn url_regex() -> &'static Regex {
+    static URL_REGEX: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    URL_REGEX.get_or_init(|| {
+        Regex::new(r#"(https?|HTTPS?)://[^\s\"'!*(){}|\\\^<>`]*[^\s\"':,.!?{}|\\\^~\[\]`()<>]"#)
+            .expect("valid terminal URL regex")
+    })
 }
 
 fn chunk_indicates_tui_ready(bytes: &[u8]) -> bool {
@@ -767,6 +886,67 @@ mod tests {
             seq,
             data: B64.encode(text),
         }
+    }
+
+    #[test]
+    fn terminal_links_detect_plain_urls_and_osc_8_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let terminal =
+            TerminalSession::attach(core, "replay-race".into(), 80, 4, Arc::new(|| {})).unwrap();
+        terminal
+            .feed_output(&output(
+                1,
+                "plain https://example.com/path\r\n\x1b]8;;https://example.com/osc\x1b\\linked label\x1b]8;;\x1b\\",
+            ))
+            .unwrap();
+
+        let plain = terminal
+            .link_at(Point::new(Line(0), Column(10)))
+            .expect("plain URL");
+        assert_eq!(plain.uri, "https://example.com/path");
+        assert!(plain.contains(Point::new(Line(0), Column(6))));
+        assert!(plain.contains(Point::new(Line(0), Column(29))));
+
+        let osc = terminal
+            .link_at(Point::new(Line(1), Column(3)))
+            .expect("OSC 8 link");
+        assert_eq!(osc.uri, "https://example.com/osc");
+        assert_eq!(osc.start, Point::new(Line(1), Column(0)));
+        assert_eq!(osc.end, Point::new(Line(1), Column(11)));
+    }
+
+    #[test]
+    fn terminal_url_detection_follows_soft_wraps_but_not_hard_line_breaks() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let terminal =
+            TerminalSession::attach(core, "replay-race".into(), 14, 4, Arc::new(|| {})).unwrap();
+        terminal
+            .feed_output(&output(1, "xxhttps://example.com/path"))
+            .unwrap();
+
+        let wrapped = terminal
+            .link_at(Point::new(Line(1), Column(3)))
+            .expect("wrapped URL");
+        assert_eq!(wrapped.uri, "https://example.com/path");
+        assert_eq!(wrapped.start, Point::new(Line(0), Column(2)));
+        assert_eq!(wrapped.end, Point::new(Line(1), Column(11)));
+
+        {
+            let mut term = terminal.term.lock();
+            term.grid_mut()[Line(0)][Column(13)]
+                .flags
+                .remove(Flags::WRAPLINE);
+        }
+        assert_eq!(
+            terminal
+                .link_at(Point::new(Line(0), Column(3)))
+                .expect("complete URL prefix")
+                .uri,
+            "https://exam"
+        );
+        assert!(terminal.link_at(Point::new(Line(1), Column(3))).is_none());
     }
 
     #[test]
