@@ -35,3 +35,13 @@ Setup: resume-on-launch on; one shell chat, one direct claude chat, one two-slot
 ## Known risk, in order
 
 Ring purge ordering on re-attach (item 5) is the one place a wrong implementation shows as a user-visible bug rather than a cosmetic one; everything else in the resize path degrades to "one extra repaint". The fullscreen default only touches claude-code argv and overrides the user file by design; the residual risk is Claude Code versions without the `tui` key printing a settings warning at startup.
+
+## M6.8 addendum — long-lived terminals (nightly after `6cfae2d`)
+
+The ring is gone; panes borrow a per-session `Term` that lives in the `TerminalBridge` registry. Item 5 above is now the headline: after a resize, switch tabs away and back, change mission ↔ chat route, close and reopen a pane — content is there immediately, no blank, no flash. Add:
+
+11. Start a mission with its pane hidden, open it later — full history from the first byte.
+12. Resume and reset a session — fresh paint, no leftover frame. Kill a session — the pane shows the Ended/Resume card over a neutral background (the final screen is no longer kept; deviation recorded in the impl_log).
+13. Answer an ask card on a stopped slot — one "queued until the session resumes" warning in the feed, then delivery on resume.
+14. Two windows on the same tab set: assign a chat to a pane from window B and watch window A's pane attach (the render-time attach safety net is gone; no repro was found, this is the check).
+15. Activity Monitor after an hour with several live sessions — memory is bounded by live `Term`s (10,000-line scrollback each) and drops when sessions are archived.

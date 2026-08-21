@@ -3,7 +3,7 @@
 Program directory for the Rust-native UI rewrite (`gpui-nightly` line). New impls for this program get numbered directories here; everything else in `docs/impls/` belongs to the Tauri line's history.
 
 - [impl_log.md](impl_log.md) — the program-wide progress log (current state + dated entries). Start here to catch up.
-- [m6-consolidation.md](m6-consolidation.md) — M6 plan: terminal resize smoothness (M6.6, landed 2026-08-21), then real input-state tracking (M6.1, next), hook-based session status, post-audit defects, and structural debt, with the `main`-first landing rule.
+- [m6-consolidation.md](m6-consolidation.md) — M6 plan: terminal resize smoothness (M6.6) and long-lived terminals (M6.8) landed 2026-08-21; next the `arch.md` rewrite (M6.5), real input-state tracking (M6.1), hook-based session status, post-audit defects, and structural debt, with the `main`-first landing rule.
 - [plan.md](plan.md) — the program plan: strategy, standing decisions, workstreams, and the roadmap (milestones M0–M6, then Phases 5–6). Merged 2026-08-18 from impls 0031 (approach plan) and 0046 (main-parity catchup); those numbers remain the citation keys used in the log.
 
 Standing decisions (dated in the plan):
