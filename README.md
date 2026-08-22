@@ -43,7 +43,7 @@ The coordination model is explicit. A **runner** is a reusable agent configurati
 
 Runner also runs as an **MCP server**: any MCP client — including the agents themselves — can create crews, start missions, and steer them programmatically. See [Drive it from your agents](#drive-it-from-your-agents-mcp).
 
-Runner is a native macOS app written in Rust: [GPUI](https://github.com/gpui-ce/gpui-ce) for the UI, `alacritty_terminal` for the terminal grid, SQLite for state. No webview.
+Runner is a native macOS app written in Rust: [gpui-ce](https://github.com/gpui-ce/gpui-ce) — the community-maintained fork of [Zed](https://zed.dev)'s GPUI — for the UI, `alacritty_terminal` for the terminal grid, SQLite for state. No webview.
 
 ## Download
 
@@ -169,6 +169,13 @@ Each is a copy-pasteable handle + system-prompt set you can spawn into a new Cre
 Architecture, runtime contracts, product vision, and per-feature specs live in [`docs/`](./docs/) — start with [`docs/arch/arch.md`](./docs/arch/arch.md) for the wire-level overview, or [`docs/product/vision.md`](./docs/product/vision.md) for the product direction.
 
 For dev setup, prereqs, and contributor conventions see [AGENTS.md](./AGENTS.md).
+
+## Acknowledgements
+
+- **[GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui)** and **[gpui-ce](https://github.com/gpui-ce/gpui-ce)** — the UI is built on gpui-ce, the community fork that keeps Zed's GPU-accelerated UI framework published and usable outside Zed. Thank you to the Zed team for building and open-sourcing the framework, and to the gpui-ce maintainers for carrying it forward; Zed's terminal crates were the architectural reference for Runner's terminal split.
+- **[alacritty_terminal](https://github.com/alacritty/alacritty)** — the terminal grid, parser, and scrollback under every pane.
+- **[xterm.js](https://github.com/xtermjs/xterm.js)** — the procedural box-drawing glyph table is transcribed from the WebGL addon under its MIT notice (`crates/runner-app/LICENSE.xterm`).
+- **[Sparkle](https://sparkle-project.org)** — the macOS updater.
 
 ## License
 
