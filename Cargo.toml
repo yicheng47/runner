@@ -11,6 +11,7 @@ members = [
 [workspace.package]
 edition = "2021"
 authors = ["Jason Wang <yuesihan@gmail.com>"]
+license = "GPL-3.0-only"
 
 [workspace.dependencies]
 chrono = { version = "0.4", features = ["serde"] }

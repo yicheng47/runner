@@ -3,6 +3,7 @@ name = "runner-app"
 version = "0.6.0-nightly"
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 publish = false
 default-run = "runner-app"
 

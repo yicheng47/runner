@@ -166,4 +166,4 @@ For dev setup, prereqs, and contributor conventions see [AGENTS.md](./AGENTS.md)
 
 ## License
 
-MIT
+GPL-3.0-only. Copyright (C) 2026 Jason Wang. Runner is free software: you can use it for anything, including at work, and redistribute or modify it under the terms of the GNU General Public License v3.0 — modified versions you distribute must stay under the same license (see `LICENSE`). Versions released before 2026-08-22 were published under MIT and remain so.

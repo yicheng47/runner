@@ -3,6 +3,7 @@ name = "runner-core"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 description = "Shared types and event-log primitives for the Runner app and CLI."
 
 [lib]
