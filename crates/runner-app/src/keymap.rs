@@ -707,6 +707,7 @@ pub(crate) fn install_bindings(
     cx.clear_key_bindings();
     cx.bind_keys([
         KeyBinding::new("cmd-c", Copy, Some("Terminal")),
+        KeyBinding::new("cmd-c", Copy, Some("MissionFeed")),
         KeyBinding::new("cmd-v", Paste, Some("Terminal")),
     ]);
     if shortcuts_suspended {

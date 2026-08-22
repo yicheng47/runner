@@ -290,6 +290,21 @@ impl SessionManager {
         bytes: &[u8],
         events: &dyn SessionEvents,
     ) -> Result<()> {
+        self.inject_direct_stdin_with_wait_timeout(
+            session_id,
+            bytes,
+            events,
+            DIRECT_INPUT_GATE_TIMEOUT,
+        )
+    }
+
+    pub(super) fn inject_direct_stdin_with_wait_timeout(
+        &self,
+        session_id: &str,
+        bytes: &[u8],
+        events: &dyn SessionEvents,
+        wait_timeout: Duration,
+    ) -> Result<()> {
         let submitted = bytes == b"\r";
         let input_class = classify_local_input(bytes);
         let session = self
@@ -300,10 +315,34 @@ impl SessionManager {
         let generation = delivery.generation;
         let ticket = delivery.next_ticket;
         delivery.next_ticket = delivery.next_ticket.wrapping_add(1);
+        let deadline = Instant::now() + wait_timeout;
         while delivery.generation == generation
             && (delivery.in_flight || delivery.next_served != ticket)
         {
-            delivery = gate.ready.wait(delivery).unwrap();
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                delivery.cancelled_tickets.insert(ticket);
+                delivery.skip_cancelled_tickets();
+                gate.ready.notify_all();
+                return Err(Error::DirectInputTimeout {
+                    session_id: session_id.to_string(),
+                    timeout_ms: wait_timeout.as_millis() as u64,
+                });
+            }
+            let (next, wait) = gate.ready.wait_timeout(delivery, remaining).unwrap();
+            delivery = next;
+            if wait.timed_out()
+                && delivery.generation == generation
+                && (delivery.in_flight || delivery.next_served != ticket)
+            {
+                delivery.cancelled_tickets.insert(ticket);
+                delivery.skip_cancelled_tickets();
+                gate.ready.notify_all();
+                return Err(Error::DirectInputTimeout {
+                    session_id: session_id.to_string(),
+                    timeout_ms: wait_timeout.as_millis() as u64,
+                });
+            }
         }
         if delivery.generation != generation {
             return Err(Error::msg(format!(
@@ -368,6 +407,7 @@ impl SessionManager {
         })();
 
         delivery.next_served = delivery.next_served.wrapping_add(1);
+        delivery.skip_cancelled_tickets();
         let input_queue_drained = delivery.next_served == delivery.next_ticket;
         let successful_clear = outcome
             .as_ref()

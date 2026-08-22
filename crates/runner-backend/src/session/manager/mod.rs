@@ -16,7 +16,7 @@
 // Startup cleanup demotes stale running DB rows to stopped; user-facing
 // resume respawns a fresh PTY with the same session row id.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
@@ -47,6 +47,9 @@ mod spawn;
 mod tests;
 
 const RECENT_LOCAL_INPUT_WINDOW: Duration = Duration::from_secs(2);
+// Router delivery normally holds the gate for its 80 ms submit delay. Five
+// seconds also clears the 500 ms input-flush grace comfortably under load.
+const DIRECT_INPUT_GATE_TIMEOUT: Duration = Duration::from_secs(5);
 const RUNNER_STATUS_APPEND_MAX_ATTEMPTS: usize = 8;
 const RUNNER_STATUS_APPEND_RETRY_DELAY: Duration = Duration::from_millis(5);
 
@@ -519,6 +522,15 @@ struct DeliveryGateState {
     in_flight: bool,
     next_ticket: u64,
     next_served: u64,
+    cancelled_tickets: BTreeSet<u64>,
+}
+
+impl DeliveryGateState {
+    fn skip_cancelled_tickets(&mut self) {
+        while self.cancelled_tickets.remove(&self.next_served) {
+            self.next_served = self.next_served.wrapping_add(1);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -900,6 +912,7 @@ impl SessionManager {
             delivery.in_flight = false;
             delivery.next_ticket = 0;
             delivery.next_served = 0;
+            delivery.cancelled_tickets.clear();
             gate.ready.notify_all();
             state.local_input_pending = false;
             state.last_local_input_at = None;

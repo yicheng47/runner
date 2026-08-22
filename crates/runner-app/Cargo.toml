@@ -38,3 +38,6 @@ raw-window-handle = "0.6"
 
 [dev-dependencies]
 gpui = { package = "gpui-ce", version = "0.3", features = ["test-support"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+font-kit = { package = "zed-font-kit", version = "0.14.1-zed" }

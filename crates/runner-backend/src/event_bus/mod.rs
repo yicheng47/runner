@@ -377,14 +377,17 @@ impl BusState {
         // the comparisons below would silently mark every existing inbox
         // entry as read and hide every future entry whose ULID came before
         // "zzzz" — which, given Crockford's alphabet, is all of them.
-        if up_to.parse::<ulid::Ulid>().is_err() {
-            log::warn!(
-                "dropping inbox_read with non-ULID up_to {:?} for mission {}",
-                up_to,
-                self.mission_id
-            );
-            return;
-        }
+        let up_to = match up_to.parse::<ulid::Ulid>() {
+            Ok(up_to) => up_to.to_string(),
+            Err(_) => {
+                log::warn!(
+                    "dropping inbox_read with non-ULID up_to {:?} for mission {}",
+                    up_to,
+                    self.mission_id
+                );
+                return;
+            }
+        };
         let handle = event.from.clone();
         let inbox = self.inbox.entry(handle.clone()).or_default();
 
@@ -398,7 +401,7 @@ impl BusState {
             return;
         }
 
-        inbox.watermark = Some(up_to.to_string());
+        inbox.watermark = Some(up_to.clone());
         // Advance read_idx past every matched id ≤ up_to. matched is already
         // append-ordered (ULIDs are monotonic), so this is just a forward
         // walk from the current read_idx.
@@ -411,7 +414,7 @@ impl BusState {
         emitter.watermark_advanced(&WatermarkUpdate {
             mission_id: self.mission_id.clone(),
             runner_handle: handle.clone(),
-            watermark: up_to.to_string(),
+            watermark: up_to,
             unread_count: unread,
         });
         // Also fire inbox/updated so consumers that only listen for that
@@ -703,6 +706,36 @@ mod tests {
         let last = inbox.last().unwrap();
         assert_eq!(last.runner_handle, "lead");
         assert_eq!(last.unread_count, 0);
+    }
+
+    #[test]
+    fn lowercase_inbox_read_ulid_advances_canonical_watermark() {
+        let dir = fresh_mission_dir();
+        let log = EventLog::open(dir.path()).unwrap();
+        let bcast = log.append(message("human", None, "broadcast")).unwrap();
+
+        let cap = Arc::new(Capture::default());
+        let _bus = EventBus::for_mission(
+            "mission".into(),
+            dir.path(),
+            &["lead".to_string()],
+            cap_dyn(&cap),
+        )
+        .unwrap();
+        wait_until(1000, || !cap.inbox.lock().unwrap().is_empty());
+
+        log.append(signal(
+            "lead",
+            "inbox_read",
+            serde_json::json!({ "up_to": bcast.id.to_lowercase() }),
+        ))
+        .unwrap();
+
+        wait_until(3000, || !cap.watermark.lock().unwrap().is_empty());
+        let watermark = cap.watermark.lock().unwrap();
+        assert_eq!(watermark.len(), 1);
+        assert_eq!(watermark[0].watermark, bcast.id);
+        assert_eq!(watermark[0].unread_count, 0);
     }
 
     #[test]
