@@ -78,8 +78,7 @@ impl UpdatesPane {
 
     fn check_for_updates(&mut self, cx: &mut Context<Self>) {
         let previous = self.updater.read(cx).last_check_at();
-        self.updater
-            .update(cx, |updater, _| updater.check_for_updates());
+        self.updater.read(cx).check_for_updates();
         self.check_refresh_generation = self.check_refresh_generation.wrapping_add(1);
         let generation = self.check_refresh_generation;
         cx.spawn(async move |weak, cx| {
@@ -110,9 +109,12 @@ impl UpdatesPane {
 
 impl Render for UpdatesPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (updater_available, automatically_checks, last_checked) = {
+        let (updater_available, available_version, automatically_checks, last_checked) = {
             let updater = self.updater.read(cx);
             let updater_available = updater.is_available();
+            let available_version = updater
+                .available()
+                .map(|update| update.version().to_owned());
             let automatically_checks = if updater_available {
                 updater.automatically_checks_for_updates()
             } else {
@@ -123,12 +125,14 @@ impl Render for UpdatesPane {
             };
             (
                 updater_available,
+                available_version,
                 automatically_checks,
                 format_last_checked(updater.last_check_at()),
             )
         };
 
         let pane = cx.entity();
+        let updater_controls_unavailable = !updater_available && available_version.is_none();
         let toggle_updater = self.updater.clone();
         let toggle_store = self.app_store.clone();
 
@@ -193,7 +197,13 @@ impl Render for UpdatesPane {
                                                     )),
                                             ),
                                     )
-                                    .children((!updater_available).then(|| {
+                                    .children(available_version.map(|version| {
+                                        div()
+                                            .text_size(rems(12. / 16.))
+                                            .text_color(theme::muted())
+                                            .child(format!("Update available: v{version}"))
+                                    }))
+                                    .children(updater_controls_unavailable.then(|| {
                                         div()
                                             .text_size(rems(12. / 16.))
                                             .text_color(theme::muted())

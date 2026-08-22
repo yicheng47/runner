@@ -387,7 +387,7 @@ impl Router {
         self.register_sessions_inner(sessions, false);
     }
 
-    /// Fresh-start/reset path. Session rows and router handles exist before
+    /// Fresh-start path. Session rows and router handles exist before
     /// the sequential background PTY spawns begin, so an early channel post
     /// must queue its nudge instead of warning that the later slot is absent.
     pub fn register_pending_sessions(&self, sessions: &[(String, String)]) {

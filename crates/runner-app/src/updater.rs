@@ -2,6 +2,64 @@ use std::time::SystemTime;
 
 use gpui::{App, Context, Entity, Global};
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpdateInfo {
+    version: String,
+}
+
+impl UpdateInfo {
+    pub fn new(version: impl Into<String>) -> Self {
+        Self {
+            version: version.into(),
+        }
+    }
+
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", feature = "updater")))]
+#[derive(Debug, Eq, PartialEq)]
+enum UpdateTransition {
+    Found(String),
+    NotFound,
+    Aborted,
+    UserSkipped,
+}
+
+#[cfg(any(test, all(target_os = "macos", feature = "updater")))]
+fn apply_available_transition(
+    available: &mut Option<UpdateInfo>,
+    transition: UpdateTransition,
+) -> bool {
+    let next = match transition {
+        UpdateTransition::Found(version) => Some(UpdateInfo::new(version)),
+        UpdateTransition::NotFound | UpdateTransition::Aborted | UpdateTransition::UserSkipped => {
+            None
+        }
+    };
+    if *available == next {
+        false
+    } else {
+        *available = next;
+        true
+    }
+}
+
+#[cfg(debug_assertions)]
+fn dev_available() -> Option<UpdateInfo> {
+    std::env::var("RUNNER_DEV_UPDATE_AVAILABLE")
+        .ok()
+        .filter(|version| !version.trim().is_empty())
+        .map(UpdateInfo::new)
+}
+
+#[cfg(not(debug_assertions))]
+fn dev_available() -> Option<UpdateInfo> {
+    None
+}
+
 #[derive(Clone)]
 pub struct GlobalUpdater(pub Entity<Updater>);
 
@@ -13,12 +71,18 @@ pub fn global_updater(cx: &App) -> Entity<Updater> {
 
 pub struct Updater {
     native: native::NativeUpdater,
+    available: Option<UpdateInfo>,
 }
 
 impl Updater {
-    pub fn new(automatically_checks: bool) -> Self {
+    pub fn new(automatically_checks: bool, cx: &mut Context<Self>) -> Self {
         Self {
-            native: native::NativeUpdater::new(automatically_checks),
+            native: native::NativeUpdater::new(
+                automatically_checks,
+                cx.weak_entity(),
+                cx.to_async(),
+            ),
+            available: dev_available(),
         }
     }
 
@@ -26,8 +90,16 @@ impl Updater {
         self.native.is_available()
     }
 
+    pub fn start(&self) {
+        self.native.start();
+    }
+
     pub fn check_for_updates(&self) {
         self.native.check_for_updates();
+    }
+
+    pub fn available(&self) -> Option<&UpdateInfo> {
+        self.available.as_ref()
     }
 
     pub fn automatically_checks_for_updates(&self) -> bool {
@@ -42,16 +114,31 @@ impl Updater {
     pub fn last_check_at(&self) -> Option<SystemTime> {
         self.native.last_check_at()
     }
+
+    #[cfg(all(target_os = "macos", feature = "updater"))]
+    fn apply_transition(&mut self, transition: UpdateTransition, cx: &mut Context<Self>) {
+        if apply_available_transition(&mut self.available, transition) {
+            cx.notify();
+        }
+    }
 }
 
 #[cfg(all(target_os = "macos", feature = "updater"))]
 mod native {
     use std::time::{Duration, SystemTime};
 
+    use gpui::{AsyncApp, WeakEntity};
     use objc2::rc::{Allocated, Retained};
     use objc2::runtime::{AnyObject, NSObject};
-    use objc2::{extern_class, extern_methods, MainThreadMarker, MainThreadOnly};
-    use objc2_foundation::NSDate;
+    use objc2::{
+        define_class, extern_class, extern_methods, msg_send, DefinedClass, MainThreadMarker,
+        MainThreadOnly,
+    };
+    use objc2_foundation::{NSDate, NSObjectProtocol, NSString};
+
+    use super::{UpdateTransition, Updater};
+
+    const SPU_USER_UPDATE_CHOICE_SKIP: isize = 0;
 
     #[link(name = "Sparkle", kind = "framework")]
     unsafe extern "C" {}
@@ -67,6 +154,101 @@ mod native {
         #[thread_kind = MainThreadOnly]
         struct SPUUpdater;
     );
+
+    extern_class!(
+        #[unsafe(super(NSObject))]
+        #[thread_kind = MainThreadOnly]
+        struct SUAppcastItem;
+    );
+
+    impl SUAppcastItem {
+        extern_methods!(
+            #[unsafe(method(displayVersionString))]
+            #[unsafe(method_family = none)]
+            fn display_version_string(&self) -> Retained<NSString>;
+
+            #[unsafe(method(versionString))]
+            #[unsafe(method_family = none)]
+            fn version_string(&self) -> Retained<NSString>;
+        );
+    }
+
+    struct UpdaterDelegateIvars {
+        updater: WeakEntity<Updater>,
+        cx: AsyncApp,
+    }
+
+    define_class!(
+        #[unsafe(super(NSObject))]
+        #[thread_kind = MainThreadOnly]
+        #[ivars = UpdaterDelegateIvars]
+        struct UpdaterDelegate;
+
+        unsafe impl NSObjectProtocol for UpdaterDelegate {}
+
+        impl UpdaterDelegate {
+            #[unsafe(method(updater:didFindValidUpdate:))]
+            fn did_find_valid_update(&self, _updater: &SPUUpdater, item: &SUAppcastItem) {
+                let display_version = item.display_version_string().to_string();
+                let version = if display_version.trim().is_empty() {
+                    item.version_string().to_string()
+                } else {
+                    display_version
+                };
+                self.apply_transition(UpdateTransition::Found(version));
+            }
+
+            #[unsafe(method(updaterDidNotFindUpdate:))]
+            fn did_not_find_update(&self, _updater: &SPUUpdater) {
+                self.apply_transition(UpdateTransition::NotFound);
+            }
+
+            #[unsafe(method(updater:userDidMakeChoice:forUpdate:state:))]
+            fn user_did_make_choice(
+                &self,
+                _updater: &SPUUpdater,
+                choice: isize,
+                _item: &SUAppcastItem,
+                _state: &AnyObject,
+            ) {
+                if choice == SPU_USER_UPDATE_CHOICE_SKIP {
+                    self.apply_transition(UpdateTransition::UserSkipped);
+                }
+            }
+
+            #[unsafe(method(updater:didAbortWithError:))]
+            fn did_abort_with_error(&self, _updater: &SPUUpdater, _error: &AnyObject) {
+                self.apply_transition(UpdateTransition::Aborted);
+            }
+        }
+    );
+
+    impl UpdaterDelegate {
+        fn new(
+            marker: MainThreadMarker,
+            updater: WeakEntity<Updater>,
+            cx: AsyncApp,
+        ) -> Retained<Self> {
+            let this = Self::alloc(marker).set_ivars(UpdaterDelegateIvars { updater, cx });
+            unsafe { msg_send![super(this), init] }
+        }
+
+        fn apply_transition(&self, transition: UpdateTransition) {
+            let _main_thread =
+                MainThreadMarker::new().expect("Sparkle updater delegate must run on main thread");
+            let updater = self.ivars().updater.clone();
+            self.ivars()
+                .cx
+                .spawn(async move |cx| {
+                    let _ = cx.update(|cx| {
+                        updater.update(cx, |updater, cx| {
+                            updater.apply_transition(transition, cx);
+                        })
+                    });
+                })
+                .detach();
+        }
+    }
 
     impl SPUStandardUpdaterController {
         extern_methods!(
@@ -95,6 +277,10 @@ mod native {
 
     impl SPUUpdater {
         extern_methods!(
+            #[unsafe(method(checkForUpdatesInBackground))]
+            #[unsafe(method_family = none)]
+            fn check_for_updates_in_background(&self);
+
             #[unsafe(method(automaticallyChecksForUpdates))]
             #[unsafe(method_family = none)]
             fn automatically_checks_for_updates(&self) -> bool;
@@ -111,23 +297,39 @@ mod native {
 
     pub(super) struct NativeUpdater {
         controller: Retained<SPUStandardUpdaterController>,
+        _delegate: Retained<UpdaterDelegate>,
+        automatically_checks: bool,
     }
 
     impl NativeUpdater {
-        pub(super) fn new(automatically_checks: bool) -> Self {
+        pub(super) fn new(
+            automatically_checks: bool,
+            updater: WeakEntity<Updater>,
+            cx: AsyncApp,
+        ) -> Self {
             let marker =
                 MainThreadMarker::new().expect("Runner updater must start on the main thread");
+            let delegate = UpdaterDelegate::new(marker, updater, cx);
             let controller = SPUStandardUpdaterController::init_with_starting_updater(
                 SPUStandardUpdaterController::alloc(marker),
                 false,
-                None,
+                Some(&delegate),
                 None,
             );
-            controller.start_updater();
-            controller
-                .updater()
-                .set_automatically_checks_for_updates(automatically_checks);
-            Self { controller }
+            Self {
+                controller,
+                _delegate: delegate,
+                automatically_checks,
+            }
+        }
+
+        pub(super) fn start(&self) {
+            self.controller.start_updater();
+            let updater = self.controller.updater();
+            updater.set_automatically_checks_for_updates(self.automatically_checks);
+            if updater.automatically_checks_for_updates() {
+                updater.check_for_updates_in_background();
+            }
         }
 
         pub(super) fn is_available(&self) -> bool {
@@ -164,12 +366,22 @@ mod native {
 mod native {
     use std::time::SystemTime;
 
+    use gpui::{AsyncApp, WeakEntity};
+
+    use super::Updater;
+
     pub(super) struct NativeUpdater;
 
     impl NativeUpdater {
-        pub(super) fn new(_automatically_checks: bool) -> Self {
+        pub(super) fn new(
+            _automatically_checks: bool,
+            _updater: WeakEntity<Updater>,
+            _cx: AsyncApp,
+        ) -> Self {
             Self
         }
+
+        pub(super) fn start(&self) {}
 
         pub(super) fn is_available(&self) -> bool {
             false
@@ -189,15 +401,64 @@ mod native {
     }
 }
 
-#[cfg(all(test, not(all(target_os = "macos", feature = "updater"))))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(all(target_os = "macos", feature = "updater")))]
+    use gpui::AppContext as _;
 
     #[test]
+    fn found_update_sets_available_version() {
+        let mut available = None;
+        apply_available_transition(&mut available, UpdateTransition::Found("0.6.1".into()));
+
+        assert_eq!(available, Some(UpdateInfo::new("0.6.1")));
+    }
+
+    #[test]
+    fn duplicate_found_update_does_not_change_available_state() {
+        let mut available = Some(UpdateInfo::new("0.6.1"));
+
+        assert!(!apply_available_transition(
+            &mut available,
+            UpdateTransition::Found("0.6.1".into()),
+        ));
+    }
+
+    #[test]
+    fn not_found_clears_available_update() {
+        let mut available = Some(UpdateInfo::new("0.6.1"));
+        apply_available_transition(&mut available, UpdateTransition::NotFound);
+
+        assert_eq!(available, None);
+    }
+
+    #[test]
+    fn abort_clears_available_update() {
+        let mut available = Some(UpdateInfo::new("0.6.1"));
+        apply_available_transition(&mut available, UpdateTransition::Aborted);
+
+        assert_eq!(available, None);
+    }
+
+    #[test]
+    fn user_skip_clears_available_update() {
+        let mut available = Some(UpdateInfo::new("0.6.1"));
+        apply_available_transition(&mut available, UpdateTransition::UserSkipped);
+
+        assert_eq!(available, None);
+    }
+
+    #[cfg(not(all(target_os = "macos", feature = "updater")))]
+    #[test]
     fn development_build_has_no_updater_capability() {
-        let updater = Updater::new(true);
-        assert!(!updater.is_available());
-        assert!(!updater.automatically_checks_for_updates());
-        assert_eq!(updater.last_check_at(), None);
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            let updater = cx.new(|cx| Updater::new(true, cx));
+            let updater = updater.read(cx);
+            assert!(!updater.is_available());
+            assert!(!updater.automatically_checks_for_updates());
+            assert_eq!(updater.last_check_at(), None);
+        });
     }
 }

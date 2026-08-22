@@ -132,7 +132,6 @@ fn is_concurrent_resume_error(error: &str) -> bool {
 enum MissionMenuAction {
     Pin,
     Rename,
-    Reset,
     Archive,
 }
 
@@ -200,10 +199,6 @@ pub(crate) struct MissionWorkspace {
     next_transition_generation: u64,
     stopping: bool,
     resuming: bool,
-    resetting: bool,
-    pub(crate) reset_confirm_open: bool,
-    reset_cancel_focus: FocusHandle,
-    reset_confirm_focus: FocusHandle,
     archiving: bool,
     secondary: bool,
     duplicate_dismissed: bool,
@@ -395,10 +390,6 @@ impl MissionWorkspace {
             next_transition_generation: 0,
             stopping: false,
             resuming: false,
-            resetting: false,
-            reset_confirm_open: false,
-            reset_cancel_focus: cx.focus_handle(),
-            reset_confirm_focus: cx.focus_handle(),
             archiving: false,
             secondary: false,
             duplicate_dismissed: false,
@@ -414,7 +405,7 @@ impl MissionWorkspace {
         }
     }
 
-    fn reset(&mut self, mission_id: String, rail_view: MissionRailView) -> u64 {
+    fn prepare_mission(&mut self, mission_id: String, rail_view: MissionRailView) -> u64 {
         self.generation += 1;
         self.refresh_generation += 1;
         self.event_resync_generation += 1;
@@ -450,8 +441,6 @@ impl MissionWorkspace {
         self.transitions.clear();
         self.stopping = false;
         self.resuming = false;
-        self.resetting = false;
-        self.reset_confirm_open = false;
         self.archiving = false;
         self.secondary = false;
         self.duplicate_dismissed = false;
@@ -493,7 +482,7 @@ impl MissionWorkspace {
     }
 
     fn lifecycle_busy(&self) -> bool {
-        self.stopping || self.resuming || self.resetting || self.archiving
+        self.stopping || self.resuming || self.archiving
     }
 
     fn secondary_state(&self, cx: &App) -> runner_backend::ops::window::SecondaryState {
@@ -586,13 +575,6 @@ impl MissionWorkspace {
         } else {
             self.feed_has_new_messages = true;
         }
-    }
-
-    pub(crate) fn session_ids(&self) -> Vec<String> {
-        self.sessions
-            .iter()
-            .map(|session| session.session.id.clone())
-            .collect()
     }
 
     fn core<'a>(&self, cx: &'a App) -> &'a AppCore {
@@ -987,7 +969,7 @@ impl MissionWorkspace {
             self.core(cx).windows.mark_blurred(&self.window_label);
         }
         self.core(cx).broadcast_focus_map();
-        let generation = self.reset(
+        let generation = self.prepare_mission(
             mission_id.clone(),
             MissionRailView::from_setting(&self.settings(cx).mission_rail_view),
         );
@@ -1452,7 +1434,7 @@ impl MissionWorkspace {
     }
 
     fn focus_active_mission_terminal(&self, window: &mut Window, cx: &App) {
-        if self.rename_modal.is_some() || self.reset_confirm_open {
+        if self.rename_modal.is_some() {
             return;
         }
         let MissionTab::Session(session_id) = &self.active_tab else {
@@ -1811,7 +1793,6 @@ impl MissionWorkspace {
         self.menu_actions = vec![
             MissionMenuAction::Pin,
             MissionMenuAction::Rename,
-            MissionMenuAction::Reset,
             MissionMenuAction::Archive,
         ];
         self.action_menu.update(cx, |menu, menu_cx| {
@@ -1823,9 +1804,6 @@ impl MissionWorkspace {
                     UiMenuItem::new("Rename")
                         .icon("square-pen.svg")
                         .disabled(busy),
-                    UiMenuItem::new("Reset")
-                        .icon("rotate-ccw.svg")
-                        .disabled(busy || mission.status != MissionStatus::Running),
                     UiMenuItem::new("Archive")
                         .icon("archive.svg")
                         .destructive(true)
@@ -1851,18 +1829,6 @@ impl MissionWorkspace {
         match action {
             MissionMenuAction::Pin => self.toggle_mission_pin(window, cx),
             MissionMenuAction::Rename => self.open_mission_rename(window, cx),
-            MissionMenuAction::Reset => {
-                if !self.lifecycle_busy()
-                    && self
-                        .mission
-                        .as_ref()
-                        .is_some_and(|mission| mission.status == MissionStatus::Running)
-                {
-                    self.reset_confirm_open = true;
-                    self.reset_cancel_focus.focus(window);
-                    cx.notify();
-                }
-            }
             MissionMenuAction::Archive => self.archive_open_mission(window, cx),
         }
     }
@@ -2223,315 +2189,6 @@ impl MissionWorkspace {
             cx.stop_propagation();
             self.submit_mission_rename(window, cx);
         }
-    }
-
-    fn close_mission_reset_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.resetting {
-            return;
-        }
-        self.reset_confirm_open = false;
-        self.focus_active_mission_terminal(window, cx);
-        cx.notify();
-    }
-
-    fn submit_mission_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mission_id) = self.mission_id.clone() else {
-            return;
-        };
-        if self.resetting || self.secondary_state(cx).secondary {
-            return;
-        }
-        self.resetting = true;
-        self.error = None;
-        let generation = self.generation;
-        let size = self.current_mission_terminal_size(window, cx);
-        let core = self.core(cx).clone();
-        let reset_id = mission_id.clone();
-        let task = cx.background_spawn(async move {
-            let mission = runner_backend::ops::mission::mission_reset_impl_with_size(
-                &core,
-                reset_id.clone(),
-                Some(size),
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-            let sessions = runner_backend::ops::session::session_list(&core, &reset_id)
-                .map_err(|error| error.to_string())?;
-            let events = runner_backend::ops::mission::mission_events_replay(&core, &reset_id)
-                .map_err(|error| error.to_string())?;
-            Ok::<_, String>((mission, sessions, events))
-        });
-        cx.spawn_in(window, async move |weak, cx| {
-            let result = task.await;
-            let _ = weak.update_in(cx, |this, window, cx| {
-                if !this.is_current(&mission_id, generation) {
-                    return;
-                }
-                this.resetting = false;
-                match result {
-                    Ok((mission, sessions, events)) => {
-                        let old_ids = this.session_ids();
-                        for session_id in old_ids {
-                            this.attached.remove(&session_id);
-                        }
-                        this.mission = Some(mission);
-                        this.sessions = sessions;
-                        this.events = events;
-                        this.rebuild_event_projection();
-                        this.feed_scroll.scroll_to_bottom();
-                        this.feed_was_near_bottom = true;
-                        this.feed_has_new_messages = false;
-                        this.delivery_blocked.clear();
-                        this.transitions.clear();
-                        this.open_tabs = this
-                            .sessions
-                            .iter()
-                            .map(|session| session.session.id.clone())
-                            .collect();
-                        this.active_tab = MissionTab::Feed;
-                        this.reset_confirm_open = false;
-                        let removed_mission_id = mission_id.clone();
-                        this.update_app_settings(cx, true, move |settings| {
-                            settings
-                                .last_mission_terminal_ids
-                                .remove(&removed_mission_id);
-                            true
-                        });
-                        this.sync_mission_copy_entities(cx);
-                        if let Err(error) = this.ensure_mission_terminals_attached(window, cx) {
-                            this.error = Some(error.to_string());
-                        }
-                        this.refresh_store(StoreRefreshKind::All, cx);
-                        window.focus(&this.root_focus);
-                    }
-                    Err(error) => {
-                        this.error = Some(action_failure("reset the mission", error));
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
-    pub(crate) fn render_mission_reset_confirm(&self, cx: &mut Context<Self>) -> AnyElement {
-        let title = self
-            .mission
-            .as_ref()
-            .map(|mission| mission.title.clone())
-            .unwrap_or_default();
-        let resetting = self.resetting;
-        let root = cx.entity();
-        let dismiss_root = root.clone();
-        let dismiss_key_root = root.clone();
-        let cancel_root = root.clone();
-        let confirm_root = root;
-        let focus_order = [
-            self.reset_cancel_focus.clone(),
-            self.reset_confirm_focus.clone(),
-        ];
-        let tab_focus_order = focus_order.clone();
-        let consequence = |id: &'static str, text: &'static str| {
-            div()
-                .id(id)
-                .flex()
-                .items_start()
-                .gap_2()
-                .text_size(rems(12. / 16.))
-                .line_height(rems(17. / 16.))
-                .text_color(theme::muted())
-                .child(div().text_color(theme::faint()).child("·"))
-                .child(text)
-        };
-        div()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .p_4()
-            .bg(gpui::rgba(0x0000008c))
-            .occlude()
-            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                if !resetting {
-                    dismiss_root.update(cx, |this, cx| {
-                        this.close_mission_reset_confirm(window, cx)
-                    });
-                }
-            })
-            .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                match event.keystroke.key.as_str() {
-                    "escape" if !resetting => {
-                        cx.stop_propagation();
-                        dismiss_key_root.update(cx, |this, cx| {
-                            this.close_mission_reset_confirm(window, cx)
-                        });
-                    }
-                    "tab" if !resetting => {
-                        cx.stop_propagation();
-                        let current = tab_focus_order
-                            .iter()
-                            .position(|handle| handle.is_focused(window));
-                        let index = current.map_or(
-                            usize::from(event.keystroke.modifiers.shift),
-                            |index| 1 - index,
-                        );
-                        tab_focus_order[index].focus(window);
-                    }
-                    _ => {}
-                }
-            })
-            .child(
-                div()
-                    .w_full()
-                    .max_w(rems(480. / 16.))
-                    .flex()
-                    .flex_col()
-                    .gap_4()
-                    .overflow_hidden()
-                    .rounded(rems(12. / 16.))
-                    .border_2()
-                    .border_color(theme::warning())
-                    .bg(theme::panel())
-                    .shadow_2xl()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(div().h(rems(3. / 16.)).w_full().bg(theme::warning()))
-                    .child(
-                        div()
-                            .px_6()
-                            .pb_6()
-                            .flex()
-                            .flex_col()
-                            .gap_4()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .child(
-                                        div()
-                                            .size(rems(36. / 16.))
-                                            .flex_none()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .rounded_full()
-                                            .bg(theme::with_alpha(theme::warning(), 0.15))
-                                            .child(
-                                                svg()
-                                                    .path("triangle-alert.svg")
-                                                    .size(rems(18. / 16.))
-                                                    .text_color(theme::warning()),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .min_w(px(0.))
-                                            .flex_1()
-                                            .flex()
-                                            .flex_col()
-                                            .gap(rems(2. / 16.))
-                                            .child(
-                                                div()
-                                                    .truncate()
-                                                    .text_size(rems(1.))
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .child("Reset mission?"),
-                                            )
-                                            .child(
-                                                div()
-                                                    .truncate()
-                                                    .text_size(rems(12. / 16.))
-                                                    .text_color(theme::faint())
-                                                    .child(
-                                                        "This wipes the run and starts the crew over.",
-                                                    ),
-                                            ),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .rounded_lg()
-                                    .border_1()
-                                    .border_color(theme::border())
-                                    .bg(theme::bg())
-                                    .px_3()
-                                    .py_3()
-                                    .child(consequence(
-                                        "reset-consequence-ptys",
-                                        "All slot PTYs are killed and respawned fresh.",
-                                    ))
-                                    .child(consequence(
-                                        "reset-consequence-events",
-                                        "The event log is wiped — feed history is lost.",
-                                    ))
-                                    .child(consequence(
-                                        "reset-consequence-conversations",
-                                        "Agent conversations are dropped — claude-code starts fresh.",
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .text_size(rems(12. / 16.))
-                                    .text_color(theme::faint())
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_wrap()
-                                            .children([
-                                                div()
-                                                    .font_family("JetBrains Mono")
-                                                    .text_color(theme::muted())
-                                                    .child(title),
-                                                div().child(
-                                                    " will keep its title, crew, and slots — just nothing else.",
-                                                ),
-                                            ]),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_end()
-                                    .gap_2()
-                                    .child(
-                                        Button::new("cancel-mission-reset", "Cancel")
-                                            .focus_handle(focus_order[0].clone())
-                                            .disabled(resetting)
-                                            .on_press(move |window, cx| {
-                                                cancel_root.update(cx, |this, cx| {
-                                                    this.close_mission_reset_confirm(window, cx)
-                                                });
-                                            }),
-                                    )
-                                    .child(
-                                        Button::new(
-                                            "confirm-mission-reset",
-                                            if resetting {
-                                                "Resetting…"
-                                            } else {
-                                                "Reset mission"
-                                            },
-                                        )
-                                        .focus_handle(focus_order[1].clone())
-                                        .variant(ButtonVariant::Warning)
-                                        .icon("rotate-ccw.svg")
-                                        .disabled(resetting)
-                                        .on_press(move |window, cx| {
-                                            confirm_root.update(cx, |this, cx| {
-                                                this.submit_mission_reset(window, cx)
-                                            });
-                                        }),
-                                    ),
-                            ),
-                    ),
-            )
-            .into_any_element()
     }
 }
 
@@ -2939,9 +2596,6 @@ impl MissionWorkspace {
         let mut overlays = Vec::new();
         if self.rename_modal.is_some() {
             overlays.push(self.render_mission_rename_modal(cx));
-        }
-        if self.reset_confirm_open {
-            overlays.push(self.render_mission_reset_confirm(cx));
         }
         overlays
     }

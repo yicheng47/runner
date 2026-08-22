@@ -45,6 +45,12 @@ fn alpha(mut color: gpui::Hsla, value: f32) -> gpui::Hsla {
     color
 }
 
+fn settings_update_hint_version(
+    available: Option<&runner_app::updater::UpdateInfo>,
+) -> Option<&str> {
+    available.map(|update| update.version())
+}
+
 impl NativeRoot {
     pub(crate) fn render_app_shell(
         &mut self,
@@ -347,6 +353,45 @@ impl NativeRoot {
                 "Search (⌘K)",
                 search_button,
             ));
+        let updater = global_updater(cx);
+        let zoom = self.settings(cx).app_zoom;
+        let update_version =
+            settings_update_hint_version(updater.read(cx).available()).map(str::to_owned);
+        let update_hint = update_version.map(|version| {
+            let click_updater = updater.clone();
+            Tooltip::new(
+                "sidebar-update-tooltip",
+                format!("Runner {version} is ready to install"),
+                div()
+                    .id("sidebar-update")
+                    .flex_none()
+                    .size(rems(32. / 16.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(gpui::transparent_black())
+                    .cursor_pointer()
+                    .hover(|button| {
+                        button
+                            .border_color(alpha(theme::accent(), 0.4))
+                            .bg(alpha(theme::accent(), 0.1))
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        click_updater.read(cx).check_for_updates();
+                    })
+                    .child(
+                        svg()
+                            .path("circle-arrow-down.svg")
+                            .flex_none()
+                            .size(px(14. * zoom))
+                            .text_color(theme::accent()),
+                    ),
+            )
+        });
         let settings_button = div()
             .flex_none()
             .px_3()
@@ -355,43 +400,50 @@ impl NativeRoot {
             .border_color(theme::sidebar_selected_border())
             .child(
                 div()
-                    .id("open-settings")
-                    .group("sidebar-settings")
                     .w_full()
-                    .px(rems(10. / 16.))
-                    .py_2()
                     .flex()
                     .items_center()
-                    .gap(rems(10. / 16.))
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(gpui::transparent_black())
-                    .cursor_pointer()
-                    .text_color(theme::muted())
-                    .line_height(px(SETTINGS_FOOTER_LINE_HEIGHT * self.settings(cx).app_zoom))
-                    .hover(|button| {
-                        button
-                            .border_color(theme::sidebar_selected_border())
-                            .bg(alpha(theme::sidebar_selected(), 0.4))
-                            .text_color(theme::text())
-                    })
-                    .child(
-                        svg()
-                            .path("settings.svg")
-                            .w(px(14. * self.settings(cx).app_zoom))
-                            .h(px(14. * self.settings(cx).app_zoom))
-                            .flex_none()
-                            .text_color(theme::muted())
-                            .group_hover("sidebar-settings", |icon| icon.text_color(theme::text())),
-                    )
+                    .gap_1()
                     .child(
                         div()
-                            .text_size(px(13. * self.settings(cx).app_zoom))
-                            .child("Settings"),
+                            .id("open-settings")
+                            .group("sidebar-settings")
+                            .min_w(px(0.))
+                            .flex_1()
+                            .px(rems(10. / 16.))
+                            .py_2()
+                            .flex()
+                            .items_center()
+                            .gap(rems(10. / 16.))
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(gpui::transparent_black())
+                            .cursor_pointer()
+                            .text_color(theme::muted())
+                            .line_height(px(SETTINGS_FOOTER_LINE_HEIGHT * zoom))
+                            .hover(|button| {
+                                button
+                                    .border_color(theme::sidebar_selected_border())
+                                    .bg(alpha(theme::sidebar_selected(), 0.4))
+                                    .text_color(theme::text())
+                            })
+                            .child(
+                                svg()
+                                    .path("settings.svg")
+                                    .w(px(14. * zoom))
+                                    .h(px(14. * zoom))
+                                    .flex_none()
+                                    .text_color(theme::muted())
+                                    .group_hover("sidebar-settings", |icon| {
+                                        icon.text_color(theme::text())
+                                    }),
+                            )
+                            .child(div().text_size(px(13. * zoom)).child("Settings"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.enter_settings_route(None, window, cx);
+                            })),
                     )
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.enter_settings_route(None, window, cx);
-                    })),
+                    .children(update_hint),
             );
         let resize_handle = visible.then(|| self.render_sidebar_resize_handle(cx));
         let mut sidebar = div()
@@ -866,5 +918,21 @@ impl NativeRoot {
     ) {
         window.toggle_fullscreen();
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_update_hint_tracks_available_state() {
+        let available = runner_app::updater::UpdateInfo::new("0.6.1");
+
+        assert_eq!(settings_update_hint_version(None), None);
+        assert_eq!(
+            settings_update_hint_version(Some(&available)),
+            Some("0.6.1")
+        );
     }
 }

@@ -103,19 +103,14 @@ impl SessionManager {
     }
 
     /// Register a fresh cancellation flag for a mission's background
-    /// PTY-spawn task. Called from `mission_start` / `mission_reset`
-    /// before dispatching `complete_mission_session_spawn`. Returns
-    /// the shared flag the dispatcher and the background task both
-    /// hold; setting it (via `cancel_pending_mission_spawns`) is
-    /// what aborts queued slots.
+    /// PTY-spawn task. Called from `mission_start` before dispatching
+    /// `complete_mission_session_spawn`. Returns the shared flag the
+    /// dispatcher and the background task both hold; setting it (via
+    /// `cancel_pending_mission_spawns`) is what aborts queued slots.
     ///
-    /// A prior flag for the same mission_id (left over from an
-    /// earlier start/reset) is dropped: the new spawn batch
-    /// supersedes any stale background task, and the old task's
-    /// flag is no longer reachable from anywhere except its own
-    /// closure — when it gets cancelled it'll observe the new flag
-    /// only via the per-iteration DB lookup, which is fine because
-    /// `mission_reset` archives the old session rows up front.
+    /// A prior flag for the same mission_id is replaced defensively.
+    /// The new spawn batch supersedes any stale background task, and
+    /// the old task's flag remains reachable only from its own closure.
     pub fn register_pending_mission_cancel(&self, mission_id: &str) -> Arc<AtomicBool> {
         let flag = Arc::new(AtomicBool::new(false));
         self.pending_mission_cancels
@@ -128,11 +123,11 @@ impl SessionManager {
     /// Clear the cancellation flag for a mission once its background
     /// spawn task drains. Per-batch identity-checked: only the task
     /// that owns `expected` may unregister it. Without this guard, a
-    /// slow draining task could outlive a subsequent `mission_reset`
-    /// and remove the *new* batch's flag — leaving the next
-    /// Stop/Archive/Reset with no flag to flip and pending slots
-    /// uncancellable. Callers pass an `Arc::clone(&cancel)` of the
-    /// flag they received from `register_pending_mission_cancel`.
+    /// slow draining task could outlive a replacement registration
+    /// and remove the *new* batch's flag — leaving the next Stop or
+    /// Archive with no flag to flip and pending slots uncancellable.
+    /// Callers pass an `Arc::clone(&cancel)` of the flag they received
+    /// from `register_pending_mission_cancel`.
     pub fn drop_pending_mission_cancel(&self, mission_id: &str, expected: &Arc<AtomicBool>) {
         let mut map = self.pending_mission_cancels.lock().unwrap();
         if let Some(current) = map.get(mission_id) {
@@ -146,8 +141,7 @@ impl SessionManager {
     /// registered) so any queued background spawns observe it and
     /// abort before their PTYs come up. Safe to call when no flag
     /// is registered. Invoked from `kill_all_for_mission`, which is
-    /// in the call path of `mission_stop`, `mission_archive`, and
-    /// `mission_reset`.
+    /// in the call path of `mission_stop` and `mission_archive`.
     pub fn cancel_pending_mission_spawns(&self, mission_id: &str) {
         if let Some(flag) = self.pending_mission_cancels.lock().unwrap().get(mission_id) {
             flag.store(true, Ordering::Release);

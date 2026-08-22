@@ -452,8 +452,8 @@ pub fn archive(conn: &Connection, id: &str, archived_at: Timestamp) -> rusqlite:
 
 /// Clear a direct session's archive marker (Settings → Archived
 /// restore). Scoped to direct chats like `list_archived_direct` —
-/// mission/slot-bound rows (reset leftovers) must stay archived or
-/// they'd leak back into `list_for_mission`. Single-column flip —
+/// mission/slot-bound rows must stay archived or they'd leak back
+/// into `list_for_mission`. Single-column flip —
 /// status, `agent_session_key`, and title all survive, so a restored
 /// chat can still resume. The guards make a repeat call a 0-row no-op.
 pub fn unarchive_direct(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
@@ -479,20 +479,6 @@ pub fn delete_archived_direct(conn: &Connection, id: &str) -> rusqlite::Result<u
             AND slot_id IS NULL
             AND archived_at IS NOT NULL",
         rusqlite::params![id],
-    )
-}
-
-/// Archive every non-archived session of a mission (mission reset).
-pub fn archive_all_for_mission(
-    conn: &Connection,
-    mission_id: &str,
-    archived_at: Timestamp,
-) -> rusqlite::Result<usize> {
-    conn.execute(
-        "UPDATE sessions
-            SET archived_at = ?1
-          WHERE mission_id = ?2 AND archived_at IS NULL",
-        rusqlite::params![archived_at.to_rfc3339(), mission_id],
     )
 }
 
@@ -640,8 +626,8 @@ pub fn list_recent_direct(conn: &Connection) -> rusqlite::Result<Vec<DirectSessi
 
 /// Archived direct sessions, newest-archived first — the Settings →
 /// Archived pane's chat list. Same row shape and direct-chat scoping as
-/// `list_recent_direct`; archived mission-slot rows (reset leftovers)
-/// stay off this surface.
+/// `list_recent_direct`; archived mission-slot rows stay off this
+/// surface.
 pub fn list_archived_direct(conn: &Connection) -> rusqlite::Result<Vec<DirectSessionRow>> {
     let sql = format!(
         "SELECT {}, {DIRECT_EXTRAS}
@@ -1153,8 +1139,8 @@ mod tests {
             ],
         )
         .unwrap();
-        // Archived mission-slot leftover (mission reset) — slot-bound, so
-        // it must never surface as an archived chat.
+        // Archived mission-slot row — slot-bound, so it must never
+        // surface as an archived chat.
         conn.execute(
             "INSERT INTO sessions (id, runner_id, slot_id, status, started_at, archived_at)
              VALUES ('slot-arch', 'r1', 'sl-old', 'stopped', ?1, ?1)",
@@ -1203,8 +1189,8 @@ mod tests {
 
     #[test]
     fn unarchive_direct_refuses_mission_and_slot_bound_rows() {
-        // The Archived pane only lists direct chats; restoring a reset
-        // leftover here would leak it back into `list_for_mission`.
+        // The Archived pane only lists direct chats; restoring a
+        // mission-bound row would leak it back into `list_for_mission`.
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         let now = Utc::now().to_rfc3339();

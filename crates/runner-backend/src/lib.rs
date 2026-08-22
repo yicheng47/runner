@@ -58,7 +58,7 @@ pub struct AppCore {
     /// replay and pushes the launch prompt into the lead's stdin.
     pub routers: Arc<router::RouterRegistry>,
     /// Most recent mission-pane grid measured by the frontend. Backend-only
-    /// mission starts/resets use it when their caller cannot provide a size.
+    /// mission starts use it when their caller cannot provide a size.
     pub mission_grid_hint: Arc<Mutex<Option<(u16, u16)>>>,
     /// MCP server lifecycle handle (impl 0013). Unix socket listener
     /// that external clients connect to via the `runner-mcp` bridge.

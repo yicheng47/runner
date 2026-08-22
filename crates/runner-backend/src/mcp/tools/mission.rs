@@ -508,19 +508,6 @@ impl RunnerMcpHandler {
         Ok(CallToolResult::success(vec![Content::json(&mission)?]))
     }
 
-    #[tool(description = "Reset and restart a mission using the same guarded behavior as the UI.")]
-    pub async fn mission_reset(
-        &self,
-        Parameters(MissionIdArgs { id }): Parameters<MissionIdArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let app_state = self.state.clone();
-        let mission = mission::mission_reset_impl(&app_state, id)
-            .await
-            .map_err(mcp_error)?;
-        emit_mission_changed(self);
-        Ok(CallToolResult::success(vec![Content::json(&mission)?]))
-    }
-
     #[tool(description = "Post a human-originated signal into a mission feed.")]
     pub async fn mission_post_human_signal(
         &self,

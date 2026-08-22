@@ -297,6 +297,7 @@ struct NativeRoot {
     _activation_subscription: Option<Subscription>,
     _bounds_subscription: Option<Subscription>,
     _project_cwd_subscription: Option<Subscription>,
+    _updater_subscription: Subscription,
     _store_subscription: Subscription,
 }
 
@@ -536,6 +537,7 @@ impl NativeRoot {
             _ => Vec::new(),
         };
         let runtime_navigation_index = (!runtime_navigation_history.is_empty()).then_some(0);
+        let updater = global_updater(cx);
         let mut root = Self {
             window_label: window_label.clone(),
             log_dir,
@@ -596,6 +598,7 @@ impl NativeRoot {
             _activation_subscription: None,
             _bounds_subscription: None,
             _project_cwd_subscription: None,
+            _updater_subscription: cx.observe(&updater, |_, _, cx| cx.notify()),
             _store_subscription: cx
                 .observe(&app_store, |this, _, cx| this.handle_app_store_update(cx)),
         };
@@ -979,8 +982,9 @@ fn run() -> Result<()> {
         keymap::install_bindings(cx, &keymap_overrides, false);
         cx.set_global(GlobalAppStore(app_store));
         cx.set_global(GlobalNativePaths(paths.clone()));
-        let updater = cx.new(|_| Updater::new(automatically_check_for_updates));
-        cx.set_global(GlobalUpdater(updater));
+        let updater = cx.new(|cx| Updater::new(automatically_check_for_updates, cx));
+        cx.set_global(GlobalUpdater(updater.clone()));
+        updater.read(cx).start();
         cx.set_global(WindowLayoutCheckpoint::default());
 
         // App::shutdown clears its windows before polling the returned future, so the
@@ -1056,7 +1060,7 @@ fn run() -> Result<()> {
             });
         });
         cx.on_action(|_: &CheckForUpdates, cx| {
-            global_updater(cx).update(cx, |updater, _| updater.check_for_updates());
+            global_updater(cx).read(cx).check_for_updates();
         });
         cx.set_menus(vec![
             Menu {

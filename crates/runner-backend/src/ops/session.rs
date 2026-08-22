@@ -52,9 +52,9 @@ pub struct SessionRow {
 pub fn list_for_mission(conn: &rusqlite::Connection, mission_id: &str) -> Result<Vec<SessionRow>> {
     // Sessions render in the same slot order as the Crew Detail roster;
     // `handle` is the slot's in-crew handle with the template handle as
-    // fallback for legacy pre-slot rows, and archived rows (mission
-    // reset leftovers) are filtered out. The ordering, join, and filter
-    // semantics live in `repo::session::list_for_mission`.
+    // fallback for legacy pre-slot rows, and archived rows are filtered
+    // out. The ordering, join, and filter semantics live in
+    // `repo::session::list_for_mission`.
     let rows = repo::session::list_for_mission(conn, mission_id)?;
     Ok(rows
         .into_iter()
@@ -417,8 +417,8 @@ pub fn session_archive(state: &AppCore, session_id: &str) -> Result<()> {
 /// title, and `agent_session_key` survive, so a restored chat can
 /// still resume. Idempotent: unarchiving an active direct chat is a
 /// no-op Ok. Unknown ids and mission/slot-bound rows error — the
-/// Archived pane only lists direct chats, and restoring a reset
-/// leftover would leak it back into `session_list` for its mission.
+/// Archived pane only lists direct chats, and restoring a mission-bound
+/// row would leak it back into `session_list` for its mission.
 ///
 /// Emits a `session/updated` Tauri event after the flip — the same
 /// channel `session_rename` / `session_pin` use — so the sidebar's
@@ -1040,8 +1040,8 @@ mod tests {
         let runner_id = seed_runner(&conn);
         let active = insert_direct_session(&conn, &runner_id, false);
         let archived = insert_direct_session(&conn, &runner_id, true);
-        // Archived slot leftover (mission reset): must survive this
-        // path — it dies with its mission, not through chat delete.
+        // Archived slot-bound row: must survive this path — it dies
+        // with its mission, not through chat delete.
         let slot_bound = ulid::Ulid::new().to_string();
         conn.execute(
             "INSERT INTO sessions

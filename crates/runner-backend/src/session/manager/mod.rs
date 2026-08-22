@@ -604,13 +604,12 @@ pub struct SessionManager {
     /// + issue #171.
     claude_launch_gate: Mutex<Option<Instant>>,
     /// Cancellation flags for in-flight background mission spawns,
-    /// keyed by `mission_id`. `mission_start` / `mission_reset`
-    /// register a fresh flag before dispatching the
-    /// `complete_mission_session_spawn` background task;
-    /// `kill_all_for_mission` flips it; the background task checks
-    /// it around the gate sleep and at the top of each iteration so
-    /// the queued slots don't keep firing into a stopped /
-    /// archived / reset mission. See `cancel_pending_mission_spawns`.
+    /// keyed by `mission_id`. `mission_start` registers a fresh flag
+    /// before dispatching the `complete_mission_session_spawn`
+    /// background task; `kill_all_for_mission` flips it. The task
+    /// checks the flag around the gate sleep and at the top of each
+    /// iteration so queued slots do not keep firing into a stopped or
+    /// archived mission. See `cancel_pending_mission_spawns`.
     pending_mission_cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// Underlying terminal runtime. Every spawn / resume / kill /
     /// inject_stdin / resize routes through this trait — the manager
@@ -651,8 +650,8 @@ pub enum CompleteSpawnOutcome {
     /// `SessionManager.sessions` and behaving like any other live
     /// session.
     Spawned,
-    /// `kill_all_for_mission` flipped the cancel flag (Stop / Archive
-    /// / Reset). The PTY was never forked. Caller should mark the
+    /// `kill_all_for_mission` flipped the cancel flag (Stop / Archive).
+    /// The PTY was never forked. Caller should mark the
     /// session row stopped so the workspace UI reflects reality.
     Cancelled,
 }

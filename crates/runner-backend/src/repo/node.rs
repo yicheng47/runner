@@ -670,7 +670,7 @@ pub fn clear_unread_on_startup(
 ///   - every non-archived mission has a mission node (under its
 ///     project node when bound); mission nodes whose mission is
 ///     archived or deleted are removed — this is what re-creates a
-///     node on unarchive/reset without special-case handling;
+///     node on unarchive without special-case handling;
 ///   - every active direct session is covered by exactly the tab
 ///     layouts; uncovered sessions get a fresh single-slot tab node,
 ///     parented under their project's node when `project_id` is set,

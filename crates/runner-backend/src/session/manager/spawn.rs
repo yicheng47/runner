@@ -435,7 +435,7 @@ impl SessionManager {
             pool,
         } = pending;
 
-        // Pre-gate cancellation: a user who clicked Stop/Archive/Reset
+        // Pre-gate cancellation: a user who clicked Stop/Archive
         // while this slot was sitting in the spawn queue gets the
         // expected behavior — the queued slot never forks. Without
         // this, the slot would sleep through the gate and spawn into
@@ -494,7 +494,7 @@ impl SessionManager {
             .map_err(|e| Error::msg(format!("spawn {}: {e}", runner.command)))?;
 
         // Post-spawn cancellation. Two triggers reach this branch:
-        //   1. A `Stop`/`Archive`/`Reset` that fired while the
+        //   1. A `Stop`/`Archive` that fired while the
         //      runtime was mid-fork — `kill_all_for_mission` can't
         //      see the PTY yet (no `SessionHandle` in `sessions`
         //      until the insert below). Flagged by `cancel`.

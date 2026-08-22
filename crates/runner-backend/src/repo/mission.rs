@@ -203,33 +203,13 @@ pub fn archive_if_stopped(
     )
 }
 
-/// Roll a half-open mission to `aborted` (spawn/mount/first-turn
-/// failures during start or reset).
+/// Roll a half-open mission to `aborted` after a start failure.
 pub fn abort(conn: &Connection, id: &str, stopped_at: Timestamp) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE missions
             SET status = 'aborted', stopped_at = ?1
           WHERE id = ?2",
         rusqlite::params![stopped_at.to_rfc3339(), id],
-    )
-}
-
-/// Mission reset: back to `running` with a fresh `started_at`;
-/// `stopped_at` and `archived_at` clear in lockstep with the status flip
-/// so a freshly-reset live mission never vanishes from `list()`.
-pub fn reset_to_running(
-    conn: &Connection,
-    id: &str,
-    started_at: Timestamp,
-) -> rusqlite::Result<usize> {
-    conn.execute(
-        "UPDATE missions
-            SET status = 'running',
-                started_at = ?1,
-                stopped_at = NULL,
-                archived_at = NULL
-          WHERE id = ?2",
-        rusqlite::params![started_at.to_rfc3339(), id],
     )
 }
 
@@ -443,23 +423,6 @@ mod tests {
             complete_and_archive_if_running(&conn, "m-min", Utc::now()).unwrap(),
             0
         );
-    }
-
-    #[test]
-    fn reset_to_running_clears_terminal_stamps() {
-        let pool = db::open_in_memory().unwrap();
-        let conn = pool.get().unwrap();
-        seed_crew(&conn, "c1");
-        insert(&conn, &full_row()).unwrap();
-
-        let fresh_start = Utc::now();
-        assert_eq!(reset_to_running(&conn, "m-full", fresh_start).unwrap(), 1);
-        let m = get(&conn, "m-full").unwrap().unwrap();
-        assert_eq!(m.status, MissionStatus::Running);
-        assert_eq!(m.started_at, fresh_start);
-        assert_eq!(m.stopped_at, None);
-        assert_eq!(m.archived_at, None);
-        assert!(m.pinned_at.is_some(), "pin survives a reset");
     }
 
     #[test]

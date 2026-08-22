@@ -271,16 +271,15 @@ pub(crate) enum MissionArchiveStep {
 
 /// One atomic step of the archive-all mission sweep: re-read the
 /// mission and, when it is not running, stamp `archived_at` and delete
-/// its node inside the SAME Immediate transaction — there is no
-/// observable state between the stamp and the node cleanup for a
-/// concurrent `mission_reset` to slip into. Running missions are left
-/// untouched here; the caller runs the full archive path with no
+/// its node inside the SAME Immediate transaction so reconciliation
+/// cannot recreate the node between those writes. Running missions are
+/// left untouched here; the caller runs the full archive path with no
 /// transaction held.
 ///
 /// Deliberately NO bus/router teardown in the non-running and
 /// already-archived branches: those states have no live runtime by
-/// invariant, and an unconditional teardown after commit is exactly
-/// the window in which a reset-spawned fresh run could be disconnected.
+/// invariant, while running missions are routed to the full archive
+/// path that owns teardown.
 pub(crate) fn archive_mission_step(
     conn: &mut rusqlite::Connection,
     mission_id: &str,
@@ -314,10 +313,8 @@ pub(crate) fn archive_mission_step(
 /// mission-archive path (PTY kills, terminal event, bus/router
 /// unmount); stopped ones stamp + drop their node atomically via
 /// `archive_mission_step`. The caller's snapshot is advisory only —
-/// every decision comes from a fresh transactional read, so a reset
-/// landing between steps either wins cleanly (the next step sees a
-/// running mission and demands the full path) or happens after the
-/// mission is durably archived (a legitimate revival).
+/// every decision comes from a fresh transactional read so stale
+/// snapshots cannot stamp a running mission.
 pub(crate) async fn archive_child_missions(
     state: &AppCore,
     missions: &[(String, crate::model::MissionStatus)],
@@ -644,21 +641,15 @@ mod tests {
         seed_mission_with_status(state, id, project_id, "aborted");
     }
 
-    /// The post-stamp/pre-cleanup boundary is gone: one step stamps
-    /// and deletes the node in a single transaction, so a
-    /// `mission_reset` can only land fully before (step sees running,
-    /// demands the full path) or fully after (a legitimate revival the
-    /// sweep then refuses to stamp and never tears down).
     #[test]
-    fn mission_archive_step_is_atomic_against_reset_revival() {
+    fn archive_mission_step_stamps_and_deletes_node_atomically() {
         let state = test_core();
-        seed_mission(&state, "m1", None); // aborted
+        seed_mission(&state, "m1", None);
         {
             let conn = state.db.get().unwrap();
             repo::node::ensure_mission_node(&conn, "m1", None).unwrap();
         }
 
-        // Step 1: stamp + node delete commit together.
         {
             let mut conn = state.db.get().unwrap();
             assert!(matches!(
@@ -666,64 +657,29 @@ mod tests {
                 MissionArchiveStep::Done
             ));
         }
-        {
-            let conn = state.db.get().unwrap();
-            let archived: Option<String> = conn
-                .query_row(
-                    "SELECT archived_at FROM missions WHERE id = 'm1'",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert!(archived.is_some());
-            assert!(
-                repo::node::find_by_ref(&conn, repo::node::NodeType::Mission, "m1")
-                    .unwrap()
-                    .is_none()
-            );
-        }
 
-        // A reset landing AFTER the step legitimately revives the
-        // mission: archive marker cleared, node re-created, run live.
-        {
-            let conn = state.db.get().unwrap();
-            repo::mission::reset_to_running(&conn, "m1", chrono::Utc::now()).unwrap();
-            repo::node::ensure_mission_node(&conn, "m1", None).unwrap();
-        }
-
-        // A stale sweep continuation must now refuse to touch it: no
-        // stamp, no node delete — it demands the full archive path.
-        {
-            let mut conn = state.db.get().unwrap();
-            assert!(matches!(
-                archive_mission_step(&mut conn, "m1").unwrap(),
-                MissionArchiveStep::NeedsFullArchive
-            ));
-        }
         let conn = state.db.get().unwrap();
-        let (status, archived_at): (String, Option<String>) = conn
+        let archived_at: Option<String> = conn
             .query_row(
-                "SELECT status, archived_at FROM missions WHERE id = 'm1'",
+                "SELECT archived_at FROM missions WHERE id = 'm1'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(status, "running");
-        assert_eq!(archived_at, None, "revived mission must not be stamped");
+        assert!(archived_at.is_some());
         assert!(
             repo::node::find_by_ref(&conn, repo::node::NodeType::Mission, "m1")
                 .unwrap()
-                .is_some(),
-            "the fresh node from the reset survives the refused step"
+                .is_none()
         );
     }
 
     /// Concurrency guard at the snapshot/action boundary: the caller's
-    /// status snapshot says `aborted`, but the mission was reset to
-    /// `running` in the gap (another window). The stamp path must NOT
-    /// fire — the loop re-reads and takes the full archive path, which
-    /// terminates the run properly (status flips to completed) instead
-    /// of stamping `archived_at` onto a still-running mission.
+    /// status snapshot says `aborted`, but the mission is running when
+    /// the action executes. The stamp path must NOT fire — the loop
+    /// re-reads and takes the full archive path, which terminates the
+    /// run properly (status flips to completed) instead of stamping
+    /// `archived_at` onto a still-running mission.
     #[test]
     fn stale_status_snapshot_never_stamps_a_running_mission() {
         let dir = tempfile::tempdir().unwrap();
