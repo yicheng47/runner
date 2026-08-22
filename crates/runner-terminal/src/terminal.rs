@@ -22,6 +22,10 @@ use runner_backend::session::manager::{
 use runner_backend::AppCore;
 
 use crate::palette;
+use crate::{
+    fixtures::FixtureRecorder,
+    input_state::{InputEvent, InputTracker},
+};
 
 pub const XTERM_WORD_SEPARATORS: &str = " ()[]{}',\"`";
 
@@ -115,6 +119,8 @@ pub struct TerminalSession {
     waker: Arc<dyn Fn() + Send + Sync>,
     viewers: Arc<AtomicUsize>,
     user_input: UserInput,
+    input_tracker: Mutex<InputTracker>,
+    fixture_recorder: Option<FixtureRecorder>,
 }
 
 pub struct TerminalView {
@@ -216,6 +222,16 @@ impl TerminalSession {
         let title = Arc::new(Mutex::new(String::new()));
         let terminal_palette = Arc::new(Mutex::new(PaletteState::new(palette::RUNNER)));
         let viewers = Arc::new(AtomicUsize::new(0));
+        let now = Instant::now();
+        let mut input_tracker = InputTracker::new(now);
+        let initial_observation = input_tracker.initial_observation(now);
+        let fixture_recorder = match FixtureRecorder::from_env(&session_id, cols, rows) {
+            Ok(recorder) => recorder,
+            Err(error) => {
+                log::error!("start input fixture recorder for {session_id} failed: {error:#}");
+                None
+            }
+        };
         let session = Arc::new(Self {
             term: Arc::clone(&term),
             core: core.clone(),
@@ -228,7 +244,11 @@ impl TerminalSession {
             waker,
             viewers,
             user_input,
+            input_tracker: Mutex::new(input_tracker),
+            fixture_recorder,
         });
+        core.sessions
+            .report_input_state(&session_id, initial_observation);
 
         let term_for_events = Arc::downgrade(&term);
         thread::Builder::new()
@@ -339,9 +359,13 @@ impl TerminalSession {
 
     pub fn feed_output(&self, event: &OutputEvent) -> Result<()> {
         let bytes = &event.bytes;
+        let now = Instant::now();
         let mut sequence = self.sequence.lock().unwrap();
         if event.seq <= sequence.last {
             return Ok(());
+        }
+        if let Some(recorder) = self.fixture_recorder.as_ref() {
+            recorder.record_output(bytes);
         }
         sequence.last = event.seq;
         sequence.last_output_at = Some(Instant::now());
@@ -349,6 +373,7 @@ impl TerminalSession {
             sequence.tui_ready_seq = sequence.tui_ready_seq.max(event.seq);
         }
         let mut parser = self.parser.lock().unwrap();
+        let mut input_tracker = self.input_tracker.lock().unwrap();
         let mut term = self.term.lock();
         let previous_mode = *term.mode();
         parser.advance(&mut *term, bytes);
@@ -365,9 +390,16 @@ impl TerminalSession {
         {
             term.selection = None;
         }
+        let input_observation = input_tracker.observe_output(now, &term);
         drop(term);
+        drop(input_tracker);
         drop(parser);
         drop(sequence);
+        if let Some(observation) = input_observation {
+            self.core
+                .sessions
+                .report_input_state(&self.session_id, observation);
+        }
         if self.viewers.load(Ordering::Acquire) > 0 {
             (self.waker)();
         }
@@ -375,8 +407,9 @@ impl TerminalSession {
     }
 
     pub fn submit_text(&self, text: &str) -> runner_backend::error::Result<()> {
-        self.write_user_bytes(text.as_bytes())?;
-        self.write_user_bytes(b"\r")
+        self.send_text(text)?;
+        self.send_key("enter", false, false, false, None)?;
+        Ok(())
     }
 
     pub fn write_user_bytes(&self, bytes: &[u8]) -> runner_backend::error::Result<()> {
@@ -404,6 +437,9 @@ impl TerminalSession {
         shift: bool,
         key_char: Option<&str>,
     ) -> runner_backend::error::Result<bool> {
+        let input = InputEvent::Key {
+            kind: crate::mappings::classify_key(key, ctrl, alt, shift, key_char),
+        };
         let app_cursor = self
             .term
             .lock_unfair()
@@ -411,11 +447,28 @@ impl TerminalSession {
             .contains(TermMode::APP_CURSOR);
         match crate::mappings::encode_key(key, ctrl, alt, shift, key_char, app_cursor) {
             Some(bytes) => {
+                self.observe_input(&input);
                 self.write_user_bytes(&bytes)?;
                 Ok(true)
             }
             None => Ok(false),
         }
+    }
+
+    pub fn send_text(&self, text: &str) -> runner_backend::error::Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        self.observe_input(&InputEvent::Key {
+            kind: crate::mappings::InputKind::Content {
+                text: text.to_owned(),
+            },
+        });
+        self.write_user_bytes(text.as_bytes())
+    }
+
+    pub fn set_composing(&self, composing: bool) {
+        self.observe_input(&InputEvent::Composing { composing });
     }
 
     pub fn paste(&self, text: &str) -> runner_backend::error::Result<()> {
@@ -424,7 +477,26 @@ impl TerminalSession {
             .lock_unfair()
             .mode()
             .contains(TermMode::BRACKETED_PASTE);
+        self.observe_input(&InputEvent::Paste {
+            text: text.to_owned(),
+        });
         self.write_user_bytes(&crate::mappings::encode_paste(text, bracketed))
+    }
+
+    fn observe_input(&self, input: &InputEvent) {
+        if let Some(recorder) = self.fixture_recorder.as_ref() {
+            recorder.record_input(input);
+        }
+        let observation = {
+            let mut tracker = self.input_tracker.lock().unwrap();
+            let term = self.term.lock_unfair();
+            tracker.observe_input(input, Instant::now(), &term)
+        };
+        if let Some(observation) = observation {
+            self.core
+                .sessions
+                .report_input_state(&self.session_id, observation);
+        }
     }
 
     pub fn resize(&self, cols: u16, rows: u16) {

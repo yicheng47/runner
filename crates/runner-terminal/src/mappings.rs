@@ -4,6 +4,51 @@
 //! in, bytes come out.
 
 use alacritty_terminal::term::TermMode;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InputKind {
+    Content { text: String },
+    Edit,
+    Submit,
+    Cancel,
+    Navigate,
+}
+
+pub fn classify_key(
+    key: &str,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    key_char: Option<&str>,
+) -> InputKind {
+    if key == "enter" && !ctrl && !alt && !shift {
+        return InputKind::Submit;
+    }
+    if key == "enter" && shift && !ctrl && !alt {
+        return InputKind::Content { text: "\n".into() };
+    }
+    if matches!(key, "backspace" | "delete")
+        || (ctrl && !alt && matches!(key, "h" | "u" | "w" | "k"))
+    {
+        return InputKind::Edit;
+    }
+    if ctrl && !alt && key == "c" {
+        return InputKind::Cancel;
+    }
+    if key == "tab" && !ctrl && !alt {
+        return InputKind::Content { text: "\t".into() };
+    }
+    if !ctrl && !alt {
+        if let Some(text) = key_char.filter(|text| text.chars().any(|c| !c.is_control())) {
+            return InputKind::Content {
+                text: text.to_owned(),
+            };
+        }
+    }
+    InputKind::Navigate
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MouseButton {
@@ -279,9 +324,48 @@ pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        encode_key, encode_mouse_motion, encode_mouse_press, encode_mouse_release, encode_scroll,
-        MouseButton, MouseModifiers, TermMode,
+        classify_key, encode_key, encode_mouse_motion, encode_mouse_press, encode_mouse_release,
+        encode_scroll, InputKind, MouseButton, MouseModifiers, TermMode,
     };
+
+    #[test]
+    fn key_classification_separates_submit_content_edit_and_navigation() {
+        assert_eq!(
+            classify_key("enter", false, false, false, None),
+            InputKind::Submit
+        );
+        assert_eq!(
+            classify_key("enter", false, false, true, None),
+            InputKind::Content { text: "\n".into() }
+        );
+        assert_eq!(
+            classify_key("enter", false, true, false, None),
+            InputKind::Navigate
+        );
+        assert_eq!(
+            classify_key("x", false, false, false, Some("x")),
+            InputKind::Content { text: "x".into() }
+        );
+        for key in ["backspace", "delete"] {
+            assert_eq!(
+                classify_key(key, false, false, false, None),
+                InputKind::Edit
+            );
+        }
+        for key in ["h", "u", "w", "k"] {
+            assert_eq!(classify_key(key, true, false, false, None), InputKind::Edit);
+        }
+        assert_eq!(
+            classify_key("c", true, false, false, None),
+            InputKind::Cancel
+        );
+        for key in ["left", "escape", "f1"] {
+            assert_eq!(
+                classify_key(key, false, false, false, None),
+                InputKind::Navigate
+            );
+        }
+    }
 
     #[test]
     fn option_letter_chords_use_the_plain_key() {

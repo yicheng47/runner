@@ -19,6 +19,7 @@ use super::{
 };
 use crate::error::Result;
 use crate::model::{Runner, Slot, SlotWithRunner};
+use crate::session::manager::InputState;
 
 /// Discriminator on each recorded push so tests can assert which
 /// primitive the router used: raw byte injection (`inject`) for
@@ -49,6 +50,7 @@ struct RecordingInjector {
 struct RecordingInputState {
     pending: bool,
     last_input_at: Option<Instant>,
+    observed: Option<(InputState, Instant, bool)>,
     in_flight: bool,
     generation: u64,
 }
@@ -151,6 +153,24 @@ impl RecordingInjector {
         input.last_input_at = Some(Instant::now() - Duration::from_millis(1950));
     }
 
+    fn set_observed_input(&self, session_id: &str, state: InputState, composer_visible: bool) {
+        let input_cleared = {
+            let mut input = self.input.lock().unwrap();
+            let input = input.entry(session_id.to_string()).or_default();
+            let input_cleared = input.observed.is_some_and(|(previous, _, _)| {
+                previous != InputState::Idle && state == InputState::Idle
+            });
+            input.observed = Some((state, Instant::now(), composer_visible));
+            if input_cleared {
+                input.last_input_at = None;
+            }
+            input_cleared
+        };
+        if input_cleared {
+            self.notify(session_id, SessionDeliveryEvent::InputCleared);
+        }
+    }
+
     fn set_in_flight(&self, session_id: &str) {
         let mut input = self.input.lock().unwrap();
         input.entry(session_id.to_string()).or_default().in_flight = true;
@@ -164,6 +184,7 @@ impl RecordingInjector {
         if let Some(input) = self.input.lock().unwrap().get_mut(session_id) {
             input.pending = false;
             input.last_input_at = None;
+            input.observed = None;
         }
         self.notify(session_id, SessionDeliveryEvent::InputCleared);
     }
@@ -177,6 +198,7 @@ impl RecordingInjector {
             input.in_flight = false;
             input.pending = false;
             input.last_input_at = None;
+            input.observed = None;
         }
         self.notify(session_id, SessionDeliveryEvent::Respawned);
     }
@@ -257,8 +279,16 @@ impl StdinInjector for RecordingInjector {
             .unwrap()
             .get(session_id)
             .is_some_and(|input| {
+                let observed_quiescent = match input.observed {
+                    Some((InputState::Drafting, _, _)) => false,
+                    Some((InputState::Submitted, since, _)) => {
+                        since.elapsed() >= Duration::from_secs(2)
+                    }
+                    Some((InputState::Idle, _, _)) => true,
+                    None => !input.pending,
+                };
                 !input.in_flight
-                    && !input.pending
+                    && observed_quiescent
                     && input
                         .last_input_at
                         .is_none_or(|last| last.elapsed() >= Duration::from_secs(2))
@@ -289,8 +319,21 @@ impl StdinInjector for RecordingInjector {
         if input.in_flight {
             return Ok(DeliveryReservation::InFlight);
         }
-        if input.pending {
-            return Ok(DeliveryReservation::PendingInput);
+        match input.observed {
+            Some((InputState::Drafting, _, _)) => {
+                return Ok(DeliveryReservation::PendingInput);
+            }
+            Some((InputState::Submitted, since, _)) => {
+                let elapsed = since.elapsed();
+                if elapsed < Duration::from_secs(2) {
+                    return Ok(DeliveryReservation::RecentlyTyping(
+                        Duration::from_secs(2) - elapsed,
+                    ));
+                }
+            }
+            Some((InputState::Idle, _, _)) => {}
+            None if input.pending => return Ok(DeliveryReservation::PendingInput),
+            None => {}
         }
         if let Some(last) = input.last_input_at {
             let elapsed = last.elapsed();
@@ -1140,6 +1183,35 @@ fn input_clear_flushes_after_quiet_500ms_grace() {
         injector.submitted_bodies_for("S-IMPL") == ["deferred relay"]
     });
     assert!(cleared_at.elapsed() >= Duration::from_millis(500));
+}
+
+#[test]
+fn observed_hello_delete_to_empty_flushes_a_parked_nudge() {
+    let (router, injector, log, _dir) = fixture(
+        vec![
+            slot_with_runner("lead", true),
+            slot_with_runner("impl", false),
+        ],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_observed_input("S-IMPL", InputState::Drafting, false);
+    let direct = log
+        .append(message(
+            "lead",
+            Some("impl"),
+            "after hello and five backspaces",
+        ))
+        .unwrap();
+    router.handle_event(&direct);
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+
+    let cleared_at = Instant::now();
+    injector.set_observed_input("S-IMPL", InputState::Idle, true);
+    wait_until(
+        super::INPUT_CLEAR_FLUSH_GRACE + Duration::from_millis(300),
+        || injector.submitted_bodies_for("S-IMPL").len() == 1,
+    );
+    assert!(cleared_at.elapsed() >= super::INPUT_CLEAR_FLUSH_GRACE);
 }
 
 #[test]

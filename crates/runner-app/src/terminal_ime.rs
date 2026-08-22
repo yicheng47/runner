@@ -169,6 +169,7 @@ impl TerminalInput {
             return false;
         }
         self.composition.clear();
+        self.session.set_composing(false);
         true
     }
 
@@ -180,6 +181,7 @@ impl TerminalInput {
     ) {
         self.composition
             .replace_and_mark(range_utf16, new_text, new_selected_range_utf16);
+        self.session.set_composing(self.is_composing());
         self.session.scroll_to_bottom();
     }
 
@@ -189,10 +191,11 @@ impl TerminalInput {
 
     pub fn commit_text(&mut self, text: &str) -> runner_backend::error::Result<()> {
         self.composition.clear();
+        self.session.set_composing(false);
         if text.is_empty() {
             return Ok(());
         }
-        self.session.write_user_bytes(text.as_bytes())?;
+        self.session.send_text(text)?;
         self.session.scroll_to_bottom();
         Ok(())
     }

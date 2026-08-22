@@ -1117,7 +1117,7 @@ fn inject_stdin_on_unknown_session_errors_cleanly() {
 }
 
 #[test]
-fn local_input_byte_classes_drive_pending_state() {
+fn local_input_byte_classes_remain_the_unobserved_fallback() {
     use super::output::{classify_local_input, update_local_input_state, LocalInputClass};
 
     assert_eq!(
@@ -1158,6 +1158,7 @@ fn local_input_byte_classes_drive_pending_state() {
 
     let now = Instant::now();
     let mut state = SessionState::default();
+    assert!(state.observed_input.is_none());
     update_local_input_state(&mut state, classify_local_input(b"draft"), now);
     assert!(state.local_input_pending);
     assert_eq!(state.last_local_input_at, Some(now));
@@ -1174,6 +1175,179 @@ fn local_input_byte_classes_drive_pending_state() {
     update_local_input_state(&mut state, classify_local_input(b"\x03"), now);
     assert!(!state.local_input_pending);
     assert!(state.last_local_input_at.is_none());
+}
+
+#[test]
+fn enter_while_observed_idle_is_activity_only() {
+    use super::output::{classify_local_input, update_local_input_state};
+
+    let now = Instant::now();
+    let mut state = SessionState {
+        observed_input: Some(ObservedInput {
+            state: InputState::Idle,
+            since: now,
+        }),
+        ..SessionState::default()
+    };
+    update_local_input_state(&mut state, classify_local_input(b"\r"), now);
+    assert!(!state.local_input_pending);
+    assert_eq!(state.last_local_input_at, Some(now));
+}
+
+fn install_test_session_handle(manager: &SessionManager, session_id: &str) {
+    manager
+        .session_state_or_insert(session_id)
+        .lock()
+        .unwrap()
+        .handle = Some(SessionHandle {
+        id: session_id.into(),
+        mission_id: Some("mission-observed-input".into()),
+        runner_id: None,
+        runtime_session: RuntimeSession {
+            runtime: "fake".into(),
+            session_id: session_id.into(),
+        },
+        codex_capture: None,
+        forwarder: None,
+        stop: Arc::new(AtomicBool::new(false)),
+    });
+}
+
+#[test]
+fn observed_input_tier_precedes_the_byte_latch_and_hidden_drafts_park() {
+    let manager =
+        manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+    let session_id = "observed-input";
+    install_test_session_handle(&manager, session_id);
+    {
+        let state = manager.session_state(session_id).unwrap();
+        let mut state = state.lock().unwrap();
+        state.local_input_pending = true;
+        state.last_local_input_at = None;
+    }
+    assert_eq!(
+        manager.reserve_delivery(session_id).unwrap(),
+        router::DeliveryReservation::PendingInput,
+        "None must retain the byte latch exactly as the fallback tier"
+    );
+
+    let now = Instant::now();
+    manager.report_input_state(
+        session_id,
+        InputObservation {
+            state: InputState::Idle,
+            since: now,
+            composing: false,
+            composer_visible: true,
+        },
+    );
+    let token = match manager.reserve_delivery(session_id).unwrap() {
+        router::DeliveryReservation::Ready(token) => token,
+        other => panic!("observed Idle must override a stale byte latch, got {other:?}"),
+    };
+    manager.finish_delivery(session_id, token);
+
+    manager.report_input_state(
+        session_id,
+        InputObservation {
+            state: InputState::Drafting,
+            since: now,
+            composing: false,
+            composer_visible: false,
+        },
+    );
+    assert_eq!(
+        manager.reserve_delivery(session_id).unwrap(),
+        router::DeliveryReservation::PendingInput
+    );
+    manager.report_input_state(
+        session_id,
+        InputObservation {
+            state: InputState::Submitted,
+            since: Instant::now(),
+            composing: false,
+            composer_visible: true,
+        },
+    );
+    assert!(matches!(
+        manager.reserve_delivery(session_id).unwrap(),
+        router::DeliveryReservation::RecentlyTyping(_)
+    ));
+
+    manager.report_input_state(
+        session_id,
+        InputObservation {
+            state: InputState::Submitted,
+            since: Instant::now() - RECENT_LOCAL_INPUT_WINDOW,
+            composing: false,
+            composer_visible: true,
+        },
+    );
+    manager
+        .session_state(session_id)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .last_local_input_at = Some(Instant::now());
+    assert!(matches!(
+        manager.reserve_delivery(session_id).unwrap(),
+        router::DeliveryReservation::RecentlyTyping(_)
+    ));
+}
+
+#[derive(Default)]
+struct DeliveryEventCapture(Mutex<Vec<router::SessionDeliveryEvent>>);
+
+impl router::SessionDeliveryListener for DeliveryEventCapture {
+    fn session_delivery_event(&self, _session_id: &str, event: router::SessionDeliveryEvent) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+
+#[test]
+fn observed_drafting_to_idle_emits_input_cleared() {
+    let manager =
+        manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+    let session_id = "observed-clear";
+    install_test_session_handle(&manager, session_id);
+    let capture = Arc::new(DeliveryEventCapture::default());
+    let listener: Arc<dyn router::SessionDeliveryListener> = capture.clone();
+    manager.register_delivery_listener(session_id, Arc::downgrade(&listener));
+    let observation = |state| InputObservation {
+        state,
+        since: Instant::now(),
+        composing: false,
+        composer_visible: true,
+    };
+    manager.report_input_state(session_id, observation(InputState::Drafting));
+    manager
+        .session_state(session_id)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .last_local_input_at = Some(Instant::now());
+    manager.report_input_state(session_id, observation(InputState::Idle));
+    assert_eq!(
+        capture.0.lock().unwrap().as_slice(),
+        &[router::SessionDeliveryEvent::InputCleared]
+    );
+    assert!(manager
+        .session_state(session_id)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .last_local_input_at
+        .is_none());
+
+    capture.0.lock().unwrap().clear();
+    manager.report_input_state(session_id, observation(InputState::Drafting));
+    manager.report_input_state(session_id, observation(InputState::Submitted));
+    manager.report_input_state(session_id, observation(InputState::Idle));
+    assert_eq!(
+        capture.0.lock().unwrap().as_slice(),
+        &[router::SessionDeliveryEvent::InputCleared],
+        "a submitted draft must release the same parked outbox once the grid is empty"
+    );
 }
 
 // `await_pty_output` was deleted in the Step 9 cutover. Tests

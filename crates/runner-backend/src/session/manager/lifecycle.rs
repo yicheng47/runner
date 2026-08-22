@@ -76,6 +76,7 @@ impl SessionManager {
                     state.activity_revision = state.activity_revision.wrapping_add(1);
                     state.suppress_local_input_busy = false;
                     state.local_input_pending = false;
+                    state.observed_input = None;
                     state.last_local_input_at = None;
                     state.mission_status_sink = None;
                     state.completion_armed = false;
@@ -298,6 +299,7 @@ impl SessionManager {
                 state.activity_revision = state.activity_revision.wrapping_add(1);
                 state.suppress_local_input_busy = false;
                 state.local_input_pending = false;
+                state.observed_input = None;
                 state.last_local_input_at = None;
                 state.mission_status_sink = None;
                 state.completion_armed = false;

@@ -55,6 +55,29 @@ const RUNNER_STATUS_APPEND_RETRY_DELAY: Duration = Duration::from_millis(5);
 
 pub(crate) const DEFAULT_PTY_SIZE: (u16, u16) = (80, 24);
 
+/// Input state observed from the native terminal grid. Agent-reported
+/// waiting state remains separate until the hook-based status work lands.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputState {
+    Idle,
+    Drafting,
+    Submitted,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct InputObservation {
+    pub state: InputState,
+    pub since: Instant,
+    pub composing: bool,
+    pub composer_visible: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ObservedInput {
+    state: InputState,
+    since: Instant,
+}
+
 /// Trailing debounce for width-changing full-repaint TUI resizes.
 const RESIZE_SETTLE_MS: u64 = 175;
 
@@ -557,6 +580,7 @@ struct SessionState {
     activity_revision: u64,
     suppress_local_input_busy: bool,
     local_input_pending: bool,
+    observed_input: Option<ObservedInput>,
     last_local_input_at: Option<Instant>,
     delivery_gate: Arc<DeliveryGate>,
     mission_status_sink: Option<ForwarderEmitCtx>,
@@ -578,6 +602,7 @@ impl SessionState {
             && self.activity.is_none()
             && !self.suppress_local_input_busy
             && !self.local_input_pending
+            && self.observed_input.is_none()
             && self.last_local_input_at.is_none()
             && self.mission_status_sink.is_none()
             && !self.completion_armed
@@ -809,10 +834,18 @@ impl SessionManager {
         let gate = session.lock().unwrap().delivery_gate.clone();
         let delivery = gate.state.lock().unwrap();
         let session = session.lock().unwrap();
+        let observed_quiescent = match session.observed_input {
+            Some(observed) if observed.state == InputState::Drafting => false,
+            Some(observed) if observed.state == InputState::Submitted => {
+                observed.since.elapsed() >= RECENT_LOCAL_INPUT_WINDOW
+            }
+            Some(_) => true,
+            None => !session.local_input_pending,
+        };
         session.handle.is_some()
             && !delivery.in_flight
             && delivery.next_ticket == delivery.next_served
-            && !session.local_input_pending
+            && observed_quiescent
             && session
                 .last_local_input_at
                 .is_none_or(|last| last.elapsed() >= RECENT_LOCAL_INPUT_WINDOW)
@@ -839,8 +872,23 @@ impl SessionManager {
         if delivery.next_ticket != delivery.next_served {
             return Ok(router::DeliveryReservation::InFlight);
         }
-        if session.local_input_pending {
-            return Ok(router::DeliveryReservation::PendingInput);
+        match session.observed_input {
+            Some(observed) if observed.state == InputState::Drafting => {
+                return Ok(router::DeliveryReservation::PendingInput);
+            }
+            Some(observed) if observed.state == InputState::Submitted => {
+                let elapsed = observed.since.elapsed();
+                if elapsed < RECENT_LOCAL_INPUT_WINDOW {
+                    return Ok(router::DeliveryReservation::RecentlyTyping(
+                        RECENT_LOCAL_INPUT_WINDOW - elapsed,
+                    ));
+                }
+            }
+            Some(_) => {}
+            None if session.local_input_pending => {
+                return Ok(router::DeliveryReservation::PendingInput);
+            }
+            None => {}
         }
         if let Some(last) = session.last_local_input_at {
             let elapsed = last.elapsed();
@@ -852,6 +900,32 @@ impl SessionManager {
         }
         delivery.in_flight = true;
         Ok(router::DeliveryReservation::Ready(delivery.generation))
+    }
+
+    pub fn report_input_state(&self, session_id: &str, observation: InputObservation) {
+        let Some(session) = self.session_state(session_id) else {
+            return;
+        };
+        let input_cleared = {
+            let mut session = session.lock().unwrap();
+            if session.handle.is_none() {
+                return;
+            }
+            let input_cleared = session.observed_input.is_some_and(|previous| {
+                previous.state != InputState::Idle && observation.state == InputState::Idle
+            });
+            if input_cleared {
+                session.last_local_input_at = None;
+            }
+            session.observed_input = Some(ObservedInput {
+                state: observation.state,
+                since: observation.since,
+            });
+            input_cleared
+        };
+        if input_cleared {
+            self.notify_delivery_event(session_id, router::SessionDeliveryEvent::InputCleared);
+        }
     }
 
     pub fn finish_delivery(&self, session_id: &str, token: u64) {
@@ -915,6 +989,7 @@ impl SessionManager {
             delivery.cancelled_tickets.clear();
             gate.ready.notify_all();
             state.local_input_pending = false;
+            state.observed_input = None;
             state.last_local_input_at = None;
             state.handle = Some(handle);
             state.mission_status_sink = mission_status_sink;

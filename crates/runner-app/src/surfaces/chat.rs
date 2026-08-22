@@ -977,14 +977,19 @@ impl NativeRoot {
         };
         match paste {
             runner_app::terminal_paste::TerminalPaste::Image(image) => {
-                let core = self.core(cx).clone();
-                let session_id = session_id.to_owned();
+                let Some(terminal) = self
+                    .attached
+                    .get(session_id)
+                    .map(|chat| Arc::clone(&chat.terminal))
+                else {
+                    return;
+                };
                 let paste = cx.background_spawn(async move {
                     runner_backend::ops::session::session_paste_image(
                         image.bytes,
                         image.format.mime_type(),
                     )?;
-                    core.sessions.inject_stdin(&session_id, b"\x16")
+                    terminal.write_user_bytes(b"\x16")
                 });
                 cx.spawn(async move |weak, cx| {
                     let result = paste.await;

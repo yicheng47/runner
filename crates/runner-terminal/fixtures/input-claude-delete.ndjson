@@ -1,0 +1,10 @@
+{"v":1,"cols":40,"rows":4,"command":"claude","args":[],"note":"Input-state replay: placeholder composer, content echo, five Backspaces to the empty form"}
+{"ms":0,"data":"G1syOzFI4p2vIFRyeSBhIHRhc2s="}
+{"ms":5,"input":{"type":"key","kind":{"kind":"content","text":"h"}}}
+{"ms":10,"data":"DRtbS+KdryBo"}
+{"ms":11,"input":{"type":"key","kind":{"kind":"edit"}}}
+{"ms":12,"input":{"type":"key","kind":{"kind":"edit"}}}
+{"ms":13,"input":{"type":"key","kind":{"kind":"edit"}}}
+{"ms":14,"input":{"type":"key","kind":{"kind":"edit"}}}
+{"ms":15,"input":{"type":"key","kind":{"kind":"edit"}}}
+{"ms":20,"data":"DRtbS+KdryBUcnkgYSB0YXNr"}

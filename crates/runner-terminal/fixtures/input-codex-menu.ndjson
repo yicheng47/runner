@@ -1,0 +1,9 @@
+{"v":1,"cols":40,"rows":4,"command":"codex","args":[],"note":"Input-state replay: slash draft hidden by a command menu, restored, then Ctrl-C clears"}
+{"ms":0,"data":"G1syOzFI4oC6IEFzayBDb2RleA=="}
+{"ms":5,"input":{"type":"key","kind":{"kind":"content","text":"/"}}}
+{"ms":10,"data":"DRtbS+KAuiAv"}
+{"ms":12,"input":{"type":"key","kind":{"kind":"navigate"}}}
+{"ms":15,"data":"DRtbS0NvbW1hbmQgbWVudQ=="}
+{"ms":20,"data":"DRtbS+KAuiAv"}
+{"ms":22,"input":{"type":"key","kind":{"kind":"cancel"}}}
+{"ms":25,"data":"DRtbS+KAuiBBc2sgQ29kZXg="}

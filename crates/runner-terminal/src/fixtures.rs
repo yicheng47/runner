@@ -6,13 +6,18 @@
 //! line a `FixtureEvent`. Output bytes are base64 so raw escape
 //! sequences survive JSON and git diffs.
 
-use std::fs;
-use std::path::Path;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::Instant;
 
 use anyhow::{bail, Context as _};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+
+use crate::input_state::InputEvent;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FixtureHeader {
@@ -30,10 +35,17 @@ pub struct FixtureHeader {
 pub enum FixtureEvent {
     /// PTY output chunk, base64-encoded, `ms` since spawn.
     Data { ms: u64, data: String },
-    /// Bytes we wrote to the PTY (kept for provenance, not replayed).
-    Input { ms: u64, input: String },
+    /// Human input observed by the native terminal tracker.
+    Input { ms: u64, input: FixtureInput },
     /// Child exit, if observed before the recording window closed.
     Exit { ms: u64, exit: i32 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FixtureInput {
+    Event(InputEvent),
+    LegacyBytes(String),
 }
 
 #[derive(Debug, Clone)]
@@ -76,4 +88,69 @@ impl Fixture {
 
 pub fn encode_chunk(bytes: &[u8]) -> String {
     B64.encode(bytes)
+}
+
+pub fn decode_chunk(data: &str) -> anyhow::Result<Vec<u8>> {
+    B64.decode(data).context("decode fixture data chunk")
+}
+
+pub struct FixtureRecorder {
+    started: Instant,
+    file: Mutex<File>,
+}
+
+impl FixtureRecorder {
+    pub fn from_env(session_id: &str, cols: u16, rows: u16) -> anyhow::Result<Option<Self>> {
+        let Some(path) = std::env::var_os("RUNNER_RECORD_INPUT_FIXTURE") else {
+            return Ok(None);
+        };
+        let mut output_path = path;
+        output_path.push(format!(".{session_id}.ndjson"));
+        let path = PathBuf::from(output_path);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .with_context(|| format!("create input fixture {}", path.display()))?;
+        let header = FixtureHeader {
+            v: 1,
+            cols,
+            rows,
+            command: session_id.to_owned(),
+            args: Vec::new(),
+            note: Some("recorded by TerminalSession".into()),
+        };
+        serde_json::to_writer(&mut file, &header).context("serialize input fixture header")?;
+        file.write_all(b"\n")
+            .context("write input fixture header")?;
+        Ok(Some(Self {
+            started: Instant::now(),
+            file: Mutex::new(file),
+        }))
+    }
+
+    pub fn record_output(&self, bytes: &[u8]) {
+        self.record(&FixtureEvent::Data {
+            ms: self.elapsed_ms(),
+            data: encode_chunk(bytes),
+        });
+    }
+
+    pub fn record_input(&self, input: &InputEvent) {
+        self.record(&FixtureEvent::Input {
+            ms: self.elapsed_ms(),
+            input: FixtureInput::Event(input.clone()),
+        });
+    }
+
+    fn elapsed_ms(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
+    }
+
+    fn record(&self, event: &FixtureEvent) {
+        let mut file = self.file.lock().unwrap();
+        if serde_json::to_writer(&mut *file, event).is_ok() {
+            let _ = file.write_all(b"\n");
+        }
+    }
 }

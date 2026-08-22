@@ -43,7 +43,10 @@ pub(super) fn update_local_input_state(
         }
         Some(LocalInputClass::ClearPending) => {
             state.local_input_pending = false;
-            state.last_local_input_at = None;
+            state.last_local_input_at = state
+                .observed_input
+                .is_some_and(|observed| observed.state == InputState::Idle)
+                .then_some(now);
             true
         }
         Some(LocalInputClass::ActivityOnly) => {

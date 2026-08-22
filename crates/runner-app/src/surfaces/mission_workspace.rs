@@ -2521,7 +2521,7 @@ impl MissionWorkspace {
             cx.notify();
             return;
         };
-        if let Err(error) = chat.terminal.write_user_bytes(b"\r") {
+        if let Err(error) = chat.terminal.send_key("enter", false, false, false, None) {
             self.error = Some(error.to_string());
         }
         chat.terminal_focus.focus(window);
@@ -4269,7 +4269,7 @@ impl MissionWorkspace {
             .children((!narrow).then(|| {
                 div()
                     .text_color(theme::muted())
-                    .child("— typing detected, delivery paused")
+                    .child("— a draft in the composer is holding delivery; submit or clear it")
             }))
             .children(idle.then(|| {
                 div()
@@ -4297,7 +4297,7 @@ impl MissionWorkspace {
                             this.clear_mission_input(&session_id, window, cx)
                         });
                     })
-                    .child("Clear input")
+                    .child("Submit draft")
                     .child(
                         div()
                             .font_family("Menlo")
