@@ -1,5 +1,9 @@
 .PHONY: build check fmt fmt-check clippy test verify run
 
+# Crew builds hit load 208 on 2026-08-22 and starved the UI.
+CARGO_BUILD_JOBS ?= 12
+export CARGO_BUILD_JOBS
+
 build:
 	cargo build --workspace
 

@@ -47,7 +47,7 @@ use runner_terminal::terminal::{TerminalSession, TerminalView};
 use app_settings::{settings_path, AppSettings};
 use app_store::{global_app_store, AppStore, GlobalAppStore, StoreRefreshKind, StoreRevisions};
 use assets::{
-    Assets, INTER_FONT, MESLO_FONT_BOLD, MESLO_FONT_BOLD_ITALIC, MESLO_FONT_ITALIC,
+    Assets, INTER_FONTS, MESLO_FONT_BOLD, MESLO_FONT_BOLD_ITALIC, MESLO_FONT_ITALIC,
     MESLO_FONT_REGULAR,
 };
 use runner_app::updater::{global_updater, GlobalUpdater, Updater};
@@ -946,13 +946,18 @@ fn run() -> Result<()> {
     });
     application.run(move |cx: &mut App| {
         cx.text_system()
-            .add_fonts(vec![
-                Cow::Borrowed(INTER_FONT),
-                Cow::Borrowed(MESLO_FONT_REGULAR),
-                Cow::Borrowed(MESLO_FONT_BOLD),
-                Cow::Borrowed(MESLO_FONT_ITALIC),
-                Cow::Borrowed(MESLO_FONT_BOLD_ITALIC),
-            ])
+            .add_fonts(
+                INTER_FONTS
+                    .into_iter()
+                    .map(Cow::Borrowed)
+                    .chain([
+                        Cow::Borrowed(MESLO_FONT_REGULAR),
+                        Cow::Borrowed(MESLO_FONT_BOLD),
+                        Cow::Borrowed(MESLO_FONT_ITALIC),
+                        Cow::Borrowed(MESLO_FONT_BOLD_ITALIC),
+                    ])
+                    .collect(),
+            )
             .expect("bundled fonts must be valid");
 
         #[cfg(target_os = "macos")]

@@ -178,6 +178,26 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Runner>> {
     rows.map(|r| r.map(Runner::from)).collect()
 }
 
+pub fn list_for_crew(conn: &Connection, crew_id: &str) -> rusqlite::Result<Vec<Runner>> {
+    let sql = format!(
+        "SELECT {}
+           FROM runners r
+          WHERE EXISTS (
+                SELECT 1
+                  FROM slots s
+                 WHERE s.crew_id = ?1
+                   AND s.runner_id = r.id
+          )
+          ORDER BY r.handle ASC",
+        super::qualified_select_list("r", COLUMNS)
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params![crew_id], |row| {
+        from_row::<RunnerRow>(row).map_err(de_err)
+    })?;
+    rows.map(|row| row.map(Runner::from)).collect()
+}
+
 const SEARCH_PREDICATE: &str = "(
        LOWER(r.handle) LIKE LOWER(?1) ESCAPE '\\'
     OR LOWER(r.display_name) LIKE LOWER(?1) ESCAPE '\\'

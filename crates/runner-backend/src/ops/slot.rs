@@ -18,6 +18,8 @@
 //     unique by the schema.
 //   - `slot_handle` is unique within a crew (schema-enforced).
 
+use std::collections::HashMap;
+
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use schemars::JsonSchema;
@@ -161,16 +163,21 @@ fn get_slot_internal(conn: &Connection, slot_id: &str) -> Result<Slot> {
 }
 
 /// Return the slots that belong to a crew, ordered by position, each
-/// joined with its referenced Runner template. Two queries — one for
-/// the slot rows, one for each unique runner template — instead of a
-/// big alias-mangled JOIN. Pre-release crews are tiny; readability
-/// wins.
+/// joined with its referenced Runner template. The roster is loaded in two
+/// queries: one for slots and one for the crew's unique runner templates.
 pub fn list(conn: &Connection, crew_id: &str) -> Result<Vec<SlotWithRunner>> {
     let slots = repo::slot::list_for_crew(conn, crew_id)?;
-
+    let runners = repo::runner::list_for_crew(conn, crew_id)?;
+    let runners_by_id: HashMap<_, _> = runners
+        .into_iter()
+        .map(|runner| (runner.id.clone(), runner))
+        .collect();
     let mut out = Vec::with_capacity(slots.len());
     for slot in slots {
-        let runner = runner::get(conn, &slot.runner_id)?;
+        let runner = runners_by_id
+            .get(&slot.runner_id)
+            .cloned()
+            .ok_or_else(|| Error::msg(format!("runner not found: {}", slot.runner_id)))?;
         out.push(SlotWithRunner { slot, runner });
     }
     Ok(out)
@@ -544,6 +551,15 @@ mod tests {
     use super::*;
     use crate::{db, ops::crew};
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static ROSTER_SELECT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    fn count_roster_selects(sql: &str) {
+        if sql.trim_start().starts_with("SELECT") {
+            ROSTER_SELECT_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 
     fn pool() -> db::DbPool {
         db::open_in_memory().unwrap()
@@ -620,6 +636,45 @@ mod tests {
         assert_eq!(roster.len(), 2);
         assert_eq!(roster[0].slot.runner_id, roster[1].slot.runner_id);
         assert_ne!(roster[0].slot.slot_handle, roster[1].slot.slot_handle);
+    }
+
+    #[test]
+    fn list_loads_slots_and_unique_runners_in_two_queries() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew = seed_crew(&conn, "Alpha");
+        let shared = seed_runner(&conn, "shared");
+        let other = seed_runner(&conn, "other");
+        create(&mut conn, &crew, &shared, "lead", None, None).unwrap();
+        create(&mut conn, &crew, &shared, "reviewer", None, None).unwrap();
+        create(&mut conn, &crew, &other, "coder", None, None).unwrap();
+
+        ROSTER_SELECT_COUNT.store(0, Ordering::Relaxed);
+        conn.trace(Some(count_roster_selects));
+        let roster = list(&conn, &crew).unwrap();
+        conn.trace(None);
+
+        assert_eq!(roster.len(), 3);
+        assert_eq!(ROSTER_SELECT_COUNT.load(Ordering::Relaxed), 2);
+        assert_eq!(roster[0].runner.id, shared);
+        assert_eq!(roster[1].runner.id, shared);
+        assert_eq!(roster[2].runner.id, other);
+    }
+
+    #[test]
+    fn list_errors_instead_of_dropping_slot_with_missing_runner() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let crew = seed_crew(&conn, "Alpha");
+        let runner = seed_runner(&conn, "missing");
+        create(&mut conn, &crew, &runner, "lead", None, None).unwrap();
+
+        conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        conn.execute("DELETE FROM runners WHERE id = ?1", params![runner])
+            .unwrap();
+
+        let error = list(&conn, &crew).unwrap_err();
+        assert_eq!(error.to_string(), format!("runner not found: {runner}"));
     }
 
     #[test]

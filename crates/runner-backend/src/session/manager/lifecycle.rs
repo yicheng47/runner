@@ -70,6 +70,7 @@ impl SessionManager {
                     delivery.in_flight = false;
                     delivery.next_ticket = 0;
                     delivery.next_served = 0;
+                    delivery.cancelled_tickets.clear();
                     gate.ready.notify_all();
                     state.activity = None;
                     state.activity_revision = state.activity_revision.wrapping_add(1);
@@ -290,6 +291,7 @@ impl SessionManager {
                 delivery.in_flight = false;
                 delivery.next_ticket = 0;
                 delivery.next_served = 0;
+                delivery.cancelled_tickets.clear();
                 gate.ready.notify_all();
                 state.handle = None;
                 state.activity = None;

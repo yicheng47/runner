@@ -8,9 +8,9 @@ use chrono::Utc;
 use futures::StreamExt as _;
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, rems, svg, AnyElement, App, Bounds, BoxShadow, CursorStyle, DragMoveEvent,
-    Entity, FontWeight, KeyDownEvent, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
-    SharedString, WeakEntity, Window, WindowControlArea,
+    canvas, div, px, rems, svg, AnyElement, App, Bounds, BoxShadow, ClipboardItem, CursorStyle,
+    DragMoveEvent, Entity, FontWeight, KeyDownEvent, MouseButton, Pixels, ScrollDelta,
+    ScrollWheelEvent, SharedString, WeakEntity, Window, WindowControlArea,
 };
 use runner_app::terminal_ime::TerminalInput;
 use runner_app::ui::{
@@ -34,6 +34,9 @@ use crate::surfaces::mission_composer::{
 };
 use crate::surfaces::mission_feed::{
     group_feed_blocks, is_human_authored, message_target, message_text, project_asks, FeedBlock,
+};
+use crate::surfaces::mission_markdown::{
+    FeedPosition, FeedSelection, FeedSelectionHandler, FeedSelectionPhase,
 };
 use crate::*;
 
@@ -173,6 +176,8 @@ pub(crate) struct MissionWorkspace {
     runner_statuses: BTreeMap<String, SessionActivityState>,
     goal: Option<String>,
     feed_blocks: Vec<FeedBlock>,
+    feed_selection: Option<FeedSelection>,
+    feed_selecting: bool,
     askers_by_question: HashMap<String, String>,
     resolved_asks: HashMap<String, String>,
     pending_ask_choices: HashMap<String, String>,
@@ -364,6 +369,8 @@ impl MissionWorkspace {
             runner_statuses: BTreeMap::new(),
             goal: None,
             feed_blocks: Vec::new(),
+            feed_selection: None,
+            feed_selecting: false,
             askers_by_question: HashMap::new(),
             resolved_asks: HashMap::new(),
             pending_ask_choices: HashMap::new(),
@@ -418,6 +425,8 @@ impl MissionWorkspace {
         self.runner_statuses.clear();
         self.goal = None;
         self.feed_blocks.clear();
+        self.feed_selection = None;
+        self.feed_selecting = false;
         self.askers_by_question.clear();
         self.resolved_asks.clear();
         self.pending_ask_choices.clear();
@@ -454,6 +463,8 @@ impl MissionWorkspace {
     pub(crate) fn release_window(&mut self, cx: &mut Context<Self>) {
         self.active = false;
         self.attached.clear();
+        self.feed_selection = None;
+        self.feed_selecting = false;
         cx.notify();
     }
 
@@ -523,6 +534,14 @@ impl MissionWorkspace {
         }
         self.runner_statuses = statuses;
         self.feed_blocks = group_feed_blocks(&self.events);
+        if self.feed_selection.as_ref().is_some_and(|selection| {
+            !self
+                .events
+                .iter()
+                .any(|event| event.id == selection.event_id)
+        }) {
+            self.clear_feed_selection();
+        }
         let asks = project_asks(&self.events);
         self.askers_by_question = asks.askers_by_question;
         self.resolved_asks = asks.resolved_asks;
@@ -2206,6 +2225,20 @@ fn action_failure(action: &str, error: impl AsRef<str>) -> String {
     format!("Couldn't {action}: {detail}")
 }
 
+fn selectable_event_text(event: &Event) -> String {
+    let message = message_text(event);
+    if !message.is_empty() {
+        message
+    } else {
+        event
+            .payload
+            .get("prompt")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    }
+}
+
 impl MissionWorkspace {
     pub(crate) fn cycle_mission_tab(
         &mut self,
@@ -2239,6 +2272,7 @@ impl MissionWorkspace {
 
     fn select_mission_feed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cache_active_terminal_size(window, cx);
+        self.clear_feed_selection();
         self.active_tab = MissionTab::Feed;
         if self.feed_was_near_bottom {
             self.feed_scroll.scroll_to_bottom();
@@ -2266,6 +2300,7 @@ impl MissionWorkspace {
             return;
         }
         self.cache_active_terminal_size(window, cx);
+        self.clear_feed_selection();
         if !self.open_tabs.iter().any(|open| open == session_id) {
             self.open_tabs.push(session_id.to_owned());
         }
@@ -2310,6 +2345,7 @@ impl MissionWorkspace {
             }
         }
         if self.active_tab == MissionTab::Session(session_id.to_owned()) {
+            self.clear_feed_selection();
             self.active_tab = MissionTab::Feed;
             window.focus(&self.root_focus);
         }
@@ -2552,6 +2588,14 @@ impl MissionWorkspace {
             .bg(theme::bg())
             .child(center)
             .child(rail)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if !this.feed_selecting && this.feed_selection.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
             .on_action(cx.listener(Self::focus_previous_mission_tab))
             .on_action(cx.listener(Self::focus_next_mission_tab))
             .on_drag_move::<MissionRailResizeDrag>(cx.listener(
@@ -2957,7 +3001,9 @@ impl MissionWorkspace {
                 .collect()
         };
         let root = cx.entity();
-        let pill_root = root;
+        let pill_root = root.clone();
+        let feed_up_root = root.clone();
+        let feed_out_root = root.clone();
         let pane = div()
             .relative()
             .min_h(px(0.))
@@ -2968,6 +3014,8 @@ impl MissionWorkspace {
             .child(
                 div()
                     .id("mission-feed-scroll")
+                    .key_context("MissionFeed")
+                    .track_focus(&self.root_focus)
                     .min_h(px(0.))
                     .flex_1()
                     .overflow_y_scroll()
@@ -2977,7 +3025,19 @@ impl MissionWorkspace {
                     .flex()
                     .flex_col()
                     .gap(rems(18. / 16.))
-                    .children(rows),
+                    .children(rows)
+                    .on_action(cx.listener(Self::copy_feed_selection))
+                    .on_key_down(cx.listener(Self::on_feed_key_down))
+                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                        feed_up_root.update(cx, |this, _| {
+                            this.feed_selecting = false;
+                        });
+                    })
+                    .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+                        feed_out_root.update(cx, |this, _| {
+                            this.feed_selecting = false;
+                        });
+                    }),
             )
             .children(self.feed_has_new_messages.then(|| {
                 div()
@@ -3012,6 +3072,113 @@ impl MissionWorkspace {
                     )
             }));
         pane.into_any_element()
+    }
+
+    fn clear_feed_selection(&mut self) {
+        self.feed_selection = None;
+        self.feed_selecting = false;
+    }
+
+    fn update_feed_selection(
+        &mut self,
+        phase: FeedSelectionPhase,
+        event_id: &str,
+        position: FeedPosition,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match phase {
+            FeedSelectionPhase::Begin => {
+                self.feed_selection = Some(FeedSelection {
+                    event_id: event_id.to_owned(),
+                    anchor: position,
+                    head: position,
+                });
+                self.feed_selecting = true;
+                window.focus(&self.root_focus);
+                cx.notify();
+            }
+            FeedSelectionPhase::Extend if self.feed_selecting => {
+                let Some(selection) = self.feed_selection.as_mut() else {
+                    return;
+                };
+                if selection.event_id == event_id && selection.head != position {
+                    selection.head = position;
+                    cx.notify();
+                }
+            }
+            FeedSelectionPhase::End => {
+                if self.feed_selecting {
+                    if let Some(selection) = self.feed_selection.as_mut() {
+                        if selection.event_id == event_id {
+                            selection.head = position;
+                        }
+                    }
+                }
+                self.feed_selecting = false;
+                cx.notify();
+            }
+            FeedSelectionPhase::Extend => {}
+        }
+    }
+
+    fn feed_selection_handler(&self, cx: &mut Context<Self>) -> FeedSelectionHandler {
+        let root = cx.entity();
+        FeedSelectionHandler::new(move |phase, event_id, position, window, cx| {
+            root.update(cx, |this, cx| {
+                this.update_feed_selection(phase, event_id, position, window, cx)
+            });
+        })
+    }
+
+    fn render_feed_markdown(
+        &self,
+        event_id: &str,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let handler = self.feed_selection_handler(cx);
+        let selection_color = crate::terminal::element::to_hsla(
+            self.settings(cx).terminal_theme.palette().selection,
+            1.,
+        );
+        crate::surfaces::mission_markdown::render_markdown(
+            event_id,
+            text,
+            cx.entity_id(),
+            self.feed_selection.as_ref(),
+            selection_color,
+            Some(&handler),
+            cx,
+        )
+    }
+
+    fn on_feed_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key == "escape" && self.feed_selection.is_some() {
+            self.clear_feed_selection();
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    fn copy_feed_selection(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(selection) = self.feed_selection.as_ref() else {
+            return;
+        };
+        let Some(event) = self
+            .events
+            .iter()
+            .find(|event| event.id == selection.event_id)
+        else {
+            return;
+        };
+        let source = selectable_event_text(event);
+        let Some(text) = crate::surfaces::mission_markdown::selected_plain_text(&source, selection)
+        else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        cx.stop_propagation();
     }
 
     fn mission_composer_roster(&self) -> Vec<ComposerRosterEntry> {
@@ -3488,12 +3655,7 @@ impl MissionWorkspace {
                                             .into_any_element()
                                     })
                                 } else {
-                                    Some(crate::surfaces::mission_markdown::render_markdown(
-                                        &event.id,
-                                        &text,
-                                        cx.entity_id(),
-                                        cx,
-                                    ))
+                                    Some(self.render_feed_markdown(&event.id, &text, cx))
                                 }
                             })),
                     ),
@@ -3828,12 +3990,7 @@ impl MissionWorkspace {
                                     .child("(no prompt)")
                                     .into_any_element()
                             } else {
-                                crate::surfaces::mission_markdown::render_markdown(
-                                    &event.id,
-                                    &prompt,
-                                    cx.entity_id(),
-                                    cx,
-                                )
+                                self.render_feed_markdown(&event.id, &prompt, cx)
                             })
                             .child(buttons)
                             .children(resolved.map(|choice| {

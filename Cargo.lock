@@ -4983,6 +4983,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-segmentation",
+ "zed-font-kit",
 ]
 
 [[package]]

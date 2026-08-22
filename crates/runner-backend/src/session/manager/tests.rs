@@ -2604,6 +2604,54 @@ fn direct_chat_typing_stays_idle_until_submit() {
 }
 
 #[test]
+fn direct_input_gate_timeout_is_bounded_and_does_not_pin_the_queue() {
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture();
+    let session_id = "direct-timeout";
+    let state = mgr.session_state_or_insert(session_id);
+    let gate = state.lock().unwrap().delivery_gate.clone();
+    state.lock().unwrap().handle = Some(SessionHandle {
+        id: session_id.into(),
+        mission_id: None,
+        runner_id: None,
+        runtime_session: RuntimeSession {
+            runtime: "fake".into(),
+            session_id: session_id.into(),
+        },
+        codex_capture: None,
+        forwarder: None,
+        stop: Arc::new(AtomicBool::new(false)),
+    });
+    gate.state.lock().unwrap().in_flight = true;
+
+    let budget = Duration::from_millis(20);
+    let started = Instant::now();
+    let error = mgr
+        .inject_direct_stdin_with_wait_timeout(session_id, b"x", cap.as_ref(), budget)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::DirectInputTimeout {
+            ref session_id,
+            timeout_ms: 20,
+        } if session_id == "direct-timeout"
+    ));
+    assert!(
+        started.elapsed() <= ci_scaled_budget(Duration::from_secs(1)),
+        "gate timeout exceeded its bounded test budget"
+    );
+
+    mgr.finish_delivery(session_id, 0);
+    mgr.inject_direct_stdin_with_wait_timeout(session_id, b"after-timeout", cap.as_ref(), budget)
+        .unwrap();
+    assert_eq!(
+        fake.bytes_writes(),
+        vec![(session_id.to_string(), b"after-timeout".to_vec())]
+    );
+}
+
+#[test]
 fn mission_status_transition_appends_once_without_session_status_event() {
     let pool = pool_with_schema();
     let mission_base = Mission {

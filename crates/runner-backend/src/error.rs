@@ -16,6 +16,9 @@ pub enum Error {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("direct input timed out after {timeout_ms} ms waiting for session {session_id}")]
+    DirectInputTimeout { session_id: String, timeout_ms: u64 },
+
     #[error("{0}")]
     Msg(String),
 }

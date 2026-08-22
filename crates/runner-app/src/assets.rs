@@ -2,7 +2,16 @@ use std::borrow::Cow;
 
 use gpui::{AssetSource, ImageSource, Resource, Result, SharedString};
 
-pub const INTER_FONT: &[u8] = include_bytes!("../../../assets/fonts/Inter-Variable.ttf");
+pub const INTER_FONTS: [&[u8]; 8] = [
+    include_bytes!("../../../assets/fonts/Inter-Regular.ttf"),
+    include_bytes!("../../../assets/fonts/Inter-Italic.ttf"),
+    include_bytes!("../../../assets/fonts/Inter-Medium.ttf"),
+    include_bytes!("../../../assets/fonts/Inter-MediumItalic.ttf"),
+    include_bytes!("../../../assets/fonts/Inter-SemiBold.ttf"),
+    include_bytes!("../../../assets/fonts/Inter-SemiBoldItalic.ttf"),
+    include_bytes!("../../../assets/fonts/Inter-Bold.ttf"),
+    include_bytes!("../../../assets/fonts/Inter-BoldItalic.ttf"),
+];
 pub const MESLO_FONT_REGULAR: &[u8] =
     include_bytes!("../../../assets/fonts/MesloLGS-NF-Regular.ttf");
 pub const MESLO_FONT_BOLD: &[u8] = include_bytes!("../../../assets/fonts/MesloLGS-NF-Bold.ttf");
@@ -141,6 +150,59 @@ const ASSETS: &[(&str, &[u8])] = &[
     ("external-link.svg", EXTERNAL_LINK),
     ("github.svg", GITHUB),
 ];
+
+#[cfg(all(test, target_os = "macos"))]
+mod static_font_tests {
+    use std::sync::Arc;
+
+    use font_kit::{
+        font::Font,
+        matching::find_best_match,
+        properties::{Properties, Style, Weight},
+    };
+
+    use super::INTER_FONTS;
+
+    #[test]
+    fn inter_static_faces_resolve_regular_and_semibold_separately() {
+        let faces = INTER_FONTS
+            .iter()
+            .map(|bytes| Font::from_bytes(Arc::new(bytes.to_vec()), 0).expect("valid Inter face"))
+            .collect::<Vec<_>>();
+        assert!(faces.iter().all(|face| face.family_name() == "Inter"));
+
+        let properties = faces.iter().map(Font::properties).collect::<Vec<_>>();
+        assert_eq!(
+            properties
+                .iter()
+                .map(|properties| (properties.weight, properties.style))
+                .collect::<Vec<_>>(),
+            vec![
+                (Weight::NORMAL, Style::Normal),
+                (Weight::NORMAL, Style::Italic),
+                (Weight::MEDIUM, Style::Normal),
+                (Weight::MEDIUM, Style::Italic),
+                (Weight::SEMIBOLD, Style::Normal),
+                (Weight::SEMIBOLD, Style::Italic),
+                (Weight::BOLD, Style::Normal),
+                (Weight::BOLD, Style::Italic),
+            ]
+        );
+        let regular = find_best_match(&properties, &Properties::new()).expect("regular face");
+        let semibold = find_best_match(
+            &properties,
+            &Properties {
+                weight: Weight::SEMIBOLD,
+                ..Properties::new()
+            },
+        )
+        .expect("semibold face");
+
+        assert_ne!(regular, semibold);
+        assert_eq!(properties[regular].weight, Weight::NORMAL);
+        assert_eq!(properties[semibold].weight, Weight::SEMIBOLD);
+    }
+}
 
 pub struct Assets;
 
