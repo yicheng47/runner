@@ -542,6 +542,7 @@ struct PendingResize {
 struct SessionState {
     handle: Option<SessionHandle>,
     activity: Option<SessionActivityState>,
+    activity_revision: u64,
     suppress_local_input_busy: bool,
     local_input_pending: bool,
     last_local_input_at: Option<Instant>,
@@ -581,7 +582,8 @@ pub struct SessionManager {
     /// Per-session state. The outer map lock protects membership only;
     /// each session's hot mutable state lives behind its own mutex so
     /// PTY output for one busy session does not block lifecycle work on
-    /// other sessions.
+    /// other sessions. Never lock a SessionState while holding this map;
+    /// prune is the sole nested path and locks the state before the map.
     sessions: Mutex<HashMap<String, Arc<Mutex<SessionState>>>>,
     delivery_listeners: Mutex<HashMap<String, Vec<Weak<dyn router::SessionDeliveryListener>>>>,
     /// User's current login-shell env snapshot. Discovery swaps this
@@ -861,12 +863,18 @@ impl SessionManager {
     }
 
     fn prune_empty_session_state(&self, session_id: &str) {
+        let Some(state) = self.session_state(session_id) else {
+            return;
+        };
+        let state_guard = state.lock().unwrap();
+        if !state_guard.is_empty() {
+            return;
+        }
         let mut sessions = self.sessions.lock().unwrap();
-        let should_remove = sessions
+        if sessions
             .get(session_id)
-            .map(|state| state.lock().unwrap().is_empty())
-            .unwrap_or(false);
-        if should_remove {
+            .is_some_and(|current| Arc::ptr_eq(current, &state))
+        {
             sessions.remove(session_id);
         }
     }
@@ -898,6 +906,7 @@ impl SessionManager {
             state.handle = Some(handle);
             state.mission_status_sink = mission_status_sink;
             state.killed = false;
+            state.activity_revision = state.activity_revision.wrapping_add(1);
 
             let requested_size = state.last_requested_size;
             if let Some((cols, rows)) = requested_size.filter(|size| *size != initial_size) {
@@ -982,6 +991,7 @@ impl SessionManager {
             return false;
         }
         session.activity = Some(state);
+        session.activity_revision = session.activity_revision.wrapping_add(1);
         true
     }
 
@@ -989,16 +999,25 @@ impl SessionManager {
         let session = self
             .session_state(session_id)
             .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
-        let mut session = session.lock().unwrap();
-        let sink = session.mission_status_sink.as_ref().ok_or_else(|| {
-            Error::msg(format!("session has no mission status sink: {session_id}"))
-        })?;
+        let (sink, activity_revision) = {
+            let session = session.lock().unwrap();
+            let sink = session.mission_status_sink.clone().ok_or_else(|| {
+                Error::msg(format!("session has no mission status sink: {session_id}"))
+            })?;
+            (sink, session.activity_revision)
+        };
         match sink.try_append_with_retry(draft) {
             Ok(()) => {}
             Err(TryAppendError::Contended) => return Err(Error::msg("event log busy")),
             Err(TryAppendError::Failed(error)) => return Err(error.into()),
         }
-        session.activity = Some(SessionActivityState::Busy);
+        let mut session = session.lock().unwrap();
+        // Teardown clears the sink and advances the revision before this
+        // state can be pruned, so an orphaned Arc cannot publish stale Busy.
+        if session.activity_revision == activity_revision {
+            session.activity = Some(SessionActivityState::Busy);
+            session.activity_revision = session.activity_revision.wrapping_add(1);
+        }
         Ok(())
     }
 
@@ -1027,29 +1046,38 @@ impl SessionManager {
     }
 
     pub(crate) fn take_completion_armed(&self, session_ids: &[String]) -> bool {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions: Vec<_> = {
+            let sessions = self.sessions.lock().unwrap();
+            session_ids
+                .iter()
+                .filter_map(|session_id| sessions.get(session_id).cloned())
+                .collect()
+        };
         let mut armed = false;
-        for session_id in session_ids {
-            if let Some(session) = sessions.get(session_id) {
-                let mut session = session.lock().unwrap();
-                armed |= session.completion_armed;
-                session.completion_armed = false;
-            }
+        for session in sessions {
+            let mut session = session.lock().unwrap();
+            armed |= session.completion_armed;
+            session.completion_armed = false;
         }
         armed
     }
 
     pub fn activity_snapshot(&self) -> BTreeMap<String, SessionActivityState> {
-        self.sessions
+        let sessions: Vec<_> = self
+            .sessions
             .lock()
             .unwrap()
             .iter()
+            .map(|(id, session)| (id.clone(), Arc::clone(session)))
+            .collect();
+        sessions
+            .into_iter()
             .filter_map(|(id, session)| {
                 session
                     .lock()
                     .unwrap()
                     .activity
-                    .map(|activity| (id.clone(), activity))
+                    .map(|activity| (id, activity))
             })
             .collect()
     }

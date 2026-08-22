@@ -3982,6 +3982,202 @@ fn forwarder_status_emit_retries_brief_event_log_contention() {
     assert_eq!(statuses[0].payload["state"], "idle");
 }
 
+fn hold_event_log_lock(
+    event_log: &EventLog,
+) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+    use fs2::FileExt;
+    use std::fs::OpenOptions;
+
+    let path = event_log.path().to_path_buf();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let blocker = std::thread::spawn(move || {
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        file.lock_exclusive().unwrap();
+        ready_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+        file.unlock().unwrap();
+    });
+    ready_rx.recv().unwrap();
+    (release_tx, blocker)
+}
+
+fn manager_with_contended_wake_sink(event_log: Arc<EventLog>) -> Arc<SessionManager> {
+    let mgr = manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+    let state = mgr.session_state_or_insert("session");
+    state.lock().unwrap().mission_status_sink = Some(ForwarderEmitCtx {
+        crew_id: "crew".into(),
+        mission_id: "mission".into(),
+        handle: "runner".into(),
+        event_log,
+    });
+    mgr
+}
+
+fn wake_busy_draft() -> EventDraft {
+    EventDraft::signal(
+        "crew",
+        "mission",
+        "runner",
+        SignalType::new("runner_status"),
+        serde_json::json!({ "state": "busy", "source": "router-wake" }),
+    )
+}
+
+#[test]
+fn contended_wake_append_does_not_block_output_ingestion() {
+    let dir = tempfile::tempdir().unwrap();
+    let event_log = Arc::new(EventLog::open(dir.path()).unwrap());
+    let mgr = manager_with_contended_wake_sink(Arc::clone(&event_log));
+    let (release, blocker) = hold_event_log_lock(&event_log);
+
+    let session = mgr.session_state("session").unwrap();
+    let session_guard = session.lock().unwrap();
+    let (wake_started_tx, wake_started_rx) = std::sync::mpsc::channel();
+    let wake_mgr = Arc::clone(&mgr);
+    let wake = std::thread::spawn(move || {
+        wake_started_tx.send(()).unwrap();
+        wake_mgr.synthesize_wake_busy("session", wake_busy_draft())
+    });
+    wake_started_rx.recv().unwrap();
+    std::thread::sleep(Duration::from_millis(1));
+    drop(session_guard);
+    std::thread::sleep(Duration::from_millis(2));
+
+    let (output_started_tx, output_started_rx) = std::sync::mpsc::channel();
+    let (output_done_tx, output_done_rx) = std::sync::mpsc::channel();
+    let output_mgr = Arc::clone(&mgr);
+    let output = std::thread::spawn(move || {
+        output_started_tx.send(()).unwrap();
+        let start = Instant::now();
+        let mut event = None;
+        for _ in 0..300 {
+            event = Some(output_mgr.record_output("session", Some("mission"), b"output"));
+        }
+        output_done_tx.send((start.elapsed(), event)).unwrap();
+    });
+    output_started_rx.recv().unwrap();
+    let observed = output_done_rx.recv_timeout(Duration::from_millis(20));
+
+    release.send(()).unwrap();
+    blocker.join().unwrap();
+    let wake_result = wake.join().unwrap();
+    output.join().unwrap();
+
+    let (elapsed, event) = observed.expect(
+        "record_output must finish while the wake append is still parked on the event-log lock",
+    );
+    assert!(
+        elapsed < Duration::from_millis(20),
+        "record_output must stay well under the wake retry budget; took {elapsed:?}",
+    );
+    assert_eq!(event.unwrap().seq, 300);
+    wake_result.unwrap();
+}
+
+#[test]
+fn synthetic_wake_does_not_overwrite_a_newer_forwarder_transition() {
+    let dir = tempfile::tempdir().unwrap();
+    let event_log = Arc::new(EventLog::open(dir.path()).unwrap());
+    let mgr = manager_with_contended_wake_sink(Arc::clone(&event_log));
+    mgr.note_forwarder_transition("session", SessionActivityState::Idle, "forwarder");
+    let (release, blocker) = hold_event_log_lock(&event_log);
+
+    let session = mgr.session_state("session").unwrap();
+    let session_guard = session.lock().unwrap();
+    let (wake_started_tx, wake_started_rx) = std::sync::mpsc::channel();
+    let wake_mgr = Arc::clone(&mgr);
+    let wake = std::thread::spawn(move || {
+        wake_started_tx.send(()).unwrap();
+        wake_mgr.synthesize_wake_busy("session", wake_busy_draft())
+    });
+    wake_started_rx.recv().unwrap();
+    std::thread::sleep(Duration::from_millis(1));
+    drop(session_guard);
+    std::thread::sleep(Duration::from_millis(2));
+
+    let (transition_started_tx, transition_started_rx) = std::sync::mpsc::channel();
+    let (transition_done_tx, transition_done_rx) = std::sync::mpsc::channel();
+    let transition_mgr = Arc::clone(&mgr);
+    let transition = std::thread::spawn(move || {
+        transition_started_tx.send(()).unwrap();
+        let busy_changed = transition_mgr.note_forwarder_transition(
+            "session",
+            SessionActivityState::Busy,
+            "forwarder",
+        );
+        let idle_changed = transition_mgr.note_forwarder_transition(
+            "session",
+            SessionActivityState::Idle,
+            "forwarder",
+        );
+        transition_done_tx
+            .send((busy_changed, idle_changed))
+            .unwrap();
+    });
+    transition_started_rx.recv().unwrap();
+    let transition_before_unlock = transition_done_rx.recv_timeout(Duration::from_millis(20));
+
+    release.send(()).unwrap();
+    blocker.join().unwrap();
+    let wake_result = wake.join().unwrap();
+    transition.join().unwrap();
+
+    assert_eq!(
+        transition_before_unlock.expect(
+            "newer forwarder transitions must acquire the session lock while append is parked",
+        ),
+        (true, true),
+    );
+    wake_result.unwrap();
+    assert_eq!(
+        mgr.activity_snapshot().get("session"),
+        Some(&SessionActivityState::Idle),
+        "the completed wake append must not replace the newer idle transition",
+    );
+}
+
+#[test]
+fn failed_synthetic_wake_append_preserves_activity_and_error_mapping() {
+    let dir = tempfile::tempdir().unwrap();
+    let event_log = Arc::new(EventLog::open(dir.path()).unwrap());
+    let mgr = manager_with_contended_wake_sink(Arc::clone(&event_log));
+    mgr.note_forwarder_transition("session", SessionActivityState::Idle, "forwarder");
+    let (release, blocker) = hold_event_log_lock(&event_log);
+
+    let error = mgr
+        .synthesize_wake_busy("session", wake_busy_draft())
+        .unwrap_err();
+    assert_eq!(error.to_string(), "event log busy");
+    assert_eq!(
+        mgr.activity_snapshot().get("session"),
+        Some(&SessionActivityState::Idle),
+    );
+
+    release.send(()).unwrap();
+    blocker.join().unwrap();
+
+    let missing_dir = tempfile::tempdir().unwrap();
+    let missing_log = Arc::new(EventLog::open(missing_dir.path()).unwrap());
+    let missing_mgr = manager_with_contended_wake_sink(missing_log);
+    missing_mgr.note_forwarder_transition("session", SessionActivityState::Idle, "forwarder");
+    missing_dir.close().unwrap();
+
+    let error = missing_mgr
+        .synthesize_wake_busy("session", wake_busy_draft())
+        .unwrap_err();
+    assert_ne!(error.to_string(), "event log busy");
+    assert_eq!(
+        missing_mgr.activity_snapshot().get("session"),
+        Some(&SessionActivityState::Idle),
+    );
+}
+
 #[test]
 fn compute_gate_wait_returns_zero_when_no_prior_spawn() {
     // First claude through the gate — `last` is None, so the

@@ -275,8 +275,8 @@ impl SessionManager {
         else {
             return Ok(false);
         };
-        self.write_stdin_bytes(&rt_session, bytes)?;
         drop(session);
+        self.write_stdin_bytes(&rt_session, bytes)?;
         drop(delivery);
         if bytes == b"\r" {
             self.capture_codex_session_key(session_id);
@@ -352,6 +352,9 @@ impl SessionManager {
                 session.local_input_pending = previous_input_pending;
                 session.last_local_input_at = previous_input_at;
                 return Err(error);
+            }
+            if transition.is_some() {
+                session.activity_revision = session.activity_revision.wrapping_add(1);
             }
             if submitted {
                 session.completion_armed = true;
@@ -673,7 +676,7 @@ impl SessionManager {
         events.output(&ev);
     }
 
-    fn record_output(
+    pub(super) fn record_output(
         &self,
         session_id: &str,
         mission_id: Option<&str>,
