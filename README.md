@@ -29,7 +29,7 @@
 
 ---
 
-> Status: alpha, actively shipping. macOS today; Linux on the way.
+> Status: alpha, actively shipping. macOS, Apple Silicon.
 
 ---
 
@@ -43,9 +43,11 @@ The coordination model is explicit. A **runner** is a reusable agent configurati
 
 Runner also runs as an **MCP server**: any MCP client — including the agents themselves — can create crews, start missions, and steer them programmatically. See [Drive it from your agents](#drive-it-from-your-agents-mcp).
 
+Runner is a native macOS app written in Rust: [GPUI](https://github.com/gpui-ce/gpui-ce) for the UI, `alacritty_terminal` for the terminal grid, SQLite for state. No webview.
+
 ## Download
 
-Latest macOS build (Apple Silicon + Intel `.dmg`) on the [releases page](https://github.com/yicheng47/runner/releases/latest). Linux builds coming with the v1 cut.
+Latest macOS build (Apple Silicon `.dmg`) on the [releases page](https://github.com/yicheng47/runner/releases/latest). The rolling [`nightly`](https://github.com/yicheng47/runner/releases/tag/nightly) prerelease tracks this branch and updates itself through Sparkle. Signed and notarized; Intel Macs, Linux, and Windows are not supported.
 
 <!-- TODO(demo): add a "## Demo" section here once the new hero video is recorded — a Peer
      Coding Crew mission on a real repo (mission start from a project → feed + per-slot
@@ -100,7 +102,7 @@ Every chat is a real 1:1 PTY with a runner, no mission required. Tabs hold up to
 
 ### A real terminal
 
-xterm.js on a WebGL canvas — claude-code, codex, and any modern TUI render with their actual ANSI palette, mouse tracking, and live redraws. Sessions are resumable across app restarts; the event log is the source of truth.
+Every pane is a real PTY behind an `alacritty_terminal` grid, drawn by GPUI on the GPU — claude-code, codex, and any modern TUI render with their actual ANSI palette, mouse reporting, alt-screen redraws, and pixel-snapped box-drawing glyphs. Mouse selection and ⌘C, IME composition (Pinyin included), file-path paste, 10,000 lines of scrollback. Sessions are resumable across app restarts; the event log is the source of truth.
 
 </td>
 </tr>
@@ -112,7 +114,7 @@ xterm.js on a WebGL canvas — claude-code, codex, and any modern TUI render wit
 
 ### Multi-window
 
-`⌘N` opens additional OS windows — a mission on one screen, a wall of chats on the other. Windows coordinate ownership of shared sessions: the primary owns the PTY, and any other window showing the same session gets a hand-off overlay instead of a corrupted terminal.
+`⇧⌘N` opens additional OS windows — a mission on one screen, a wall of chats on the other. Windows coordinate ownership of shared sessions: the primary owns the PTY, and any other window showing the same session gets a hand-off overlay instead of a corrupted terminal.
 
 </td>
 </tr>
@@ -124,7 +126,7 @@ xterm.js on a WebGL canvas — claude-code, codex, and any modern TUI render wit
 
 ### Drive it from your agents (MCP)
 
-Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar, and **Settings → MCP** registers it with Claude Code or Codex in one click. Connected agents assemble crews, start and steer missions (`mission_start`, `mission_feed`, `mission_post_human_signal`), and spin up chats (`session_start_direct`). The compounding trick: your daily driver agent plans a fix, dispatches a coder/reviewer crew, and keeps working — agents dispatching crews of agents, every session still a real PTY you can open and watch.
+Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar, and **Settings → MCP** registers it with Claude Code, Codex, Qoder, or TRAE in one click. Connected agents assemble crews, start and steer missions (`mission_start`, `mission_feed`, `mission_post_human_signal`), and spin up chats (`session_start_direct`). The compounding trick: your daily driver agent plans a fix, dispatches a coder/reviewer crew, and keeps working — agents dispatching crews of agents, every session still a real PTY you can open and watch.
 
 </td>
 </tr>
@@ -133,8 +135,10 @@ Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sideca
 ### Also in the box
 
 - **Projects** — bind a working directory once; chats and missions started inside a project inherit its cwd and stay grouped in their own sidebar section.
-- **Themes** — Auto / Light / Dark chrome with two variants per side (Runner and Catppuccin Mocha dark; Codex Light and Catppuccin Latte light), independent terminal palettes, and a bundled offline font picker.
+- **Themes** — Auto / Light / Dark chrome with two variants per side (Runner and Catppuccin Mocha dark; Codex Light and Catppuccin Latte light), independent terminal palettes (Runner, Catppuccin Mocha, Solarized Dark), bundled UI fonts (Inter, Geist, Roboto), and a bundled MesloLGS Nerd Font for terminals.
+- **Auto-update** — Sparkle, with a hint on the sidebar's Settings row when a new build is waiting; nightly and release feeds are signed with the same key.
 - **Bundled `runner` CLI** — spawned agents message each other, check the crew roster, and post signals from inside their own PTYs.
+- **Runtimes** — Claude Code, Codex, Qoder, and TRAE, detected on `PATH` with per-runtime executable overrides in **Settings → Agents**.
 
 ## Example crew
 
