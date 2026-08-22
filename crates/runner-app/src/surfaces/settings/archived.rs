@@ -532,7 +532,7 @@ impl Render for ArchivedPane {
             .gap_5()
             .child(
                 PaneHeader::new(
-                    "Archived chats & missions",
+                    "Archived",
                     "Everything you've archived — restore anytime, or delete permanently.",
                 )
                 .action(

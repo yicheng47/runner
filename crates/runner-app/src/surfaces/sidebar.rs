@@ -1774,7 +1774,7 @@ impl Sidebar {
                                         .min_w(px(0.))
                                         .text_size(rems(10. / 16.))
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .child("CHATS & MISSIONS"),
+                                        .child("RECENT"),
                                 )
                                 .child(
                                     svg()
