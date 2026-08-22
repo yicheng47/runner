@@ -138,7 +138,7 @@ Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sideca
 - **Themes** — Auto / Light / Dark chrome with two variants per side (Runner and Catppuccin Mocha dark; Codex Light and Catppuccin Latte light), independent terminal palettes (Runner, Catppuccin Mocha, Solarized Dark), bundled UI fonts (Inter, Geist, Roboto), and a bundled MesloLGS Nerd Font for terminals.
 - **Auto-update** — Sparkle, with a hint on the sidebar's Settings row when a new build is waiting; nightly and release feeds are signed with the same key.
 - **Bundled `runner` CLI** — spawned agents message each other, check the crew roster, and post signals from inside their own PTYs.
-- **Runtimes** — Claude Code, Codex, Qoder, and TRAE, detected on `PATH` with per-runtime executable overrides in **Settings → Agents**.
+- **Runtimes** — Claude Code and Codex are first-class: daily-driven, with fixture-tested terminal rendering and tuned launch/nudge timing. Qoder and TRAE run through the same paths but see far less use and may have rough edges — [issues](https://github.com/yicheng47/runner/issues) are welcome. All four are detected on `PATH`, with per-runtime executable overrides in **Settings → Agents**.
 
 ## Example crew
 
