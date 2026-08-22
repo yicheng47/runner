@@ -72,6 +72,7 @@ impl SessionManager {
                     delivery.next_served = 0;
                     gate.ready.notify_all();
                     state.activity = None;
+                    state.activity_revision = state.activity_revision.wrapping_add(1);
                     state.suppress_local_input_busy = false;
                     state.local_input_pending = false;
                     state.last_local_input_at = None;
@@ -159,9 +160,9 @@ impl SessionManager {
     pub fn kill_all_for_mission(&self, mission_id: &str) -> Result<()> {
         self.cancel_pending_mission_spawns(mission_id);
         let ids: Vec<String> = {
-            let sessions = self.sessions.lock().unwrap();
+            let sessions: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
             sessions
-                .values()
+                .into_iter()
                 .filter_map(|state| {
                     let state = state.lock().unwrap();
                     let handle = state.handle.as_ref()?;
@@ -191,8 +192,8 @@ impl SessionManager {
         pool: &DbPool,
     ) {
         let has_live_siblings = {
-            let sessions = self.sessions.lock().unwrap();
-            sessions.values().any(|state| {
+            let sessions: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
+            sessions.into_iter().any(|state| {
                 state
                     .lock()
                     .unwrap()
@@ -244,9 +245,9 @@ impl SessionManager {
     /// Returns only after every reader thread has joined.
     pub fn kill_all_for_runner(&self, runner_id: &str) -> Result<()> {
         let ids: Vec<String> = {
-            let sessions = self.sessions.lock().unwrap();
+            let sessions: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
             sessions
-                .values()
+                .into_iter()
                 .filter_map(|state| {
                     let state = state.lock().unwrap();
                     let handle = state.handle.as_ref()?;
@@ -292,6 +293,7 @@ impl SessionManager {
                 gate.ready.notify_all();
                 state.handle = None;
                 state.activity = None;
+                state.activity_revision = state.activity_revision.wrapping_add(1);
                 state.suppress_local_input_busy = false;
                 state.local_input_pending = false;
                 state.last_local_input_at = None;
