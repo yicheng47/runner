@@ -22,6 +22,27 @@ use runner_backend::repo::node::{NodeRow, NodeType};
 
 const SIDEBAR_ROW_FONT_SIZE: f32 = 13.;
 
+// Shared with the layout probe so the production flex constraints stay under test.
+fn sidebar_scroll_frame() -> gpui::Div {
+    div().relative().min_h(px(0.)).flex_1().flex().flex_col()
+}
+
+fn sidebar_scroll_container(
+    id: &'static str,
+    scroll: &gpui::ScrollHandle,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .relative()
+        .min_h(px(0.))
+        .flex_1()
+        .flex()
+        .flex_col()
+        .overflow_y_scroll()
+        .scrollbar_width(px(0.))
+        .track_scroll(scroll)
+}
+
 #[derive(Clone, Copy)]
 enum ArchiveErrorTarget {
     App,
@@ -1600,14 +1621,7 @@ impl Sidebar {
         }));
         let root_attention = rollups.get(&None).copied().unwrap_or_default();
 
-        let mut scroll = div()
-            .id("sidebar-node-scroll")
-            .relative()
-            .min_h(px(0.))
-            .flex_1()
-            .overflow_y_scroll()
-            .scrollbar_width(px(0.))
-            .track_scroll(&self.scroll);
+        let mut scroll = sidebar_scroll_container("sidebar-node-scroll", &self.scroll);
         if !pinned.is_empty() {
             let visible = pinned
                 .iter()
@@ -1733,7 +1747,6 @@ impl Sidebar {
         scroll = scroll.child(
             div()
                 .mt_5()
-                .min_h(px(0.))
                 .flex_1()
                 .flex()
                 .flex_col()
@@ -1804,7 +1817,6 @@ impl Sidebar {
                     let has_rows = !root_rows.is_empty();
                     div()
                         .id("root-chat-scope")
-                        .min_h(rems(28. / 16.))
                         .flex_1()
                         .px_3()
                         .pt_1()
@@ -1854,6 +1866,7 @@ impl Sidebar {
             .flex_1()
             .flex()
             .flex_col()
+            .overflow_hidden()
             .pb_3()
             .child(
                 div().flex_none().child(section_title("WORKSPACE")).child(
@@ -1907,10 +1920,7 @@ impl Sidebar {
                     .bg(theme::sidebar_selected_border()),
             )
             .child(
-                div()
-                    .relative()
-                    .min_h(px(0.))
-                    .flex_1()
+                sidebar_scroll_frame()
                     .child(scroll)
                     .child(self.scrollbar.clone()),
             )
@@ -3153,7 +3163,117 @@ pub(crate) fn session_label(entry: &DirectSessionEntry) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{
+        prelude::*, size, Context, Render, ScrollHandle, TestAppContext, VisualTestContext, Window,
+    };
     use runner_backend::events::AppEvent;
+
+    struct SidebarScrollLayoutTest {
+        scroll: ScrollHandle,
+        block_wrapper_scroll: ScrollHandle,
+        constrained_section_scroll: ScrollHandle,
+        short_scroll: ScrollHandle,
+    }
+
+    impl Render for SidebarScrollLayoutTest {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .child(sidebar_scroll_column(
+                    self.scroll.clone(),
+                    "test-sidebar-node-scroll",
+                    true,
+                    false,
+                    6,
+                    12,
+                ))
+                .child(sidebar_scroll_column(
+                    self.block_wrapper_scroll.clone(),
+                    "test-block-wrapper-sidebar-node-scroll",
+                    false,
+                    false,
+                    6,
+                    12,
+                ))
+                .child(sidebar_scroll_column(
+                    self.constrained_section_scroll.clone(),
+                    "test-constrained-section-sidebar-node-scroll",
+                    true,
+                    true,
+                    6,
+                    12,
+                ))
+                .child(sidebar_scroll_column(
+                    self.short_scroll.clone(),
+                    "test-short-sidebar-node-scroll",
+                    true,
+                    false,
+                    1,
+                    2,
+                ))
+        }
+    }
+
+    fn sidebar_scroll_column(
+        scroll_handle: ScrollHandle,
+        id: &'static str,
+        flex_frame: bool,
+        constrain_sections: bool,
+        project_count: usize,
+        chat_count: usize,
+    ) -> AnyElement {
+        let projects = div()
+            .flex()
+            .flex_col()
+            .children((0..project_count).map(|_| div().h(px(40.)).flex_none()));
+        let mut chat_scope = div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .children((0..chat_count).map(|_| div().h(px(28.)).flex_none()));
+        if constrain_sections {
+            chat_scope = chat_scope.min_h(rems(28. / 16.));
+        }
+        let chats_selector = format!("TEST_CHATS_{id}");
+        let mut chats = div()
+            .debug_selector(move || chats_selector.clone())
+            .mt(px(20.))
+            .flex_1()
+            .flex()
+            .flex_col()
+            .child(div().h(px(24.)).flex_none())
+            .child(chat_scope);
+        if constrain_sections {
+            chats = chats.min_h(px(0.));
+        }
+        let scroll = sidebar_scroll_container(id, &scroll_handle)
+            .child(projects)
+            .child(chats);
+        let wrapper = if flex_frame {
+            sidebar_scroll_frame().child(scroll)
+        } else {
+            div().relative().min_h(px(0.)).flex_1().child(scroll)
+        };
+
+        div()
+            .w(px(240.))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .child(
+                div()
+                    .min_h(px(0.))
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .child(wrapper),
+            )
+            .into_any_element()
+    }
 
     fn appended_event(signal: &str) -> AppEvent {
         AppEvent {
@@ -3208,5 +3328,56 @@ mod tests {
             Some("tab-1"),
             "tab-1"
         ));
+    }
+
+    #[test]
+    fn sidebar_scroll_layout_reports_overflow_and_fills_short_lists() {
+        let mut cx = TestAppContext::single();
+        let scroll = ScrollHandle::new();
+        let test_scroll = scroll.clone();
+        let block_wrapper_scroll = ScrollHandle::new();
+        let test_block_wrapper_scroll = block_wrapper_scroll.clone();
+        let constrained_section_scroll = ScrollHandle::new();
+        let test_constrained_section_scroll = constrained_section_scroll.clone();
+        let short_scroll = ScrollHandle::new();
+        let test_short_scroll = short_scroll.clone();
+        let window = cx.add_window(move |_, _| SidebarScrollLayoutTest {
+            scroll: test_scroll,
+            block_wrapper_scroll: test_block_wrapper_scroll,
+            constrained_section_scroll: test_constrained_section_scroll,
+            short_scroll: test_short_scroll,
+        });
+        cx.run_until_parked();
+        let mut window = VisualTestContext::from_window(window.into(), &cx);
+        window.simulate_resize(size(px(960.), px(160.)));
+        window.run_until_parked();
+
+        let viewport = f32::from(scroll.bounds().size.height);
+        let max_offset = f32::from(scroll.max_offset().height);
+        let block_wrapper_viewport = f32::from(block_wrapper_scroll.bounds().size.height);
+        let block_wrapper_max_offset = f32::from(block_wrapper_scroll.max_offset().height);
+        let constrained_section_max_offset =
+            f32::from(constrained_section_scroll.max_offset().height);
+        let constrained_chats_height = f32::from(
+            window
+                .debug_bounds("TEST_CHATS_test-constrained-section-sidebar-node-scroll")
+                .unwrap()
+                .size
+                .height,
+        );
+        let short_chats_height = f32::from(
+            window
+                .debug_bounds("TEST_CHATS_test-short-sidebar-node-scroll")
+                .unwrap()
+                .size
+                .height,
+        );
+        assert_eq!(viewport, 160.);
+        assert_eq!(max_offset, 460.);
+        assert_eq!(block_wrapper_viewport, 620.);
+        assert_eq!(block_wrapper_max_offset, 0.);
+        assert_eq!(constrained_section_max_offset, 100.);
+        assert_eq!(constrained_chats_height, 0.);
+        assert_eq!(short_chats_height, 100.);
     }
 }

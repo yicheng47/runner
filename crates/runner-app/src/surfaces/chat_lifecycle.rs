@@ -70,11 +70,11 @@ pub(crate) fn ended_subtitle(
 pub(crate) fn transition_should_settle(
     kind: TransitionKind,
     elapsed: Duration,
-    ready_signal_seen: bool,
+    first_paint_seen: bool,
     output_seen: bool,
     output_idle_for: Option<Duration>,
 ) -> bool {
-    ready_signal_seen
+    first_paint_seen
         || elapsed >= TRANSITION_HARD_TIMEOUT
         || (output_seen
             && elapsed >= TRANSITION_MIN_VISIBLE
@@ -141,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn transition_settling_keeps_resume_visible_for_silent_agents() {
+    fn transition_settling_uses_first_paint_with_timeout_and_idle_backstops() {
         assert!(transition_should_settle(
             TransitionKind::Resuming,
             Duration::from_millis(20),
