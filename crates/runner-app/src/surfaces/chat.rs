@@ -69,6 +69,9 @@ impl NativeRoot {
             "session/spawned" => {
                 if let Some(session_id) = session_id {
                     self.attached.remove(&session_id);
+                    if let Some(transition) = self.chat_transitions.get_mut(&session_id) {
+                        transition.baseline_seq = 0;
+                    }
                     self.refresh_sessions(cx);
                     if let Some(layout) =
                         self.tabs.active().cloned().filter(|layout| {
@@ -185,15 +188,15 @@ impl NativeRoot {
                         .map(|chat| chat.terminal.output_activity());
                     let output_seen = activity
                         .is_some_and(|activity| activity.last_seq > transition.baseline_seq);
-                    let ready_signal_seen = activity
-                        .is_some_and(|activity| activity.tui_ready_seq > transition.baseline_seq);
+                    let first_paint_seen = activity
+                        .is_some_and(|activity| activity.first_paint_seq > transition.baseline_seq);
                     let output_idle_for = activity
                         .and_then(|activity| activity.last_output_at)
                         .map(|last| now.saturating_duration_since(last));
                     let settled = chat_lifecycle::transition_should_settle(
                         transition.kind,
                         now.saturating_duration_since(transition.started_at),
-                        ready_signal_seen,
+                        first_paint_seen,
                         output_seen,
                         output_idle_for,
                     );

@@ -1393,7 +1393,7 @@ impl MissionWorkspace {
                         },
                         now.saturating_duration_since(transition.started_at),
                         activity.is_some_and(|activity| {
-                            activity.tui_ready_seq > transition.baseline_seq
+                            activity.first_paint_seq > transition.baseline_seq
                         }),
                         activity
                             .is_some_and(|activity| activity.last_seq > transition.baseline_seq),
@@ -1648,23 +1648,15 @@ impl MissionWorkspace {
                         {
                             self.attached.remove(session_id);
                             self.delivery_blocked.remove(session_id);
-                            if let Some(kind) = transition_to_begin_on_spawn(
-                                self.transitions
-                                    .get(session_id)
-                                    .map(|transition| transition.kind),
-                            ) {
-                                let baseline = self
-                                    .app_store
-                                    .read(cx)
-                                    .bridge
-                                    .session(session_id)
-                                    .map(|terminal| terminal.output_activity().last_seq)
-                                    .unwrap_or(0)
-                                    .saturating_sub(1);
+                            let existing = self.transitions.get_mut(session_id).map(|transition| {
+                                transition.baseline_seq = 0;
+                                transition.kind
+                            });
+                            if let Some(kind) = transition_to_begin_on_spawn(existing) {
                                 self.begin_mission_transition(
                                     session_id,
                                     kind,
-                                    Some(baseline),
+                                    Some(0),
                                     window,
                                     cx,
                                 );

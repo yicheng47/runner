@@ -82,7 +82,9 @@ pub fn query_color_for<T>(
 #[derive(Default)]
 struct SequenceState {
     last: u64,
+    // No production reader after M6.11; kept as a cheaper mode-level signal should one appear.
     tui_ready_seq: u64,
+    first_paint_seq: u64,
     last_output_at: Option<Instant>,
 }
 
@@ -148,6 +150,7 @@ pub struct TerminalScrollState {
 pub struct TerminalOutputActivity {
     pub last_seq: u64,
     pub tui_ready_seq: u64,
+    pub first_paint_seq: u64,
     pub last_output_at: Option<Instant>,
 }
 
@@ -329,6 +332,7 @@ impl TerminalSession {
         TerminalOutputActivity {
             last_seq: sequence.last,
             tui_ready_seq: sequence.tui_ready_seq,
+            first_paint_seq: sequence.first_paint_seq,
             last_output_at: sequence.last_output_at,
         }
     }
@@ -348,6 +352,14 @@ impl TerminalSession {
         let mut term = self.term.lock();
         let previous_mode = *term.mode();
         parser.advance(&mut *term, bytes);
+        if sequence.first_paint_seq == 0
+            && term
+                .grid()
+                .display_iter()
+                .any(|cell| !cell.c.is_whitespace())
+        {
+            sequence.first_paint_seq = event.seq;
+        }
         let mode = *term.mode();
         if !previous_mode.intersects(TermMode::MOUSE_MODE) && mode.intersects(TermMode::MOUSE_MODE)
         {
@@ -1048,7 +1060,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_replaces_terminal_on_respawn_and_keeps_ready_sequence() {
+    fn registry_replaces_terminal_on_respawn_and_resets_first_paint() {
         let temp = tempfile::tempdir().unwrap();
         let core = test_core(temp.path());
         let events = core.session_events();
@@ -1061,6 +1073,7 @@ mod tests {
         });
         events.output(&output(1, "old-child"));
         let old = bridge.session("replay-race").unwrap();
+        assert_eq!(old.output_activity().first_paint_seq, 1);
 
         events.spawned(&SessionSpawnedEvent {
             session_id: "replay-race".into(),
@@ -1071,11 +1084,13 @@ mod tests {
         let fresh = bridge.session("replay-race").unwrap();
         assert!(!Arc::ptr_eq(&old, &fresh));
         assert_eq!(fresh.size(), (100, 30));
+        assert_eq!(fresh.output_activity().first_paint_seq, 0);
         events.output(&output(2, "\x1b[?2004hnew-child"));
 
         let activity = fresh.output_activity();
         assert_eq!(activity.last_seq, 2);
         assert_eq!(activity.tui_ready_seq, 2);
+        assert_eq!(activity.first_paint_seq, 2);
         let rendered = visible_lines(&*fresh.term.lock()).join("\n");
         assert!(rendered.contains("new-child"));
         assert!(!rendered.contains("old-child"));
@@ -1258,6 +1273,7 @@ mod tests {
         let first = terminal.output_activity();
         assert_eq!(first.last_seq, 1);
         assert_eq!(first.tui_ready_seq, 0);
+        assert_eq!(first.first_paint_seq, 1);
         assert!(first.last_output_at.is_some());
 
         terminal
@@ -1266,6 +1282,33 @@ mod tests {
         let ready = terminal.output_activity();
         assert_eq!(ready.last_seq, 2);
         assert_eq!(ready.tui_ready_seq, 2);
+        assert_eq!(ready.first_paint_seq, 1);
         assert!(ready.last_output_at >= first.last_output_at);
+    }
+
+    #[test]
+    fn first_paint_requires_a_visible_non_whitespace_cell() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let terminal =
+            TerminalSession::attach(core, "replay-race".into(), 8, 3, Arc::new(|| {})).unwrap();
+
+        terminal
+            .feed_output(&output(1, "\x1b[?1049h\x1b[2J\x1b[H"))
+            .unwrap();
+        let alternate_screen = terminal.output_activity();
+        assert_eq!(alternate_screen.tui_ready_seq, 1);
+        assert_eq!(alternate_screen.first_paint_seq, 0);
+
+        terminal
+            .feed_output(&output(2, "\x1b[31m   \x1b[0m\x1b[2;2H"))
+            .unwrap();
+        assert_eq!(terminal.output_activity().first_paint_seq, 0);
+
+        terminal.feed_output(&output(3, "x")).unwrap();
+        assert_eq!(terminal.output_activity().first_paint_seq, 3);
+
+        terminal.feed_output(&output(4, "later")).unwrap();
+        assert_eq!(terminal.output_activity().first_paint_seq, 3);
     }
 }
