@@ -29,6 +29,22 @@ enum UpdateTransition {
 }
 
 #[cfg(any(test, all(target_os = "macos", feature = "updater")))]
+const RUNNER_UPDATE_ERROR_DOMAIN: &str = "com.wycstudios.runner.updater";
+
+#[cfg(any(test, all(target_os = "macos", feature = "updater")))]
+const SPU_UPDATE_CHECK_UPDATES_IN_BACKGROUND: isize = 1;
+
+#[cfg(any(test, all(target_os = "macos", feature = "updater")))]
+fn should_proceed(update_check: isize) -> bool {
+    update_check != SPU_UPDATE_CHECK_UPDATES_IN_BACKGROUND
+}
+
+#[cfg(any(test, all(target_os = "macos", feature = "updater")))]
+fn transition_for_abort(error_domain: &str) -> Option<UpdateTransition> {
+    (error_domain != RUNNER_UPDATE_ERROR_DOMAIN).then_some(UpdateTransition::Aborted)
+}
+
+#[cfg(any(test, all(target_os = "macos", feature = "updater")))]
 fn apply_available_transition(
     available: &mut Option<UpdateInfo>,
     transition: UpdateTransition,
@@ -128,16 +144,20 @@ mod native {
     use std::time::{Duration, SystemTime};
 
     use gpui::{AsyncApp, WeakEntity};
+    use objc2::ffi::NSInteger;
     use objc2::rc::{Allocated, Retained};
-    use objc2::runtime::{AnyObject, NSObject};
+    use objc2::runtime::{AnyObject, Bool, NSObject};
     use objc2::{
-        define_class, extern_class, extern_methods, msg_send, DefinedClass, MainThreadMarker,
-        MainThreadOnly,
+        define_class, extern_class, extern_methods, msg_send, AnyThread, DefinedClass,
+        MainThreadMarker, MainThreadOnly,
     };
-    use objc2_foundation::{NSDate, NSObjectProtocol, NSString};
+    use objc2_foundation::{NSDate, NSDictionary, NSError, NSObjectProtocol, NSString};
 
-    use super::{UpdateTransition, Updater};
+    use super::{
+        should_proceed, transition_for_abort, UpdateTransition, Updater, RUNNER_UPDATE_ERROR_DOMAIN,
+    };
 
+    const RUNNER_UPDATE_ERROR_CODE: NSInteger = 1;
     const SPU_USER_UPDATE_CHOICE_SKIP: isize = 0;
 
     #[link(name = "Sparkle", kind = "framework")]
@@ -173,6 +193,31 @@ mod native {
         );
     }
 
+    fn update_version(item: &SUAppcastItem) -> String {
+        let display_version = item.display_version_string().to_string();
+        if display_version.trim().is_empty() {
+            item.version_string().to_string()
+        } else {
+            display_version
+        }
+    }
+
+    fn background_check_declined_error() -> Retained<NSError> {
+        let domain = NSString::from_str(RUNNER_UPDATE_ERROR_DOMAIN);
+        let description =
+            NSString::from_str("Runner recorded an update during a background check.");
+        let user_info =
+            NSDictionary::from_slices(&[NSError::NSLocalizedDescriptionKey()], &[&*description]);
+        unsafe {
+            msg_send![
+                NSError::alloc(),
+                initWithDomain: &*domain,
+                code: RUNNER_UPDATE_ERROR_CODE,
+                userInfo: &*user_info
+            ]
+        }
+    }
+
     struct UpdaterDelegateIvars {
         updater: WeakEntity<Updater>,
         cx: AsyncApp,
@@ -187,15 +232,28 @@ mod native {
         unsafe impl NSObjectProtocol for UpdaterDelegate {}
 
         impl UpdaterDelegate {
+            #[unsafe(method(updater:shouldProceedWithUpdate:updateCheck:error:))]
+            fn should_proceed_with_update(
+                &self,
+                _updater: &SPUUpdater,
+                item: &SUAppcastItem,
+                update_check: NSInteger,
+                error: Option<&mut *mut NSError>,
+            ) -> Bool {
+                self.apply_transition(UpdateTransition::Found(update_version(item)));
+                if should_proceed(update_check) {
+                    return true.into();
+                }
+
+                if let Some(error) = error {
+                    *error = Retained::autorelease_ptr(background_check_declined_error());
+                }
+                false.into()
+            }
+
             #[unsafe(method(updater:didFindValidUpdate:))]
             fn did_find_valid_update(&self, _updater: &SPUUpdater, item: &SUAppcastItem) {
-                let display_version = item.display_version_string().to_string();
-                let version = if display_version.trim().is_empty() {
-                    item.version_string().to_string()
-                } else {
-                    display_version
-                };
-                self.apply_transition(UpdateTransition::Found(version));
+                self.apply_transition(UpdateTransition::Found(update_version(item)));
             }
 
             #[unsafe(method(updaterDidNotFindUpdate:))]
@@ -217,8 +275,10 @@ mod native {
             }
 
             #[unsafe(method(updater:didAbortWithError:))]
-            fn did_abort_with_error(&self, _updater: &SPUUpdater, _error: &AnyObject) {
-                self.apply_transition(UpdateTransition::Aborted);
+            fn did_abort_with_error(&self, _updater: &SPUUpdater, error: &NSError) {
+                if let Some(transition) = transition_for_abort(&error.domain().to_string()) {
+                    self.apply_transition(transition);
+                }
             }
         }
     );
@@ -439,6 +499,44 @@ mod tests {
         apply_available_transition(&mut available, UpdateTransition::Aborted);
 
         assert_eq!(available, None);
+    }
+
+    #[test]
+    fn only_background_update_checks_are_declined() {
+        assert!(should_proceed(0));
+        assert!(!should_proceed(1));
+        assert!(should_proceed(2));
+    }
+
+    #[test]
+    fn runner_decline_abort_preserves_available_update() {
+        let mut available = Some(UpdateInfo::new("0.6.1"));
+
+        if let Some(transition) = transition_for_abort(RUNNER_UPDATE_ERROR_DOMAIN) {
+            apply_available_transition(&mut available, transition);
+        }
+        assert_eq!(available, Some(UpdateInfo::new("0.6.1")));
+
+        if let Some(transition) = transition_for_abort("com.example.other") {
+            apply_available_transition(&mut available, transition);
+        }
+        assert_eq!(available, None);
+    }
+
+    #[test]
+    fn runner_decline_does_not_renotify_same_found_update() {
+        let mut available = None;
+        assert!(apply_available_transition(
+            &mut available,
+            UpdateTransition::Found("0.6.1".into()),
+        ));
+
+        assert_eq!(transition_for_abort(RUNNER_UPDATE_ERROR_DOMAIN), None);
+        assert!(!apply_available_transition(
+            &mut available,
+            UpdateTransition::Found("0.6.1".into()),
+        ));
+        assert_eq!(available, Some(UpdateInfo::new("0.6.1")));
     }
 
     #[test]

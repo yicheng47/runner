@@ -81,7 +81,7 @@ impl SettingsPane {
             Self::Updates => "Updates",
             Self::Diagnostics => "Diagnostics",
             Self::About => "About",
-            Self::Archived => "Archived chats & missions",
+            Self::Archived => "Archived",
         }
     }
 
@@ -106,6 +106,7 @@ const APP_PANES: &[SettingsPane] = &[
     SettingsPane::Appearance,
     SettingsPane::Terminal,
     SettingsPane::Shortcuts,
+    SettingsPane::Archived,
 ];
 const INTEGRATION_PANES: &[SettingsPane] = &[SettingsPane::Agents, SettingsPane::Mcp];
 const SYSTEM_PANES: &[SettingsPane] = &[
@@ -113,12 +114,10 @@ const SYSTEM_PANES: &[SettingsPane] = &[
     SettingsPane::Diagnostics,
     SettingsPane::About,
 ];
-const ARCHIVED_PANES: &[SettingsPane] = &[SettingsPane::Archived];
 const NAV_GROUPS: &[(&str, &[SettingsPane])] = &[
     ("App", APP_PANES),
     ("Integrations", INTEGRATION_PANES),
     ("System", SYSTEM_PANES),
-    ("Archived", ARCHIVED_PANES),
 ];
 
 fn filtered_nav_groups(query: &str) -> Vec<(&'static str, Vec<SettingsPane>)> {
@@ -1862,14 +1861,27 @@ mod tests {
     #[test]
     fn nav_search_filters_labels_and_removes_empty_groups() {
         let all = filtered_nav_groups("");
-        assert_eq!(all.len(), 4);
+        assert_eq!(all.len(), 3);
         assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 10);
+        assert_eq!(
+            all[0],
+            (
+                "App",
+                vec![
+                    SettingsPane::General,
+                    SettingsPane::Appearance,
+                    SettingsPane::Terminal,
+                    SettingsPane::Shortcuts,
+                    SettingsPane::Archived,
+                ],
+            )
+        );
 
         let terminal = filtered_nav_groups("  TERM  ");
         assert_eq!(terminal, vec![("App", vec![SettingsPane::Terminal])]);
 
-        let archived = filtered_nav_groups("missions");
-        assert_eq!(archived, vec![("Archived", vec![SettingsPane::Archived])]);
+        let archived = filtered_nav_groups("archived");
+        assert_eq!(archived, vec![("App", vec![SettingsPane::Archived])]);
         assert!(filtered_nav_groups("no such setting").is_empty());
     }
 
