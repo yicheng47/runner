@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use chrono::DateTime;
 use runner_backend::repo::node::{NodeRow, NodeType};
@@ -9,6 +10,122 @@ pub(crate) enum AttentionState {
     None,
     Unread,
     Working,
+}
+
+pub(crate) const SHORTCUT_PILL_REVEAL_DELAY: Duration = Duration::from_millis(150);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum SidebarActivationTarget {
+    Tab {
+        tab_id: String,
+        session_id: String,
+    },
+    Mission {
+        mission_id: String,
+        project_id: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SidebarShortcutRow {
+    pub(crate) node_id: String,
+    pub(crate) target: SidebarActivationTarget,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SidebarShortcutProject {
+    pub(crate) node_id: String,
+    pub(crate) expanded: bool,
+    pub(crate) children: Vec<SidebarShortcutRow>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum VisibleSidebarRow {
+    Header(String),
+    Activatable(SidebarShortcutRow),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NumberedSidebarRow {
+    pub(crate) index: u8,
+    pub(crate) node_id: String,
+    pub(crate) target: SidebarActivationTarget,
+}
+
+pub(crate) fn visible_sidebar_walk(
+    pinned: Vec<SidebarShortcutRow>,
+    projects_open: bool,
+    projects: Vec<SidebarShortcutProject>,
+    recent_open: bool,
+    recent: Vec<SidebarShortcutRow>,
+) -> Vec<VisibleSidebarRow> {
+    let mut rows = Vec::new();
+    if !pinned.is_empty() {
+        rows.push(VisibleSidebarRow::Header("pinned".into()));
+        rows.extend(pinned.into_iter().map(VisibleSidebarRow::Activatable));
+    }
+    rows.push(VisibleSidebarRow::Header("projects".into()));
+    if projects_open {
+        for project in projects {
+            rows.push(VisibleSidebarRow::Header(project.node_id));
+            if project.expanded {
+                rows.extend(
+                    project
+                        .children
+                        .into_iter()
+                        .map(VisibleSidebarRow::Activatable),
+                );
+            }
+        }
+    }
+    rows.push(VisibleSidebarRow::Header("recent".into()));
+    if recent_open {
+        rows.extend(recent.into_iter().map(VisibleSidebarRow::Activatable));
+    }
+    rows.push(VisibleSidebarRow::Header("workspace".into()));
+    rows
+}
+
+pub(crate) fn numbered_sidebar_rows(
+    rows: impl IntoIterator<Item = VisibleSidebarRow>,
+) -> Vec<NumberedSidebarRow> {
+    rows.into_iter()
+        .filter_map(|row| match row {
+            VisibleSidebarRow::Header(_) => None,
+            VisibleSidebarRow::Activatable(row) => Some(row),
+        })
+        .take(9)
+        .enumerate()
+        .map(|(index, row)| NumberedSidebarRow {
+            index: index as u8 + 1,
+            node_id: row.node_id,
+            target: row.target,
+        })
+        .collect()
+}
+
+pub(crate) fn activation_target_for_index(
+    rows: &[NumberedSidebarRow],
+    index: u8,
+) -> Option<SidebarActivationTarget> {
+    rows.iter()
+        .find(|row| row.index == index)
+        .map(|row| row.target.clone())
+}
+
+pub(crate) fn should_show_shortcut_pills(
+    command_held_alone_since: Option<Instant>,
+    now: Instant,
+    other_modifiers: bool,
+    key_pressed: bool,
+    window_active: bool,
+) -> bool {
+    window_active
+        && !other_modifiers
+        && !key_pressed
+        && command_held_alone_since.is_some_and(|started_at| {
+            now.saturating_duration_since(started_at) >= SHORTCUT_PILL_REVEAL_DELAY
+        })
 }
 
 pub(crate) fn tab_attention_state(
@@ -308,6 +425,26 @@ fn node<'a>(nodes: &'a [NodeRow], id: &str) -> Option<&'a NodeRow> {
 mod tests {
     use super::*;
 
+    fn shortcut_tab(id: &str) -> SidebarShortcutRow {
+        SidebarShortcutRow {
+            node_id: id.into(),
+            target: SidebarActivationTarget::Tab {
+                tab_id: id.into(),
+                session_id: format!("{id}-session"),
+            },
+        }
+    }
+
+    fn shortcut_mission(id: &str, project_id: Option<&str>) -> SidebarShortcutRow {
+        SidebarShortcutRow {
+            node_id: id.into(),
+            target: SidebarActivationTarget::Mission {
+                mission_id: id.into(),
+                project_id: project_id.map(str::to_owned),
+            },
+        }
+    }
+
     fn row(
         id: &str,
         node_type: NodeType,
@@ -361,6 +498,140 @@ mod tests {
             AttentionState::Working
         );
         assert_eq!(mission_attention_state(true, true), AttentionState::None);
+    }
+
+    #[test]
+    fn visible_row_numbering_skips_headers_and_collapsed_projects_then_caps_at_nine() {
+        let pinned = vec![
+            shortcut_tab("pin-tab"),
+            shortcut_mission("pin-mission", None),
+        ];
+        let projects = vec![
+            SidebarShortcutProject {
+                node_id: "expanded-project".into(),
+                expanded: true,
+                children: vec![
+                    shortcut_tab("project-tab"),
+                    shortcut_mission("project-mission", Some("project-a")),
+                ],
+            },
+            SidebarShortcutProject {
+                node_id: "collapsed-project".into(),
+                expanded: false,
+                children: vec![shortcut_tab("hidden-tab")],
+            },
+        ];
+        let recent = (1..=8)
+            .map(|index| shortcut_tab(&format!("recent-{index}")))
+            .collect();
+        let walk = visible_sidebar_walk(pinned, true, projects, true, recent);
+        assert!(walk
+            .iter()
+            .any(|row| matches!(row, VisibleSidebarRow::Header(id) if id == "expanded-project")));
+        assert!(walk
+            .iter()
+            .any(|row| matches!(row, VisibleSidebarRow::Header(id) if id == "collapsed-project")));
+        assert!(!walk.iter().any(|row| matches!(
+            row,
+            VisibleSidebarRow::Activatable(row) if row.node_id == "hidden-tab"
+        )));
+
+        let numbered = numbered_sidebar_rows(walk);
+        assert_eq!(numbered.len(), 9);
+        assert_eq!(
+            numbered
+                .iter()
+                .map(|row| (row.index, row.node_id.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (1, "pin-tab"),
+                (2, "pin-mission"),
+                (3, "project-tab"),
+                (4, "project-mission"),
+                (5, "recent-1"),
+                (6, "recent-2"),
+                (7, "recent-3"),
+                (8, "recent-4"),
+                (9, "recent-5"),
+            ]
+        );
+    }
+
+    #[test]
+    fn shortcut_reveal_requires_command_alone_for_the_full_delay() {
+        let started_at = Instant::now();
+        assert!(!should_show_shortcut_pills(
+            Some(started_at),
+            started_at + Duration::from_millis(149),
+            false,
+            false,
+            true,
+        ));
+        assert!(should_show_shortcut_pills(
+            Some(started_at),
+            started_at + SHORTCUT_PILL_REVEAL_DELAY,
+            false,
+            false,
+            true,
+        ));
+        assert!(!should_show_shortcut_pills(
+            None,
+            started_at + SHORTCUT_PILL_REVEAL_DELAY,
+            false,
+            false,
+            true,
+        ));
+        assert!(!should_show_shortcut_pills(
+            Some(started_at),
+            started_at + SHORTCUT_PILL_REVEAL_DELAY,
+            true,
+            false,
+            true,
+        ));
+        assert!(!should_show_shortcut_pills(
+            Some(started_at),
+            started_at + SHORTCUT_PILL_REVEAL_DELAY,
+            false,
+            true,
+            true,
+        ));
+        assert!(!should_show_shortcut_pills(
+            Some(started_at),
+            started_at + SHORTCUT_PILL_REVEAL_DELAY,
+            false,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn shortcut_index_resolves_the_numbered_tab_or_mission_target() {
+        let numbered = numbered_sidebar_rows(visible_sidebar_walk(
+            vec![shortcut_tab("tab-a")],
+            true,
+            vec![SidebarShortcutProject {
+                node_id: "project".into(),
+                expanded: true,
+                children: vec![shortcut_mission("mission-a", Some("project-a"))],
+            }],
+            true,
+            vec![],
+        ));
+        assert_eq!(
+            activation_target_for_index(&numbered, 1),
+            Some(SidebarActivationTarget::Tab {
+                tab_id: "tab-a".into(),
+                session_id: "tab-a-session".into(),
+            })
+        );
+        assert_eq!(
+            activation_target_for_index(&numbered, 2),
+            Some(SidebarActivationTarget::Mission {
+                mission_id: "mission-a".into(),
+                project_id: Some("project-a".into()),
+            })
+        );
+        assert_eq!(activation_target_for_index(&numbered, 3), None);
     }
 
     #[test]

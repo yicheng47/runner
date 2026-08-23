@@ -6,8 +6,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{
     CloseWindowOrPane, CommandPalette, Copy, FocusNextPane, FocusPreviousPane, Hide, HideOthers,
     Minimize, MissionTabNext, MissionTabPrevious, NavigateNextPage, NavigatePreviousPage, NewTab,
-    NewWindow, OpenSettings, Paste, Quit, ToggleFullscreen, ToggleSidebar, ZoomIn, ZoomOut,
-    ZoomReset,
+    NewWindow, OpenSettings, Paste, Quit, SelectTab1, SelectTab2, SelectTab3, SelectTab4,
+    SelectTab5, SelectTab6, SelectTab7, SelectTab8, SelectTab9, ToggleFullscreen, ToggleSidebar,
+    ZoomIn, ZoomOut, ZoomReset,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -163,6 +164,78 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description: "Return the app to 100%.",
                 scope: KeymapScope::Global,
                 default: key_combo("Digit0", true, false, false, false, None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "select-tab-1",
+                title: "Go to tab 1",
+                description: "Open the first visible sidebar tab or mission.",
+                scope: KeymapScope::Global,
+                default: key_combo("Digit1", true, false, false, false, None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "select-tab-2",
+                title: "Go to tab 2",
+                description: "Open the second visible sidebar tab or mission.",
+                scope: KeymapScope::Global,
+                default: key_combo("Digit2", true, false, false, false, None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "select-tab-3",
+                title: "Go to tab 3",
+                description: "Open the third visible sidebar tab or mission.",
+                scope: KeymapScope::Global,
+                default: key_combo("Digit3", true, false, false, false, None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "select-tab-4",
+                title: "Go to tab 4",
+                description: "Open the fourth visible sidebar tab or mission.",
+                scope: KeymapScope::Global,
+                default: key_combo("Digit4", true, false, false, false, None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "select-tab-5",
+                title: "Go to tab 5",
+                description: "Open the fifth visible sidebar tab or mission.",
+                scope: KeymapScope::Global,
+                default: key_combo("Digit5", true, false, false, false, None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "select-tab-6",
+                title: "Go to tab 6",
+                description: "Open the sixth visible sidebar tab or mission.",
+                scope: KeymapScope::Global,
+                default: key_combo("Digit6", true, false, false, false, None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "select-tab-7",
+                title: "Go to tab 7",
+                description: "Open the seventh visible sidebar tab or mission.",
+                scope: KeymapScope::Global,
+                default: key_combo("Digit7", true, false, false, false, None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "select-tab-8",
+                title: "Go to tab 8",
+                description: "Open the eighth visible sidebar tab or mission.",
+                scope: KeymapScope::Global,
+                default: key_combo("Digit8", true, false, false, false, None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "select-tab-9",
+                title: "Go to tab 9",
+                description: "Open the ninth visible sidebar tab or mission.",
+                scope: KeymapScope::Global,
+                default: key_combo("Digit9", true, false, false, false, None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -738,6 +811,15 @@ pub(crate) fn install_bindings(
                 "zoom-in" => KeyBinding::new(&binding, ZoomIn, context),
                 "zoom-out" => KeyBinding::new(&binding, ZoomOut, context),
                 "zoom-reset" => KeyBinding::new(&binding, ZoomReset, context),
+                "select-tab-1" => KeyBinding::new(&binding, SelectTab1, context),
+                "select-tab-2" => KeyBinding::new(&binding, SelectTab2, context),
+                "select-tab-3" => KeyBinding::new(&binding, SelectTab3, context),
+                "select-tab-4" => KeyBinding::new(&binding, SelectTab4, context),
+                "select-tab-5" => KeyBinding::new(&binding, SelectTab5, context),
+                "select-tab-6" => KeyBinding::new(&binding, SelectTab6, context),
+                "select-tab-7" => KeyBinding::new(&binding, SelectTab7, context),
+                "select-tab-8" => KeyBinding::new(&binding, SelectTab8, context),
+                "select-tab-9" => KeyBinding::new(&binding, SelectTab9, context),
                 "pane-previous" => KeyBinding::new(&binding, FocusPreviousPane, context),
                 "pane-next" => KeyBinding::new(&binding, FocusNextPane, context),
                 "mission-tab-previous" => KeyBinding::new(&binding, MissionTabPrevious, context),
@@ -759,7 +841,7 @@ mod tests {
 
     #[test]
     fn registry_matches_the_shipped_defaults_and_fixed_entry() {
-        assert_eq!(entries().len(), 16);
+        assert_eq!(entries().len(), 25);
         assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 3);
         assert!(entry("new-window").unwrap().fixed);
         assert!(entry("close-pane").unwrap().fixed);
@@ -774,6 +856,28 @@ mod tests {
             entry("pane-previous").unwrap().default,
             entry("mission-tab-previous").unwrap().default
         );
+    }
+
+    #[test]
+    fn tab_shortcuts_are_global_rebindable_and_have_no_dispatch_context() {
+        let ids = (1..=9)
+            .map(|index| format!("select-tab-{index}"))
+            .collect::<Vec<_>>();
+        let tab_entries = entries()
+            .iter()
+            .filter(|entry| entry.id.starts_with("select-tab-"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tab_entries.iter().map(|entry| entry.id).collect::<Vec<_>>(),
+            ids.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        for (index, entry) in (1..=9).zip(tab_entries) {
+            assert_eq!(entry.title, format!("Go to tab {index}"));
+            assert_eq!(entry.scope, KeymapScope::Global);
+            assert!(!entry.fixed);
+            assert_eq!(binding_strings(&entry.default), [format!("cmd-{index}")]);
+            assert_eq!(binding_context(entry, &entry.default), None);
+        }
     }
 
     #[test]
@@ -912,7 +1016,7 @@ mod tests {
     fn registry_defaults_compile_to_gpui_runtime_keystrokes() {
         type ExpectedBinding<'a> = (&'a str, &'a str, bool);
         type ExpectedEntry<'a> = (&'a str, &'a [ExpectedBinding<'a>]);
-        let expected: [ExpectedEntry<'_>; 16] = [
+        let expected: [ExpectedEntry<'_>; 25] = [
             ("new-window", &[("shift-cmd-n", "n", true)]),
             ("new-chat", &[("cmd-n", "n", false)]),
             ("command-palette", &[("cmd-k", "k", false)]),
@@ -923,6 +1027,15 @@ mod tests {
             ("zoom-in", &[("cmd-=", "=", false), ("cmd-+", "+", false)]),
             ("zoom-out", &[("cmd--", "-", false)]),
             ("zoom-reset", &[("cmd-0", "0", false)]),
+            ("select-tab-1", &[("cmd-1", "1", false)]),
+            ("select-tab-2", &[("cmd-2", "2", false)]),
+            ("select-tab-3", &[("cmd-3", "3", false)]),
+            ("select-tab-4", &[("cmd-4", "4", false)]),
+            ("select-tab-5", &[("cmd-5", "5", false)]),
+            ("select-tab-6", &[("cmd-6", "6", false)]),
+            ("select-tab-7", &[("cmd-7", "7", false)]),
+            ("select-tab-8", &[("cmd-8", "8", false)]),
+            ("select-tab-9", &[("cmd-9", "9", false)]),
             ("pane-previous", &[("cmd-[", "[", false)]),
             ("pane-next", &[("cmd-]", "]", false)]),
             ("close-pane", &[("cmd-w", "w", false)]),
