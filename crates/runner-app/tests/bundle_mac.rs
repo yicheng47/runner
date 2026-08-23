@@ -66,6 +66,7 @@ fn nightly_plist_uses_the_isolated_rolling_channel() {
         "com.wycstudios.runner.nightly"
     );
     assert_eq!(plist_value(&plist, "CFBundleName"), "Runner Nightly");
+    assert_eq!(plist_value(&plist, "CFBundleExecutable"), "Runner");
     assert_eq!(
         plist_value(&plist, "SUFeedURL"),
         "https://github.com/yicheng47/runner/releases/download/nightly/appcast.xml"
@@ -101,6 +102,7 @@ fn production_plist_keeps_the_marketing_version_separate_from_the_stamp() {
         "com.wycstudios.runner"
     );
     assert_eq!(plist_value(&plist, "CFBundleName"), "Runner");
+    assert_eq!(plist_value(&plist, "CFBundleExecutable"), "Runner");
     assert_eq!(
         plist_value(&plist, "SUFeedURL"),
         "https://github.com/yicheng47/runner/releases/latest/download/appcast.xml"

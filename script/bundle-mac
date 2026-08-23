@@ -140,7 +140,7 @@ write_plist() {
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleExecutable</key>
-    <string>runner-app</string>
+    <string>Runner</string>
     <key>CFBundleIconFile</key>
     <string>Runner.icns</string>
     <key>CFBundleIdentifier</key>
@@ -235,7 +235,7 @@ for target_triple in "${TARGET_TRIPLES[@]}"; do
     cargo build --manifest-path "$ROOT_DIR/Cargo.toml" --locked --release --package runner-cli --bins --target "$target_triple"
 done
 
-for binary in runner-app runner-agent-cli runner-mcp; do
+for binary in Runner runner-agent-cli runner-mcp; do
     arm64_path="$ROOT_DIR/target/aarch64-apple-darwin/release/$binary"
     x86_64_path="$ROOT_DIR/target/x86_64-apple-darwin/release/$binary"
     for binary_path in "$arm64_path" "$x86_64_path"; do
@@ -276,8 +276,8 @@ codesign --force "${CODESIGN_OPTIONS[@]}" --preserve-metadata=entitlements --sig
 codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$SPARKLE_ROOT/Autoupdate"
 codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$SPARKLE_ROOT/Updater.app"
 codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
-# Sign sidecars first: codesign resolves runner-app to the enclosing bundle, whose lipo-created x86_64 sidecars lack linker ad-hoc signatures.
-for binary in runner-agent-cli runner-mcp runner-app; do
+# Sign sidecars first: codesign resolves Runner to the enclosing bundle, whose lipo-created x86_64 sidecars lack linker ad-hoc signatures.
+for binary in runner-agent-cli runner-mcp Runner; do
     codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$APP_BUNDLE/Contents/MacOS/$binary"
 done
 codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"

@@ -5,10 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 publish = false
-default-run = "runner-app"
+default-run = "Runner"
 
 [[bin]]
-name = "runner-app"
+name = "Runner"
 path = "src/main.rs"
 
 [features]
