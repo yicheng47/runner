@@ -1,4 +1,4 @@
-.PHONY: build check fmt fmt-check clippy test verify run
+.PHONY: build check fmt fmt-check clippy test verify run clean cache-size
 
 # Crew builds hit load 208 on 2026-08-22 and starved the UI.
 CARGO_BUILD_JOBS ?= 12
@@ -27,3 +27,10 @@ verify: check test clippy fmt-check
 
 run:
 	cargo run -p runner-app
+
+clean:
+	cargo clean
+
+cache-size:
+	@du -sh target 2>/dev/null || echo "target/: (none)"
+	@du -sh ~/.cargo/registry ~/.cargo/git 2>/dev/null
