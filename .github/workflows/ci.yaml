@@ -3,9 +3,11 @@ name: CI
 on:
   pull_request:
     branches:
+      - main
       - gpui-nightly
   push:
     branches:
+      - main
       - gpui-nightly
 
 permissions:
