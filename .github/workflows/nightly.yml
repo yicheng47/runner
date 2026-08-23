@@ -124,7 +124,7 @@ jobs:
           printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$SPARKLE_TOOLS_DIR/generate_appcast" \
             --ed-key-file - \
             --download-url-prefix "https://github.com/yicheng47/runner/releases/download/nightly/" \
-            --full-release-notes-url "https://github.com/yicheng47/runner/commits/gpui-nightly" \
+            --full-release-notes-url "https://github.com/yicheng47/runner/commits/main" \
             --link "https://github.com/yicheng47/runner/releases/tag/nightly" \
             --maximum-versions 10 \
             "$APPCAST_DIR"
@@ -151,7 +151,7 @@ jobs:
           if gh release view nightly >/dev/null 2>&1; then
             gh release edit nightly --title "Runner Nightly" --notes "Rolling prerelease feed for the GPUI nightly channel." --prerelease --latest=false --draft=false
           else
-            gh release create nightly --target gpui-nightly --title "Runner Nightly" --notes "Rolling prerelease feed for the GPUI nightly channel." --prerelease --latest=false
+            gh release create nightly --target main --title "Runner Nightly" --notes "Rolling prerelease feed for the GPUI nightly channel." --prerelease --latest=false
           fi
           gh release upload nightly "$NEW_DMG" "$APPCAST_DIR/appcast.xml" --clobber
           gh api "repos/${{ github.repository }}/releases/tags/nightly" --jq '.assets[].name' | while IFS= read -r asset; do
