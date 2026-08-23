@@ -29,7 +29,7 @@
 
 ---
 
-> Status: alpha, actively shipping. macOS, Apple Silicon.
+> Status: alpha, actively shipping. macOS, Apple Silicon and Intel (one universal build).
 
 ---
 
@@ -47,7 +47,7 @@ Runner is a native macOS app written in Rust: [gpui-ce](https://github.com/gpui-
 
 ## Download
 
-Latest macOS build (Apple Silicon `.dmg`) on the [releases page](https://github.com/yicheng47/runner/releases/latest). The rolling [`nightly`](https://github.com/yicheng47/runner/releases/tag/nightly) prerelease tracks this branch and updates itself through Sparkle. Signed and notarized; Intel Macs, Linux, and Windows are not supported.
+Latest macOS build (universal `.dmg`, Apple Silicon and Intel) on the [releases page](https://github.com/yicheng47/runner/releases/latest). The rolling [`nightly`](https://github.com/yicheng47/runner/releases/tag/nightly) prerelease tracks this branch and updates itself through Sparkle. Signed and notarized; Linux and Windows are not supported.
 
 <!-- TODO(demo): add a "## Demo" section here once the new hero video is recorded — a Peer
      Coding Crew mission on a real repo (mission start from a project → feed + per-slot

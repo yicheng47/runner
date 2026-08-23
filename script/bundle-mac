@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET_TRIPLE="aarch64-apple-darwin"
+TARGET_TRIPLES=("aarch64-apple-darwin" "x86_64-apple-darwin")
 MINIMUM_SYSTEM_VERSION="12.0"
 SPARKLE_VERSION="2.9.5"
 SPARKLE_SHA256="015336b601493e05c237964954bff6191370003d94edefe663724c88840d73cc"
@@ -120,14 +120,14 @@ case "$CHANNEL" in
         APP_NAME="Runner Nightly"
         SHORT_VERSION="$VERSION.$BUILD_STAMP"
         FEED_URL="https://github.com/yicheng47/runner/releases/download/nightly/appcast.xml"
-        DMG_NAME="Runner-Nightly-$SHORT_VERSION-arm64.dmg"
+        DMG_NAME="Runner-Nightly-$SHORT_VERSION-universal.dmg"
         ;;
     production)
         BUNDLE_ID="com.wycstudios.runner"
         APP_NAME="Runner"
         SHORT_VERSION="${VERSION%-nightly}"
         FEED_URL="https://github.com/yicheng47/runner/releases/latest/download/appcast.xml"
-        DMG_NAME="Runner-$SHORT_VERSION-arm64.dmg"
+        DMG_NAME="Runner-$SHORT_VERSION-universal.dmg"
         ;;
 esac
 
@@ -213,25 +213,41 @@ fi
 tar -xf "$SPARKLE_ARCHIVE" -C "$SPARKLE_WORK_DIR"
 ditto "$SPARKLE_WORK_DIR/Sparkle.framework" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
 
+require_universal_binary() {
+    local binary_path="$1"
+    local binary_archs
+    binary_archs="$(lipo -archs "$binary_path")"
+    if [[ " $binary_archs " != *" arm64 "* || " $binary_archs " != *" x86_64 "* ]]; then
+        echo "error: binary is not universal (architectures: $binary_archs): $binary_path" >&2
+        exit 1
+    fi
+}
+
+require_universal_binary "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"
+
 export RUNNER_BUILD_STAMP="$BUILD_STAMP"
 export RUNNER_BUILD_SHA="$BUILD_SHA"
 export RUNNER_MARKETING_VERSION="$SHORT_VERSION"
 export MACOSX_DEPLOYMENT_TARGET="$MINIMUM_SYSTEM_VERSION"
 export RUSTFLAGS="${RUSTFLAGS:-} -Lframework=$SPARKLE_WORK_DIR -Clink-arg=-Wl,-rpath,@executable_path/../Frameworks"
-cargo build --manifest-path "$ROOT_DIR/Cargo.toml" --locked --release --package runner-app --features updater --target "$TARGET_TRIPLE"
-cargo build --manifest-path "$ROOT_DIR/Cargo.toml" --locked --release --package runner-cli --bins --target "$TARGET_TRIPLE"
+for target_triple in "${TARGET_TRIPLES[@]}"; do
+    cargo build --manifest-path "$ROOT_DIR/Cargo.toml" --locked --release --package runner-app --features updater --target "$target_triple"
+    cargo build --manifest-path "$ROOT_DIR/Cargo.toml" --locked --release --package runner-cli --bins --target "$target_triple"
+done
 
 for binary in runner-app runner-agent-cli runner-mcp; do
-    binary_path="$ROOT_DIR/target/$TARGET_TRIPLE/release/$binary"
-    if [[ ! -x "$binary_path" ]]; then
-        echo "error: release binary not found: $binary_path" >&2
-        exit 1
-    fi
-    if [[ "$(lipo -archs "$binary_path")" != "arm64" ]]; then
-        echo "error: release binary is not arm64: $binary_path" >&2
-        exit 1
-    fi
-    install -m 755 "$binary_path" "$APP_BUNDLE/Contents/MacOS/$binary"
+    arm64_path="$ROOT_DIR/target/aarch64-apple-darwin/release/$binary"
+    x86_64_path="$ROOT_DIR/target/x86_64-apple-darwin/release/$binary"
+    for binary_path in "$arm64_path" "$x86_64_path"; do
+        if [[ ! -x "$binary_path" ]]; then
+            echo "error: release binary not found: $binary_path" >&2
+            exit 1
+        fi
+    done
+    installed_path="$APP_BUNDLE/Contents/MacOS/$binary"
+    lipo -create "$arm64_path" "$x86_64_path" -output "$installed_path"
+    chmod 755 "$installed_path"
+    require_universal_binary "$installed_path"
 done
 
 ICONSET="$ICON_WORK_DIR/Runner.iconset"
@@ -260,14 +276,15 @@ codesign --force "${CODESIGN_OPTIONS[@]}" --preserve-metadata=entitlements --sig
 codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$SPARKLE_ROOT/Autoupdate"
 codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$SPARKLE_ROOT/Updater.app"
 codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
-for binary in runner-app runner-agent-cli runner-mcp; do
+# Sign sidecars first: codesign resolves runner-app to the enclosing bundle, whose lipo-created x86_64 sidecars lack linker ad-hoc signatures.
+for binary in runner-agent-cli runner-mcp runner-app; do
     codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$APP_BUNDLE/Contents/MacOS/$binary"
 done
 codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"
 codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 
 if [[ "$DEV_MODE" == true ]]; then
-    printf 'Bundled signed local %s %s at %s\n' "$APP_NAME" "$SHORT_VERSION" "$APP_BUNDLE"
+    printf 'Bundled signed local universal %s %s at %s\n' "$APP_NAME" "$SHORT_VERSION" "$APP_BUNDLE"
     exit 0
 fi
 
@@ -278,7 +295,7 @@ for variable in APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
     fi
 done
 
-APP_ZIP="$ROOT_DIR/target/release/$APP_NAME-$SHORT_VERSION-arm64.zip"
+APP_ZIP="$ROOT_DIR/target/release/$APP_NAME-$SHORT_VERSION-universal.zip"
 ditto -c -k --keepParent "$APP_BUNDLE" "$APP_ZIP"
 xcrun notarytool submit "$APP_ZIP" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
 xcrun stapler staple "$APP_BUNDLE"
@@ -294,4 +311,4 @@ codesign --verify --verbose=2 "$DMG_PATH"
 xcrun notarytool submit "$DMG_PATH" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
 xcrun stapler staple "$DMG_PATH"
 xcrun stapler validate "$DMG_PATH"
-printf 'Bundled, signed, notarized, and stapled %s %s at %s\n' "$APP_NAME" "$SHORT_VERSION" "$DMG_PATH"
+printf 'Bundled, signed, notarized, and stapled universal %s %s at %s\n' "$APP_NAME" "$SHORT_VERSION" "$DMG_PATH"
