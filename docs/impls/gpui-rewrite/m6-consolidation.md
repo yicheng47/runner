@@ -19,9 +19,9 @@ Sequencing with M4.6b (shell split): nothing in the app crate starts until it la
 
 ## Status (2026-08-22)
 
-Landed, in the order they ran: M6.6, M6.8, M6.5, M6.10 + M6.11, M6.9, the M6.3 session-lock item, M6.13 + M6.12 (carrying three M6.3 items), M6.1, M6.18, M6.17 — each recorded under [Landed](#landed) with its commit. **Pending before `v0.6.0`, run order (proposed 2026-08-22):** M6.16 descendant sweep (small, backend — the next backend gap), M6.19 pin the UI font to Inter and M6.20 sidebar drop indicator (both S, added 2026-08-23), M6.15 ⌘1–9 tab shortcuts (design first; its place among the pre-GA items is Jason's call). **Post-GA:** M6.2 hooks, M6.7 terminal performance, M6.4 feed append, the M6.3 remainder. Numbers are identifiers, not sequence. Not M6 but on the cutover path and tracked in plan §Release channels: the native `release.yml` with the bridge trio (absent on this branch — `main`'s is Tauri-only and the tree swap deletes it) and the `bridge-test` Tauri→native hop.
+Landed, in the order they ran: M6.6, M6.8, M6.5, M6.10 + M6.11, M6.9, the M6.3 session-lock item, M6.13 + M6.12 (carrying three M6.3 items), M6.1, M6.18, M6.17 — each recorded under [Landed](#landed) with its commit. **Cutover pulled forward (Jason, 2026-08-23, plan decision 14): nothing in M6 gates `v0.6.0` any more.** Post-GA, in the order they were queued: M6.16 descendant sweep, M6.19 pin the UI font to Inter, M6.20 sidebar drop indicator, M6.15 ⌘1–9 tab shortcuts (design first), then M6.2 hooks, M6.7 terminal performance, M6.4 feed append, the M6.3 remainder. Numbers are identifiers, not sequence. Not M6 but on the cutover path and tracked in plan §Release channels: the native `release.yml` with the bridge trio (absent on this branch — `main`'s is Tauri-only and the tree swap deletes it) and the `bridge-test` Tauri→native hop.
 
-## Pending — before `v0.6.0`
+## Pending — first after `v0.6.0`
 
 ### M6.16 — Descendant sweep by env tag at session stop and startup — S/M, backend, before `v0.6.0` (Jason, 2026-08-22, after the M6.3 reviewer's stress loops ran the host at load 306 for three hours)
 
@@ -45,7 +45,7 @@ Not yet traced; pointers from a read of `surfaces/sidebar.rs`: the drag state is
 
 Browser-style `⌘1`…`⌘9` jump to the Nth visible sidebar row (PINNED + CHATS & MISSIONS in display order, collapsed projects skipped, mission rows included; no `⌘0`), plus Arc's learnability: hold `⌘` alone for ~150 ms and each numbered row shows a digit pill in its trailing slot, gone on release or when another modifier joins. Global chords (`select-tab-1…9`, rebindable), per window, silent when the sidebar is collapsed. Design to do in `runner.pen` before the brief: `cmp/TabShortcutPill` (mono digit, ~16×16, `$raised`/`$text-mid`, radius 4) and a "Sidebar — ⌘ held" state frame to settle the pill against selected / unread / busy rows. Implementation notes in the spec (modifier tracking via `on_modifiers_changed` as `terminal/element.rs` does for ⌘-hover links; numbering from the same visible-row walk as `render_sidebar_contents`; nine `actions!` handled by the shell). Non-goals: reorder chords, `⌘0`, pills in the mission tab strip.
 
-## Pending — post-GA
+## Pending — later
 
 ### M6.2 — Hook-based session status (#347 reopened 2026-08-20; spec `docs/features/52-hook-based-session-status.md`) — L, backend + status consumers, second M6 mission (was first until 2026-08-21)
 
