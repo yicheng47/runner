@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned. Fixes [#404](https://github.com/yicheng47/runner/issues/404) and absorbs the codex half of the #403 trust pre-seeding direction. Supersedes the boot-stall cue previously specced under this number (`BootWatch` byte-budget heuristic) — that mission was archived and its working-tree changes reverted; the general "agent needs you" tier remains future work under `docs/features/52-hook-based-session-status.md`. Approach validated against orca (`~/repos/ai/orca`): `src/main/agent-trust-presets.ts` documents the artifact and why CLI flags are not equivalent; the format is verified there against codex's own source (`codex-rs/tui/src/onboarding/trust_directory.rs`).
+Implemented (#404 closed 2026-08-17, `1b7ee92`, shipped in v0.5.2; native `crates/runner-backend/src/session/codex_trust.rs`). Fixes [#404](https://github.com/yicheng47/runner/issues/404) and absorbs the codex half of the #403 trust pre-seeding direction. Supersedes the boot-stall cue previously specced under this number (`BootWatch` byte-budget heuristic) — that mission was archived and its working-tree changes reverted; the general "agent needs you" tier remains future work under `docs/features/52-hook-based-session-status.md`. Approach validated against orca (`~/repos/ai/orca`): `src/main/agent-trust-presets.ts` documents the artifact and why CLI flags are not equivalent; the format is verified there against codex's own source (`codex-rs/tui/src/onboarding/trust_directory.rs`).
 
 ## Problem
 

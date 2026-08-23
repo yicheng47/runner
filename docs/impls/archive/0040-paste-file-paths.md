@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned. Tracking issue [#368](https://github.com/yicheng47/runner/issues/368), spec [55](../features/55-paste-file-paths.md). This is a **redo**: the feature first landed in PR [#369](https://github.com/yicheng47/runner/pull/369) (commit `61cafd2`) and was reverted when main was rebuilt around the #372 spawn-width fix. The reverted code survives on the local branch `fix/367-368-spawn-width-and-paste-paths` and is the reference implementation — most of it re-lands verbatim; the one behavioral correction is decision 1.
+Implemented (#368 closed 2026-07-29, `a8e7cf3`; native port in `crates/runner-app/src/terminal_paste.rs`). Tracking issue [#368](https://github.com/yicheng47/runner/issues/368), spec [55](../features/55-paste-file-paths.md). This is a **redo**: the feature first landed in PR [#369](https://github.com/yicheng47/runner/pull/369) (commit `61cafd2`) and was reverted when main was rebuilt around the #372 spawn-width fix. The reverted code survives on the local branch `fix/367-368-spawn-width-and-paste-paths` and is the reference implementation — most of it re-lands verbatim; the one behavioral correction is decision 1.
 
 ## Problem
 

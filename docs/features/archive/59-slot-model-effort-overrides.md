@@ -1,6 +1,6 @@
 # Per-slot model and effort overrides
 
-Tracking issue: [#397](https://github.com/yicheng47/runner/issues/397). Status: planned.
+Tracking issue: [#397](https://github.com/yicheng47/runner/issues/397). Status: shipped in v0.5.2 (#397 closed 2026-08-17, migration `0020_slot_effort_override.sql`).
 
 ## Motivation
 

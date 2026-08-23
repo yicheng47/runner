@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned. Tracking issue [#378](https://github.com/yicheng47/runner/issues/378). Design: `design/mission-feed-composer.pen` — frame `c78FA` (feed + composer), `c78FB` (targeted chip state), `ASuQW` (@ mention picker), note `c78Nt`.
+Implemented (#378 closed 2026-08-01, `670a168`; native port carries `mission_post_human_message` end to end). Tracking issue [#378](https://github.com/yicheng47/runner/issues/378). Design: `design/mission-feed-composer.pen` — frame `c78FA` (feed + composer), `c78FB` (targeted chip state), `ASuQW` (@ mention picker), note `c78Nt`.
 
 ## Problem
 

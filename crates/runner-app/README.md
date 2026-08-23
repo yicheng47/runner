@@ -1,6 +1,6 @@
 # runner-app
 
-Phase 3 walking skeleton for [the gpui-rewrite plan](../../docs/impls/gpui-rewrite/plan.md). It opens Runner's existing direct chats from the same SQLite database as the released app, spawns or resumes them through `runner_backend::session::SessionManager`, and renders the manager's PTY byte stream with `alacritty_terminal` on GPUI.
+The Runner application: GPUI UI, terminal renderer, Sparkle updater, packaging. The Cargo package is `runner-app`; the binary it builds is `Runner` (`[[bin]]`), which `script/bundle-mac` wraps into `Runner.app` / `Runner Nightly.app`. Everything UI-agnostic — sessions, router, event log, SQLite, MCP — lives in `runner-backend`; the terminal model, input encoding, and the fixture corpus live in `runner-terminal`. How it fits together: [`docs/arch/arch.md`](../../docs/arch/arch.md); how it got here: [`docs/impls/gpui-rewrite/README.md`](../../docs/impls/gpui-rewrite/README.md).
 
 ## Run
 
@@ -8,23 +8,23 @@ Phase 3 walking skeleton for [the gpui-rewrite plan](../../docs/impls/gpui-rewri
 make run
 ```
 
-The development command uses `~/Library/Application Support/com.wycstudios.runner-dev/runner.db`, matching the Tauri development environment and keeping production state isolated. A future packaged release build will use the production directory. Click an existing direct chat in the sidebar, then use either the terminal or composer.
+The development build uses `~/Library/Application Support/com.wycstudios.runner-dev/runner.db`, keeping production state isolated; release bundles use `com.wycstudios.runner`. It has no bundle, so macOS labels it by the binary name (`Runner`) and the updater is a no-op (the `updater` feature is off in dev). GPUI requires the Xcode Metal Toolchain component.
 
-GPUI requires the Xcode 26 Metal Toolchain component, already installed on the development machine.
+One app instance at a time: the dev build and an installed Runner share nothing, but an installed production and nightly bundle share one data directory.
 
-## Fixture corpus (regression harness)
-
-Recorded PTY byte logs in `../runner-terminal/fixtures/*.ndjson` (header line + base64 data/input/exit events), replayed into a headless `Term` and compared against blessed `*.snapshot.txt` grids:
+## Checks
 
 ```sh
-cargo test -p runner-terminal
-UPDATE_SNAPSHOTS=1 cargo test -p runner-terminal
+make verify                      # check + workspace tests + clippy --features updater + fmt
+cargo test -p runner-app         # app unit tests
+cargo test -p runner-app --test bundle_mac   # bundle script plist contract
+cargo test -p runner-terminal    # fixture corpus replay (grid snapshots + input-state transitions)
 ```
 
-Current corpus: `claude-session` (real interactive TUI boot → prompt → streamed reply → /exit palette), `top-busy` (full-screen redraw churn), `width-torture` (CJK/emoji/ZWJ/box-drawing/SGR glyph classes), and `procedural-glyphs` (block art, shades, box borders, Braille, Powerline, and legacy computing symbols).
+## Fixture corpus
 
-## Smoke test
+Recorded PTY byte logs in `../runner-terminal/fixtures/*.ndjson` (header line + base64 data/input/exit events) are replayed into a headless `Term` and compared against blessed `*.snapshot.txt` grids; `input-*` fixtures also pin the input-state tracker's transition list. Re-bless with `UPDATE_SNAPSHOTS=1 cargo test -p runner-terminal`. Record a new fixture from the running app with `RUNNER_RECORD_INPUT_FIXTURE=<prefix>` (writes `<prefix>.<session>.ndjson`).
 
-1. Run `make run` and click a stopped direct chat in the sidebar. It should resume the same development conversation and render its live terminal.
-2. Type in the terminal, submit a prompt, scroll, and resize the window. Output, input, and PTY geometry should remain live.
-3. Click the composer, switch to Pinyin, type `中文测试`, choose a candidate, and press Enter once more. Composition should stay anchored in the field and the committed text should submit to the selected chat.
+## Packaging
+
+`script/bundle-mac --channel nightly|production [--dev]` assembles, signs, and notarizes the universal bundle; CI runs it from `nightly.yml` (dispatch-only, rolling prerelease) and `release.yml` (`v*` tags → draft release). See `docs/arch/arch.md` §14 and the `/nightly` skill.

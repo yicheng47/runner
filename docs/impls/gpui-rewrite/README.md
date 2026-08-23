@@ -1,15 +1,65 @@
-# GPUI Rewrite
+# GPUI rewrite — program record
 
-Program directory for the Rust-native UI rewrite. **Shipped:** the line was promoted to `main` by tree-swap on 2026-08-23 and published as [`v0.6.0`](https://github.com/yicheng47/runner/releases/tag/v0.6.0) the same day — one native binary, universal, Sparkle updates, with the one-time bridge from 0.5.x. What remains (the M6 remainder, release chores) is tracked in [#432](https://github.com/yicheng47/runner/issues/432) and lands on `main` as `0.7.0-nightly`. Everything else in `docs/impls/` belongs to the Tauri line's history.
+Runner's UI was rewritten from Tauri + React + xterm.js to one native Rust binary — GPUI rendering, `alacritty_terminal` as both the terminal model and the renderer's buffer — and shipped as [`v0.6.0`](https://github.com/yicheng47/runner/releases/tag/v0.6.0) on 2026-08-23. This file is the condensed record: what shipped, the decisions that still bind, the rules learned, and what remains. The full history — the plan with all fourteen decisions, the dated log, the M4 surface inventory, every mission brief, and the M6 document as it stood at GA — is verbatim under [`../archive/gpui-rewrite/`](../archive/gpui-rewrite/). Post-GA work is tracked in [#432](https://github.com/yicheng47/runner/issues/432) and detailed in [m6-remainder.md](m6-remainder.md).
 
-- [impl_log.md](impl_log.md) — the program-wide progress log (current state + dated entries). Start here to catch up.
-- [m6-consolidation.md](m6-consolidation.md) — M6 plan, pending on top and landed at the bottom. Landed through GA: M6.6, M6.8, M6.5, M6.10 + M6.11, M6.9, the M6.3 session-lock item, M6.13 + M6.12, M6.1, M6.18, M6.17, M6.21, M6.22. Post-GA queue: M6.16, M6.19, M6.20, M6.15, then M6.2, M6.7, M6.4, the M6.3 remainder.
-- [plan.md](plan.md) — the program plan: strategy, standing decisions, workstreams, and the roadmap (milestones M0–M6, then Phases 5–6). Merged 2026-08-18 from impls 0031 (approach plan) and 0046 (main-parity catchup); those numbers remain the citation keys used in the log.
+## Why, and the end state
 
-Standing decisions (dated in the plan):
+0.5.x kept two terminal parsers in the loop — Rust behind the PTY, JavaScript in front — and every divergence between them was a bug class: WebGL glyph-atlas garble, width mismatches on CJK and emoji, blank repaints, hidden panes starved of a GPU context (#307). One parser and one grid removes the class by construction. The backend was never the problem, so it was kept: `crates/runner-backend` (sessions, router, event bus, SQLite, MCP) is the same core 0.5.x ran on, now UI-agnostic; `crates/runner-app` is the binary (`Runner`; the Cargo package is still `runner-app`); `crates/runner-terminal` holds the terminal model, input encoding, and the fixture corpus; `crates/runner-core` and `cli/` are shared with the agents. No webview, no JS, no Tauri. Architecture: [`../../arch/arch.md`](../../arch/arch.md).
 
-- `main` owns product design and the domain model; repo-and-below stays verbatim-identical, migration numbers are allocated on `main` only (plan §Decisions).
-- Framework: `gpui-ce`; terminal architecture mirrors Zed's `terminal`/`terminal_view` split on upstream `alacritty_terminal` (plan §Framework, §Workstream C). Zed's terminal crates are GPL — architectural reference only.
-- Pulse (`~/repos/yicheng47/pulse`) is the window-level UI reference and the updater reference — Sparkle via the pulse pattern (plan §UI reference, §Phase 5).
-- Crate renames after the M3 session-hardening slice (landed 2026-08-18): `runner-app` → `runner-backend`, `runner-native` → `runner-app` (plan §Decisions).
-- Release channels and the cutover bridge: `CFBundleVersion` is always a build stamp, nightlies are prereleases on a rolling `nightly` feed (never the `releases/latest` alias the Tauri updater polls), and GA `v0.6.0` is the single cutover release carrying both Sparkle and Tauri-bridge artifacts (plan decision 12, §Release channels).
+## Timeline
+
+| When | What | Where |
+|---|---|---|
+| 2026-07-18/19 | Phase 1 terminal spike → GO on GPUI; fixture corpus (real PTY byte logs replayed into grid snapshots) born here. Phase 2 app-core extraction; Phase 3 walking skeleton. Parked; pioneer line briefly its own repo. | plan §Roadmap, appendix memo |
+| 2026-08-17 | Restart as the `gpui-nightly` branch in this repo. M0 `gpui-ce 0.3` swap; M1 repo-and-below parity against `main` at `1b7ee92`; M2 terminal split into `runner-terminal`. | log 08-17 |
+| 2026-08-18 → 20 | M3 backend parity slices (session hardening, runtimes, M3.6–M3.8); crate renames to the final layout; M4 UI rebuild begins from a 75-surface inventory (3 styled / 22 partial / 50 missing at entry). | log 08-18 … 08-20 |
+| 2026-08-20 → 21 | M4.1–M4.8: app shell, widgets, node sidebar, entity pages, mission surfaces, settings, keymap registry + command palette (`9cb159a`), Agents/MCP/Archived panes, multi-window, terminal selection/copy (`e836222`), Sparkle updater + packaging + nightly workflow (`8dc2843`), parity fix-ups (`bfc9eda`). **M4 exit gate: 75 done / 0 partial / 0 missing.** M5 closed by decision 13 — parity recorded, watermark `276a3a4`. | log 08-20, 08-21 |
+| 2026-08-21 | First nightlies; Sparkle proven native→native; Jason switches his daily driver. Same day: the `…1306` crash loop (below) and nightlies become dispatch-only. | log 08-21 |
+| 2026-08-21 → 23 | M6 consolidation, as nightlies: M6.6 resize smoothness (`6f020d4`), M6.8 long-lived terminals (`3536c70`), M6.5 `arch.md` rewrite, M6.10 + M6.11 sidebar overflow / first-paint pill (`e3e6739`), M6.9 update hint + mission reset removed (`518a7bf`), M6.3 session-lock item (`1b1d77a`), M6.13 feed text + M6.12 audit (`5b974ed`), M6.1 real input-state tracking (`9deca7c`), M6.18 silent update checks (`6b9bbe4`), M6.17 universal builds (`59a8b87`). License MIT → GPL-3.0-only (2026-08-22). | log 08-21 … 08-23 |
+| 2026-08-23 | Cutover 1: native `release.yml` with the Tauri bridge trio (`30ea908`); dry run green; crate `0.6.0-nightly → 0.6.0` (`b45ae35`); **tree-swap onto `main`** (`8872100`), `gpui-nightly` retired. M6.21 sidebar entry points (PR #430 → `09049d0`) and M6.22 archive routing (PR #431 → `d825ada`) land before the tag. | log 08-23 |
+| 2026-08-23 16:54 | **`v0.6.0` published** from the tag on `23548fc`: universal DMG, Sparkle appcast, bridge trio; `releases/latest` flips; 0.5.x installs bridge automatically. | log 08-23 |
+
+## Decisions that still bind
+
+The plan's fourteen decisions are in the archive; these are the ones that constrain work after GA.
+
+- **Framework and terminal shape.** `gpui-ce` (the crates.io GPUI); the terminal mirrors Zed's `terminal` / `terminal_view` split on upstream `alacritty_terminal`. Zed's terminal crates are GPL and were an architectural reference only — techniques described in words, never copied. Pulse (`~/repos/yicheng47/pulse`) is the window-level UI and updater reference.
+- **One line of work.** `main` is the native app and the only branch; task branches off `main`, PR, one required check (`Rust / macOS`), merge, then the docs landing commit. Migrations are allocated on `main` again (decision 11's freeze ended with the Tauri line).
+- **Design source.** The parity exception (decision 1: "`main`'s React code wins on every axis") ended at cutover. `design/runner.pen` is the active canvas; new product work is Pencil-first (M6.21 was the first), `design/runner-mvp-design.pen` is the historical MVP canvas.
+- **Release channels (decision 12).** `CFBundleVersion` is always the UTC build stamp `YYYYMMDD.HHMM`; `CFBundleShortVersionString` is `X.Y.Z-nightly.<stamp>` on the nightly channel and `X.Y.Z` on production; the crate version carries `-nightly` between releases and is hand-bumped to the bare version at release. Nightlies are a rolling GitHub **prerelease** on their own Sparkle feed, dispatch-only; production is a `vX.Y.Z` tag → draft release → human publish. One EdDSA keypair serves both feeds. Every 0.6.x release re-uploads the bridge `latest.json` pointing at `v0.6.0`'s tarball; **hard cutoff at 0.7.0**. Operational detail: [`arch.md` §14](../../arch/arch.md#14-program-state--line-landing-channels); the `/nightly` skill runs the nightly path.
+- **Updater.** Sparkle via the pulse pattern (`objc2` bindings behind the `updater` feature, no-op in dev); Sparkle's standard sheet owns the update flow, background checks only light the sidebar hint.
+- **Universal builds.** One DMG per channel, arm64 + x86_64 `lipo`'d into each of the three binaries; sidecars are codesigned before the main executable.
+- **One app instance at a time.** The nightly and production bundles share `~/Library/Application Support/com.wycstudios.runner/` (one `runner.db`, one MCP socket, one orphan sweep).
+- **Crews never launch the dev app** for UI validation; the human smoke-tests, then asks for the PR (Jason, 2026-08-23).
+
+## Product-visible differences from 0.5.x (kept on purpose)
+
+The archive's deviation register is the full parity record; these are the ones a 0.5.x user notices. New chat is ⌘N and new window ⇧⌘N (was ⌘T / ⌘N). Bundled MesloLGS Nerd Font is the default terminal font, Menlo the only alternative; the UI font is Inter (the picker is slated for removal, M6.19). The Updates pane is slim and Sparkle's sheet owns the flow; the update hint is one accent icon on the Settings row. The sidebar section is RECENT, Archived is the last row of the Settings App group. **Mission reset is gone** — it was the only irreversible data-loss action; archive + new mission covers it. Preferences did not migrate from the webview's localStorage (one-time). Window set and routes checkpoint to `window-layout.json` and restore after every graceful quit. Feed Markdown is a dependency-free subset, not full GFM.
+
+## Standing GPUI rules (every brief cites them)
+
+- Never `cx.new` a stateful child in a render or data-load path; child entities are created once and reused. Entity identity is manual; notify scope is rebuild cost — a child change must not notify the root unless the root's layout depends on it.
+- Never `Entity::update` the observing entity inside its own `cx.observe` callback — use the callback's `&mut self`. A child must never read the shell on a path the shell can enter synchronously; route assignments funnel through `NativeRoot::set_route`, child→shell hops are `cx.defer`red.
+- A window with no focused handle has an empty dispatch-context stack, so every contextual binding fails there; every route a root can initially render must focus a tracked handle. Bind OS-level fallbacks with no context when they must work independently of surface focus. A no-context binding receives the deepest precedence and beats every contextual binding for the same keystroke — compound fallbacks such as ⌘W route their surface-specific behavior themselves.
+- `window.current_view()` is valid only while rendering: inside a mouse/hover/key listener it unwraps an empty stack, and because the listener runs inside an AppKit callback that cannot unwind, the process aborts. Capture the `EntityId` at render time and move it into the closure (the `…1306` crash loop).
+- Never inject `ESC[2J` into a live grid — alacritty scrolls the viewport into scrollback, duplicating history. A TUI's own SIGWINCH repaint plus alacritty's reflow is the whole resize story. PTY and grid widths are never guessed apart: terminals attach at the recorded PTY size; codex runs on the alternate screen, which never reflows, so a wrong-width replay keeps its wrap damage forever.
+- Terminals outlive views: a session's `Term` lives in the `TerminalBridge` registry for the session's lifetime and panes borrow it through leases; never rebuild a grid from a replay buffer, never attach from render.
+- A GPUI `div()` is `Display::Block` until `.flex()`: a block parent ignores its children's `flex_1` / `min_h_0`, so a scroll chain must be `.flex().flex_col()` at every level or the viewport grows to its content and the scrollbar never appears.
+- `svg()` needs its own `.text_color()`; deferred layers cannot be created while already drawing a deferred parent — mount modals as the root's final direct overlay; wrapped text inside an `items_center` column needs a definite-width non-flex text block.
+- Dev profile compiles dependencies at opt-level 2 (gpui-ce/taffy at 3); an unoptimized dep graph makes every frame layout-bound.
+
+## Lessons from the landings
+
+- **Log before you reason.** The M4.6f file log and panic hook found the nightly crash loop in one read the day after they landed. The M6.1 input-state fix that shipped in #430 has *no* live recording behind it (the phantom-draft mechanism is a plausible reconstruction); if the "Inbox waiting" pill mis-fires again, record with `RUNNER_RECORD_INPUT_FIXTURE` for both claude-code and codex before touching the state machine.
+- **Reviewer finds that changed the design:** the release workflow must verify the bridge signature's minisign key id is the one shipped 0.5.x clients trust (`23fee1fa29746d59`) — a rotated key would sign a valid-looking bridge every install rejects after an irreversible publish; "leave the mission route on archive" had to gate on the archived *transition*, not the state, or a deliberately opened archived mission would be ejected by every unrelated `mission/changed`; the multi-pane "Archive all" label is the only signal before an unconfirmed kill of every pane.
+- **Tests must not pin what the contract changes.** `tests/bundle_mac.rs` hardcoded `0.6.0-nightly` and failed every `main` run after the bump; it now derives from `script/bundle-mac --print-version`.
+- **Repo settings are not in the tree.** The tree swap carried the native CI but `main`'s required checks still named the Tauri jobs; every PR sat `BLOCKED` until the rule was repointed at `Rust / macOS`.
+- **Process.** Nightlies are cut deliberately (dispatch-only) after a push-built nightly restarted the app mid-mission. Jason steers crews from the coder's PTY — those decisions never reach the feed; read the coder→reviewer relays before landing. One outward git/gh action per command. Commit the brief before `mission_start`. Briefs over 8 KB need a condensed goal that points at the file.
+
+## What remains
+
+[#432](https://github.com/yicheng47/runner/issues/432), detailed in [m6-remainder.md](m6-remainder.md): release chores (`0.7.0-nightly` bump, first post-GA nightly, `latest.json` carry-forward until 0.7.0), then M6.16 descendant sweep, M6.19 pin the UI font, M6.20 sidebar drop indicator, M6.15 ⌘1–9 tab switching (design first), then M6.2 hook-based session status (#347), M6.7 terminal performance, M6.4 feed append, the M6.3 backend remainder, Tier 2. Post-M6 direction: promote `runner-backend` into a session daemon so updates and crashes stop killing live agents.
+
+## Nightlies
+
+- **Current nightly**: `0.6.0-nightly.20260823.0341` (first universal build, M6.17; run 32615982200 from `4fa233d`) — pre-GA; the rolling `nightly` release was deleted after GA and is recreated by the next `/nightly run`. The line above is maintained by the `/nightly` skill.

@@ -1,6 +1,6 @@
 # Start Project modal
 
-Tracking issue: [#383](https://github.com/yicheng47/runner/issues/383). Status: planned.
+Tracking issue: [#383](https://github.com/yicheng47/runner/issues/383). Status: shipped (#383 closed 2026-08-01; native `open_project_modal` in `surfaces/sidebar.rs`).
 
 ## Motivation
 

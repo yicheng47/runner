@@ -2,7 +2,7 @@
 
 ## Status
 
-Shipped. Tracking issue [#360](https://github.com/yicheng47/runner/issues/360). Wake behavior confirmed by smoke test on 2026-07-27. Phase 1's findings and the answered open questions are recorded below.
+Shipped on the Tauri line, then obsolete: the xterm.js WebGL renderer was removed by the GPUI rewrite (v0.6.0, 2026-08-23), which eliminates the atlas-desync class by construction; no native equivalent exists or is needed. Tracking issue [#360](https://github.com/yicheng47/runner/issues/360). Wake behavior confirmed by smoke test on 2026-07-27. Phase 1's findings and the answered open questions are recorded below.
 
 ## Problem
 

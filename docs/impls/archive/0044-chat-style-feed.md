@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned. Design: `design/mission-feed-composer.pen` — frame "Feed · chat-style messages" (`rAJ00`), updated "Runners rail" (`LMQ7c`), decision notes (`Rauwg`). Builds on the #392 working-tree fixes already present in `MessageBody.tsx` / `EventFeed.tsx` (list gutter, mission-goal row, spacing). Revives the identicon idea from `docs/features/archive/11-runner-avatar.md`, which was specced but never shipped.
+Implemented (`b5f7fd5`, shipped in v0.5.0; the native feed carries the same rows and identicons, reworked by M6.13). Design: `design/mission-feed-composer.pen` — frame "Feed · chat-style messages" (`rAJ00`), updated "Runners rail" (`LMQ7c`), decision notes (`Rauwg`). Builds on the #392 working-tree fixes already present in `MessageBody.tsx` / `EventFeed.tsx` (list gutter, mission-goal row, spacing). Revives the identicon idea from `docs/features/archive/11-runner-avatar.md`, which was specced but never shipped.
 
 ## Problem
 

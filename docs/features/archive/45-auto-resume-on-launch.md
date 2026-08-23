@@ -1,6 +1,6 @@
 # 45 — Auto-resume running chats and missions on launch
 
-> Tracking issue: [#320](https://github.com/yicheng47/runner/issues/320)
+> Tracking issue: [#320](https://github.com/yicheng47/runner/issues/320) — shipped (closed 2026-07-26; impl 0035; migration `0017_session_resume_on_launch.sql`).
 
 ## Motivation
 

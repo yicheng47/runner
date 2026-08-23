@@ -2,7 +2,7 @@
 
 ## Status
 
-In implementation. Tracking issue [#386](https://github.com/yicheng47/runner/issues/386) — resolved in reduced form: the dynamic `codex app-server model/list` path stays documented in the issue but is not built; the catalog stays hardcoded with free-text passthrough, per the Orca precedent (`agent-session-option-catalog-claude-codex.ts`: "keep this seed short and allow unknown persisted ids to pass through"). During implementation, the mission author explicitly expanded the scope to mirror every model visible in the installed Codex catalog, add model/effort controls to Direct chat creation, and make detected agents user-enableable across Start Chat and runner create/edit selectors.
+Implemented (#386 closed 2026-08-07, `d4c082f`, `3f58c29`). Tracking issue [#386](https://github.com/yicheng47/runner/issues/386) — resolved in reduced form: the dynamic `codex app-server model/list` path stays documented in the issue but is not built; the catalog stays hardcoded with free-text passthrough, per the Orca precedent (`agent-session-option-catalog-claude-codex.ts`: "keep this seed short and allow unknown persisted ids to pass through"). During implementation, the mission author explicitly expanded the scope to mirror every model visible in the installed Codex catalog, add model/effort controls to Direct chat creation, and make detected agents user-enableable across Start Chat and runner create/edit selectors.
 
 ## Problem
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned. Tracking issue [#359](https://github.com/yicheng47/runner/issues/359), spec [54](../features/54-draft-aware-delivery-gate.md).
+Implemented (#359 closed 2026-08-01, `29e87ef`…`6c33aa6`); superseded on the native line by M6.1 observed input state (`crates/runner-terminal/src/input_state.rs`, 2026-08-22). Tracking issue [#359](https://github.com/yicheng47/runner/issues/359), spec [54](../features/54-draft-aware-delivery-gate.md).
 
 ## Problem
 

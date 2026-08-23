@@ -1,6 +1,6 @@
 # M6.1 Smoke Test — observed terminal input state
 
-Release-readiness check for M6.1 (`docs/impls/gpui-rewrite/m6-consolidation.md` §M6.1, brief in `briefs/m6-1-input-state.md`). The native terminal now observes `Idle`, `Drafting`, and `Submitted` from key intent plus the live grid; the backend consumes that observation before the legacy byte latch. A draft has no abandonment timer: delivery remains parked until the grid shows the composer empty, including while a menu hides it.
+Release-readiness check for M6.1 (`docs/impls/archive/gpui-rewrite/m6-consolidation.md` §M6.1, brief in `docs/impls/archive/gpui-rewrite/briefs/m6-1-input-state.md`). The native terminal now observes `Idle`, `Drafting`, and `Submitted` from key intent plus the live grid; the backend consumes that observation before the legacy byte latch. A draft has no abandonment timer: delivery remains parked until the grid shows the composer empty, including while a menu hides it.
 
 Run the human lane on the nightly build with one two-agent mission (claude lead + codex reviewer), one shell direct chat, and a second Runner window showing the same mission. Keep one directed message ready to send from each agent so every step can test whether a nudge lands or parks.
 

@@ -1,6 +1,6 @@
 # M6.6 Smoke Test — terminal resize smoothness + Claude fullscreen default
 
-Release-readiness check for the M6.6 nightly (`docs/impls/gpui-rewrite/m6-consolidation.md` §M6.6, brief in `briefs/m6-6-terminal-resize-smoothness.md`). What changed underneath: the PTY ioctl now fires on every resize instead of 175 ms after the drag stops; the settle only purges the output ring and nudges a repaint — it no longer injects `ESC[2J ESC[H` into live grids; `last_size` and the resize policy are no longer read or written per frame on the UI thread; claude-code spawns get `--settings {"tui":"fullscreen"}` unless the runner's own args already pass `--settings`.
+Release-readiness check for the M6.6 nightly (`docs/impls/archive/gpui-rewrite/m6-consolidation.md` §M6.6, brief in `docs/impls/archive/gpui-rewrite/briefs/m6-6-terminal-resize-smoothness.md`). What changed underneath: the PTY ioctl now fires on every resize instead of 175 ms after the drag stops; the settle only purges the output ring and nudges a repaint — it no longer injects `ESC[2J ESC[H` into live grids; `last_size` and the resize policy are no longer read or written per frame on the UI thread; claude-code spawns get `--settings {"tui":"fullscreen"}` unless the runner's own args already pass `--settings`.
 
 Two lanes, ten minutes total. Run the human lane on the nightly build, not `make run`, with one Runner instance and no crew mission in flight.
 

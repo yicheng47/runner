@@ -1,6 +1,6 @@
 # ⌘1–9 tab switching with hold-to-reveal shortcut pills
 
-Status: planned, before `v0.6.0`, **design first** (Jason, 2026-08-22). Program slot: M6.15 in [m6-consolidation.md](../impls/gpui-rewrite/m6-consolidation.md).
+Status: planned, post-GA, **design first** (Jason, 2026-08-22). Program slot: M6.15 in [m6-remainder.md](../impls/gpui-rewrite/m6-remainder.md).
 
 ## Motivation
 

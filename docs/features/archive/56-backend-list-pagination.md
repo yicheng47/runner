@@ -1,6 +1,6 @@
 # 56 — Backend pagination for Runners and Crews, honest bottom pager
 
-Tracking: [#377](https://github.com/yicheng47/runner/issues/377)
+Tracking: [#377](https://github.com/yicheng47/runner/issues/377). Status: shipped (#377 closed 2026-07-31; native `list_controls.rs` / `ui/list.rs`).
 
 Design: `design/runner-crew-list-search.pen` — the "56" row below the Crews frames: frame `csK4O` ("Runners — 56 · bottom pager, honest scroll" — pager stays bottom-pinned behind a 1px hairline aligned with the sidebar footer's divider, list region above scrolls with a visible scrollbar, a card cut at the fold reads as scrollable rather than hidden) plus deltas note `nmAx8`. The single-page state uses the same footer with page 1 selected and both arrows disabled; it has no separate frame. `cmp/Pager` itself is unchanged.
 

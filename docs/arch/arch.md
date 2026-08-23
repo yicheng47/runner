@@ -1,6 +1,6 @@
 # Runner — Architecture
 
-> Companion to [`../product/vision.md`](../product/vision.md). The vision doc defines *what* we're building and why; this doc defines *how* it works — tech stack, the model concepts the code is built around, and the protocol / schema decisions that make the model work. Rewritten 2026-08-22 (M6.5) for the native GPUI app on `gpui-nightly`; the Tauri + xterm.js era version is in history (`git show 0e5ea18:docs/arch/arch.md`) and the port that replaced it is recorded in [`../impls/gpui-rewrite/`](../impls/gpui-rewrite/README.md).
+> Companion to [`../product/vision.md`](../product/vision.md). The vision doc defines *what* we're building and why; this doc defines *how* it works — tech stack, the model concepts the code is built around, and the protocol / schema decisions that make the model work. Rewritten 2026-08-22 (M6.5) for the native GPUI app (shipped as `v0.6.0` on 2026-08-23; §14 updated then); the Tauri + xterm.js era version is in history (`git show 0e5ea18:docs/arch/arch.md`) and the port that replaced it is recorded in [`../impls/gpui-rewrite/`](../impls/gpui-rewrite/README.md).
 
 ## 1. Overview
 
@@ -655,7 +655,7 @@ sessions (
 );
 ```
 
-Migrations live in `crates/runner-backend/migrations/` (`0001_init.sql` … `0020_slot_effort_override.sql`). Forward-only; new migrations on `gpui-nightly` are allocated there and the Tauri app never sees them, which is why the cutover is a one-way door for the database (M6.3's index migration is deferred to cutover for that reason).
+Migrations live in `crates/runner-backend/migrations/` (`0001_init.sql` … `0020_slot_effort_override.sql`). Forward-only; new migrations are allocated there and the Tauri app never sees them, which is why the cutover is a one-way door for the database (M6.3's index migration is deferred to cutover for that reason).
 
 ### 10.2 Filesystem
 
@@ -751,10 +751,15 @@ A panic in a PTY reader thread only affects that session: the forwarder ends, th
 - A target platform where `portable-pty` semantics differ meaningfully from POSIX PTYs (Windows).
 - A GPUI API break: `gpui-ce` is pinned (0.3.3) and upgraded deliberately; the terminal element and IME integration are the surfaces most exposed to it.
 
-## 14. Program state — branches, landing, channels
+## 14. Program state — line, landing, channels
 
-As of 2026-08-22:
+As of 2026-08-23 (`v0.6.0` published):
 
-- **`main`** is the Tauri + React app, feature-frozen at `276a3a4` (plan decision 11); it still ships `v0.5.x` to existing users through `tauri-plugin-updater` from `releases/latest`.
-- **`gpui-nightly`** is the native app and the only line of work. Everything lands there: a crew implements and reviews on a task branch in the working tree, the human runs `make verify`, merges with `--no-ff`, and cuts a nightly on demand (`gh workflow run nightly.yml --ref gpui-nightly`); a push alone only runs CI. Nightlies are Sparkle-signed `0.6.0-nightly.<stamp>` builds on the rolling `nightly` GitHub prerelease and can never be seen by the Tauri updater.
-- **Cutover** is one release, `v0.6.0`: the tree swap onto `main`, a Sparkle DMG + appcast for native users, and a bridge trio (`Runner.app.tar.gz`, its minisign signature, `latest.json`) so Tauri installs update themselves into the native app; the trio is kept until 0.7.0. Details, the version scheme and the GA runbook: [`../impls/gpui-rewrite/plan.md`](../impls/gpui-rewrite/plan.md) §Release channels; progress and deviations: [`../impls/gpui-rewrite/impl_log.md`](../impls/gpui-rewrite/impl_log.md); the consolidation backlog: [`../impls/gpui-rewrite/m6-consolidation.md`](../impls/gpui-rewrite/m6-consolidation.md).
+- **`main`** is the native app and the only line of work; the Tauri + React line ended at `276a3a4` and its last release, `v0.5.2`, bridges into `v0.6.0` on its next update check. Work lands as a task branch → PR → the one required check (`Rust / macOS`) → merge → a docs landing commit. The human smoke-tests before the PR; crews do not launch the app.
+- **Versions.** `CFBundleVersion` is always the UTC build stamp `YYYYMMDD.HHMM` on both channels — Sparkle compares only this; `CFBundleShortVersionString` is display: `X.Y.Z-nightly.<stamp>` on nightly, `X.Y.Z` on production. The crate version (`runner-app`, `runner-backend`, `runner-terminal` in lockstep) carries `-nightly` between releases and is hand-bumped to the bare version on the release commit; the bump back (`0.6.0` → `0.7.0-nightly`) is the first post-GA chore. In-app display is `<short version> (<sha>)`; `make run` shows `<crate version> (dev)`.
+- **Nightly channel.** `gh workflow run nightly.yml --ref main` (dispatch-only; a push runs CI alone) builds, signs, notarizes, and uploads `Runner-Nightly-<short version>-universal.dmg` plus a regenerated `appcast.xml` to the rolling `nightly` GitHub **prerelease**, keeping the last ten. The nightly bundle is `com.wycstudios.runner.nightly` ("Runner Nightly") with `SUFeedURL` `releases/download/nightly/appcast.xml`. The workflow refuses to publish unless CI is green for the sha, and fails afterwards if `releases/latest` points at the nightly tag or a Tauri bridge asset is on the nightly release. The `/nightly` skill runs this path.
+- **Production channel.** Tag `vX.Y.Z` on a commit whose crate version is exactly `X.Y.Z` → `release.yml` builds the same universal bundle for `com.wycstudios.runner` (`SUFeedURL` `releases/latest/download/appcast.xml`), generates a one-item signed appcast, and attaches everything to a **draft** release; publishing is the human's switch, because it moves the `releases/latest` alias. `workflow_dispatch` with `dry_run` builds the same artifacts into a throwaway draft. One Sparkle EdDSA keypair (`packaging/sparkle-public-key`) serves both feeds.
+- **Tauri bridge (until 0.7.0).** `v0.6.0` carries `Runner.app.tar.gz` + its minisign `.sig` (key id `23fee1fa29746d59`, the one embedded in 0.5.x) + `latest.json`; every later 0.6.x release re-uploads the same `latest.json` (both platform keys at the absolute `v0.6.0` URL) so a dormant 0.5.x install hops Tauri → 0.6.0 → Sparkle. **Hard cutoff at 0.7.0**: no `latest.json`; a 0.5.x install still dormant installs the DMG by hand.
+- **Isolation.** The two bundles share one data directory (§10.2) — one instance at a time. A nightly is invisible to production installs by construction: different feed URL, and a prerelease never becomes `releases/latest`.
+
+History of how this was decided: [`../impls/gpui-rewrite/README.md`](../impls/gpui-rewrite/README.md) (condensed) and [`../impls/archive/gpui-rewrite/plan.md`](../impls/archive/gpui-rewrite/plan.md) §Release channels (full); what remains: [`../impls/gpui-rewrite/m6-remainder.md`](../impls/gpui-rewrite/m6-remainder.md).

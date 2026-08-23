@@ -1,6 +1,6 @@
 # 37 — Agent runtime executable settings
 
-> Tracking issue: [#279](https://github.com/yicheng47/runner/issues/279)
+> Tracking issue: [#279](https://github.com/yicheng47/runner/issues/279) — shipped (closed 2026-07-25; impl 0033; native `runtime_status.rs` + Settings → Agents).
 > Priority: P1.
 
 ## Motivation
