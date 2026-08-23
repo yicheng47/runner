@@ -66,10 +66,10 @@ impl NativeRoot {
         let workspace = self.render_entity_surface(window, cx);
         let sidebar = self.render_app_sidebar(window, cx);
         let preview_trigger = self.render_sidebar_preview_trigger(cx);
-        let modal = (self.route != AppRoute::Settings)
-            .then_some(self.start_chat_modal.as_ref())
-            .flatten()
-            .map(|_| self.render_start_chat_modal(cx));
+        let modal = self
+            .start_chat_modal
+            .is_some()
+            .then(|| self.render_start_chat_modal(cx));
         let chat_rename_modal = (self.route == AppRoute::Chat)
             .then_some(self.chat_rename_modal.as_ref())
             .flatten()
@@ -112,7 +112,6 @@ impl NativeRoot {
                     .child(workspace),
             )
             .children(preview_trigger)
-            .children(modal)
             .children(chat_rename_modal)
             .children(sidebar_overlays)
             .children(entity_overlays);
@@ -137,6 +136,7 @@ impl NativeRoot {
             .text_color(theme::text())
             .child(chrome)
             .children(settings)
+            .children(modal)
             .children(settings_confirm)
             .child(command_palette)
             .children(toast)

@@ -14,8 +14,8 @@ use gpui::{
     radians, svg, DragMoveEvent, FontWeight, PathPromptOptions, Transformation, WeakEntity,
 };
 use runner_app::ui::{
-    working_dir_text_field, ButtonVariant, ConfirmDialog, Field, Modal, OverlayWidth, TextField,
-    Tooltip, WorkingDirField,
+    focus_ring, working_dir_text_field, ButtonVariant, ConfirmDialog, Field, Modal, OverlayWidth,
+    TextField, Tooltip, WorkingDirField,
 };
 use runner_backend::ops::mission::{MissionActivityState, MissionSummary};
 use runner_backend::repo::node::{NodeRow, NodeType};
@@ -166,20 +166,20 @@ enum SidebarMenuAction {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WorkspaceEntry {
-    NewChat,
+    NewTab,
     Runner,
     Crew,
 }
 
 const WORKSPACE_ENTRIES: [WorkspaceEntry; 3] = [
-    WorkspaceEntry::NewChat,
+    WorkspaceEntry::NewTab,
     WorkspaceEntry::Runner,
     WorkspaceEntry::Crew,
 ];
 
 impl WorkspaceEntry {
     fn selectable(self) -> bool {
-        !matches!(self, Self::NewChat)
+        !matches!(self, Self::NewTab)
     }
 
     fn selected(self, route: &AppRoute) -> bool {
@@ -187,7 +187,7 @@ impl WorkspaceEntry {
             return false;
         }
         match self {
-            Self::NewChat => unreachable!(),
+            Self::NewTab => unreachable!(),
             Self::Runner => matches!(route, AppRoute::Runners | AppRoute::RunnerDetail(_)),
             Self::Crew => matches!(route, AppRoute::Crews | AppRoute::CrewEditor(_)),
         }
@@ -1778,16 +1778,14 @@ impl Sidebar {
         let workspace_rows = WORKSPACE_ENTRIES.map(|entry| {
             let active = entry.selected(&route);
             match entry {
-                WorkspaceEntry::NewChat => {
-                    let root = cx.entity();
+                WorkspaceEntry::NewTab => {
+                    let shell = self.shell.clone();
                     workspace_new_chat_row(move |window, cx| {
-                        root.update(cx, |this, cx| {
-                            this.handle_sidebar_menu_action(
-                                SidebarMenuAction::NewChat(None),
-                                window,
-                                cx,
-                            )
-                        });
+                        if let Some(shell) = shell.upgrade() {
+                            shell.update(cx, |shell, shell_cx| {
+                                shell.open_new_tab_modal(&NewTab, window, shell_cx)
+                            });
+                        }
                     })
                 }
                 WorkspaceEntry::Runner => {
@@ -3048,8 +3046,7 @@ fn project_row_action(
         .focus_visible(|button| {
             button
                 .opacity(1.)
-                .border_1()
-                .border_color(theme::border_strong())
+                .shadow(focus_ring(theme::border_strong()))
         })
         .child(
             svg()
@@ -3449,15 +3446,15 @@ mod tests {
         assert_eq!(
             WORKSPACE_ENTRIES,
             [
-                WorkspaceEntry::NewChat,
+                WorkspaceEntry::NewTab,
                 WorkspaceEntry::Runner,
                 WorkspaceEntry::Crew,
             ]
         );
-        assert!(!WorkspaceEntry::NewChat.selectable());
-        assert!(!WorkspaceEntry::NewChat.selected(&AppRoute::Runners));
-        assert!(!WorkspaceEntry::NewChat.selected(&AppRoute::Crews));
-        assert!(!WorkspaceEntry::NewChat.selected(&AppRoute::Settings));
+        assert!(!WorkspaceEntry::NewTab.selectable());
+        assert!(!WorkspaceEntry::NewTab.selected(&AppRoute::Runners));
+        assert!(!WorkspaceEntry::NewTab.selected(&AppRoute::Crews));
+        assert!(!WorkspaceEntry::NewTab.selected(&AppRoute::Settings));
         assert!(WorkspaceEntry::Runner.selectable());
         assert!(WorkspaceEntry::Crew.selectable());
     }
