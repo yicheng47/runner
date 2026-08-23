@@ -129,7 +129,7 @@ These are intentionally out of scope — they belong to a different product or a
 - Thread/fact primitives for mission coordination.
 - Secrets management beyond plain env vars.
 - LLM-based signal routing (the router is a flat dispatcher by design — the lead owns coordination judgment).
-- Linux and Windows desktop support (macOS only).
+- Linux desktop support. (macOS today; **Windows is targeted for 0.7.0** — [#437](https://github.com/yicheng47/runner/issues/437), decided 2026-08-23.)
 
 ## 7. Open product questions
 
@@ -142,6 +142,6 @@ Decisions we have not taken; revisit when the product surfaces them.
 
 ## 8. Risks
 
-- **PTY and process-lifecycle edge cases.** Orphan reaping, resume, and geometry are the recurring trouble spots; targeting macOS alone keeps the matrix to one.
+- **PTY and process-lifecycle edge cases.** Orphan reaping, resume, and geometry are the recurring trouble spots; targeting macOS alone keeps the matrix to one. 0.7.0's Windows target ([#437](https://github.com/yicheng47/runner/issues/437)) doubles it — ConPTY plus Job Objects is a second lifecycle implementation, not a port.
 - **TUI rendering edge cases in xterm.js.** Claude / codex use rich TUIs (alt-screen, OSC 8 hyperlinks, OSC 52 clipboard); every new TUI quirk is a tuning loop.
 - **Agents that don't know the `runner signal` / `runner msg` conventions.** We ship sensible default briefs per runtime so even an untuned agent participates correctly.
