@@ -4,7 +4,7 @@ Single program document for the Rust-native UI rewrite on the `gpui-nightly` lin
 
 ## Status
 
-**Cutover executed 2026-08-23 (decision 14):** `gpui-nightly` promoted to `main` by tree-swap merge and `v0.6.0` tagged on that commit — the first native release, universal, with the Tauri bridge. Phases 1–6 and M0–M5 are complete; M6's remaining items and everything after land on `main` as nightlies (`0.7.0-nightly`) per [m6-consolidation.md](m6-consolidation.md). The rest of this document is the program's record.
+**Cutover executed 2026-08-23 (decision 14):** `gpui-nightly` promoted to `main` by tree-swap merge (`8872100`), M6.21 and M6.22 landed on top, and `v0.6.0` tagged on the M6.22 landing — the first native release, universal, with the Tauri bridge. Phases 1–6 and M0–M5 are complete; M6's remaining items and everything after land on `main` as nightlies (`0.7.0-nightly`) per [m6-consolidation.md](m6-consolidation.md). The rest of this document is the program's record.
 
 ## End state
 
