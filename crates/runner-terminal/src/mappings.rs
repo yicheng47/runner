@@ -37,7 +37,7 @@ pub fn classify_key(
     if ctrl && !alt && key == "c" {
         return InputKind::Cancel;
     }
-    if key == "tab" && !ctrl && !alt {
+    if key == "tab" && !ctrl && !alt && !shift {
         return InputKind::Content { text: "\t".into() };
     }
     if !ctrl && !alt {
@@ -85,6 +85,12 @@ pub fn encode_key(
 ) -> Option<Vec<u8>> {
     if key == "enter" && shift && !ctrl && !alt {
         return Some(b"\x1b\r".to_vec());
+    }
+    if key == "tab" && shift && !ctrl && !alt {
+        return Some(b"\x1b[Z".to_vec());
+    }
+    if let Some(bytes) = encode_modified_special_key(key, ctrl, alt, shift) {
+        return Some(bytes);
     }
 
     let mut bytes: Vec<u8> = Vec::new();
@@ -161,6 +167,54 @@ pub fn encode_key(
         bytes.insert(0, 0x1b);
     }
     Some(bytes)
+}
+
+/// xterm's modified form for the keys whose plain sequence already
+/// starts with ESC. Prefixing those with another ESC (the Option-as-Meta
+/// convention that is right for letters) hands the TUI `ESC ESC [ C`,
+/// which crossterm reads as a bare Esc followed by the characters `[C`
+/// — Option+Right typed `[C` into codex's composer. Real terminals send
+/// `CSI 1;m C` / `CSI n;m ~` with `m = 1 + shift + 2*alt + 4*ctrl`;
+/// F1–F4 leave their SS3 form when modified, and DECCKM does not apply.
+fn encode_modified_special_key(key: &str, ctrl: bool, alt: bool, shift: bool) -> Option<Vec<u8>> {
+    if !(ctrl || alt || shift) {
+        return None;
+    }
+    let (number, final_byte): (u8, u8) = match key {
+        "up" => (1, b'A'),
+        "down" => (1, b'B'),
+        "right" => (1, b'C'),
+        "left" => (1, b'D'),
+        "end" => (1, b'F'),
+        "home" => (1, b'H'),
+        "f1" => (1, b'P'),
+        "f2" => (1, b'Q'),
+        "f3" => (1, b'R'),
+        "f4" => (1, b'S'),
+        "insert" => (2, b'~'),
+        "delete" => (3, b'~'),
+        "pageup" => (5, b'~'),
+        "pagedown" => (6, b'~'),
+        "f5" => (15, b'~'),
+        "f6" => (17, b'~'),
+        "f7" => (18, b'~'),
+        "f8" => (19, b'~'),
+        "f9" => (20, b'~'),
+        "f10" => (21, b'~'),
+        "f11" => (23, b'~'),
+        "f12" => (24, b'~'),
+        "f13" => (25, b'~'),
+        "f14" => (26, b'~'),
+        "f15" => (28, b'~'),
+        "f16" => (29, b'~'),
+        "f17" => (31, b'~'),
+        "f18" => (32, b'~'),
+        "f19" => (33, b'~'),
+        "f20" => (34, b'~'),
+        _ => return None,
+    };
+    let modifier = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
+    Some(format!("\x1b[{number};{modifier}{}", final_byte as char).into_bytes())
 }
 
 /// Route a wheel gesture the way a real terminal would: apps that
@@ -384,6 +438,94 @@ mod tests {
         assert_eq!(
             encode_key("d", false, true, true, Some("Î"), false),
             Some(b"\x1bD".to_vec())
+        );
+    }
+
+    #[test]
+    fn modified_special_keys_use_the_xterm_parameter_form() {
+        // Option+Right must never be ESC ESC [ C — crossterm reads that as
+        // Esc then the text "[C".
+        assert_eq!(
+            encode_key("right", false, true, false, None, false),
+            Some(b"\x1b[1;3C".to_vec())
+        );
+        assert_eq!(
+            encode_key("left", false, true, false, None, true),
+            Some(b"\x1b[1;3D".to_vec())
+        );
+        assert_eq!(
+            encode_key("right", false, false, true, None, false),
+            Some(b"\x1b[1;2C".to_vec())
+        );
+        assert_eq!(
+            encode_key("right", true, false, false, None, false),
+            Some(b"\x1b[1;5C".to_vec())
+        );
+        assert_eq!(
+            encode_key("up", true, true, true, None, false),
+            Some(b"\x1b[1;8A".to_vec())
+        );
+        assert_eq!(
+            encode_key("home", false, true, false, None, false),
+            Some(b"\x1b[1;3H".to_vec())
+        );
+        assert_eq!(
+            encode_key("end", false, false, true, None, false),
+            Some(b"\x1b[1;2F".to_vec())
+        );
+        assert_eq!(
+            encode_key("delete", false, true, false, None, false),
+            Some(b"\x1b[3;3~".to_vec())
+        );
+        assert_eq!(
+            encode_key("pageup", false, false, true, None, false),
+            Some(b"\x1b[5;2~".to_vec())
+        );
+        assert_eq!(
+            encode_key("f1", false, true, false, None, false),
+            Some(b"\x1b[1;3P".to_vec())
+        );
+        assert_eq!(
+            encode_key("f5", true, false, false, None, false),
+            Some(b"\x1b[15;5~".to_vec())
+        );
+        // Unmodified keys keep their plain and DECCKM forms.
+        assert_eq!(
+            encode_key("right", false, false, false, None, false),
+            Some(b"\x1b[C".to_vec())
+        );
+        assert_eq!(
+            encode_key("right", false, false, false, None, true),
+            Some(b"\x1bOC".to_vec())
+        );
+        // Keys whose sequence does not start with ESC keep the ESC prefix.
+        assert_eq!(
+            encode_key("backspace", false, true, false, None, false),
+            Some(b"\x1b\x7f".to_vec())
+        );
+        assert_eq!(
+            encode_key("enter", false, true, false, None, false),
+            Some(b"\x1b\r".to_vec())
+        );
+    }
+
+    #[test]
+    fn shift_tab_is_backtab_and_navigation() {
+        assert_eq!(
+            encode_key("tab", false, false, true, None, false),
+            Some(b"\x1b[Z".to_vec())
+        );
+        assert_eq!(
+            encode_key("tab", false, false, false, None, false),
+            Some(b"\t".to_vec())
+        );
+        assert_eq!(
+            classify_key("tab", false, false, true, None),
+            InputKind::Navigate
+        );
+        assert_eq!(
+            classify_key("tab", false, false, false, None),
+            InputKind::Content { text: "\t".into() }
         );
     }
 
