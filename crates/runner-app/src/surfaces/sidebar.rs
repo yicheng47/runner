@@ -87,7 +87,7 @@ impl SidebarRow {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum SidebarRenameTarget {
     Tab {
         node_id: String,
@@ -153,18 +153,45 @@ impl Render for SidebarNodeDrag {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum SidebarMenuAction {
     NewChat(Option<String>),
     NewMission(Option<String>),
-    OpenInNewWindow(String),
     TogglePin { node_id: String, pinned: bool },
     Rename(SidebarRenameTarget),
-    RemoveTabFromProject(Vec<String>),
-    RemoveMissionFromProject(String),
     ArchiveTab(Vec<String>),
     ArchiveMission(String),
     DeleteProject(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkspaceEntry {
+    NewChat,
+    Runner,
+    Crew,
+}
+
+const WORKSPACE_ENTRIES: [WorkspaceEntry; 3] = [
+    WorkspaceEntry::NewChat,
+    WorkspaceEntry::Runner,
+    WorkspaceEntry::Crew,
+];
+
+impl WorkspaceEntry {
+    fn selectable(self) -> bool {
+        !matches!(self, Self::NewChat)
+    }
+
+    fn selected(self, route: &AppRoute) -> bool {
+        if !self.selectable() {
+            return false;
+        }
+        match self {
+            Self::NewChat => unreachable!(),
+            Self::Runner => matches!(route, AppRoute::Runners | AppRoute::RunnerDetail(_)),
+            Self::Crew => matches!(route, AppRoute::Crews | AppRoute::CrewEditor(_)),
+        }
+    }
 }
 
 pub(crate) struct Sidebar {
@@ -856,62 +883,17 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let pinned = node.pinned_position.is_some();
-        let mut entries = vec![
-            (
-                UiMenuItem::new(if pinned { "Unpin" } else { "Pin" }).icon(if pinned {
-                    "pin-off.svg"
-                } else {
-                    "pin.svg"
-                }),
-                SidebarMenuAction::TogglePin {
-                    node_id: node.id.clone(),
-                    pinned,
-                },
-            ),
-            (
-                UiMenuItem::new("Rename tab").icon("pencil.svg"),
-                SidebarMenuAction::Rename(SidebarRenameTarget::Tab {
-                    node_id: node.id.clone(),
-                    original: layout.name.clone().unwrap_or_default(),
-                }),
-            ),
-            (
-                UiMenuItem::new("Open in New Window").icon("app-window.svg"),
-                SidebarMenuAction::OpenInNewWindow(format!(
-                    "/chats/{}",
-                    layout
-                        .focused_session_id()
-                        .unwrap_or(&members[0].session_id)
-                )),
-            ),
-        ];
-        if node_project_id(&self.app_store.read(cx).nodes, &node).is_some() {
-            entries.push((
-                UiMenuItem::new("Remove from project").icon("folder-minus.svg"),
-                SidebarMenuAction::RemoveTabFromProject(
-                    members
-                        .iter()
-                        .map(|member| member.session_id.clone())
-                        .collect(),
-                ),
-            ));
-        }
-        entries.push((
-            UiMenuItem::new(if layout.root.leaves().len() > 1 {
-                "Archive all"
-            } else {
-                "Archive"
-            })
-            .icon("archive.svg")
-            .destructive(true),
-            SidebarMenuAction::ArchiveTab(
-                members
-                    .iter()
-                    .map(|member| member.session_id.clone())
-                    .collect(),
-            ),
-        ));
+        let multi_pane = layout.root.leaves().len() > 1;
+        let entries = tab_menu_entries(
+            &node.id,
+            node.pinned_position.is_some(),
+            layout.name.unwrap_or_default(),
+            multi_pane,
+            members
+                .into_iter()
+                .map(|member| member.session_id)
+                .collect(),
+        );
         self.open_sidebar_context_menu(position, 160., entries, window, cx);
     }
 
@@ -923,44 +905,29 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let pinned = node.pinned_position.is_some();
-        let mut entries = vec![
-            (
-                UiMenuItem::new(if pinned { "Unpin" } else { "Pin" }).icon(if pinned {
-                    "pin-off.svg"
-                } else {
-                    "pin.svg"
-                }),
-                SidebarMenuAction::TogglePin {
-                    node_id: node.id,
-                    pinned,
-                },
-            ),
-            (
-                UiMenuItem::new("Rename").icon("pencil.svg"),
-                SidebarMenuAction::Rename(SidebarRenameTarget::Mission {
-                    mission_id: summary.mission.id.clone(),
-                    original: summary.mission.title.clone(),
-                }),
-            ),
-            (
-                UiMenuItem::new("Open in New Window").icon("app-window.svg"),
-                SidebarMenuAction::OpenInNewWindow(format!("/missions/{}", summary.mission.id)),
-            ),
-        ];
-        if summary.mission.project_id.is_some() {
-            entries.push((
-                UiMenuItem::new("Remove from project").icon("folder-minus.svg"),
-                SidebarMenuAction::RemoveMissionFromProject(summary.mission.id.clone()),
-            ));
-        }
-        entries.push((
-            UiMenuItem::new("Archive")
-                .icon("archive.svg")
-                .destructive(true),
-            SidebarMenuAction::ArchiveMission(summary.mission.id),
-        ));
+        let entries = mission_menu_entries(
+            &node.id,
+            node.pinned_position.is_some(),
+            &summary.mission.id,
+            summary.mission.title,
+        );
         self.open_sidebar_context_menu(position, 160., entries, window, cx);
+    }
+
+    fn open_project_create_menu(
+        &mut self,
+        project_id: String,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_sidebar_context_menu(
+            position,
+            160.,
+            project_create_menu_entries(&project_id),
+            window,
+            cx,
+        );
     }
 
     fn open_project_menu(
@@ -970,32 +937,7 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let entries = vec![
-            (
-                UiMenuItem::new("New chat in project").icon("message-square-plus.svg"),
-                SidebarMenuAction::NewChat(Some(project.id.clone())),
-            ),
-            (
-                UiMenuItem::new("New mission in project").icon("flag.svg"),
-                SidebarMenuAction::NewMission(Some(project.id.clone())),
-            ),
-            (
-                UiMenuItem::new("Rename project")
-                    .icon("pencil.svg")
-                    .separator_before(true),
-                SidebarMenuAction::Rename(SidebarRenameTarget::Project {
-                    project_id: project.id.clone(),
-                    original: project.name,
-                }),
-            ),
-            (
-                UiMenuItem::new("Delete project")
-                    .icon("trash.svg")
-                    .separator_before(true)
-                    .destructive(true),
-                SidebarMenuAction::DeleteProject(project.id),
-            ),
-        ];
+        let entries = project_menu_entries(project.id, project.name);
         self.open_sidebar_context_menu(position, 200., entries, window, cx);
     }
 
@@ -1034,14 +976,6 @@ impl Sidebar {
                     });
                 }
             }
-            SidebarMenuAction::OpenInNewWindow(route) => {
-                cx.defer(move |cx| {
-                    if let Err(error) = open_new_runner_window(Some(route), cx) {
-                        eprintln!("Runner new window failed: {error:#}");
-                    }
-                    cx.activate(true);
-                });
-            }
             SidebarMenuAction::TogglePin { node_id, pinned } => {
                 match runner_backend::ops::node::node_set_pinned(self.core(cx), node_id, !pinned) {
                     Ok(_) => self.refresh_store(StoreRefreshKind::All, cx),
@@ -1072,26 +1006,6 @@ impl Sidebar {
                     }
                 };
                 self.begin_sidebar_rename(target, value, placeholder, window, cx);
-            }
-            SidebarMenuAction::RemoveTabFromProject(session_ids) => {
-                match runner_backend::ops::session::session_set_project(
-                    self.core(cx),
-                    session_ids,
-                    None,
-                ) {
-                    Ok(()) => self.refresh_store(StoreRefreshKind::All, cx),
-                    Err(error) => self.report_error(error.to_string(), cx),
-                }
-            }
-            SidebarMenuAction::RemoveMissionFromProject(mission_id) => {
-                match runner_backend::ops::mission::mission_set_project(
-                    self.core(cx),
-                    &mission_id,
-                    None,
-                ) {
-                    Ok(_) => self.refresh_store(StoreRefreshKind::All, cx),
-                    Err(error) => self.report_error(error.to_string(), cx),
-                }
             }
             SidebarMenuAction::ArchiveTab(session_ids) => {
                 self.archive_sidebar_tab(session_ids, window, cx)
@@ -1861,6 +1775,47 @@ impl Sidebar {
                         )
                 })),
         );
+        let workspace_rows = WORKSPACE_ENTRIES.map(|entry| {
+            let active = entry.selected(&route);
+            match entry {
+                WorkspaceEntry::NewChat => {
+                    let root = cx.entity();
+                    workspace_new_chat_row(move |window, cx| {
+                        root.update(cx, |this, cx| {
+                            this.handle_sidebar_menu_action(
+                                SidebarMenuAction::NewChat(None),
+                                window,
+                                cx,
+                            )
+                        });
+                    })
+                }
+                WorkspaceEntry::Runner => {
+                    workspace_row("workspace-runner", "terminal.svg", "runner", active, {
+                        let shell = self.shell.clone();
+                        move |window, cx| {
+                            if let Some(shell) = shell.upgrade() {
+                                shell.update(cx, |shell, shell_cx| {
+                                    shell.open_runners(window, shell_cx)
+                                });
+                            }
+                        }
+                    })
+                }
+                WorkspaceEntry::Crew => {
+                    workspace_row("workspace-crew", "users.svg", "crew", active, {
+                        let shell = self.shell.clone();
+                        move |window, cx| {
+                            if let Some(shell) = shell.upgrade() {
+                                shell.update(cx, |shell, shell_cx| {
+                                    shell.open_crews(window, shell_cx)
+                                });
+                            }
+                        }
+                    })
+                }
+            }
+        });
         div()
             .min_h(px(0.))
             .flex_1()
@@ -1876,38 +1831,7 @@ impl Sidebar {
                         .flex()
                         .flex_col()
                         .gap(rems(2. / 16.))
-                        .child(workspace_row(
-                            "workspace-runner",
-                            "terminal.svg",
-                            "runner",
-                            matches!(&route, AppRoute::Runners | AppRoute::RunnerDetail(_)),
-                            {
-                                let shell = self.shell.clone();
-                                move |window, cx| {
-                                    if let Some(shell) = shell.upgrade() {
-                                        shell.update(cx, |shell, shell_cx| {
-                                            shell.open_runners(window, shell_cx)
-                                        });
-                                    }
-                                }
-                            },
-                        ))
-                        .child(workspace_row(
-                            "workspace-crew",
-                            "users.svg",
-                            "crew",
-                            matches!(&route, AppRoute::Crews | AppRoute::CrewEditor(_)),
-                            {
-                                let shell = self.shell.clone();
-                                move |window, cx| {
-                                    if let Some(shell) = shell.upgrade() {
-                                        shell.update(cx, |shell, shell_cx| {
-                                            shell.open_crews(window, shell_cx)
-                                        });
-                                    }
-                                }
-                            },
-                        )),
+                        .children(workspace_rows),
                 ),
             )
             .child(
@@ -2277,6 +2201,8 @@ impl Sidebar {
             .rename
             .as_ref()
             .is_some_and(|rename| rename.target.matches(NodeType::Project, &project.id));
+        let create_menu_root = cx.entity();
+        let create_project_id = project.id.clone();
         let menu_root = cx.entity();
         let menu_project = project.clone();
         let toggle_id = project.id.clone();
@@ -2331,20 +2257,39 @@ impl Sidebar {
             )
             .children(collapsed.then(|| attention_indicator(attention)))
             .child(
-                IconButton::new(
-                    SharedString::from(format!("sidebar-project-actions-{}", project.id)),
-                    "more-horizontal.svg",
-                )
-                .size(IconButtonSize::Xs)
-                .stop_click_propagation(true)
-                .reveal_on_group_hover("sidebar-row-actions")
-                .tooltip("Project actions")
-                .on_press(move |window, cx| {
-                    let position = window.mouse_position();
-                    menu_root.update(cx, |this, cx| {
-                        this.open_project_menu(menu_project.clone(), position, window, cx)
-                    });
-                }),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(project_row_action(
+                        SharedString::from(format!("sidebar-project-create-{}", project.id)),
+                        "plus.svg",
+                        12.,
+                        "New in project",
+                        move |window, cx| {
+                            let position = window.mouse_position();
+                            create_menu_root.update(cx, |this, cx| {
+                                this.open_project_create_menu(
+                                    create_project_id.clone(),
+                                    position,
+                                    window,
+                                    cx,
+                                )
+                            });
+                        },
+                    ))
+                    .child(project_row_action(
+                        SharedString::from(format!("sidebar-project-actions-{}", project.id)),
+                        "more-horizontal.svg",
+                        14.,
+                        "Project actions",
+                        move |window, cx| {
+                            let position = window.mouse_position();
+                            menu_root.update(cx, |this, cx| {
+                                this.open_project_menu(menu_project.clone(), position, window, cx)
+                            });
+                        },
+                    )),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_project(&toggle_id, cx);
@@ -2889,6 +2834,120 @@ impl NativeRoot {
     }
 }
 
+fn tab_menu_entries(
+    node_id: &str,
+    pinned: bool,
+    original: String,
+    multi_pane: bool,
+    session_ids: Vec<String>,
+) -> Vec<(UiMenuItem, SidebarMenuAction)> {
+    vec![
+        (
+            UiMenuItem::new(if pinned { "Unpin" } else { "Pin" }).icon(if pinned {
+                "pin-off.svg"
+            } else {
+                "pin.svg"
+            }),
+            SidebarMenuAction::TogglePin {
+                node_id: node_id.to_owned(),
+                pinned,
+            },
+        ),
+        (
+            UiMenuItem::new("Rename tab").icon("pencil.svg"),
+            SidebarMenuAction::Rename(SidebarRenameTarget::Tab {
+                node_id: node_id.to_owned(),
+                original,
+            }),
+        ),
+        (
+            UiMenuItem::new(if multi_pane { "Archive all" } else { "Archive" })
+                .icon("archive.svg")
+                .destructive(true),
+            SidebarMenuAction::ArchiveTab(session_ids),
+        ),
+    ]
+}
+
+fn mission_menu_entries(
+    node_id: &str,
+    pinned: bool,
+    mission_id: &str,
+    original: String,
+) -> Vec<(UiMenuItem, SidebarMenuAction)> {
+    vec![
+        (
+            UiMenuItem::new(if pinned { "Unpin" } else { "Pin" }).icon(if pinned {
+                "pin-off.svg"
+            } else {
+                "pin.svg"
+            }),
+            SidebarMenuAction::TogglePin {
+                node_id: node_id.to_owned(),
+                pinned,
+            },
+        ),
+        (
+            UiMenuItem::new("Rename").icon("pencil.svg"),
+            SidebarMenuAction::Rename(SidebarRenameTarget::Mission {
+                mission_id: mission_id.to_owned(),
+                original,
+            }),
+        ),
+        (
+            UiMenuItem::new("Archive")
+                .icon("archive.svg")
+                .destructive(true),
+            SidebarMenuAction::ArchiveMission(mission_id.to_owned()),
+        ),
+    ]
+}
+
+fn project_create_menu_entries(project_id: &str) -> Vec<(UiMenuItem, SidebarMenuAction)> {
+    vec![
+        (
+            UiMenuItem::new("New chat").icon("message-square-plus.svg"),
+            SidebarMenuAction::NewChat(Some(project_id.to_owned())),
+        ),
+        (
+            UiMenuItem::new("New mission").icon("flag.svg"),
+            SidebarMenuAction::NewMission(Some(project_id.to_owned())),
+        ),
+    ]
+}
+
+fn project_menu_entries(
+    project_id: String,
+    project_name: String,
+) -> Vec<(UiMenuItem, SidebarMenuAction)> {
+    vec![
+        (
+            UiMenuItem::new("New chat in project").icon("message-square-plus.svg"),
+            SidebarMenuAction::NewChat(Some(project_id.clone())),
+        ),
+        (
+            UiMenuItem::new("New mission in project").icon("flag.svg"),
+            SidebarMenuAction::NewMission(Some(project_id.clone())),
+        ),
+        (
+            UiMenuItem::new("Rename project")
+                .icon("pencil.svg")
+                .separator_before(true),
+            SidebarMenuAction::Rename(SidebarRenameTarget::Project {
+                project_id: project_id.clone(),
+                original: project_name,
+            }),
+        ),
+        (
+            UiMenuItem::new("Delete project")
+                .icon("trash.svg")
+                .separator_before(true)
+                .destructive(true),
+            SidebarMenuAction::DeleteProject(project_id),
+        ),
+    ]
+}
+
 fn node_project_id(nodes: &[NodeRow], node: &NodeRow) -> Option<String> {
     let parent = nodes
         .iter()
@@ -2915,6 +2974,102 @@ fn section_title(label: &'static str) -> AnyElement {
         .text_color(theme::faint())
         .child(label)
         .into_any_element()
+}
+
+fn workspace_new_chat_row(on_click: impl Fn(&mut Window, &mut gpui::App) + 'static) -> AnyElement {
+    div()
+        .id("workspace-new-chat")
+        .w_full()
+        .px(rems(10. / 16.))
+        .py(rems(6. / 16.))
+        .flex()
+        .items_center()
+        .gap_2()
+        .rounded_sm()
+        .border_1()
+        .border_color(gpui::transparent_black())
+        .cursor_pointer()
+        .hover(|row| {
+            row.border_color(theme::sidebar_selected_border())
+                .bg(theme::with_alpha(theme::sidebar_selected(), 0.4))
+        })
+        .child(
+            svg()
+                .path("message-square-plus.svg")
+                .size(rems(12. / 16.))
+                .flex_none()
+                .text_color(theme::accent()),
+        )
+        .child(
+            div()
+                .min_w(px(0.))
+                .flex_1()
+                .text_size(rems(14. / 16.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::muted())
+                .child("New chat"),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(rems(11. / 16.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::faint())
+                .child("⌘N"),
+        )
+        .on_click(move |_, window, cx| on_click(window, cx))
+        .into_any_element()
+}
+
+fn project_row_action(
+    id: SharedString,
+    icon: &'static str,
+    icon_size: f32,
+    tooltip: &'static str,
+    on_press: impl Fn(&mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let id = gpui::ElementId::from(id);
+    let tooltip_id = (id.clone(), "tooltip");
+    let on_press = Rc::new(on_press);
+    let key_press = Rc::clone(&on_press);
+    let button = div()
+        .id(id)
+        .tab_index(0)
+        .tab_stop(true)
+        .size(rems(1.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_sm()
+        .opacity(0.)
+        .group_hover("sidebar-row-actions", |button| button.opacity(1.))
+        .cursor_pointer()
+        .hover(|button| button.bg(theme::raised()))
+        .focus_visible(|button| {
+            button
+                .opacity(1.)
+                .border_1()
+                .border_color(theme::border_strong())
+        })
+        .child(
+            svg()
+                .path(icon)
+                .size(rems(icon_size / 16.))
+                .text_color(theme::muted())
+                .group_hover("sidebar-row-actions", |icon| icon.text_color(theme::text())),
+        )
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(move |_, window, cx| {
+            cx.stop_propagation();
+            on_press(window, cx);
+        })
+        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                cx.stop_propagation();
+                key_press(window, cx);
+            }
+        });
+    Tooltip::new(tooltip_id, tooltip, button).into_any_element()
 }
 
 fn workspace_row(
@@ -3280,6 +3435,123 @@ mod tests {
             name: "event/appended",
             payload: serde_json::json!({ "event": { "type": signal } }),
         }
+    }
+
+    fn menu_labels(entries: &[(UiMenuItem, SidebarMenuAction)]) -> Vec<&str> {
+        entries
+            .iter()
+            .map(|(item, _)| item.label.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn workspace_starts_with_a_non_selectable_new_chat_action() {
+        assert_eq!(
+            WORKSPACE_ENTRIES,
+            [
+                WorkspaceEntry::NewChat,
+                WorkspaceEntry::Runner,
+                WorkspaceEntry::Crew,
+            ]
+        );
+        assert!(!WorkspaceEntry::NewChat.selectable());
+        assert!(!WorkspaceEntry::NewChat.selected(&AppRoute::Runners));
+        assert!(!WorkspaceEntry::NewChat.selected(&AppRoute::Crews));
+        assert!(!WorkspaceEntry::NewChat.selected(&AppRoute::Settings));
+        assert!(WorkspaceEntry::Runner.selectable());
+        assert!(WorkspaceEntry::Crew.selectable());
+    }
+
+    #[test]
+    fn project_create_menu_uses_short_labels_and_project_targets() {
+        let entries = project_create_menu_entries("project-1");
+        assert_eq!(menu_labels(&entries), ["New chat", "New mission"]);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|(_, action)| action.clone())
+                .collect::<Vec<_>>(),
+            [
+                SidebarMenuAction::NewChat(Some("project-1".into())),
+                SidebarMenuAction::NewMission(Some("project-1".into())),
+            ]
+        );
+
+        let project_entries = project_menu_entries("project-1".into(), "Runner".into());
+        assert_eq!(
+            menu_labels(&project_entries),
+            [
+                "New chat in project",
+                "New mission in project",
+                "Rename project",
+                "Delete project",
+            ]
+        );
+    }
+
+    #[test]
+    fn tab_and_mission_menus_have_the_trimmed_item_lists() {
+        let tab_entries = tab_menu_entries(
+            "tab-1",
+            false,
+            "My tab".into(),
+            false,
+            vec!["session-1".into(), "session-2".into()],
+        );
+        assert_eq!(menu_labels(&tab_entries), ["Pin", "Rename tab", "Archive"]);
+        assert!(tab_entries[2].0.destructive);
+        assert_eq!(
+            tab_entries
+                .iter()
+                .map(|(_, action)| action.clone())
+                .collect::<Vec<_>>(),
+            [
+                SidebarMenuAction::TogglePin {
+                    node_id: "tab-1".into(),
+                    pinned: false,
+                },
+                SidebarMenuAction::Rename(SidebarRenameTarget::Tab {
+                    node_id: "tab-1".into(),
+                    original: "My tab".into(),
+                }),
+                SidebarMenuAction::ArchiveTab(vec!["session-1".into(), "session-2".into(),]),
+            ]
+        );
+
+        let multi_pane_entries = tab_menu_entries(
+            "tab-1",
+            false,
+            "My tab".into(),
+            true,
+            vec!["session-1".into(), "session-2".into()],
+        );
+        assert_eq!(
+            menu_labels(&multi_pane_entries),
+            ["Pin", "Rename tab", "Archive all"]
+        );
+        assert!(multi_pane_entries[2].0.destructive);
+
+        let mission_entries =
+            mission_menu_entries("mission-node-1", false, "mission-1", "My mission".into());
+        assert_eq!(menu_labels(&mission_entries), ["Pin", "Rename", "Archive"]);
+        assert!(mission_entries[2].0.destructive);
+        assert_eq!(
+            mission_entries
+                .iter()
+                .map(|(_, action)| action.clone())
+                .collect::<Vec<_>>(),
+            [
+                SidebarMenuAction::TogglePin {
+                    node_id: "mission-node-1".into(),
+                    pinned: false,
+                },
+                SidebarMenuAction::Rename(SidebarRenameTarget::Mission {
+                    mission_id: "mission-1".into(),
+                    original: "My mission".into(),
+                }),
+                SidebarMenuAction::ArchiveMission("mission-1".into()),
+            ]
+        );
     }
 
     #[test]
