@@ -4,7 +4,7 @@ Single program document for the Rust-native UI rewrite on the `gpui-nightly` lin
 
 ## Status
 
-Phases 1–3 (spike, core extraction, walking skeleton) are complete — records in §Roadmap and the appendix. Of the working milestones, M0–M2 and M3.1 have shipped; M3 (feature-parity slices) is in progress as serial codex-peer missions, task numbering pinned in the log's 2026-08-18 breakdown entry. Then M4 (UI parity), M5 (sweep + watermark), Phase 5 (app-shell services), Phase 6 (cutover).
+**Cutover executed 2026-08-23 (decision 14):** `gpui-nightly` promoted to `main` by tree-swap merge and `v0.6.0` tagged on that commit — the first native release, universal, with the Tauri bridge. Phases 1–6 and M0–M5 are complete; M6's remaining items and everything after land on `main` as nightlies (`0.7.0-nightly`) per [m6-consolidation.md](m6-consolidation.md). The rest of this document is the program's record.
 
 ## End state
 

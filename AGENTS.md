@@ -67,7 +67,7 @@ Prefer the smallest check that covers the change. For native UI changes, run the
 - Use structured APIs and parsers when available instead of ad hoc string
   manipulation.
 - Keep comments rare and useful. Explain non-obvious intent, not mechanics.
-- Treat `design/runner-mvp-design.pen` as the historical MVP canvas. Put new product work in a feature-scoped `.pen` file and keep UI aligned with the file and node referenced by the user or feature spec. Exception — the `gpui-nightly` rewrite line: there the goal is parity with the shipped React app, so `main`'s `src/` is the source of truth on every axis and the `.pen` canvas is a reference only (see `docs/impls/gpui-rewrite/plan.md` decision 1).
+- Treat `design/runner-mvp-design.pen` as the historical MVP canvas. Put new product work in a feature-scoped `.pen` file and keep UI aligned with the file and node referenced by the user or feature spec. The active canvas is `design/runner.pen`; the gpui-rewrite's parity exception (plan decision 1) ended at the `v0.6.0` cutover on 2026-08-23.
 - Do not add repo conventions only to an agent-specific file. Update this file
   and leave tool-specific files as pointers if needed.
 
