@@ -14,7 +14,7 @@ concurrency:
 jobs:
   build-macos:
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
 
@@ -43,7 +43,7 @@ jobs:
       - name: Install Rust toolchain
         run: |
           rustup show active-toolchain
-          rustup target add aarch64-apple-darwin
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -104,11 +104,11 @@ jobs:
           if gh release view nightly >/dev/null 2>&1; then
             gh release download nightly --pattern '*.dmg' --dir "$appcast_dir"
           fi
-          new_dmg="target/release/Runner-Nightly-${{ steps.build.outputs.short_version }}-arm64.dmg"
+          new_dmg="target/release/Runner-Nightly-${{ steps.build.outputs.short_version }}-universal.dmg"
           cp "$new_dmg" "$appcast_dir/"
           for dmg in "$appcast_dir"/*.dmg; do
             name=${dmg##*/}
-            if [[ "$name" =~ ([0-9]{8})\.([0-9]{4})-arm64\.dmg$ ]]; then
+            if [[ "$name" =~ ([0-9]{8})\.([0-9]{4})-(arm64|universal)\.dmg$ ]]; then
               printf '%s.%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$dmg"
             fi
           done | sort -r | sed -n '11,$p' | cut -f2- | while IFS= read -r stale; do
