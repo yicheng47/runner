@@ -181,6 +181,29 @@ fn close_target(route: &AppRoute, leaves: usize) -> CloseTarget {
     }
 }
 
+fn close_window_or_pane(this: &mut NativeRoot, window: &mut Window, cx: &mut Context<NativeRoot>) {
+    let leaves = (this.route == AppRoute::Chat)
+        .then(|| this.tabs.active())
+        .flatten()
+        .map(|layout| layout.root.leaves().len())
+        .unwrap_or_default();
+    match close_target(&this.route, leaves) {
+        CloseTarget::Pane => {
+            if let Some(pane_id) = this
+                .tabs
+                .active()
+                .map(|layout| layout.focused_pane_id.clone())
+            {
+                this.close_pane(&pane_id, window, cx);
+            }
+        }
+        CloseTarget::Window => {
+            this.prepare_window_close(window, cx);
+            window.remove_window();
+        }
+    }
+}
+
 struct ChatRenameModal {
     target: ChatRenameTarget,
     input: Entity<runner_app::ui::TextField>,
@@ -1018,14 +1041,26 @@ fn run() -> Result<()> {
         cx.on_action(|_: &Hide, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+        // Global action listeners run while GPUI still holds the active
+        // window's update lease (both the key-binding and the menu-item
+        // paths dispatch through `active_window.update`), so a nested
+        // `window.update` here fails silently. Defer the work one tick.
         cx.on_action(|_: &Minimize, cx| {
             if let Some(window) = cx.active_window() {
-                let _ = window.update(cx, |_, window, _| window.minimize_window());
+                cx.defer(move |cx| {
+                    if let Err(error) = window.update(cx, |_, window, _| window.minimize_window()) {
+                        eprintln!("Runner minimize failed: {error:#}");
+                    }
+                });
             }
         });
         cx.on_action(|_: &Maximize, cx| {
             if let Some(window) = cx.active_window() {
-                let _ = window.update(cx, |_, window, _| window.zoom_window());
+                cx.defer(move |cx| {
+                    if let Err(error) = window.update(cx, |_, window, _| window.zoom_window()) {
+                        eprintln!("Runner maximize failed: {error:#}");
+                    }
+                });
             }
         });
         cx.on_action(|_: &CloseWindowOrPane, cx| {
@@ -1033,34 +1068,9 @@ fn run() -> Result<()> {
                 .active_window()
                 .and_then(|window| window.downcast::<NativeRoot>())
             {
-                let _ = window.update(cx, |this, window, cx| {
-                    let leaves = (this.route == AppRoute::Chat)
-                        .then(|| this.tabs.active())
-                        .flatten()
-                        .map(|layout| layout.root.leaves().len())
-                        .unwrap_or_default();
-                    match close_target(&this.route, leaves) {
-                        CloseTarget::Pane => {
-                            eprintln!(
-                                "Runner cmd-w: route={:?} leaves={leaves} -> pane",
-                                this.route
-                            );
-                            if let Some(pane_id) = this
-                                .tabs
-                                .active()
-                                .map(|layout| layout.focused_pane_id.clone())
-                            {
-                                this.close_pane(&pane_id, window, cx);
-                            }
-                        }
-                        CloseTarget::Window => {
-                            eprintln!(
-                                "Runner cmd-w: route={:?} leaves={leaves} -> window",
-                                this.route
-                            );
-                            this.prepare_window_close(window, cx);
-                            window.remove_window();
-                        }
+                cx.defer(move |cx| {
+                    if let Err(error) = window.update(cx, close_window_or_pane) {
+                        eprintln!("Runner cmd-w failed: {error:#}");
                     }
                 });
             }
