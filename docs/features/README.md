@@ -22,6 +22,7 @@ Since the GPUI rewrite shipped as `v0.6.0` (2026-08-23) there is one line of wor
 - [61 — Opt-in worktree isolation per mission](./61-mission-worktree-isolation.md) — mission-start decorator: opted-in missions get `git worktree add <repo>/.worktrees/… -b mission/<short-id>-<slug>` and `mission.cwd` points into it, so concurrent crews and the human's checkout never collide; default stays the project checkout, all slots share the tree, archive offers safe (`git worktree remove`, dirty-refusing) cleanup ([#403](https://github.com/yicheng47/runner/issues/403)).
 - [62 — Monokai terminal theme](./62-monokai-terminal-theme.md) — add the classic Monokai palette as a third terminal theme (ANSI-16 palette, pink `#F92672` swatch); specced against `main`'s `settings.ts`, ports to `TerminalTheme` in `app_settings.rs` ([#406](https://github.com/yicheng47/runner/issues/406)).
 - [63 — ⌘1–9 tab switching with hold-to-reveal shortcut pills](./63-tab-shortcut-hints.md) — browser-style `⌘1`…`⌘9` jump to the Nth visible sidebar row; hold `⌘` for ~150 ms and each numbered row shows its digit pill, Arc-style; M6.15, design first.
+- [64 — Native terminal as a tab type and as pane content](./64-native-terminal.md) — `$SHELL` in a real PTY as a third kind of tab (`⌘T`) and as pane content beside a chat in a split; a direct session with `runtime == "shell"`, no new `NodeType`, no modal, no archive, never auto-respawned on launch; not a VS Code-style drawer ([#356](https://github.com/yicheng47/runner/issues/356)).
 
 ## Archive
 
