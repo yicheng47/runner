@@ -1,0 +1,6 @@
+{"v":1,"cols":40,"rows":4,"command":"zsh","args":[],"note":"Input-state replay: trimmed bare shell prompt, content echo, and Enter submission"}
+{"ms":0,"data":"G1syOzFIJCA="}
+{"ms":5,"input":{"type":"key","kind":{"kind":"content","text":"hello"}}}
+{"ms":10,"data":"DRtbSyQgaGVsbG8="}
+{"ms":15,"input":{"type":"key","kind":{"kind":"submit"}}}
+{"ms":20,"data":"DRtbSyQg"}

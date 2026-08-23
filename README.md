@@ -8,15 +8,13 @@
 <p align="center">
   Spawn a runner. Create your crew. Ship the feature.
   <br />
-  A local agentic development environment (ADE) — orchestrate crews of CLI coding agents: Claude Code, Codex, Qoder, and friends.
+  A local agentic development environment (ADE) — orchestrate crews of CLI coding agents: Claude Code, Codex, and friends.
 </p>
 
 <p align="center">
   <a href="#about">About</a>
   ·
   <a href="#features">Features</a>
-  ·
-  <a href="#supported-agent-runtimes">Runtimes</a>
   ·
   <a href="#drive-it-from-your-agents-mcp">MCP</a>
   ·
@@ -31,13 +29,13 @@
 
 ---
 
-> Status: alpha, actively shipping.
+> Status: alpha, actively shipping. macOS, Apple Silicon and Intel (one universal build).
 
 ---
 
 ## About
 
-Runner is a local desktop workspace for operating multiple CLI coding agents at once. Instead of scattering Claude Code, Codex, and Qoder sessions across terminal windows, you run them as an organized fleet — configured runners, composed crews, coordinated missions — from a single app.
+Runner is a local desktop workspace for operating multiple CLI coding agents at once. Instead of scattering Claude Code and Codex sessions across terminal windows, you run them as an organized fleet — configured runners, composed crews, coordinated missions — from a single app.
 
 Runner is an **agentic development environment (ADE)**. Where an IDE organizes buffers and a debugger around the code you write, an ADE organizes terminals, crews, and event feeds around the agents writing it. The operator's job shifts accordingly: assign roles, start missions, monitor progress, review diffs, and make the calls agents escalate to you.
 
@@ -45,22 +43,11 @@ The coordination model is explicit. A **runner** is a reusable agent configurati
 
 Runner also runs as an **MCP server**: any MCP client — including the agents themselves — can create crews, start missions, and steer them programmatically. See [Drive it from your agents](#drive-it-from-your-agents-mcp).
 
-## Supported agent runtimes
-
-Runner currently ships first-class adapters for four CLI coding agents:
-
-| Runtime | Default command | Notes |
-| --- | --- | --- |
-| Claude Code | `claude` | Direct chats, crews, conversation resume, permission modes, and MCP registration. |
-| Codex | `codex` | Direct chats, crews, conversation resume, model effort, permission modes, and MCP registration. |
-| Qoder | `qodercli` | Direct chats, crews, conversation resume, permission modes, and MCP registration. |
-| TRAE CLI | `traecli` | Internal-edition runtime; activates when `traecli` is available on `PATH`. Supports chats, crews, resume, model effort, permission modes, and MCP registration. |
-
-Runner does not bundle these agent CLIs. Install and authenticate each runtime separately; Runner detects its default command from `PATH`, and **Settings → Agents** lets you override the executable path.
+Runner is a native macOS app written in Rust: [gpui-ce](https://github.com/gpui-ce/gpui-ce) — the community-maintained fork of [Zed](https://zed.dev)'s GPUI — for the UI, `alacritty_terminal` for the terminal grid, SQLite for state. No webview.
 
 ## Download
 
-Latest macOS build (Apple Silicon + Intel `.dmg`) on the [releases page](https://github.com/yicheng47/runner/releases/latest).
+Latest macOS build (universal `.dmg`, Apple Silicon and Intel) on the [releases page](https://github.com/yicheng47/runner/releases/latest). The rolling [`nightly`](https://github.com/yicheng47/runner/releases/tag/nightly) prerelease tracks this branch and updates itself through Sparkle. Signed and notarized; Linux and Windows are not supported.
 
 <!-- TODO(demo): add a "## Demo" section here once the new hero video is recorded — a Peer
      Coding Crew mission on a real repo (mission start from a project → feed + per-slot
@@ -97,13 +84,13 @@ Starting a mission spawns one live PTY per slot into a tabbed workspace where th
 </tr>
 <tr>
 <td width="50%">
-  <img src="assets/chat_split.png" alt="Chat tab with a Claude Code and a Codex pane side by side, and the project-grouped sidebar" width="100%" />
+  <img src="assets/chat_split.png" alt="Chat tab with three split panes and organized sidebar" width="100%" />
 </td>
 <td width="50%" valign="middle">
 
-### Chats — tabs, split panes, projects
+### Chats — tabs, split panes, folders
 
-Every chat is a real 1:1 PTY with a runner, no mission required. Tabs hold up to three side-by-side panes — run Claude Code, Codex, and Qoder on the same problem in one view. The sidebar groups chats and missions into cwd-bound projects; every tab shows a spinner while a pane is still working and a dot when one finished while you were elsewhere, so a wall of parallel agents stays scannable.
+Every chat is a real 1:1 PTY with a runner, no mission required. Tabs hold up to three side-by-side panes — run a Claude Code and a Codex on the same problem in one view. The sidebar groups tabs into collapsible folders; every tab shows a spinner while a pane is still working and a dot when one finished while you were elsewhere, so a wall of parallel agents stays scannable.
 
 </td>
 </tr>
@@ -115,7 +102,7 @@ Every chat is a real 1:1 PTY with a runner, no mission required. Tabs hold up to
 
 ### A real terminal
 
-xterm.js on a WebGL canvas — claude-code, codex, qoder, and any modern TUI render with their actual ANSI palette, mouse tracking, and live redraws. Sessions are resumable across app restarts; the event log is the source of truth.
+Every pane is a real PTY behind an `alacritty_terminal` grid, drawn by GPUI on the GPU — claude-code, codex, and any modern TUI render with their actual ANSI palette, mouse reporting, alt-screen redraws, and pixel-snapped box-drawing glyphs. Mouse selection and ⌘C, IME composition (Pinyin included), file-path paste, 10,000 lines of scrollback. Sessions are resumable across app restarts; the event log is the source of truth.
 
 </td>
 </tr>
@@ -127,19 +114,19 @@ xterm.js on a WebGL canvas — claude-code, codex, qoder, and any modern TUI ren
 
 ### Multi-window
 
-`⌘N` opens additional OS windows — a mission on one screen, a wall of chats on the other. Windows coordinate ownership of shared sessions: the primary owns the PTY, and any other window showing the same session gets a hand-off overlay instead of a corrupted terminal.
+`⇧⌘N` opens additional OS windows — a mission on one screen, a wall of chats on the other. Windows coordinate ownership of shared sessions: the primary owns the PTY, and any other window showing the same session gets a hand-off overlay instead of a corrupted terminal.
 
 </td>
 </tr>
 <tr>
 <td width="50%">
-  <img src="assets/mcp_settings.png" alt="Settings → MCP — one-click config for Claude Code, Codex, and Qoder" width="100%" />
+  <img src="assets/mcp_settings.png" alt="Settings → MCP — one-click config for Claude Code and Codex" width="100%" />
 </td>
 <td width="50%" valign="middle">
 
 ### Drive it from your agents (MCP)
 
-Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar, and **Settings → MCP** registers it with Claude Code, Codex, or Qoder in one click. Connected agents assemble crews, start and steer missions (`mission_start`, `mission_feed`, `mission_post_human_signal`), and spin up chats (`session_start_direct`). The compounding trick: your daily driver agent plans a fix, dispatches a coder/reviewer crew, and keeps working — agents dispatching crews of agents, every session still a real PTY you can open and watch.
+Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sidecar, and **Settings → MCP** registers it with Claude Code, Codex, Qoder, or TRAE in one click. Connected agents assemble crews, start and steer missions (`mission_start`, `mission_feed`, `mission_post_human_signal`), and spin up chats (`session_start_direct`). The compounding trick: your daily driver agent plans a fix, dispatches a coder/reviewer crew, and keeps working — agents dispatching crews of agents, every session still a real PTY you can open and watch.
 
 </td>
 </tr>
@@ -148,27 +135,31 @@ Everything above is also an MCP tool. Runner bundles a `runner-mcp` stdio sideca
 ### Also in the box
 
 - **Projects** — bind a working directory once; chats and missions started inside a project inherit its cwd and stay grouped in their own sidebar section.
-- **Themes** — Auto / Light / Dark chrome with two variants per side (Runner and Catppuccin Mocha dark; Codex Light and Catppuccin Latte light), independent terminal palettes, and a bundled offline font picker.
+- **Themes** — Auto / Light / Dark chrome with two variants per side (Runner and Catppuccin Mocha dark; Codex Light and Catppuccin Latte light), independent terminal palettes (Runner, Catppuccin Mocha, Solarized Dark), Inter bundled as the UI font, and MesloLGS Nerd Font bundled for terminals.
+- **Auto-update** — Sparkle, with a hint on the sidebar's Settings row when a new build is waiting; nightly and release feeds are signed with the same key.
 - **Bundled `runner` CLI** — spawned agents message each other, check the crew roster, and post signals from inside their own PTYs.
+- **Runtimes** — Claude Code and Codex are first-class: daily-driven, with fixture-tested terminal rendering and tuned launch/nudge timing. Qoder and TRAE run through the same paths but see far less use and may have rough edges — [issues](https://github.com/yicheng47/runner/issues) are welcome. All four are detected on `PATH`, with per-runtime executable overrides in **Settings → Agents**.
 
 ## Example crew
 
-The **default Runner shape** — a three-runner engineering party where one decomposes, one builds, one audits. Lives in [`examples/dev-crew/`](./examples/dev-crew/) — drop the system prompts into a new Crew, hand it a goal, and the three tabs work the problem in one window.
+The **default Runner shape** is a two-runner peer-coding loop: one implements, one reviews, and the loop runs on the working-tree diff until the review is clean — no architect, no dispatch overhead, just the tightest loop that still has a second pair of eyes. Runner seeds this crew on first launch; the source lives in [`examples/peer-coding/`](./examples/peer-coding/).
 
 | Runner | Runtime | Role | System prompt |
 | --- | --- | --- | --- |
-| **@architect** (lead) | `claude-code` | Reads the goal, decomposes into tasks, dispatches the rest. Stays out of the editor. | [`architect.md`](./examples/dev-crew/architect.md) |
-| **@impl** | `claude-code` | Picks up tasks, writes the code, runs the tests. | [`impl.md`](./examples/dev-crew/impl.md) |
-| **@reviewer** | `codex` | Reads the diff, finds regressions and missing edge cases, reports back. | [`reviewer.md`](./examples/dev-crew/reviewer.md) |
+| **@coder** (lead) | `codex` | Branches, implements, runs the checks, hands the diff to the reviewer, fixes findings. | [`coder.md`](./examples/peer-coding/coder.md) |
+| **@reviewer** | `codex` | Reads the working-tree diff, reports must-fix issues with file:line pointers, never edits code. | [`reviewer.md`](./examples/peer-coding/reviewer.md) |
+
+The crew's team conventions — feature branch first, review before any commit, nothing merged unless the human asks — are in [`team-conventions.md`](./examples/peer-coding/team-conventions.md). Both slots ship on `codex`; switching `@coder` to `claude-code` makes it a cross-vendor pair, where each model catches what the other's training glosses over.
 
 ### More crews
 
 For weirder, more fun crew shapes, peek at [`examples/`](./examples/):
 
-- [`dev-crew/`](./examples/dev-crew/) — the default architect / impl / reviewer trio above
-- [`peer-coding/`](./examples/peer-coding/) — the tightest loop that still has a second pair of eyes: a coder ships one task on a feature branch, a reviewer audits the working-tree diff over the Runner CLI until clean
+- [`peer-coding/`](./examples/peer-coding/) — the default coder / reviewer pair above
+- [`dev-crew/`](./examples/dev-crew/) — an architect / impl / reviewer trio: one decomposes, one builds, one audits
 - [`docs-crew/`](./examples/docs-crew/) — architect partitions a complex repo, 2+ writers draft per-module docs in parallel, editor harmonizes
 - [`tic-tac-toe/`](./examples/tic-tac-toe/) — 2 agents + 1 referee actually playing a game against each other
+- [`werewolf/`](./examples/werewolf/) — 6-player social deduction with a god moderator
 - [`tomb-raid/`](./examples/tomb-raid/) — a 4-person heist crew run by a DM
 
 Each is a copy-pasteable handle + system-prompt set you can spawn into a new Crew and hit Start.
@@ -179,6 +170,13 @@ Architecture, runtime contracts, product vision, and per-feature specs live in [
 
 For dev setup, prereqs, and contributor conventions see [AGENTS.md](./AGENTS.md).
 
+## Acknowledgements
+
+- **[GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui)** and **[gpui-ce](https://github.com/gpui-ce/gpui-ce)** — the UI is built on gpui-ce, the community fork that keeps Zed's GPU-accelerated UI framework published and usable outside Zed. Thank you to the Zed team for building and open-sourcing the framework, and to the gpui-ce maintainers for carrying it forward; Zed's terminal crates were the architectural reference for Runner's terminal split.
+- **[alacritty_terminal](https://github.com/alacritty/alacritty)** — the terminal grid, parser, and scrollback under every pane.
+- **[xterm.js](https://github.com/xtermjs/xterm.js)** — the procedural box-drawing glyph table is transcribed from the WebGL addon under its MIT notice (`crates/runner-app/LICENSE.xterm`).
+- **[Sparkle](https://sparkle-project.org)** — the macOS updater.
+
 ## License
 
-MIT
+GPL-3.0-only. Copyright (C) 2026 Jason Wang. Runner is free software: you can use it for anything, including at work, and redistribute or modify it under the terms of the GNU General Public License v3.0 — modified versions you distribute must stay under the same license (see `LICENSE`). Versions released before 2026-08-22 were published under MIT and remain so.

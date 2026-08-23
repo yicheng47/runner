@@ -1,0 +1,186 @@
+name: Nightly
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  build-macos:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Compute build identity once
+        id: build
+        run: |
+          stamp=$(date -u +%Y%m%d.%H%M)
+          sha=$(git rev-parse --short=7 HEAD)
+          version=$(./script/bundle-mac --print-version)
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short_version=$version.$stamp" >> "$GITHUB_OUTPUT"
+
+      - name: Require the real Sparkle keypair
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          test -n "$SPARKLE_ED_PRIVATE_KEY" || { echo "error: SPARKLE_ED_PRIVATE_KEY is not configured" >&2; exit 1; }
+          public_key=$(tr -d '[:space:]' < packaging/sparkle-public-key)
+          test "$public_key" != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" || { echo "error: packaging/sparkle-public-key is still the placeholder" >&2; exit 1; }
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: Import Apple Developer certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain_password=$(openssl rand -base64 32)
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$keychain_password" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$keychain_password" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" build.keychain
+
+      - name: Select signing identity
+        run: |
+          cert_info=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application")
+          cert_id=$(printf '%s\n' "$cert_info" | awk -F'"' '{print $2}')
+          test -n "$cert_id"
+          echo "APPLE_SIGNING_IDENTITY=$cert_id" >> "$GITHUB_ENV"
+
+      - name: Build, sign, notarize, and staple nightly
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          RUNNER_BUILD_STAMP: ${{ steps.build.outputs.stamp }}
+          RUNNER_BUILD_SHA: ${{ steps.build.outputs.sha }}
+        run: ./script/bundle-mac --channel nightly
+
+      - name: Fetch pinned Sparkle tools
+        run: |
+          sparkle_version=2.9.5
+          sparkle_sha256=015336b601493e05c237964954bff6191370003d94edefe663724c88840d73cc
+          sparkle_archive="$RUNNER_TEMP/Sparkle-$sparkle_version.tar.xz"
+          sparkle_dir="$RUNNER_TEMP/Sparkle-$sparkle_version"
+          curl --fail --location "https://github.com/sparkle-project/Sparkle/releases/download/$sparkle_version/Sparkle-$sparkle_version.tar.xz" --output "$sparkle_archive"
+          printf '%s  %s\n' "$sparkle_sha256" "$sparkle_archive" | shasum -a 256 -c -
+          mkdir -p "$sparkle_dir"
+          tar -xf "$sparkle_archive" -C "$sparkle_dir"
+          echo "SPARKLE_TOOLS_DIR=$sparkle_dir/bin" >> "$GITHUB_ENV"
+
+      - name: Download existing nightly assets and prune history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          appcast_dir="$RUNNER_TEMP/runner-nightly-appcast"
+          mkdir -p "$appcast_dir"
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release download nightly --pattern '*.dmg' --dir "$appcast_dir"
+          fi
+          new_dmg="target/release/Runner-Nightly-${{ steps.build.outputs.short_version }}-universal.dmg"
+          cp "$new_dmg" "$appcast_dir/"
+          for dmg in "$appcast_dir"/*.dmg; do
+            name=${dmg##*/}
+            if [[ "$name" =~ ([0-9]{8})\.([0-9]{4})-(arm64|universal)\.dmg$ ]]; then
+              printf '%s.%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$dmg"
+            fi
+          done | sort -r | sed -n '11,$p' | cut -f2- | while IFS= read -r stale; do
+            rm -f "$stale"
+          done
+          echo "APPCAST_DIR=$appcast_dir" >> "$GITHUB_ENV"
+          echo "NEW_DMG=$new_dmg" >> "$GITHUB_ENV"
+
+      - name: Generate signed rolling appcast
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$SPARKLE_TOOLS_DIR/generate_appcast" \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/yicheng47/runner/releases/download/nightly/" \
+            --full-release-notes-url "https://github.com/yicheng47/runner/commits/main" \
+            --link "https://github.com/yicheng47/runner/releases/tag/nightly" \
+            --maximum-versions 10 \
+            "$APPCAST_DIR"
+
+      - name: Require CI green for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ci_run_id=""
+          for _ in {1..60}; do
+            ci_run_id=$(gh run list --commit "$GITHUB_SHA" --workflow ci.yaml --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+            if [[ -n "$ci_run_id" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          test -n "$ci_run_id" || { echo "error: no CI run found for $GITHUB_SHA" >&2; exit 1; }
+          gh run watch "$ci_run_id" --exit-status
+
+      - name: Publish the rolling prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release edit nightly --title "Runner Nightly" --notes "Rolling prerelease feed for the GPUI nightly channel." --prerelease --latest=false --draft=false
+          else
+            gh release create nightly --target main --title "Runner Nightly" --notes "Rolling prerelease feed for the GPUI nightly channel." --prerelease --latest=false
+          fi
+          gh release upload nightly "$NEW_DMG" "$APPCAST_DIR/appcast.xml" --clobber
+          gh api "repos/${{ github.repository }}/releases/tags/nightly" --jq '.assets[].name' | while IFS= read -r asset; do
+            if [[ "$asset" == *.dmg && ! -f "$APPCAST_DIR/$asset" ]]; then
+              gh release delete-asset nightly "$asset" --yes
+            fi
+          done
+
+      - name: Reject Tauri updater assets on the nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=$(gh api "repos/${{ github.repository }}/releases/tags/nightly" --jq '.assets[].name')
+          if printf '%s\n' "$assets" | grep -Eq '(^latest\.json$|\.app\.tar\.gz(\.sig)?$)'; then
+            echo "error: nightly release contains a production Tauri updater asset" >&2
+            exit 1
+          fi
+
+      - name: Verify updater channel isolation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest_location=$(curl --silent --show-error --head https://github.com/yicheng47/runner/releases/latest | awk 'tolower($1) == "location:" { print $2 }' | tr -d '\r')
+          if [[ "$latest_location" == *"/tag/nightly"* ]]; then
+            echo "error: GitHub latest release redirects to the nightly tag" >&2
+            exit 1
+          fi
+          latest_tag=$(gh api repos/yicheng47/runner/releases/latest --jq .tag_name)
+          if [[ "$latest_tag" != v* ]]; then
+            echo "error: latest production release tag does not start with v: $latest_tag" >&2
+            exit 1
+          fi

@@ -1,0 +1,20 @@
+[package]
+name = "runner-terminal"
+version = "0.6.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+alacritty_terminal = "0.26"
+anyhow = "1"
+base64 = "0.22"
+log = "0.4"
+regex = "1"
+runner-backend = { path = "../runner-backend" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

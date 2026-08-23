@@ -38,7 +38,7 @@ Report a new bug.
 
      ## Environment
      - OS: <if relevant>
-     - Version: <app version from `src-tauri/tauri.conf.json`>
+     - Version: <app version from `crates/runner-app/Cargo.toml`>
      ```
    - Command shape: `gh issue create --label bug --label P1 --title "…" --body "…"`
 5. Report the issue URL and the assigned priority.
@@ -92,4 +92,4 @@ When in doubt between two levels, pick the lower-urgency one and say why; over-l
 
 - Do not commit or push unless the user explicitly asks.
 - When creating issues, investigate the codebase first to include relevant file paths — this makes bugs actionable.
-- Read the app version from `src-tauri/tauri.conf.json` when populating the Environment section.
+- Read the app version from `crates/runner-app/Cargo.toml` when populating the Environment section.

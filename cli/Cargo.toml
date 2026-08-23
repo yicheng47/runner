@@ -3,6 +3,7 @@ name = "runner-cli"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 description = "Bundled `runner` CLI agents use to append signals/messages to a mission's NDJSON event log."
 autobins = false
 

@@ -20,33 +20,25 @@ Core vocabulary:
 
 Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 
-- **Window**: a real OS window (⌘N). Multi-window support is impl 0018.
+- **Window**: a real OS window (⇧⌘N). Multi-window support is impl 0018.
 - **Tab**: one group of panes shown on a window's chat surface — the unit
   the layout picker builds and the sidebar highlights (formerly "chat
-  group" / "split"). ⌘T starts a chat in a new tab.
+  group" / "split"). ⌘N starts a chat in a new tab.
 - **Pane**: one slot inside a tab, holding a single chat session. Panes
   are filled from a pane's own New chat button or a sidebar pick.
 
 ## Stack
 
-- Platform: macOS only (Apple Silicon + Intel). Linux and Windows are out
-  of scope — do not add cross-platform branches, fallbacks, or
-  abstractions for them. Unix-only mechanisms are fair game.
-- Frontend: React 19, TypeScript, Tailwind CSS 4, Vite, React Router.
-- Desktop/backend: Tauri 2, Rust, SQLite via `rusqlite`.
+- Native UI: GPUI with `alacritty_terminal` as the terminal model and render buffer.
+- Application core: Rust, SQLite via `rusqlite`, exposed by `crates/runner-backend`.
 - PTY runtime: `portable-pty`.
 - Event transport: append-only NDJSON logs watched through `notify`.
 - Bundled CLI: `runner`, built from the `cli/` workspace member.
 
 ## Project Map
 
-- `src/`: React frontend.
-- `src/components/`: shared UI and runtime components.
-- `src/pages/`: route-level screens.
-- `src-tauri/src/commands/`: Tauri command handlers.
-- `src-tauri/src/session/`: PTY session manager.
-- `src-tauri/src/event_bus/`: mission log watcher and Tauri event fanout.
-- `src-tauri/src/router/`: signal router and runtime prompt adapter.
+- `crates/runner-app/`: GPUI application, terminal renderer, and terminal fixture corpus.
+- `crates/runner-backend/`: UI-agnostic application core, including SQLite, session manager, event bus, router, and MCP server.
 - `cli/`: bundled `runner` CLI used by spawned agents.
 - `crates/runner-core/`: shared event-log primitives.
 - `design/`: Pencil source files.
@@ -58,15 +50,13 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 
 ## Development Commands
 
-- Install deps: `pnpm install`.
-- Start app in dev: `pnpm tauri dev` or `make dev`.
-- Frontend typecheck: `pnpm exec tsc --noEmit` or `make typecheck`.
-- Frontend lint: `pnpm run lint` or `make lint`.
-- Rust tests: `cargo test --workspace` or `make test-rust`.
-- Full local test target: `make test`.
+- Start the native app against the development database: `make run`.
+- Format: `make fmt`.
+- Clippy: `make clippy`.
+- Workspace tests: `make test`.
+- Everything CI runs: `make verify` (check + test + clippy + fmt-check).
 
-Prefer the smallest check that covers the change. For frontend changes, run
-typecheck and lint. For Rust behavior, run relevant `cargo test` targets.
+Prefer the smallest check that covers the change. For native UI changes, run the `runner-app` tests plus workspace clippy; for core behavior, run the relevant crate tests.
 
 ## Engineering Conventions
 
@@ -77,7 +67,7 @@ typecheck and lint. For Rust behavior, run relevant `cargo test` targets.
 - Use structured APIs and parsers when available instead of ad hoc string
   manipulation.
 - Keep comments rare and useful. Explain non-obvious intent, not mechanics.
-- Treat `design/runner-mvp-design.pen` as the historical MVP canvas. Put new product work in a feature-scoped `.pen` file and keep UI aligned with the file and node referenced by the user or feature spec.
+- Treat `design/runner-mvp-design.pen` as the historical MVP canvas. Put new product work in a feature-scoped `.pen` file and keep UI aligned with the file and node referenced by the user or feature spec. The active canvas is `design/runner.pen`; the gpui-rewrite's parity exception (plan decision 1) ended at the `v0.6.0` cutover on 2026-08-23.
 - Do not add repo conventions only to an agent-specific file. Update this file
   and leave tool-specific files as pointers if needed.
 

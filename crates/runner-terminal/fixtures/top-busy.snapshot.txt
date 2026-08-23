@@ -1,0 +1,31 @@
+cols=100 rows=30 cursor=29,94
+|Processes: 875 total, 5 running, 870 sleeping, 6177 threads                                22:48:20
+|Load Avg: 4.91, 5.70, 5.64  CPU usage: 5.82% user, 3.4% sys, 91.12% idle
+|SharedLibs: 1235M resident, 191M data, 305M linkedit.
+|MemRegions: 0 total, 0B resident, 803M private, 7493M shared.
+|PhysMem: 49G used (4909M wired, 1019M compressor), 47G unused.
+|VM: 390T vsize, 6144M framework vsize, 2163678(0) swapins, 4285874(0) swapouts.
+|Networks: packets: 150497824/162G in, 170561281/235G out.
+|Disks: 17465018/464G read, 4012653/313G written.
+|
+|PID    COMMAND      %CPU  TIME     #TH     #WQ  #PORT MEM    PURG   CMPRS  PGRP  PPID  STATE
+|36500  rustrover    107.0 54:41.84 258/2   6    1143  4576M+ 61M    48M    36500 1     running
+|31161  2.1.214      12.9  03:38.47 49      1    113   218M   0B     0B     31161 17212 sleeping
+|1021   identityserv 8.9   00:22.79 8       4    502+  19M+   848K   2336K- 1021  1     sleeping
+|0      kernel_task  7.2   02:05:38 1271/28 0    0     1232K+ 0B     0B     0     0     running
+|49708  top          6.4   00:00.65 1/1     0    29+   10M+   0B     0B     49708 49707 running
+|543    fseventsd    3.7   03:43.03 20      1    257   6432K  0B     1472K  543   1     sleeping
+|737    com.apple.Ap 3.0   26:28.99 4/2     3/2  358   3536K  0B     528K   737   1     running
+|17221  com.apple.We 2.3   00:53.87 9       3    343+  451M+  11M-   0B     17221 1     sleeping
+|585    securityd    2.1   00:08.83 5       1    156   7424K  0B     2096K  585   1     sleeping
+|17223  com.apple.We 1.9   02:32.03 6       3    84+   558M+  32K    0B     17223 1     sleeping
+|1431   Finder       1.8   02:41.21 6       3    745   145M   3392K  13M    1431  1     sleeping
+|734    com.apple.Dr 1.4   28:22.43 8       6    1349- 30M-   0B     2640K  734   1     sleeping
+|17212  runner       1.3   02:17.82 56      1    521+  46M+   32K-   0B     15598 1     sleeping
+|957    secd         1.2   00:33.90 3       2    301+  11M    9856K  1680K- 957   1     sleeping
+|995    trustd       1.1   01:19.46 4       3    319+  9904K+ 976K   1536K  995   1     sleeping
+|1018   callservices 1.1   00:08.65 8       4    578+  15M+   0B     2064K  1018  1     sleeping
+|539    logd         1.0   04:16.95 4       3    2779  10M    0B     560K   539   1     sleeping
+|3316   com.docker.b 0.9   10:28.35 55      1    389   106M   0B     24M    3074  3074  sleeping
+|765    wifip2pd     0.9   00:20.84 3       2    76    7105K  0B     1568K  765   1     sleeping
+|948    distnoted    0.8   00:21.14 3       2    718   7520K  0B     2304K  948   1     sleeping

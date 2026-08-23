@@ -1,117 +1,86 @@
 # Runner — Architecture
 
-> Companion to [`../product/vision.md`](../product/vision.md). The vision doc defines *what* we're building and why; this doc defines *how* it works — tech stack, the model concepts the code is built around, and the protocol / schema decisions that make the model work.
+> Companion to [`../product/vision.md`](../product/vision.md). The vision doc defines *what* we're building and why; this doc defines *how* it works — tech stack, the model concepts the code is built around, and the protocol / schema decisions that make the model work. Rewritten 2026-08-22 (M6.5) for the native GPUI app on `gpui-nightly`; the Tauri + xterm.js era version is in history (`git show 0e5ea18:docs/arch/arch.md`) and the port that replaced it is recorded in [`../impls/gpui-rewrite/`](../impls/gpui-rewrite/README.md).
 
 ## 1. Overview
 
-Runner is a local desktop app. A user configures a **crew** of CLI coding agents, launches a **mission** to activate it, and watches the crew coordinate in real time. The app is a Tauri 2 binary: Rust backend, React + xterm.js webview, SQLite for config, and a per-mission NDJSON file for live state.
+Runner is a local macOS desktop app. A user configures a **crew** of CLI coding agents, launches a **mission** to activate it, and watches the crew coordinate in real time. The app is one native process: a GPUI user interface, a Rust application core (`crates/runner-backend`), an `alacritty_terminal` grid per live session, SQLite for configuration, and a per-mission NDJSON file for live coordination state. There is no webview, no IPC bridge, and no serialization between the PTY and the screen.
 
 ### 1.1 Runtime picture
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ Tauri process (Runner desktop app)                                           │
+│ Runner.app — one process                                                     │
 │                                                                              │
-│                        ┌──────────────────────────┐                          │
-│                        │ MissionManager           │                          │
-│                        │   (orchestration —       │                          │
-│                        │    lifecycle only)       │                          │
-│                        │                          │                          │
-│                        │  - mission lifecycle     │                          │
-│                        │  - compose prompts       │                          │
-│                        │  - remount on restart    │                          │
-│                        └────────────┬─────────────┘                          │
-│                                     │  spawns sessions + mounts router/bus   │
-│                                     ▼                                        │
-│   ┌─────────────────────────┐               ┌─────────────────────────┐      │
-│   │ SessionManager          │               │ EventBus                │      │
-│   │   (PTY runtime —        │               │   (NDJSON tailer —      │      │
-│   │    the hot path)        │               │    projects for UI)     │      │
-│   │                         │               │                         │      │
-│   │  - PTY spawn / kill     │               │  - tail NDJSON          │      │
-│   │  - reader threads       │               │  - notify watch         │      │
-│   │  - scrollback rings     │               │  - projections          │      │
-│   │  - resume stopped rows  │               │                         │      │
-│   └────────────┬────────────┘               └────────────┬────────────┘      │
-│                │                                         │                   │
-│                │                                         ▼                   │
-│                │                            ┌─────────────────────────┐      │
-│                │                            │ Signal router           │      │
-│                │                            │  - fixed handlers       │      │
-│                │                            │  - status map           │      │
-│                │                            └────────────┬────────────┘      │
-│                │                                         │                   │
-│                │  inject_stdin / human_question /        │                   │
-│                │  status                                 │                   │
-│                │◄────────────────────────────────────────┘                   │
-│                ▼                                                             │
-│   ┌──────────────────────────────────────────────────────────────────────┐   │
-│   │ Runner session (one per slot × mission)                              │   │
-│   │                                                                      │   │
-│   │  ┌──────────┐   PTY   ┌─────────────────────────────────────┐        │   │
-│   │  │  master  │ ◄─────► │ child: claude-code / codex / qoder  │        │   │
-│   │  └──────────┘         │        / trae / shell               │        │   │
-│   │                       │   env: RUNNER_CREW_ID,              │        │   │
-│   │                       │        RUNNER_MISSION_ID,           │        │   │
-│   │                       │        RUNNER_HANDLE,               │        │   │
-│   │                       │        RUNNER_EVENT_LOG, PATH=…     │        │   │
-│   │                       └─────────────────┬───────────────────┘        │   │
-│   └─────────────────────────────────────────┼──────────────────────────────┘ │
-│                                             │ runs `runner` CLI              │
-│                                             ▼                                │
-│                    ┌──────────────────────────────────┐                      │
-│                    │ events.ndjson  (per mission)     │                      │
-│                    └────────────────┬─────────────────┘                      │
-│                                     │ notify ──► EventBus (above)            │
-└─────────────────────────────────────┼────────────────────────────────────────┘
-                                      ▼
-                          ┌──────────────────────────────┐
-                          │ React + xterm.js  (webview)  │
-                          │  terminals, event feed,      │
-                          │  HITL cards                  │
-                          └──────────────────────────────┘
+│  UI (crates/runner-app, GPUI main thread)                                    │
+│   windows · sidebar · tabs/panes · mission workspace + feed · settings       │
+│   terminal element paints each pane's grid; keys/IME/mouse → PTY input       │
+│          ▲ wake + AppEvents                       ▲ grid            │ bytes  │
+│          │                                        │                 ▼        │
+│  ┌───────┴────────────┐        ┌──────────────────┴──────────────────────┐   │
+│  │ AppStore           │        │ TerminalBridge registry                 │   │
+│  │  snapshots of rows │        │  (crates/runner-terminal)               │   │
+│  │  + reactions       │        │  one alacritty Term per live session,   │   │
+│  └───────▲────────────┘        │  fed raw bytes on the ingestion thread  │   │
+│          │ AppEvent broadcast  └──────────────────▲──────────────────────┘   │
+│          │ (mission/changed, session/*, …)        │ SessionEvents::output    │
+│  ════════╪════════════════════════════════════════╪══════════════════════    │
+│  Core (crates/runner-backend, AppCore)            │                          │
+│   ┌──────┴───────────┐  ┌──────────────┐  ┌───────┴────────────────────┐     │
+│   │ EventBus         │  │ Router       │  │ SessionManager             │     │
+│   │  notify tailer   │─►│  handlers    │─►│  PTY runtime (hot path)    │     │
+│   │  per mission     │  │  delivery    │  │  spawn/kill/resume, reader │     │
+│   │  + projections   │  │  gate/outbox │  │  threads, writers, sizes   │     │
+│   └──────▲───────────┘  └──────────────┘  └───────┬────────────────────┘     │
+│          │                                         │ PTY master             │
+│   ┌──────┴───────────┐  ┌──────────────┐  ┌───────┴────────────────────┐     │
+│   │ events.ndjson    │◄─│ MissionMgr   │  │ child: claude-code / codex │     │
+│   │  per mission     │  │ (ops::mission│  │   / qoder / trae / shell   │     │
+│   └──────▲───────────┘  │  lifecycle)  │  │  env: RUNNER_*, PATH=…     │     │
+│          │ flock append └──────────────┘  └───────┬────────────────────┘     │
+│          └────────────────────────────────────────┘ runs `runner` CLI        │
+│                                                                              │
+│   MCP server (rmcp, Unix socket $APPDATA/mcp.sock) ◄── runner-mcp bridge ◄── external clients │
+│   SQLite runner.db (rusqlite + r2d2, WAL) — config + session lifecycle, off the hot path │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Two layers inside the box.** Everything runs in one Tauri 2 binary, but the components split into two distinct roles:
+**Three layers inside the box.**
 
-*Orchestration (top of the picture, lifecycle only).*
+*Orchestration (lifecycle only).* **MissionManager** (`ops::mission`) starts, stops, archives and resets missions, composes each runner's system prompt at spawn, and re-mounts router + bus state for `running` missions on launch. Once a mission is up it goes quiet; it is not in the runtime data path.
 
-- **MissionManager** — mission lifecycle (start / stop / archive / reset), composes the per-runner system prompt at spawn, and re-mounts router + bus state for `running` missions on app restart. Under the in-process PTY runtime, child agents die with the app process; startup cleanup demotes stale `running` session rows to `stopped` so the UI can offer Resume. Once a mission is up, MissionManager goes quiet until the next lifecycle event — it is *not* in the runtime data path.
+*Runtime (the hot path).* **SessionManager** owns each PTY master, the blocking reader thread, the serialized writer, the idle detector and the session's last applied size. **EventBus** tails the per-mission NDJSON file with `notify`, parses each new line, hands it to the **Router** for handler dispatch and republishes a `mission/changed` notification for the UI. "Projections" — inbox, pending HITL cards, status map — are in-memory rollups over the same event stream.
 
-*Runtime (the hot path — the row below MissionManager).*
+*Presentation (the app crate).* **`AppStore`** holds read snapshots of the rows the UI renders and turns `AppEvent`s into scoped GPUI notifications. **`TerminalBridge`** (in `crates/runner-terminal`) owns one `alacritty_terminal::Term` per live session for the session's lifetime; panes borrow the terminal, they never own it. The terminal element paints the grid, and keys, IME composition and mouse events go straight back to the PTY writer.
 
-- **SessionManager** — the per-session PTY runtime. Holds each PTY master, runs the blocking reader thread, keeps the scrollback ring, and serializes writes. Resume is a fresh spawn against the same session row; for claude-code/codex/qoder/trae, `agent_session_key` lets the agent CLI continue its own conversation when supported.
-- **EventBus** — tails the per-mission NDJSON file with `notify`, parses each new line, and republishes it as Tauri events the webview and the router can subscribe to. "Projections" are the in-memory rollups it computes on the fly — inbox, pending HITL cards, status map — all derived from the same event stream.
+**Two channels out of the core, deliberately different.** Terminal bytes take the synchronous path: the PTY reader thread calls `SessionEvents::output` and the bridge feeds the session's `Term` under its lock — no queue, no encoding, nothing to lag. Everything else (row changes, mission events, session lifecycle, router warnings) goes through a `tokio::sync::broadcast` of `AppEvent`s consumed by the `native-app-events` thread, which updates `AppStore` and wakes GPUI. Names in use today: `mission/changed`, `mission/resync`, `session/spawned`, `session/exit`, `session/updated`, `session/archived`, `session/status`, `session/warning`, `runner/changed`, `runner/activity`, `crew/changed`, `slot/changed`, `project/changed`, `chat/layout-changed`, `router/delivery-blocked`, `app/woke`.
 
-**The Signal router** sits downstream of the EventBus. When a parsed line is a built-in signal type, the router runs a fixed handler. The "inject_stdin / human_question / status" arrow into SessionManager covers the three things a handler can do: write bytes into a specific session's PTY master (`inject_stdin` — launch prompt to lead on `mission_goal`, human choice on `human_response`, worker question on `ask_lead`), append a new event back to the NDJSON log so the UI renders a HITL card (`human_question`), or update the in-memory status map (`runner_status` events from the forwarder feed this).
+**One session.** The session row is one slot's PTY process: SessionManager holds the master file descriptor; the child runs the agent binary with a real tty on stdin/stdout/stderr. The env vars are what make the bundled `runner` CLI work inside that child — when the agent runs `runner msg post …`, the CLI reads `RUNNER_MISSION_ID` + `RUNNER_EVENT_LOG` from its environment, builds the JSON line, and `flock`-appends to the right file. No daemon, no socket; the CLI opens the file directly.
 
-**One session.** The session row in the middle is one slot's PTY process: SessionManager holds the master file descriptor; the child runs the agent binary with a real tty on its stdin/stdout/stderr (the slave end). The env vars are what make the bundled `runner` CLI work inside that child — when the agent runs `runner msg post …`, the CLI reads `RUNNER_MISSION_ID` + `RUNNER_EVENT_LOG` from its environment, builds the JSON line, and `flock`-appends to the right file. No daemon, no socket; the CLI just opens the file directly.
+**Closing the loop.** Child invokes `runner` CLI → CLI appends a line to `events.ndjson` → `notify` wakes the EventBus → the line goes to (a) the Router and (b) the UI as `mission/changed`. If a handler needs to wake a runner, it writes bytes into that session's PTY through SessionManager's writer. The bus is the spine: all coordination flows through one append-only file, which is why it's debuggable with `tail -f | jq`.
 
-**Closing the loop.** Child invokes `runner` CLI → CLI appends a line to `events.ndjson` → `notify` wakes the EventBus → EventBus fans the line out to (a) the Signal router for handler dispatch and (b) the webview as a Tauri event. If the handler needs a wake-up, it calls back into SessionManager's writer to push bytes into a session's stdin — that's the upward arrow on the convergence point. The bus is the spine: all coordination flows through one append-only file, which is why it's debuggable with `tail -f | jq`.
+**What's not in the hot path.** SQLite holds configuration and session-lifecycle metadata (runners, crews, slots, projects, the sidebar tree, mission rows, session rows with PID, runtime metadata and last size). Live coordination state lives in the NDJSON file or in the router's memory; live screen state lives in the `Term`s.
 
-**The webview** is downstream of everything. It renders each session's PTY output (subscribes to `session:{id}:out`) and the read-mostly event feed + HITL cards + signal log (subscribes to `mission:{id}:event`). The operator talks to a runner by typing directly into that runner's pane; the feed's only write control is a pending `ask_human` card's response buttons.
-
-**What's not in the picture.** The SQLite DB. That's deliberate — SQLite holds configuration and session-lifecycle metadata only (runners, crews, slots, mission rows, session rows with PID + runtime metadata). It is not on the runtime hot path. All live coordination state lives in the NDJSON file or in the router's in-memory map.
-
-**The invariant this picture encodes.** There is exactly one piece of mutable shared state per mission: `events.ndjson`. Every other component is either a writer to it (the `runner` CLI; the router for `human_question`), a reader of it (EventBus → router + UI), or a per-session PTY pipeline that doesn't touch it directly. That's what makes mission coordination crash-durable and replayable — on restart, Runner re-opens the file and reconstructs router/feed projections from replay. PTY children themselves do not survive app restart under the in-process runtime; their rows become resumable stopped sessions.
+**The invariant this picture encodes.** There is exactly one piece of mutable shared state per mission: `events.ndjson`. Every other component is a writer to it (the `runner` CLI; the router for `human_question` / `mission_warning`), a reader of it (EventBus → router + UI), or a per-session PTY pipeline that doesn't touch it. On restart Runner re-opens the file and reconstructs router/feed projections from replay. PTY children do not survive app restart; their rows become resumable stopped sessions, and sessions flagged `resume_on_launch` are re-spawned at startup.
 
 ## 2. Tech stack
 
 | Layer | Choice | Why |
 |---|---|---|
-| Desktop shell | **Tauri 2** | Native binary + WebKit2 webview. Smaller than Electron, Rust-native plugin surface, ships dmg/AppImage cleanly. |
-| Backend language | **Rust** | One language for the PTY layer, the NDJSON writer, the router, and the Tauri commands. No FFI churn. |
-| Frontend | **React 19 + TypeScript** | Familiar, fast, no SSR concerns inside Tauri. |
-| Styling | **Tailwind 4** + tokenized CSS variables | Design palette lives in `:root` vars; `<html data-theme>` swaps the active appearance variant. Terminal themes are separate from app chrome themes. |
-| Terminal emulator | **xterm.js** (+ `xterm-addon-webgl`, fit, search, hyperlinks) | Mature, accurate ANSI/alt-screen rendering. WebGL backend keeps redraws cheap. |
-| PTY runtime | **`portable-pty`** (in-process) | One OS thread per session reads bytes off the PTY master; writes go back through a tokio-mutex-guarded writer. Earlier tmux-backed runtime retired (see `docs/impls/archive/0011-pty-host-terminal-runtime.md`). |
-| Persistence | **SQLite via `rusqlite`** (WAL mode) | Config + session lifecycle only; coordination state lives in the NDJSON event log. |
-| Event transport | **Append-only NDJSON per mission** | Tailable with `tail -f \| jq`, crash-durable, replayable. `flock(LOCK_EX)` for cross-process append atomicity. |
-| File watching | **`notify`** crate | The bus tails the NDJSON file and republishes lines as Tauri events. |
-| Bundled CLI | **`runner` binary** | The agents talk to the bus through this — `runner signal …`, `runner msg post …`, `runner msg read`. Bundled with the app, dropped at `$APPDATA/runner/bin/runner` on first run, PATH-prepended per spawn. |
-| Logging | **`tauri-plugin-log`** + a Rust panic hook | Writes to the OS log dir for the bundle; backtraces captured to the same file. |
-| Auto-update | **`tauri-plugin-updater`** | Signed updates from the GitHub Releases manifest. Settings → About drives the check → download → restart ladder; a sidebar prompt card surfaces ready-to-install (impl 0025). |
-| MCP | **`rmcp` + Unix socket + `runner-mcp` bridge** | Runner.app owns stateful tool execution; external MCP clients spawn `runner-mcp`, which bridges stdio to the app's local Unix socket. |
+| UI framework | **GPUI** (`gpui-ce` 0.3.3, Metal) | Zed's retained-mode Rust UI: entities + elements, one process with the core, native text shaping and IME. Replaced Tauri + React in the 2026-08 rewrite. |
+| Terminal model | **`alacritty_terminal` 0.26** | Grid, VTE parser, scrollback with reflow, selection, mouse/alt-screen modes. The same model Zed embeds. |
+| Terminal renderer | custom GPUI element (`runner-app/src/terminal/element.rs`) | Walks the `Term` grid per frame, shapes runs through GPUI's text system; bundled MesloLGS Nerd Font is the default face, Menlo the alternative. |
+| Application core | **Rust** crate `runner-backend`, UI-agnostic | SQLite, session manager, event bus, router, MCP server. The same crate could host another front end; the app crate is a consumer. |
+| PTY runtime | **`portable-pty`** (in-process) | One blocking OS thread per session reads the master; writes are serialized per session. |
+| Persistence | **SQLite via `rusqlite`** + `r2d2` pool, WAL | Config + session lifecycle only. Migrations in `crates/runner-backend/migrations/` (0001–0020). |
+| Event transport | **Append-only NDJSON per mission** | Tailable, crash-durable, replayable; `flock(LOCK_EX)` for cross-process append atomicity. |
+| File watching | **`notify`** | The bus tails the NDJSON file and republishes lines. |
+| Bundled CLI | **`runner`** (`cli/`) | Agents talk to the bus through it — `runner signal …`, `runner msg post …`, `runner msg read`. Dropped at `$APPDATA/bin/runner` on first run, PATH-prepended per spawn. |
+| MCP | **`rmcp`** server over a Unix socket + `runner-mcp` stdio bridge | Runner.app owns stateful tool execution (crews, runners, slots, projects, missions, direct sessions); external clients spawn `runner-mcp`, which bridges stdio to `$APPDATA/mcp.sock`. |
+| Logging | **`tracing`** + rotating file layer + panic hook | `~/Library/Logs/com.wycstudios.runner/runner.log`; release filter `info`, debug builds `debug`, `RUST_LOG` overrides. |
+| Updater | **Sparkle 2.9.5** via `objc2` (`updater` feature) | `SPUStandardUpdaterController`, EdDSA-signed appcast on GitHub Releases; nightly channel reads the rolling `nightly` prerelease's `appcast.xml`. |
+| Packaging | `script/bundle-mac` | `.app` assembly, Developer ID codesign, notarization, DMG; `CFBundleVersion` is the build stamp. |
+| Input | GPUI key dispatch + native IME (`terminal_ime.rs`) | Pinyin composition in the terminal was the hard requirement of the rewrite. |
 
 **Platform target.** macOS (Apple Silicon + x64), and only macOS. Linux and Windows are out of scope, so no cross-platform fallback paths are maintained and Unix-only mechanisms are used freely.
 
@@ -119,7 +88,7 @@ Runner is a local desktop app. A user configures a **crew** of CLI coding agents
 
 Domain objects split into two layers:
 
-- **Configuration** — persistent, user-edited. Outlives missions. Runner, Crew, Slot, crew addendum.
+- **Configuration** — persistent, user-edited. Outlives missions. Runner, Crew, Slot, crew addendum, Project, the sidebar tree.
 - **Runtime** — created at mission start, torn down at mission end. Mission, Session, the in-memory router state, the per-mission shared context.
 
 The key insight: **a Runner is config; a Session is its runtime instance** — same pattern as Crew (config) → Mission (runtime). A runner never runs on its own. A runner runs *inside a mission* as a session (or as a one-off direct-chat session outside any mission).
@@ -130,22 +99,21 @@ The key insight: **a Runner is config; a Session is its runtime instance** — s
 ┌─ Configuration (persistent) ─────────┐    ┌─ Runtime (mission-scoped) ──────────────┐
 │                                      │    │                                         │
 │   Runner ──── Slot (per-crew handle, │    │   Session ─► PTY process                │
-│      ▲             lead flag)        ┼────┼─►  (one per slot per mission;            │
-│      │             ▲                 │    │      lives & dies with the mission)     │
-│      │             │                 │    │                                         │
-│      │             │ composes        │    │     ▲                                   │
-│      │           Crew                │    │     │  spawned & owned by               │
-│      │             │                 │    │     │                                   │
-│      │             ├── system_prompt │    │   Mission ─── events.ndjson             │
-│      │             │   addendum      │    │     │              │                    │
-│      │             └── default goal  │    │     │              ├─► Signal           │
-│      │                               │    │     │              └─► Message          │
+│      ▲             lead flag,        ┼────┼─►  (one per slot per mission;            │
+│      │             runtime/model/    │    │      lives & dies with the mission)     │
+│      │             effort overrides) │    │                                         │
+│      │             ▲                 │    │     ▲                                   │
+│      │             │ composes        │    │     │  spawned & owned by               │
+│      │           Crew                │    │     │                                   │
+│      │             │                 │    │   Mission ─── events.ndjson             │
+│      │             ├── system_prompt │    │     │              │                    │
+│      │             │   addendum      │    │     │              ├─► Signal           │
+│      │             └── default goal  │    │     │              └─► Message          │
 │      │                               │    │     │                                   │
 │      └─ direct chat session (off-bus, no mission, no router) ◄───────────────────── │
 │                                      │    │     │                                   │
-│                                      │    │     ├─► Router in-memory state          │
-│                                      │    │     │    (pending asks, status map)    │
-│                                      │    │     │                                   │
+│   Project (cwd) ── nodes tree        │    │     ├─► Router in-memory state          │
+│     (projects, tabs, missions)       │    │     │    (pending asks, status, outbox) │
 │                                      │    │     └─► Shared context: brief + roster  │
 └──────────────────────────────────────┘    └─────────────────────────────────────────┘
 ```
@@ -154,7 +122,7 @@ A mission is a container. Everything in the runtime column is either the contain
 
 ### 3.2 Runner — *one configured agent*
 
-A reusable template: handle, display name, runtime (`claude-code | codex | qoder | trae` today), command + args, working dir, system prompt (persona), env. **Top-level, not nested under a crew.** The same runner template can be used by many crews simultaneously, and can also be the subject of standalone direct-chat sessions.
+A reusable template: handle, display name, runtime (`claude-code | codex | qoder | trae` today, plus a bare shell), command + args, working dir, system prompt (persona), env, optional model and effort. **Top-level, not nested under a crew.** The same runner template can be used by many crews simultaneously, and can also be the subject of standalone direct-chat sessions.
 
 A runner has two identifying fields:
 
@@ -163,20 +131,23 @@ A runner has two identifying fields:
 
 Keeping these separate means renaming a runner for the UI doesn't break briefs or historical events.
 
+Runtime argv is composed by the adapter in `router/runtime.rs`, not stored: the permission mode (`--permission-mode` / codex `--ask-for-approval` + `--sandbox`), model and effort flags, codex's `--add-dir` grant for the mission directory, the first-turn body, and — for claude-code — one compact `--settings {"tui":"fullscreen"}` pair that selects Claude Code's alternate-screen renderer unless the runner's own args already pass `--settings`. Runner owns the renderer for the sessions it spawns; `--settings` outranks the user's `~/.claude/settings.json`.
+
 ### 3.3 Crew — *a configured team, composed of slots*
 
 A named, persistent group of **slots**. Carries the default mission goal and the optional team-conventions addendum. It does not run. It is blueprint.
 
 Crews are composed of **slots**, not runners directly. A slot is the indirection that lets the same runner template participate in many crews:
 
-- **`slot_handle`** — the slot's in-crew handle (`@impl`, `@lead`). Required, unique within the crew. This is what crewmates address each other by — `runner msg post --to impl`. Different crews can carry slots with the same slot_handle filled by different runner templates, and the same runner template can carry different slot_handles in different crews.
+- **`slot_handle`** — the slot's in-crew handle (`@impl`, `@lead`). Required, unique within the crew. This is what crewmates address each other by — `runner msg post --to impl`.
 - **`runner_id`** — which runner template fills the slot.
 - **`position`** — display order within the crew.
 - **`lead`** — exactly one slot per crew carries `lead = 1`, enforced by a unique partial index (§10.1).
+- **`runtime_override`, `model_override`, `effort_override`** — per-slot deviations from the template, so one crew can run the same persona on two runtimes.
 
 **Why slot vs runner.** Users curate a small library of runner templates and re-use them across crews and direct chats. Tying the in-crew handle and lead flag to the runner template would force duplicating configs every time a runner shows up in a new crew.
 
-**Lead is also the default HITL gateway.** When a worker needs human input, it does not ask the human directly — it emits an `ask_lead` signal. The router wakes the lead, who decides whether to answer from their own context or escalate via `ask_human`. The human's answer flows back to the lead, who forwards it to the original worker as a directed message. See §8.5 for the full protocol. Workers *may* emit `ask_human` directly as a fallback — the protocol doesn't forbid it — but the worker preamble (§6) instructs them to go through the lead.
+**Lead is also the default HITL gateway.** When a worker needs human input, it does not ask the human directly — it emits an `ask_lead` signal. The router wakes the lead, who decides whether to answer from their own context or escalate via `ask_human`. The human's answer flows back to the lead, who forwards it to the original worker as a directed message. See §8.3. Workers *may* emit `ask_human` directly as a fallback, but the worker preamble (§6) instructs them to go through the lead.
 
 ### 3.4 Mission — *one activation of the crew, and the runtime container*
 
@@ -184,17 +155,19 @@ A mission is the only runtime container in the system. Everything alive at runti
 
 - A **Session** per slot (the PTY processes — §3.5).
 - The **coordination bus** — the NDJSON event log carrying signals and messages.
-- The **router's in-memory state** — pending HITL asks and latest runner availability.
+- The **router's in-memory state** — pending HITL asks, latest runner availability, per-slot delivery outboxes.
 - The **shared context** — composed system prompts (brief, roster, coordination notes, optional team conventions) injected at spawn.
 
 Lifecycle:
-- **Start**: user clicks Start Mission on a crew. A mission row is created (with its own `cwd` and an optional per-mission `goal_override`), one session is spawned per slot, the router boots with fresh state, and an NDJSON file is opened.
-- **Stop**: user pauses the mission. Live PTYs are killed, but the mission row remains `running`; router/bus state stays mounted and stopped slots can be resumed.
-- **Archive**: user ends the mission. Runner appends `mission_stopped`, marks the row `completed`, sets `archived_at`, kills any live PTYs, and unmounts router/bus state. Archived missions are hidden from active lists and render read-only by direct URL.
 
-**Mission cwd is authoritative.** Each mission carries its own `cwd` column. Spawned slots inherit `mission.cwd` regardless of what the runner template's `working_dir` says — that field is only used in direct chats (where there is no mission). This makes "start two missions on the same crew but in different repos" trivial.
+- **Start**: a mission row is created (with its own `cwd` and an optional per-mission `goal_override`), one session is spawned per slot, the router boots with fresh state, and an NDJSON file is opened. Missions can be started from the UI or through the MCP `mission_start` tool.
+- **Stop**: live PTYs are killed, but the mission row remains `running`; router/bus state stays mounted and stopped slots can be resumed.
+- **Archive**: Runner appends `mission_stopped`, marks the row `completed`, sets `archived_at`, kills any live PTYs (verified dead before the row flips), and unmounts router/bus state. Archived missions are hidden from active lists and render read-only.
+- **Reset**: kills the slots and re-spawns them against the same mission row and log; forks read the persisted last size so they open at the width the pane had.
 
-Concurrent missions on the same crew are allowed — a crew is a reusable template, and per-mission state (sessions, the coordination bus, the runner-CLI shim path, the roster sidecar) is fully namespaced by `mission_id`.
+**Mission cwd is authoritative.** Each mission carries its own `cwd` column. Spawned slots inherit `mission.cwd` regardless of what the runner template's `working_dir` says — that field is only used in direct chats. Starting from a project copies the project's cwd into the row.
+
+Concurrent missions on the same crew are allowed — a crew is a reusable template, and per-mission state (sessions, the bus, the runner-CLI shim path, the roster sidecar) is fully namespaced by `mission_id`.
 
 ### 3.5 Session — *one slot's PTY process*
 
@@ -202,15 +175,17 @@ The runtime instance of a slot inside a mission, a runner-backed direct chat, or
 
 Two flavors, distinguished by whether `mission_id` is set on the session row:
 
-- **Mission session** — spawned when a mission starts; one session per slot. It dies with the mission. The session participates in the crew's coordination bus, sees broadcasts, can receive `inject_stdin` from the router. The `RUNNER_HANDLE` env var carries the *slot* handle, not the runner template's global handle — so a runner template used as `@impl` in one crew sees `RUNNER_HANDLE=impl` there.
-- **Direct-chat session** — spawned ad-hoc without a parent mission. It can be backed by a runner template or by a bare runtime selection. `mission_id` is null and the working directory lives on the session row directly. The agent is **not on any coordination bus** — there's no event log, no router, no inbox; it's just a one-on-one PTY between the human and the agent CLI. Runner-backed chats keep `runner_id`; runtime-only chats store `runner_id = NULL` plus `agent_runtime` / `agent_command`.
+- **Mission session** — spawned when a mission starts; one session per slot. It participates in the crew's bus, sees broadcasts, can receive stdin injection from the router. `RUNNER_HANDLE` carries the *slot* handle, not the runner template's global handle.
+- **Direct-chat session** — spawned ad-hoc without a parent mission, backed by a runner template or a bare runtime selection. `mission_id` is null and the working directory lives on the session row. The agent is **not on any coordination bus**. Runner-backed chats keep `runner_id`; runtime-only chats store `runner_id = NULL` plus `agent_runtime` / `agent_command`.
 
-A session owns:
+A session owns, in the core:
+
 - A PTY master handle (the only object in the system with a file descriptor to a running child process).
-- A blocking reader thread that drains the PTY and pushes bytes to the scrollback ring + a Tauri event stream.
-- A writer for stdin injection (used by the human and by the router's fixed handlers), serialized through a tokio mutex.
-- A bounded scrollback ring that survives frontend tab switches and route changes while the app process is alive.
-- An exit status once the child has terminated.
+- A blocking reader thread that drains the PTY, hands each chunk to `SessionEvents::output`, and feeds the idle detector.
+- A serialized writer for stdin (the human's keystrokes, pastes, and the router's injections all go through it).
+- Its last applied PTY size (`last_cols`/`last_rows` on the row, the latest measurement in memory) and an exit status once the child has terminated.
+
+And, in the app: one `alacritty_terminal::Term` in the `TerminalBridge` registry, created when the session spawns and released when it exits or is archived (§5.5). There is no separate scrollback buffer — the `Term` *is* the screen and the history.
 
 A session is the only object in the system that actually *executes* code — everything else is metadata, a coordination channel, or a projection over the event log.
 
@@ -218,63 +193,49 @@ A session is the only object in the system that actually *executes* code — eve
 
 How sessions are displayed spans durable organization and ephemeral view state. The concepts must never be blurred in code, docs, or UI copy:
 
-- **Project** — the only durable container in the sidebar: a global, cwd-bound group for missions and direct-chat tabs. Starting work from a project copies its cwd into the new mission/session row and records nullable `project_id`; runtime cwd precedence stays unchanged after that point. Project identity and ordering are durable, while collapse and the active project that scopes new-chat creation are per-window view state. Deleting a project archives its chats and missions but never touches the directory on disk.
-- **Window** — a real OS window (⌘N, `File → New Window`, impl 0018). The backend's per-window subject registry (`src-tauri/src/windows.rs`) tracks every visible direct-chat subject, focus recency for duplicate-session ownership, and explicit current focus for viewed-attention semantics; it knows no tab layout beyond the reported session subjects.
-- **Tab** — one stable, ULID-keyed group of panes rendered as exactly one sidebar row. SQLite persists its optional project parent, name, order, JSON layout, and nullable completion/viewed watermarks; the layout picker mutates the same row without resetting attention state. Every active direct-chat session belongs to exactly one tab, including single-pane chats. Per-window active-tab selection remains ephemeral.
-- **Pane** — one slot inside a tab, holding exactly one chat session (move-not-copy). Panes are filled from a pane's own New chat button or a sidebar pick into a focused empty pane; `⌘[` / `⌘]` cycle pane focus, `⌘W` closes the focused pane without stopping its session.
+- **Project** — the only durable container in the sidebar: a global, cwd-bound group for missions and direct-chat tabs. Starting work from a project copies its cwd into the new mission/session row and records nullable `project_id`. Deleting a project archives its chats and missions but never touches the directory on disk.
+- **Window** — a real OS window (⇧⌘N, `File → New Window`). The core's per-window subject registry (`crates/runner-backend/src/windows.rs`) tracks every visible direct-chat subject, focus recency for duplicate-session ownership, and current focus for viewed-attention semantics. A session shown in two windows has one primary; the secondary window shows a duplicate-chat placeholder rather than a second live grid.
+- **Tab** — one stable, ULID-keyed group of panes rendered as exactly one sidebar row. Tabs, projects and mission references are rows of the `nodes` tree (§10.1) with an optional project parent, name, order, JSON layout, pin position and completion/viewed watermarks. Every active direct-chat session belongs to exactly one tab. Per-window active-tab selection is ephemeral.
+- **Pane** — one slot inside a tab, holding exactly one chat session (move-not-copy). `⌘[` / `⌘]` cycle pane focus, `⌘W` closes the focused pane without stopping its session.
 
-Sessions exist independently of the display tree: closing a pane or window never kills a PTY. Archiving a tab removes the tab row and archives its member sessions.
+Sessions exist independently of the display tree: closing a pane or window never kills a PTY, and since M6.8 it does not even drop the session's `Term` — the grid keeps ingesting while hidden and is simply painted again when a pane shows it.
 
-Projects contain tab and mission leaves; root contains projects and unfiled leaves. Moving a leaf across a project boundary writes its `project_id` binding through so sidebar placement and runtime cwd ownership stay aligned.
+The mission workspace's per-slot terminal switcher predates this hierarchy and is a different, mission-scoped UI element — not a Tab in the sense above.
 
-Disambiguation: the mission workspace's per-slot terminal switcher (feature 33's "terminal tabs") predates this hierarchy and is a different, mission-scoped UI element — not a Tab in the sense above. If the mission surface ever adopts the tab/pane model, that is feature 19's deferred scope.
+### 3.7 Settings surface
 
-### 3.7 Settings surface (frontend only)
+Settings is a full-window route rendered in place of the app shell, with its own grouped sidebar and card-grouped panes: Appearance (app font, zoom, theme), Terminal (font, cursor, theme palette), Agents (runtime discovery and overrides, the login-shell probe outcome), MCP, Keyboard shortcuts (a view over the registry in `runner-app/src/keymap.rs`), Updates, Diagnostics (log path, open-log), About, and Archived. Entry points — the sidebar Settings row, the command palette, and `⌘,` — navigate to the route and return to the caller's location.
 
-Settings is a full-window route, `/settings/:pane?`, rendered outside the app shell: its own sidebar (grouped nav + label search + "Back to app") replaces the app sidebar in the same slot — resizable and sharing the app sidebar's persisted width (`runner.sidebar.width`) so the takeover reads as continuous — with card-grouped panes in the content column (impl 0025, superseding the earlier modal). Entry points — the sidebar Settings row, the command palette entry, and `⌘,` — navigate to the route, threading the caller's location through state so the back button returns there. All settings persist to `localStorage` through the typed helpers in `src/lib/settings.ts`; there is no backend settings store yet.
+Preferences persist in `$APPDATA/ui-settings.json`, read by the app at launch. They do **not** migrate from the Tauri app, which kept them in the webview's localStorage; a first native launch starts from defaults (both apps default resume-on-launch off).
 
-Two pieces worth naming:
-
-- **Keyboard shortcuts pane** — read-only view over the static registry in `src/lib/keymap.ts` (feature 257 v1). Handlers keep their hardcoded keys; each carries a one-line pointer back at the registry. Rebinding is a designed follow-up.
-- **Update flow** — Updates merged into About: the hero card walks a five-state button ladder (check → download → restart) over the shared `useUpdate()` context, auto-checking on pane mount. When an update is ready to install, `UpdatePromptCard` floats above the app sidebar's Settings row (per-launch dismissable); the old top-center toast is gone.
+**Updates** is the slim form of `main`'s pane: check now, the automatic-checks toggle, last-check time. Sparkle's standard user driver owns the found/download/install dialogs. Not ported from `main`: the Arc-style "New Runner version available" pill above the sidebar Settings row (hover → card, per-launch dismiss, auto-install checkbox). It needs an `SPUUpdaterDelegate` so the app learns an update was found; tracked as M6.9 in [`../impls/gpui-rewrite/m6-consolidation.md`](../impls/gpui-rewrite/m6-consolidation.md).
 
 ## 4. Coordination primitives — *what flows between runners*
 
-Runners don't share a programming model; they share an IM-like surface. We ship a subset in each milestone.
+Runners don't share a programming model; they share an IM-like surface.
 
 | Primitive | Role | Shipped | Planned |
 |---|---|:---:|:---:|
 | **Signal** | Typed notification; the router handles built-ins. Verb grammar. | ✅ | |
 | **Message** | Prose, broadcast or directed to a specific slot. | ✅ | |
 | **Inbox** | Per-slot projection: broadcasts + messages addressed to me. | ✅ | |
-| **Thread** | Scoped sub-conversation within a mission. | | next |
-| **Fact** | KV whiteboard; "what is currently true in this mission." | | next |
+| **Thread** | Scoped sub-conversation within a mission. | | not planned |
+| **Fact** | KV whiteboard; "what is currently true in this mission." | | not planned |
 | **Mention** | Targeted `@handle` inside a message's prose. | | later |
-| **Reaction** | Lightweight signal attached to a message (`👍`, `🔍`, `blocking`). | | later |
+| **Reaction** | Lightweight signal attached to a message. | | later |
 
 ### 4.1 Signal — *"something happened, please wake the right surface"*
 
-Short, typed, router-visible. Grammar: past-tense verb (or asker verbs like `ask_lead`, `ask_human`).
-
-Signals are machine-readable by design. The router has fixed handlers keyed to built-in signal types (§8.5). Runners emit them when they need parent-process plumbing: wake the lead, show a human card, escalate.
-
-A signal carries an optional `payload` (JSON) for the router and UI. Human-readable conversation belongs in messages.
+Short, typed, router-visible. Grammar: past-tense verb (or asker verbs like `ask_lead`, `ask_human`). The router has fixed handlers keyed to built-in signal types (§8.1). A signal carries an optional `payload` (JSON) for the router and UI. Human-readable conversation belongs in messages.
 
 ### 4.2 Message — *"here's what I think"*
 
 Prose, addressed either to the mission (broadcast) or to a specific crewmate (direct).
 
-Two shapes:
-
 - **Broadcast** — `runner msg post "<text>"`. Goes to every other runner's inbox; a human-authored broadcast goes to every runner.
 - **Direct** — `runner msg post --to <slot_handle> "<text>"`. Goes to that slot's inbox only.
 
-Messages are **flat by design** — one stream per mission, no message-thread scoping, and no separate fact primitive. Each runner consumes messages through their **inbox** (§4.3). Durable conclusions belong in project files, code, commits, or normal message prose instead of a second coordination object model.
-
-Messages and signals stay separate because:
-- Signals are typed and small; router handlers key off them. Messages are prose; the router doesn't parse them.
-- A signal without prose works (`approved`). Prose without a type works too. Conflating them forces every signal to carry prose and every note to carry a type.
-- LLM agents already know how to use both: signals are like exit codes, messages are like comments.
+Messages are **flat by design** — one stream per mission, no thread scoping, no fact primitive. Durable conclusions belong in project files, code, commits, or message prose. Signals are typed and small; messages are prose the router does not parse — but it does *notice* them (§8.5).
 
 ### 4.3 Inbox — *"what's in my mailbox"*
 
@@ -285,18 +246,13 @@ inbox(h) = all events in the mission where
           kind = "message" AND from != h AND (to = null OR to = h)
 ```
 
-`runner msg read` returns the calling slot's inbox, sorted by ULID (chronological). `--since <ts>` restricts to messages newer than a given ULID/timestamp so agents can poll without re-reading history.
+`runner msg read` returns the calling slot's inbox, sorted by ULID. `--since <ts>` restricts to messages newer than a given ULID/timestamp so agents can poll without re-reading history.
 
-**The inbox is pull-based.** Messages are read when the recipient runs `msg read`; the system does not automatically interrupt a busy runner every time mail arrives. Not every direct message is urgent, and auto-interrupting on every DM would blur the signal/message split (urgent vs async) and risk corrupting in-flight tool calls.
-
-The recipient learns to read its inbox through two mechanisms:
-
-1. **Convention** — the platform-injected worker preamble (§6 Layer 1) instructs every runner to check its inbox at natural task boundaries.
-2. **Signals as the urgent wake-up** — if a sender needs the recipient to drop everything, they emit a signal in addition to (or instead of) the message. The signal goes through the router's fixed handlers, which may inject stdin.
+**The inbox is pull-based, with a nudge.** The body of a message is only ever read when the recipient runs `msg read`. What the router does on a new message is write one line into the recipient's PTY — `[inbox] new message from @coder — run \`runner msg read\` to view.` — subject to the delivery gate in §8.5, so an agent that is mid-turn or a human who is mid-draft is not interrupted. The recipient also learns to read its inbox through the platform preamble (§6 Layer 1), which instructs every runner to check at natural task boundaries.
 
 ### 4.4 Event — *the unifying transport*
 
-Every coordination primitive is persisted as an **event** — one line in the per-mission NDJSON file. An event has:
+Every coordination primitive is persisted as an **event** — one line in the per-mission NDJSON file:
 
 ```jsonc
 {
@@ -312,261 +268,203 @@ Every coordination primitive is persisted as an **event** — one line in the pe
 }
 ```
 
-The `kind` field discriminates. For `kind: "signal"`, `type` carries the signal's semantic verb; for `kind: "message"`, `type` is omitted and the prose lives in `payload.text`. The router and UI project events into primitive-specific views based on `kind`.
-
-Runners interact through CLI verbs (`runner signal`, `runner msg`), not the event schema directly — there is no separate `signal_emitted` or `message_posted` event type.
+`kind` discriminates. For `kind: "signal"`, `type` carries the verb; for `kind: "message"`, the prose lives in `payload.text`. Runners interact through CLI verbs (`runner signal`, `runner msg`), not the event schema directly. Event-log primitives (ULIDs with a monotonic floor, the `flock` append, tail repair of a torn last line) live in `crates/runner-core`.
 
 ## 5. PTY session runtime
 
-A short primer for readers without an OS-internals background. A **pseudo-terminal (PTY)** is a kernel-emulated terminal device. To the child process, it looks like a real TTY — `isatty()` returns true, `ioctl(TIOCGWINSZ)` reports a window size, signals route correctly — but the other end is just a file descriptor held by a controlling process, not a hardware terminal. The kernel exposes the pair as two endpoints:
-
-- **slave** — what the child opens as `stdin` / `stdout` / `stderr`. Indistinguishable from a real `/dev/tty`.
-- **master** — what the controlling process (Runner, here) reads from to see what the child wrote and writes to to push keystrokes into the child's stdin.
-
-It's the same primitive `ssh`, `tmux`, and every terminal emulator (iTerm2, Alacritty, …) use under the hood.
-
-For the rigorous treatment, see Stevens & Rago, *Advanced Programming in the UNIX Environment*, **chapter 19 ("Pseudo Terminals")** — line discipline, packet mode, the `forkpty` / `openpty` helpers, and the gotchas around signal forwarding and window-size propagation. Runner doesn't reimplement any of that; we use the `portable-pty` Rust crate, which wraps the same POSIX primitives.
+A **pseudo-terminal (PTY)** is a kernel-emulated terminal device. To the child it looks like a real TTY — `isatty()` is true, `ioctl(TIOCGWINSZ)` reports a window size, signals route correctly — but the other end is a file descriptor held by a controlling process. The kernel exposes the pair as a **slave** (the child's stdin/stdout/stderr) and a **master** (what Runner reads from and writes to). It's the same primitive `ssh`, `tmux`, and every terminal emulator use. Runner uses the `portable-pty` crate, which wraps the POSIX primitives; for the rigorous treatment see Stevens & Rago, *APUE*, chapter 19.
 
 ### 5.1 Topology at a glance
 
-Per session, two parallel data paths flow through one PTY master / slave pair.
-
-Output (agent → UI + idle inference):
+Output (agent → screen + idle inference):
 
 ```
-   Child ──► PTY slave ──► PTY master ──► Reader thread ─┬─► Scrollback ring (~10k lines)
-   (tty stdout                            (blocking      ├─► xterm.js  (session:{id}:out)
-    + stderr)                              OS thread)    └─► Idle detector
-                                                              └─► runner_status event
-                                                                  (source: forwarder)
+   Child ──► PTY slave ──► PTY master ──► Reader thread ─┬─► SessionEvents::output
+   (tty stdout                            (blocking      │     └─► TerminalBridge ─► the session's Term
+    + stderr)                              OS thread)    │            (alacritty, 10,000-line scrollback)
+                                                         │            └─► wake GPUI if a pane is viewing it
+                                                         └─► Idle detector ─► runner_status (forwarder)
 ```
 
 Input (UI + router → agent):
 
 ```
-   xterm.js (onData) ──┐
-                       ├─► Writer ──► PTY master ──► PTY slave ──► Child
-   Signal router ──────┘   (tokio::Mutex,                          (tty stdin)
-   (inject_stdin)           lock-serialized,
-                            one write_all per turn)
+   terminal element (keys, IME, paste, mouse) ──► TerminalSession ─┐
+     direct chats: inline write                                     ├─► per-session writer ──► PTY master ──► child
+     mission panes: queued input worker (off the render thread)     │
+   Router (launch prompt, ask_lead, human_response, inbox nudges) ──┘
 ```
 
-The PTY master is the hinge: held in Rust by SessionManager, written to by the mutex-guarded Writer, read from by the blocking reader thread. Master ↔ slave runs in-process via `portable-pty` (no external multiplexer).
-
-Bus side (orthogonal to the PTY, drawn for completeness):
+The PTY master is the hinge: held by SessionManager, written to by the serialized writer, read from by the blocking reader thread. Bus side, orthogonal to the PTY:
 
 ```
-   Child ──► `runner` CLI on PATH ──► events.ndjson ──► notify ──► Signal router
-                                       (per mission,                  │
-                                        flock + append)               └─► back to Writer
-                                                                          on wake-up signals
+   Child ──► `runner` CLI on PATH ──► events.ndjson ──► notify ──► EventBus ──► Router ──► back to the writer on wake-up signals
 ```
 
-The whole system runs many of these side-by-side — one per slot per live mission, plus one per active direct chat — each with its own reader thread, writer mutex, and scrollback ring. The router and the bus are mission-scoped, so they fan out across every session in the same mission.
+The whole system runs many of these side-by-side — one per slot per live mission, plus one per active direct chat — each with its own reader thread, writer, idle detector and `Term`.
 
-### 5.2 Why PTY (not pipes)
+### 5.2 Why PTY (not pipes) and why alacritty
 
-Claude Code, Codex, Qoder, and TRAE CLI are TUIs. They check `isatty()`; if false, they degrade (no colors, no spinner, sometimes outright refuse). Their output is a stream of escape sequences (`\x1b[2K`, alt-screen toggles) that only a terminal emulator can render.
-
-A pseudo-terminal gives the child a real terminal on stdin/stdout/ stderr (full TUI mode) and hands us the master end as a byte stream that we forward to **xterm.js** in the webview.
+Claude Code, Codex, Qoder, and TRAE CLI are TUIs. They check `isatty()`; if false they degrade. Their output is escape sequences that only a terminal emulator can render. The PTY gives the child a real terminal; `alacritty_terminal` gives Runner a correct emulator — grid, VTE parser, alt screen, scrollback reflow, selection, mouse reporting modes — without reinventing one. GPUI paints the grid it maintains.
 
 ### 5.3 Spawn
 
-`portable-pty` is the in-process PTY library. The session runtime is encapsulated behind a `SessionRuntime` trait so the storage layer (SessionManager) doesn't know whether the runtime is in-process PTY, a tmux multiplexer, or anything else; today only `PtyRuntime` is shipped.
+The session runtime is encapsulated behind a `SessionRuntime` trait so SessionManager doesn't know whether the runtime is in-process PTY or anything else; only `PtyRuntime` is shipped.
 
-Login-shell discovery is startup-safe and shared. Setup seeds `SessionManager` from the last successful `LoginShellEnv` snapshot in `_app_state.login_shell_env_lkg`, paints the app, then runs the configured shell probe on a background thread with a five-second deadline. A successful probe atomically swaps the environment used by future spawns, persists the new snapshot, and emits `runtime/changed`; timeout, spawn failure, empty capture, or a missing shell leaves the prior snapshot active and records the typed outcome for Settings → Agents. Refresh is explicit after launch and follows the same path.
+Login-shell discovery is startup-safe and shared: setup seeds SessionManager from the last successful `LoginShellEnv` snapshot, paints the app, then runs the configured shell probe on a background thread with a five-second deadline. A successful probe atomically swaps the environment used by future spawns and emits `runtime/changed`; a failure leaves the prior snapshot active and records the outcome for Settings → Agents.
 
-Built-in runtime commands are resolved in Rust against the same direct-chat PATH the child receives. Precedence is a valid backend-persisted runtime override, then the first regular executable with an executable bit found by walking the composed PATH, then the bare catalog command only while discovery is still in flight. Once discovery completes, a missing executable fails before PTY creation with a pointer to Settings → Agents. Resolution substitutes only a runner command that still equals the runtime catalog default; legacy custom commands remain byte-for-byte unchanged. Runtime-only sessions record the effective command, reuse a still-valid recorded absolute path on resume, and re-resolve when that file disappears.
+Built-in runtime commands are resolved in Rust against the same PATH the child receives: a persisted runtime override, then the first executable found on the composed PATH, then the bare catalog command only while discovery is in flight. Once discovery completes, a missing executable fails before PTY creation with a pointer to Settings → Agents.
 
 ```
-portable_pty::openpty(rows, cols)
-  ├─ master handle  → kept by SessionManager
+portable_pty::openpty(rows, cols)          rows/cols: explicit pane size > latest in-memory
+  ├─ master handle  → kept by SessionManager        measurement > persisted last_cols/rows > 80×24
   └─ slave handle   → given to child via spawn_command()
 
 Child inherits (mission session):
-  PATH              = <mission shim>:$APPDATA/runner/bin:<login-shell PATH>:<curated CLI dirs>:<process PATH>
+  PATH              = <mission shim>:$APPDATA/bin:<login-shell PATH>:<curated CLI dirs>:<process PATH>
   RUNNER_CREW_ID    = <ulid>
   RUNNER_MISSION_ID = <ulid>
   RUNNER_HANDLE     = <slot_handle>
-  RUNNER_EVENT_LOG  = $APPDATA/runner/crews/<crew>/missions/<mission>/events.ndjson
+  RUNNER_EVENT_LOG  = $APPDATA/crews/<crew>/missions/<mission>/events.ndjson
   TERM              = xterm-256color
   COLORTERM         = truecolor
+  COLUMNS / LINES   = the spawn size
   <login-shell proxy env: HTTP_PROXY/HTTPS_PROXY/NO_PROXY>
 
+install_handle:
+  record the PTY, cache the runtime's policy flags, reconcile any size pushed while the
+  PTY did not exist, emit session/spawned   ← the bridge creates the Term here
+  start the forwarder (reader thread + idle detector)
+
 Reader thread (blocking):
-  loop {
-    read(master)
-      → emit session:{id}:out event,
-        push to scrollback ring,
-        feed PTY-silence idle detector
-  }
-  on EOF: wait(child) → emit session:{id}:exit { code } → update sessions row
+  loop { read(master) → SessionEvents::output(raw bytes) ; feed idle detector }
+  on EOF: wait(child) → emit session/exit { code } → update sessions row
 ```
 
-System prompt content is delivered through the runtime adapter in `router::runtime`. Claude-code, codex, qoder, and trae receive the composed first-turn body as a positional argument on fresh spawn; resumed conversations suppress it to avoid injecting a duplicate turn.
+The first-turn body (persona, brief, launch prompt) is delivered through the runtime adapter in `router/runtime.rs`: as a positional argument for runtimes that accept one, otherwise as a verified paste after the TUI is ready. Claude Code's `--append-system-prompt` is SDK-only (requires `-p`), so interactive claude sessions get their brief as a first user turn. Resumed conversations suppress it.
 
-### 5.4 Frontend wiring and human takeover
+### 5.4 Native wiring and human takeover
 
-- On first view: fetch the session's scrollback ring; write to xterm.js to restore history.
-- Subscribe to `session:{id}:out` for live output.
-- xterm.js `onData` → `send_input(session_id, bytes)` → `master.writer.write_all(bytes)`.
-- Frontend window resize → debounced `master.resize(rows, cols)` → SIGWINCH to child. Non-optional; without it, TUIs mis-render.
+- The terminal element renders the session's `Term` from the registry; a pane that mounts late simply paints the grid as it is — there is no history fetch.
+- Keys are encoded from the `Term`'s mode (application cursor keys, bracketed paste, Shift+Enter as `ESC CR`, ⌥ as Meta); IME composition is native, with marked text drawn in the grid; mouse reporting modes 1000/1002/1003/1006 are honored and Shift bypasses them for selection and scrollback; selection and copy are the element's own.
+- **Resize** is immediate. The pane that owns the terminal's size pushes each measured size from `prepaint`; `TerminalSession::resize` resizes the `Term` (reflowing history) and the PTY ioctl fires on the same call, every frame of a drag, for every runtime. A 175 ms settle thread only persists the final size once per storm. Nothing clears the grid on resize: the TUI's own SIGWINCH repaint plus alacritty's reflow is the whole story (M6.6 — the earlier "clear and replay" contract duplicated history, because `ESC[2J` on the primary screen is `clear_viewport`, which scrolls the viewport into scrollback).
 
-**Human takeover is a first-class capability.** At any moment, the human can type directly into any runner's stdin — the same writer the router uses for stdin pushes. The human can step in to answer a prompt the agent is stuck on, correct a bad plan, kill a runaway tool call, or just chat with the agent mid-flight.
+**Human takeover is a first-class capability.** At any moment the human can type directly into any runner's stdin — the same writer the router uses. The pane is a real terminal, not a log viewer: special keys pass through untouched, and the agent cannot tell whether bytes came from the router, the human, or its normal terminal input.
 
-The xterm pane is a real terminal, not a log viewer. Special keys (arrows, Enter, Ctrl-C) pass through untouched. The agent on the other end can't tell whether the bytes came from the router, the human, or its normal terminal input — which is the point.
+The mission feed is read-mostly: it renders coordination events and historical human-authored events, has no free-form composer, and its only input is the choice control on a pending `human_question` card. External orchestrators post `human_said` through MCP when they need to relay an operator instruction programmatically.
 
-The mission feed is read-mostly. It renders coordination events and historical human-authored events, but it has no free-form composer; the operator selects a runner pane and types there. The remaining feed-side input is the choice control on a pending `human_question` card, which appends a correlated `human_response` for the router to inject back to the asker. External orchestrators can still post `human_said` through MCP when they need to relay an operator instruction programmatically.
+### 5.5 Sessions outlive views; terminals outlive panes
 
-### 5.5 Sessions outlive the UI, not the app process
+Sessions live in the core and belong to the mission, not to any window, tab or pane. Closing a window does *not* kill the sessions — the agents keep running, events keep flowing, the router keeps handling live signals.
 
-Sessions live in the Rust backend and belong to the mission, not to any webview or tab. Closing the mission control window does *not* kill the sessions — the agents keep running, events keep flowing into the NDJSON file, and the router keeps handling live signals. Re-opening the window re-attaches: the frontend fetches each session's scrollback ring to rebuild xterm state, then subscribes to live output from wherever it was.
+Since M6.8 the same is true of the screen. `TerminalBridge` holds a strong `Arc<TerminalSession>` per live session: created on `session/spawned` (with a first-output fallback as an ordering safety net), fed from the first byte, released on `session/exit` and `session/archived`, replaced when a resume or reset spawns a new child under the same id. Panes take a *viewer lease* on the terminal they show; a hidden terminal keeps ingesting but does not wake GPUI. Tab switches, route changes and re-opened panes re-render an existing grid instead of rebuilding one. Consequence, recorded as a deviation from `main`: a stopped pane shows the Ended/Resume card over a neutral background, not the final screen; flip the release point from exit to archive if that is ever missed.
 
-**Rows persist across app restart; PTY children do not.** With the in-process `portable-pty` runtime, child agents die with Runner. On next launch, Runner re-mounts router/bus state for `running` missions, replays the NDJSON log, then demotes stale `running` session rows to `stopped`. The workspace can still show durable mission context and Resume controls, but Resume spawns a fresh PTY against the same session row.
-
-The things that end a live PTY are: user clicks Stop/Archive, the child process exits, the app quits, or Runner explicitly kills the process tree.
+**Rows persist across app restart; PTY children do not.** On quit, `stop_running_sessions_on_quit` kills every process group (SIGHUP, then SIGKILL) and joins the forwarders; the startup orphan sweep is the crash fallback and a failing sweep is fatal at boot. On next launch Runner re-mounts router/bus state for `running` missions, replays the logs, demotes stale `running` session rows to `stopped`, and re-spawns sessions flagged `resume_on_launch`. Resume spawns a fresh PTY against the same session row; for claude-code/codex/qoder/trae, `agent_session_key` lets the agent CLI continue its own conversation when supported.
 
 ### 5.6 Writer serialization
 
-The PTY master writer is shared between the human (via `send_input` command) and the router (via stdin pushes). Concurrent writers could interleave bytes mid-line, confusing the TUI on the other end. Each session's writer is wrapped in a `tokio::sync::Mutex`; every write is one `write_all` call under the lock.
+The PTY writer is shared between the human and the router. Each session's writer is serialized, one `write_all` per turn. Mission panes send through a per-session **queued input worker** so that a delivery waiting on the draft gate (§8.5) can never park GPUI's render thread; direct chats write inline. Pastes are bracketed when the TUI has enabled bracketed paste, and the first-turn paste is verified against the grid before Enter is sent.
 
 ### 5.7 Threads, not async
 
-`portable-pty`'s reader is blocking. Spawn one OS thread per session for the read side. Writers stay on the Tauri async runtime (writes are short and contended only at the millisecond scale).
+`portable-pty`'s reader is blocking. One OS thread per session does one blocking `read(2)` in a loop; the kernel parks it cheaply. Writes are short and take a per-session lock. The core uses a small tokio runtime only where the libraries want one — the `rmcp` MCP server on its Unix socket and the broadcast channel behind `AppEvent`s.
 
-### 5.8 Scrollback
+### 5.8 Scrollback and size
 
-Bounded raw-byte ring per session in SessionManager. It survives tab switches, route changes, and late workspace attachment while the app process is alive. It does not survive app restart, and there is no on-disk scrollback overflow today. The ring sees raw bytes including alt-screen toggles — acceptable because the frontend replays through xterm.js which can absorb them.
+Scrollback is the session's `alacritty_terminal::Term`, configured for 10,000 lines, reflowed on width change, and process-local: it does not survive app restart and there is no on-disk overflow. A resumed or reset session gets a fresh `Term`; the agent CLI's own resume restores conversation context on screen.
 
-Resume preserves the ring for claude-code and qoder (impls 0024, 0032, and 0034): they paint inline into the main screen, so kept scrollback + resume banner + tail repaint is what a physical terminal would show, and a later remount replay keeps the pre-resume conversation. Before the new child forks, Runner appends a synthetic seam chunk through the normal output ingest path to reset SGR, disable bracketed paste and mouse reporting, and start the banner on a fresh line. The ring stays bounded and process-local as before — old and new bytes share the same cap. Codex, trae, and other purge runtimes still drop prior bytes because their full-frame resume repaint would stack over retained content; Runner seeds the purged ring with an in-band full-reset chunk so mounted xterm grids and later replay both start clean. Claude-code, codex, qoder, and trae all clear stale scrollback on width changes before their SIGWINCH-driven repaint. Either way `resume` stamps a seq watermark before appending the synthetic chunk; the frontend's starting/resuming pills only honor TUI-ready escapes above it, and the synthetic chunks contain no ready-mode enable, so retained or synthetic bytes cannot clear an overlay waiting on the new PTY.
-
-Each session row persists the last applied PTY `cols` and `rows`. Spawn and resume resolve their initial size as explicit frontend dimensions, then the persisted dimensions, then 80×24 only for a session with no prior size. This resolution happens in SessionManager before the runtime forks, so relaunch resumes and other temporarily unmeasurable views cannot emit an initial 80-column segment before the frontend settles.
+Each session row persists the last applied PTY `cols` and `rows`. Spawn and resume resolve their initial size as the explicit pane size, then the latest in-memory measurement (which can arrive before the PTY exists and is applied at `install_handle`), then the persisted dimensions, then 80×24 only for a session with no prior size. Mission forks and resets read the persisted size when it is newer than their hint, so a re-spawned slot opens at the width its pane has.
 
 ### 5.9 Death and kill
 
-Reader thread owns the child handle. On EOF, it calls `wait()`, emits `session:{id}:exit`, updates the sessions row. No auto-restart.
-
-Kill: drop master → SIGHUP via `portable-pty`; escalate to SIGKILL if the child lingers.
+The reader thread owns the child handle. On EOF it calls `wait()`, emits `session/exit`, updates the sessions row. No auto-restart. Kill: SIGHUP to the process group via `portable-pty`; escalate to SIGKILL if the child lingers. Archive paths verify the child is dead before the row flips.
 
 ### 5.10 Busy / idle inference
 
-Per-runner busy/idle is inferred from PTY-byte silence by the session forwarder, not reported by the agent via `runner status`. For mission sessions the forwarder appends a `runner_status` event with `source: "forwarder"` to the mission log, and the router maps it into the workspace status projection. Direct chats stay off-bus: `SessionManager` retains their latest live activity, exposes it through `session_activity_snapshot`, and emits `session/status` transitions to every window. Direct spawn/resume stores and emits an initial busy state before the first PTY byte; teardown removes the snapshot entry without synthesizing a completion.
+Per-runner busy/idle is inferred from PTY-byte silence by the session forwarder's `IdleDetector` (750 ms of silence = idle; a 500 ms grace window re-armed on every resize ioctl keeps SIGWINCH repaints from reading as work), not reported by the agent. For mission sessions the forwarder appends a `runner_status` event with `source: "forwarder"` to the mission log and the router maps it into the workspace status projection. Direct chats stay off-bus: SessionManager keeps their latest activity and emits `session/status` transitions to every window; the sidebar aggregates them at the tab level into spinners, `last_completed_at`, and the unread dot.
 
-The sidebar subscribes to `session/status` before hydrating the snapshot and replays any transitions that raced with the request. It aggregates activity at the durable tab level: any busy running member shows the spinner, and the final busy-to-idle transition records `tabs.last_completed_at`. A focused window displaying any tab member records the same completion as viewed; otherwise `last_completed_at > last_viewed_at` restores the unread dot across navigation, windows, and restart. Tab activation reports the target tab's full subject set and advances its viewed watermark in one backend command, while `chat/tab-attention-changed` rehydrates every window without masquerading as a layout mutation.
-
-The `runner status busy|idle` CLI verb is kept as a back-compat alias only — it stamps `source: "agent"` so debug tooling can tell agent-reported events apart from forwarder inference, prints a stderr deprecation notice, and is slated for removal.
+This is the fallback tier by design. M6.2 adds hook-based status from the agents' own turn signals (`working` / `waiting` / `done`) with the byte-flow detector demoted to heuristic; M6.1 replaces the byte-based "is the human typing" latch with an observed input state from the native seam.
 
 ## 6. System prompt composition
 
-Every spawned session receives a composed system prompt — different shape for workers, the lead, and direct chats. The composition is mechanical: pure functions over slot + crew + mission inputs, no LLM in the loop. Source of truth lives in `src-tauri/src/router/prompt.rs`.
+Every spawned session receives a composed system prompt — different shape for workers, the lead, and direct chats. The composition is mechanical: pure functions over slot + crew + mission inputs, no LLM in the loop. Source of truth lives in `crates/runner-backend/src/router/prompt.rs`; delivery mechanics in `router/runtime.rs`.
 
 ### 6.1 The three layers
 
-The mission spawn path composes each runner's effective prompt from three layers, applied in this order:
-
-1. **Layer 1 — platform preamble** (code-owned, not editable). For non-lead workers: a fixed block describing the `runner` CLI verbs (`msg read`, `msg post`, `signal ask_lead`) and the pull-based inbox convention. For the lead: the launch prompt composed at `mission_goal` time (§6.3), including the goal, the roster, and the allowed-signals list.
-2. **Layer 2 — crew team conventions** (data-owned, optional — `crews.system_prompt_addendum`). Spliced under a `== Team conventions ==` section between Layer 1 and Layer 3. Empty / NULL = no splice. Lets a crew share house rules without editing every runner template.
-3. **Layer 3 — runner persona** (data-owned — `runners.system_prompt`). The role brief: who the runner is and what they do. Spliced under `== Your brief ==`.
+1. **Layer 1 — platform preamble** (code-owned). For workers: a fixed block describing the `runner` CLI verbs and the inbox convention. For the lead: the launch prompt composed at `mission_goal` time (§6.3).
+2. **Layer 2 — crew team conventions** (`crews.system_prompt_addendum`, optional). Spliced under `== Team conventions ==`.
+3. **Layer 3 — runner persona** (`runners.system_prompt`). Spliced under `== Your brief ==`.
 
 ### 6.2 What each session sees
 
 | Session kind | Layer 1 | Layer 2 | Layer 3 | Delivery |
 |---|:---:|:---:|:---:|---|
-| Mission worker | preamble | if set | persona | first-turn body (argv when the runtime accepts it, otherwise stdin paste) |
-| Mission lead | launch prompt (composed by router on `mission_goal`) | if set | persona | runtime's append-system-prompt flag at spawn + router-injected launch body to stdin on `mission_goal` |
-| Direct chat | — | — | persona | runtime's append-system-prompt flag at spawn |
+| Mission worker | preamble | if set | persona | first-turn body (argv when the runtime accepts it, otherwise a verified stdin paste) |
+| Mission lead | launch prompt (composed by router on `mission_goal`) | if set | persona | persona at spawn + router-injected launch body on `mission_goal` |
+| Direct chat | — | — | persona | first turn |
 
 Direct chats see *only* Layer 3 — the worker preamble's verbs and the team conventions don't make sense off-bus.
 
-Example for a worker slot `reviewer` filled by a `reviewer` runner template:
-
-```
-You are a worker in a crew coordinated by the bundled `runner` CLI…
-[Layer 1 preamble: verbs and inbox convention]
-
-== Team conventions ==        ← Layer 2, if crew.system_prompt_addendum set
-…
-
-== Your brief ==              ← Layer 3
-When `coder` requests review, read their messages and the diff,
-then either approve or request changes with specific feedback.
-```
-
 ### 6.3 The lead's launch prompt
 
-The lead's startup prompt is short — just the runner's persona via the runtime's append-system-prompt flag. The full mission picture arrives later: once `mission_goal` fires, the router composes a launch-prompt body (goal, roster, allowed signals, addendum) and writes it to the lead's stdin. This separation keeps the spawn fast and lets the user edit the goal up to the moment they click Start Mission.
-
-The composed launch prompt covers:
-
-- The lead's identity (`You are <slot_handle> (Display Name), the lead runner in crew "<crew name>"`).
-- The mission goal (from `missions.goal_override` or `crews.goal`).
-- The roster — every crewmate's slot_handle, display name, and lead/worker tag.
-- The team-conventions addendum (Layer 2), if set.
-- The known signal types (from `runner_core::model::KnownSignalType`) as the coordination vocabulary.
-- A reminder of the lead's job: dispatch via directed messages, absorb `ask_lead` traffic, escalate via `ask_human` only when needed.
+The lead's startup is short. Once `mission_goal` fires, the router composes a launch-prompt body — identity, the mission goal (`missions.goal_override` or `crews.goal`), the roster, the addendum, the known signal types from `runner_core::model::KnownSignalType`, and a reminder of the lead's job — and writes it to the lead's stdin once the TUI is ready. This keeps the spawn fast and lets the user edit the goal up to the moment they click Start Mission.
 
 ## 7. Coordination bus
 
 ### 7.1 Transport
 
 ```
-$APPDATA/runner/crews/{crew_id}/missions/{mission_id}/events.ndjson
+$APPDATA/crews/{crew_id}/missions/{mission_id}/events.ndjson
 ```
 
-One line per event. Append-only. Each mission has its own file — scopes log rotation, crash-replay, and deletion.
-
-Why a file instead of an in-memory bus:
-- **Debuggable** — `tail -f events.ndjson | jq .`.
-- **Crash-durable** — whatever's on disk survived the crash.
-- **Atomic** under explicit guards (§7.1.1) — concurrent `runner` invocations interleave correctly at line granularity.
-- **Replayable for projections** — restart the router, re-scan pending asks and runner status, resume live tail.
+One line per event, append-only, one file per mission. Debuggable (`tail -f | jq .`), crash-durable, atomic under explicit guards, replayable for projections.
 
 #### 7.1.1 Concurrent-write correctness
 
-Multiple runners can invoke `runner signal` / `runner msg` at the same time from different PTYs. We need line-granular atomicity regardless of filesystem:
+Multiple runners can invoke `runner signal` / `runner msg` at the same time from different PTYs, and the core writes router-generated events (`human_question`, `mission_warning`, `runner_status`) to the same file:
 
 1. Open the log with `O_APPEND | O_WRONLY | O_CREAT`.
-2. Acquire an advisory exclusive lock: `flock(fd, LOCK_EX)`.
-3. Emit exactly one `write(2)` call with the serialized JSON line including the trailing `\n`.
+2. `flock(fd, LOCK_EX)`.
+3. Exactly one `write(2)` of the serialized JSON line including the trailing `\n`.
 4. `close(fd)`, which releases the lock.
 
-This gives us:
-- **Ordering**: `O_APPEND` guarantees the write lands at end-of-file at the moment the kernel performs it.
-- **Atomicity across writers**: `flock(LOCK_EX)` serializes writers. Small-write atomicity on regular files is filesystem-specific; we don't rely on it.
-- **No partial lines**: a single `write(2)` of the full line + `\n` under the lock means the whole line lands or none of it does.
+Ordering from `O_APPEND`, atomicity across writers from the lock, no partial lines from the single write. The app data directory must be on a local POSIX filesystem; network and iCloud-synced volumes may not honor `flock()`.
 
-**Filesystem requirements.** The app data directory must be on a local POSIX filesystem (APFS, ext4, XFS, …). Network filesystems (NFS, SMB) and iCloud-synced volumes may not honor `flock()` or may re-order appends across clients; we document this and check at app startup.
+**No `fsync`, by decision** (2026-08-20): page-cache durability is the right trade for a local tool. The cost is a hard power loss mid-append; the log's tail repair already handles a torn last line on open, and coordination state is reconstructible from the agents' own session logs.
 
-Writers: the bundled `runner` CLI writes runner-authored events; the Rust backend writes router-generated events (`human_question`, `mission_warning`, `runner_status` from the forwarder, …) through the same `flock`-guarded path. No other process should write to this file.
+ULIDs carry a monotonic floor per log so two writers (the app and the CLI) never emit out-of-order ids within a millisecond.
 
 ### 7.2 Consumers
 
-Two subscribers to the NDJSON file, both via `notify`:
+Two subscribers to each mission's file, both fed by one `notify` watcher:
 
-- **Signal router** — deserializes each new line. For built-in signals, runs a fixed handler. For messages, no-op; messages stay flat and are not routed into thread/fact projections.
-- **EventBus → UI** — the backend re-emits each line as a `mission:{id}:event` Tauri event. Frontend splits by `kind` into the event feed and the HITL/signal projections.
+- **Router** — deserializes each new line and dispatches it (§8).
+- **UI** — the bus republishes the line's arrival as a `mission/changed` `AppEvent`; the mission workspace re-reads the feed from its cursor and projects events into the feed, the HITL cards and the status pills (incremental append is M6.4).
 
 #### Startup replay
 
-On router boot: open the mission's file, fold `human_question` / `human_response` and `runner_status` rows into in-memory state, then switch to tailing from the current end of the log. Replay rebuilds projections; it does not re-run historical stdin pushes.
+On router boot: open the mission's file, fold `human_question` / `human_response` and `runner_status` rows into in-memory state, record the replay high-water mark, then tail from the current end. Replay rebuilds projections; it never re-runs historical stdin pushes or inbox nudges.
 
 ## 8. Signal router
 
 The router is a flat dispatcher, not a policy engine. There is no per-crew `{when, do}` rule list. The lead runner owns coordination judgment; the router owns parent-process plumbing that a child PTY cannot do itself.
 
-Stdin pushes are deliberately silent: the router writes bytes into the target PTY but does not synthesize `stdin_injected` audit events. The event log records the signal that caused the push, plus `human_question` / `human_response` for HITL cards.
+Stdin pushes are deliberately silent: the router writes bytes into the target PTY but does not synthesize `stdin_injected` audit events. The event log records the signal or message that caused the push, plus `human_question` / `human_response` for HITL cards and `mission_warning` when a delivery cannot happen.
 
 ### 8.1 Fixed handler table
 
-| Signal type | Fixed handler |
+| Event | Fixed handler |
 |---|---|
-| `mission_goal` | Compose the launch prompt and inject it to the lead's stdin. |
+| `mission_goal` | Compose the launch prompt and inject it to the lead. |
 | `human_said` | Inject MCP-provided `payload.text` to `payload.target` if present, otherwise to the lead. |
 | `ask_lead` | Inject the worker's `{ question, context }` to the lead. |
 | `ask_human` | Append a `human_question` event for the UI. |
 | `human_response` | Look up the matching `question_id` and inject the answer to the runner that emitted the original `ask_human`. |
 | `runner_status` | Update the latest-status map from `payload.state`. If a non-lead reports `idle`, inject a short availability update to the lead. |
-| `inbox_read` | Internal — used by the event-feed projection to track read watermarks. Not user-visible. |
+| message (any) | Inject a one-line inbox nudge to the recipient (directed) or to every other roster member (broadcast); a message to the virtual `human` handle is rendered in the feed and not nudged. |
+| `inbox_read` | Internal — owned by the bus's projection layer to track read watermarks. |
+
+`mission_start`, `mission_stopped`, `human_question`, `mission_warning` are observed but not routed: they are events the router or the lifecycle itself emits.
 
 ### 8.2 `ask_human` — payload shapes and matching
 
@@ -580,10 +478,10 @@ Stdin pushes are deliberately silent: the router writes bytes into the target PT
   "type": "human_question",
   "from": "router",
   "payload": {
-    "triggered_by": <triggering-signal.id>,     // e.g. the changes_requested signal's id
+    "triggered_by": <triggering-signal.id>,
     "prompt":       "Reviewer requested changes. Accept or override?",
     "choices":      ["accept", "override"],
-    "on_behalf_of": "@impl"                     // optional; see "Lead-mediated asks" below
+    "on_behalf_of": "@impl"                     // optional; see §8.3
   }
 }
 
@@ -593,45 +491,42 @@ Stdin pushes are deliberately silent: the router writes bytes into the target PT
   "type": "human_response",
   "from": "human",
   "payload": {
-    "question_id": <human_question.id>,         // = the card event's `id` field
-    "choice":      "accept"                     // the clicked value (always one of choices[])
+    "question_id": <human_question.id>,
+    "choice":      "accept"
   }
 }
 ```
 
-Causality is carried in-payload rather than on the envelope. The canonical `question_id` is the `human_question` event's own `id` field, assigned at flock-guarded log-append time.
+Causality is carried in-payload rather than on the envelope. The canonical `question_id` is the `human_question` event's own `id`, assigned at flock-guarded append time.
 
 ### 8.3 Lead-mediated asks (the canonical pattern)
 
-By convention (§3.3), workers do not escalate to the human directly:
-
-1. **Worker asks the lead.** Worker emits `ask_lead` with the question in its payload. The router's fixed handler injects the worker's `{ question, context }` to the lead.
-2. **Lead decides.**
-   - **Answer from own context.** Lead posts a directed message to the worker via `runner msg post --to <handle> "…"`. The worker picks it up on its next `runner msg read`. Pull-based; no new wake-up needed.
-   - **Escalate to human.** Lead emits `ask_human` with `payload.on_behalf_of: "<handle>"`. The router appends `human_question`; the UI uses `on_behalf_of` to show the attribution chain (*@impl → @architect → you*).
-3. **Human responds.** The router injects the result into the lead's stdin (the lead was the asker of record). The lead forwards the answer via a directed message to the original worker.
-
-This is not a new protocol — it is `ask_lead` + `ask_human` + directed messages composed. The only schema additions are the `ask_lead` signal type and the optional `on_behalf_of` field on `human_question`.
+1. **Worker asks the lead.** Worker emits `ask_lead`; the router injects `{ question, context }` to the lead.
+2. **Lead decides.** Answer from own context via a directed message (pull-based, plus the nudge), or escalate with `ask_human` and `payload.on_behalf_of: "<handle>"`; the UI shows the attribution chain (*@impl → @architect → you*).
+3. **Human responds.** The router injects the result into the lead's stdin; the lead forwards it to the worker as a directed message.
 
 ### 8.4 Read-mostly mission feed
 
-The mission feed answers what is happening across the crew; the selected terminal pane is where the operator talks to a runner. Runners cannot address a virtual `human` message recipient: `runner msg post --to human` fails with guidance to answer in TUI output.
+The mission feed answers what is happening across the crew; the selected terminal pane is where the operator talks to a runner. Runners cannot address a virtual `human` message recipient: `runner msg post --to human` fails with guidance to answer in TUI output. The feed keeps its render paths for historical `human_said`, `human_response`, and messages addressed to `human`, so old logs replay unchanged.
 
-The feed keeps its render paths for historical `human_said`, `human_response`, and message events addressed to `human`, so pre-feature-51 logs replay unchanged. The router likewise keeps the `human_said` handler for MCP-originated operator instructions and the message-nudge skip for historical messages targeting `human`. The live feed's only input is a pending `human_question` card response, which preserves the `ask_human` → `human_question` → `human_response` → injection-to-asker path.
+### 8.5 Who does delivery, and when
 
-### 8.5 Who does delivery
+| | Sender addresses recipient? | What the router does | When |
+|---|:---:|---|---|
+| Signal | No — fixed handler decides | Injects the handler's text | Through the delivery gate |
+| Broadcast message | No | One-line inbox nudge to every other slot | Through the delivery gate |
+| Direct message | Yes (`--to`) | One-line inbox nudge to that slot | Through the delivery gate |
 
-| | Sender addresses recipient? | Delivery timing | Router in path? |
-|---|:---:|---|:---:|
-| Signal | No — fixed handler decides | Immediate for wake-up handlers | Always |
-| Broadcast message | No | On recipient's `msg read` | No |
-| Direct message | Yes (`--to`) | On recipient's `msg read` | No |
+Message *bodies* are never pushed; recipients read them with `msg read`. What the router pushes is the wake-up line, and every push — handler text or nudge — goes through the per-slot **delivery gate and outbox** in `router/mod.rs`:
 
-**Messages do not trigger router actions.** The inbox is pull-based. If a sender needs the recipient to drop everything, they emit a signal — signals are the urgent wake-up channel, messages are async conversation.
+- **Draft-aware.** If the human is typing in that slot's pane (today a byte-level latch: printable input and pastes set it, Enter/Ctrl-C clear it, with no time bound — the 10-minute abandonment backstop in impl 0041 was never implemented, so only Enter, Ctrl-C, respawn or exit release it; M6.1 replaces the latch with an observed input state), the delivery waits in the outbox and the pane shows a "delivery waiting" pill (`router/delivery-blocked`).
+- **Turn-boundary.** Deliveries are spaced by an 80 ms cooldown and a 30 s reconciliation re-nudge covers a nudge that landed while the agent was mid-tool-call; latest-wins absorbs bursts. With M6.2 the boundary comes from the agent's own `done` signal instead of inferred idle.
+- **Queued until resume.** A delivery to a stopped or resuming slot is queued, announced once per outbox with a `mission_warning` ("queued until the session resumes"), flushed on `Respawned`, and dropped with a second warning if the session exits for good. Nothing is silently lost and nothing hard-fails (M6.8).
+- **Never on replay.** Events at or below the replay high-water mark are not re-dispatched, so a restart does not re-nudge anyone with mail they already saw.
 
 ## 9. The `runner` CLI
 
-The bundled CLI is the agent-facing surface for everything in §4–§8. Spawned children invoke it directly (it's prepended onto their `PATH` at spawn — §5.3) to participate in the bus: emit signals, post messages, read their inbox. There is no other supported way for an agent to talk to the rest of the crew; the CLI is the "communication infrastructure" from the agent's point of view.
+The bundled CLI is the agent-facing surface for everything in §4–§8. Spawned children invoke it directly (it's prepended onto their `PATH` at spawn) to participate in the bus. There is no other supported way for an agent to talk to the rest of the crew.
 
 ### 9.1 Surface
 
@@ -643,26 +538,27 @@ runner status busy|idle [--note <text>]      (deprecated)
 runner help
 ```
 
-One binary, two real verbs (`signal`, `msg`) plus the deprecated `status` alias and a `help` entry point. Context always comes from env vars injected at spawn (`RUNNER_CREW_ID`, `RUNNER_MISSION_ID`, `RUNNER_HANDLE`, `RUNNER_EVENT_LOG`); the CLI is otherwise stateless and side-effect-free outside of the one log append.
+Context always comes from env vars injected at spawn (`RUNNER_CREW_ID`, `RUNNER_MISSION_ID`, `RUNNER_HANDLE`, `RUNNER_EVENT_LOG`); the CLI is otherwise stateless and side-effect-free outside of the one log append. Message bodies are capped at 32 KB.
 
 ### 9.2 Verb-by-verb
 
-- **`signal <type> [--payload <json>]`** — append a `kind: signal` event to the mission log. The router picks it up via §7.2's notify tailer and runs its fixed handler (§8.1). `--payload` is free-form JSON; the router interprets it per signal type.
-- **`msg post <text>`** — broadcast: append a `kind: message` event with `to: null`. Lands in every slot's inbox.
-- **`msg post --to <handle> <text>`** — directed: append a `kind: message` event with `to: <handle>`. Lands in that slot's inbox only. The handle must be a slot in the mission roster.
-- **`msg read [--since <ts>] [--from <handle>]`** — the inbox-read projection (§4.3). Returns broadcasts plus directs addressed to me, sorted by ULID. `--since` filters by ULID cutoff for poll-without-rewind; `--from` filters by sender.
-- **`status busy|idle [--note <text>]`** — **deprecated.** Busy/idle is now inferred by the session forwarder from PTY-byte silence (§5.10). The verb is kept as a back-compat alias (the event is stamped `source: "agent"` so debug tooling can tell agent-reported events apart from forwarder-inferred ones) and prints a stderr deprecation notice. Bundled templates no longer call it; slated for removal in a future release.
-- **`help`** — long-form usage from `cli/src/help.rs`. Mirrors this section.
+- **`signal <type> [--payload <json>]`** — append a `kind: signal` event. The router runs its fixed handler. `<type>` is validated against the closed `runner_core::model::KnownSignalType` enum.
+- **`msg post <text>`** — broadcast: `to: null`. **`msg post --to <handle> <text>`** — directed; the handle must be a slot in the mission roster.
+- **`msg read [--since <ts>] [--from <handle>]`** — the inbox projection (§4.3), sorted by ULID; also records an `inbox_read` watermark.
+- **`status busy|idle`** — **deprecated**; status is inferred (§5.10). Kept as an alias stamped `source: "agent"`, prints a deprecation notice.
+- **`help`** — long-form usage from `cli/src/help.rs`.
 
 ### 9.3 What the CLI does *not* do
 
-- **No event-DAG flags.** No `--correlation-id`, no `--causation-id`. Causality is implicit in ULID ordering, or in-payload where it has to be explicit (e.g. `human_response.payload.question_id` matches a `human_question` card's `id` — §8.2).
-- **No daemon, no socket.** Each invocation is a one-shot process: read env, build the event, `flock` + append to `RUNNER_EVENT_LOG`, exit. The bus is the file; nothing else needs to be alive.
-- **No per-crew allowlist.** The CLI validates `<type>` against the closed `runner_core::model::KnownSignalType` enum — one place to add a built-in signal type, no DB column or sidecar to keep in sync (feature 20).
+No event-DAG flags (causality is ULID order or in-payload), no daemon, no socket, no per-crew allowlist. Each invocation is a one-shot process: read env, build the event, `flock` + append, exit.
 
 ### 9.4 Direct chats: the CLI is absent
 
-Direct-chat sessions (§3.5) don't get the bundled CLI on PATH — there is no bus to write to, no router to wake, no inbox to read from. If an agent in a direct chat were to invoke `runner …` (e.g. because its system prompt was copied from a mission template), the command simply isn't found. This is deliberate: direct chats are one-on-one with the human, so the coordination verbs would be misleading.
+Direct-chat sessions don't get the bundled CLI on PATH — there is no bus, no router, no inbox. This is deliberate: direct chats are one-on-one with the human.
+
+### 9.5 External control: MCP, not the CLI
+
+Outside agents and tools operate Runner itself through the MCP server the app hosts on `$APPDATA/mcp.sock` (bridged from stdio by `runner-mcp`): `crew_*`, `runner_*`, `slot_*`, `project_*`, `mission_*` (start, stop, archive, reset, status, feed, post human message/signal, pin, rename) and `session_start_direct`. This is how a Claude Code session drives a crew mission from the outside — the loop the rewrite itself was built with.
 
 ## 10. Data model
 
@@ -672,45 +568,37 @@ Direct-chat sessions (§3.5) don't get the bundled CLI on PATH — there is no b
 crews (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  purpose TEXT,                       -- short prose shown in Crew Detail; optional
+  purpose TEXT,
   goal TEXT,                          -- default mission goal
-  orchestrator_policy TEXT,           -- DEPRECATED (#247): superseded by system_prompt_addendum; retained but unused
   system_prompt_addendum TEXT,        -- Layer-2 team conventions; nullable
   created_at TEXT, updated_at TEXT
 );
 
 runners (
   id TEXT PRIMARY KEY,
-  handle TEXT NOT NULL UNIQUE,        -- globally unique slug; see §3.2
+  handle TEXT NOT NULL UNIQUE,        -- globally unique slug; §3.2
   display_name TEXT NOT NULL,
-  runtime TEXT NOT NULL,              -- first-class runtime key; claude-code | codex | qoder | trae today
+  runtime TEXT NOT NULL,              -- claude-code | codex | qoder | trae | shell
   command TEXT NOT NULL,
   args_json TEXT,
-  working_dir TEXT,                   -- direct-chat working dir; missions override via mission.cwd
+  working_dir TEXT,                   -- direct-chat working dir; missions use mission.cwd
   system_prompt TEXT,                 -- Layer 3 persona
   env_json TEXT,
-  model TEXT,                         -- optional model override (e.g. codex GPT-5 effort)
-  effort TEXT,                        -- optional effort override
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  model TEXT, effort TEXT,            -- optional overrides, composed into argv at spawn
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 
--- Crew membership lives on slots; each slot is one position inside
--- one crew, filled by one runner template. The same runner can fill
--- slots in many crews (§3.3).
 slots (
   id TEXT PRIMARY KEY,
   crew_id TEXT NOT NULL REFERENCES crews(id) ON DELETE CASCADE,
   runner_id TEXT NOT NULL REFERENCES runners(id) ON DELETE CASCADE,
-  slot_handle TEXT NOT NULL,          -- the in-crew handle (@impl, @reviewer); unique within crew
-  position INTEGER NOT NULL,          -- display order; unique within crew
+  slot_handle TEXT NOT NULL,          -- in-crew handle; unique within crew
+  position INTEGER NOT NULL,
   lead INTEGER NOT NULL DEFAULT 0,
+  runtime_override TEXT, model_override TEXT, effort_override TEXT,
   added_at TEXT NOT NULL,
-  UNIQUE (crew_id, slot_handle),
-  UNIQUE (crew_id, position)
+  UNIQUE (crew_id, slot_handle), UNIQUE (crew_id, position)
 );
-
--- Exactly one lead per crew.
 CREATE UNIQUE INDEX one_lead_per_crew ON slots(crew_id) WHERE lead = 1;
 
 projects (
@@ -721,177 +609,152 @@ projects (
   created_at TEXT NOT NULL
 );
 
+-- The sidebar tree: projects, tabs and mission references as one ordered
+-- forest (migration 0014 replaced the folders/tabs tables).
+nodes (
+  id TEXT PRIMARY KEY,
+  parent_id TEXT REFERENCES nodes(id) ON DELETE RESTRICT,   -- NULL = root
+  position INTEGER NOT NULL,                                -- scoped to parent
+  type TEXT NOT NULL,                                       -- 'project' | 'tab' | 'mission'
+  name TEXT,                                                -- tab title
+  ref_id TEXT,                                              -- projects.id / missions.id
+  layout TEXT,                                              -- tab-only: pane layout JSON
+  pinned_position INTEGER,                                  -- non-NULL = pinned
+  last_completed_at TEXT, last_viewed_at TEXT,              -- tab attention watermarks
+  created_at TEXT NOT NULL
+);
+
 missions (
   id TEXT PRIMARY KEY,
   crew_id TEXT NOT NULL REFERENCES crews(id) ON DELETE CASCADE,
   project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
   title TEXT NOT NULL,
   status TEXT NOT NULL,               -- running | completed | aborted
-  goal_override TEXT,                 -- null → inherit crews.goal
+  goal_override TEXT,
   cwd TEXT,                           -- authoritative working dir for slot spawns
-  started_at TEXT NOT NULL,
-  stopped_at TEXT,
-  archived_at TEXT,                   -- non-null → read-only history; hidden from search
-  pinned_at TEXT
+  started_at TEXT NOT NULL, stopped_at TEXT, archived_at TEXT, pinned_at TEXT
 );
 
 sessions (
   id TEXT PRIMARY KEY,
-  -- Nullable: direct-chat sessions exist without a mission (§3.5).
-  -- For mission sessions, deleting the mission detaches the session
-  -- (SET NULL) so historical session rows survive for stats.
-  mission_id TEXT REFERENCES missions(id) ON DELETE SET NULL,
+  mission_id TEXT REFERENCES missions(id) ON DELETE SET NULL,   -- NULL = direct chat
   project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
   runner_id TEXT REFERENCES runners(id) ON DELETE CASCADE,
-  slot_id TEXT,                       -- back-reference to the slot a mission session filled
-  cwd TEXT,                           -- direct-chat working dir
+  slot_id TEXT,
+  cwd TEXT,
   status TEXT NOT NULL,               -- running | stopped | crashed
   pid INTEGER,
   started_at TEXT, stopped_at TEXT,
-  -- Runtime metadata for the live in-process PTY handle. The legacy
-  -- socket/window/pane columns are retained but not written by new rows.
-  runtime TEXT,                       -- which runtime owns the live handle (native-pty)
-  runtime_socket TEXT,
-  runtime_session TEXT,
-  runtime_window TEXT,
-  runtime_pane TEXT,
-  runtime_cursor INTEGER,
-  -- Agent-side resume key captured at spawn so Resume can ask the CLI to
-  -- continue the prior conversation after a stop or app restart.
-  agent_session_key TEXT,
-  agent_runtime TEXT,                 -- runtime-only direct chat identity
-  agent_command TEXT,                 -- effective executable for runtime-only/pinned sessions
-  archived_at TEXT,
-  title TEXT,                         -- direct-chat title; null for mission sessions
-  pinned_at TEXT
-);
-
-folders (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  created_at TEXT NOT NULL
-);
-
-tabs (
-  id TEXT PRIMARY KEY,
-  folder_id TEXT REFERENCES folders(id) ON DELETE RESTRICT,
-  name TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  layout TEXT NOT NULL,              -- JSON: preset, slot assignments, split sizes
-  created_at TEXT NOT NULL,
-  last_completed_at TEXT,
-  last_viewed_at TEXT
+  runtime TEXT, runtime_socket TEXT, runtime_session TEXT,      -- live handle metadata
+  runtime_window TEXT, runtime_pane TEXT, runtime_cursor INTEGER, -- (legacy tmux columns, unused)
+  agent_session_key TEXT,             -- the agent CLI's own conversation id, for Resume
+  agent_runtime TEXT, agent_command TEXT, agent_model TEXT, agent_effort TEXT,
+  last_cols INTEGER, last_rows INTEGER,   -- last applied PTY size (§5.8)
+  resume_on_launch INTEGER NOT NULL DEFAULT 0,
+  archived_at TEXT, title TEXT, pinned_at TEXT
 );
 ```
 
-Migrations live in `src-tauri/migrations/`. Schema changes are forward-only — no down migrations. Pre-release migrations were squashed into `0001_init.sql`; subsequent migrations are individual files.
+Migrations live in `crates/runner-backend/migrations/` (`0001_init.sql` … `0020_slot_effort_override.sql`). Forward-only; new migrations on `gpui-nightly` are allocated there and the Tauri app never sees them, which is why the cutover is a one-way door for the database (M6.3's index migration is deferred to cutover for that reason).
 
 ### 10.2 Filesystem
 
 ```
-$APPDATA/runner/
+~/Library/Application Support/com.wycstudios.runner/      ($APPDATA; debug builds: …runner-dev)
+├── runner.db                               # SQLite (WAL)
+├── ui-settings.json                        # preferences (§3.7)
+├── mcp.sock                                # MCP server socket while the app runs
 ├── bin/
-│   ├── runner                                # bundled agent CLI (signal + msg)
-│   └── runner-mcp                            # stdio MCP bridge
-├── mcp.sock                                  # local MCP socket while app is running
-├── runner.db                                 # SQLite (WAL)
-└── crews/
-    └── {crew_id}/
-        └── missions/
-            └── {mission_id}/
-                └── events.ndjson             # per-mission event log
+│   ├── runner                              # bundled agent CLI (signal + msg)
+│   └── runner-mcp                          # stdio MCP bridge
+└── crews/{crew_id}/missions/{mission_id}/
+    └── events.ndjson                       # per-mission event log (+ roster sidecar)
+
+~/Library/Logs/com.wycstudios.runner/runner.log   # rotating app log + panic backtraces
 ```
 
-macOS: `$APPDATA` = `~/Library/Application Support/com.wycstudios.runner`. Dev builds use a `-dev` suffix so dev and prod data are isolated.
-
-**Mission sessions** share their mission's directory: their scrollback rings live in memory in SessionManager (no on-disk overflow today), and the only durable artifact for the mission is the `events.ndjson` log.
-
-**Direct chats are off-disk.** Because a direct-chat session has no mission, no event bus, and no router, it has no filesystem footprint beyond its row in `sessions` (SQLite). The scrollback ring stays in memory; the PTY child writes nothing of its own to disk that Runner manages. This is why a direct chat can be started, used, and ended without ever touching `$APPDATA/runner/crews/`.
-
-**Log files (out-of-band).** `tauri-plugin-log` writes to the OS log dir, not into `$APPDATA/runner/`. On macOS that's `~/Library/Logs/com.wycstudios.runner/runner.log`; the panic hook writes backtraces to the same file. Dev builds use a separate `com.wycstudios.runner-dev` subdir.
+The data directory is the one the Tauri app used, so a cutover install finds its runners, crews, missions and sessions in place; only the webview's localStorage preferences are left behind. Direct chats are off-disk beyond their row in `sessions`; mission sessions share their mission's directory and the only durable artifact is `events.ndjson`. Screen state lives in memory (§5.8).
 
 ## 11. Process and thread model
 
-Runner is a two-process system at runtime: the **Tauri backend process** (Rust) and the **webview process** (WebKit running our React bundle). They communicate through Tauri's IPC bridge — commands one way, events the other. Everything in this section is about the backend; the webview is single-threaded JavaScript and doesn't need separate explanation.
+Runner is one process. There is no IPC boundary between the screen and the PTY.
 
-### 11.1 The shape inside the backend
+### 11.1 The shape
 
 ```
-Tauri backend process
-  ├── Tauri main thread
-  │     └── Tauri command dispatch + event emission
+Runner.app process
+  ├── GPUI main thread
+  │     render + layout, input dispatch, IME, window management,
+  │     AppStore reactions → scoped cx.notify, Sparkle callbacks
   │
-  ├── Tokio async runtime (multi-threaded)
-  │     ├── MissionManager (async; mostly idle between lifecycle events)
-  │     ├── SessionManager command surface (async writers, command handlers)
-  │     ├── Per live mission:
-  │     │     ├── EventBus tailer task (notify watcher → broadcast)
-  │     │     └── Signal router task (consumes the bus, runs handlers)
-  │     └── Tauri command handlers (CRUD, session_spawn, mission_start, …)
+  ├── native-app-events thread
+  │     AppEvent broadcast → AppStore snapshots → wake GPUI
   │
-  └── OS threads (blocking, one per active session)
-        └── Per session: blocking PTY reader thread
-              (reads from PTY master → scrollback ring,
-               session:{id}:out Tauri event, idle detector)
-
-⇕ IPC bridge ⇕
-
-Webview process (single-threaded JS)
-  └── React + xterm.js
-        ├── Subscribes to session:{id}:out, mission:{id}:event
-        └── Sends Tauri commands on user interaction
+  ├── Per live session
+  │     ├── blocking PTY reader thread  (read(2) → SessionEvents::output → Term, idle detector)
+  │     ├── queued input worker         (mission panes; draft-gate waits live here)
+  │     └── short-lived settle thread   (one per resize storm; persists last_size)
+  │
+  ├── Per live mission
+  │     └── notify watcher → EventBus tail → Router dispatch; router cooldown / reconciliation timers
+  │
+  ├── tokio runtime (small)
+  │     ├── rmcp MCP server on $APPDATA/mcp.sock
+  │     └── AppEvent broadcast channel
+  │
+  └── login-shell probe thread (startup, five-second deadline)
 ```
 
 ### 11.2 Why a thread per PTY reader (not async)
 
-`portable-pty`'s read side is **blocking** — there's no `AsyncRead` adapter that's correct on macOS without polling hacks. Putting it on the tokio runtime would either (a) block a runtime thread indefinitely (starving other tasks) or (b) require spinning a timer to poll, which costs latency and CPU. An OS thread that does one blocking `read(2)` in a loop is the right shape: the kernel parks it cheaply when there are no bytes, wakes it instantly when there are, and the cost of one OS thread per session is negligible at our scale.
-
-The write side stays async. Writes are short (keystrokes, stdin pushes are tens of bytes), the `tokio::sync::Mutex` around the writer is fine on the async runtime, and there's no read-side blocking concern.
+`portable-pty`'s read side is blocking. An OS thread doing one blocking `read(2)` in a loop is the right shape: the kernel parks it cheaply when there are no bytes and wakes it instantly when there are. The same thread feeds the `Term` directly — the lock is the only synchronization between ingestion and painting, and GPUI only re-renders when a viewed terminal changed.
 
 ### 11.3 What runs per-mission vs. app-wide
 
 | Lifetime | Components |
 |---|---|
-| App-wide (one of each) | Tauri main thread, tokio runtime, MissionManager, SessionManager, the SQLite connection pool, the webview process, the `tauri-plugin-log` writer. |
-| Per live mission | One EventBus tailer task + one Signal router task + the `notify` watcher feeding them, all wired to that mission's NDJSON file. |
-| Per active session | One blocking OS thread (the PTY reader) + the per-session writer mutex + the scrollback ring. |
+| App-wide | GPUI main thread, the events thread, AppStore, SessionManager, MissionManager, the SQLite pool, the MCP server, the tracing writer, the Sparkle controller. |
+| Per live mission | One notify watcher + bus tail + router dispatch, wired to that mission's NDJSON file. |
+| Per live session | The PTY reader thread, the writer and input worker, the idle detector, and one `Term` (10,000-line scrollback) in the bridge registry. |
 
-The "per live mission" tasks come up at mission start (or app restart for missions in `status='running'`) and shut down when the mission is archived. A reversible Stop kills PTYs but leaves router/bus state mounted. Direct chats don't have these — they have only the per-session thread + writer + ring while their PTY is live.
+Per-mission components come up at mission start (or app launch for `running` missions) and go down at archive. A reversible Stop kills PTYs but leaves router/bus state mounted.
 
 ### 11.4 Cost model
 
-The target scale is one operator with a handful of concurrent missions and ≤ ~10 sessions in total. At that scale:
-
-- ~10 blocking OS threads — well under any OS limit; cheap.
-- 1 tokio runtime with the default multi-threaded scheduler.
-- A few notify watchers (one per live mission) — cheap.
-- One SQLite connection in WAL mode for the whole app — reads happen on whatever task needs them, the connection's own lock serializes.
-
-The model scales until the **OS threads × stack size** product or the **notify watcher count** becomes meaningful, which neither will at this product's footprint. If we ever needed to host tens of missions per process, the right move is to put the PTY reads behind an event loop (`kqueue` / `epoll` polling against the PTY master's fd) and drop the per-session OS thread. We don't need that today.
+The target scale is one operator with a handful of concurrent missions and ≤ ~10 live sessions. That is ~10 reader threads, as many `Term`s (tens of MB each only when their scrollback is full), a few notify watchers and one SQLite pool. Rendering cost scales with *visible* terminals, not live ones. Per-frame work today re-walks the visible grid (M6.7 lists what is still wasteful); nothing in the model needs an event loop over PTY fds at this footprint.
 
 ### 11.5 Failure isolation
 
-A panic in a PTY reader thread only affects that one session — the reader thread's job is to push bytes into channels; if it dies, the channels close and the session is marked stopped. A panic in a tokio task only affects its task (Tokio doesn't unwind across tasks). A panic on the Tauri main thread takes the whole app down, and is what the panic hook (§10.2) is set up to capture to the log file before exit.
+A panic in a PTY reader thread only affects that session: the forwarder ends, the session is marked stopped. A panic on the GPUI main thread takes the app down — the panic hook writes the backtrace to `runner.log` first, and the crash reporter's `.ips` lands in `~/Library/Logs/DiagnosticReports/`. The standing GPUI rules in `impl_log.md` exist because several of those were found the hard way (`window.current_view()` outside render, entity updates inside their own observers).
 
 ## 12. Architectural bets
 
 1. **Mission is the runtime unit.** Crew is config; mission is a run.
 2. **Slot is the indirection** that lets one runner template participate in many crews and direct chats without duplication.
-3. **PTY in-process via `portable-pty`, not pipes, not tmux.** TUI fidelity is non-negotiable; the multiplexer adds operational surface area we no longer need.
+3. **PTY in-process via `portable-pty`, not pipes, not tmux.** TUI fidelity is non-negotiable.
 4. **NDJSON file per mission, not a broker.** Debuggable and crash-durable.
-5. **CLI wrapper for spawned agents; MCP for external controllers.** Mission agents communicate through the bundled `runner` CLI on PATH. Outside agents/tools use the MCP bridge to inspect and operate Runner itself.
+5. **CLI wrapper for spawned agents; MCP for external controllers.**
 6. **Signals and messages as distinct primitives.** Keeps the router simple and prose natural.
-7. **The signal router is the only urgent wake-up path.** Runners stay decoupled.
+7. **The signal router is the only urgent wake-up path**, and every push goes through one delivery gate.
 8. **Prompt composition at spawn time (Layer 1/2/3).** Replaces runtime handshakes.
-9. **Small vocabulary.** Signals + messages are the coordination model. Thread and fact primitives are intentionally not supported; add new vocabulary only when it unlocks a concrete shipped workflow.
-10. **xterm.js for rendering.** Don't reinvent the terminal emulator.
+9. **Small vocabulary.** Signals + messages; no threads or facts.
+10. **One native process; `alacritty_terminal` as the model, GPUI paints the grid.** Terminal bytes are never serialized, and the terminal outlives its views.
 11. **ULID for event IDs.** Sortable, monotonic within ms.
-12. **Mission state outlives the app process; PTYs do not.** The event log and session rows are the authoritative continuation point, and Resume creates fresh child processes.
+12. **Mission state outlives the app process; PTYs do not.** The event log and session rows are the continuation point; Resume creates fresh child processes.
+13. **The core is UI-agnostic.** `runner-backend` knows nothing about GPUI; the app is one consumer of `AppCore`, and the MCP server is another.
 
 ## 13. What would break this architecture
 
-- A runtime with no way to inject a system prompt at spawn (we'd type into stdin post-spawn — ugly but doable).
+- A runtime with no way to take a first turn or a system prompt at spawn.
 - An agent that won't learn to call CLI tools.
 - NDJSON append atomicity breaking on an exotic filesystem (NFS, iCloud-synced). App data must be on a local POSIX filesystem.
-- A target platform where `portable-pty` semantics differ meaningfully from POSIX PTYs (Windows is the standing example — why it's deferred).
+- A target platform where `portable-pty` semantics differ meaningfully from POSIX PTYs (Windows).
+- A GPUI API break: `gpui-ce` is pinned (0.3.3) and upgraded deliberately; the terminal element and IME integration are the surfaces most exposed to it.
+
+## 14. Program state — branches, landing, channels
+
+As of 2026-08-22:
+
+- **`main`** is the Tauri + React app, feature-frozen at `276a3a4` (plan decision 11); it still ships `v0.5.x` to existing users through `tauri-plugin-updater` from `releases/latest`.
+- **`gpui-nightly`** is the native app and the only line of work. Everything lands there: a crew implements and reviews on a task branch in the working tree, the human runs `make verify`, merges with `--no-ff`, and cuts a nightly on demand (`gh workflow run nightly.yml --ref gpui-nightly`); a push alone only runs CI. Nightlies are Sparkle-signed `0.6.0-nightly.<stamp>` builds on the rolling `nightly` GitHub prerelease and can never be seen by the Tauri updater.
+- **Cutover** is one release, `v0.6.0`: the tree swap onto `main`, a Sparkle DMG + appcast for native users, and a bridge trio (`Runner.app.tar.gz`, its minisign signature, `latest.json`) so Tauri installs update themselves into the native app; the trio is kept until 0.7.0. Details, the version scheme and the GA runbook: [`../impls/gpui-rewrite/plan.md`](../impls/gpui-rewrite/plan.md) §Release channels; progress and deviations: [`../impls/gpui-rewrite/impl_log.md`](../impls/gpui-rewrite/impl_log.md); the consolidation backlog: [`../impls/gpui-rewrite/m6-consolidation.md`](../impls/gpui-rewrite/m6-consolidation.md).

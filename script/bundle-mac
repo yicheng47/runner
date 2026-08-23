@@ -1,0 +1,314 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TARGET_TRIPLES=("aarch64-apple-darwin" "x86_64-apple-darwin")
+MINIMUM_SYSTEM_VERSION="12.0"
+SPARKLE_VERSION="2.9.5"
+SPARKLE_SHA256="015336b601493e05c237964954bff6191370003d94edefe663724c88840d73cc"
+SPARKLE_URL="https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+PLACEHOLDER_PUBLIC_KEY="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+CHANNEL=""
+DEV_MODE=false
+PRINT_MODE=""
+BUILD_STAMP="${RUNNER_BUILD_STAMP:-}"
+BUILD_SHA="${RUNNER_BUILD_SHA:-}"
+
+usage() {
+    echo "usage: $0 --channel nightly|production [--dev] [--stamp YYYYMMDD.HHMM] [--sha abc1234] [--print-version|--print-stamp|--print-plist]" >&2
+}
+
+workspace_version() {
+    awk '
+        $0 == "[package]" { in_package = 1; next }
+        /^\[/ { in_package = 0 }
+        in_package && /^[[:space:]]*version[[:space:]]*=/ {
+            value = $0
+            sub(/^[^=]*=[[:space:]]*"/, "", value)
+            sub(/".*$/, "", value)
+            print value
+            exit
+        }
+    ' "$ROOT_DIR/crates/runner-app/Cargo.toml"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --channel)
+            CHANNEL="${2:-}"
+            shift 2
+            ;;
+        --dev)
+            DEV_MODE=true
+            shift
+            ;;
+        --stamp)
+            BUILD_STAMP="${2:-}"
+            shift 2
+            ;;
+        --sha)
+            BUILD_SHA="${2:-}"
+            shift 2
+            ;;
+        --print-version|--print-stamp|--print-plist)
+            PRINT_MODE="$1"
+            shift
+            ;;
+        *)
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+VERSION="$(workspace_version)"
+if [[ -z "$VERSION" ]]; then
+    echo "error: could not read runner-app version" >&2
+    exit 1
+fi
+if [[ "$PRINT_MODE" == "--print-version" ]]; then
+    printf '%s\n' "$VERSION"
+    exit 0
+fi
+if [[ "$CHANNEL" != "nightly" && "$CHANNEL" != "production" ]]; then
+    usage
+    exit 1
+fi
+
+if [[ -z "$BUILD_STAMP" ]]; then
+    BUILD_STAMP="$(date -u +%Y%m%d.%H%M)"
+fi
+if [[ ! "$BUILD_STAMP" =~ ^[0-9]{8}\.[0-9]{4}$ ]]; then
+    echo "error: build stamp must use YYYYMMDD.HHMM" >&2
+    exit 1
+fi
+STAMP_DATE="${BUILD_STAMP%%.*}"
+STAMP_TIME="${BUILD_STAMP##*.}"
+if (( 10#$STAMP_DATE >= 2147483648 || 10#$STAMP_TIME >= 2147483648 )); then
+    echo "error: every build stamp component must fit in a signed 32-bit integer" >&2
+    exit 1
+fi
+if [[ "$PRINT_MODE" == "--print-stamp" ]]; then
+    printf '%s\n' "$BUILD_STAMP"
+    exit 0
+fi
+if [[ -z "$BUILD_SHA" ]]; then
+    BUILD_SHA="$(git -C "$ROOT_DIR" rev-parse --short=7 HEAD)"
+fi
+if [[ ! "$BUILD_SHA" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+    echo "error: build sha must be a 7-40 character hexadecimal git sha" >&2
+    exit 1
+fi
+BUILD_SHA="${BUILD_SHA:0:7}"
+
+PUBLIC_KEY_FILE="$ROOT_DIR/packaging/sparkle-public-key"
+if [[ ! -f "$PUBLIC_KEY_FILE" ]]; then
+    echo "error: Sparkle public key not found: $PUBLIC_KEY_FILE" >&2
+    exit 1
+fi
+SPARKLE_PUBLIC_KEY="$(tr -d '[:space:]' < "$PUBLIC_KEY_FILE")"
+if [[ -z "$SPARKLE_PUBLIC_KEY" ]]; then
+    echo "error: Sparkle public key is empty" >&2
+    exit 1
+fi
+
+case "$CHANNEL" in
+    nightly)
+        BUNDLE_ID="com.wycstudios.runner.nightly"
+        APP_NAME="Runner Nightly"
+        SHORT_VERSION="$VERSION.$BUILD_STAMP"
+        FEED_URL="https://github.com/yicheng47/runner/releases/download/nightly/appcast.xml"
+        DMG_NAME="Runner-Nightly-$SHORT_VERSION-universal.dmg"
+        ;;
+    production)
+        BUNDLE_ID="com.wycstudios.runner"
+        APP_NAME="Runner"
+        SHORT_VERSION="${VERSION%-nightly}"
+        FEED_URL="https://github.com/yicheng47/runner/releases/latest/download/appcast.xml"
+        DMG_NAME="Runner-$SHORT_VERSION-universal.dmg"
+        ;;
+esac
+
+write_plist() {
+    cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>runner-app</string>
+    <key>CFBundleIconFile</key>
+    <string>Runner.icns</string>
+    <key>CFBundleIdentifier</key>
+    <string>$BUNDLE_ID</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>$APP_NAME</string>
+    <key>CFBundleDisplayName</key>
+    <string>$APP_NAME</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$SHORT_VERSION</string>
+    <key>CFBundleVersion</key>
+    <string>$BUILD_STAMP</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.developer-tools</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>$MINIMUM_SYSTEM_VERSION</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>SUAllowsAutomaticUpdates</key>
+    <false/>
+    <key>SUAutomaticallyUpdate</key>
+    <false/>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUEnableSystemProfiling</key>
+    <false/>
+    <key>SUFeedURL</key>
+    <string>$FEED_URL</string>
+    <key>SUPublicEDKey</key>
+    <string>$SPARKLE_PUBLIC_KEY</string>
+</dict>
+</plist>
+EOF
+}
+
+if [[ "$PRINT_MODE" == "--print-plist" ]]; then
+    write_plist
+    exit 0
+fi
+if [[ -n "$PRINT_MODE" ]]; then
+    usage
+    exit 1
+fi
+if [[ "$DEV_MODE" == false && "$SPARKLE_PUBLIC_KEY" == "$PLACEHOLDER_PUBLIC_KEY" ]]; then
+    echo "error: replace packaging/sparkle-public-key before a notarized release build" >&2
+    exit 1
+fi
+
+APP_BUNDLE="$ROOT_DIR/target/release/$APP_NAME.app"
+DMG_PATH="$ROOT_DIR/target/release/$DMG_NAME"
+ICON_SOURCE="$ROOT_DIR/assets/icon.png"
+SPARKLE_CACHE_DIR="$ROOT_DIR/target/sparkle"
+SPARKLE_ARCHIVE="$SPARKLE_CACHE_DIR/Sparkle-$SPARKLE_VERSION.tar.xz"
+ICON_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/runner-icon.XXXXXX")"
+SPARKLE_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/runner-sparkle.XXXXXX")"
+trap 'rm -rf "$ICON_WORK_DIR" "$SPARKLE_WORK_DIR"' EXIT
+
+rm -rf "$APP_BUNDLE"
+mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources" "$APP_BUNDLE/Contents/Frameworks" "$SPARKLE_CACHE_DIR"
+
+if [[ ! -f "$SPARKLE_ARCHIVE" ]] || ! printf '%s  %s\n' "$SPARKLE_SHA256" "$SPARKLE_ARCHIVE" | shasum -a 256 -c - >/dev/null 2>&1; then
+    curl --fail --location "$SPARKLE_URL" --output "$SPARKLE_WORK_DIR/Sparkle.tar.xz"
+    printf '%s  %s\n' "$SPARKLE_SHA256" "$SPARKLE_WORK_DIR/Sparkle.tar.xz" | shasum -a 256 -c -
+    install -m 644 "$SPARKLE_WORK_DIR/Sparkle.tar.xz" "$SPARKLE_ARCHIVE"
+fi
+tar -xf "$SPARKLE_ARCHIVE" -C "$SPARKLE_WORK_DIR"
+ditto "$SPARKLE_WORK_DIR/Sparkle.framework" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
+
+require_universal_binary() {
+    local binary_path="$1"
+    local binary_archs
+    binary_archs="$(lipo -archs "$binary_path")"
+    if [[ " $binary_archs " != *" arm64 "* || " $binary_archs " != *" x86_64 "* ]]; then
+        echo "error: binary is not universal (architectures: $binary_archs): $binary_path" >&2
+        exit 1
+    fi
+}
+
+require_universal_binary "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"
+
+export RUNNER_BUILD_STAMP="$BUILD_STAMP"
+export RUNNER_BUILD_SHA="$BUILD_SHA"
+export RUNNER_MARKETING_VERSION="$SHORT_VERSION"
+export MACOSX_DEPLOYMENT_TARGET="$MINIMUM_SYSTEM_VERSION"
+export RUSTFLAGS="${RUSTFLAGS:-} -Lframework=$SPARKLE_WORK_DIR -Clink-arg=-Wl,-rpath,@executable_path/../Frameworks"
+for target_triple in "${TARGET_TRIPLES[@]}"; do
+    cargo build --manifest-path "$ROOT_DIR/Cargo.toml" --locked --release --package runner-app --features updater --target "$target_triple"
+    cargo build --manifest-path "$ROOT_DIR/Cargo.toml" --locked --release --package runner-cli --bins --target "$target_triple"
+done
+
+for binary in runner-app runner-agent-cli runner-mcp; do
+    arm64_path="$ROOT_DIR/target/aarch64-apple-darwin/release/$binary"
+    x86_64_path="$ROOT_DIR/target/x86_64-apple-darwin/release/$binary"
+    for binary_path in "$arm64_path" "$x86_64_path"; do
+        if [[ ! -x "$binary_path" ]]; then
+            echo "error: release binary not found: $binary_path" >&2
+            exit 1
+        fi
+    done
+    installed_path="$APP_BUNDLE/Contents/MacOS/$binary"
+    lipo -create "$arm64_path" "$x86_64_path" -output "$installed_path"
+    chmod 755 "$installed_path"
+    require_universal_binary "$installed_path"
+done
+
+ICONSET="$ICON_WORK_DIR/Runner.iconset"
+mkdir -p "$ICONSET"
+for spec in "16 icon_16x16.png" "32 icon_16x16@2x.png" "32 icon_32x32.png" "64 icon_32x32@2x.png" "128 icon_128x128.png" "256 icon_128x128@2x.png" "256 icon_256x256.png" "512 icon_256x256@2x.png" "512 icon_512x512.png" "1024 icon_512x512@2x.png"; do
+    read -r size name <<< "$spec"
+    sips -z "$size" "$size" "$ICON_SOURCE" --out "$ICONSET/$name" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP_BUNDLE/Contents/Resources/Runner.icns"
+write_plist > "$APP_BUNDLE/Contents/Info.plist"
+plutil -lint "$APP_BUNDLE/Contents/Info.plist"
+
+SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
+if [[ "$DEV_MODE" == false && "$SIGNING_IDENTITY" == "-" ]]; then
+    echo "error: APPLE_SIGNING_IDENTITY is required for a release bundle" >&2
+    exit 1
+fi
+if [[ "$SIGNING_IDENTITY" == "-" ]]; then
+    CODESIGN_OPTIONS=(--timestamp=none)
+else
+    CODESIGN_OPTIONS=(--options runtime --timestamp)
+fi
+SPARKLE_ROOT="$APP_BUNDLE/Contents/Frameworks/Sparkle.framework/Versions/B"
+codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$SPARKLE_ROOT/XPCServices/Installer.xpc"
+codesign --force "${CODESIGN_OPTIONS[@]}" --preserve-metadata=entitlements --sign "$SIGNING_IDENTITY" "$SPARKLE_ROOT/XPCServices/Downloader.xpc"
+codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$SPARKLE_ROOT/Autoupdate"
+codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$SPARKLE_ROOT/Updater.app"
+codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
+# Sign sidecars first: codesign resolves runner-app to the enclosing bundle, whose lipo-created x86_64 sidecars lack linker ad-hoc signatures.
+for binary in runner-agent-cli runner-mcp runner-app; do
+    codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$APP_BUNDLE/Contents/MacOS/$binary"
+done
+codesign --force "${CODESIGN_OPTIONS[@]}" --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"
+codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+
+if [[ "$DEV_MODE" == true ]]; then
+    printf 'Bundled signed local universal %s %s at %s\n' "$APP_NAME" "$SHORT_VERSION" "$APP_BUNDLE"
+    exit 0
+fi
+
+for variable in APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+    if [[ -z "${!variable:-}" ]]; then
+        echo "error: $variable is required for notarization" >&2
+        exit 1
+    fi
+done
+
+APP_ZIP="$ROOT_DIR/target/release/$APP_NAME-$SHORT_VERSION-universal.zip"
+ditto -c -k --keepParent "$APP_BUNDLE" "$APP_ZIP"
+xcrun notarytool submit "$APP_ZIP" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+xcrun stapler staple "$APP_BUNDLE"
+xcrun stapler validate "$APP_BUNDLE"
+
+DMG_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/runner-dmg.XXXXXX")"
+trap 'rm -rf "$ICON_WORK_DIR" "$SPARKLE_WORK_DIR" "$DMG_WORK_DIR"' EXIT
+ditto "$APP_BUNDLE" "$DMG_WORK_DIR/$APP_NAME.app"
+ln -s /Applications "$DMG_WORK_DIR/Applications"
+hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_WORK_DIR" -ov -format UDZO "$DMG_PATH"
+codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$DMG_PATH"
+codesign --verify --verbose=2 "$DMG_PATH"
+xcrun notarytool submit "$DMG_PATH" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+xcrun stapler staple "$DMG_PATH"
+xcrun stapler validate "$DMG_PATH"
+printf 'Bundled, signed, notarized, and stapled universal %s %s at %s\n' "$APP_NAME" "$SHORT_VERSION" "$DMG_PATH"

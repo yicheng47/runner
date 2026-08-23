@@ -1,0 +1,5 @@
+cols=40 rows=4 cursor=1,12
+|
+|❯ Try a task
+|
+|

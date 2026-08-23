@@ -1,0 +1,5 @@
+0 Idle composing=false visible=true
+10 Drafting composing=false visible=true
+15 Drafting composing=false visible=false
+20 Drafting composing=false visible=true
+25 Idle composing=false visible=true
