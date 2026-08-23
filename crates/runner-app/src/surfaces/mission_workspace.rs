@@ -24,6 +24,7 @@ use runner_backend::model::{
 };
 use runner_backend::ops::session::SessionRow;
 use runner_backend::windows::Subject;
+use runner_terminal::input_state::ECHO_WINDOW;
 
 use super::*;
 use crate::surfaces::app_shell::{SIDEBAR_TOGGLE_GLYPH_INSET, SIDEBAR_TOGGLE_GLYPH_X};
@@ -2507,7 +2508,7 @@ impl MissionWorkspace {
         }
     }
 
-    fn clear_mission_input(
+    fn submit_or_clear_mission_input(
         &mut self,
         session_id: &str,
         window: &mut Window,
@@ -2521,9 +2522,18 @@ impl MissionWorkspace {
             cx.notify();
             return;
         };
-        if let Err(error) = chat.terminal.send_key("enter", false, false, false, None) {
+        let terminal = Arc::clone(&chat.terminal);
+        if let Err(error) = terminal.send_key("enter", false, false, false, None) {
             self.error = Some(error.to_string());
+            cx.notify();
+            return;
         }
+        let reset_guard = terminal.input_reset_guard();
+        cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(ECHO_WINDOW).await;
+            terminal.reset_input_state(reset_guard);
+        })
+        .detach();
         chat.terminal_focus.focus(window);
         cx.notify();
     }
@@ -4294,10 +4304,10 @@ impl MissionWorkspace {
                     .on_click(move |_, window, cx| {
                         cx.stop_propagation();
                         clear_root.update(cx, |this, cx| {
-                            this.clear_mission_input(&session_id, window, cx)
+                            this.submit_or_clear_mission_input(&session_id, window, cx)
                         });
                     })
-                    .child("Submit draft")
+                    .child("Submit / clear")
                     .child(
                         div()
                             .font_family("Menlo")

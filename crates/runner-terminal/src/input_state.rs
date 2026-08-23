@@ -1,7 +1,10 @@
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::grid::Dimensions as _;
+use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::Term;
+use alacritty_terminal::vte::ansi::Color;
 use serde::{Deserialize, Serialize};
 
 pub use runner_backend::session::manager::{InputObservation, InputState};
@@ -27,14 +30,23 @@ struct Composer {
     last_form: String,
     visible: bool,
     submitted_form: Option<String>,
+    placeholder_style: Option<CellStyle>,
 }
 
 #[derive(Clone, Debug)]
 struct Probe {
     typed: String,
     rows_before: Vec<String>,
+    styles_before: Vec<Vec<CellStyle>>,
     started: Instant,
     weak_match: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CellStyle {
+    fg: Color,
+    bg: Color,
+    flags: Flags,
 }
 
 #[derive(Clone, Debug)]
@@ -58,6 +70,7 @@ pub struct InputTracker {
     composing: bool,
     reported: Option<ReportedState>,
     public_since: Instant,
+    input_revision: u64,
 }
 
 impl InputTracker {
@@ -67,6 +80,7 @@ impl InputTracker {
             composing: false,
             reported: None,
             public_since: now,
+            input_revision: 0,
         }
     }
 
@@ -81,6 +95,7 @@ impl InputTracker {
         now: Instant,
         term: &Term<T>,
     ) -> Option<InputObservation> {
+        self.input_revision = self.input_revision.wrapping_add(1);
         self.expire_probe(now);
         match event {
             InputEvent::Composing { composing } => self.composing = *composing,
@@ -114,14 +129,18 @@ impl InputTracker {
                         &probe.typed,
                         probe.weak_match,
                     ) {
-                        Some(matched) => TrackerState::Drafting(Composer {
-                            row: matched.row,
-                            prefix: matched.prefix,
-                            empty_forms: vec![probe.rows_before[matched.row].clone()],
-                            last_form: rows_after[matched.row].clone(),
-                            visible: true,
-                            submitted_form: None,
-                        }),
+                        Some(matched) => {
+                            let placeholder_style = probe_placeholder_style(&probe, &matched, term);
+                            TrackerState::Drafting(Composer {
+                                row: matched.row,
+                                prefix: matched.prefix,
+                                empty_forms: vec![probe.rows_before[matched.row].clone()],
+                                last_form: rows_after[matched.row].clone(),
+                                visible: true,
+                                submitted_form: None,
+                                placeholder_style,
+                            })
+                        }
                         None => TrackerState::Probing(probe),
                     }
                 }
@@ -138,10 +157,13 @@ impl InputTracker {
                     probe.weak_match,
                 ) {
                     let before = &probe.rows_before[matched.row];
-                    if composer_is_empty(before, &matched.prefix, &composer.empty_forms)
+                    if composer_text_is_empty(before, &matched.prefix, &composer.empty_forms)
                         && !composer.empty_forms.contains(before)
                     {
                         composer.empty_forms.push(before.clone());
+                    }
+                    if let Some(style) = probe_placeholder_style(&probe, &matched, term) {
+                        composer.placeholder_style = Some(style);
                     }
                     composer.row = matched.row;
                     composer.prefix = matched.prefix;
@@ -161,18 +183,27 @@ impl InputTracker {
         self.emit_if_changed(now)
     }
 
+    pub fn reset_guard(&self) -> u64 {
+        self.input_revision
+    }
+
+    pub fn reset_if_unchanged(&mut self, guard: u64, now: Instant) -> Option<InputObservation> {
+        if self.input_revision != guard {
+            return None;
+        }
+        self.state = TrackerState::Idle;
+        self.composing = false;
+        self.input_revision = self.input_revision.wrapping_add(1);
+        self.emit_if_changed(now)
+    }
+
     fn observe_content<T>(&mut self, text: &str, pasted: bool, now: Instant, term: &Term<T>) {
         if text.is_empty() {
             return;
         }
         let state = std::mem::replace(&mut self.state, TrackerState::Idle);
         self.state = match state {
-            TrackerState::Idle => TrackerState::Probing(Probe {
-                typed: probe_text(text),
-                rows_before: visible_rows(term),
-                started: now,
-                weak_match: pasted && weak_paste_match(text),
-            }),
+            TrackerState::Idle => TrackerState::Probing(new_probe(text, pasted, now, term)),
             TrackerState::Probing(mut probe) => {
                 probe.typed.push_str(&probe_text(text));
                 probe.weak_match |= pasted && weak_paste_match(text);
@@ -191,12 +222,7 @@ impl InputTracker {
                 TrackerState::Drafting(composer)
             }
             TrackerState::Submitted(composer) => TrackerState::Reprobing {
-                probe: Probe {
-                    typed: probe_text(text),
-                    rows_before: visible_rows(term),
-                    started: now,
-                    weak_match: pasted && weak_paste_match(text),
-                },
+                probe: new_probe(text, pasted, now, term),
                 composer,
             },
         };
@@ -243,7 +269,7 @@ impl InputTracker {
                 TrackerState::Drafting(composer)
             };
         };
-        if composer_is_empty(&current, &composer.prefix, &composer.empty_forms) {
+        if composer_is_empty(term, composer.row, &current, &composer) {
             return TrackerState::Idle;
         }
         if !current.starts_with(&composer.prefix) {
@@ -263,7 +289,7 @@ impl InputTracker {
             composer.visible = true;
         }
 
-        if composer_is_empty(&current, &composer.prefix, &composer.empty_forms) {
+        if composer_is_empty(term, composer.row, &current, &composer) {
             return TrackerState::Idle;
         }
 
@@ -371,6 +397,100 @@ fn visible_rows<T>(term: &Term<T>) -> Vec<String> {
         .collect()
 }
 
+fn visible_row_styles<T>(term: &Term<T>) -> Vec<Vec<CellStyle>> {
+    (0..term.screen_lines())
+        .map(|row| {
+            let grid = term.grid();
+            let row = &grid[Line(row as i32)];
+            (0..grid.columns())
+                .filter_map(|column| {
+                    let cell = &row[Column(column)];
+                    (!cell
+                        .flags
+                        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER))
+                    .then(|| {
+                        std::iter::repeat_n(
+                            cell_style(cell),
+                            1 + cell.zerowidth().map_or(0, <[_]>::len),
+                        )
+                    })
+                })
+                .flatten()
+                .collect()
+        })
+        .collect()
+}
+
+fn new_probe<T>(text: &str, pasted: bool, now: Instant, term: &Term<T>) -> Probe {
+    Probe {
+        typed: probe_text(text),
+        rows_before: visible_rows(term),
+        styles_before: visible_row_styles(term),
+        started: now,
+        weak_match: pasted && weak_paste_match(text),
+    }
+}
+
+fn cell_style(cell: &alacritty_terminal::term::cell::Cell) -> CellStyle {
+    let mut flags = cell.flags;
+    flags.remove(
+        Flags::WIDE_CHAR
+            | Flags::WIDE_CHAR_SPACER
+            | Flags::LEADING_WIDE_CHAR_SPACER
+            | Flags::WRAPLINE,
+    );
+    CellStyle {
+        fg: cell.fg,
+        bg: cell.bg,
+        flags,
+    }
+}
+
+fn snapshot_content_style(text: &str, styles: &[CellStyle], prefix: &str) -> Option<CellStyle> {
+    text.chars()
+        .zip(styles)
+        .skip(prefix.chars().count())
+        .find_map(|(character, style)| (!character.is_whitespace()).then_some(*style))
+}
+
+fn row_content_style<T>(term: &Term<T>, row: usize, prefix: &str) -> Option<CellStyle> {
+    let grid = term.grid();
+    let row = &grid[Line(row as i32)];
+    let mut prefix_characters = prefix.chars().count();
+    for column in 0..grid.columns() {
+        let cell = &row[Column(column)];
+        if cell
+            .flags
+            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+        {
+            continue;
+        }
+        if prefix_characters > 0 {
+            prefix_characters =
+                prefix_characters.saturating_sub(1 + cell.zerowidth().map_or(0, <[_]>::len));
+            continue;
+        }
+        if !cell.c.is_whitespace() {
+            return Some(cell_style(cell));
+        }
+    }
+    None
+}
+
+fn probe_placeholder_style<T>(
+    probe: &Probe,
+    matched: &EchoMatch,
+    term: &Term<T>,
+) -> Option<CellStyle> {
+    let placeholder = snapshot_content_style(
+        &probe.rows_before[matched.row],
+        &probe.styles_before[matched.row],
+        &matched.prefix,
+    );
+    let draft = row_content_style(term, matched.row, &matched.prefix);
+    placeholder.filter(|style| Some(*style) != draft)
+}
+
 fn locate_echo(
     before: &[String],
     after: &[String],
@@ -473,8 +593,16 @@ fn looks_like_prompt_prefix(prefix: &str) -> bool {
     prefix.chars().last().is_some_and(char::is_whitespace) && !last.is_alphanumeric()
 }
 
-fn composer_is_empty(current: &str, prefix: &str, empty_forms: &[String]) -> bool {
+fn composer_text_is_empty(current: &str, prefix: &str, empty_forms: &[String]) -> bool {
     empty_forms.iter().any(|form| current == form) || current.trim_end() == prefix.trim_end()
+}
+
+fn composer_is_empty<T>(term: &Term<T>, row: usize, current: &str, composer: &Composer) -> bool {
+    composer_text_is_empty(current, &composer.prefix, &composer.empty_forms)
+        || (current != composer.last_form
+            && composer.placeholder_style.is_some_and(|placeholder| {
+                row_content_style(term, row, &composer.prefix) == Some(placeholder)
+            }))
 }
 
 fn relocate_row<T>(term: &Term<T>, prefix: &str, old_row: usize) -> Option<usize> {
@@ -612,6 +740,190 @@ mod tests {
             .observe_output(start + Duration::from_millis(10), &term)
             .unwrap();
         assert_eq!(idle.state, InputState::Idle);
+    }
+
+    #[test]
+    fn claude_styled_rotated_placeholder_returns_drafting_to_idle() {
+        let start = Instant::now();
+        let mut term = new_term(50, 4);
+        feed(
+            &mut term,
+            b"\x1b[2;1H\xe2\x9d\xaf \x1b[2mTry refactoring this file\x1b[22m",
+        );
+        let mut tracker = InputTracker::new(start);
+        tracker.initial_observation(start);
+        tracker.observe_input(
+            &InputEvent::Key {
+                kind: InputKind::Content { text: "h".into() },
+            },
+            start,
+            &term,
+        );
+        feed(&mut term, b"\r\x1b[K\xe2\x9d\xaf h");
+        assert_eq!(
+            tracker
+                .observe_output(start + Duration::from_millis(1), &term)
+                .unwrap()
+                .state,
+            InputState::Drafting
+        );
+
+        feed(
+            &mut term,
+            b"\r\x1b[K\xe2\x9d\xaf \x1b[2mTry writing a test\x1b[22m",
+        );
+        assert_eq!(
+            tracker
+                .observe_output(start + Duration::from_millis(2), &term)
+                .unwrap()
+                .state,
+            InputState::Idle
+        );
+    }
+
+    #[test]
+    fn restyled_live_draft_stays_drafting() {
+        let start = Instant::now();
+        let mut term = new_term(50, 4);
+        feed(
+            &mut term,
+            b"\x1b[2;1H\xe2\x9d\xaf \x1b[2mTry refactoring this file\x1b[22m",
+        );
+        let mut tracker = InputTracker::new(start);
+        tracker.initial_observation(start);
+        tracker.observe_input(
+            &InputEvent::Key {
+                kind: InputKind::Content {
+                    text: "hello world".into(),
+                },
+            },
+            start,
+            &term,
+        );
+        feed(&mut term, b"\r\x1b[K\xe2\x9d\xaf hello world");
+        assert_eq!(
+            tracker
+                .observe_output(start + Duration::from_millis(1), &term)
+                .unwrap()
+                .state,
+            InputState::Drafting
+        );
+
+        feed(
+            &mut term,
+            b"\r\x1b[K\xe2\x9d\xaf \x1b[2mhello world\x1b[22m",
+        );
+        assert!(tracker
+            .observe_output(start + Duration::from_millis(2), &term)
+            .is_none());
+        assert_eq!(tracker.current_reported_state().state, InputState::Drafting);
+    }
+
+    #[test]
+    fn codex_styled_rotated_placeholder_returns_drafting_to_idle() {
+        let start = Instant::now();
+        let mut term = new_term(50, 4);
+        feed(
+            &mut term,
+            b"\x1b[2;1H\xe2\x94\x82 \xe2\x80\xba \x1b[38;5;8mAsk Codex\x1b[39m             \xe2\x94\x82",
+        );
+        let mut tracker = InputTracker::new(start);
+        tracker.initial_observation(start);
+        tracker.observe_input(
+            &InputEvent::Key {
+                kind: InputKind::Content { text: "h".into() },
+            },
+            start,
+            &term,
+        );
+        feed(
+            &mut term,
+            b"\r\x1b[K\xe2\x94\x82 \xe2\x80\xba h                     \xe2\x94\x82",
+        );
+        assert_eq!(
+            tracker
+                .observe_output(start + Duration::from_millis(1), &term)
+                .unwrap()
+                .state,
+            InputState::Drafting
+        );
+
+        feed(
+            &mut term,
+            b"\r\x1b[K\xe2\x94\x82 \xe2\x80\xba \x1b[38;5;8mReview this repository\x1b[39m\xe2\x94\x82",
+        );
+        assert_eq!(
+            tracker
+                .observe_output(start + Duration::from_millis(2), &term)
+                .unwrap()
+                .state,
+            InputState::Idle
+        );
+    }
+
+    #[test]
+    fn explicit_reset_forces_a_draft_idle_once() {
+        let start = Instant::now();
+        let mut term = new_term(40, 4);
+        feed(&mut term, b"\x1b[2;1H\xe2\x9d\xaf Try a task");
+        let mut tracker = InputTracker::new(start);
+        tracker.initial_observation(start);
+        tracker.observe_input(
+            &InputEvent::Key {
+                kind: InputKind::Content { text: "h".into() },
+            },
+            start,
+            &term,
+        );
+        feed(&mut term, b"\r\x1b[K\xe2\x9d\xaf h");
+        assert_eq!(
+            tracker
+                .observe_output(start + Duration::from_millis(1), &term)
+                .unwrap()
+                .state,
+            InputState::Drafting
+        );
+
+        let guard = tracker.reset_guard();
+        let reset = tracker
+            .reset_if_unchanged(guard, start + Duration::from_millis(2))
+            .unwrap();
+        assert_eq!(reset.state, InputState::Idle);
+        assert!(!reset.composing);
+        assert!(tracker
+            .reset_if_unchanged(guard, start + Duration::from_millis(3))
+            .is_none());
+    }
+
+    #[test]
+    fn explicit_reset_does_not_clear_input_observed_after_the_guard() {
+        let start = Instant::now();
+        let mut term = new_term(40, 4);
+        feed(&mut term, b"\x1b[2;1H\xe2\x9d\xaf Try a task");
+        let mut tracker = InputTracker::new(start);
+        tracker.initial_observation(start);
+        tracker.observe_input(
+            &InputEvent::Key {
+                kind: InputKind::Content { text: "h".into() },
+            },
+            start,
+            &term,
+        );
+        feed(&mut term, b"\r\x1b[K\xe2\x9d\xaf h");
+        tracker.observe_output(start + Duration::from_millis(1), &term);
+        let guard = tracker.reset_guard();
+        tracker.observe_input(
+            &InputEvent::Key {
+                kind: InputKind::Content { text: "i".into() },
+            },
+            start + Duration::from_millis(2),
+            &term,
+        );
+
+        assert!(tracker
+            .reset_if_unchanged(guard, start + Duration::from_millis(3))
+            .is_none());
+        assert_eq!(tracker.current_reported_state().state, InputState::Drafting);
     }
 
     #[test]
