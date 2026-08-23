@@ -31,6 +31,18 @@ impl AppRoute {
     }
 }
 
+fn route_after_mission_archived(
+    route: &AppRoute,
+    mission_id: &str,
+    was_archived: Option<bool>,
+    is_archived: bool,
+) -> Option<AppRoute> {
+    (was_archived == Some(false)
+        && is_archived
+        && matches!(route, AppRoute::Mission(active) if active == mission_id))
+    .then_some(AppRoute::Chat)
+}
+
 #[derive(Clone)]
 struct SidebarResizeDrag;
 
@@ -830,6 +842,30 @@ impl NativeRoot {
         }
     }
 
+    pub(crate) fn leave_archived_mission(
+        &mut self,
+        mission_id: &str,
+        was_archived: Option<bool>,
+        is_archived: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(route) =
+            route_after_mission_archived(&self.route, mission_id, was_archived, is_archived)
+        else {
+            return;
+        };
+        self.set_route(route, cx);
+        match self.ensure_active_tab_attached(window, cx) {
+            Ok(()) => {
+                self.mark_active_tab_viewed(window, cx);
+                self.focus_active_terminal(window, cx);
+            }
+            Err(error) => self.chat_error = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
         if self.route == AppRoute::Settings {
             return;
@@ -924,6 +960,43 @@ impl NativeRoot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn archived_mission_only_leaves_its_open_route() {
+        assert_eq!(
+            route_after_mission_archived(
+                &AppRoute::Mission("mission-1".into()),
+                "mission-1",
+                Some(false),
+                true,
+            ),
+            Some(AppRoute::Chat)
+        );
+        for route in [
+            AppRoute::Mission("mission-2".into()),
+            AppRoute::Runners,
+            AppRoute::Settings,
+            AppRoute::Chat,
+        ] {
+            assert_eq!(
+                route_after_mission_archived(&route, "mission-1", Some(false), true),
+                None
+            );
+        }
+        let open_archived = AppRoute::Mission("mission-1".into());
+        assert_eq!(
+            route_after_mission_archived(&open_archived, "mission-1", Some(true), true),
+            None
+        );
+        assert_eq!(
+            route_after_mission_archived(&open_archived, "mission-1", None, true),
+            None
+        );
+        assert_eq!(
+            route_after_mission_archived(&open_archived, "mission-1", Some(false), false),
+            None
+        );
+    }
 
     #[test]
     fn settings_update_hint_tracks_available_state() {

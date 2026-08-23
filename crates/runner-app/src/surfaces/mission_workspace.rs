@@ -769,9 +769,24 @@ impl MissionWorkspace {
             })
     }
 
-    fn open_runners(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn leave_archived_mission(
+        &mut self,
+        mission_id: &str,
+        was_archived: Option<bool>,
+        is_archived: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(shell) = self.shell.upgrade() {
-            shell.update(cx, |shell, shell_cx| shell.open_runners(window, shell_cx));
+            shell.update(cx, |shell, shell_cx| {
+                shell.leave_archived_mission(
+                    mission_id,
+                    was_archived,
+                    is_archived,
+                    window,
+                    shell_cx,
+                )
+            });
         }
     }
 
@@ -1757,11 +1772,16 @@ impl MissionWorkspace {
             let _ = weak.update_in(cx, |this, window, cx| {
                 if !this.is_current(&mission_id, generation)
                     || this.refresh_generation != refresh_generation
+                    || !this.is_active(cx)
                 {
                     return;
                 }
                 match result {
                     Ok((mission, sessions)) => {
+                        let was_archived = this
+                            .mission
+                            .as_ref()
+                            .map(|mission| mission.archived_at.is_some());
                         let archived = mission.archived_at.is_some();
                         let valid_ids = sessions
                             .iter()
@@ -1785,6 +1805,13 @@ impl MissionWorkspace {
                                     .remove(&removed_mission_id);
                                 true
                             });
+                            this.leave_archived_mission(
+                                &mission_id,
+                                was_archived,
+                                archived,
+                                window,
+                                cx,
+                            );
                         } else if matches!(
                             &this.active_tab,
                             MissionTab::Session(session_id) if !valid_ids.contains(session_id)
@@ -2080,12 +2107,12 @@ impl MissionWorkspace {
                                 .remove(&removed_mission_id);
                             true
                         });
+                        this.leave_archived_mission(&mission_id, Some(false), true, window, cx);
                         this.refresh_store(StoreRefreshKind::All, cx);
                         this.core(cx).events.emit(
                             "mission/changed",
                             &serde_json::json!({ "mission_id": mission_id }),
                         );
-                        this.open_runners(window, cx);
                     }
                     Err(error) => {
                         this.archiving = false;
