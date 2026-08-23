@@ -172,14 +172,14 @@ impl NativeRoot {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    this.clear_sidebar_drag(cx);
+                    this.clear_sidebar_drag("root-up", cx);
                     this.clear_crew_slot_drag(cx);
                 }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    this.clear_sidebar_drag(cx);
+                    this.clear_sidebar_drag("root-up-out", cx);
                     this.clear_crew_slot_drag(cx);
                 }),
             )

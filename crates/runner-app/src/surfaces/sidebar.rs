@@ -4,10 +4,11 @@ use std::path::Path;
 
 use super::*;
 use crate::surfaces::sidebar_logic::{
-    attention_rollups, complete_unpinned_scope_order, container_drop_target, list_drop_target,
-    mission_attention_state, ordered_pinned_node_ids_after_drop,
+    attention_rollups, complete_unpinned_scope_order, container_drop_target, indicator_visible,
+    list_drop_target, mission_attention_state, ordered_pinned_node_ids_after_drop,
     ordered_root_node_ids_after_project_drop, ordered_visible_node_ids_after_drop,
-    rollup_attention_state, tab_attention_state, AttentionState, DropKind, DropTarget,
+    rollup_attention_state, tab_attention_state, take_drag_state, AttentionState, DropKind,
+    DropTarget,
 };
 use crate::*;
 use gpui::{
@@ -206,6 +207,7 @@ pub(crate) struct Sidebar {
     archiving_sessions: HashSet<String>,
     archiving_missions: HashSet<String>,
     active_project_id: Option<String>,
+    window_id: u64,
     dragged_id: Option<String>,
     drop_target: Option<DropTarget>,
     drop_marker: Option<String>,
@@ -258,6 +260,7 @@ impl Sidebar {
             archiving_sessions: HashSet::new(),
             archiving_missions: HashSet::new(),
             active_project_id,
+            window_id: 0,
             dragged_id: None,
             drop_target: None,
             drop_marker: None,
@@ -480,9 +483,9 @@ impl NativeRoot {
         });
     }
 
-    pub(crate) fn clear_sidebar_drag(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn clear_sidebar_drag(&mut self, path: &'static str, cx: &mut Context<Self>) {
         self.sidebar.update(cx, |sidebar, sidebar_cx| {
-            sidebar.clear_sidebar_drag(sidebar_cx)
+            sidebar.clear_sidebar_drag(path, sidebar_cx)
         });
     }
 
@@ -548,7 +551,7 @@ impl Sidebar {
         let had_context_menu = self.context_menu.take().is_some();
         self.rename = None;
         self._rename_focus_subscription = None;
-        self.clear_sidebar_drag(cx);
+        self.clear_sidebar_drag("dismiss", cx);
         if had_context_menu {
             self.schedule_shell_notify(cx);
         }
@@ -1360,13 +1363,43 @@ impl NativeRoot {
 }
 
 impl Sidebar {
-    pub(crate) fn clear_sidebar_drag(&mut self, cx: &mut Context<Self>) {
-        if self.dragged_id.take().is_some()
-            || self.drop_target.take().is_some()
-            || self.drop_marker.take().is_some()
-        {
+    pub(crate) fn clear_sidebar_drag(&mut self, path: &'static str, cx: &mut Context<Self>) {
+        let dragged_id = self.dragged_id.clone();
+        let drop_marker = self.drop_marker.clone();
+        let changed = take_drag_state(
+            &mut self.dragged_id,
+            &mut self.drop_target,
+            &mut self.drop_marker,
+        );
+        if changed {
+            tracing::debug!(
+                target: "sidebar::drag",
+                path,
+                window_id = self.window_id,
+                dragged_id = ?dragged_id,
+                marker = ?drop_marker,
+                remaining_dragged_id = ?self.dragged_id,
+                remaining_drop_target = ?self.drop_target,
+                remaining_marker = ?self.drop_marker,
+                "clear sidebar drag"
+            );
             cx.notify();
         }
+    }
+
+    fn start_sidebar_drag(&mut self, dragged_id: String, cx: &mut Context<Self>) {
+        self.dragged_id = Some(dragged_id);
+        self.drop_target = None;
+        self.drop_marker = None;
+        tracing::debug!(
+            target: "sidebar::drag",
+            path = "drag-start",
+            window_id = self.window_id,
+            dragged_id = ?self.dragged_id,
+            marker = ?self.drop_marker,
+            "start sidebar drag"
+        );
+        cx.notify();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1381,8 +1414,7 @@ impl Sidebar {
         marker: String,
         cx: &mut Context<Self>,
     ) {
-        self.dragged_id = Some(dragged_id.to_owned());
-        self.drop_target = list_drop_target(
+        let drop_target = list_drop_target(
             &self.app_store.read(cx).nodes,
             kind,
             parent_id,
@@ -1391,7 +1423,24 @@ impl Sidebar {
             hovered_id,
             after,
         );
-        self.drop_marker = self.drop_target.as_ref().map(|_| marker);
+        let drop_marker = drop_target.as_ref().map(|_| marker);
+        let changed = self.dragged_id.as_deref() != Some(dragged_id)
+            || self.drop_target != drop_target
+            || self.drop_marker != drop_marker;
+        self.dragged_id = Some(dragged_id.to_owned());
+        self.drop_target = drop_target;
+        self.drop_marker = drop_marker;
+        if changed {
+            tracing::debug!(
+                target: "sidebar::drag",
+                path = "row-target",
+                window_id = self.window_id,
+                dragged_id = ?self.dragged_id,
+                marker = ?self.drop_marker,
+                drop_target = ?self.drop_target,
+                "set sidebar drop target"
+            );
+        }
         cx.notify();
     }
 
@@ -1402,29 +1451,73 @@ impl Sidebar {
         visible_ids: &[String],
         cx: &mut Context<Self>,
     ) {
-        self.dragged_id = Some(dragged_id.to_owned());
-        self.drop_target = container_drop_target(
+        let drop_target = container_drop_target(
             &self.app_store.read(cx).nodes,
             visible_ids,
             dragged_id,
             project_node_id,
         );
-        self.drop_marker = self
-            .drop_target
+        let drop_marker = drop_target
             .as_ref()
             .map(|_| format!("container:{project_node_id}"));
+        let changed = self.dragged_id.as_deref() != Some(dragged_id)
+            || self.drop_target != drop_target
+            || self.drop_marker != drop_marker;
+        self.dragged_id = Some(dragged_id.to_owned());
+        self.drop_target = drop_target;
+        self.drop_marker = drop_marker;
+        if changed {
+            tracing::debug!(
+                target: "sidebar::drag",
+                path = "container-target",
+                window_id = self.window_id,
+                dragged_id = ?self.dragged_id,
+                marker = ?self.drop_marker,
+                drop_target = ?self.drop_target,
+                "set sidebar drop target"
+            );
+        }
         cx.notify();
     }
 
     fn commit_sidebar_drop(&mut self, dragged_id: &str, cx: &mut Context<Self>) {
         if self.dragged_id.as_deref() != Some(dragged_id) {
-            self.clear_sidebar_drag(cx);
+            tracing::debug!(
+                target: "sidebar::drag",
+                path = "commit-early-return",
+                reason = "dragged-id-mismatch",
+                window_id = self.window_id,
+                dragged_id = ?self.dragged_id,
+                marker = ?self.drop_marker,
+                event_dragged_id = dragged_id,
+                "skip sidebar drop"
+            );
+            self.clear_sidebar_drag("commit-early-return", cx);
             return;
         }
         let Some(target) = self.drop_target.clone() else {
-            self.clear_sidebar_drag(cx);
+            tracing::debug!(
+                target: "sidebar::drag",
+                path = "commit-early-return",
+                reason = "missing-drop-target",
+                window_id = self.window_id,
+                dragged_id = ?self.dragged_id,
+                marker = ?self.drop_marker,
+                event_dragged_id = dragged_id,
+                "skip sidebar drop"
+            );
+            self.clear_sidebar_drag("commit-early-return", cx);
             return;
         };
+        tracing::debug!(
+            target: "sidebar::drag",
+            path = "drop",
+            window_id = self.window_id,
+            dragged_id = ?self.dragged_id,
+            marker = ?self.drop_marker,
+            drop_target = ?target,
+            "commit sidebar drop"
+        );
         let rows = self.resolved_sidebar_rows(cx);
         let result = match target.kind {
             DropKind::Pinned => {
@@ -1478,6 +1571,16 @@ impl Sidebar {
         };
         match result {
             Ok(nodes) => {
+                tracing::debug!(
+                    target: "sidebar::drag",
+                    path = "drop-result",
+                    outcome = "ok",
+                    window_id = self.window_id,
+                    dragged_id = ?self.dragged_id,
+                    marker = ?self.drop_marker,
+                    node_count = nodes.len(),
+                    "sidebar drop committed"
+                );
                 if let Some(shell) = self.shell.upgrade() {
                     shell.update(cx, |shell, shell_cx| {
                         if let Err(error) = shell.tabs.replace_rows(&nodes) {
@@ -1490,12 +1593,41 @@ impl Sidebar {
                     .update(cx, |store, store_cx| store.replace_nodes(nodes, store_cx));
                 self.refresh_store(StoreRefreshKind::All, cx);
             }
-            Err(error) => self.report_error(error.to_string(), cx),
+            Err(error) => {
+                tracing::debug!(
+                    target: "sidebar::drag",
+                    path = "drop-result",
+                    outcome = "error",
+                    window_id = self.window_id,
+                    dragged_id = ?self.dragged_id,
+                    marker = ?self.drop_marker,
+                    error = %error,
+                    "sidebar drop failed"
+                );
+                self.report_error(error.to_string(), cx);
+            }
         }
-        self.clear_sidebar_drag(cx);
+        self.clear_sidebar_drag("drop", cx);
     }
 
-    pub(crate) fn render_sidebar_contents(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_sidebar_contents(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if self.drop_marker.is_some()
+            && !indicator_visible(self.drop_marker.as_deref(), cx.has_active_drag())
+        {
+            tracing::debug!(
+                target: "sidebar::drag",
+                path = "render-backstop",
+                window_id = self.window_id,
+                dragged_id = ?self.dragged_id,
+                marker = ?self.drop_marker,
+                "clear inactive sidebar drop indicator before render"
+            );
+            take_drag_state(
+                &mut self.dragged_id,
+                &mut self.drop_target,
+                &mut self.drop_marker,
+            );
+        }
         let route = self
             .shell
             .upgrade()
@@ -1535,7 +1667,11 @@ impl Sidebar {
         }));
         let root_attention = rollups.get(&None).copied().unwrap_or_default();
 
-        let mut scroll = sidebar_scroll_container("sidebar-node-scroll", &self.scroll);
+        let mut scroll = sidebar_scroll_container("sidebar-node-scroll", &self.scroll).on_drop(
+            cx.listener(|this, drag: &SidebarNodeDrag, _, cx| {
+                this.commit_sidebar_drop(&drag.node_id, cx);
+            }),
+        );
         if !pinned.is_empty() {
             let visible = pinned
                 .iter()
@@ -2328,8 +2464,7 @@ impl Sidebar {
                     },
                     move |drag: &SidebarNodeDrag, _, _, cx| {
                         drag_root.update(cx, |this, cx| {
-                            this.dragged_id = Some(drag.node_id.clone());
-                            cx.notify();
+                            this.start_sidebar_drag(drag.node_id.clone(), cx);
                         });
                         cx.new(|_| drag.clone())
                     },
@@ -2553,8 +2688,7 @@ impl Sidebar {
             .child(row)
             .on_drag(drag, move |drag: &SidebarNodeDrag, _, _, cx| {
                 drag_root.update(cx, |this, cx| {
-                    this.dragged_id = Some(drag.node_id.clone());
-                    cx.notify();
+                    this.start_sidebar_drag(drag.node_id.clone(), cx);
                 });
                 cx.new(|_| drag.clone())
             })
@@ -2639,7 +2773,8 @@ impl Sidebar {
 }
 
 impl Render for Sidebar {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.window_id = window.window_handle().window_id().as_u64();
         self.render_sidebar_contents(cx)
     }
 }

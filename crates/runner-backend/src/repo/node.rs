@@ -349,10 +349,7 @@ pub fn reorder_pinned(conn: &Connection, ordered_ids: &[String]) -> rusqlite::Re
 ///
 /// Nesting is enforced here at the app layer (the schema allows a
 /// general tree): projects live at root only; leaves (`tab`, `mission`)
-/// live at root or under one project. The sidebar additionally refuses
-/// to DRAG a node out of a project scope (leaving a project is an
-/// explicit menu action); that is a UI affordance, not a shape rule,
-/// so it lives in the frontend's `canDropInScope`, not here.
+/// live at root or under one project.
 ///
 /// Crossing a project boundary writes the domain pointer through:
 /// a tab updates its member sessions' `sessions.project_id`, a mission

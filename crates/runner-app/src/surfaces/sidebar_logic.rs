@@ -82,6 +82,21 @@ pub(crate) struct DropTarget {
     pub index: usize,
 }
 
+pub(crate) fn indicator_visible(drop_marker: Option<&str>, has_active_drag: bool) -> bool {
+    drop_marker.is_some() && has_active_drag
+}
+
+pub(crate) fn take_drag_state(
+    dragged_id: &mut Option<String>,
+    drop_target: &mut Option<DropTarget>,
+    drop_marker: &mut Option<String>,
+) -> bool {
+    let had_id = dragged_id.take().is_some();
+    let had_target = drop_target.take().is_some();
+    let had_marker = drop_marker.take().is_some();
+    had_id || had_target || had_marker
+}
+
 pub(crate) fn can_drop_in_scope(
     nodes: &[NodeRow],
     dragged_id: &str,
@@ -93,13 +108,8 @@ pub(crate) fn can_drop_in_scope(
     if dragged.pinned_position.is_some() || dragged.node_type == NodeType::Project {
         return false;
     }
-    let leaving_project = dragged
-        .parent_id
-        .as_deref()
-        .and_then(|id| node(nodes, id))
-        .is_some_and(|parent| parent.node_type == NodeType::Project);
     let Some(parent_id) = parent_id else {
-        return !leaving_project;
+        return true;
     };
     node(nodes, parent_id).is_some_and(|parent| {
         parent.node_type == NodeType::Project
@@ -371,13 +381,14 @@ mod tests {
     }
 
     #[test]
-    fn drag_targets_respect_project_boundaries_and_compute_reparent_index() {
+    fn drag_targets_cross_project_boundaries_and_compute_reparent_index() {
         let nodes = vec![
             row("project-a", NodeType::Project, None, 0, None),
             row("project-b", NodeType::Project, None, 1, None),
             row("root-tab", NodeType::Tab, None, 2, None),
             row("inside-a", NodeType::Tab, Some("project-a"), 0, None),
             row("inside-b", NodeType::Mission, Some("project-b"), 0, None),
+            row("pinned", NodeType::Tab, None, 3, Some(0)),
         ];
         assert_eq!(
             container_drop_target(&nodes, &["inside-b".into()], "root-tab", "project-b"),
@@ -387,12 +398,39 @@ mod tests {
                 index: 1,
             })
         );
-        assert!(list_drop_target(
+        let root_target = list_drop_target(
             &nodes,
             DropKind::Leaf,
             None,
             &["root-tab".into()],
             "inside-a",
+            "root-tab",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            root_target,
+            DropTarget {
+                kind: DropKind::Leaf,
+                parent_id: None,
+                index: 0,
+            }
+        );
+        let visible = ordered_visible_node_ids_after_drop(
+            &["root-tab".into()],
+            "inside-a",
+            root_target.index,
+        );
+        assert_eq!(
+            complete_unpinned_scope_order(&nodes, None, "inside-a", &visible),
+            ["project-a", "project-b", "inside-a", "root-tab"]
+        );
+        assert!(list_drop_target(
+            &nodes,
+            DropKind::Leaf,
+            None,
+            &["root-tab".into()],
+            "pinned",
             "root-tab",
             false,
         )
@@ -411,6 +449,39 @@ mod tests {
             .index,
             0
         );
+    }
+
+    #[test]
+    fn drop_indicator_requires_an_active_drag() {
+        assert!(indicator_visible(Some("leaf:tab:true"), true));
+        assert!(!indicator_visible(Some("leaf:tab:true"), false));
+        assert!(!indicator_visible(None, true));
+        assert!(!indicator_visible(None, false));
+    }
+
+    #[test]
+    fn taking_drag_state_clears_every_field() {
+        let mut dragged_id = Some("tab-a".into());
+        let mut drop_target = Some(DropTarget {
+            kind: DropKind::Leaf,
+            parent_id: None,
+            index: 1,
+        });
+        let mut drop_marker = Some("leaf:tab-b:true".into());
+
+        assert!(take_drag_state(
+            &mut dragged_id,
+            &mut drop_target,
+            &mut drop_marker
+        ));
+        assert_eq!(dragged_id, None);
+        assert_eq!(drop_target, None);
+        assert_eq!(drop_marker, None);
+        assert!(!take_drag_state(
+            &mut dragged_id,
+            &mut drop_target,
+            &mut drop_marker
+        ));
     }
 
     #[test]
