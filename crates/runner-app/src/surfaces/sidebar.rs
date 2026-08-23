@@ -4,11 +4,14 @@ use std::path::Path;
 
 use super::*;
 use crate::surfaces::sidebar_logic::{
-    attention_rollups, complete_unpinned_scope_order, container_drop_target, indicator_visible,
-    list_drop_target, mission_attention_state, ordered_pinned_node_ids_after_drop,
+    activation_target_for_index, attention_rollups, complete_unpinned_scope_order,
+    container_drop_target, indicator_visible, list_drop_target, mission_attention_state,
+    numbered_sidebar_rows, ordered_pinned_node_ids_after_drop,
     ordered_root_node_ids_after_project_drop, ordered_visible_node_ids_after_drop,
-    rollup_attention_state, tab_attention_state, take_drag_state, AttentionState, DropKind,
-    DropTarget,
+    rollup_attention_state, should_show_shortcut_pills, tab_attention_state, take_drag_state,
+    visible_sidebar_walk, AttentionState, DropKind, DropTarget, NumberedSidebarRow,
+    SidebarActivationTarget, SidebarShortcutProject, SidebarShortcutRow,
+    SHORTCUT_PILL_REVEAL_DELAY,
 };
 use crate::*;
 use gpui::{
@@ -84,6 +87,29 @@ impl SidebarRow {
                 .iter()
                 .any(|member| member.status == SessionStatus::Running),
             Self::Mission { summary, .. } => summary.any_session_live,
+        }
+    }
+
+    fn shortcut_row(&self, nodes: &[NodeRow]) -> SidebarShortcutRow {
+        let node = self.node();
+        let target = match self {
+            Self::Tab {
+                layout, members, ..
+            } => {
+                let target = sidebar_tab_target(layout, members);
+                SidebarActivationTarget::Tab {
+                    tab_id: node.id.clone(),
+                    session_id: target.session_id.clone(),
+                }
+            }
+            Self::Mission { summary, .. } => SidebarActivationTarget::Mission {
+                mission_id: summary.mission.id.clone(),
+                project_id: node_project_id(nodes, node),
+            },
+        };
+        SidebarShortcutRow {
+            node_id: node.id.clone(),
+            target,
         }
     }
 }
@@ -211,6 +237,11 @@ pub(crate) struct Sidebar {
     dragged_id: Option<String>,
     drop_target: Option<DropTarget>,
     drop_marker: Option<String>,
+    cmd_held_since: Option<Instant>,
+    shortcut_key_pressed: bool,
+    show_shortcut_pills: bool,
+    numbered_shortcut_rows: Vec<NumberedSidebarRow>,
+    tab_index_by_node: HashMap<String, u8>,
     _rename_focus_subscription: Option<Subscription>,
     _store_subscription: Subscription,
 }
@@ -264,6 +295,11 @@ impl Sidebar {
             dragged_id: None,
             drop_target: None,
             drop_marker: None,
+            cmd_held_since: None,
+            shortcut_key_pressed: false,
+            show_shortcut_pills: false,
+            numbered_shortcut_rows: Vec::new(),
+            tab_index_by_node: HashMap::new(),
             _rename_focus_subscription: None,
             _store_subscription: cx.observe(&app_store, |this, _, cx| {
                 this.handle_store_update(cx);
@@ -417,7 +453,19 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !window.is_window_active() {
+            self.sidebar.update(cx, |sidebar, sidebar_cx| {
+                sidebar.clear_shortcut_pills(sidebar_cx)
+            });
+        }
         self.sync_window_activation(window, cx);
+    }
+
+    pub(crate) fn sync_sidebar_shortcut_rows(&mut self, cx: &mut Context<Self>) {
+        let tabs = &self.tabs;
+        self.sidebar.update(cx, |sidebar, sidebar_cx| {
+            sidebar.refresh_shortcut_rows(tabs, sidebar_cx)
+        });
     }
 
     pub(crate) fn mark_active_tab_viewed(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -606,8 +654,11 @@ impl Sidebar {
             return Vec::new();
         };
         let shell = shell.read(cx);
-        let layouts = shell
-            .tabs
+        self.resolved_sidebar_rows_for_tabs(&shell.tabs, cx)
+    }
+
+    fn resolved_sidebar_rows_for_tabs(&self, tabs: &TabSet, cx: &App) -> Vec<SidebarRow> {
+        let layouts = tabs
             .tabs()
             .iter()
             .map(|layout| (layout.id.as_str(), layout))
@@ -688,6 +739,175 @@ impl Sidebar {
             })
             .cloned()
             .collect()
+    }
+
+    fn shortcut_row_walk(
+        &self,
+        rows: &[SidebarRow],
+        pinned: &[SidebarRow],
+        project_nodes: &[NodeRow],
+        root_rows: &[SidebarRow],
+        cx: &App,
+    ) -> Vec<crate::surfaces::sidebar_logic::VisibleSidebarRow> {
+        let store = self.app_store.read(cx);
+        let shortcut_row = |row: &SidebarRow| row.shortcut_row(&store.nodes);
+        let pinned = pinned.iter().map(shortcut_row).collect();
+        let project_ids = store
+            .projects
+            .iter()
+            .map(|project| project.id.as_str())
+            .collect::<HashSet<_>>();
+        let projects = project_nodes
+            .iter()
+            .filter_map(|node| {
+                let project_id = node
+                    .ref_id
+                    .as_deref()
+                    .filter(|project_id| project_ids.contains(project_id))?;
+                Some(SidebarShortcutProject {
+                    node_id: node.id.clone(),
+                    expanded: !store
+                        .settings
+                        .sidebar_collapsed_projects
+                        .contains(project_id),
+                    children: rows
+                        .iter()
+                        .filter(|row| {
+                            row.node().pinned_position.is_none()
+                                && row.node().parent_id.as_deref() == Some(node.id.as_str())
+                        })
+                        .map(shortcut_row)
+                        .collect(),
+                })
+            })
+            .collect();
+        let recent = root_rows.iter().map(shortcut_row).collect();
+        visible_sidebar_walk(
+            pinned,
+            store.settings.sidebar_projects_open,
+            projects,
+            store.settings.sidebar_chats_open,
+            recent,
+        )
+    }
+
+    pub(crate) fn refresh_shortcut_rows(&mut self, tabs: &TabSet, cx: &App) {
+        let rows = self.resolved_sidebar_rows_for_tabs(tabs, cx);
+        let mut pinned = rows
+            .iter()
+            .filter(|row| row.node().pinned_position.is_some())
+            .cloned()
+            .collect::<Vec<_>>();
+        pinned.sort_by_key(|row| row.node().pinned_position);
+        let root_rows = self.scope_rows(&rows, None);
+        let project_nodes = self
+            .app_store
+            .read(cx)
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.parent_id.is_none()
+                    && node.pinned_position.is_none()
+                    && node.node_type == NodeType::Project
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let numbered_shortcut_rows = numbered_sidebar_rows(self.shortcut_row_walk(
+            &rows,
+            &pinned,
+            &project_nodes,
+            &root_rows,
+            cx,
+        ));
+        self.tab_index_by_node = numbered_shortcut_rows
+            .iter()
+            .map(|row| (row.node_id.clone(), row.index))
+            .collect();
+        self.numbered_shortcut_rows = numbered_shortcut_rows;
+    }
+
+    pub(crate) fn select_shortcut_row(
+        &mut self,
+        index: u8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(target) = activation_target_for_index(&self.numbered_shortcut_rows, index) else {
+            return;
+        };
+        match target {
+            SidebarActivationTarget::Tab { tab_id, session_id } => {
+                self.activate_sidebar_session(&tab_id, &session_id, window, cx)
+            }
+            SidebarActivationTarget::Mission {
+                mission_id,
+                project_id,
+            } => {
+                self.active_project_id = project_id;
+                self.open_mission(mission_id, window, cx);
+            }
+        }
+    }
+
+    pub(crate) fn handle_shortcut_modifiers_changed(
+        &mut self,
+        modifiers: gpui::Modifiers,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !window.is_window_active() || !command_held_alone(modifiers) {
+            self.clear_shortcut_pills(cx);
+            return;
+        }
+        if self.cmd_held_since.is_some() {
+            return;
+        }
+        let started_at = Instant::now();
+        self.cmd_held_since = Some(started_at);
+        self.shortcut_key_pressed = false;
+        if std::mem::take(&mut self.show_shortcut_pills) {
+            cx.notify();
+        }
+        cx.spawn_in(window, async move |weak, cx| {
+            cx.background_executor()
+                .timer(SHORTCUT_PILL_REVEAL_DELAY)
+                .await;
+            let _ = weak.update_in(cx, |this, window, cx| {
+                let modifiers = window.modifiers();
+                let held_since = (modifiers.platform && this.cmd_held_since == Some(started_at))
+                    .then_some(started_at);
+                if should_show_shortcut_pills(
+                    held_since,
+                    Instant::now(),
+                    other_modifiers_held(modifiers),
+                    this.shortcut_key_pressed,
+                    window.is_window_active(),
+                ) && !this.show_shortcut_pills
+                {
+                    this.show_shortcut_pills = true;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn handle_shortcut_key_pressed(&mut self, cx: &mut Context<Self>) {
+        self.cmd_held_since = None;
+        self.shortcut_key_pressed = true;
+        self.hide_shortcut_pills(cx);
+    }
+
+    pub(crate) fn clear_shortcut_pills(&mut self, cx: &mut Context<Self>) {
+        self.cmd_held_since = None;
+        self.shortcut_key_pressed = false;
+        self.hide_shortcut_pills(cx);
+    }
+
+    fn hide_shortcut_pills(&mut self, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.show_shortcut_pills) {
+            cx.notify();
+        }
     }
 
     fn activate_sidebar_session(
@@ -1654,6 +1874,7 @@ impl Sidebar {
             })
             .cloned()
             .collect::<Vec<_>>();
+        let tab_index_by_node = self.tab_index_by_node.clone();
         let rollups = attention_rollups(
             rows.iter()
                 .filter(|row| row.node().pinned_position.is_none())
@@ -1692,9 +1913,11 @@ impl Sidebar {
                             .children(pinned.into_iter().map(|row| {
                                 let project_id =
                                     node_project_id(&self.app_store.read(cx).nodes, row.node());
+                                let shortcut_index = tab_index_by_node.get(&row.node().id).copied();
                                 self.render_sidebar_row(
                                     row,
                                     project_id,
+                                    shortcut_index,
                                     DropKind::Pinned,
                                     None,
                                     visible.clone(),
@@ -1776,6 +1999,7 @@ impl Sidebar {
                                         nested,
                                         attention,
                                         visible_projects.clone(),
+                                        &tab_index_by_node,
                                         cx,
                                     ))
                                 })
@@ -1879,9 +2103,12 @@ impl Sidebar {
                             root_rows
                                 .into_iter()
                                 .map(|row| {
+                                    let shortcut_index =
+                                        tab_index_by_node.get(&row.node().id).copied();
                                     self.render_sidebar_row(
                                         row,
                                         None,
+                                        shortcut_index,
                                         DropKind::Leaf,
                                         None,
                                         visible.clone(),
@@ -2060,6 +2287,7 @@ impl Sidebar {
         &self,
         row: SidebarRow,
         project_id: Option<String>,
+        shortcut_index: Option<u8>,
         drop_kind: DropKind,
         parent_id: Option<String>,
         visible_ids: Vec<String>,
@@ -2076,6 +2304,7 @@ impl Sidebar {
                 layout,
                 members,
                 attention,
+                shortcut_index,
                 drop_kind,
                 parent_id,
                 visible_ids,
@@ -2090,6 +2319,7 @@ impl Sidebar {
                 summary,
                 attention,
                 project_id,
+                shortcut_index,
                 drop_kind,
                 parent_id,
                 visible_ids,
@@ -2105,6 +2335,7 @@ impl Sidebar {
         layout: PaneLayout,
         members: Vec<DirectSessionEntry>,
         attention: AttentionState,
+        shortcut_index: Option<u8>,
         drop_kind: DropKind,
         parent_id: Option<String>,
         visible_ids: Vec<String>,
@@ -2125,19 +2356,11 @@ impl Sidebar {
                 .collect::<Vec<_>>()
                 .join(" + ")
         });
-        let focused = layout
-            .focused_session_id()
-            .or_else(|| members.first().map(|member| member.session_id.as_str()))
-            .unwrap_or_default()
-            .to_owned();
         let renaming = self
             .rename
             .as_ref()
             .is_some_and(|rename| rename.target.matches(NodeType::Tab, &node.id));
-        let target = members
-            .iter()
-            .find(|member| member.session_id == focused)
-            .unwrap_or(&members[0]);
+        let target = sidebar_tab_target(&layout, &members);
         let click_tab = node.id.clone();
         let click_session = target.session_id.clone();
         let leaf_icon = if pane_count >= 3 {
@@ -2161,41 +2384,57 @@ impl Sidebar {
                 None,
                 (leaf_icon, live),
                 attention,
+                shortcut_index,
+                active,
                 cx,
             )
         } else {
+            let show_shortcut = self.show_shortcut_pills && shortcut_index.is_some();
+            let trailing = if show_shortcut {
+                sidebar_row_trailing_slot()
+                    .children(shortcut_index.map(|index| tab_shortcut_pill(index, active)))
+                    .into_any_element()
+            } else {
+                sidebar_row_trailing_slot()
+                    .child(attention_indicator(attention))
+                    .child(
+                        IconButton::new(
+                            SharedString::from(format!("sidebar-tab-actions-{}", node.id)),
+                            "more-horizontal.svg",
+                        )
+                        .size(IconButtonSize::Xs)
+                        .stop_click_propagation(true)
+                        .reveal_on_group_hover("sidebar-row-actions")
+                        .tooltip("More actions")
+                        .on_press(move |window, cx| {
+                            let position = window.mouse_position();
+                            menu_root.update(cx, |this, cx| {
+                                this.open_tab_menu(
+                                    menu_node.clone(),
+                                    menu_layout.clone(),
+                                    menu_members.clone(),
+                                    position,
+                                    window,
+                                    cx,
+                                )
+                            });
+                        }),
+                    )
+                    .into_any_element()
+            };
             sidebar_row_shell(
                 SharedString::from(format!("sidebar-tab-{}", node.id)),
                 active,
                 false,
             )
-            .children(node.pinned_position.is_some().then(pin_indicator))
+            .children(
+                node.pinned_position
+                    .is_some()
+                    .then(|| pin_indicator(!show_shortcut)),
+            )
             .child(sidebar_icon(leaf_icon, live))
             .child(sidebar_row_label(label.clone(), active, false))
-            .child(attention_indicator(attention))
-            .child(
-                IconButton::new(
-                    SharedString::from(format!("sidebar-tab-actions-{}", node.id)),
-                    "more-horizontal.svg",
-                )
-                .size(IconButtonSize::Xs)
-                .stop_click_propagation(true)
-                .reveal_on_group_hover("sidebar-row-actions")
-                .tooltip("More actions")
-                .on_press(move |window, cx| {
-                    let position = window.mouse_position();
-                    menu_root.update(cx, |this, cx| {
-                        this.open_tab_menu(
-                            menu_node.clone(),
-                            menu_layout.clone(),
-                            menu_members.clone(),
-                            position,
-                            window,
-                            cx,
-                        )
-                    });
-                }),
-            )
+            .child(trailing)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.activate_sidebar_session(&click_tab, &click_session, window, cx);
             }))
@@ -2228,6 +2467,7 @@ impl Sidebar {
         summary: MissionSummary,
         attention: AttentionState,
         project_id: Option<String>,
+        shortcut_index: Option<u8>,
         drop_kind: DropKind,
         parent_id: Option<String>,
         visible_ids: Vec<String>,
@@ -2257,40 +2497,59 @@ impl Sidebar {
                 None,
                 ("flag.svg", summary.all_sessions_live),
                 attention,
+                shortcut_index,
+                active,
                 cx,
             )
         } else {
+            let show_shortcut = self.show_shortcut_pills && shortcut_index.is_some();
+            let trailing = if show_shortcut {
+                sidebar_row_trailing_slot()
+                    .children(shortcut_index.map(|index| tab_shortcut_pill(index, active)))
+                    .into_any_element()
+            } else {
+                sidebar_row_trailing_slot()
+                    .child(attention_indicator(attention))
+                    .child(
+                        IconButton::new(
+                            SharedString::from(format!(
+                                "sidebar-mission-actions-{}",
+                                summary.mission.id
+                            )),
+                            "more-horizontal.svg",
+                        )
+                        .size(IconButtonSize::Xs)
+                        .stop_click_propagation(true)
+                        .reveal_on_group_hover("sidebar-row-actions")
+                        .tooltip("More actions")
+                        .on_press(move |window, cx| {
+                            let position = window.mouse_position();
+                            menu_root.update(cx, |this, cx| {
+                                this.open_mission_menu(
+                                    menu_node.clone(),
+                                    menu_summary.clone(),
+                                    position,
+                                    window,
+                                    cx,
+                                )
+                            });
+                        }),
+                    )
+                    .into_any_element()
+            };
             sidebar_row_shell(
                 SharedString::from(format!("sidebar-mission-{}", summary.mission.id)),
                 active,
                 false,
             )
-            .children(node.pinned_position.is_some().then(pin_indicator))
+            .children(
+                node.pinned_position
+                    .is_some()
+                    .then(|| pin_indicator(!show_shortcut)),
+            )
             .child(sidebar_icon("flag.svg", summary.all_sessions_live))
             .child(sidebar_row_label(label.clone(), active, false))
-            .child(attention_indicator(attention))
-            .child(
-                IconButton::new(
-                    SharedString::from(format!("sidebar-mission-actions-{}", summary.mission.id)),
-                    "more-horizontal.svg",
-                )
-                .size(IconButtonSize::Xs)
-                .stop_click_propagation(true)
-                .reveal_on_group_hover("sidebar-row-actions")
-                .tooltip("More actions")
-                .on_press(move |window, cx| {
-                    let position = window.mouse_position();
-                    menu_root.update(cx, |this, cx| {
-                        this.open_mission_menu(
-                            menu_node.clone(),
-                            menu_summary.clone(),
-                            position,
-                            window,
-                            cx,
-                        )
-                    });
-                }),
-            )
+            .child(trailing)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.active_project_id = project_id.clone();
                 this.open_mission(summary.mission.id.clone(), window, cx);
@@ -2316,6 +2575,7 @@ impl Sidebar {
         self.decorate_draggable_row(base, &node, label, drop_kind, parent_id, visible_ids, cx)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_project(
         &self,
         node: NodeRow,
@@ -2323,6 +2583,7 @@ impl Sidebar {
         nested: Vec<SidebarRow>,
         attention: AttentionState,
         visible_projects: Vec<String>,
+        tab_index_by_node: &HashMap<String, u8>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let collapsed = self
@@ -2356,6 +2617,8 @@ impl Sidebar {
                 } else {
                     AttentionState::None
                 },
+                None,
+                selected,
                 cx,
             )
         } else {
@@ -2545,9 +2808,11 @@ impl Sidebar {
                         nested
                             .into_iter()
                             .map(|row| {
+                                let shortcut_index = tab_index_by_node.get(&row.node().id).copied();
                                 self.render_sidebar_row(
                                     row,
                                     Some(project_id.clone()),
+                                    shortcut_index,
                                     DropKind::Leaf,
                                     Some(node.id.clone()),
                                     nested_ids.clone(),
@@ -2722,6 +2987,7 @@ impl Sidebar {
         wrapper.into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_inline_rename_row(
         &self,
         kind: NodeType,
@@ -2729,6 +2995,8 @@ impl Sidebar {
         disclosure_icon: Option<&'static str>,
         icon: (&'static str, bool),
         attention: AttentionState,
+        shortcut_index: Option<u8>,
+        shortcut_selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(rename) = self
@@ -2754,7 +3022,19 @@ impl Sidebar {
         }))
         .child(sidebar_icon(icon, icon_active))
         .child(div().min_w(px(0.)).flex_1().child(input))
-        .child(attention_indicator(attention))
+        .child(if let Some(index) = shortcut_index {
+            if self.show_shortcut_pills {
+                sidebar_row_trailing_slot()
+                    .child(tab_shortcut_pill(index, shortcut_selected))
+                    .into_any_element()
+            } else {
+                sidebar_row_trailing_slot()
+                    .child(attention_indicator(attention))
+                    .into_any_element()
+            }
+        } else {
+            attention_indicator(attention)
+        })
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
             match event.keystroke.key.as_str() {
                 "enter" => {
@@ -3348,8 +3628,32 @@ fn sidebar_row_label(label: String, selected: bool, monospace: bool) -> AnyEleme
         .into_any_element()
 }
 
+fn sidebar_row_trailing_slot() -> gpui::Div {
+    div()
+        .w(rems(34. / 16.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_end()
+        .gap(rems(6. / 16.))
+}
+
 fn chat_tab_row_active(route: &AppRoute, active_tab_id: Option<&str>, node_id: &str) -> bool {
     matches!(route, AppRoute::Chat) && active_tab_id == Some(node_id)
+}
+
+fn sidebar_tab_target<'a>(
+    layout: &PaneLayout,
+    members: &'a [DirectSessionEntry],
+) -> &'a DirectSessionEntry {
+    let focused = layout
+        .focused_session_id()
+        .or_else(|| members.first().map(|member| member.session_id.as_str()))
+        .unwrap_or_default();
+    members
+        .iter()
+        .find(|member| member.session_id == focused)
+        .unwrap_or(&members[0])
 }
 
 fn project_row_label(label: String) -> AnyElement {
@@ -3376,16 +3680,49 @@ fn sidebar_icon(path: &'static str, active: bool) -> AnyElement {
         .into_any_element()
 }
 
-fn pin_indicator() -> AnyElement {
-    svg()
-        .path("pin.svg")
+fn pin_indicator(visible: bool) -> AnyElement {
+    div()
         .size(rems(10. / 16.))
         .flex_none()
-        .text_color(theme::faint())
-        .with_transformation(Transformation::rotate(radians(
-            -std::f32::consts::FRAC_PI_4,
-        )))
+        .children(visible.then(|| {
+            svg()
+                .path("pin.svg")
+                .size(rems(10. / 16.))
+                .text_color(theme::faint())
+                .with_transformation(Transformation::rotate(radians(
+                    -std::f32::consts::FRAC_PI_4,
+                )))
+        }))
         .into_any_element()
+}
+
+fn tab_shortcut_pill(index: u8, selected: bool) -> AnyElement {
+    div()
+        .size(rems(1.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(rems(4. / 16.))
+        .bg(theme::raised())
+        .font_family("JetBrains Mono")
+        .font_weight(FontWeight::MEDIUM)
+        .text_size(rems(10. / 16.))
+        .text_color(if selected {
+            theme::text()
+        } else {
+            theme::muted()
+        })
+        .child(index.to_string())
+        .into_any_element()
+}
+
+fn other_modifiers_held(modifiers: gpui::Modifiers) -> bool {
+    modifiers.control || modifiers.alt || modifiers.shift || modifiers.function
+}
+
+fn command_held_alone(modifiers: gpui::Modifiers) -> bool {
+    modifiers.platform && !other_modifiers_held(modifiers)
 }
 
 fn attention_indicator(attention: AttentionState) -> AnyElement {

@@ -70,6 +70,7 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.sync_theme(window, cx);
+        self.sync_sidebar_shortcut_rows(cx);
         window.set_rem_size(px(16. * self.settings(cx).app_zoom));
         if let Some(error) = self.error.take() {
             self.show_toast(error, ToastTone::Error, cx);
@@ -136,6 +137,8 @@ impl NativeRoot {
         let toast = self
             .render_toast(cx)
             .map(|toast| deferred(toast).with_priority(3));
+        let modifier_sidebar = self.sidebar.clone();
+        let key_sidebar = self.sidebar.clone();
 
         div()
             .relative()
@@ -152,6 +155,16 @@ impl NativeRoot {
             .children(settings_confirm)
             .child(command_palette)
             .children(toast)
+            .on_modifiers_changed(move |event, window, cx| {
+                modifier_sidebar.update(cx, |sidebar, sidebar_cx| {
+                    sidebar.handle_shortcut_modifiers_changed(event.modifiers, window, sidebar_cx);
+                });
+            })
+            .capture_key_down(move |_, _, cx| {
+                key_sidebar.update(cx, |sidebar, sidebar_cx| {
+                    sidebar.handle_shortcut_key_pressed(sidebar_cx);
+                });
+            })
             .on_drag_move::<SidebarResizeDrag>(cx.listener(
                 |this, event: &DragMoveEvent<SidebarResizeDrag>, _, cx| {
                     let width = f32::from(event.event.position.x - event.bounds.left())
@@ -195,6 +208,15 @@ impl NativeRoot {
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::zoom_reset))
             .on_action(cx.listener(Self::toggle_fullscreen))
+            .on_action(cx.listener(Self::select_tab_1))
+            .on_action(cx.listener(Self::select_tab_2))
+            .on_action(cx.listener(Self::select_tab_3))
+            .on_action(cx.listener(Self::select_tab_4))
+            .on_action(cx.listener(Self::select_tab_5))
+            .on_action(cx.listener(Self::select_tab_6))
+            .on_action(cx.listener(Self::select_tab_7))
+            .on_action(cx.listener(Self::select_tab_8))
+            .on_action(cx.listener(Self::select_tab_9))
             .into_any_element()
     }
 
@@ -877,6 +899,48 @@ impl NativeRoot {
         }
         self.sidebar_preview_peeking = false;
         cx.notify();
+    }
+
+    fn select_sidebar_shortcut(&mut self, index: u8, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar.update(cx, |sidebar, sidebar_cx| {
+            sidebar.select_shortcut_row(index, window, sidebar_cx)
+        });
+    }
+
+    fn select_tab_1(&mut self, _: &SelectTab1, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_sidebar_shortcut(1, window, cx);
+    }
+
+    fn select_tab_2(&mut self, _: &SelectTab2, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_sidebar_shortcut(2, window, cx);
+    }
+
+    fn select_tab_3(&mut self, _: &SelectTab3, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_sidebar_shortcut(3, window, cx);
+    }
+
+    fn select_tab_4(&mut self, _: &SelectTab4, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_sidebar_shortcut(4, window, cx);
+    }
+
+    fn select_tab_5(&mut self, _: &SelectTab5, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_sidebar_shortcut(5, window, cx);
+    }
+
+    fn select_tab_6(&mut self, _: &SelectTab6, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_sidebar_shortcut(6, window, cx);
+    }
+
+    fn select_tab_7(&mut self, _: &SelectTab7, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_sidebar_shortcut(7, window, cx);
+    }
+
+    fn select_tab_8(&mut self, _: &SelectTab8, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_sidebar_shortcut(8, window, cx);
+    }
+
+    fn select_tab_9(&mut self, _: &SelectTab9, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_sidebar_shortcut(9, window, cx);
     }
 
     fn show_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
