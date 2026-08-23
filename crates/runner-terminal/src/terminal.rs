@@ -499,6 +499,23 @@ impl TerminalSession {
         }
     }
 
+    pub fn input_reset_guard(&self) -> u64 {
+        self.input_tracker.lock().unwrap().reset_guard()
+    }
+
+    pub fn reset_input_state(&self, guard: u64) {
+        let observation = self
+            .input_tracker
+            .lock()
+            .unwrap()
+            .reset_if_unchanged(guard, Instant::now());
+        if let Some(observation) = observation {
+            self.core
+                .sessions
+                .report_input_state(&self.session_id, observation);
+        }
+    }
+
     pub fn resize(&self, cols: u16, rows: u16) {
         let cols = cols.max(2);
         let rows = rows.max(2);

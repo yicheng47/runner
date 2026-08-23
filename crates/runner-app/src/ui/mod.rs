@@ -30,7 +30,9 @@ fn zoom_from_rem_size(rem_size: Pixels) -> f32 {
 pub use avatar::{
     cells_for_seed, hue_for_seed, lead_badge, AvatarHue, RunnerAvatar, RunnerPresence,
 };
-pub use button::{Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize, PressHandler};
+pub use button::{
+    focus_ring, Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize, PressHandler,
+};
 pub use copy_value_button::CopyValueButton;
 pub use duplicate_subject_overlay::{DuplicateSubjectKind, DuplicateSubjectOverlay};
 pub use field::{

@@ -15,6 +15,12 @@ fn run(args: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
+fn bundle_version() -> String {
+    let output = run(&["--print-version"]);
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
 fn plist_value<'a>(plist: &'a str, key: &str) -> &'a str {
     let marker = format!("<key>{key}</key>");
     let after_key = plist.split_once(&marker).unwrap().1;
@@ -43,6 +49,7 @@ fn assert_update_preferences(plist: &str) {
 
 #[test]
 fn nightly_plist_uses_the_isolated_rolling_channel() {
+    let version = bundle_version();
     let output = run(&[
         "--channel",
         "nightly",
@@ -59,13 +66,14 @@ fn nightly_plist_uses_the_isolated_rolling_channel() {
         "com.wycstudios.runner.nightly"
     );
     assert_eq!(plist_value(&plist, "CFBundleName"), "Runner Nightly");
+    assert_eq!(plist_value(&plist, "CFBundleExecutable"), "Runner");
     assert_eq!(
         plist_value(&plist, "SUFeedURL"),
         "https://github.com/yicheng47/runner/releases/download/nightly/appcast.xml"
     );
     assert_eq!(
         plist_value(&plist, "CFBundleShortVersionString"),
-        "0.6.0-nightly.20260821.1432"
+        format!("{version}.20260821.1432")
     );
     assert_eq!(plist_value(&plist, "CFBundleVersion"), "20260821.1432");
     assert_eq!(
@@ -77,6 +85,7 @@ fn nightly_plist_uses_the_isolated_rolling_channel() {
 
 #[test]
 fn production_plist_keeps_the_marketing_version_separate_from_the_stamp() {
+    let version = bundle_version();
     let output = run(&[
         "--channel",
         "production",
@@ -93,11 +102,15 @@ fn production_plist_keeps_the_marketing_version_separate_from_the_stamp() {
         "com.wycstudios.runner"
     );
     assert_eq!(plist_value(&plist, "CFBundleName"), "Runner");
+    assert_eq!(plist_value(&plist, "CFBundleExecutable"), "Runner");
     assert_eq!(
         plist_value(&plist, "SUFeedURL"),
         "https://github.com/yicheng47/runner/releases/latest/download/appcast.xml"
     );
-    assert_eq!(plist_value(&plist, "CFBundleShortVersionString"), "0.6.0");
+    assert_eq!(
+        plist_value(&plist, "CFBundleShortVersionString"),
+        version.strip_suffix("-nightly").unwrap_or(&version)
+    );
     assert_eq!(plist_value(&plist, "CFBundleVersion"), "20260821.1432");
     assert_eq!(
         plist_value(&plist, "SUPublicEDKey"),
