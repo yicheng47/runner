@@ -1,6 +1,6 @@
 # ⌘1–9 tab switching with hold-to-reveal shortcut pills
 
-Status: designed 2026-08-23 (`design/runner.pen` `cmp/TabShortcutPill` `gpQTy`, frame `BOqhO`), in implementation as M6.15. Program slot: M6.15 in [m6-remainder.md](../impls/gpui-rewrite/m6-remainder.md).
+Status: shipped in v0.6.1 (2026-08-23, PR #435 → `a9cd866`; design `design/runner.pen` `cmp/TabShortcutPill` `gpQTy`, frame `BOqhO`). Program slot: M6.15 in [m6-remainder.md](../impls/gpui-rewrite/m6-remainder.md).
 
 ## Motivation
 
