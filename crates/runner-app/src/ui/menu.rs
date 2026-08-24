@@ -202,7 +202,13 @@ pub fn popup_layer(
                     div()
                         .w(viewport.width)
                         .h(viewport.height)
-                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        // A press on the trigger itself is the trigger's to
+                        // handle: dismissing here too would close on mouse-down
+                        // and let the trigger's click reopen on mouse-up.
+                        .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                            if anchor.contains(&event.position) {
+                                return;
+                            }
                             dismiss(window, cx);
                         })
                         .on_mouse_down(MouseButton::Right, move |_, window, cx| {
