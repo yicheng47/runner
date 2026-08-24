@@ -98,6 +98,16 @@ impl TerminalFontFamily {
             Self::MesloNerdFont => "MesloLGS NF",
         }
     }
+
+    pub fn font(self) -> Font {
+        let mut font = font(self.family());
+        font.fallbacks = Some(FontFallbacks::from_fonts(
+            ["PingFang SC", "Microsoft YaHei", "sans-serif"]
+                .map(str::to_owned)
+                .into(),
+        ));
+        font
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -493,6 +503,18 @@ mod tests {
             let parsed: TerminalFontFamily =
                 serde_json::from_str(&format!("\"{legacy}\"")).unwrap();
             assert_eq!(parsed, TerminalFontFamily::Menlo);
+        }
+    }
+
+    #[test]
+    fn terminal_fonts_use_an_explicit_cjk_fallback_chain() {
+        for family in [TerminalFontFamily::MesloNerdFont, TerminalFontFamily::Menlo] {
+            let font = family.font();
+            assert_eq!(font.family.as_ref(), family.family());
+            assert_eq!(
+                font.fallbacks.unwrap().fallback_list(),
+                ["PingFang SC", "Microsoft YaHei", "sans-serif"]
+            );
         }
     }
 

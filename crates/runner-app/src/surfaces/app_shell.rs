@@ -732,7 +732,7 @@ impl NativeRoot {
     pub(crate) fn terminal_style(&self, cx: &App) -> crate::terminal::element::TerminalStyle {
         crate::terminal::element::TerminalStyle {
             palette: self.settings(cx).terminal_theme.palette(),
-            font_family: self.settings(cx).terminal_font_family.family().into(),
+            font: self.settings(cx).terminal_font_family.font(),
             font_size: self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom,
             app_zoom: self.settings(cx).app_zoom,
         }

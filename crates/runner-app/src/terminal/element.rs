@@ -17,7 +17,7 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{point_to_viewport, viewport_to_point, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use gpui::{
-    fill, font, outline, point, px, relative, size, App, Bounds, ContentMask, Context, CursorStyle,
+    fill, outline, point, px, relative, size, App, Bounds, ContentMask, Context, CursorStyle,
     DispatchPhase, Element, ElementInputHandler, Entity, FocusHandle, Font, GlobalElementId,
     Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
     MouseButton as GpuiMouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
@@ -554,7 +554,7 @@ pub struct TerminalElement {
 #[derive(Clone)]
 pub struct TerminalStyle {
     pub palette: TerminalPalette,
-    pub font_family: SharedString,
+    pub font: Font,
     pub font_size: f32,
     pub app_zoom: f32,
 }
@@ -727,7 +727,7 @@ impl Element for TerminalElement {
         cx: &mut App,
     ) -> GridPrepaint {
         let text_system = window.text_system();
-        let base_font = font(self.style.font_family.clone());
+        let base_font = self.style.font.clone();
         let font_size = px(self.style.font_size);
         let font_id = text_system.resolve_font(&base_font);
         let cell_width = text_system
