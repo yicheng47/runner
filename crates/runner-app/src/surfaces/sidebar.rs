@@ -3330,17 +3330,7 @@ fn project_menu_entries(
 ) -> Vec<(UiMenuItem, SidebarMenuAction)> {
     vec![
         (
-            UiMenuItem::new("New chat in project").icon("message-square-plus.svg"),
-            SidebarMenuAction::NewChat(Some(project_id.clone())),
-        ),
-        (
-            UiMenuItem::new("New mission in project").icon("flag.svg"),
-            SidebarMenuAction::NewMission(Some(project_id.clone())),
-        ),
-        (
-            UiMenuItem::new("Rename project")
-                .icon("pencil.svg")
-                .separator_before(true),
+            UiMenuItem::new("Rename project").icon("pencil.svg"),
             SidebarMenuAction::Rename(SidebarRenameTarget::Project {
                 project_id: project_id.clone(),
                 original: project_name,
@@ -3944,12 +3934,7 @@ mod tests {
         let project_entries = project_menu_entries("project-1".into(), "Runner".into());
         assert_eq!(
             menu_labels(&project_entries),
-            [
-                "New chat in project",
-                "New mission in project",
-                "Rename project",
-                "Delete project",
-            ]
+            ["Rename project", "Delete project"]
         );
     }
 
