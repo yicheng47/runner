@@ -3,16 +3,23 @@ use std::collections::BTreeMap;
 use anyhow::{bail, Context as _, Result};
 use runner_backend::ops::node::NodeTabUpsertInput;
 use runner_backend::repo::node::{NodeRow, NodeType};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
+// Wire names are the Tauri-era spellings (`cols-2`, not serde's kebab-case
+// `cols2`); the aliases keep rows written by 0.6.0/0.6.1 readable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub enum PresetKind {
+    #[serde(rename = "single")]
     Single,
+    #[serde(rename = "cols-2", alias = "cols2")]
     Cols2,
+    #[serde(rename = "rows-2", alias = "rows2")]
     Rows2,
+    #[serde(rename = "main-2", alias = "main2")]
     Main2,
+    #[serde(rename = "cols-3", alias = "cols3")]
     Cols3,
+    #[serde(rename = "rows-3", alias = "rows3")]
     Rows3,
 }
 
@@ -168,8 +175,29 @@ struct PersistedLayout {
     preset: PresetKind,
     #[serde(default)]
     slots: Vec<Option<String>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_sizes")]
     sizes: BTreeMap<String, [f32; 2]>,
+}
+
+// The Tauri-era writer could persist `[null,null]` sizes (NaN from the panel
+// library stringified) and its reader tolerated any malformed size entry;
+// rejecting the whole layout for a cosmetic gutter value strands the tab.
+fn lenient_sizes<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, [f32; 2]>, D::Error> {
+    let raw = serde_json::Value::deserialize(deserializer)?;
+    let Some(entries) = raw.as_object() else {
+        return Ok(BTreeMap::new());
+    };
+    Ok(entries
+        .iter()
+        .filter_map(|(id, value)| {
+            let [a, b] = value.as_array()?.as_slice() else {
+                return None;
+            };
+            Some((id.clone(), [a.as_f64()? as f32, b.as_f64()? as f32]))
+        })
+        .collect())
 }
 
 impl PaneLayout {
@@ -401,17 +429,23 @@ pub struct TabSet {
 }
 
 impl TabSet {
-    pub fn from_rows(rows: &[NodeRow]) -> Result<Self> {
+    pub fn from_rows(rows: &[NodeRow]) -> Self {
         let tabs = rows
             .iter()
             .filter(|row| row.node_type == NodeType::Tab)
-            .map(PaneLayout::from_node_row)
-            .collect::<Result<Vec<_>>>()?;
+            .filter_map(|row| match PaneLayout::from_node_row(row) {
+                Ok(tab) => Some(tab),
+                Err(error) => {
+                    tracing::warn!(tab_id = %row.id, "skipping unreadable tab layout: {error:#}");
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
         let active_tab_id = tabs.first().map(|tab| tab.id.clone());
-        Ok(Self {
+        Self {
             tabs,
             active_tab_id,
-        })
+        }
     }
 
     pub fn tabs(&self) -> &[PaneLayout] {
@@ -468,14 +502,14 @@ impl TabSet {
         Ok(())
     }
 
-    pub fn replace_rows(&mut self, rows: &[NodeRow]) -> Result<()> {
+    pub fn replace_rows(&mut self, rows: &[NodeRow]) {
         let active_id = self.active_tab_id.clone();
         let focused_pane_id = self.active().map(|tab| tab.focused_pane_id.clone());
         let focused_session = self
             .active()
             .and_then(PaneLayout::focused_session_id)
             .map(str::to_owned);
-        let mut next = Self::from_rows(rows)?;
+        let mut next = Self::from_rows(rows);
         if let Some(active_id) = active_id {
             next.activate(&active_id);
         }
@@ -489,7 +523,6 @@ impl TabSet {
             }
         }
         *self = next;
-        Ok(())
     }
 }
 

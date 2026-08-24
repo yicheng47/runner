@@ -67,7 +67,7 @@ fn pane_assignment_is_move_not_copy_across_tabs() {
         row("01K00000000000000000000000", 0, &tab_a),
         row("01K00000000000000000000001", 1, &tab_b),
     ];
-    let mut tabs = TabSet::from_rows(&rows).unwrap();
+    let mut tabs = TabSet::from_rows(&rows);
     tabs.assign_to_active("p2", "B").unwrap();
 
     assert_eq!(tabs.tabs()[0].session_ids(), ["A", "B"]);
@@ -188,7 +188,7 @@ fn switching_tabs_preserves_each_tabs_sessions_focus_and_geometry() {
         row("01K00000000000000000000000", 0, &tab_a),
         row("01K00000000000000000000001", 1, &tab_b),
     ];
-    let mut tabs = TabSet::from_rows(&rows).unwrap();
+    let mut tabs = TabSet::from_rows(&rows);
     tabs.active_mut().unwrap().focus_session("B");
 
     assert!(tabs.activate("01K00000000000000000000001"));
@@ -212,9 +212,9 @@ fn rehydration_keeps_the_active_tab_by_stable_id() {
         row("01K00000000000000000000001", 1, &b),
         row("01K00000000000000000000002", 2, &c),
     ];
-    let mut tabs = TabSet::from_rows(&rows).unwrap();
+    let mut tabs = TabSet::from_rows(&rows);
     tabs.activate("01K00000000000000000000001");
-    tabs.replace_rows(&rows[1..]).unwrap();
+    tabs.replace_rows(&rows[1..]);
 
     assert_eq!(tabs.active_tab_id(), Some("01K00000000000000000000001"));
 }
@@ -229,7 +229,7 @@ fn structural_writes_preserve_parent_scope() {
     let mut filed_row = row("01K00000000000000000000000", 7, &filed_tab);
     filed_row.parent_id = Some("folder-1".into());
     let loose_row = row("01K00000000000000000000001", 2, &loose_tab);
-    let tabs = TabSet::from_rows(&[filed_row, loose_row]).unwrap();
+    let tabs = TabSet::from_rows(&[filed_row, loose_row]);
 
     let filed = &tabs.tabs()[0];
     assert_eq!(filed.parent_id.as_deref(), Some("folder-1"));
@@ -239,4 +239,80 @@ fn structural_writes_preserve_parent_scope() {
     );
     let loose = &tabs.tabs()[1];
     assert_eq!(loose.position, 2);
+}
+
+fn raw_row(id: &str, layout: &str) -> NodeRow {
+    NodeRow {
+        id: id.to_owned(),
+        parent_id: None,
+        position: 0,
+        node_type: NodeType::Tab,
+        name: None,
+        ref_id: None,
+        layout: Some(layout.to_owned()),
+        pinned_position: None,
+        last_completed_at: None,
+        last_viewed_at: None,
+        created_at: "2026-07-19T00:00:00Z".into(),
+    }
+}
+
+#[test]
+fn tauri_era_null_sizes_fall_back_to_preset_defaults() {
+    let row = raw_row(
+        "01K00000000000000000000000",
+        r#"{"preset":"cols-2","slots":["A","B"],"sizes":{"cols-2:outer":[null,null],"stale":[70,30,0],"other":"x"}}"#,
+    );
+    let restored = PaneLayout::from_node_row(&row).unwrap();
+
+    assert_eq!(restored.preset, PresetKind::Cols2);
+    assert_eq!(restored.session_ids(), ["A", "B"]);
+    let PaneNode::Split(split) = restored.root else {
+        panic!("cols-2 must have an outer split");
+    };
+    assert_eq!(split.sizes, [50., 50.]);
+}
+
+#[test]
+fn unreadable_tab_row_is_skipped_without_dropping_the_set() {
+    let good = PaneLayout::fresh(PresetKind::Single, Some("A"), &["A".into()]);
+    let rows = [
+        raw_row(
+            "01K00000000000000000000000",
+            r#"{"preset":"nope","slots":["B"]}"#,
+        ),
+        row("01K00000000000000000000001", 1, &good),
+        raw_row("01K00000000000000000000002", "not json"),
+    ];
+    let tabs = TabSet::from_rows(&rows);
+
+    assert_eq!(tabs.tabs().len(), 1);
+    assert_eq!(tabs.active_tab_id(), Some("01K00000000000000000000001"));
+    assert_eq!(tabs.tabs()[0].session_ids(), ["A"]);
+}
+
+#[test]
+fn preset_wire_names_match_tauri_and_accept_the_0_6_0_spelling() {
+    let cases = [
+        (PresetKind::Single, "single", "single"),
+        (PresetKind::Cols2, "cols-2", "cols2"),
+        (PresetKind::Rows2, "rows-2", "rows2"),
+        (PresetKind::Main2, "main-2", "main2"),
+        (PresetKind::Cols3, "cols-3", "cols3"),
+        (PresetKind::Rows3, "rows-3", "rows3"),
+    ];
+    for (preset, canonical, legacy_0_6) in cases {
+        let written = PaneLayout::fresh(preset, None, &[]).serialize().unwrap();
+        assert!(
+            written.contains(&format!("\"preset\":\"{canonical}\"")),
+            "{preset:?} wrote {written}"
+        );
+        for spelling in [canonical, legacy_0_6] {
+            let row = raw_row(
+                "01K00000000000000000000000",
+                &format!("{{\"preset\":\"{spelling}\",\"slots\":[],\"sizes\":{{}}}}"),
+            );
+            assert_eq!(PaneLayout::from_node_row(&row).unwrap().preset, preset);
+        }
+    }
 }

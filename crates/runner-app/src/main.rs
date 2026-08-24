@@ -348,7 +348,7 @@ impl NativeRoot {
         let sessions = app_store.read(cx).sessions.clone();
         let nodes = app_store.read(cx).nodes.clone();
         let store_revisions = app_store.read(cx).revisions;
-        let mut errors: Vec<_> = app_store.read(cx).error.clone().into_iter().collect();
+        let startup_error = app_store.read(cx).error.clone();
 
         let (chat_event_tx, mut chat_event_rx) =
             futures::channel::mpsc::unbounded::<runner_backend::events::AppEvent>();
@@ -425,13 +425,7 @@ impl NativeRoot {
         .detach();
 
         window.set_rem_size(px(16. * settings.app_zoom));
-        let mut tabs = match TabSet::from_rows(&nodes) {
-            Ok(tabs) => tabs,
-            Err(error) => {
-                errors.push(error.to_string());
-                TabSet::default()
-            }
-        };
+        let mut tabs = TabSet::from_rows(&nodes);
         let route_path = initial_route_path
             .as_deref()
             .unwrap_or_default()
@@ -606,7 +600,7 @@ impl NativeRoot {
             split_sizes_dirty: false,
             chat_secondaries: HashMap::new(),
             dismissed_duplicate_chats: HashSet::new(),
-            error: (!errors.is_empty()).then(|| errors.join("\n")),
+            error: startup_error,
             settings_page,
             route: initial_route.clone(),
             settings_return_route: initial_route,
@@ -704,14 +698,14 @@ impl NativeRoot {
     fn reload_tabs(&mut self, cx: &mut Context<Self>) -> Result<()> {
         self.app_store
             .update(cx, |store, store_cx| store.refresh_nodes(store_cx))?;
-        self.apply_tab_rows(cx)
+        self.apply_tab_rows(cx);
+        Ok(())
     }
 
-    fn apply_tab_rows(&mut self, cx: &mut Context<Self>) -> Result<()> {
-        self.tabs.replace_rows(&self.app_store.read(cx).nodes)?;
+    fn apply_tab_rows(&mut self, cx: &mut Context<Self>) {
+        self.tabs.replace_rows(&self.app_store.read(cx).nodes);
         self.sync_active_project_from_active_tab(cx);
         self.prune_sidebar_collapse_state(cx);
-        Ok(())
     }
 
     fn session_entry<'a>(&self, session_id: &str, cx: &'a App) -> Option<&'a DirectSessionEntry> {
@@ -732,9 +726,7 @@ impl NativeRoot {
             self.error = self.app_store.read(cx).error.clone();
         }
         if reactions.reload_tabs {
-            if let Err(error) = self.apply_tab_rows(cx) {
-                self.error = Some(error.to_string());
-            }
+            self.apply_tab_rows(cx);
         }
         if reactions.prune_sidebar {
             self.prune_sidebar_collapse_state(cx);
