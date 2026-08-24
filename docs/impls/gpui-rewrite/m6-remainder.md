@@ -17,7 +17,7 @@ Everything lands on `main` (the only line since the 2026-08-23 cutover): a crew 
 
 ## Status (2026-08-23 — v0.6.1 released)
 
-`v0.6.0` shipped 2026-08-23; `v0.6.1` followed the same evening with M6.20 (PR #433 → `d92a046`), M6.15 (PR #435 → `a9cd866`), the Option/Shift/Ctrl key-encoding fix (#434 → `9f0883d`) and the ⌘W fix (#436 → `82a146a`) — each recorded with its commit in the program record ([README.md](README.md) §Timeline); the landed M6 items through GA are in full in the archived M6 document ([../archive/gpui-rewrite/m6-consolidation.md](../archive/gpui-rewrite/m6-consolidation.md)). This file keeps only what is still open, in the order queued; GitHub tracking is [#432](https://github.com/yicheng47/runner/issues/432). Everything lands on `main` as nightlies. Numbers are identifiers, not sequence.
+`v0.6.0` shipped 2026-08-23; `v0.6.1` followed the same evening with M6.20 (PR #433 → `d92a046`), M6.15 (PR #435 → `a9cd866`), the Option/Shift/Ctrl key-encoding fix (#434 → `9f0883d`) and the ⌘W fix (#436 → `82a146a`) — each recorded with its commit in the program record ([README.md](README.md) §Timeline); the landed M6 items through GA are in full in the archived M6 document ([../archive/gpui-rewrite/m6-consolidation.md](../archive/gpui-rewrite/m6-consolidation.md)). This file keeps only what is still open, in the order queued; GitHub tracking is [#445](https://github.com/yicheng47/runner/issues/445) (supersedes #432, closed 2026-08-24). Everything lands on `main` as nightlies. Numbers are identifiers, not sequence.
 
 ## Pending — post-GA, in order
 

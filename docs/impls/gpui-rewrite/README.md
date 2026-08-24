@@ -61,7 +61,7 @@ The archive's deviation register is the full parity record; these are the ones a
 
 ## What remains
 
-[#432](https://github.com/yicheng47/runner/issues/432), detailed in [m6-remainder.md](m6-remainder.md): release chores (the nightly version bump, first post-GA nightly, `latest.json` carry-forward until 0.7.0), then M6.16 descendant sweep, M6.19 pin the UI font, then M6.2 hook-based session status (#347), M6.7 terminal performance, M6.4 feed append, the M6.3 backend remainder, Tier 2. Post-M6 direction: promote `runner-backend` into a session daemon so updates and crashes stop killing live agents.
+[#445](https://github.com/yicheng47/runner/issues/445) (supersedes #432, closed 2026-08-24), detailed in [m6-remainder.md](m6-remainder.md): the first post-GA nightly (the version bump landed as 0.6.2 and the `latest.json` 0.7.0 cutoff moved to #437), then M6.16 descendant sweep, M6.19 pin the UI font, then M6.2 hook-based session status (#347), M6.7 terminal performance, M6.4 feed append, the M6.3 backend remainder, Tier 2. Post-M6 direction: promote `runner-backend` into a session daemon so updates and crashes stop killing live agents.
 
 ## Nightlies
 
