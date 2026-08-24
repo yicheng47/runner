@@ -1802,12 +1802,7 @@ impl Sidebar {
                     "sidebar drop committed"
                 );
                 if let Some(shell) = self.shell.upgrade() {
-                    shell.update(cx, |shell, shell_cx| {
-                        if let Err(error) = shell.tabs.replace_rows(&nodes) {
-                            shell.error = Some(error.to_string());
-                            shell_cx.notify();
-                        }
-                    });
+                    shell.update(cx, |shell, _| shell.tabs.replace_rows(&nodes));
                 }
                 self.app_store
                     .update(cx, |store, store_cx| store.replace_nodes(nodes, store_cx));

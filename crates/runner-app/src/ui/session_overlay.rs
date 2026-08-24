@@ -205,8 +205,9 @@ impl RenderOnce for SessionOverlay {
                             )
                             .child(
                                 div()
-                                    .flex()
+                                    .debug_selector(|| "SESSION_ENDED_SUBTITLE".into())
                                     .w_full()
+                                    .min_w_0()
                                     .whitespace_normal()
                                     .text_size(rems(13. / 16.))
                                     .line_height(rems(18. / 16.))
@@ -278,5 +279,28 @@ mod tests {
             .debug_bounds("SESSION_ENDED_ACTIONS")
             .expect("actions bounds");
         assert_eq!(card.bottom() - actions.bottom(), px(27.));
+    }
+
+    #[test]
+    fn ended_overlay_subtitle_wraps_inside_the_card() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|window, _| {
+            window.set_rem_size(px(20.8));
+            EndedOverlayTest
+        });
+        cx.run_until_parked();
+        let mut window = VisualTestContext::from_window(window.into(), &cx);
+        let card = window
+            .debug_bounds("SESSION_ENDED_CARD")
+            .expect("card bounds");
+        let subtitle = window
+            .debug_bounds("SESSION_ENDED_SUBTITLE")
+            .expect("subtitle bounds");
+        let line_height = px(20.8 * 18. / 16.);
+        assert!(
+            subtitle.size.height >= line_height * 2.,
+            "subtitle did not wrap: {subtitle:?}"
+        );
+        assert!(subtitle.right() <= card.right(), "{subtitle:?} vs {card:?}");
     }
 }
