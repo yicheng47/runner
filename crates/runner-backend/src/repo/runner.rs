@@ -168,14 +168,30 @@ pub fn get_by_handle(conn: &Connection, handle: &str) -> rusqlite::Result<Option
     .map(|opt| opt.map(Runner::from))
 }
 
+/// Row mapper for the list queries: an unreadable row (a non-TEXT value in
+/// a TEXT column, written by something outside the app — issue #439)
+/// degrades to a warn naming the row id instead of failing the whole query
+/// and blanking every runner surface. `get`/`get_by_handle` still error —
+/// an explicitly requested row must not silently vanish.
+fn read_or_skip(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<Runner>> {
+    match from_row::<RunnerRow>(row) {
+        Ok(r) => Ok(Some(Runner::from(r))),
+        Err(e) => {
+            let id: String = row.get(0).unwrap_or_else(|_| "<unreadable>".into());
+            log::warn!("runners: skipping unreadable row {id}: {e}");
+            Ok(None)
+        }
+    }
+}
+
 pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Runner>> {
     let sql = format!(
         "SELECT {} FROM runners ORDER BY handle ASC",
         select_list(COLUMNS)
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], |row| from_row::<RunnerRow>(row).map_err(de_err))?;
-    rows.map(|r| r.map(Runner::from)).collect()
+    let rows = stmt.query_map([], read_or_skip)?;
+    rows.filter_map(|r| r.transpose()).collect()
 }
 
 pub fn list_for_crew(conn: &Connection, crew_id: &str) -> rusqlite::Result<Vec<Runner>> {
@@ -192,10 +208,8 @@ pub fn list_for_crew(conn: &Connection, crew_id: &str) -> rusqlite::Result<Vec<R
         super::qualified_select_list("r", COLUMNS)
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params![crew_id], |row| {
-        from_row::<RunnerRow>(row).map_err(de_err)
-    })?;
-    rows.map(|row| row.map(Runner::from)).collect()
+    let rows = stmt.query_map(rusqlite::params![crew_id], read_or_skip)?;
+    rows.filter_map(|r| r.transpose()).collect()
 }
 
 const SEARCH_PREDICATE: &str = "(
@@ -230,10 +244,8 @@ pub fn list_page(
         super::qualified_select_list("r", COLUMNS)
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params![pattern, limit, offset], |row| {
-        from_row::<RunnerRow>(row).map_err(de_err)
-    })?;
-    rows.map(|row| row.map(Runner::from)).collect()
+    let rows = stmt.query_map(rusqlite::params![pattern, limit, offset], read_or_skip)?;
+    rows.filter_map(|r| r.transpose()).collect()
 }
 
 pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
@@ -350,6 +362,36 @@ mod tests {
             runner.env,
             HashMap::from([("FOO".to_string(), "bar".to_string())])
         );
+    }
+
+    #[test]
+    fn list_skips_unreadable_rows_and_keeps_readable_ones() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        insert(&conn, &full_row()).unwrap();
+        // The issue #439 repro: a BLOB in a TEXT column, only writable from
+        // outside the app.
+        conn.execute(
+            "INSERT INTO runners (
+                id, handle, display_name, runtime, command, args_json,
+                system_prompt, created_at, updated_at
+             ) VALUES ('bad', 'bad', 'Bad', 'codex', 'codex', '[]',
+                       x'deadbeef', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        let handles = |runners: Vec<Runner>| {
+            runners
+                .into_iter()
+                .map(|r| r.handle)
+                .collect::<Vec<String>>()
+        };
+        assert_eq!(handles(list(&conn).unwrap()), ["full"]);
+        assert_eq!(handles(list_page(&conn, "%", 10, 0).unwrap()), ["full"]);
+        // An explicitly requested row still errors.
+        assert!(get(&conn, "bad").is_err());
+        assert!(get_by_handle(&conn, "bad").is_err());
     }
 
     #[test]
