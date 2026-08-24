@@ -18,7 +18,7 @@ const fn rgb(r: u8, g: u8, b: u8) -> Rgb {
 }
 
 pub const RUNNER: TerminalPalette = TerminalPalette {
-    background: rgb(0x1d, 0x1e, 0x23),
+    background: rgb(0x15, 0x16, 0x1b),
     foreground: rgb(0xdc, 0xdc, 0xe0),
     cursor: rgb(0x00, 0xff, 0x9c),
     cursor_accent: rgb(0x15, 0x16, 0x1b),
