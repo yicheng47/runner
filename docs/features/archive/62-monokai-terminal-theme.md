@@ -1,6 +1,6 @@
 # Monokai terminal theme
 
-Tracking issue: [#406](https://github.com/yicheng47/runner/issues/406). Status: shipped in [v0.6.3](https://github.com/yicheng47/runner/releases/tag/v0.6.3) — PR #446 → `974a158`, 2026-08-24, by mission on `codex-crew`; the smoke test grew the scope to the Monokai Pro values, the Runner canvas lift, the Solarized Dark retirement, and the two select/popup fixes below. Respecced 2026-08-24 for the native GPUI line — the original spec targeted the Tauri app's `src/lib/settings.ts`, which is gone since the `v0.6.0` cutover.
+Tracking issue: [#406](https://github.com/yicheng47/runner/issues/406). Status: shipped in [v0.6.3](https://github.com/yicheng47/runner/releases/tag/v0.6.3) — PR #446 → `974a158`, 2026-08-24, by mission on `codex-crew`; the smoke test grew the scope to the Monokai Pro values, the Runner canvas lift, the Solarized Dark retirement, and the two select/popup fixes below. **The Runner canvas lift was rolled back before v0.6.3 shipped** (2026-08-25, direct on `main`): with the terminal at the panel color `#1D1E23` the chat's right rail and the terminal read as one surface, and lightening the rail instead looked wrong too, so `RUNNER.background` is `#15161B` again; the brighter selection `#3B3E49` stays. The first v0.6.3 build was published and withdrawn the same day; the re-release carries the rollback. Respecced 2026-08-24 for the native GPUI line — the original spec targeted the Tauri app's `src/lib/settings.ts`, which is gone since the `v0.6.0` cutover.
 
 ## Motivation
 
