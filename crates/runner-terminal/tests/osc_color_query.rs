@@ -60,7 +60,7 @@ fn osc11_reports_runner_background() {
     let (term, rx) = feed(b"\x1b]11;?\x07");
     let reply = color_reply(&term, &rx, 257);
     assert!(
-        reply.contains("1515/1616/1b1b"),
+        reply.contains("1d1d/1e1e/2323"),
         "OSC 11 should report the Runner background, got {reply:?}"
     );
 }

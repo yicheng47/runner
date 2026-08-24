@@ -266,7 +266,7 @@ impl SettingsState {
             vec![
                 SelectOption::new("runner", "Runner").swatch(0x00ff9c),
                 SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
-                SelectOption::new("solarized-dark", "Solarized Dark").swatch(0x268bd2),
+                SelectOption::new("monokai", "Monokai").swatch(0xff6188),
             ],
             SettingsSelection::TerminalTheme,
             cx,
@@ -1796,7 +1796,7 @@ fn terminal_theme_value(value: TerminalTheme) -> &'static str {
     match value {
         TerminalTheme::Runner => "runner",
         TerminalTheme::CatppuccinMocha => "catppuccin-mocha",
-        TerminalTheme::SolarizedDark => "solarized-dark",
+        TerminalTheme::Monokai => "monokai",
     }
 }
 
@@ -1804,7 +1804,7 @@ fn parse_terminal_theme(value: &str) -> Option<TerminalTheme> {
     match value {
         "runner" => Some(TerminalTheme::Runner),
         "catppuccin-mocha" => Some(TerminalTheme::CatppuccinMocha),
-        "solarized-dark" => Some(TerminalTheme::SolarizedDark),
+        "monokai" => Some(TerminalTheme::Monokai),
         _ => None,
     }
 }

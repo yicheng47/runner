@@ -28,10 +28,11 @@ pub const MISSION_RAIL_DEFAULT: f32 = 288.;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TerminalTheme {
-    #[default]
-    Runner,
     CatppuccinMocha,
-    SolarizedDark,
+    Monokai,
+    #[default]
+    #[serde(other)]
+    Runner,
 }
 
 impl TerminalTheme {
@@ -39,7 +40,7 @@ impl TerminalTheme {
         match self {
             Self::Runner => palette::RUNNER,
             Self::CatppuccinMocha => palette::CATPPUCCIN_MOCHA,
-            Self::SolarizedDark => palette::SOLARIZED_DARK,
+            Self::Monokai => palette::MONOKAI,
         }
     }
 }
@@ -438,6 +439,41 @@ mod tests {
         assert_eq!(value["automaticallyCheckForUpdates"], true);
         assert_eq!(value["defaultRuntime"], "");
         assert_eq!(value["keymapOverrides"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn monokai_terminal_theme_persists_and_loads() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("ui-settings.json");
+        AppSettings {
+            terminal_theme: TerminalTheme::Monokai,
+            ..AppSettings::default()
+        }
+        .save(&path)
+        .unwrap();
+
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(persisted["terminalTheme"], "monokai");
+        assert_eq!(
+            AppSettings::load(&path).unwrap().terminal_theme,
+            TerminalTheme::Monokai
+        );
+    }
+
+    #[test]
+    fn unknown_terminal_theme_loads_as_runner_without_resetting_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("ui-settings.json");
+        fs::write(
+            &path,
+            r#"{"terminalTheme":"unknown-theme","sidebarWidth":376}"#,
+        )
+        .unwrap();
+
+        let loaded = AppSettings::load(&path).unwrap();
+        assert_eq!(loaded.terminal_theme, TerminalTheme::Runner);
+        assert_eq!(loaded.sidebar_width, 376.);
     }
 
     #[test]
