@@ -478,6 +478,7 @@ impl Render for StyledSelect {
                 .map(|(index, option)| {
                     let active = option.value == self.value;
                     let highlighted = self.state.highlighted() == index;
+                    let stacked = self.detailed || option.description.is_some();
                     let foreground = if option.disabled {
                         theme::faint()
                     } else if option.danger {
@@ -494,8 +495,9 @@ impl Render for StyledSelect {
                         .px(rems(if self.detailed { 10. / 16. } else { 12. / 16. }))
                         .py_2()
                         .flex()
-                        .items_start()
+                        .items_center()
                         .gap_2()
+                        .when(stacked, |row| row.items_start())
                         .when(self.detailed, |row| row.rounded(rems(4. / 16.)))
                         .opacity(if option.disabled { 0.5 } else { 1. })
                         .when(active || highlighted, |row| {
@@ -516,11 +518,11 @@ impl Render for StyledSelect {
                         })
                         .children(option.swatch.map(|color| {
                             div()
-                                .mt(rems(2. / 16.))
                                 .size(rems(12. / 16.))
                                 .flex_none()
                                 .rounded(rems(2. / 16.))
                                 .bg(rgb(color))
+                                .when(stacked, |swatch| swatch.mt(rems(2. / 16.)))
                         }))
                         .child(
                             div()
