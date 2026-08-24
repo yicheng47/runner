@@ -373,6 +373,7 @@ impl Render for StyledSelect {
             .child(
                 div()
                     .id("styled-select-trigger")
+                    .debug_selector(|| "STYLED_SELECT_TRIGGER".into())
                     .track_focus(&self.focus_handle)
                     .w_full()
                     .h(rems(height / 16.))
@@ -633,6 +634,52 @@ pub fn runtime_select_options(catalog: &[RuntimeCatalogEntry]) -> Vec<SelectOpti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{Modifiers, TestAppContext, VisualTestContext};
+
+    struct SelectHost {
+        select: Entity<StyledSelect>,
+    }
+
+    impl Render for SelectHost {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().p_4().child(self.select.clone())
+        }
+    }
+
+    #[test]
+    fn clicking_the_trigger_of_an_open_select_closes_it() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|_, cx| {
+            let focus_handle = cx.focus_handle();
+            let select = cx.new(|cx| {
+                StyledSelect::new(
+                    "select",
+                    focus_handle,
+                    "a",
+                    options(),
+                    Rc::new(|_, _, _| {}),
+                    cx,
+                )
+            });
+            SelectHost { select }
+        });
+        cx.run_until_parked();
+        let select = window
+            .read_with(&cx, |host, _| host.select.clone())
+            .unwrap();
+        let mut window = VisualTestContext::from_window(window.into(), &cx);
+        let trigger = window
+            .debug_bounds("STYLED_SELECT_TRIGGER")
+            .expect("trigger bounds");
+
+        window.simulate_click(trigger.center(), Modifiers::default());
+        window.run_until_parked();
+        assert!(select.read_with(&window, |select, _| select.state.is_open()));
+
+        window.simulate_click(trigger.center(), Modifiers::default());
+        window.run_until_parked();
+        assert!(!select.read_with(&window, |select, _| select.state.is_open()));
+    }
 
     fn options() -> Vec<SelectOption> {
         vec![
