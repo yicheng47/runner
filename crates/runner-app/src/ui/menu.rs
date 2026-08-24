@@ -229,6 +229,7 @@ pub fn popup_layer(
                     .child(
                         div()
                             .w(width)
+                            .occlude()
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
@@ -760,7 +761,49 @@ fn context_menu_layer(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
+    use gpui::{Modifiers, TestAppContext, VisualTestContext};
+
+    struct PopupOcclusionHost {
+        underlying_clicked: Rc<Cell<bool>>,
+        popup_clicked: Rc<Cell<bool>>,
+    }
+
+    impl Render for PopupOcclusionHost {
+        fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let underlying_clicked = Rc::clone(&self.underlying_clicked);
+            let popup_clicked = Rc::clone(&self.popup_clicked);
+            let anchor = Bounds {
+                origin: point(px(20.), px(20.)),
+                size: gpui::size(px(120.), px(30.)),
+            };
+            div()
+                .size_full()
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(20.))
+                        .top(px(54.))
+                        .w(px(120.))
+                        .h(px(80.))
+                        .capture_any_mouse_down(move |_, _, _| underlying_clicked.set(true)),
+                )
+                .child(popup_layer(
+                    anchor,
+                    window,
+                    px(120.),
+                    div()
+                        .id("popup-occlusion-row")
+                        .h(px(80.))
+                        .on_click(move |_, _, _| popup_clicked.set(true))
+                        .debug_selector(|| "POPUP_OCCLUSION_MENU".into())
+                        .into_any_element(),
+                    Rc::new(|_, _| {}),
+                ))
+        }
+    }
 
     fn items() -> Vec<MenuItem> {
         vec![
@@ -768,6 +811,30 @@ mod tests {
             MenuItem::new("Unavailable").disabled(true),
             MenuItem::new("Delete").destructive(true),
         ]
+    }
+
+    #[test]
+    fn popup_panel_blocks_capture_handlers_underneath_it() {
+        let mut cx = TestAppContext::single();
+        let underlying_clicked = Rc::new(Cell::new(false));
+        let popup_clicked = Rc::new(Cell::new(false));
+        let underlying_clicked_for_host = Rc::clone(&underlying_clicked);
+        let popup_clicked_for_host = Rc::clone(&popup_clicked);
+        let window = cx.add_window(move |_, _| PopupOcclusionHost {
+            underlying_clicked: underlying_clicked_for_host,
+            popup_clicked: popup_clicked_for_host,
+        });
+        cx.run_until_parked();
+        let mut window = VisualTestContext::from_window(window.into(), &cx);
+        let menu = window
+            .debug_bounds("POPUP_OCCLUSION_MENU")
+            .expect("popup menu bounds");
+
+        window.simulate_click(menu.center(), Modifiers::default());
+        window.run_until_parked();
+
+        assert!(popup_clicked.get());
+        assert!(!underlying_clicked.get());
     }
 
     #[test]
