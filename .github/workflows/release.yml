@@ -74,7 +74,7 @@ jobs:
       - name: Install Rust toolchain
         run: |
           rustup show active-toolchain
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          rustup target add aarch64-apple-darwin
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -131,7 +131,7 @@ jobs:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
           appcast_dir=$(mktemp -d "$RUNNER_TEMP/runner-release-appcast.XXXXXX")
-          dmg="target/release/Runner-${{ steps.release.outputs.version }}-universal.dmg"
+          dmg="target/release/Runner-${{ steps.release.outputs.version }}-arm64.dmg"
           release_url="https://github.com/yicheng47/runner/releases/tag/${{ steps.release.outputs.release_tag }}"
           cp "$dmg" "$appcast_dir/"
           printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$SPARKLE_TOOLS_DIR/generate_appcast" \
@@ -141,6 +141,7 @@ jobs:
             --link "$release_url" \
             --maximum-versions 10 \
             "$appcast_dir"
+          grep -Fq '<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>' "$appcast_dir/appcast.xml"
           echo "DMG=$dmg" >> "$GITHUB_ENV"
           echo "APPCAST=$appcast_dir/appcast.xml" >> "$GITHUB_ENV"
 

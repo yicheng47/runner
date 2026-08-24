@@ -36,7 +36,7 @@ opt-level = 3
 [profile.dev.package.taffy]
 opt-level = 3
 
-# Release binaries ship inside a universal DMG, so every byte counts twice.
+# Release binaries use whole-program optimization to keep the ARM64 package small.
 # Not stripped: the panic hook logs backtraces, and stripping would turn their
 # frames into bare addresses.
 [profile.release]

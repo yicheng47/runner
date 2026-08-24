@@ -43,7 +43,7 @@ jobs:
       - name: Install Rust toolchain
         run: |
           rustup show active-toolchain
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          rustup target add aarch64-apple-darwin
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -104,7 +104,7 @@ jobs:
           if gh release view nightly >/dev/null 2>&1; then
             gh release download nightly --pattern '*.dmg' --dir "$appcast_dir"
           fi
-          new_dmg="target/release/Runner-Nightly-${{ steps.build.outputs.short_version }}-universal.dmg"
+          new_dmg="target/release/Runner-Nightly-${{ steps.build.outputs.short_version }}-arm64.dmg"
           cp "$new_dmg" "$appcast_dir/"
           for dmg in "$appcast_dir"/*.dmg; do
             name=${dmg##*/}
