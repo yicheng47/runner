@@ -1,6 +1,6 @@
 [package]
 name = "runner-backend"
-version = "0.6.2"
+version = "0.6.3"
 description = "UI-agnostic application core for Runner: command bodies, session manager, event bus, router, and MCP server"
 edition.workspace = true
 authors.workspace = true
