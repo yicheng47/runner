@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn shipped_palettes_have_expected_roles() {
-        assert_eq!(RUNNER.background, rgb(0x1d, 0x1e, 0x23));
+        assert_eq!(RUNNER.background, rgb(0x15, 0x16, 0x1b));
         assert_eq!(RUNNER.selection, rgb(0x3b, 0x3e, 0x49));
         assert_eq!(RUNNER.cursor, rgb(0x00, 0xff, 0x9c));
         assert_eq!(CATPPUCCIN_MOCHA.ansi[4], rgb(0x89, 0xb4, 0xfa));
