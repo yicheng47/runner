@@ -52,6 +52,71 @@ enum ArchiveErrorTarget {
     Chat,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ArchiveSessionOperation {
+    ArchiveChat { running: bool },
+    CloseTerminal,
+}
+
+fn archive_session_plan(
+    session_ids: &[String],
+    sessions: &[DirectSessionEntry],
+    active: Option<&str>,
+) -> Vec<(String, ArchiveSessionOperation)> {
+    let mut plan = session_ids
+        .iter()
+        .map(|id| {
+            let entry = sessions.iter().find(|session| session.session_id == *id);
+            let operation = if entry.is_some_and(|session| session.agent_runtime == "shell") {
+                ArchiveSessionOperation::CloseTerminal
+            } else {
+                ArchiveSessionOperation::ArchiveChat {
+                    running: entry.is_some_and(|session| session.status == SessionStatus::Running),
+                }
+            };
+            (id.clone(), operation)
+        })
+        .collect::<Vec<_>>();
+    plan.sort_by_key(|(id, operation)| {
+        (
+            *operation == ArchiveSessionOperation::CloseTerminal,
+            active == Some(id.as_str()),
+        )
+    });
+    plan
+}
+
+pub(crate) fn archive_all_confirmation_body(
+    session_ids: &[String],
+    sessions: &[DirectSessionEntry],
+) -> Option<String> {
+    let (chats, terminals) = archive_session_plan(session_ids, sessions, None)
+        .into_iter()
+        .fold(
+            (0, 0),
+            |(chats, terminals), (_, operation)| match operation {
+                ArchiveSessionOperation::ArchiveChat { .. } => (chats + 1, terminals),
+                ArchiveSessionOperation::CloseTerminal => (chats, terminals + 1),
+            },
+        );
+    if terminals == 0 {
+        return None;
+    }
+    let terminal_action = format!(
+        "permanently closes {terminals} terminal{}",
+        if terminals == 1 { "" } else { "s" }
+    );
+    if chats == 0 {
+        return Some(format!(
+            "This {terminal_action}. Closed terminals cannot be restored."
+        ));
+    }
+    Some(format!(
+        "This archives {chats} chat{} and {terminal_action}. Archived chats can be restored from Settings → Archived; closed terminals cannot.",
+        if chats == 1 { "" } else { "s" },
+    ))
+}
+
 #[derive(Clone)]
 enum SidebarRow {
     Tab {
@@ -184,10 +249,19 @@ enum SidebarMenuAction {
     NewChat(Option<String>),
     NewTerminal(Option<String>),
     NewMission(Option<String>),
-    TogglePin { node_id: String, pinned: bool },
+    TogglePin {
+        node_id: String,
+        pinned: bool,
+    },
     Rename(SidebarRenameTarget),
-    ArchiveTab(Vec<String>),
-    CloseTerminalTab { tab_id: String, session_id: String },
+    ArchiveTab {
+        tab_id: String,
+        session_ids: Vec<String>,
+    },
+    CloseTerminalTab {
+        tab_id: String,
+        session_id: String,
+    },
     ArchiveMission(String),
     DeleteProject(String),
 }
@@ -549,15 +623,23 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.archive_all_sessions(session_ids, ArchiveAllSource::Chat, window, cx);
+    }
+
+    pub(crate) fn archive_all_sessions(
+        &mut self,
+        session_ids: Vec<String>,
+        source: ArchiveAllSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let active = self.active_focused_session_id();
+        let error_target = match source {
+            ArchiveAllSource::Chat => ArchiveErrorTarget::Chat,
+            ArchiveAllSource::Sidebar => ArchiveErrorTarget::App,
+        };
         self.sidebar.update(cx, |sidebar, sidebar_cx| {
-            sidebar.archive_sessions(
-                session_ids,
-                ArchiveErrorTarget::Chat,
-                active,
-                window,
-                sidebar_cx,
-            )
+            sidebar.archive_sessions(session_ids, error_target, active, window, sidebar_cx)
         });
     }
 
@@ -1099,6 +1181,10 @@ impl Sidebar {
                     .map(|member| member.session_id.clone())
             })
             .flatten();
+        let tab_session_ids = members
+            .iter()
+            .map(|member| member.session_id.clone())
+            .collect::<Vec<_>>();
         let entries = tab_menu_entries(
             &node.id,
             node.pinned_position.is_some(),
@@ -1109,6 +1195,7 @@ impl Sidebar {
                 .filter(|member| member.agent_runtime != "shell")
                 .map(|member| member.session_id)
                 .collect(),
+            tab_session_ids,
             terminal_session_id,
         );
         self.open_sidebar_context_menu(position, 160., entries, window, cx);
@@ -1242,8 +1329,23 @@ impl Sidebar {
                 };
                 self.begin_sidebar_rename(target, value, placeholder, window, cx);
             }
-            SidebarMenuAction::ArchiveTab(session_ids) => {
-                self.archive_sidebar_tab(session_ids, window, cx)
+            SidebarMenuAction::ArchiveTab {
+                tab_id,
+                session_ids,
+            } => {
+                if let Some(shell) = self.shell.upgrade() {
+                    window.defer(cx, move |window, cx| {
+                        shell.update(cx, |shell, shell_cx| {
+                            shell.request_archive_all(
+                                Some(&tab_id),
+                                session_ids,
+                                ArchiveAllSource::Sidebar,
+                                window,
+                                shell_cx,
+                            )
+                        });
+                    });
+                }
             }
             SidebarMenuAction::CloseTerminalTab { tab_id, session_id } => {
                 if let Some(shell) = self.shell.upgrade() {
@@ -1291,36 +1393,14 @@ impl Sidebar {
         }
     }
 
-    pub(crate) fn archive_sidebar_tab(
-        &mut self,
-        session_ids: Vec<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let active = self
-            .shell
-            .upgrade()
-            .and_then(|shell| shell.read(cx).active_focused_session_id());
-        self.archive_sessions(session_ids, ArchiveErrorTarget::App, active, window, cx);
-    }
-
     fn archive_sessions(
         &mut self,
-        mut session_ids: Vec<String>,
+        session_ids: Vec<String>,
         error_target: ArchiveErrorTarget,
         active: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        session_ids.retain(|id| {
-            !self
-                .app_store
-                .read(cx)
-                .sessions
-                .iter()
-                .find(|session| session.session_id == *id)
-                .is_some_and(|session| session.agent_runtime == "shell")
-        });
         if session_ids.is_empty() {
             return;
         }
@@ -1330,44 +1410,40 @@ impl Sidebar {
         {
             return;
         }
-        session_ids.sort_by_key(|id| active.as_deref() == Some(id.as_str()));
-        let entries = session_ids
-            .iter()
-            .map(|id| {
-                (
-                    id.clone(),
-                    self.app_store
-                        .read(cx)
-                        .sessions
-                        .iter()
-                        .find(|session| session.session_id == *id)
-                        .is_some_and(|session| session.status == SessionStatus::Running),
-                )
-            })
-            .collect::<Vec<_>>();
-        self.archiving_sessions.extend(session_ids.iter().cloned());
+        let plan = archive_session_plan(
+            &session_ids,
+            &self.app_store.read(cx).sessions,
+            active.as_deref(),
+        );
+        let pending_ids = plan.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+        self.archiving_sessions.extend(pending_ids.iter().cloned());
         self.schedule_shell_notify(cx);
         cx.notify();
 
         let core = self.core(cx).clone();
-        let pending_ids = session_ids;
         let archive_task = cx.background_spawn(async move {
-            let mut archived = Vec::new();
-            for (session_id, running) in entries {
-                if running {
-                    let _ = runner_backend::ops::session::session_kill(&core, &session_id);
+            let mut removed = Vec::new();
+            for (session_id, operation) in plan {
+                let result = match operation {
+                    ArchiveSessionOperation::CloseTerminal => {
+                        runner_backend::ops::session::session_close(&core, &session_id)
+                    }
+                    ArchiveSessionOperation::ArchiveChat { running } => {
+                        if running {
+                            let _ = runner_backend::ops::session::session_kill(&core, &session_id);
+                        }
+                        runner_backend::ops::session::session_archive(&core, &session_id)
+                    }
+                };
+                if let Err(error) = result {
+                    return (removed, Some(error.to_string()));
                 }
-                if let Err(error) =
-                    runner_backend::ops::session::session_archive(&core, &session_id)
-                {
-                    return (archived, Some(error.to_string()));
-                }
-                archived.push(session_id);
+                removed.push(session_id);
             }
-            (archived, None)
+            (removed, None)
         });
         cx.spawn_in(window, async move |weak, cx| {
-            let (archived, archive_error) = archive_task.await;
+            let (removed, archive_error) = archive_task.await;
             let _ = weak.update_in(cx, |this, window, cx| {
                 for session_id in &pending_ids {
                     this.archiving_sessions.remove(session_id);
@@ -1377,7 +1453,7 @@ impl Sidebar {
                     window.defer(cx, move |window, cx| {
                         shell.update(cx, |shell, shell_cx| {
                             shell.finish_sidebar_archive(
-                                archived,
+                                removed,
                                 archive_error,
                                 error_target,
                                 window,
@@ -1395,14 +1471,16 @@ impl Sidebar {
 impl NativeRoot {
     fn finish_sidebar_archive(
         &mut self,
-        archived: Vec<String>,
+        removed: Vec<String>,
         archive_error: Option<String>,
         error_target: ArchiveErrorTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        for session_id in archived {
+        for session_id in removed {
             self.attached.remove(&session_id);
+            self.session_exit_codes.remove(&session_id);
+            self.chat_transitions.remove(&session_id);
         }
         let refresh_result = (|| -> Result<()> {
             self.refresh_sessions(cx);
@@ -3277,7 +3355,8 @@ fn tab_menu_entries(
     pinned: bool,
     original: String,
     multi_pane: bool,
-    session_ids: Vec<String>,
+    chat_session_ids: Vec<String>,
+    tab_session_ids: Vec<String>,
     terminal_session_id: Option<String>,
 ) -> Vec<(UiMenuItem, SidebarMenuAction)> {
     let mut entries = vec![
@@ -3300,12 +3379,19 @@ fn tab_menu_entries(
             }),
         ),
     ];
-    if !session_ids.is_empty() {
+    if !chat_session_ids.is_empty() {
         entries.push((
             UiMenuItem::new(if multi_pane { "Archive all" } else { "Archive" })
                 .icon("archive.svg")
                 .destructive(true),
-            SidebarMenuAction::ArchiveTab(session_ids),
+            SidebarMenuAction::ArchiveTab {
+                tab_id: node_id.to_owned(),
+                session_ids: if multi_pane {
+                    tab_session_ids
+                } else {
+                    chat_session_ids
+                },
+            },
         ));
     } else if let Some(session_id) = terminal_session_id {
         entries.push((
@@ -3879,6 +3965,27 @@ mod tests {
     };
     use runner_backend::events::AppEvent;
 
+    fn direct_session(id: &str, runtime: &str, status: SessionStatus) -> DirectSessionEntry {
+        DirectSessionEntry {
+            session_id: id.into(),
+            project_id: None,
+            runner_id: None,
+            handle: None,
+            agent_runtime: runtime.into(),
+            agent_command: runtime.into(),
+            display_name: runtime.into(),
+            status,
+            title: None,
+            cwd: None,
+            started_at: None,
+            stopped_at: None,
+            resumable: false,
+            agent_session_key: None,
+            pinned: false,
+            archived_at: None,
+        }
+    }
+
     struct SidebarScrollLayoutTest {
         scroll: ScrollHandle,
         block_wrapper_scroll: ScrollHandle,
@@ -4069,6 +4176,7 @@ mod tests {
             "My tab".into(),
             false,
             vec!["session-1".into(), "session-2".into()],
+            vec!["session-1".into(), "session-2".into()],
             None,
         );
         assert_eq!(menu_labels(&tab_entries), ["Pin", "Rename tab", "Archive"]);
@@ -4087,7 +4195,10 @@ mod tests {
                     node_id: "tab-1".into(),
                     original: "My tab".into(),
                 }),
-                SidebarMenuAction::ArchiveTab(vec!["session-1".into(), "session-2".into(),]),
+                SidebarMenuAction::ArchiveTab {
+                    tab_id: "tab-1".into(),
+                    session_ids: vec!["session-1".into(), "session-2".into()],
+                },
             ]
         );
 
@@ -4097,6 +4208,7 @@ mod tests {
             "My tab".into(),
             true,
             vec!["session-1".into(), "session-2".into()],
+            vec!["session-1".into(), "session-2".into()],
             None,
         );
         assert_eq!(
@@ -4105,12 +4217,30 @@ mod tests {
         );
         assert!(multi_pane_entries[2].0.destructive);
 
+        let mixed_entries = tab_menu_entries(
+            "tab-1",
+            false,
+            "Mixed tab".into(),
+            true,
+            vec!["chat-1".into()],
+            vec!["chat-1".into(), "shell-1".into()],
+            None,
+        );
+        assert_eq!(
+            mixed_entries[2].1,
+            SidebarMenuAction::ArchiveTab {
+                tab_id: "tab-1".into(),
+                session_ids: vec!["chat-1".into(), "shell-1".into()],
+            }
+        );
+
         let terminal_only_entries = tab_menu_entries(
             "tab-1",
             false,
             "Terminal".into(),
             false,
             Vec::new(),
+            vec!["shell-1".into()],
             Some("shell-1".into()),
         );
         assert_eq!(
@@ -4150,6 +4280,59 @@ mod tests {
                 }),
                 SidebarMenuAction::ArchiveMission("mission-1".into()),
             ]
+        );
+    }
+
+    #[test]
+    fn mixed_tab_archive_plan_and_confirmation_copy_are_explicit() {
+        let sessions = [
+            direct_session("shell-1", "shell", SessionStatus::Running),
+            direct_session("shell-2", "shell", SessionStatus::Stopped),
+            direct_session("active-chat", "codex", SessionStatus::Running),
+            direct_session("idle-chat", "claude", SessionStatus::Stopped),
+        ];
+        let session_ids = vec!["shell-1".into(), "active-chat".into(), "idle-chat".into()];
+
+        assert_eq!(
+            archive_session_plan(&session_ids, &sessions, Some("active-chat")),
+            [
+                (
+                    "idle-chat".into(),
+                    ArchiveSessionOperation::ArchiveChat { running: false },
+                ),
+                (
+                    "active-chat".into(),
+                    ArchiveSessionOperation::ArchiveChat { running: true },
+                ),
+                ("shell-1".into(), ArchiveSessionOperation::CloseTerminal,),
+            ]
+        );
+        assert_eq!(
+            archive_all_confirmation_body(
+                &["active-chat".into(), "shell-1".into()],
+                &sessions,
+            ),
+            Some("This archives 1 chat and permanently closes 1 terminal. Archived chats can be restored from Settings → Archived; closed terminals cannot.".into()),
+        );
+        assert_eq!(
+            archive_all_confirmation_body(
+                &[
+                    "active-chat".into(),
+                    "idle-chat".into(),
+                    "shell-1".into(),
+                    "shell-2".into(),
+                ],
+                &sessions,
+            ),
+            Some("This archives 2 chats and permanently closes 2 terminals. Archived chats can be restored from Settings → Archived; closed terminals cannot.".into()),
+        );
+        assert_eq!(
+            archive_all_confirmation_body(&["shell-1".into()], &sessions),
+            Some("This permanently closes 1 terminal. Closed terminals cannot be restored.".into()),
+        );
+        assert_eq!(
+            archive_all_confirmation_body(&["active-chat".into(), "idle-chat".into()], &sessions,),
+            None,
         );
     }
 

@@ -156,6 +156,7 @@ enum ChatMenuAction {
     RenameSession { session_id: String, current: String },
     RenameTab { tab_id: String, current: String },
     Archive(Vec<String>),
+    ArchiveAll(Vec<String>),
 }
 
 #[derive(Clone)]
@@ -240,14 +241,29 @@ struct PaneRename {
     input: Entity<runner_app::ui::TextField>,
 }
 
-struct TerminalCloseConfirm {
-    target: TerminalCloseTarget,
-    session_id: String,
+enum TerminalCloseTarget {
+    Pane {
+        pane_id: String,
+        session_id: String,
+    },
+    Tab {
+        session_id: String,
+    },
+    ArchiveAll {
+        session_ids: Vec<String>,
+        source: ArchiveAllSource,
+        confirmation_body: String,
+    },
 }
 
-enum TerminalCloseTarget {
-    Pane(String),
-    Tab,
+struct TerminalCloseConfirm {
+    target: TerminalCloseTarget,
+}
+
+#[derive(Clone, Copy)]
+enum ArchiveAllSource {
+    Chat,
+    Sidebar,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

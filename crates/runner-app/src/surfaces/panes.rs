@@ -454,7 +454,7 @@ impl NativeRoot {
                         .destructive(true)
                         .disabled(lifecycle_busy),
                 );
-                actions.push(ChatMenuAction::Archive(chat_session_ids));
+                actions.push(ChatMenuAction::ArchiveAll(session_ids));
             }
         } else if let Some(session_id) = session_ids.first() {
             if let Some(entry) = self.session_entry(session_id, cx) {
@@ -854,22 +854,40 @@ impl NativeRoot {
     }
 
     pub(crate) fn render_terminal_close_confirm(&self, cx: &mut Context<Self>) -> AnyElement {
-        let body = if self
+        let (title, body, confirm_label, pending_label) = match self
             .terminal_close_confirm
             .as_ref()
-            .is_some_and(|confirm| matches!(&confirm.target, TerminalCloseTarget::Tab))
+            .map(|confirm| &confirm.target)
         {
-            "A foreground process is still running. Closing this terminal will stop it."
-        } else {
-            "A foreground process is still running. Closing this pane will stop it."
+            Some(TerminalCloseTarget::Tab { .. }) => (
+                "Close terminal?",
+                "A foreground process is still running. Closing this terminal will stop it."
+                    .to_owned(),
+                "Close terminal",
+                "Closing…",
+            ),
+            Some(TerminalCloseTarget::ArchiveAll {
+                confirmation_body, ..
+            }) => (
+                "Archive all?",
+                confirmation_body.clone(),
+                "Archive all",
+                "Archiving…",
+            ),
+            _ => (
+                "Close terminal?",
+                "A foreground process is still running. Closing this pane will stop it.".to_owned(),
+                "Close terminal",
+                "Closing…",
+            ),
         };
         let root = cx.entity();
         let confirm_root = root.clone();
         ConfirmDialog::new(
-            "Close terminal?",
+            title,
             body,
-            "Close terminal",
-            "Closing…",
+            confirm_label,
+            pending_label,
             false,
             Rc::new(move |window, cx| {
                 confirm_root.update(cx, |this, cx| this.confirm_terminal_close(window, cx));

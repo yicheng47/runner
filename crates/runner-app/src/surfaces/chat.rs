@@ -440,6 +440,9 @@ impl NativeRoot {
             ChatMenuAction::Archive(session_ids) => {
                 self.archive_chat_sessions(session_ids, window, cx)
             }
+            ChatMenuAction::ArchiveAll(session_ids) => {
+                self.request_archive_all(None, session_ids, ArchiveAllSource::Chat, window, cx)
+            }
         }
     }
 
@@ -1401,8 +1404,10 @@ impl NativeRoot {
         ) {
             Ok(true) => {
                 self.terminal_close_confirm = Some(TerminalCloseConfirm {
-                    target: TerminalCloseTarget::Pane(pane_id.to_owned()),
-                    session_id: session_id.to_owned(),
+                    target: TerminalCloseTarget::Pane {
+                        pane_id: pane_id.to_owned(),
+                        session_id: session_id.to_owned(),
+                    },
                 });
                 cx.notify();
             }
@@ -1432,8 +1437,9 @@ impl NativeRoot {
                     self.chat_error = Some(error.to_string());
                 }
                 self.terminal_close_confirm = Some(TerminalCloseConfirm {
-                    target: TerminalCloseTarget::Tab,
-                    session_id: session_id.to_owned(),
+                    target: TerminalCloseTarget::Tab {
+                        session_id: session_id.to_owned(),
+                    },
                 });
                 cx.notify();
             }
@@ -1493,15 +1499,55 @@ impl NativeRoot {
         cx.notify();
     }
 
+    pub(crate) fn request_archive_all(
+        &mut self,
+        tab_id: Option<&str>,
+        session_ids: Vec<String>,
+        source: ArchiveAllSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(confirmation_body) = super::sidebar::archive_all_confirmation_body(
+            &session_ids,
+            &self.app_store.read(cx).sessions,
+        ) else {
+            self.archive_all_sessions(session_ids, source, window, cx);
+            return;
+        };
+        if let Some(tab_id) = tab_id {
+            self.tabs.activate(tab_id);
+            self.set_route(AppRoute::Chat, cx);
+            if let Err(error) = self.ensure_active_tab_attached(window, cx) {
+                self.chat_error = Some(error.to_string());
+            }
+        }
+        self.terminal_close_confirm = Some(TerminalCloseConfirm {
+            target: TerminalCloseTarget::ArchiveAll {
+                session_ids,
+                source,
+                confirmation_body,
+            },
+        });
+        cx.notify();
+    }
+
     pub(crate) fn confirm_terminal_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(confirm) = self.terminal_close_confirm.take() else {
             return;
         };
         match confirm.target {
-            TerminalCloseTarget::Pane(pane_id) => {
-                self.close_terminal_pane(&pane_id, &confirm.session_id, window, cx)
+            TerminalCloseTarget::Pane {
+                pane_id,
+                session_id,
+            } => self.close_terminal_pane(&pane_id, &session_id, window, cx),
+            TerminalCloseTarget::Tab { session_id } => {
+                self.close_terminal_tab(&session_id, window, cx)
             }
-            TerminalCloseTarget::Tab => self.close_terminal_tab(&confirm.session_id, window, cx),
+            TerminalCloseTarget::ArchiveAll {
+                session_ids,
+                source,
+                ..
+            } => self.archive_all_sessions(session_ids, source, window, cx),
         }
     }
 

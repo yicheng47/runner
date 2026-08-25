@@ -8,7 +8,7 @@ Run against the development database with `make run`. One Runner instance, no cr
 
 ## Already covered — do not re-verify by hand
 
-`make verify` is green on this branch: 563 backend tests, 255 native-app tests, workspace clippy (all targets), and fmt. Those pin argv and environment composition, the `session_close` transaction, completion suppression, the launch-claim gating and chat/shell stagger split, cwd fallback selection and notice byte order, the identity-line branches, menu contents, rename decisions, pane-close behaviour, and the palette entry. There is no value in re-checking any of that manually — the list below is deliberately only the parts a test cannot see.
+`make verify` is green on this branch: 563 backend tests, 256 native-app tests, workspace clippy (all targets), and fmt. Those pin argv and environment composition, the `session_close` transaction, completion suppression, the launch-claim gating and chat/shell stagger split, cwd fallback selection and notice byte order, the identity-line branches, menu contents, mixed-tab archive planning and counted confirmation copy, rename decisions, pane-close behaviour, and the palette entry. There is no value in re-checking any of that manually — the list below is deliberately only the parts a test cannot see.
 
 ## Setup
 
@@ -53,6 +53,7 @@ Run against the development database with `make run`. One Runner instance, no cr
 - [ ] Escape reverts. Clearing the field and pressing Enter restores the default (`zsh`).
 - [ ] `×` on a **chat** pane: the split re-flows, and the chat is still in the sidebar and reopenable.
 - [ ] Archive a chat pane: the pane stays in place, empty, offering **New chat** / **New terminal**.
+- [ ] In a mixed chat/terminal tab, **Archive all** always asks once, including at a bare prompt. The dialog gives the live chat/terminal counts and says archived chats are restorable while closed terminals are not; confirming archives the chat, permanently closes the terminal, and removes the whole tab.
 - [ ] `×` on a terminal sitting at a bare prompt → closes silently.
 - [ ] Run `sleep 60`, then `×` → a **confirmation dialog**. Cancel keeps the pane; confirm kills the process and drops it.
 - [ ] Right-click a single-pane terminal tab → **Close terminal** occupies the destructive slot where a chat has Archive. At a bare prompt it closes immediately; with `sleep 60` running it shows the same foreground-process confirmation before removing the tab.
