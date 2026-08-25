@@ -1374,6 +1374,15 @@ pub(crate) fn runtime_direct_runner(
         .or_else(|| registry.map(|r| r.command))
         .ok_or_else(|| Error::msg(format!("unknown runtime: {runtime}")))?;
     let now = Utc::now();
+    let args = if runtime == "shell" {
+        crate::shell_path::shell_login_args(command)
+    } else {
+        router::runtime::apply_permission_mode(
+            runtime,
+            &[],
+            crate::ops::runner::default_permission_mode(),
+        )
+    };
     Ok(Runner {
         id: format!("runtime:{runtime}"),
         handle: runtime.to_string(),
@@ -1382,11 +1391,7 @@ pub(crate) fn runtime_direct_runner(
             .unwrap_or_else(|| runtime.to_string()),
         runtime: runtime.to_string(),
         command: command.to_string(),
-        args: router::runtime::apply_permission_mode(
-            runtime,
-            &[],
-            crate::ops::runner::default_permission_mode(),
-        ),
+        args,
         working_dir: None,
         system_prompt: None,
         env: HashMap::new(),

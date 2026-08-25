@@ -19,6 +19,12 @@ use super::{de_err, insert_sql, qualified_select_list, select_list, ser_err};
 
 const RESUME_ON_LAUNCH_PENDING: i64 = 1;
 const RESUME_ON_LAUNCH_CLAIMED: i64 = 2;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeOnLaunchClaim {
+    pub session_id: String,
+    pub shell: bool,
+}
 const LIVE_AT_QUIT_PREDICATE: &str = "
     status = 'running'
     AND archived_at IS NULL
@@ -156,6 +162,21 @@ pub fn get_row(conn: &Connection, id: &str) -> rusqlite::Result<Option<SessionRo
         from_row::<SessionRowDb>(row).map_err(de_err)
     })
     .optional()
+}
+
+/// Runtime identity stored directly on an overridden/runtime-only session,
+/// falling back to its runner template for ordinary chat rows.
+pub fn effective_runtime(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT COALESCE(s.agent_runtime, r.runtime)
+           FROM sessions s
+           LEFT JOIN runners r ON r.id = s.runner_id
+          WHERE s.id = ?1",
+        rusqlite::params![id],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .map(Option::flatten)
 }
 
 pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
@@ -370,9 +391,12 @@ pub fn mark_running_for_resume_on_launch(conn: &mut Connection) -> rusqlite::Res
 }
 
 /// Atomically claim the next quit-time stamp. Startup cleanup must first
-/// requeue any claim interrupted by a prior process. Rows that can no longer
-/// resume are cleared and skipped so they cannot become stale launch work.
-pub fn take_resume_on_launch(conn: &mut Connection) -> rusqlite::Result<Option<String>> {
+/// requeue any claim interrupted by a prior process. Shells need no prior
+/// conversation key because relaunching one always starts a fresh process;
+/// chat rows that can no longer resume are cleared and skipped.
+pub fn take_resume_on_launch(
+    conn: &mut Connection,
+) -> rusqlite::Result<Option<ResumeOnLaunchClaim>> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let next = loop {
         let row = tx
@@ -381,7 +405,12 @@ pub fn take_resume_on_launch(conn: &mut Connection) -> rusqlite::Result<Option<S
                         status IN ('stopped', 'crashed'),
                         agent_session_key IS NOT NULL
                             AND TRIM(agent_session_key) != '',
-                        archived_at IS NULL
+                        archived_at IS NULL,
+                        COALESCE(
+                            agent_runtime,
+                            (SELECT runtime FROM runners WHERE runners.id = sessions.runner_id),
+                            ''
+                        ) = 'shell'
                    FROM sessions
                   WHERE resume_on_launch = ?1
                   ORDER BY started_at, id
@@ -393,14 +422,15 @@ pub fn take_resume_on_launch(conn: &mut Connection) -> rusqlite::Result<Option<S
                         row.get::<_, bool>(1)?,
                         row.get::<_, bool>(2)?,
                         row.get::<_, bool>(3)?,
+                        row.get::<_, bool>(4)?,
                     ))
                 },
             )
             .optional()?;
-        let Some((id, stopped, has_key, active)) = row else {
+        let Some((id, stopped, has_key, active, shell)) = row else {
             break None;
         };
-        if stopped && has_key && active {
+        if stopped && (has_key || shell) && active {
             tx.execute(
                 "UPDATE sessions
                     SET resume_on_launch = ?2
@@ -408,7 +438,10 @@ pub fn take_resume_on_launch(conn: &mut Connection) -> rusqlite::Result<Option<S
                     AND resume_on_launch = ?3",
                 rusqlite::params![id, RESUME_ON_LAUNCH_CLAIMED, RESUME_ON_LAUNCH_PENDING],
             )?;
-            break Some(id);
+            break Some(ResumeOnLaunchClaim {
+                session_id: id,
+                shell,
+            });
         }
         tx.execute(
             "UPDATE sessions SET resume_on_launch = 0 WHERE id = ?1",
@@ -435,6 +468,22 @@ pub fn finish_resume_on_launch(conn: &Connection, id: &str) -> rusqlite::Result<
 pub fn clear_resume_on_launch(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE sessions SET resume_on_launch = 0 WHERE resume_on_launch != 0",
+        [],
+    )
+}
+
+/// Clear launch-resume work gated by the user's chat setting while leaving
+/// shell rows queued so terminal panes always come back live.
+pub fn clear_chat_resume_on_launch(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE sessions
+            SET resume_on_launch = 0
+          WHERE resume_on_launch != 0
+            AND COALESCE(
+                    agent_runtime,
+                    (SELECT runtime FROM runners WHERE runners.id = sessions.runner_id),
+                    ''
+                ) != 'shell'",
         [],
     )
 }
@@ -672,7 +721,7 @@ mod tests {
         conn.execute(
             "INSERT INTO runners (
                 id, handle, display_name, runtime, command, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, 'shell', 'sh', ?4, ?4)",
+             ) VALUES (?1, ?2, ?3, 'alpha', 'alpha', ?4, ?4)",
             rusqlite::params![
                 id,
                 handle,
@@ -681,6 +730,12 @@ mod tests {
             ],
         )
         .unwrap();
+    }
+
+    fn take_resume_id(conn: &mut Connection) -> Option<String> {
+        take_resume_on_launch(conn)
+            .unwrap()
+            .map(|claim| claim.session_id)
     }
 
     fn full_row() -> SessionRowDb {
@@ -948,10 +1003,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            take_resume_on_launch(&mut conn).unwrap().as_deref(),
-            Some("d-resumable")
-        );
+        assert_eq!(take_resume_id(&mut conn).as_deref(), Some("d-resumable"));
         let claim: i64 = conn
             .query_row(
                 "SELECT resume_on_launch FROM sessions WHERE id = 'd-resumable'",
@@ -961,7 +1013,7 @@ mod tests {
             .unwrap();
         assert_eq!(claim, RESUME_ON_LAUNCH_CLAIMED);
         assert!(finish_resume_on_launch(&conn, "d-resumable").unwrap());
-        assert_eq!(take_resume_on_launch(&mut conn).unwrap(), None);
+        assert_eq!(take_resume_id(&mut conn), None);
         let marked: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sessions WHERE resume_on_launch != 0",
@@ -977,7 +1029,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(clear_resume_on_launch(&conn).unwrap(), 2);
-        assert_eq!(take_resume_on_launch(&mut conn).unwrap(), None);
+        assert_eq!(take_resume_id(&mut conn), None);
+    }
+
+    #[test]
+    fn disabled_chat_resume_keeps_keyless_shell_claim_available() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        seed_runner(&conn, "r1", "alpha");
+        let now = "2026-07-25T00:00:00Z";
+        conn.execute(
+            "INSERT INTO sessions
+                (id, runner_id, status, started_at, agent_session_key,
+                 agent_runtime, agent_command, resume_on_launch)
+             VALUES
+                ('chat', 'r1', 'stopped', ?1, 'key', 'alpha', NULL, 1),
+                ('shell', NULL, 'stopped', ?1, NULL, 'shell', '/bin/zsh', 1)",
+            [now],
+        )
+        .unwrap();
+
+        assert_eq!(clear_chat_resume_on_launch(&conn).unwrap(), 1);
+        assert_eq!(
+            take_resume_on_launch(&mut conn).unwrap(),
+            Some(ResumeOnLaunchClaim {
+                session_id: "shell".into(),
+                shell: true,
+            })
+        );
+        assert!(finish_resume_on_launch(&conn, "shell").unwrap());
+        assert_eq!(take_resume_id(&mut conn), None);
     }
 
     #[test]
@@ -994,18 +1075,12 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            take_resume_on_launch(&mut conn).unwrap().as_deref(),
-            Some("starting")
-        );
+        assert_eq!(take_resume_id(&mut conn).as_deref(), Some("starting"));
         assert!(mark_running_for_resume_on_launch(&mut conn)
             .unwrap()
             .is_empty());
         assert!(!finish_resume_on_launch(&conn, "starting").unwrap());
-        assert_eq!(
-            take_resume_on_launch(&mut conn).unwrap().as_deref(),
-            Some("starting")
-        );
+        assert_eq!(take_resume_id(&mut conn).as_deref(), Some("starting"));
     }
 
     #[test]
@@ -1022,10 +1097,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            take_resume_on_launch(&mut conn).unwrap().as_deref(),
-            Some("resumed")
-        );
+        assert_eq!(take_resume_id(&mut conn).as_deref(), Some("resumed"));
         conn.execute(
             "UPDATE sessions SET status = 'running' WHERE id = 'resumed'",
             [],
@@ -1037,10 +1109,7 @@ mod tests {
             ["resumed"]
         );
         assert_eq!(cleanup_stale_running(&conn, Utc::now()).unwrap(), 1);
-        assert_eq!(
-            take_resume_on_launch(&mut conn).unwrap().as_deref(),
-            Some("resumed")
-        );
+        assert_eq!(take_resume_id(&mut conn).as_deref(), Some("resumed"));
     }
 
     #[test]
@@ -1058,10 +1127,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(cleanup_stale_running(&conn, Utc::now()).unwrap(), 0);
-        assert_eq!(
-            take_resume_on_launch(&mut conn).unwrap().as_deref(),
-            Some("claimed")
-        );
+        assert_eq!(take_resume_id(&mut conn).as_deref(), Some("claimed"));
     }
 
     #[test]
@@ -1110,7 +1176,7 @@ mod tests {
         assert_eq!(row.session.runner_id, "r1");
         assert_eq!(row.session.status, SessionStatus::Running);
         assert_eq!(row.handle, "coder", "slot handle wins over template handle");
-        assert_eq!(row.runtime, "shell");
+        assert_eq!(row.runtime, "alpha");
         assert!(row.lead);
         assert_eq!(row.agent_session_key.as_deref(), Some("key-1"));
     }
@@ -1267,7 +1333,7 @@ mod tests {
         assert_eq!(ids, vec!["d2", "d1"], "running first, archived hidden");
         let d1 = listed.iter().find(|d| d.row.id == "d1").unwrap();
         assert_eq!(d1.runner_handle.as_deref(), Some("alpha"));
-        assert_eq!(d1.runner_runtime.as_deref(), Some("shell"));
+        assert_eq!(d1.runner_runtime.as_deref(), Some("alpha"));
         let d2 = listed.iter().find(|d| d.row.id == "d2").unwrap();
         assert_eq!(d2.runner_handle, None);
         assert_eq!(d2.row.agent_runtime.as_deref(), Some("codex"));

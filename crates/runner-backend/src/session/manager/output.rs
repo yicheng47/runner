@@ -261,6 +261,19 @@ impl SessionManager {
         self.write_stdin(session_id, &rt_session, bytes)
     }
 
+    /// Return whether a live PTY has handed control to a foreground process
+    /// other than its spawned shell. Unknown or stopped sessions are safe to
+    /// close without a foreground-process confirmation.
+    pub fn has_foreground_process(&self, session_id: &str) -> Result<bool> {
+        let Ok(rt_session) = self.live_runtime_session(session_id) else {
+            return Ok(false);
+        };
+        Ok(self
+            .runtime
+            .has_foreground_process(&rt_session)?
+            .unwrap_or(false))
+    }
+
     pub fn inject_reserved(&self, session_id: &str, token: u64, bytes: &[u8]) -> Result<bool> {
         let Some(session) = self.session_state(session_id) else {
             return Ok(false);
@@ -708,7 +721,7 @@ impl SessionManager {
         self.prune_empty_session_state(session_id);
     }
 
-    fn ingest_output_chunk(
+    pub(super) fn ingest_output_chunk(
         &self,
         session_id: &str,
         mission_id: Option<&str>,

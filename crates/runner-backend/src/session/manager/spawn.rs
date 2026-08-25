@@ -27,6 +27,13 @@ impl SessionManager {
         effort: Option<&str>,
         pool: &DbPool,
     ) -> Result<Runner> {
+        if runtime == "shell" {
+            let command = recorded_command
+                .map(str::trim)
+                .filter(|command| !command.is_empty())
+                .ok_or_else(|| Error::msg("shell session missing agent_command"))?;
+            return runtime_direct_runner("shell", Some(command), None, None);
+        }
         let definition = router::runtime::runtime_definition(runtime)
             .ok_or_else(|| Error::msg(format!("unknown runtime: {runtime}")))?;
         let recorded = recorded_command
@@ -865,7 +872,9 @@ impl SessionManager {
         // Direct chats are off-bus: RUNNER_HANDLE is the runner template's
         // own handle, no slot/mission env vars.
         let mut direct_env: BTreeMap<String, String> = BTreeMap::new();
-        direct_env.insert("RUNNER_HANDLE".into(), runner.handle.clone());
+        if runner.runtime != "shell" {
+            direct_env.insert("RUNNER_HANDLE".into(), runner.handle.clone());
+        }
 
         let initial_size = Some(cols.zip(rows).unwrap_or(DEFAULT_PTY_SIZE));
 
@@ -1277,20 +1286,50 @@ impl SessionManager {
             (_, k) => k,
         };
         let plan = router::runtime::resume_plan(&runner.runtime, effective_prior_key);
-        if !allow_fresh_fallback && !plan.resuming {
+        if !allow_fresh_fallback && !plan.resuming && runner.runtime != "shell" {
             return Err(Error::msg(format!(
                 "session {session_id} cannot resume its prior conversation; resume it manually to start fresh"
             )));
         }
 
-        // Working directory: same precedence as `spawn_direct` — the
-        // row's stored cwd wins; otherwise fall back to the runner's
-        // current `working_dir`.
-        let resolved_cwd: Option<String> = snap.cwd.clone().or_else(|| {
-            snap.runner_id
-                .as_ref()
-                .and_then(|_| runner.working_dir.clone())
-        });
+        // Direct chats keep `spawn_direct`'s hard error for an explicitly
+        // missing cwd; mission slots retain their existing resume behavior.
+        // Shells are safe to relaunch at a fallback directory because a human
+        // remains at the prompt, so resolve that fallback before portable-pty
+        // can silently substitute HOME.
+        let (resolved_cwd, shell_cwd_notice) = if runner.runtime == "shell" {
+            let project_cwd = match snap.project_id.as_deref() {
+                Some(project_id) => {
+                    let conn = pool.get()?;
+                    crate::repo::project::get(&conn, project_id)?.map(|project| project.cwd)
+                }
+                None => None,
+            };
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            let (cwd, notice) = resolve_shell_resume_cwd(
+                snap.cwd.as_deref(),
+                project_cwd.as_deref(),
+                home.as_deref(),
+            )?;
+            (Some(cwd), notice)
+        } else {
+            let cwd = snap.cwd.clone().or_else(|| {
+                snap.runner_id
+                    .as_ref()
+                    .and_then(|_| runner.working_dir.clone())
+            });
+            if mission_ctx.is_none() {
+                if let Some(missing_cwd) = cwd
+                    .as_deref()
+                    .filter(|cwd| !cwd.is_empty() && !Path::new(cwd).is_dir())
+                {
+                    return Err(Error::msg(format!(
+                        "working directory does not exist: {missing_cwd}"
+                    )));
+                }
+            }
+            (cwd, None)
+        };
 
         // Refresh the per-slot runner shim before composing PATH —
         // mission cwd may have been edited since the last spawn.
@@ -1332,7 +1371,7 @@ impl SessionManager {
             if let Some(wd) = ctx.mission_cwd.as_deref() {
                 env_extra.insert("MISSION_CWD".into(), wd.to_string());
             }
-        } else {
+        } else if runner.runtime != "shell" {
             env_extra.insert("RUNNER_HANDLE".into(), runner.handle.clone());
         }
 
@@ -1483,6 +1522,14 @@ impl SessionManager {
             &pool,
             events.as_ref(),
         );
+        if let Some(notice) = shell_cwd_notice.as_deref() {
+            self.ingest_output_chunk(
+                session_id,
+                snap.mission_id.as_deref(),
+                notice,
+                events.as_ref(),
+            );
+        }
         if snap.mission_id.is_none() {
             self.publish_direct_activity(
                 session_id,
@@ -1595,5 +1642,52 @@ impl SessionManager {
             .ok()
             .flatten()
             .and_then(|status| status.pid)
+    }
+}
+
+fn resolve_shell_resume_cwd(
+    recorded_cwd: Option<&str>,
+    project_cwd: Option<&str>,
+    home: Option<&Path>,
+) -> Result<(String, Option<Vec<u8>>)> {
+    let recorded_path = recorded_cwd
+        .map(str::trim)
+        .filter(|cwd| !cwd.is_empty())
+        .map(Path::new);
+    let resolved = recorded_path
+        .and_then(|cwd| cwd.ancestors().find(|candidate| candidate.is_dir()))
+        .or_else(|| {
+            project_cwd
+                .map(str::trim)
+                .filter(|cwd| !cwd.is_empty())
+                .map(Path::new)
+                .filter(|cwd| cwd.is_dir())
+        })
+        .or_else(|| home.filter(|home| home.is_dir()))
+        .ok_or_else(|| Error::msg("shell session has no existing working directory fallback"))?;
+    let resolved = resolved.to_string_lossy().into_owned();
+    let notice = recorded_path
+        .filter(|recorded| *recorded != Path::new(&resolved))
+        .map(|recorded| {
+            let recorded = display_terminal_path(recorded, home);
+            let resolved = display_terminal_path(Path::new(&resolved), home);
+            format!(
+                "\x1b[33mrunner: {recorded} no longer exists\r\n        opened {resolved} instead\x1b[0m\r\n"
+            )
+            .into_bytes()
+        });
+    Ok((resolved, notice))
+}
+
+fn display_terminal_path(path: &Path, home: Option<&Path>) -> String {
+    let Some(home) = home else {
+        return path.to_string_lossy().into_owned();
+    };
+    if path == home {
+        return "~".into();
+    }
+    match path.strip_prefix(home) {
+        Ok(relative) => format!("~/{}", relative.to_string_lossy()),
+        Err(_) => path.to_string_lossy().into_owned(),
     }
 }

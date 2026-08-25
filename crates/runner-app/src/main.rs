@@ -32,7 +32,7 @@ use runner_app::pane_layout::{
 };
 use runner_app::terminal_ime::TerminalInput;
 use runner_app::ui::{
-    Button, ButtonSize, ContextMenu, CopyValueButton, DuplicateSubjectKind,
+    Button, ButtonSize, ConfirmDialog, ContextMenu, CopyValueButton, DuplicateSubjectKind,
     DuplicateSubjectOverlay, IconButton, IconButtonSize, MenuItem as UiMenuItem, PopoverMenu,
     Scrollbar, SessionControl, SessionControlKind, Tooltip, WorkspaceHeader,
     WORKSPACE_HEADER_HEIGHT,
@@ -84,6 +84,9 @@ actions!(
         SelectTab8,
         SelectTab9,
         ShowAll,
+        SplitPaneDown,
+        SplitPaneRight,
+        StopFocusedSession,
         ToggleFullscreen,
         ToggleSidebar,
         ZoomIn,
@@ -106,7 +109,7 @@ use surfaces::{
 
 const INITIAL_COLS: u16 = 100;
 const INITIAL_ROWS: u16 = 30;
-const PANE_HEADER_HEIGHT: f32 = 34.;
+const PANE_HEADER_HEIGHT: f32 = 26.;
 const WINDOW_STATE_SAVE_DELAY_MS: u64 = 300;
 
 struct AttachedChat {
@@ -153,6 +156,7 @@ enum ChatMenuAction {
     RenameSession { session_id: String, current: String },
     RenameTab { tab_id: String, current: String },
     Archive(Vec<String>),
+    ArchiveAll(Vec<String>),
 }
 
 #[derive(Clone)]
@@ -194,7 +198,24 @@ fn close_window_or_pane(this: &mut NativeRoot, window: &mut Window, cx: &mut Con
                 .active()
                 .map(|layout| layout.focused_pane_id.clone())
             {
-                this.close_pane(&pane_id, window, cx);
+                let terminal_session_id = this.tabs.active().and_then(|layout| {
+                    layout
+                        .root
+                        .leaves()
+                        .into_iter()
+                        .find(|leaf| leaf.id == pane_id)
+                        .and_then(|leaf| leaf.session_id.as_deref())
+                        .filter(|session_id| {
+                            this.session_entry(session_id, cx)
+                                .is_some_and(|entry| entry.agent_runtime == "shell")
+                        })
+                        .map(str::to_owned)
+                });
+                if let Some(session_id) = terminal_session_id {
+                    this.request_close_terminal_pane(&pane_id, &session_id, window, cx);
+                } else {
+                    this.close_pane(&pane_id, window, cx);
+                }
             }
         }
         CloseTarget::Window => {
@@ -212,6 +233,37 @@ struct ChatRenameModal {
     submit_focus: FocusHandle,
     submitting: bool,
     error: Option<String>,
+}
+
+struct PaneRename {
+    session_id: String,
+    original: String,
+    input: Entity<runner_app::ui::TextField>,
+}
+
+enum TerminalCloseTarget {
+    Pane {
+        pane_id: String,
+        session_id: String,
+    },
+    Tab {
+        session_id: String,
+    },
+    ArchiveAll {
+        session_ids: Vec<String>,
+        source: ArchiveAllSource,
+        confirmation_body: String,
+    },
+}
+
+struct TerminalCloseConfirm {
+    target: TerminalCloseTarget,
+}
+
+#[derive(Clone, Copy)]
+enum ArchiveAllSource {
+    Chat,
+    Sidebar,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -300,6 +352,9 @@ struct NativeRoot {
     chat_action_menu: Entity<PopoverMenu>,
     chat_menu_actions: Vec<ChatMenuAction>,
     pane_action_menus: HashMap<String, Entity<PopoverMenu>>,
+    pane_rename: Option<PaneRename>,
+    _pane_rename_focus_subscription: Option<Subscription>,
+    terminal_close_confirm: Option<TerminalCloseConfirm>,
     chat_rename_modal: Option<ChatRenameModal>,
     last_focused_runner_id: Option<String>,
     layout_picker_open: bool,
@@ -594,6 +649,9 @@ impl NativeRoot {
             chat_action_menu,
             chat_menu_actions: Vec::new(),
             pane_action_menus: HashMap::new(),
+            pane_rename: None,
+            _pane_rename_focus_subscription: None,
+            terminal_close_confirm: None,
             chat_rename_modal: None,
             last_focused_runner_id,
             layout_picker_open: false,

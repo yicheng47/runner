@@ -26,6 +26,6 @@ pub(crate) use mission_workspace::MissionWorkspace;
 pub(crate) use panes::{adjacent_pane_index, pane_fractions};
 pub(crate) use runners::RunnerSurfaces;
 pub(crate) use settings_page::{SettingsPane, SettingsState};
-pub(crate) use sidebar::{session_label, ProjectModal, Sidebar};
+pub(crate) use sidebar::{default_session_label, session_label, ProjectModal, Sidebar};
 pub(crate) use start_chat::StartChatModal;
 pub(crate) use start_mission::StartMissionModalState;

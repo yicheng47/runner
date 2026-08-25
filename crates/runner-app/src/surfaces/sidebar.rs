@@ -5,13 +5,12 @@ use std::path::Path;
 use super::*;
 use crate::surfaces::sidebar_logic::{
     activation_target_for_index, attention_rollups, complete_unpinned_scope_order,
-    container_drop_target, indicator_visible, list_drop_target, mission_attention_state,
-    numbered_sidebar_rows, ordered_pinned_node_ids_after_drop,
+    container_drop_target, direct_tab_attention_state, indicator_visible, list_drop_target,
+    mission_attention_state, numbered_sidebar_rows, ordered_pinned_node_ids_after_drop,
     ordered_root_node_ids_after_project_drop, ordered_visible_node_ids_after_drop,
-    rollup_attention_state, should_show_shortcut_pills, tab_attention_state, take_drag_state,
-    visible_sidebar_walk, AttentionState, DropKind, DropTarget, NumberedSidebarRow,
-    SidebarActivationTarget, SidebarShortcutProject, SidebarShortcutRow,
-    SHORTCUT_PILL_REVEAL_DELAY,
+    rollup_attention_state, should_show_shortcut_pills, take_drag_state, visible_sidebar_walk,
+    AttentionState, DropKind, DropTarget, NumberedSidebarRow, SidebarActivationTarget,
+    SidebarShortcutProject, SidebarShortcutRow, SHORTCUT_PILL_REVEAL_DELAY,
 };
 use crate::*;
 use gpui::{
@@ -51,6 +50,71 @@ fn sidebar_scroll_container(
 enum ArchiveErrorTarget {
     App,
     Chat,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ArchiveSessionOperation {
+    ArchiveChat { running: bool },
+    CloseTerminal,
+}
+
+fn archive_session_plan(
+    session_ids: &[String],
+    sessions: &[DirectSessionEntry],
+    active: Option<&str>,
+) -> Vec<(String, ArchiveSessionOperation)> {
+    let mut plan = session_ids
+        .iter()
+        .map(|id| {
+            let entry = sessions.iter().find(|session| session.session_id == *id);
+            let operation = if entry.is_some_and(|session| session.agent_runtime == "shell") {
+                ArchiveSessionOperation::CloseTerminal
+            } else {
+                ArchiveSessionOperation::ArchiveChat {
+                    running: entry.is_some_and(|session| session.status == SessionStatus::Running),
+                }
+            };
+            (id.clone(), operation)
+        })
+        .collect::<Vec<_>>();
+    plan.sort_by_key(|(id, operation)| {
+        (
+            *operation == ArchiveSessionOperation::CloseTerminal,
+            active == Some(id.as_str()),
+        )
+    });
+    plan
+}
+
+pub(crate) fn archive_all_confirmation_body(
+    session_ids: &[String],
+    sessions: &[DirectSessionEntry],
+) -> Option<String> {
+    let (chats, terminals) = archive_session_plan(session_ids, sessions, None)
+        .into_iter()
+        .fold(
+            (0, 0),
+            |(chats, terminals), (_, operation)| match operation {
+                ArchiveSessionOperation::ArchiveChat { .. } => (chats + 1, terminals),
+                ArchiveSessionOperation::CloseTerminal => (chats, terminals + 1),
+            },
+        );
+    if terminals == 0 {
+        return None;
+    }
+    let terminal_action = format!(
+        "permanently closes {terminals} terminal{}",
+        if terminals == 1 { "" } else { "s" }
+    );
+    if chats == 0 {
+        return Some(format!(
+            "This {terminal_action}. Closed terminals cannot be restored."
+        ));
+    }
+    Some(format!(
+        "This archives {chats} chat{} and {terminal_action}. Archived chats can be restored from Settings → Archived; closed terminals cannot.",
+        if chats == 1 { "" } else { "s" },
+    ))
 }
 
 #[derive(Clone)]
@@ -183,10 +247,21 @@ impl Render for SidebarNodeDrag {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum SidebarMenuAction {
     NewChat(Option<String>),
+    NewTerminal(Option<String>),
     NewMission(Option<String>),
-    TogglePin { node_id: String, pinned: bool },
+    TogglePin {
+        node_id: String,
+        pinned: bool,
+    },
     Rename(SidebarRenameTarget),
-    ArchiveTab(Vec<String>),
+    ArchiveTab {
+        tab_id: String,
+        session_ids: Vec<String>,
+    },
+    CloseTerminalTab {
+        tab_id: String,
+        session_id: String,
+    },
     ArchiveMission(String),
     DeleteProject(String),
 }
@@ -259,16 +334,21 @@ impl Sidebar {
         let root = cx.entity();
         let create_menu = cx.new(move |menu_cx| {
             let action_root = root.clone();
+            let entries = sidebar_create_menu_entries();
+            let actions = entries
+                .iter()
+                .map(|(_, action)| action.clone())
+                .collect::<Vec<_>>();
             PopoverMenu::new(
                 "sidebar-create",
                 menu_cx.focus_handle(),
-                vec![
-                    UiMenuItem::new("New chat").icon("message-square-plus.svg"),
-                    UiMenuItem::new("New mission").icon("flag.svg"),
-                ],
+                entries.into_iter().map(|(item, _)| item).collect(),
                 Rc::new(move |index, window, cx| {
+                    let Some(action) = actions.get(index).cloned() else {
+                        return;
+                    };
                     action_root.update(cx, |this, cx| {
-                        this.handle_sidebar_create_action(index, window, cx);
+                        this.handle_sidebar_menu_action(action, window, cx)
                     });
                 }),
                 menu_cx,
@@ -543,15 +623,23 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.archive_all_sessions(session_ids, ArchiveAllSource::Chat, window, cx);
+    }
+
+    pub(crate) fn archive_all_sessions(
+        &mut self,
+        session_ids: Vec<String>,
+        source: ArchiveAllSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let active = self.active_focused_session_id();
+        let error_target = match source {
+            ArchiveAllSource::Chat => ArchiveErrorTarget::Chat,
+            ArchiveAllSource::Sidebar => ArchiveErrorTarget::App,
+        };
         self.sidebar.update(cx, |sidebar, sidebar_cx| {
-            sidebar.archive_sessions(
-                session_ids,
-                ArchiveErrorTarget::Chat,
-                active,
-                window,
-                sidebar_cx,
-            )
+            sidebar.archive_sessions(session_ids, error_target, active, window, sidebar_cx)
         });
     }
 
@@ -692,25 +780,26 @@ impl Sidebar {
                     if members.is_empty() {
                         return None;
                     }
-                    let working = members.iter().any(|member| {
-                        self.archiving_sessions.contains(&member.session_id)
-                            || (member.status == SessionStatus::Running
-                                && self
-                                    .app_store
-                                    .read(cx)
-                                    .session_activity
-                                    .get(&member.session_id)
-                                    == Some(&SessionActivityState::Busy))
-                    });
+                    let attention = direct_tab_attention_state(
+                        members.iter().map(|member| {
+                            let running_busy = self.archiving_sessions.contains(&member.session_id)
+                                || (member.status == SessionStatus::Running
+                                    && self
+                                        .app_store
+                                        .read(cx)
+                                        .session_activity
+                                        .get(&member.session_id)
+                                        == Some(&SessionActivityState::Busy));
+                            (member.agent_runtime.as_str(), running_busy)
+                        }),
+                        node.last_completed_at.as_deref(),
+                        node.last_viewed_at.as_deref(),
+                    );
                     Some(SidebarRow::Tab {
                         node: node.clone(),
                         layout: (*layout).clone(),
                         members,
-                        attention: tab_attention_state(
-                            working,
-                            node.last_completed_at.as_deref(),
-                            node.last_viewed_at.as_deref(),
-                        ),
+                        attention,
                     })
                 }
                 NodeType::Mission => {
@@ -941,29 +1030,6 @@ impl Sidebar {
         cx.notify();
     }
 
-    pub(crate) fn handle_sidebar_create_action(
-        &mut self,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match index {
-            0 | 1 => {
-                let Some(shell) = self.shell.upgrade() else {
-                    return;
-                };
-                window.defer(cx, move |window, cx| {
-                    shell.update(cx, |shell, shell_cx| match index {
-                        0 => shell.open_sidebar_chat_modal(None, window, shell_cx),
-                        1 => shell.open_start_mission_modal(None, None, window, shell_cx),
-                        _ => unreachable!(),
-                    });
-                });
-            }
-            _ => unreachable!("sidebar create menu index"),
-        }
-    }
-
     fn begin_sidebar_rename(
         &mut self,
         target: SidebarRenameTarget,
@@ -1107,6 +1173,18 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         let multi_pane = layout.root.leaves().len() > 1;
+        let terminal_session_id = (!multi_pane)
+            .then(|| {
+                members
+                    .iter()
+                    .find(|member| member.agent_runtime == "shell")
+                    .map(|member| member.session_id.clone())
+            })
+            .flatten();
+        let tab_session_ids = members
+            .iter()
+            .map(|member| member.session_id.clone())
+            .collect::<Vec<_>>();
         let entries = tab_menu_entries(
             &node.id,
             node.pinned_position.is_some(),
@@ -1114,8 +1192,11 @@ impl Sidebar {
             multi_pane,
             members
                 .into_iter()
+                .filter(|member| member.agent_runtime != "shell")
                 .map(|member| member.session_id)
                 .collect(),
+            tab_session_ids,
+            terminal_session_id,
         );
         self.open_sidebar_context_menu(position, 160., entries, window, cx);
     }
@@ -1189,6 +1270,24 @@ impl Sidebar {
                     });
                 }
             }
+            SidebarMenuAction::NewTerminal(project_id) => {
+                self.set_active_project(project_id.clone(), cx);
+                if let Some(project_id) = project_id.as_deref() {
+                    let project_id = project_id.to_owned();
+                    self.update_app_settings(cx, true, move |settings| {
+                        settings.sidebar_projects_open = true;
+                        settings.sidebar_collapsed_projects.remove(&project_id);
+                        true
+                    });
+                }
+                if let Some(shell) = self.shell.upgrade() {
+                    window.defer(cx, move |window, cx| {
+                        shell.update(cx, |shell, shell_cx| {
+                            shell.new_terminal_tab(project_id, window, shell_cx)
+                        });
+                    });
+                }
+            }
             SidebarMenuAction::NewMission(project_id) => {
                 self.set_active_project(project_id.clone(), cx);
                 if let Some(shell) = self.shell.upgrade() {
@@ -1230,8 +1329,32 @@ impl Sidebar {
                 };
                 self.begin_sidebar_rename(target, value, placeholder, window, cx);
             }
-            SidebarMenuAction::ArchiveTab(session_ids) => {
-                self.archive_sidebar_tab(session_ids, window, cx)
+            SidebarMenuAction::ArchiveTab {
+                tab_id,
+                session_ids,
+            } => {
+                if let Some(shell) = self.shell.upgrade() {
+                    window.defer(cx, move |window, cx| {
+                        shell.update(cx, |shell, shell_cx| {
+                            shell.request_archive_all(
+                                Some(&tab_id),
+                                session_ids,
+                                ArchiveAllSource::Sidebar,
+                                window,
+                                shell_cx,
+                            )
+                        });
+                    });
+                }
+            }
+            SidebarMenuAction::CloseTerminalTab { tab_id, session_id } => {
+                if let Some(shell) = self.shell.upgrade() {
+                    window.defer(cx, move |window, cx| {
+                        shell.update(cx, |shell, shell_cx| {
+                            shell.request_close_terminal_tab(&tab_id, &session_id, window, shell_cx)
+                        });
+                    });
+                }
             }
             SidebarMenuAction::ArchiveMission(mission_id) => {
                 if !self.archiving_missions.insert(mission_id.clone()) {
@@ -1270,71 +1393,57 @@ impl Sidebar {
         }
     }
 
-    pub(crate) fn archive_sidebar_tab(
-        &mut self,
-        session_ids: Vec<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let active = self
-            .shell
-            .upgrade()
-            .and_then(|shell| shell.read(cx).active_focused_session_id());
-        self.archive_sessions(session_ids, ArchiveErrorTarget::App, active, window, cx);
-    }
-
     fn archive_sessions(
         &mut self,
-        mut session_ids: Vec<String>,
+        session_ids: Vec<String>,
         error_target: ArchiveErrorTarget,
         active: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if session_ids.is_empty() {
+            return;
+        }
         if session_ids
             .iter()
             .any(|id| self.archiving_sessions.contains(id))
         {
             return;
         }
-        session_ids.sort_by_key(|id| active.as_deref() == Some(id.as_str()));
-        let entries = session_ids
-            .iter()
-            .map(|id| {
-                (
-                    id.clone(),
-                    self.app_store
-                        .read(cx)
-                        .sessions
-                        .iter()
-                        .find(|session| session.session_id == *id)
-                        .is_some_and(|session| session.status == SessionStatus::Running),
-                )
-            })
-            .collect::<Vec<_>>();
-        self.archiving_sessions.extend(session_ids.iter().cloned());
+        let plan = archive_session_plan(
+            &session_ids,
+            &self.app_store.read(cx).sessions,
+            active.as_deref(),
+        );
+        let pending_ids = plan.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+        self.archiving_sessions.extend(pending_ids.iter().cloned());
         self.schedule_shell_notify(cx);
         cx.notify();
 
         let core = self.core(cx).clone();
-        let pending_ids = session_ids;
         let archive_task = cx.background_spawn(async move {
-            let mut archived = Vec::new();
-            for (session_id, running) in entries {
-                if running {
-                    let _ = runner_backend::ops::session::session_kill(&core, &session_id);
+            let mut removed = Vec::new();
+            for (session_id, operation) in plan {
+                let result = match operation {
+                    ArchiveSessionOperation::CloseTerminal => {
+                        runner_backend::ops::session::session_close(&core, &session_id)
+                    }
+                    ArchiveSessionOperation::ArchiveChat { running } => {
+                        if running {
+                            let _ = runner_backend::ops::session::session_kill(&core, &session_id);
+                        }
+                        runner_backend::ops::session::session_archive(&core, &session_id)
+                    }
+                };
+                if let Err(error) = result {
+                    return (removed, Some(error.to_string()));
                 }
-                if let Err(error) =
-                    runner_backend::ops::session::session_archive(&core, &session_id)
-                {
-                    return (archived, Some(error.to_string()));
-                }
-                archived.push(session_id);
+                removed.push(session_id);
             }
-            (archived, None)
+            (removed, None)
         });
         cx.spawn_in(window, async move |weak, cx| {
-            let (archived, archive_error) = archive_task.await;
+            let (removed, archive_error) = archive_task.await;
             let _ = weak.update_in(cx, |this, window, cx| {
                 for session_id in &pending_ids {
                     this.archiving_sessions.remove(session_id);
@@ -1344,7 +1453,7 @@ impl Sidebar {
                     window.defer(cx, move |window, cx| {
                         shell.update(cx, |shell, shell_cx| {
                             shell.finish_sidebar_archive(
-                                archived,
+                                removed,
                                 archive_error,
                                 error_target,
                                 window,
@@ -1362,14 +1471,16 @@ impl Sidebar {
 impl NativeRoot {
     fn finish_sidebar_archive(
         &mut self,
-        archived: Vec<String>,
+        removed: Vec<String>,
         archive_error: Option<String>,
         error_target: ArchiveErrorTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        for session_id in archived {
+        for session_id in removed {
             self.attached.remove(&session_id);
+            self.session_exit_codes.remove(&session_id);
+            self.chat_transitions.remove(&session_id);
         }
         let refresh_result = (|| -> Result<()> {
             self.refresh_sessions(cx);
@@ -2358,13 +2469,10 @@ impl Sidebar {
         let target = sidebar_tab_target(&layout, &members);
         let click_tab = node.id.clone();
         let click_session = target.session_id.clone();
-        let leaf_icon = if pane_count >= 3 {
-            "columns-3.svg"
-        } else if pane_count > 1 {
-            "columns-2.svg"
-        } else {
-            "message-square.svg"
-        };
+        let single_runtime = (pane_count == 1)
+            .then(|| members.first().map(|member| member.agent_runtime.as_str()))
+            .flatten();
+        let leaf_icon = sidebar_tab_icon(pane_count, single_runtime);
         let menu_node = node.clone();
         let menu_layout = layout.clone();
         let menu_members = members.clone();
@@ -3247,9 +3355,11 @@ fn tab_menu_entries(
     pinned: bool,
     original: String,
     multi_pane: bool,
-    session_ids: Vec<String>,
+    chat_session_ids: Vec<String>,
+    tab_session_ids: Vec<String>,
+    terminal_session_id: Option<String>,
 ) -> Vec<(UiMenuItem, SidebarMenuAction)> {
-    vec![
+    let mut entries = vec![
         (
             UiMenuItem::new(if pinned { "Unpin" } else { "Pin" }).icon(if pinned {
                 "pin-off.svg"
@@ -3268,13 +3378,45 @@ fn tab_menu_entries(
                 original,
             }),
         ),
-        (
+    ];
+    if !chat_session_ids.is_empty() {
+        entries.push((
             UiMenuItem::new(if multi_pane { "Archive all" } else { "Archive" })
                 .icon("archive.svg")
                 .destructive(true),
-            SidebarMenuAction::ArchiveTab(session_ids),
-        ),
-    ]
+            SidebarMenuAction::ArchiveTab {
+                tab_id: node_id.to_owned(),
+                session_ids: if multi_pane {
+                    tab_session_ids
+                } else {
+                    chat_session_ids
+                },
+            },
+        ));
+    } else if let Some(session_id) = terminal_session_id {
+        entries.push((
+            UiMenuItem::new("Close terminal")
+                .icon("close.svg")
+                .destructive(true),
+            SidebarMenuAction::CloseTerminalTab {
+                tab_id: node_id.to_owned(),
+                session_id,
+            },
+        ));
+    }
+    entries
+}
+
+fn sidebar_tab_icon(pane_count: usize, single_runtime: Option<&str>) -> &'static str {
+    if pane_count >= 3 {
+        "columns-3.svg"
+    } else if pane_count > 1 {
+        "columns-2.svg"
+    } else if single_runtime == Some("shell") {
+        "square-terminal.svg"
+    } else {
+        "message-square.svg"
+    }
 }
 
 fn mission_menu_entries(
@@ -3318,8 +3460,29 @@ fn project_create_menu_entries(project_id: &str) -> Vec<(UiMenuItem, SidebarMenu
             SidebarMenuAction::NewChat(Some(project_id.to_owned())),
         ),
         (
+            UiMenuItem::new("New terminal").icon("square-terminal.svg"),
+            SidebarMenuAction::NewTerminal(Some(project_id.to_owned())),
+        ),
+        (
             UiMenuItem::new("New mission").icon("flag.svg"),
             SidebarMenuAction::NewMission(Some(project_id.to_owned())),
+        ),
+    ]
+}
+
+fn sidebar_create_menu_entries() -> Vec<(UiMenuItem, SidebarMenuAction)> {
+    vec![
+        (
+            UiMenuItem::new("New chat").icon("message-square-plus.svg"),
+            SidebarMenuAction::NewChat(None),
+        ),
+        (
+            UiMenuItem::new("New terminal").icon("square-terminal.svg"),
+            SidebarMenuAction::NewTerminal(None),
+        ),
+        (
+            UiMenuItem::new("New mission").icon("flag.svg"),
+            SidebarMenuAction::NewMission(None),
         ),
     ]
 }
@@ -3760,13 +3923,38 @@ pub(crate) fn direct_chat_display_status(
 }
 
 pub(crate) fn session_label(entry: &DirectSessionEntry) -> String {
-    entry.title.clone().unwrap_or_else(|| {
-        entry
-            .handle
-            .as_ref()
-            .map(|handle| format!("@{handle}"))
-            .unwrap_or_else(|| entry.display_name.clone())
-    })
+    entry
+        .title
+        .clone()
+        .unwrap_or_else(|| default_session_label(entry))
+}
+
+pub(crate) fn default_session_label(entry: &DirectSessionEntry) -> String {
+    default_session_label_parts(
+        &entry.agent_runtime,
+        &entry.agent_command,
+        entry.handle.as_deref(),
+        &entry.display_name,
+    )
+}
+
+fn default_session_label_parts(
+    runtime: &str,
+    command: &str,
+    handle: Option<&str>,
+    display_name: &str,
+) -> String {
+    if runtime == "shell" {
+        return std::path::Path::new(command)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("shell")
+            .to_owned();
+    }
+    handle
+        .map(|handle| format!("@{handle}"))
+        .unwrap_or_else(|| display_name.to_owned())
 }
 
 #[cfg(test)]
@@ -3776,6 +3964,27 @@ mod tests {
         prelude::*, size, Context, Render, ScrollHandle, TestAppContext, VisualTestContext, Window,
     };
     use runner_backend::events::AppEvent;
+
+    fn direct_session(id: &str, runtime: &str, status: SessionStatus) -> DirectSessionEntry {
+        DirectSessionEntry {
+            session_id: id.into(),
+            project_id: None,
+            runner_id: None,
+            handle: None,
+            agent_runtime: runtime.into(),
+            agent_command: runtime.into(),
+            display_name: runtime.into(),
+            status,
+            title: None,
+            cwd: None,
+            started_at: None,
+            stopped_at: None,
+            resumable: false,
+            agent_session_key: None,
+            pinned: false,
+            archived_at: None,
+        }
+    }
 
     struct SidebarScrollLayoutTest {
         scroll: ScrollHandle,
@@ -3918,8 +4127,28 @@ mod tests {
 
     #[test]
     fn project_create_menu_uses_short_labels_and_project_targets() {
+        let root_entries = sidebar_create_menu_entries();
+        assert_eq!(
+            menu_labels(&root_entries),
+            ["New chat", "New terminal", "New mission"]
+        );
+        assert_eq!(
+            root_entries
+                .iter()
+                .map(|(_, action)| action.clone())
+                .collect::<Vec<_>>(),
+            [
+                SidebarMenuAction::NewChat(None),
+                SidebarMenuAction::NewTerminal(None),
+                SidebarMenuAction::NewMission(None),
+            ]
+        );
+
         let entries = project_create_menu_entries("project-1");
-        assert_eq!(menu_labels(&entries), ["New chat", "New mission"]);
+        assert_eq!(
+            menu_labels(&entries),
+            ["New chat", "New terminal", "New mission"]
+        );
         assert_eq!(
             entries
                 .iter()
@@ -3927,6 +4156,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 SidebarMenuAction::NewChat(Some("project-1".into())),
+                SidebarMenuAction::NewTerminal(Some("project-1".into())),
                 SidebarMenuAction::NewMission(Some("project-1".into())),
             ]
         );
@@ -3946,6 +4176,8 @@ mod tests {
             "My tab".into(),
             false,
             vec!["session-1".into(), "session-2".into()],
+            vec!["session-1".into(), "session-2".into()],
+            None,
         );
         assert_eq!(menu_labels(&tab_entries), ["Pin", "Rename tab", "Archive"]);
         assert!(tab_entries[2].0.destructive);
@@ -3963,7 +4195,10 @@ mod tests {
                     node_id: "tab-1".into(),
                     original: "My tab".into(),
                 }),
-                SidebarMenuAction::ArchiveTab(vec!["session-1".into(), "session-2".into(),]),
+                SidebarMenuAction::ArchiveTab {
+                    tab_id: "tab-1".into(),
+                    session_ids: vec!["session-1".into(), "session-2".into()],
+                },
             ]
         );
 
@@ -3973,12 +4208,57 @@ mod tests {
             "My tab".into(),
             true,
             vec!["session-1".into(), "session-2".into()],
+            vec!["session-1".into(), "session-2".into()],
+            None,
         );
         assert_eq!(
             menu_labels(&multi_pane_entries),
             ["Pin", "Rename tab", "Archive all"]
         );
         assert!(multi_pane_entries[2].0.destructive);
+
+        let mixed_entries = tab_menu_entries(
+            "tab-1",
+            false,
+            "Mixed tab".into(),
+            true,
+            vec!["chat-1".into()],
+            vec!["chat-1".into(), "shell-1".into()],
+            None,
+        );
+        assert_eq!(
+            mixed_entries[2].1,
+            SidebarMenuAction::ArchiveTab {
+                tab_id: "tab-1".into(),
+                session_ids: vec!["chat-1".into(), "shell-1".into()],
+            }
+        );
+
+        let terminal_only_entries = tab_menu_entries(
+            "tab-1",
+            false,
+            "Terminal".into(),
+            false,
+            Vec::new(),
+            vec!["shell-1".into()],
+            Some("shell-1".into()),
+        );
+        assert_eq!(
+            menu_labels(&terminal_only_entries),
+            ["Pin", "Rename tab", "Close terminal"]
+        );
+        assert!(terminal_only_entries[2].0.destructive);
+        assert_eq!(
+            terminal_only_entries[2].1,
+            SidebarMenuAction::CloseTerminalTab {
+                tab_id: "tab-1".into(),
+                session_id: "shell-1".into(),
+            }
+        );
+        assert_eq!(sidebar_tab_icon(1, Some("shell")), "square-terminal.svg");
+        assert_eq!(sidebar_tab_icon(1, Some("codex")), "message-square.svg");
+        assert_eq!(sidebar_tab_icon(2, Some("shell")), "columns-2.svg");
+        assert_eq!(sidebar_tab_icon(3, Some("shell")), "columns-3.svg");
 
         let mission_entries =
             mission_menu_entries("mission-node-1", false, "mission-1", "My mission".into());
@@ -4000,6 +4280,59 @@ mod tests {
                 }),
                 SidebarMenuAction::ArchiveMission("mission-1".into()),
             ]
+        );
+    }
+
+    #[test]
+    fn mixed_tab_archive_plan_and_confirmation_copy_are_explicit() {
+        let sessions = [
+            direct_session("shell-1", "shell", SessionStatus::Running),
+            direct_session("shell-2", "shell", SessionStatus::Stopped),
+            direct_session("active-chat", "codex", SessionStatus::Running),
+            direct_session("idle-chat", "claude", SessionStatus::Stopped),
+        ];
+        let session_ids = vec!["shell-1".into(), "active-chat".into(), "idle-chat".into()];
+
+        assert_eq!(
+            archive_session_plan(&session_ids, &sessions, Some("active-chat")),
+            [
+                (
+                    "idle-chat".into(),
+                    ArchiveSessionOperation::ArchiveChat { running: false },
+                ),
+                (
+                    "active-chat".into(),
+                    ArchiveSessionOperation::ArchiveChat { running: true },
+                ),
+                ("shell-1".into(), ArchiveSessionOperation::CloseTerminal,),
+            ]
+        );
+        assert_eq!(
+            archive_all_confirmation_body(
+                &["active-chat".into(), "shell-1".into()],
+                &sessions,
+            ),
+            Some("This archives 1 chat and permanently closes 1 terminal. Archived chats can be restored from Settings → Archived; closed terminals cannot.".into()),
+        );
+        assert_eq!(
+            archive_all_confirmation_body(
+                &[
+                    "active-chat".into(),
+                    "idle-chat".into(),
+                    "shell-1".into(),
+                    "shell-2".into(),
+                ],
+                &sessions,
+            ),
+            Some("This archives 2 chats and permanently closes 2 terminals. Archived chats can be restored from Settings → Archived; closed terminals cannot.".into()),
+        );
+        assert_eq!(
+            archive_all_confirmation_body(&["shell-1".into()], &sessions),
+            Some("This permanently closes 1 terminal. Closed terminals cannot be restored.".into()),
+        );
+        assert_eq!(
+            archive_all_confirmation_body(&["active-chat".into(), "idle-chat".into()], &sessions,),
+            None,
         );
     }
 
@@ -4049,6 +4382,22 @@ mod tests {
             Some("tab-1"),
             "tab-1"
         ));
+    }
+
+    #[test]
+    fn shell_sessions_default_to_the_shell_command_name() {
+        assert_eq!(
+            default_session_label_parts("shell", "/bin/zsh", None, "Shell"),
+            "zsh"
+        );
+        assert_eq!(
+            default_session_label_parts("shell", "fish", None, "Shell"),
+            "fish"
+        );
+        assert_eq!(
+            default_session_label_parts("codex", "codex", Some("coder"), "Codex"),
+            "@coder"
+        );
     }
 
     #[test]

@@ -4,6 +4,23 @@
 use super::*;
 use crate::*;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PaneRenameChange {
+    Unchanged,
+    Persist(Option<String>),
+}
+
+fn pane_rename_change(original: &str, value: &str) -> PaneRenameChange {
+    let value = value.trim();
+    if value == original.trim() {
+        PaneRenameChange::Unchanged
+    } else if value.is_empty() {
+        PaneRenameChange::Persist(None)
+    } else {
+        PaneRenameChange::Persist(Some(value.to_owned()))
+    }
+}
+
 impl NativeRoot {
     pub(crate) fn open_archived_chat(
         &mut self,
@@ -272,6 +289,26 @@ impl NativeRoot {
         .detach();
     }
 
+    pub(crate) fn stop_focused_session(
+        &mut self,
+        _: &StopFocusedSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.route != AppRoute::Chat {
+            return;
+        }
+        let Some(session_id) = self.active_focused_session_id() else {
+            return;
+        };
+        if self
+            .session_entry(&session_id, cx)
+            .is_some_and(|entry| entry.status == SessionStatus::Running)
+        {
+            self.stop_chat(&session_id, window, cx);
+        }
+    }
+
     pub(crate) fn stop_chats(
         &mut self,
         session_ids: Vec<String>,
@@ -403,6 +440,9 @@ impl NativeRoot {
             ChatMenuAction::Archive(session_ids) => {
                 self.archive_chat_sessions(session_ids, window, cx)
             }
+            ChatMenuAction::ArchiveAll(session_ids) => {
+                self.request_archive_all(None, session_ids, ArchiveAllSource::Chat, window, cx)
+            }
         }
     }
 
@@ -417,8 +457,19 @@ impl NativeRoot {
                 original.clone()
             }
         };
+        let placeholder = match &target {
+            ChatRenameTarget::Session { session_id, .. }
+                if self
+                    .session_entry(session_id, cx)
+                    .is_some_and(|entry| entry.agent_runtime == "shell") =>
+            {
+                "Terminal name"
+            }
+            ChatRenameTarget::Session { .. } => "Chat name",
+            ChatRenameTarget::Tab { .. } => "Tab name",
+        };
         let input = cx.new(|input_cx| {
-            runner_app::ui::TextField::new(input_cx.focus_handle(), original, "Chat name", false)
+            runner_app::ui::TextField::new(input_cx.focus_handle(), original, placeholder, false)
                 .text_size(13.)
         });
         input.update(cx, |input, input_cx| input.select_all(input_cx));
@@ -463,7 +514,7 @@ impl NativeRoot {
                 next == original.trim()
             }
         };
-        if unchanged || matches!(target, ChatRenameTarget::Session { .. }) && next.is_empty() {
+        if unchanged {
             self.close_chat_rename(window, cx);
             return;
         }
@@ -508,6 +559,87 @@ impl NativeRoot {
             });
         })
         .detach();
+    }
+
+    pub(crate) fn begin_pane_rename(
+        &mut self,
+        session_id: String,
+        value: String,
+        placeholder: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|input_cx| {
+            runner_app::ui::TextField::new(
+                input_cx.focus_handle(),
+                value.clone(),
+                placeholder,
+                false,
+            )
+            .text_size(12.)
+        });
+        input.update(cx, |field, input_cx| {
+            field.set_bare(true, input_cx);
+            field.set_right_padding(0., input_cx);
+            field.select_all(input_cx);
+        });
+        let focus = input.read(cx).focus_handle();
+        let root = cx.entity();
+        self._pane_rename_focus_subscription =
+            Some(cx.on_focus_out(&focus, window, move |_, _, window, cx| {
+                root.update(cx, |this, cx| this.submit_pane_rename(window, cx));
+            }));
+        self.pane_rename = Some(PaneRename {
+            session_id,
+            original: value,
+            input,
+        });
+        focus.focus(window);
+        cx.notify();
+    }
+
+    pub(crate) fn submit_pane_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(rename) = self.pane_rename.as_ref() else {
+            return;
+        };
+        if rename.input.read(cx).is_composing() {
+            return;
+        }
+        let session_id = rename.session_id.clone();
+        let change = pane_rename_change(&rename.original, rename.input.read(cx).text());
+        let result = match change {
+            PaneRenameChange::Unchanged => Ok(()),
+            PaneRenameChange::Persist(title) => {
+                runner_backend::ops::session::session_rename(self.core(cx), &session_id, title)
+                    .map(drop)
+            }
+        };
+        match result {
+            Ok(()) => {
+                self.pane_rename = None;
+                self._pane_rename_focus_subscription = None;
+                self.refresh_sessions(cx);
+                if let Err(error) = self.reload_tabs(cx) {
+                    self.chat_error = Some(error.to_string());
+                }
+                self.sync_active_chat_detail(cx);
+                self.focus_active_terminal(window, cx);
+            }
+            Err(error) => {
+                self.chat_error = Some(error.to_string());
+                if let Some(rename) = self.pane_rename.as_ref() {
+                    rename.input.read(cx).focus_handle().focus(window);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_pane_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pane_rename = None;
+        self._pane_rename_focus_subscription = None;
+        self.focus_active_terminal(window, cx);
+        cx.notify();
     }
 
     pub(crate) fn on_chat_rename_key_down(
@@ -1099,37 +1231,68 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let result = (|| -> Result<Option<String>> {
+        let result = (|| -> Result<()> {
             let Some(layout) = self.tabs.active_mut() else {
-                return Ok(None);
+                return Ok(());
             };
             layout.apply_preset(preset);
-            let empty_pane_id = layout
-                .root
-                .leaves()
-                .into_iter()
-                .find(|leaf| leaf.session_id.is_none())
-                .map(|leaf| leaf.id.clone());
             self.persist_active_tab(cx)?;
             self.reload_tabs(cx)?;
             self.ensure_active_tab_attached(window, cx)?;
-            Ok(empty_pane_id)
+            Ok(())
         })();
         self.layout_picker_open = false;
         match result {
-            Ok(empty_pane_id) => {
+            Ok(()) => {
                 self.chat_error = None;
-                if let Some(pane_id) = empty_pane_id {
-                    self.open_pane_chat_modal(&pane_id, window, cx);
-                } else {
-                    self.remember_active_runner(cx);
-                    self.mark_active_tab_viewed(window, cx);
-                    self.focus_active_terminal(window, cx);
-                }
+                self.remember_active_runner(cx);
+                self.mark_active_tab_viewed(window, cx);
+                self.focus_active_terminal(window, cx);
             }
             Err(error) => self.chat_error = Some(error.to_string()),
         }
         cx.notify();
+    }
+
+    pub(crate) fn split_pane_right(
+        &mut self,
+        _: &SplitPaneRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.split_pane(SplitOrientation::Row, window, cx);
+    }
+
+    pub(crate) fn split_pane_down(
+        &mut self,
+        _: &SplitPaneDown,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.split_pane(SplitOrientation::Column, window, cx);
+    }
+
+    fn split_pane(
+        &mut self,
+        orientation: SplitOrientation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.route != AppRoute::Chat {
+            return;
+        }
+        match self
+            .tabs
+            .active()
+            .context("active tab is missing")
+            .and_then(|layout| layout.next_split_preset(orientation))
+        {
+            Ok(preset) => self.pick_preset(preset, window, cx),
+            Err(error) => {
+                self.chat_error = Some(error.to_string());
+                cx.notify();
+            }
+        }
     }
 
     pub(crate) fn persist_active_tab(&self, cx: &App) -> Result<()> {
@@ -1148,6 +1311,14 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let closing_session_id = self.tabs.active().and_then(|layout| {
+            layout
+                .root
+                .leaves()
+                .into_iter()
+                .find(|leaf| leaf.id == pane_id)
+                .and_then(|leaf| leaf.session_id.clone())
+        });
         let result = (|| -> Result<bool> {
             let Some(layout) = self.tabs.active_mut() else {
                 return Ok(false);
@@ -1162,6 +1333,12 @@ impl NativeRoot {
         })();
         match result {
             Ok(true) => {
+                if self.pane_rename.as_ref().is_some_and(|rename| {
+                    closing_session_id.as_deref() == Some(rename.session_id.as_str())
+                }) {
+                    self.pane_rename = None;
+                    self._pane_rename_focus_subscription = None;
+                }
                 self.chat_error = None;
                 self.remember_active_runner(cx);
                 self.mark_active_tab_viewed(window, cx);
@@ -1171,6 +1348,211 @@ impl NativeRoot {
             Ok(false) => {}
             Err(error) => self.chat_error = Some(error.to_string()),
         }
+        cx.notify();
+    }
+
+    pub(crate) fn close_terminal_pane(
+        &mut self,
+        pane_id: &str,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal_close_confirm = None;
+        if !self.stopping_sessions.insert(session_id.to_owned()) {
+            return;
+        }
+        self.chat_error = None;
+        let core = self.core(cx).clone();
+        let target = session_id.to_owned();
+        let close_target = target.clone();
+        let pane_id = pane_id.to_owned();
+        let close = cx.background_spawn(async move {
+            runner_backend::ops::session::session_close(&core, &close_target)
+                .map_err(|error| error.to_string())
+        });
+        cx.spawn_in(window, async move |weak, cx| {
+            let result = close.await;
+            let _ = weak.update_in(cx, |this, window, cx| {
+                this.stopping_sessions.remove(&target);
+                match result {
+                    Ok(()) => {
+                        this.attached.remove(&target);
+                        this.session_exit_codes.remove(&target);
+                        this.refresh_sessions(cx);
+                        this.close_pane(&pane_id, window, cx);
+                    }
+                    Err(error) => this.chat_error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(crate) fn request_close_terminal_pane(
+        &mut self,
+        pane_id: &str,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match runner_backend::ops::session::session_shell_has_foreground_process(
+            self.core(cx),
+            session_id,
+        ) {
+            Ok(true) => {
+                self.terminal_close_confirm = Some(TerminalCloseConfirm {
+                    target: TerminalCloseTarget::Pane {
+                        pane_id: pane_id.to_owned(),
+                        session_id: session_id.to_owned(),
+                    },
+                });
+                cx.notify();
+            }
+            Ok(false) => self.close_terminal_pane(pane_id, session_id, window, cx),
+            Err(error) => {
+                self.chat_error = Some(error.to_string());
+                cx.notify();
+            }
+        }
+    }
+
+    pub(crate) fn request_close_terminal_tab(
+        &mut self,
+        tab_id: &str,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match runner_backend::ops::session::session_shell_has_foreground_process(
+            self.core(cx),
+            session_id,
+        ) {
+            Ok(true) => {
+                self.tabs.activate(tab_id);
+                self.set_route(AppRoute::Chat, cx);
+                if let Err(error) = self.ensure_active_tab_attached(window, cx) {
+                    self.chat_error = Some(error.to_string());
+                }
+                self.terminal_close_confirm = Some(TerminalCloseConfirm {
+                    target: TerminalCloseTarget::Tab {
+                        session_id: session_id.to_owned(),
+                    },
+                });
+                cx.notify();
+            }
+            Ok(false) => self.close_terminal_tab(session_id, window, cx),
+            Err(error) => {
+                self.error = Some(error.to_string());
+                cx.notify();
+            }
+        }
+    }
+
+    fn close_terminal_tab(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal_close_confirm = None;
+        if !self.stopping_sessions.insert(session_id.to_owned()) {
+            return;
+        }
+        let core = self.core(cx).clone();
+        let target = session_id.to_owned();
+        let close_target = target.clone();
+        let close = cx.background_spawn(async move {
+            runner_backend::ops::session::session_close(&core, &close_target)
+                .map_err(|error| error.to_string())
+        });
+        cx.spawn_in(window, async move |weak, cx| {
+            let result = close.await;
+            let _ = weak.update_in(cx, |this, window, cx| {
+                this.stopping_sessions.remove(&target);
+                match result {
+                    Ok(()) => {
+                        this.attached.remove(&target);
+                        this.session_exit_codes.remove(&target);
+                        this.refresh_sessions(cx);
+                        let refresh = this.reload_tabs(cx).and_then(|_| {
+                            if this.route == AppRoute::Chat {
+                                this.ensure_active_tab_attached(window, cx)?;
+                                this.mark_active_tab_viewed(window, cx);
+                                this.focus_active_terminal(window, cx);
+                                this.record_current_runtime_location();
+                            }
+                            Ok(())
+                        });
+                        if let Err(error) = refresh {
+                            this.error = Some(error.to_string());
+                        }
+                    }
+                    Err(error) => this.error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(crate) fn request_archive_all(
+        &mut self,
+        tab_id: Option<&str>,
+        session_ids: Vec<String>,
+        source: ArchiveAllSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(confirmation_body) = super::sidebar::archive_all_confirmation_body(
+            &session_ids,
+            &self.app_store.read(cx).sessions,
+        ) else {
+            self.archive_all_sessions(session_ids, source, window, cx);
+            return;
+        };
+        if let Some(tab_id) = tab_id {
+            self.tabs.activate(tab_id);
+            self.set_route(AppRoute::Chat, cx);
+            if let Err(error) = self.ensure_active_tab_attached(window, cx) {
+                self.chat_error = Some(error.to_string());
+            }
+        }
+        self.terminal_close_confirm = Some(TerminalCloseConfirm {
+            target: TerminalCloseTarget::ArchiveAll {
+                session_ids,
+                source,
+                confirmation_body,
+            },
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_terminal_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(confirm) = self.terminal_close_confirm.take() else {
+            return;
+        };
+        match confirm.target {
+            TerminalCloseTarget::Pane {
+                pane_id,
+                session_id,
+            } => self.close_terminal_pane(&pane_id, &session_id, window, cx),
+            TerminalCloseTarget::Tab { session_id } => {
+                self.close_terminal_tab(&session_id, window, cx)
+            }
+            TerminalCloseTarget::ArchiveAll {
+                session_ids,
+                source,
+                ..
+            } => self.archive_all_sessions(session_ids, source, window, cx),
+        }
+    }
+
+    pub(crate) fn cancel_terminal_close(&mut self, cx: &mut Context<Self>) {
+        self.terminal_close_confirm = None;
         cx.notify();
     }
 
@@ -1211,5 +1593,26 @@ impl NativeRoot {
         if let Err(error) = self.persist_active_tab(cx) {
             self.chat_error = Some(error.to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pane_rename_change, PaneRenameChange};
+
+    #[test]
+    fn pane_rename_enter_persists_titles_and_empty_restores_the_default() {
+        assert_eq!(
+            pane_rename_change("@coder", "  feature 64  "),
+            PaneRenameChange::Persist(Some("feature 64".into()))
+        );
+        assert_eq!(
+            pane_rename_change("feature 64", "   "),
+            PaneRenameChange::Persist(None)
+        );
+        assert_eq!(
+            pane_rename_change("feature 64", " feature 64 "),
+            PaneRenameChange::Unchanged
+        );
     }
 }

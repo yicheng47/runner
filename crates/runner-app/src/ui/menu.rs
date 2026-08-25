@@ -20,6 +20,7 @@ pub struct MenuItem {
     pub label: SharedString,
     pub description: Option<SharedString>,
     pub icon: Option<SharedString>,
+    pub shortcut: Option<SharedString>,
     pub destructive: bool,
     pub disabled: bool,
     pub separator_before: bool,
@@ -31,6 +32,7 @@ impl MenuItem {
             label: label.into(),
             description: None,
             icon: None,
+            shortcut: None,
             destructive: false,
             disabled: false,
             separator_before: false,
@@ -44,6 +46,11 @@ impl MenuItem {
 
     pub fn icon(mut self, icon: impl Into<SharedString>) -> Self {
         self.icon = Some(icon.into());
+        self
+    }
+
+    pub fn shortcut(mut self, shortcut: impl Into<SharedString>) -> Self {
+        self.shortcut = Some(shortcut.into());
         self
     }
 
@@ -458,6 +465,13 @@ impl Render for PopoverMenu {
                                     .child(description)
                             })),
                     )
+                    .children(item.shortcut.map(|shortcut| {
+                        div()
+                            .flex_none()
+                            .text_size(rems(11. / 16.))
+                            .text_color(theme::faint())
+                            .child(shortcut)
+                    }))
                     .when(!item.disabled, |row| {
                         row.on_click(move |_, window, cx| {
                             click_entity.update(cx, |menu, cx| {
@@ -674,6 +688,13 @@ impl Render for ContextMenu {
                                 .child(description)
                         })),
                 )
+                .children(item.shortcut.map(|shortcut| {
+                    div()
+                        .flex_none()
+                        .text_size(rems(11. / 16.))
+                        .text_color(theme::faint())
+                        .child(shortcut)
+                }))
                 .when(!item.disabled, |row| {
                     row.on_click(move |_, window, cx| {
                         click_entity.update(cx, |menu, cx| menu.activate(index, window, cx));

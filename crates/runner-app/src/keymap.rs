@@ -7,8 +7,8 @@ use crate::{
     CloseWindowOrPane, CommandPalette, Copy, FocusNextPane, FocusPreviousPane, Hide, HideOthers,
     Minimize, MissionTabNext, MissionTabPrevious, NavigateNextPage, NavigatePreviousPage, NewTab,
     NewWindow, OpenSettings, Paste, Quit, SelectTab1, SelectTab2, SelectTab3, SelectTab4,
-    SelectTab5, SelectTab6, SelectTab7, SelectTab8, SelectTab9, ToggleFullscreen, ToggleSidebar,
-    ZoomIn, ZoomOut, ZoomReset,
+    SelectTab5, SelectTab6, SelectTab7, SelectTab8, SelectTab9, SplitPaneDown, SplitPaneRight,
+    StopFocusedSession, ToggleFullscreen, ToggleSidebar, ZoomIn, ZoomOut, ZoomReset,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,7 +105,7 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
             KeymapEntry {
                 id: "command-palette",
                 title: "Command palette",
-                description: "Search missions, chats, runners, and crews.",
+                description: "Search commands, missions, chats, runners, and crews.",
                 scope: KeymapScope::Global,
                 default: key_combo("KeyK", true, false, false, false, None, false),
                 fixed: false,
@@ -255,12 +255,36 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 fixed: false,
             },
             KeymapEntry {
+                id: "split-pane-right",
+                title: "Split pane right",
+                description: "Add a side-by-side pane to the active tab.",
+                scope: KeymapScope::Global,
+                default: key_combo("KeyD", true, false, false, false, None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "split-pane-down",
+                title: "Split pane down",
+                description: "Add a stacked pane to the active tab.",
+                scope: KeymapScope::Global,
+                default: key_combo("KeyD", true, false, false, true, None, false),
+                fixed: false,
+            },
+            KeymapEntry {
                 id: "close-pane",
                 title: "Close pane",
                 description: "Close the focused pane while split; otherwise close the window.",
                 scope: KeymapScope::ChatSplit,
                 default: key_combo("KeyW", true, false, false, false, None, false),
                 fixed: true,
+            },
+            KeymapEntry {
+                id: "stop-session",
+                title: "Stop focused session",
+                description: "Stop the chat or terminal in the focused pane.",
+                scope: KeymapScope::Global,
+                default: key_combo("Period", true, false, false, false, None, false),
+                fixed: false,
             },
             KeymapEntry {
                 id: "copy",
@@ -822,6 +846,9 @@ pub(crate) fn install_bindings(
                 "select-tab-9" => KeyBinding::new(&binding, SelectTab9, context),
                 "pane-previous" => KeyBinding::new(&binding, FocusPreviousPane, context),
                 "pane-next" => KeyBinding::new(&binding, FocusNextPane, context),
+                "split-pane-right" => KeyBinding::new(&binding, SplitPaneRight, context),
+                "split-pane-down" => KeyBinding::new(&binding, SplitPaneDown, context),
+                "stop-session" => KeyBinding::new(&binding, StopFocusedSession, context),
                 "mission-tab-previous" => KeyBinding::new(&binding, MissionTabPrevious, context),
                 "mission-tab-next" => KeyBinding::new(&binding, MissionTabNext, context),
                 _ => continue,
@@ -841,7 +868,7 @@ mod tests {
 
     #[test]
     fn registry_matches_the_shipped_defaults_and_fixed_entry() {
-        assert_eq!(entries().len(), 25);
+        assert_eq!(entries().len(), 28);
         assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 3);
         assert!(entry("new-window").unwrap().fixed);
         assert!(entry("close-pane").unwrap().fixed);
@@ -852,6 +879,16 @@ mod tests {
             "⇧⌘["
         );
         assert_eq!(format_combo(&entry("zoom-in").unwrap().default), "⌘+");
+        assert_eq!(format_combo(&entry("stop-session").unwrap().default), "⌘.");
+        assert_eq!(
+            format_combo(&entry("split-pane-right").unwrap().default),
+            "⌘D"
+        );
+        assert_eq!(
+            format_combo(&entry("split-pane-down").unwrap().default),
+            "⇧⌘D"
+        );
+        assert!(entry("new-terminal").is_none());
         assert_eq!(
             entry("pane-previous").unwrap().default,
             entry("mission-tab-previous").unwrap().default
@@ -1016,7 +1053,7 @@ mod tests {
     fn registry_defaults_compile_to_gpui_runtime_keystrokes() {
         type ExpectedBinding<'a> = (&'a str, &'a str, bool);
         type ExpectedEntry<'a> = (&'a str, &'a [ExpectedBinding<'a>]);
-        let expected: [ExpectedEntry<'_>; 25] = [
+        let expected: [ExpectedEntry<'_>; 28] = [
             ("new-window", &[("shift-cmd-n", "n", true)]),
             ("new-chat", &[("cmd-n", "n", false)]),
             ("command-palette", &[("cmd-k", "k", false)]),
@@ -1038,7 +1075,10 @@ mod tests {
             ("select-tab-9", &[("cmd-9", "9", false)]),
             ("pane-previous", &[("cmd-[", "[", false)]),
             ("pane-next", &[("cmd-]", "]", false)]),
+            ("split-pane-right", &[("cmd-d", "d", false)]),
+            ("split-pane-down", &[("shift-cmd-d", "d", true)]),
             ("close-pane", &[("cmd-w", "w", false)]),
+            ("stop-session", &[("cmd-.", ".", false)]),
             ("copy", &[("cmd-c", "c", false)]),
             ("mission-tab-previous", &[("cmd-[", "[", false)]),
             ("mission-tab-next", &[("cmd-]", "]", false)]),

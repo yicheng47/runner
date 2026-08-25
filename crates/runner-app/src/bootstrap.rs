@@ -171,7 +171,8 @@ pub fn consume_resume_on_launch(
         enabled,
         || {
             let conn = core.db.get().context("get launch-resume connection")?;
-            repo::session::clear_resume_on_launch(&conn).context("clear launch-resume claims")?;
+            repo::session::clear_chat_resume_on_launch(&conn)
+                .context("clear chat launch-resume claims")?;
             Ok(())
         },
         || {
@@ -196,25 +197,24 @@ pub fn consume_resume_on_launch(
 fn consume_launch_claims(
     enabled: bool,
     mut clear: impl FnMut() -> Result<()>,
-    mut take: impl FnMut() -> Result<Option<String>>,
+    mut take: impl FnMut() -> Result<Option<repo::session::ResumeOnLaunchClaim>>,
     mut resume: impl FnMut(&str) -> std::result::Result<(), String>,
     mut wait: impl FnMut(),
 ) -> Result<AutoResumeReport> {
     if !enabled {
         clear()?;
-        return Ok(AutoResumeReport::default());
     }
 
     let mut report = AutoResumeReport::default();
-    let mut attempted = false;
-    while let Some(session_id) = take()? {
-        if attempted {
+    let mut attempted_chat = false;
+    while let Some(claim) = take()? {
+        if attempted_chat && !claim.shell {
             wait();
         }
-        attempted = true;
-        match resume(&session_id) {
-            Ok(()) => report.resumed.push(session_id),
-            Err(error) => report.errors.push(format!("{session_id}: {error}")),
+        attempted_chat |= !claim.shell;
+        match resume(&claim.session_id) {
+            Ok(()) => report.resumed.push(claim.session_id),
+            Err(error) => report.errors.push(format!("{}: {error}", claim.session_id)),
         }
     }
     Ok(report)
@@ -242,6 +242,13 @@ pub fn stop_running_sessions_on_quit(core: &AppCore) -> Result<()> {
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+
+    fn launch_claim(session_id: &str, shell: bool) -> repo::session::ResumeOnLaunchClaim {
+        repo::session::ResumeOnLaunchClaim {
+            session_id: session_id.to_owned(),
+            shell,
+        }
+    }
 
     #[test]
     fn paths_match_tauri_bundle_convention() {
@@ -348,62 +355,72 @@ mod tests {
     }
 
     #[test]
-    fn launch_claim_consumer_clears_when_disabled_without_taking() {
+    fn launch_claim_consumer_clears_gated_chats_but_drains_shells_when_disabled() {
         let cleared = Cell::new(false);
-        let taken = Cell::new(false);
-        let resumed = Cell::new(false);
+        let claims = RefCell::new(vec![None, Some(launch_claim("shell-session", true))]);
+        let resumed = RefCell::new(Vec::new());
         let report = consume_launch_claims(
             false,
             || {
                 cleared.set(true);
                 Ok(())
             },
-            || {
-                taken.set(true);
-                Ok(None)
-            },
-            |_| {
-                resumed.set(true);
+            || Ok(claims.borrow_mut().pop().unwrap()),
+            |session_id| {
+                resumed.borrow_mut().push(session_id.to_owned());
                 Ok(())
             },
             || {},
         )
         .unwrap();
 
-        assert_eq!(report, AutoResumeReport::default());
+        assert_eq!(report.resumed, ["shell-session"]);
+        assert!(report.errors.is_empty());
         assert!(cleared.get());
-        assert!(!taken.get());
-        assert!(!resumed.get());
+        assert_eq!(&*resumed.borrow(), &["shell-session"]);
     }
 
     #[test]
-    fn launch_claim_consumer_drains_sequentially_and_continues_after_failure() {
+    fn launch_claim_consumer_skips_shell_stagger_and_continues_after_failure() {
         let claims = RefCell::new(vec![
             None,
-            Some("session-b".to_owned()),
-            Some("session-a".to_owned()),
+            Some(launch_claim("session-b", false)),
+            Some(launch_claim("shell-session", true)),
+            Some(launch_claim("session-a", false)),
         ]);
         let attempts = RefCell::new(Vec::new());
-        let waits = Cell::new(0);
+        let trace = RefCell::new(Vec::new());
         let report = consume_launch_claims(
             true,
             || panic!("enabled launch must not clear claims"),
             || Ok(claims.borrow_mut().pop().unwrap()),
             |session_id| {
                 attempts.borrow_mut().push(session_id.to_owned());
+                trace.borrow_mut().push(format!("resume:{session_id}"));
                 if session_id == "session-a" {
                     Err("rejected key".into())
                 } else {
                     Ok(())
                 }
             },
-            || waits.set(waits.get() + 1),
+            || trace.borrow_mut().push("wait".into()),
         )
         .unwrap();
 
-        assert_eq!(&*attempts.borrow(), &["session-a", "session-b"]);
-        assert_eq!(waits.get(), 1);
-        assert_eq!(report.resumed, ["session-b"]);
+        assert_eq!(
+            &*attempts.borrow(),
+            &["session-a", "shell-session", "session-b"]
+        );
+        assert_eq!(
+            &*trace.borrow(),
+            &[
+                "resume:session-a",
+                "resume:shell-session",
+                "wait",
+                "resume:session-b"
+            ]
+        );
+        assert_eq!(report.resumed, ["shell-session", "session-b"]);
         assert_eq!(report.errors, ["session-a: rejected key"]);
     }
 }

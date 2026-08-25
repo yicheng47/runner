@@ -87,6 +87,10 @@ impl NativeRoot {
             .then_some(self.chat_rename_modal.as_ref())
             .flatten()
             .map(|_| self.render_chat_rename_modal(cx));
+        let terminal_close_confirm = (self.route == AppRoute::Chat)
+            .then_some(self.terminal_close_confirm.as_ref())
+            .flatten()
+            .map(|_| self.render_terminal_close_confirm(cx));
         let sidebar_overlays = if self.route != AppRoute::Settings {
             self.render_sidebar_overlays(cx)
         } else {
@@ -126,6 +130,7 @@ impl NativeRoot {
             )
             .children(preview_trigger)
             .children(chat_rename_modal)
+            .children(terminal_close_confirm)
             .children(sidebar_overlays)
             .children(entity_overlays);
         let settings =
@@ -197,8 +202,11 @@ impl NativeRoot {
                 }),
             )
             .on_action(cx.listener(Self::open_new_tab_modal))
+            .on_action(cx.listener(Self::split_pane_right))
+            .on_action(cx.listener(Self::split_pane_down))
             .on_action(cx.listener(Self::focus_previous_chat_pane))
             .on_action(cx.listener(Self::focus_next_chat_pane))
+            .on_action(cx.listener(Self::stop_focused_session))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::open_command_palette))
             .on_action(cx.listener(Self::open_settings))

@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use anyhow::bail;
 use gpui::prelude::*;
 use gpui::{
     div, px, rems, AnyElement, Context, FontWeight, KeyDownEvent, PathPromptOptions, ScrollHandle,
@@ -153,6 +154,209 @@ enum StartRequest {
 }
 
 impl NativeRoot {
+    pub(crate) fn new_terminal_tab(
+        &mut self,
+        project_id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let project_cwd = project_id.as_deref().and_then(|project_id| {
+            self.app_store
+                .read(cx)
+                .projects
+                .iter()
+                .find(|project| project.id == project_id)
+                .map(|project| project.cwd.as_str())
+        });
+        let cwd = terminal_working_dir(
+            None,
+            project_cwd,
+            &self.settings(cx).default_working_dir,
+            std::env::var("HOME").ok().as_deref(),
+        );
+        let mut spawned_id = None;
+        let result = (|| -> Result<String> {
+            let spawned = runner_backend::ops::session::session_start_shell(
+                self.core(cx),
+                project_id,
+                cwd,
+                Some(INITIAL_COLS),
+                Some(INITIAL_ROWS),
+            )?;
+            spawned_id = Some(spawned.id.clone());
+            self.refresh_sessions(cx);
+            self.reload_tabs(cx)?;
+            if !self.tabs.activate_session(&spawned.id) {
+                bail!("terminal tab was not created");
+            }
+            self.sync_active_project_from_active_tab(cx);
+            self.set_route(AppRoute::Chat, cx);
+            self.ensure_active_tab_attached(window, cx)?;
+            Ok(spawned.id)
+        })();
+
+        match result {
+            Ok(session_id) => {
+                self.chat_error = None;
+                self.mark_active_tab_viewed(window, cx);
+                self.sync_active_chat_detail(cx);
+                self.begin_chat_transition(
+                    &session_id,
+                    chat_lifecycle::TransitionKind::Starting,
+                    Some(0),
+                    window,
+                    cx,
+                );
+            }
+            Err(error) => {
+                if let Some(session_id) = spawned_id {
+                    let _ = runner_backend::ops::session::session_close(self.core(cx), &session_id);
+                }
+                self.refresh_sessions(cx);
+                let _ = self.reload_tabs(cx);
+                self.chat_error = Some(error.to_string());
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(original) = self.tabs.active().cloned() else {
+            self.chat_error = Some("Open a tab before creating a terminal".into());
+            cx.notify();
+            return;
+        };
+        let (project_id, cwd) = self.terminal_start_location(cx);
+        let target = match self
+            .tabs
+            .active_mut()
+            .expect("active tab was cloned")
+            .prepare_new_pane()
+        {
+            Ok(target) => target,
+            Err(error) => {
+                self.chat_error = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        self.spawn_terminal_in_pane(target, original, project_id, cwd, window, cx);
+    }
+
+    pub(crate) fn start_terminal_in_pane(
+        &mut self,
+        pane_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(original) = self.tabs.active().cloned() else {
+            return;
+        };
+        let target_is_empty = original
+            .root
+            .leaves()
+            .into_iter()
+            .any(|leaf| leaf.id == pane_id && leaf.session_id.is_none());
+        if !target_is_empty {
+            return;
+        }
+        let (project_id, cwd) = self.terminal_start_location(cx);
+        self.spawn_terminal_in_pane(pane_id.to_owned(), original, project_id, cwd, window, cx);
+    }
+
+    fn terminal_start_location(&self, cx: &App) -> (Option<String>, Option<String>) {
+        let sibling_cwd = self.tabs.active().and_then(|layout| {
+            layout
+                .focused_session_id()
+                .map(str::to_owned)
+                .or_else(|| layout.session_ids().into_iter().next())
+                .and_then(|session_id| {
+                    self.session_entry(&session_id, cx)
+                        .and_then(|entry| entry.cwd.as_deref())
+                        .map(str::to_owned)
+                })
+        });
+        let project_id = self.active_project_id(cx);
+        let project_cwd = project_id.as_deref().and_then(|project_id| {
+            self.app_store
+                .read(cx)
+                .projects
+                .iter()
+                .find(|project| project.id == project_id)
+                .map(|project| project.cwd.as_str())
+        });
+        let cwd = terminal_working_dir(
+            sibling_cwd.as_deref(),
+            project_cwd,
+            &self.settings(cx).default_working_dir,
+            std::env::var("HOME").ok().as_deref(),
+        );
+        (project_id, cwd)
+    }
+
+    fn spawn_terminal_in_pane(
+        &mut self,
+        pane_id: String,
+        original: PaneLayout,
+        project_id: Option<String>,
+        cwd: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let initial_size = self
+            .tabs
+            .active()
+            .map(|layout| self.estimated_terminal_size(layout, &pane_id, window, cx))
+            .unwrap_or((INITIAL_COLS, INITIAL_ROWS));
+        let mut spawned_id = None;
+        let result = (|| -> Result<String> {
+            let spawned = runner_backend::ops::session::session_start_shell(
+                self.core(cx),
+                project_id,
+                cwd,
+                Some(initial_size.0),
+                Some(initial_size.1),
+            )?;
+            spawned_id = Some(spawned.id.clone());
+            self.refresh_sessions(cx);
+            self.tabs.assign_to_active(&pane_id, &spawned.id)?;
+            self.persist_active_tab(cx)?;
+            self.reload_tabs(cx)?;
+            self.tabs.activate_session(&spawned.id);
+            self.sync_active_project_from_active_tab(cx);
+            self.set_route(AppRoute::Chat, cx);
+            self.ensure_active_tab_attached(window, cx)?;
+            Ok(spawned.id)
+        })();
+
+        match result {
+            Ok(session_id) => {
+                self.chat_error = None;
+                self.mark_active_tab_viewed(window, cx);
+                self.sync_active_chat_detail(cx);
+                self.begin_chat_transition(
+                    &session_id,
+                    chat_lifecycle::TransitionKind::Starting,
+                    Some(0),
+                    window,
+                    cx,
+                );
+            }
+            Err(error) => {
+                if let Some(session_id) = spawned_id {
+                    let _ = runner_backend::ops::session::session_close(self.core(cx), &session_id);
+                }
+                if let Ok(input) = original.upsert_input() {
+                    let _ = runner_backend::ops::node::node_tab_upsert(self.core(cx), input);
+                }
+                self.refresh_sessions(cx);
+                let _ = self.reload_tabs(cx);
+                self.chat_error = Some(error.to_string());
+            }
+        }
+        cx.notify();
+    }
+
     pub(crate) fn open_new_tab_modal(
         &mut self,
         _: &NewTab,
@@ -1217,6 +1421,20 @@ impl NativeRoot {
     }
 }
 
+fn terminal_working_dir(
+    sibling_cwd: Option<&str>,
+    project_cwd: Option<&str>,
+    default_cwd: &str,
+    home: Option<&str>,
+) -> Option<String> {
+    [sibling_cwd, project_cwd, Some(default_cwd), home]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|path| !path.is_empty())
+        .map(str::to_owned)
+}
+
 fn selection_handler(root: &Entity<NativeRoot>, selection: StartChatSelection) -> SelectHandler {
     let root = root.clone();
     Rc::new(move |value, _, cx| {
@@ -1651,6 +1869,32 @@ mod tests {
         assert_eq!(
             build_start_request(ChatMode::Runner, None, None, None, None, None, None),
             None
+        );
+    }
+
+    #[test]
+    fn terminal_cwd_prefers_the_focused_sibling_then_project_settings_and_home() {
+        assert_eq!(
+            terminal_working_dir(
+                Some("/sibling"),
+                Some("/project"),
+                "/settings",
+                Some("/home")
+            )
+            .as_deref(),
+            Some("/sibling")
+        );
+        assert_eq!(
+            terminal_working_dir(None, Some("/project"), "/settings", Some("/home")).as_deref(),
+            Some("/project")
+        );
+        assert_eq!(
+            terminal_working_dir(None, None, "/settings", Some("/home")).as_deref(),
+            Some("/settings")
+        );
+        assert_eq!(
+            terminal_working_dir(None, None, " ", Some("/home")).as_deref(),
+            Some("/home")
         );
     }
 
