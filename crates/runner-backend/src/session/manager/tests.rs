@@ -3634,7 +3634,7 @@ fn resume_refuses_running_and_archived_rows() {
 }
 
 #[test]
-fn launch_resume_never_falls_back_to_a_fresh_spawn() {
+fn launch_resume_never_falls_back_to_a_fresh_chat_spawn() {
     let pool = pool_with_schema();
     let now = Utc::now().to_rfc3339();
     let runner_id = ulid::Ulid::new().to_string();
@@ -3644,14 +3644,14 @@ fn launch_resume_never_falls_back_to_a_fresh_spawn() {
             "INSERT INTO runners
                     (id, handle, display_name, runtime, command,
                      created_at, updated_at)
-                 VALUES (?1, 'shell-runner', 'Shell', 'shell', '/bin/sh', ?2, ?2)",
+                 VALUES (?1, 'codex-runner', 'Codex', 'codex', '/bin/sh', ?2, ?2)",
             params![runner_id, now],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO sessions
-                    (id, runner_id, status, started_at, agent_session_key)
-                 VALUES ('launch-sid', ?1, 'stopped', ?2, 'not-resumable')",
+                    (id, runner_id, status, started_at)
+                 VALUES ('launch-sid', ?1, 'stopped', ?2)",
             params![runner_id, now],
         )
         .unwrap();
@@ -3680,6 +3680,56 @@ fn launch_resume_never_falls_back_to_a_fresh_spawn() {
         )
         .unwrap();
     assert_eq!(status, "stopped");
+}
+
+#[test]
+fn launch_resume_keeps_missing_cwd_as_a_chat_error() {
+    let pool = pool_with_schema();
+    let root = tempfile::tempdir().unwrap();
+    let missing_cwd = root.path().join("deleted-chat-cwd");
+    let now = Utc::now().to_rfc3339();
+    let runner_id = ulid::Ulid::new().to_string();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO runners
+                    (id, handle, display_name, runtime, command,
+                     created_at, updated_at)
+                 VALUES (?1, 'codex-runner', 'Codex', 'codex', '/bin/sh', ?2, ?2)",
+            params![runner_id, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+                    (id, runner_id, status, started_at, cwd, agent_session_key)
+                 VALUES ('chat-missing-cwd', ?1, 'stopped', ?2, ?3,
+                         '00000000-0000-0000-0000-000000000001')",
+            params![runner_id, now, missing_cwd.to_string_lossy()],
+        )
+        .unwrap();
+    }
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+
+    let error = mgr
+        .resume_on_launch(
+            "chat-missing-cwd",
+            None,
+            None,
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+        )
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "working directory does not exist: {}",
+            missing_cwd.to_string_lossy()
+        )
+    );
+    assert_eq!(fake.spawn_count(), 0);
 }
 
 #[test]
@@ -3786,6 +3836,8 @@ fn resume_mission_session_stamps_slot_handle_env() {
 #[test]
 fn codex_mission_resume_grants_event_log_dir_to_sandbox() {
     let pool = pool_with_schema();
+    let missing_cwd_root = tempfile::tempdir().unwrap();
+    let missing_cwd = missing_cwd_root.path().join("deleted-mission-cwd");
     let now = Utc::now().to_rfc3339();
     let runner_id = ulid::Ulid::new().to_string();
     let mission_id = ulid::Ulid::new().to_string();
@@ -3824,9 +3876,15 @@ fn codex_mission_resume_grants_event_log_dir_to_sandbox() {
         .unwrap();
         conn.execute(
             "INSERT INTO sessions
-                    (id, mission_id, runner_id, slot_id, status, started_at)
-                 VALUES ('codex-resume-sid', ?1, ?2, ?3, 'stopped', ?4)",
-            params![mission_id, runner_id, slot_id, now],
+                    (id, mission_id, runner_id, slot_id, status, started_at, cwd)
+                 VALUES ('codex-resume-sid', ?1, ?2, ?3, 'stopped', ?4, ?5)",
+            params![
+                mission_id,
+                runner_id,
+                slot_id,
+                now,
+                missing_cwd.to_string_lossy()
+            ],
         )
         .unwrap();
     }
@@ -3850,6 +3908,7 @@ fn codex_mission_resume_grants_event_log_dir_to_sandbox() {
     let spec = fake
         .last_spawn_spec()
         .expect("resume should have called spawn");
+    assert_eq!(spec.cwd.as_deref(), Some(missing_cwd.as_path()));
     let mission_dir_arg = mission_dir.to_string_lossy().to_string();
     assert!(
         has_arg_pair(&spec.args, "--add-dir", &mission_dir_arg),
@@ -4823,6 +4882,155 @@ fn runtime_direct_runner_applies_model_and_effort() {
     let defaults = runtime_direct_runner("codex", None, Some(" "), Some("")).unwrap();
     assert_eq!(defaults.model, None);
     assert_eq!(defaults.effort, None);
+}
+
+#[test]
+fn shell_runtime_spawns_and_resumes_as_plain_login_shell() {
+    let pool = pool_with_schema();
+    let project = crate::repo::project::create(&pool.get().unwrap(), "Project", "/tmp").unwrap();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(
+        Some("/usr/local/bin:/usr/bin:/bin".into()),
+        Arc::clone(&fake),
+    );
+    let shell = runtime_direct_runner("shell", Some("/bin/zsh"), None, None).unwrap();
+
+    assert_eq!(shell.args, ["-l"]);
+    assert!(shell.system_prompt.is_none());
+    assert!(shell.env.is_empty());
+    assert!(shell.model.is_none());
+    assert!(shell.effort.is_none());
+
+    let spawned = mgr
+        .spawn_runtime_direct(
+            &shell,
+            Some(&project.id),
+            Some("/tmp"),
+            Some(132),
+            Some(41),
+            std::path::Path::new("/tmp"),
+            Arc::clone(&pool),
+            capture(),
+        )
+        .unwrap();
+    let spec = fake.last_spawn_spec().expect("shell should spawn");
+    assert_eq!(spec.command, "/bin/zsh");
+    assert_eq!(spec.args, ["-l"]);
+    assert_eq!(spec.cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+    assert_eq!(spec.initial_size, Some((132, 41)));
+    assert_eq!(
+        spec.shell_path.as_deref(),
+        Some("/usr/local/bin:/usr/bin:/bin")
+    );
+    assert!(spec.shim_dir.is_none());
+    assert!(spec.bundled_bin_dir.is_none());
+    assert!(spec.env.keys().all(|key| !key.starts_with("RUNNER_")));
+
+    let stored = crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.project_id.as_deref(), Some(project.id.as_str()));
+    assert_eq!(stored.cwd.as_deref(), Some("/tmp"));
+    assert_eq!(stored.agent_runtime.as_deref(), Some("shell"));
+    assert_eq!(stored.agent_command.as_deref(), Some("/bin/zsh"));
+    assert!(stored.agent_session_key.is_none());
+
+    mgr.kill(&spawned.id).unwrap();
+    mgr.resume_on_launch(
+        &spawned.id,
+        None,
+        None,
+        std::path::Path::new("/tmp"),
+        Arc::clone(&pool),
+        capture(),
+    )
+    .unwrap();
+    let resumed = fake.last_spawn_spec().expect("shell should resume");
+    assert_eq!(resumed.command, "/bin/zsh");
+    assert_eq!(resumed.args, ["-l"]);
+    assert_eq!(resumed.cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+    assert!(resumed.env.keys().all(|key| !key.starts_with("RUNNER_")));
+
+    mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn shell_resume_uses_nearest_existing_cwd_and_feeds_notice_first() {
+    let pool = pool_with_schema();
+    let root = tempfile::tempdir().unwrap();
+    let project_cwd = root.path().join("project");
+    let existing_ancestor = root.path().join("worktrees").join("feature");
+    std::fs::create_dir_all(&project_cwd).unwrap();
+    std::fs::create_dir_all(&existing_ancestor).unwrap();
+    let missing_cwd = existing_ancestor.join("deleted").join("nested");
+    let project = crate::repo::project::create(
+        &pool.get().unwrap(),
+        "Project",
+        &project_cwd.to_string_lossy(),
+    )
+    .unwrap();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+                (id, project_id, status, started_at, cwd,
+                 agent_runtime, agent_command, resume_on_launch)
+             VALUES ('shell-missing-cwd', ?1, 'stopped', ?2, ?3,
+                     'shell', '/bin/zsh', 1)",
+            params![
+                project.id,
+                Utc::now().to_rfc3339(),
+                missing_cwd.to_string_lossy()
+            ],
+        )
+        .unwrap();
+    }
+
+    let fake = fake_runtime();
+    let fake_for_hook = Arc::clone(&fake);
+    *fake.spawn_hook.lock().unwrap() = Some(Box::new(move || {
+        fake_for_hook.push_output(0, b"shell startup\r\n");
+    }));
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let events = capture();
+    mgr.resume_on_launch(
+        "shell-missing-cwd",
+        None,
+        None,
+        std::path::Path::new("/tmp"),
+        Arc::clone(&pool),
+        events.clone(),
+    )
+    .unwrap();
+
+    let spawned = fake.last_spawn_spec().expect("shell should relaunch");
+    assert_eq!(spawned.cwd.as_deref(), Some(existing_ancestor.as_path()));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if events.output.lock().unwrap().len() >= 2 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "shell startup output was not forwarded"
+        );
+        std::thread::yield_now();
+    }
+    let output = events.output.lock().unwrap();
+    assert_eq!(output[0].seq, 1);
+    assert_eq!(
+        output[0].bytes,
+        format!(
+            "\x1b[33mrunner: {} no longer exists\r\n        opened {} instead\x1b[0m\r\n",
+            missing_cwd.to_string_lossy(),
+            existing_ancestor.to_string_lossy(),
+        )
+        .into_bytes()
+    );
+    assert_eq!(output[1].bytes, b"shell startup\r\n");
+    drop(output);
+
+    mgr.kill("shell-missing-cwd").unwrap();
 }
 
 #[test]

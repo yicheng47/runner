@@ -5,13 +5,12 @@ use std::path::Path;
 use super::*;
 use crate::surfaces::sidebar_logic::{
     activation_target_for_index, attention_rollups, complete_unpinned_scope_order,
-    container_drop_target, indicator_visible, list_drop_target, mission_attention_state,
-    numbered_sidebar_rows, ordered_pinned_node_ids_after_drop,
+    container_drop_target, direct_tab_attention_state, indicator_visible, list_drop_target,
+    mission_attention_state, numbered_sidebar_rows, ordered_pinned_node_ids_after_drop,
     ordered_root_node_ids_after_project_drop, ordered_visible_node_ids_after_drop,
-    rollup_attention_state, should_show_shortcut_pills, tab_attention_state, take_drag_state,
-    visible_sidebar_walk, AttentionState, DropKind, DropTarget, NumberedSidebarRow,
-    SidebarActivationTarget, SidebarShortcutProject, SidebarShortcutRow,
-    SHORTCUT_PILL_REVEAL_DELAY,
+    rollup_attention_state, should_show_shortcut_pills, take_drag_state, visible_sidebar_walk,
+    AttentionState, DropKind, DropTarget, NumberedSidebarRow, SidebarActivationTarget,
+    SidebarShortcutProject, SidebarShortcutRow, SHORTCUT_PILL_REVEAL_DELAY,
 };
 use crate::*;
 use gpui::{
@@ -183,10 +182,12 @@ impl Render for SidebarNodeDrag {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum SidebarMenuAction {
     NewChat(Option<String>),
+    NewTerminal(Option<String>),
     NewMission(Option<String>),
     TogglePin { node_id: String, pinned: bool },
     Rename(SidebarRenameTarget),
     ArchiveTab(Vec<String>),
+    CloseTerminalTab { tab_id: String, session_id: String },
     ArchiveMission(String),
     DeleteProject(String),
 }
@@ -259,16 +260,21 @@ impl Sidebar {
         let root = cx.entity();
         let create_menu = cx.new(move |menu_cx| {
             let action_root = root.clone();
+            let entries = sidebar_create_menu_entries();
+            let actions = entries
+                .iter()
+                .map(|(_, action)| action.clone())
+                .collect::<Vec<_>>();
             PopoverMenu::new(
                 "sidebar-create",
                 menu_cx.focus_handle(),
-                vec![
-                    UiMenuItem::new("New chat").icon("message-square-plus.svg"),
-                    UiMenuItem::new("New mission").icon("flag.svg"),
-                ],
+                entries.into_iter().map(|(item, _)| item).collect(),
                 Rc::new(move |index, window, cx| {
+                    let Some(action) = actions.get(index).cloned() else {
+                        return;
+                    };
                     action_root.update(cx, |this, cx| {
-                        this.handle_sidebar_create_action(index, window, cx);
+                        this.handle_sidebar_menu_action(action, window, cx)
                     });
                 }),
                 menu_cx,
@@ -692,25 +698,26 @@ impl Sidebar {
                     if members.is_empty() {
                         return None;
                     }
-                    let working = members.iter().any(|member| {
-                        self.archiving_sessions.contains(&member.session_id)
-                            || (member.status == SessionStatus::Running
-                                && self
-                                    .app_store
-                                    .read(cx)
-                                    .session_activity
-                                    .get(&member.session_id)
-                                    == Some(&SessionActivityState::Busy))
-                    });
+                    let attention = direct_tab_attention_state(
+                        members.iter().map(|member| {
+                            let running_busy = self.archiving_sessions.contains(&member.session_id)
+                                || (member.status == SessionStatus::Running
+                                    && self
+                                        .app_store
+                                        .read(cx)
+                                        .session_activity
+                                        .get(&member.session_id)
+                                        == Some(&SessionActivityState::Busy));
+                            (member.agent_runtime.as_str(), running_busy)
+                        }),
+                        node.last_completed_at.as_deref(),
+                        node.last_viewed_at.as_deref(),
+                    );
                     Some(SidebarRow::Tab {
                         node: node.clone(),
                         layout: (*layout).clone(),
                         members,
-                        attention: tab_attention_state(
-                            working,
-                            node.last_completed_at.as_deref(),
-                            node.last_viewed_at.as_deref(),
-                        ),
+                        attention,
                     })
                 }
                 NodeType::Mission => {
@@ -941,29 +948,6 @@ impl Sidebar {
         cx.notify();
     }
 
-    pub(crate) fn handle_sidebar_create_action(
-        &mut self,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match index {
-            0 | 1 => {
-                let Some(shell) = self.shell.upgrade() else {
-                    return;
-                };
-                window.defer(cx, move |window, cx| {
-                    shell.update(cx, |shell, shell_cx| match index {
-                        0 => shell.open_sidebar_chat_modal(None, window, shell_cx),
-                        1 => shell.open_start_mission_modal(None, None, window, shell_cx),
-                        _ => unreachable!(),
-                    });
-                });
-            }
-            _ => unreachable!("sidebar create menu index"),
-        }
-    }
-
     fn begin_sidebar_rename(
         &mut self,
         target: SidebarRenameTarget,
@@ -1107,6 +1091,14 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         let multi_pane = layout.root.leaves().len() > 1;
+        let terminal_session_id = (!multi_pane)
+            .then(|| {
+                members
+                    .iter()
+                    .find(|member| member.agent_runtime == "shell")
+                    .map(|member| member.session_id.clone())
+            })
+            .flatten();
         let entries = tab_menu_entries(
             &node.id,
             node.pinned_position.is_some(),
@@ -1114,8 +1106,10 @@ impl Sidebar {
             multi_pane,
             members
                 .into_iter()
+                .filter(|member| member.agent_runtime != "shell")
                 .map(|member| member.session_id)
                 .collect(),
+            terminal_session_id,
         );
         self.open_sidebar_context_menu(position, 160., entries, window, cx);
     }
@@ -1189,6 +1183,24 @@ impl Sidebar {
                     });
                 }
             }
+            SidebarMenuAction::NewTerminal(project_id) => {
+                self.set_active_project(project_id.clone(), cx);
+                if let Some(project_id) = project_id.as_deref() {
+                    let project_id = project_id.to_owned();
+                    self.update_app_settings(cx, true, move |settings| {
+                        settings.sidebar_projects_open = true;
+                        settings.sidebar_collapsed_projects.remove(&project_id);
+                        true
+                    });
+                }
+                if let Some(shell) = self.shell.upgrade() {
+                    window.defer(cx, move |window, cx| {
+                        shell.update(cx, |shell, shell_cx| {
+                            shell.new_terminal_tab(project_id, window, shell_cx)
+                        });
+                    });
+                }
+            }
             SidebarMenuAction::NewMission(project_id) => {
                 self.set_active_project(project_id.clone(), cx);
                 if let Some(shell) = self.shell.upgrade() {
@@ -1232,6 +1244,15 @@ impl Sidebar {
             }
             SidebarMenuAction::ArchiveTab(session_ids) => {
                 self.archive_sidebar_tab(session_ids, window, cx)
+            }
+            SidebarMenuAction::CloseTerminalTab { tab_id, session_id } => {
+                if let Some(shell) = self.shell.upgrade() {
+                    window.defer(cx, move |window, cx| {
+                        shell.update(cx, |shell, shell_cx| {
+                            shell.request_close_terminal_tab(&tab_id, &session_id, window, shell_cx)
+                        });
+                    });
+                }
             }
             SidebarMenuAction::ArchiveMission(mission_id) => {
                 if !self.archiving_missions.insert(mission_id.clone()) {
@@ -1291,6 +1312,18 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        session_ids.retain(|id| {
+            !self
+                .app_store
+                .read(cx)
+                .sessions
+                .iter()
+                .find(|session| session.session_id == *id)
+                .is_some_and(|session| session.agent_runtime == "shell")
+        });
+        if session_ids.is_empty() {
+            return;
+        }
         if session_ids
             .iter()
             .any(|id| self.archiving_sessions.contains(id))
@@ -2358,13 +2391,10 @@ impl Sidebar {
         let target = sidebar_tab_target(&layout, &members);
         let click_tab = node.id.clone();
         let click_session = target.session_id.clone();
-        let leaf_icon = if pane_count >= 3 {
-            "columns-3.svg"
-        } else if pane_count > 1 {
-            "columns-2.svg"
-        } else {
-            "message-square.svg"
-        };
+        let single_runtime = (pane_count == 1)
+            .then(|| members.first().map(|member| member.agent_runtime.as_str()))
+            .flatten();
+        let leaf_icon = sidebar_tab_icon(pane_count, single_runtime);
         let menu_node = node.clone();
         let menu_layout = layout.clone();
         let menu_members = members.clone();
@@ -3248,8 +3278,9 @@ fn tab_menu_entries(
     original: String,
     multi_pane: bool,
     session_ids: Vec<String>,
+    terminal_session_id: Option<String>,
 ) -> Vec<(UiMenuItem, SidebarMenuAction)> {
-    vec![
+    let mut entries = vec![
         (
             UiMenuItem::new(if pinned { "Unpin" } else { "Pin" }).icon(if pinned {
                 "pin-off.svg"
@@ -3268,13 +3299,38 @@ fn tab_menu_entries(
                 original,
             }),
         ),
-        (
+    ];
+    if !session_ids.is_empty() {
+        entries.push((
             UiMenuItem::new(if multi_pane { "Archive all" } else { "Archive" })
                 .icon("archive.svg")
                 .destructive(true),
             SidebarMenuAction::ArchiveTab(session_ids),
-        ),
-    ]
+        ));
+    } else if let Some(session_id) = terminal_session_id {
+        entries.push((
+            UiMenuItem::new("Close terminal")
+                .icon("close.svg")
+                .destructive(true),
+            SidebarMenuAction::CloseTerminalTab {
+                tab_id: node_id.to_owned(),
+                session_id,
+            },
+        ));
+    }
+    entries
+}
+
+fn sidebar_tab_icon(pane_count: usize, single_runtime: Option<&str>) -> &'static str {
+    if pane_count >= 3 {
+        "columns-3.svg"
+    } else if pane_count > 1 {
+        "columns-2.svg"
+    } else if single_runtime == Some("shell") {
+        "square-terminal.svg"
+    } else {
+        "message-square.svg"
+    }
 }
 
 fn mission_menu_entries(
@@ -3318,8 +3374,29 @@ fn project_create_menu_entries(project_id: &str) -> Vec<(UiMenuItem, SidebarMenu
             SidebarMenuAction::NewChat(Some(project_id.to_owned())),
         ),
         (
+            UiMenuItem::new("New terminal").icon("square-terminal.svg"),
+            SidebarMenuAction::NewTerminal(Some(project_id.to_owned())),
+        ),
+        (
             UiMenuItem::new("New mission").icon("flag.svg"),
             SidebarMenuAction::NewMission(Some(project_id.to_owned())),
+        ),
+    ]
+}
+
+fn sidebar_create_menu_entries() -> Vec<(UiMenuItem, SidebarMenuAction)> {
+    vec![
+        (
+            UiMenuItem::new("New chat").icon("message-square-plus.svg"),
+            SidebarMenuAction::NewChat(None),
+        ),
+        (
+            UiMenuItem::new("New terminal").icon("square-terminal.svg"),
+            SidebarMenuAction::NewTerminal(None),
+        ),
+        (
+            UiMenuItem::new("New mission").icon("flag.svg"),
+            SidebarMenuAction::NewMission(None),
         ),
     ]
 }
@@ -3760,13 +3837,38 @@ pub(crate) fn direct_chat_display_status(
 }
 
 pub(crate) fn session_label(entry: &DirectSessionEntry) -> String {
-    entry.title.clone().unwrap_or_else(|| {
-        entry
-            .handle
-            .as_ref()
-            .map(|handle| format!("@{handle}"))
-            .unwrap_or_else(|| entry.display_name.clone())
-    })
+    entry
+        .title
+        .clone()
+        .unwrap_or_else(|| default_session_label(entry))
+}
+
+pub(crate) fn default_session_label(entry: &DirectSessionEntry) -> String {
+    default_session_label_parts(
+        &entry.agent_runtime,
+        &entry.agent_command,
+        entry.handle.as_deref(),
+        &entry.display_name,
+    )
+}
+
+fn default_session_label_parts(
+    runtime: &str,
+    command: &str,
+    handle: Option<&str>,
+    display_name: &str,
+) -> String {
+    if runtime == "shell" {
+        return std::path::Path::new(command)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("shell")
+            .to_owned();
+    }
+    handle
+        .map(|handle| format!("@{handle}"))
+        .unwrap_or_else(|| display_name.to_owned())
 }
 
 #[cfg(test)]
@@ -3918,8 +4020,28 @@ mod tests {
 
     #[test]
     fn project_create_menu_uses_short_labels_and_project_targets() {
+        let root_entries = sidebar_create_menu_entries();
+        assert_eq!(
+            menu_labels(&root_entries),
+            ["New chat", "New terminal", "New mission"]
+        );
+        assert_eq!(
+            root_entries
+                .iter()
+                .map(|(_, action)| action.clone())
+                .collect::<Vec<_>>(),
+            [
+                SidebarMenuAction::NewChat(None),
+                SidebarMenuAction::NewTerminal(None),
+                SidebarMenuAction::NewMission(None),
+            ]
+        );
+
         let entries = project_create_menu_entries("project-1");
-        assert_eq!(menu_labels(&entries), ["New chat", "New mission"]);
+        assert_eq!(
+            menu_labels(&entries),
+            ["New chat", "New terminal", "New mission"]
+        );
         assert_eq!(
             entries
                 .iter()
@@ -3927,6 +4049,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 SidebarMenuAction::NewChat(Some("project-1".into())),
+                SidebarMenuAction::NewTerminal(Some("project-1".into())),
                 SidebarMenuAction::NewMission(Some("project-1".into())),
             ]
         );
@@ -3946,6 +4069,7 @@ mod tests {
             "My tab".into(),
             false,
             vec!["session-1".into(), "session-2".into()],
+            None,
         );
         assert_eq!(menu_labels(&tab_entries), ["Pin", "Rename tab", "Archive"]);
         assert!(tab_entries[2].0.destructive);
@@ -3973,12 +4097,38 @@ mod tests {
             "My tab".into(),
             true,
             vec!["session-1".into(), "session-2".into()],
+            None,
         );
         assert_eq!(
             menu_labels(&multi_pane_entries),
             ["Pin", "Rename tab", "Archive all"]
         );
         assert!(multi_pane_entries[2].0.destructive);
+
+        let terminal_only_entries = tab_menu_entries(
+            "tab-1",
+            false,
+            "Terminal".into(),
+            false,
+            Vec::new(),
+            Some("shell-1".into()),
+        );
+        assert_eq!(
+            menu_labels(&terminal_only_entries),
+            ["Pin", "Rename tab", "Close terminal"]
+        );
+        assert!(terminal_only_entries[2].0.destructive);
+        assert_eq!(
+            terminal_only_entries[2].1,
+            SidebarMenuAction::CloseTerminalTab {
+                tab_id: "tab-1".into(),
+                session_id: "shell-1".into(),
+            }
+        );
+        assert_eq!(sidebar_tab_icon(1, Some("shell")), "square-terminal.svg");
+        assert_eq!(sidebar_tab_icon(1, Some("codex")), "message-square.svg");
+        assert_eq!(sidebar_tab_icon(2, Some("shell")), "columns-2.svg");
+        assert_eq!(sidebar_tab_icon(3, Some("shell")), "columns-3.svg");
 
         let mission_entries =
             mission_menu_entries("mission-node-1", false, "mission-1", "My mission".into());
@@ -4049,6 +4199,22 @@ mod tests {
             Some("tab-1"),
             "tab-1"
         ));
+    }
+
+    #[test]
+    fn shell_sessions_default_to_the_shell_command_name() {
+        assert_eq!(
+            default_session_label_parts("shell", "/bin/zsh", None, "Shell"),
+            "zsh"
+        );
+        assert_eq!(
+            default_session_label_parts("shell", "fish", None, "Shell"),
+            "fish"
+        );
+        assert_eq!(
+            default_session_label_parts("codex", "codex", Some("coder"), "Codex"),
+            "@coder"
+        );
     }
 
     #[test]

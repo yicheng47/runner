@@ -384,9 +384,18 @@ fn get_direct(conn: &rusqlite::Connection, session_id: &str) -> Result<Option<Di
         .transpose()
 }
 
+fn ensure_archivable_session(conn: &rusqlite::Connection, session_id: &str) -> Result<()> {
+    if repo::session::effective_runtime(conn, session_id)?.as_deref() == Some("shell") {
+        return Err(Error::msg("terminal sessions cannot be archived"));
+    }
+    Ok(())
+}
+
 /// Soft-delete a session: hides it from the SESSION sidebar tray. The row
 /// stays in the table so a future Archived workspace surface can still
 /// surface it. Running sessions cannot be archived — kill them first.
+/// Terminal sessions are rejected because closing their pane permanently
+/// closes the shell instead of preserving a conversation.
 ///
 /// Emits a `session/archived` Tauri event after the row flips so the
 /// sidebar's CHAT list can refresh — without it, archiving from the
@@ -395,6 +404,7 @@ fn get_direct(conn: &rusqlite::Connection, session_id: &str) -> Result<Option<Di
 /// refresh.
 pub fn session_archive(state: &AppCore, session_id: &str) -> Result<()> {
     let mut conn = state.db.get()?;
+    ensure_archivable_session(&conn, session_id)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let updated = repo::session::archive(&tx, session_id, chrono::Utc::now())?;
     if updated == 0 {
@@ -472,6 +482,74 @@ pub fn session_delete(state: &AppCore, session_id: &str) -> Result<()> {
         };
     }
     Ok(())
+}
+
+fn close_shell_row(conn: &mut rusqlite::Connection, session_id: &str) -> Result<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    match repo::session::effective_runtime(&tx, session_id)?.as_deref() {
+        Some("shell") => {}
+        Some(_) => {
+            return Err(Error::msg(format!(
+                "session {session_id} is not a shell session"
+            )))
+        }
+        None => return Err(Error::msg(format!("session not found: {session_id}"))),
+    }
+    repo::node::remove_session(&tx, session_id)?;
+    if repo::session::delete(&tx, session_id)? == 0 {
+        return Err(Error::msg(format!("session not found: {session_id}")));
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Permanently close a shell-backed terminal session. A running child is
+/// stopped first, then the pane's node slot and session row are removed in
+/// one transaction. Chat sessions are rejected because closing their panes
+/// must preserve the conversation for the sidebar.
+pub fn session_close(state: &AppCore, session_id: &str) -> Result<()> {
+    let status = {
+        let conn = state.db.get()?;
+        match repo::session::effective_runtime(&conn, session_id)?.as_deref() {
+            Some("shell") => {}
+            Some(_) => {
+                return Err(Error::msg(format!(
+                    "session {session_id} is not a shell session"
+                )))
+            }
+            None => return Err(Error::msg(format!("session not found: {session_id}"))),
+        }
+        repo::session::get_row(&conn, session_id)?
+            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?
+            .status
+    };
+    if status == SessionStatus::Running {
+        state.sessions.kill(session_id)?;
+    }
+    let mut conn = state.db.get()?;
+    close_shell_row(&mut conn, session_id)?;
+    state.sessions.forget_session_state(session_id);
+    state.events.emit(
+        "session/updated",
+        &serde_json::json!({ "session_id": session_id }),
+    );
+    state
+        .events
+        .emit("chat/layout-changed", &serde_json::json!({}));
+    Ok(())
+}
+
+/// Report whether a shell-backed terminal currently owns a foreground
+/// process group beyond the shell itself. Chat sessions are rejected.
+pub fn session_shell_has_foreground_process(state: &AppCore, session_id: &str) -> Result<bool> {
+    let conn = state.db.get()?;
+    match repo::session::effective_runtime(&conn, session_id)?.as_deref() {
+        Some("shell") => state.sessions.has_foreground_process(session_id),
+        Some(_) => Err(Error::msg(format!(
+            "session {session_id} is not a shell session"
+        ))),
+        None => Err(Error::msg(format!("session not found: {session_id}"))),
+    }
 }
 
 /// Archived direct sessions, newest-archived first — the Settings →
@@ -762,6 +840,47 @@ pub fn session_start_runtime(
     Ok(spawned)
 }
 
+fn resolve_shell_command(shell: Option<String>) -> String {
+    crate::shell_path::configured_shell(shell).unwrap_or_else(|| "/bin/zsh".to_string())
+}
+
+/// Spawn the user's configured login shell as a runtime-only direct session
+/// for a terminal pane. An explicit cwd wins over the project's directory;
+/// no agent prompt, hooks, Runner bus environment, or bundled CLI is added.
+pub fn session_start_shell(
+    state: &AppCore,
+    project_id: Option<String>,
+    cwd: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<SpawnedSession> {
+    let cwd = {
+        let conn = state.db.get()?;
+        project::resolve_cwd(&conn, project_id.as_deref(), cwd)?
+    };
+    let command = resolve_shell_command(std::env::var("SHELL").ok());
+    let runner = runtime_direct_runner("shell", Some(&command), None, None)?;
+    let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
+    let spawned = state
+        .sessions
+        .spawn_runtime_direct(
+            &runner,
+            project_id.as_deref(),
+            cwd.as_deref(),
+            cols,
+            rows,
+            &state.app_data_dir,
+            state.db.clone(),
+            emitter,
+        )
+        .map_err(|e| Error::msg(format!("session_start_shell: {e}")))?;
+    state.events.emit(
+        "session/updated",
+        &serde_json::json!({ "session_id": spawned.id }),
+    );
+    Ok(spawned)
+}
+
 /// Rewrite the project pointer for a set of direct sessions and
 /// reconcile each affected tab node's placement in the same
 /// transaction, so the tree never disagrees with the domain pointers.
@@ -853,6 +972,109 @@ mod tests {
     fn paste_image_format_rejects_unsupported_image_types() {
         let err = paste_image_format("image/gif").unwrap_err().to_string();
         assert!(err.contains("unsupported clipboard image type"));
+    }
+
+    #[test]
+    fn shell_command_uses_environment_value_with_zsh_fallback() {
+        assert_eq!(resolve_shell_command(Some("/bin/fish".into())), "/bin/fish");
+        assert_eq!(resolve_shell_command(None), "/bin/zsh");
+        assert_eq!(resolve_shell_command(Some("  ".into())), "/bin/zsh");
+    }
+
+    #[test]
+    fn close_shell_row_removes_pane_slot_and_session_together() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        let now = Utc::now().to_rfc3339();
+        for (id, runtime) in [("shell", "shell"), ("chat", "codex")] {
+            conn.execute(
+                "INSERT INTO sessions
+                    (id, status, started_at, agent_runtime, agent_command)
+                 VALUES (?1, 'stopped', ?2, ?3, '/bin/sh')",
+                params![id, now, runtime],
+            )
+            .unwrap();
+        }
+        let tab = repo::node::create_tab(
+            &conn,
+            None,
+            "split",
+            0,
+            &serde_json::json!({
+                "preset": "cols-2",
+                "slots": ["shell", "chat"],
+                "sizes": {},
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        close_shell_row(&mut conn, "shell").unwrap();
+
+        assert!(repo::session::get_row(&conn, "shell").unwrap().is_none());
+        assert!(repo::session::get_row(&conn, "chat").unwrap().is_some());
+        let layout: serde_json::Value = serde_json::from_str(
+            repo::node::get(&conn, &tab.id)
+                .unwrap()
+                .unwrap()
+                .layout
+                .as_deref()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(layout["slots"], serde_json::json!([null, "chat"]));
+    }
+
+    #[test]
+    fn close_shell_row_rejects_chat_without_mutation() {
+        let pool = db::open_in_memory().unwrap();
+        let mut conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+                (id, status, started_at, agent_runtime, agent_command)
+             VALUES ('chat', 'stopped', ?1, 'codex', 'codex')",
+            params![Utc::now().to_rfc3339()],
+        )
+        .unwrap();
+        let tab = repo::node::create_tab(
+            &conn,
+            None,
+            "chat",
+            0,
+            &serde_json::json!({
+                "preset": "single",
+                "slots": ["chat"],
+                "sizes": {},
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let error = close_shell_row(&mut conn, "chat").unwrap_err();
+
+        assert!(error.to_string().contains("not a shell session"));
+        assert!(repo::session::get_row(&conn, "chat").unwrap().is_some());
+        assert!(repo::node::get(&conn, &tab.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn terminal_sessions_cannot_be_archived() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+                (id, status, started_at, agent_runtime, agent_command)
+             VALUES ('shell', 'stopped', ?1, 'shell', '/bin/zsh')",
+            params![Utc::now().to_rfc3339()],
+        )
+        .unwrap();
+
+        let error = ensure_archivable_session(&conn, "shell").unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("terminal sessions cannot be archived"));
+        assert!(repo::session::get_row(&conn, "shell").unwrap().is_some());
     }
 
     /// Mirrors the SELECT in `session_list_recent_direct` so we can

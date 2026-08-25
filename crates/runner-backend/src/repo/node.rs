@@ -790,12 +790,14 @@ fn remove_session_except(
     Ok(())
 }
 
-/// Delete a project's member tabs after archiving their sessions. The
-/// project node itself deletes afterwards (self-FK is RESTRICT).
+/// Delete a project's member tabs after archiving their chats and deleting
+/// their terminals. The project node itself deletes afterwards (self-FK is
+/// RESTRICT). Returns the archived chat ids followed by the deleted terminal
+/// ids.
 pub fn delete_container_tabs_and_archive(
     tx: &Transaction<'_>,
     container_id: &str,
-) -> rusqlite::Result<Vec<String>> {
+) -> rusqlite::Result<(Vec<String>, Vec<String>)> {
     let rows = {
         let mut stmt = tx.prepare(&format!(
             "SELECT {} FROM nodes
@@ -810,23 +812,39 @@ pub fn delete_container_tabs_and_archive(
     };
     let session_ids: HashSet<String> = rows.iter().flat_map(session_ids).collect();
     let archived_at = Utc::now().to_rfc3339();
+    let mut archived_ids = Vec::new();
+    let mut deleted_ids = Vec::new();
     for id in &session_ids {
-        let updated = tx.execute(
-            "UPDATE sessions SET archived_at = ?2
-             WHERE id = ?1 AND mission_id IS NULL AND slot_id IS NULL AND status != 'running'",
-            rusqlite::params![id, archived_at],
-        )?;
+        let shell = crate::repo::session::effective_runtime(tx, id)?.as_deref() == Some("shell");
+        let updated = if shell {
+            tx.execute(
+                "DELETE FROM sessions
+                 WHERE id = ?1 AND mission_id IS NULL AND slot_id IS NULL AND status != 'running'",
+                [id],
+            )?
+        } else {
+            tx.execute(
+                "UPDATE sessions SET archived_at = ?2
+                 WHERE id = ?1 AND mission_id IS NULL AND slot_id IS NULL AND status != 'running'",
+                rusqlite::params![id, archived_at],
+            )?
+        };
         if updated == 0 {
             return Err(rusqlite::Error::InvalidParameterName(format!(
                 "session {id} is missing or still running"
             )));
+        }
+        if shell {
+            deleted_ids.push(id.clone());
+        } else {
+            archived_ids.push(id.clone());
         }
     }
     tx.execute(
         "DELETE FROM nodes WHERE parent_id = ?1 AND type = 'tab'",
         [container_id],
     )?;
-    Ok(session_ids.into_iter().collect())
+    Ok((archived_ids, deleted_ids))
 }
 
 #[cfg(test)]
@@ -1153,10 +1171,16 @@ mod tests {
     }
 
     #[test]
-    fn project_tab_delete_archives_members_before_restricted_delete() {
+    fn project_tab_delete_archives_chats_and_deletes_terminals() {
         let pool = db::open_in_memory().unwrap();
         let mut conn = pool.get().unwrap();
-        insert_session(&conn, "s1", None);
+        insert_session(&conn, "chat", None);
+        conn.execute(
+            "INSERT INTO sessions (id, status, agent_runtime, agent_command)
+             VALUES ('terminal', 'stopped', 'shell', '/bin/zsh')",
+            [],
+        )
+        .unwrap();
         let project = crate::repo::project::create(&conn, "Project", "/tmp/project").unwrap();
         let project_node = super::ensure_project_node(&conn, &project.id).unwrap();
         super::create_tab(
@@ -1164,7 +1188,7 @@ mod tests {
             Some(&project_node.id),
             "",
             0,
-            r#"{"preset":"single","slots":["s1"],"sizes":{}}"#,
+            r#"{"preset":"cols-2","slots":["chat","terminal"],"sizes":{}}"#,
         )
         .unwrap();
         assert!(conn
@@ -1172,19 +1196,24 @@ mod tests {
             .is_err());
 
         let tx = conn.transaction().unwrap();
-        let ids = super::delete_container_tabs_and_archive(&tx, &project_node.id).unwrap();
-        assert_eq!(ids, ["s1"]);
+        let (archived_ids, deleted_ids) =
+            super::delete_container_tabs_and_archive(&tx, &project_node.id).unwrap();
+        assert_eq!(archived_ids, ["chat"]);
+        assert_eq!(deleted_ids, ["terminal"]);
         super::delete(&tx, &project_node.id).unwrap();
         tx.commit().unwrap();
 
         let archived: Option<String> = conn
             .query_row(
-                "SELECT archived_at FROM sessions WHERE id = 's1'",
+                "SELECT archived_at FROM sessions WHERE id = 'chat'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
         assert!(archived.is_some());
+        assert!(crate::repo::session::get_row(&conn, "terminal")
+            .unwrap()
+            .is_none());
         assert!(super::get(&conn, &project_node.id).unwrap().is_none());
         assert!(super::list(&conn).unwrap().is_empty());
     }
@@ -1517,8 +1546,10 @@ mod tests {
         let mission_node = super::ensure_mission_node(&conn, "m1", Some(&project.id)).unwrap();
 
         let tx = conn.transaction().unwrap();
-        let archived = super::delete_container_tabs_and_archive(&tx, &project_node.id).unwrap();
+        let (archived, deleted) =
+            super::delete_container_tabs_and_archive(&tx, &project_node.id).unwrap();
         assert!(archived.is_empty());
+        assert!(deleted.is_empty());
         assert!(
             super::delete(&tx, &project_node.id).is_err(),
             "RESTRICT must block the project-node delete while a child remains"

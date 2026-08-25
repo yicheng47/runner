@@ -143,6 +143,26 @@ pub(crate) fn tab_attention_state(
     }
 }
 
+pub(crate) fn direct_tab_attention_state<'a>(
+    members: impl IntoIterator<Item = (&'a str, bool)>,
+    last_completed_at: Option<&str>,
+    last_viewed_at: Option<&str>,
+) -> AttentionState {
+    let mut has_chat = false;
+    let mut any_chat_running_busy = false;
+    for (runtime, running_busy) in members {
+        if runtime != "shell" {
+            has_chat = true;
+            any_chat_running_busy |= running_busy;
+        }
+    }
+    if has_chat {
+        tab_attention_state(any_chat_running_busy, last_completed_at, last_viewed_at)
+    } else {
+        AttentionState::None
+    }
+}
+
 fn tab_has_unread_completion(
     last_completed_at: Option<&str>,
     last_viewed_at: Option<&str>,
@@ -498,6 +518,26 @@ mod tests {
             AttentionState::Working
         );
         assert_eq!(mission_attention_state(true, true), AttentionState::None);
+    }
+
+    #[test]
+    fn direct_tab_attention_ignores_shell_members() {
+        assert_eq!(
+            direct_tab_attention_state(
+                [("shell", true)],
+                Some("2026-08-19T02:00:00Z"),
+                Some("2026-08-19T01:00:00Z"),
+            ),
+            AttentionState::None,
+        );
+        assert_eq!(
+            direct_tab_attention_state([("shell", true), ("codex", false)], None, None,),
+            AttentionState::None,
+        );
+        assert_eq!(
+            direct_tab_attention_state([("shell", false), ("codex", true)], None, None,),
+            AttentionState::Working,
+        );
     }
 
     #[test]

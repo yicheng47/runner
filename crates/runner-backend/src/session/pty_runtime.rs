@@ -316,6 +316,35 @@ impl SessionRuntime for PtyRuntime {
             command: Some(handle.command.clone()),
         }))
     }
+
+    #[cfg(unix)]
+    fn has_foreground_process(&self, session: &RuntimeSession) -> RuntimeResult<Option<bool>> {
+        let handle = match self
+            .sessions
+            .lock()
+            .expect("PtyRuntime.sessions poisoned")
+            .get(&session.session_id)
+        {
+            Some(handle) => Arc::clone(handle),
+            None => return Ok(Some(false)),
+        };
+        let foreground_pid = handle
+            .master
+            .lock()
+            .expect("SessionHandle.master poisoned")
+            .process_group_leader();
+        Ok(distinct_foreground_process(handle.pid, foreground_pid))
+    }
+}
+
+#[cfg(unix)]
+fn distinct_foreground_process(
+    shell_pid: Option<i32>,
+    foreground_pid: Option<i32>,
+) -> Option<bool> {
+    shell_pid
+        .zip(foreground_pid)
+        .map(|(shell_pid, foreground_pid)| shell_pid != foreground_pid)
 }
 
 fn stop_and_reap_child(
@@ -1132,6 +1161,14 @@ fn wait_for_process_exit_until(pid: i32, deadline: Instant) -> bool {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[cfg(unix)]
+    #[test]
+    fn foreground_confirmation_only_applies_beyond_the_shell_process_group() {
+        assert_eq!(distinct_foreground_process(Some(41), Some(41)), Some(false));
+        assert_eq!(distinct_foreground_process(Some(41), Some(42)), Some(true));
+        assert_eq!(distinct_foreground_process(Some(41), None), None);
+    }
 
     fn spec(session_id: &str, command: &str, args: &[&str]) -> SpawnSpec {
         let env: BTreeMap<String, String> = BTreeMap::new();

@@ -84,12 +84,11 @@ pub fn project_reorder(state: &AppCore, ordered_ids: Vec<String>) -> Result<Vec<
     Ok(rows)
 }
 
-/// Delete a project, archiving every node below it: member missions
-/// archive first (each a complete self-consistent operation), then
-/// member tabs' chats archive with the project node and row in one transaction. The
-/// project row's ON DELETE SET NULL then unbinds the archived rows'
-/// pointers, so restored items come back unfiled. Returns the
-/// archived chat session ids for buffer purge + event fanout.
+/// Delete a project after archiving member missions and chats and closing member
+/// terminals. Missions archive first as complete self-consistent operations;
+/// member tabs and the project node and row then change in one transaction. The
+/// project row's ON DELETE SET NULL unbinds the archived rows' pointers, so
+/// restored items come back unfiled. Returns archived chat ids for event fanout.
 pub(crate) async fn project_delete_impl(state: &AppCore, id: &str) -> Result<Vec<String>> {
     let (project_node, children) = {
         let conn = state.db.get()?;
@@ -110,15 +109,15 @@ pub(crate) async fn project_delete_impl(state: &AppCore, id: &str) -> Result<Vec
     crate::ops::node::archive_child_missions(state, &children.missions).await?;
     crate::ops::node::kill_running_children(state, &children.session_ids)?;
 
-    let archived_ids = {
+    let (archived_ids, deleted_ids) = {
         let mut conn = state.db.get()?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         // Tabs are re-queried inside the transaction (not the earlier
         // snapshot), so late arrivals archive too — or fail the guard
         // if their sessions are still running.
-        let archived = match project_node.as_ref() {
+        let removed = match project_node.as_ref() {
             Some(node) => repo::node::delete_container_tabs_and_archive(&tx, &node.id)?,
-            None => Vec::new(),
+            None => (Vec::new(), Vec::new()),
         };
         // A plain RESTRICT-guarded delete: a child that arrived during
         // the archive gap (another window moving a mission in) fails
@@ -131,9 +130,9 @@ pub(crate) async fn project_delete_impl(state: &AppCore, id: &str) -> Result<Vec
             return Err(Error::msg(format!("project not found: {id}")));
         }
         tx.commit()?;
-        archived
+        removed
     };
-    for session_id in &archived_ids {
+    for session_id in archived_ids.iter().chain(&deleted_ids) {
         state.sessions.forget_session_state(session_id);
     }
     Ok(archived_ids)

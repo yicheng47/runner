@@ -257,4 +257,10 @@ pub trait SessionRuntime: Send + Sync {
     /// known; the caller branches on `SessionStatus.alive` and
     /// `exit_code`. Errors are reserved for transport failures.
     fn status(&self, session: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>>;
+
+    /// Whether the PTY's foreground process group differs from the spawned
+    /// shell. Runtimes without a local PTY can leave this unknown.
+    fn has_foreground_process(&self, _session: &RuntimeSession) -> RuntimeResult<Option<bool>> {
+        Ok(None)
+    }
 }

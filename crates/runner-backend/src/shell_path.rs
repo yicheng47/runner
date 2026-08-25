@@ -95,10 +95,18 @@ pub fn resolve_login_shell_env() -> DiscoveryResult {
     resolve_shell_env(&shell, RESOLVE_TIMEOUT, started)
 }
 
-fn configured_shell(value: Option<String>) -> Option<String> {
+pub(crate) fn configured_shell(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+pub(crate) fn shell_login_args(shell: &str) -> Vec<String> {
+    #[cfg(unix)]
+    if shell_probe_args(shell).is_some() {
+        return vec!["-l".to_string()];
+    }
+    Vec::new()
 }
 
 #[cfg(unix)]
@@ -356,6 +364,9 @@ mod tests {
             Some(&["-i", "-l", "-c"][..])
         );
         assert_eq!(shell_probe_args("/bin/tcsh"), None);
+        assert_eq!(shell_login_args("/bin/zsh"), ["-l"]);
+        assert_eq!(shell_login_args("/opt/homebrew/bin/fish"), ["-l"]);
+        assert!(shell_login_args("/usr/local/bin/elvish").is_empty());
         assert_eq!(configured_shell(None), None);
         assert_eq!(configured_shell(Some("  ".into())), None);
         assert_eq!(

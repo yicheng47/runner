@@ -349,6 +349,61 @@ impl PaneLayout {
         }
     }
 
+    pub fn prepare_new_pane(&mut self) -> Result<String> {
+        if let Some(pane_id) = self
+            .root
+            .leaves()
+            .into_iter()
+            .find(|leaf| leaf.id == self.focused_pane_id && leaf.session_id.is_none())
+            .map(|leaf| leaf.id.clone())
+        {
+            return Ok(pane_id);
+        }
+        if let Some(pane_id) = self
+            .root
+            .leaves()
+            .into_iter()
+            .find(|leaf| leaf.session_id.is_none())
+            .map(|leaf| leaf.id.clone())
+        {
+            self.focused_pane_id = pane_id.clone();
+            return Ok(pane_id);
+        }
+
+        let next_preset = match self.preset {
+            PresetKind::Single => PresetKind::Cols2,
+            PresetKind::Cols2 => PresetKind::Cols3,
+            PresetKind::Rows2 => PresetKind::Rows3,
+            PresetKind::Main2 | PresetKind::Cols3 | PresetKind::Rows3 => {
+                bail!("this tab already has three panes")
+            }
+        };
+        let leaves = self.root.leaves();
+        let focused = leaves
+            .iter()
+            .position(|leaf| leaf.id == self.focused_pane_id)
+            .context("focused pane is missing")?;
+        let mut slots = leaves
+            .into_iter()
+            .map(|leaf| leaf.session_id.clone())
+            .collect::<Vec<_>>();
+        slots.insert(focused + 1, None);
+        self.preset = next_preset;
+        self.root = build_preset_tree(next_preset, &slots);
+        self.focused_pane_id = self.root.leaves()[focused + 1].id.clone();
+        Ok(self.focused_pane_id.clone())
+    }
+
+    pub fn next_split_preset(&self, orientation: SplitOrientation) -> Result<PresetKind> {
+        match (self.root.leaves().len(), orientation) {
+            (1, SplitOrientation::Row) => Ok(PresetKind::Cols2),
+            (1, SplitOrientation::Column) => Ok(PresetKind::Rows2),
+            (2, SplitOrientation::Row) => Ok(PresetKind::Cols3),
+            (2, SplitOrientation::Column) => Ok(PresetKind::Rows3),
+            _ => bail!("this tab already has three panes"),
+        }
+    }
+
     pub fn close_pane(&mut self, pane_id: &str) -> bool {
         if matches!(self.root, PaneNode::Leaf(_)) {
             return false;
@@ -646,4 +701,100 @@ fn valid_sizes(sizes: [f32; 2]) -> bool {
     sizes
         .iter()
         .all(|size| size.is_finite() && *size > 0. && *size < 100.)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PaneLayout, PresetKind, SplitOrientation};
+
+    #[test]
+    fn closing_a_pane_only_removes_it_from_the_tab_layout() {
+        let visible = vec!["chat".to_owned(), "terminal".to_owned()];
+        let mut layout = PaneLayout::fresh(PresetKind::Cols2, Some("chat"), &visible);
+        let chat_pane = layout
+            .root
+            .leaves()
+            .into_iter()
+            .find(|leaf| leaf.session_id.as_deref() == Some("chat"))
+            .unwrap()
+            .id
+            .clone();
+
+        assert!(layout.close_pane(&chat_pane));
+
+        assert_eq!(layout.preset, PresetKind::Single);
+        assert_eq!(layout.session_ids(), ["terminal"]);
+    }
+
+    #[test]
+    fn preparing_a_new_pane_uses_focus_then_splits_up_to_three() {
+        let mut empty = PaneLayout::fresh(PresetKind::Cols2, Some("chat"), &["chat".into()]);
+        let empty_id = empty.focused_pane_id.clone();
+        assert_eq!(empty.prepare_new_pane().unwrap(), empty_id);
+        assert_eq!(empty.preset, PresetKind::Cols2);
+
+        let mut nonfocused_empty =
+            PaneLayout::fresh(PresetKind::Cols2, Some("chat"), &["chat".into()]);
+        let empty_id = nonfocused_empty.focused_pane_id.clone();
+        assert!(nonfocused_empty.focus_session("chat"));
+        assert_eq!(nonfocused_empty.prepare_new_pane().unwrap(), empty_id);
+        assert_eq!(nonfocused_empty.focused_pane_id, empty_id);
+        assert_eq!(nonfocused_empty.preset, PresetKind::Cols2);
+
+        let mut capped_with_empty = PaneLayout::fresh(
+            PresetKind::Cols3,
+            Some("chat"),
+            &["chat".into(), "terminal".into()],
+        );
+        let empty_id = capped_with_empty.focused_pane_id.clone();
+        assert!(capped_with_empty.focus_session("chat"));
+        assert_eq!(capped_with_empty.prepare_new_pane().unwrap(), empty_id);
+        assert_eq!(capped_with_empty.focused_pane_id, empty_id);
+        assert_eq!(capped_with_empty.preset, PresetKind::Cols3);
+
+        let mut single = PaneLayout::fresh(PresetKind::Single, Some("chat"), &["chat".into()]);
+        let target = single.prepare_new_pane().unwrap();
+        assert_eq!(single.preset, PresetKind::Cols2);
+        assert_eq!(single.root.leaves()[1].id, target);
+        assert_eq!(single.session_ids(), ["chat"]);
+
+        single.assign_session(&target, "terminal").unwrap();
+        let target = single.prepare_new_pane().unwrap();
+        assert_eq!(single.preset, PresetKind::Cols3);
+        assert_eq!(single.root.leaves()[2].id, target);
+        single.assign_session(&target, "second-terminal").unwrap();
+        assert!(single.prepare_new_pane().is_err());
+    }
+
+    #[test]
+    fn applying_two_pane_presets_leaves_the_new_pane_empty_and_focused() {
+        for preset in [PresetKind::Cols2, PresetKind::Rows2] {
+            let mut layout = PaneLayout::fresh(PresetKind::Single, Some("chat"), &["chat".into()]);
+
+            layout.apply_preset(preset);
+
+            assert_eq!(layout.session_ids(), ["chat"]);
+            assert_eq!(layout.root.leaves().len(), 2);
+            assert!(layout.focused_session_id().is_none());
+        }
+    }
+
+    #[test]
+    fn split_shortcuts_grow_rows_or_columns_and_stop_at_three() {
+        for (orientation, two, three) in [
+            (SplitOrientation::Row, PresetKind::Cols2, PresetKind::Cols3),
+            (
+                SplitOrientation::Column,
+                PresetKind::Rows2,
+                PresetKind::Rows3,
+            ),
+        ] {
+            let mut layout = PaneLayout::fresh(PresetKind::Single, Some("chat"), &["chat".into()]);
+            assert_eq!(layout.next_split_preset(orientation).unwrap(), two);
+            layout.apply_preset(two);
+            assert_eq!(layout.next_split_preset(orientation).unwrap(), three);
+            layout.apply_preset(three);
+            assert!(layout.next_split_preset(orientation).is_err());
+        }
+    }
 }

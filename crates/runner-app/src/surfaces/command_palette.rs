@@ -15,8 +15,10 @@ use crate::*;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum PaletteKind {
+    Command,
     Mission,
     Chat,
+    Terminal,
     Runner,
     Crew,
     Settings,
@@ -25,8 +27,10 @@ enum PaletteKind {
 impl PaletteKind {
     fn label(self) -> &'static str {
         match self {
+            Self::Command => "command",
             Self::Mission => "mission",
             Self::Chat => "chat",
+            Self::Terminal => "terminal",
             Self::Runner => "runner",
             Self::Crew => "crew",
             Self::Settings => "settings",
@@ -35,8 +39,10 @@ impl PaletteKind {
 
     fn icon(self) -> &'static str {
         match self {
+            Self::Command => "square-terminal.svg",
             Self::Mission => "flag.svg",
             Self::Chat => "message-square.svg",
+            Self::Terminal => "square-terminal.svg",
             Self::Runner => "terminal.svg",
             Self::Crew => "users.svg",
             Self::Settings => "settings.svg",
@@ -46,6 +52,7 @@ impl PaletteKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PaletteDestination {
+    NewTerminal,
     Mission(String),
     Chat(String),
     Runner(String),
@@ -86,6 +93,14 @@ fn chat_search_text(
     .to_lowercase()
 }
 
+fn session_palette_kind(runtime: &str) -> PaletteKind {
+    if runtime == "shell" {
+        PaletteKind::Terminal
+    } else {
+        PaletteKind::Chat
+    }
+}
+
 fn palette_items(
     missions: &[MissionSummary],
     chats: &[DirectSessionEntry],
@@ -93,7 +108,15 @@ fn palette_items(
     crews: &[CrewListItem],
 ) -> Vec<PaletteItem> {
     let mut items =
-        Vec::with_capacity(missions.len() + chats.len() + runners.len() + crews.len() + 1);
+        Vec::with_capacity(missions.len() + chats.len() + runners.len() + crews.len() + 2);
+    items.push(PaletteItem {
+        kind: PaletteKind::Command,
+        id: "new-terminal".into(),
+        label: "New terminal".into(),
+        destination: PaletteDestination::NewTerminal,
+        search_text: "new terminal shell pane".into(),
+        order: 0,
+    });
     items.extend(
         missions
             .iter()
@@ -109,7 +132,7 @@ fn palette_items(
             }),
     );
     items.extend(chats.iter().enumerate().map(|(order, chat)| PaletteItem {
-        kind: PaletteKind::Chat,
+        kind: session_palette_kind(&chat.agent_runtime),
         id: chat.session_id.clone(),
         label: chat_label(
             chat.handle.as_deref(),
@@ -321,6 +344,10 @@ impl CommandPaletteState {
         }
         let navigated = self.shell.upgrade().is_some_and(|shell| {
             shell.update(cx, |shell, shell_cx| match destination {
+                PaletteDestination::NewTerminal => {
+                    shell.new_terminal(window, shell_cx);
+                    true
+                }
                 PaletteDestination::Mission(mission_id) => {
                     shell.open_mission(mission_id, window, shell_cx);
                     true
@@ -461,7 +488,7 @@ impl Render for CommandPaletteState {
                 .text_size(rems(12. / 16.))
                 .text_color(theme::faint())
                 .child(if self.query.trim().is_empty() {
-                    "No missions, chats, runners, or crews yet."
+                    "No commands, missions, chats, runners, or crews yet."
                 } else {
                     "No matches."
                 })
@@ -583,6 +610,12 @@ mod tests {
     #[test]
     fn empty_query_groups_kinds_and_preserves_per_kind_recency() {
         let items = vec![
+            item(
+                PaletteKind::Command,
+                "new-terminal",
+                "new terminal shell pane",
+                0,
+            ),
             item(PaletteKind::Crew, "crew-1", "crew", 0),
             item(PaletteKind::Mission, "mission-2", "mission", 1),
             item(PaletteKind::Settings, "settings", "settings preferences", 0),
@@ -597,6 +630,7 @@ mod tests {
         assert_eq!(
             ids,
             [
+                "new-terminal",
                 "mission-1",
                 "mission-2",
                 "chat-1",
@@ -604,6 +638,18 @@ mod tests {
                 "crew-1",
                 "settings"
             ]
+        );
+    }
+
+    #[test]
+    fn palette_always_offers_new_terminal_as_a_command() {
+        let items = palette_items(&[], &[], &[], &[]);
+        assert_eq!(items[0].label, "New terminal");
+        assert_eq!(items[0].kind, PaletteKind::Command);
+        assert_eq!(items[0].destination, PaletteDestination::NewTerminal);
+        assert_eq!(
+            filtered_palette_items(&items, "shell")[0].id,
+            "new-terminal"
         );
     }
 
@@ -640,5 +686,11 @@ mod tests {
             ),
             "coder release prep /users/jason/runner"
         );
+    }
+
+    #[test]
+    fn shell_sessions_are_terminal_palette_items_not_chats() {
+        assert_eq!(session_palette_kind("shell"), PaletteKind::Terminal);
+        assert_eq!(session_palette_kind("codex"), PaletteKind::Chat);
     }
 }

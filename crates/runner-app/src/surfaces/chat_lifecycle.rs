@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::Duration;
 
 use runner_backend::model::SessionStatus;
@@ -65,6 +66,30 @@ pub(crate) fn ended_subtitle(
     }
     "The PTY is closed, but the conversation is preserved. Resume to pick up where you left off."
         .into()
+}
+
+pub(crate) fn shell_exited_subtitle(
+    exit_code: Option<i32>,
+    shell: &str,
+    cwd: Option<&str>,
+    home: Option<&str>,
+) -> String {
+    let exit = exit_code.map_or_else(|| "exit unknown".into(), |code| format!("exit {code}"));
+    let cwd = cwd.map_or_else(
+        || "unknown cwd".to_owned(),
+        |cwd| {
+            home.and_then(|home| Path::new(cwd).strip_prefix(home).ok())
+                .map(|relative| {
+                    if relative.as_os_str().is_empty() {
+                        "~".to_owned()
+                    } else {
+                        format!("~/{}", relative.display())
+                    }
+                })
+                .unwrap_or_else(|| cwd.to_owned())
+        },
+    );
+    format!("{exit} · {shell} · {cwd}")
 }
 
 pub(crate) fn transition_should_settle(
@@ -138,6 +163,23 @@ mod tests {
             .starts_with("The PTY exited unexpectedly."));
         assert!(ended_subtitle(SessionStatus::Stopped, true, None)
             .starts_with("The PTY is closed, but the conversation is preserved."));
+    }
+
+    #[test]
+    fn shell_exit_copy_includes_code_shell_and_abbreviated_cwd() {
+        assert_eq!(
+            shell_exited_subtitle(
+                Some(0),
+                "zsh",
+                Some("/Users/jason/workspace/oec"),
+                Some("/Users/jason")
+            ),
+            "exit 0 · zsh · ~/workspace/oec"
+        );
+        assert_eq!(
+            shell_exited_subtitle(None, "fish", Some("/tmp/project"), Some("/Users/jason")),
+            "exit unknown · fish · /tmp/project"
+        );
     }
 
     #[test]

@@ -423,13 +423,21 @@ pub(crate) fn record_session_completion(
     session_id: &str,
 ) -> Result<()> {
     let mut conn = db.get()?;
+    if repo::session::effective_runtime(&conn, session_id)?.as_deref() == Some("shell") {
+        return Ok(());
+    }
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     repo::node::ensure_active_sessions(&tx)?;
     let Some(tab) = repo::node::find_for_session(&tx, session_id)? else {
         tx.commit()?;
         return Ok(());
     };
-    let member_ids = repo::node::session_ids(&tab);
+    let mut member_ids = Vec::new();
+    for id in repo::node::session_ids(&tab) {
+        if repo::session::effective_runtime(&tx, &id)?.as_deref() != Some("shell") {
+            member_ids.push(id);
+        }
+    }
     let activity = sessions.activity_snapshot();
     if member_ids
         .iter()
@@ -922,6 +930,98 @@ mod tests {
             .unwrap();
         assert_eq!(row.last_completed_at.as_deref(), Some(first.as_str()));
         assert_eq!(drain_attention_count(&mut rx), 1);
+    }
+
+    #[test]
+    fn shell_activity_never_records_tab_completion() {
+        let state = test_core();
+        state
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions
+                    (id, status, started_at, agent_runtime, agent_command)
+                 VALUES ('shell', 'running', ?1, 'shell', '/bin/zsh')",
+                [Utc::now().to_rfc3339()],
+            )
+            .unwrap();
+        let tab = create_tab(&state, &["shell"]);
+        let events = state.session_events();
+        state.sessions.arm_completion("shell");
+
+        state.sessions.publish_direct_activity(
+            "shell",
+            SessionActivityState::Busy,
+            "test",
+            &events,
+        );
+        state.sessions.publish_direct_activity(
+            "shell",
+            SessionActivityState::Idle,
+            "test",
+            &events,
+        );
+
+        let row = repo::node::get(&state.db.get().unwrap(), &tab.id)
+            .unwrap()
+            .unwrap();
+        assert!(row.last_completed_at.is_none());
+        assert!(row.last_viewed_at.is_none());
+    }
+
+    #[test]
+    fn shell_peer_does_not_block_or_trigger_chat_completion() {
+        let state = test_core();
+        let conn = state.db.get().unwrap();
+        let now = Utc::now().to_rfc3339();
+        for (id, runtime, command) in [("chat", "codex", "codex"), ("shell", "shell", "/bin/zsh")] {
+            conn.execute(
+                "INSERT INTO sessions
+                    (id, status, started_at, agent_runtime, agent_command)
+                 VALUES (?1, 'running', ?2, ?3, ?4)",
+                rusqlite::params![id, now, runtime, command],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let tab = create_tab(&state, &["chat", "shell"]);
+        let events = state.session_events();
+        state.sessions.arm_completion("chat");
+
+        state
+            .sessions
+            .publish_direct_activity("chat", SessionActivityState::Busy, "test", &events);
+        state.sessions.publish_direct_activity(
+            "shell",
+            SessionActivityState::Busy,
+            "test",
+            &events,
+        );
+        state.sessions.publish_direct_activity(
+            "shell",
+            SessionActivityState::Idle,
+            "test",
+            &events,
+        );
+        let before = repo::node::get(&state.db.get().unwrap(), &tab.id)
+            .unwrap()
+            .unwrap();
+        assert!(before.last_completed_at.is_none());
+
+        state.sessions.publish_direct_activity(
+            "shell",
+            SessionActivityState::Busy,
+            "test",
+            &events,
+        );
+        state
+            .sessions
+            .publish_direct_activity("chat", SessionActivityState::Idle, "test", &events);
+        let after = repo::node::get(&state.db.get().unwrap(), &tab.id)
+            .unwrap()
+            .unwrap();
+        assert!(after.last_completed_at.is_some());
     }
 
     #[test]
