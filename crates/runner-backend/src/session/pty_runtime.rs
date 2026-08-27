@@ -36,7 +36,20 @@ const RUNTIME_LABEL: &str = "native-pty";
 const READ_BUF: usize = 8 * 1024;
 const DEFAULT_IDLE_THRESHOLD: Duration = Duration::from_millis(750);
 const IDLE_MONITOR_POLL: Duration = Duration::from_millis(50);
-const STOP_GRACE: Duration = Duration::from_millis(250);
+/// How long a runtime gets to exit on its own after SIGHUP before its
+/// process group is SIGKILLed. Sized to claude-code's own shutdown failsafe
+/// (SIGTERM to each tool shell, SIGKILL backstop at 1.5 s, SessionEnd hooks,
+/// force-exit at 5 s) so a stop never cuts that cleanup short; codex has no
+/// SIGHUP handler and exits at once, so the window costs nothing there.
+#[cfg(not(test))]
+const HUP_GRACE: Duration = Duration::from_secs(6);
+#[cfg(test)]
+const HUP_GRACE: Duration = Duration::from_millis(250);
+const KILL_GRACE: Duration = Duration::from_millis(250);
+/// How long descendants that outlived the agent get after SIGTERM before
+/// SIGKILL. codex has no SIGHUP handler, so anything it was running (in its
+/// own session via `setsid`) is still alive once codex is gone.
+const DESCENDANT_TERM_GRACE: Duration = Duration::from_secs(1);
 const STOP_POLL: Duration = Duration::from_millis(10);
 const ORPHAN_SWEEP_CONFIRM: Duration = Duration::from_secs(1);
 /// Window right after a `resize` (SIGWINCH) during which repaint bytes
@@ -234,8 +247,11 @@ impl SessionRuntime for PtyRuntime {
         let handle = lookup(self, &session.session_id)?;
         let mut killer = handle.killer.lock().expect("killer poisoned");
         let child = handle.child.lock().expect("child slot poisoned").take();
+        // Snapshot before SIGHUP: once the agent is gone its children are
+        // reparented to launchd and nothing else can tell they were its.
+        let descendants = handle.pid.map(live_descendants).unwrap_or_default();
 
-        match child {
+        let result = match child {
             Some(mut child) => {
                 let result = stop_and_reap_child(
                     &session.session_id,
@@ -264,7 +280,11 @@ impl SessionRuntime for PtyRuntime {
                 killer.as_mut(),
                 &handle,
             ),
+        };
+        if result.is_ok() {
+            reap_descendants(&session.session_id, &descendants);
         }
+        result
     }
 
     fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
@@ -365,14 +385,19 @@ fn stop_and_reap_child(
             .map_err(|e| RuntimeError::Msg(format!("wait {session_id}: {e}")));
     }
 
+    let hup_sent = Instant::now();
     let hup_error = killer.kill().err();
-    if poll_until(STOP_POLL, STOP_GRACE, || {
+    if poll_until(STOP_POLL, HUP_GRACE, || {
         child
             .try_wait()
             .map_err(|e| RuntimeError::Msg(format!("try_wait {session_id}: {e}")))
     })?
     .is_some()
     {
+        log::info!(
+            "session {session_id} exited {:?} after SIGHUP",
+            hup_sent.elapsed()
+        );
         return child
             .wait()
             .map_err(|e| RuntimeError::Msg(format!("wait {session_id}: {e}")));
@@ -383,8 +408,11 @@ fn stop_and_reap_child(
             "session {session_id} survived SIGHUP but has no pid for SIGKILL"
         ))
     })?;
+    log::warn!(
+        "session {session_id} survived SIGHUP for {HUP_GRACE:?}; SIGKILL to its process group"
+    );
     let kill_error = signal_process_group(pid, libc::SIGKILL).err();
-    if poll_until(STOP_POLL, STOP_GRACE, || {
+    if poll_until(STOP_POLL, KILL_GRACE, || {
         child
             .try_wait()
             .map_err(|e| RuntimeError::Msg(format!("try_wait {session_id}: {e}")))
@@ -421,12 +449,17 @@ fn stop_child_owned_by_reader(
         return Ok(());
     }
 
+    let hup_sent = Instant::now();
     let hup_error = killer.kill().err();
-    if poll_until(STOP_POLL, STOP_GRACE, || {
+    if poll_until(STOP_POLL, HUP_GRACE, || {
         Ok(reader_reaped_child(handle, pid).then_some(()))
     })?
     .is_some()
     {
+        log::info!(
+            "session {session_id} exited {:?} after SIGHUP",
+            hup_sent.elapsed()
+        );
         return Ok(());
     }
 
@@ -435,8 +468,11 @@ fn stop_child_owned_by_reader(
             "session {session_id} has no child handle or pid and was not reaped"
         ))
     })?;
+    log::warn!(
+        "session {session_id} survived SIGHUP for {HUP_GRACE:?}; SIGKILL to its process group"
+    );
     let kill_error = signal_process_group(pid, libc::SIGKILL).err();
-    if poll_until(STOP_POLL, STOP_GRACE, || {
+    if poll_until(STOP_POLL, KILL_GRACE, || {
         Ok(reader_reaped_child(handle, Some(pid)).then_some(()))
     })?
     .is_some()
@@ -1005,6 +1041,82 @@ fn clear_recorded_pid(conn: &rusqlite::Connection, session_id: &str, expected_pi
     }
 }
 
+/// Every live process below `pid`, depth-first, as of right now.
+#[cfg(target_os = "macos")]
+fn live_descendants(pid: i32) -> Vec<i32> {
+    let mut found = Vec::new();
+    let mut frontier = vec![pid];
+    while let Some(parent) = frontier.pop() {
+        let mut buf = [0 as libc::pid_t; 1024];
+        // Returns the number of pids written, not bytes (unlike proc_listpids).
+        let count = unsafe {
+            libc::proc_listchildpids(
+                parent,
+                buf.as_mut_ptr().cast(),
+                std::mem::size_of_val(&buf) as libc::c_int,
+            )
+        };
+        if count <= 0 {
+            continue;
+        }
+        for &child in &buf[..(count as usize).min(buf.len())] {
+            if child > 1 && !found.contains(&child) {
+                found.push(child);
+                frontier.push(child);
+            }
+        }
+    }
+    found
+}
+
+#[cfg(not(target_os = "macos"))]
+fn live_descendants(_pid: i32) -> Vec<i32> {
+    Vec::new()
+}
+
+/// SIGTERM, then SIGKILL, whichever of the pre-stop `descendants` are still
+/// running now that the agent itself has exited.
+fn reap_descendants(session_id: &str, descendants: &[i32]) {
+    let survivors: Vec<i32> = descendants
+        .iter()
+        .copied()
+        .filter(|&pid| process_exists(pid))
+        .collect();
+    if survivors.is_empty() {
+        return;
+    }
+    log::warn!(
+        "session {session_id}: {} descendant(s) outlived the agent; SIGTERM {survivors:?}",
+        survivors.len()
+    );
+    for &pid in &survivors {
+        if let Err(error) = signal_process(pid, libc::SIGTERM) {
+            log::warn!("session {session_id}: SIGTERM pid {pid} failed: {error}");
+        }
+    }
+    let _ = poll_until(STOP_POLL, DESCENDANT_TERM_GRACE, || {
+        Ok::<_, RuntimeError>(
+            survivors
+                .iter()
+                .all(|&pid| !process_exists(pid))
+                .then_some(()),
+        )
+    });
+    let stubborn: Vec<i32> = survivors
+        .into_iter()
+        .filter(|&pid| process_exists(pid))
+        .collect();
+    if stubborn.is_empty() {
+        return;
+    }
+    log::warn!("session {session_id}: SIGKILL descendants that ignored SIGTERM {stubborn:?}");
+    for &pid in &stubborn {
+        if let Err(error) = signal_process(pid, libc::SIGKILL) {
+            log::warn!("session {session_id}: SIGKILL pid {pid} failed: {error}");
+        }
+    }
+}
+
 fn process_exists(pid: i32) -> bool {
     if pid <= 1 {
         return false;
@@ -1488,6 +1600,54 @@ mod tests {
 
         assert_eq!(result, Some(3));
         assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn stop_reaps_descendants_the_agent_left_behind() {
+        // Models codex: the agent dies on SIGHUP at once, forwarding nothing
+        // (zsh execs into `sleep`), and its child sits in its own process
+        // group (`set -m`) ignoring SIGHUP — out of reach of both the PTY
+        // hangup and the process-group SIGKILL escalation.
+        let rt = PtyRuntime::new();
+        let (sess, stream) = rt
+            .spawn(spec(
+                "test-descendant-sweep",
+                "/bin/zsh",
+                &[
+                    "-c",
+                    "set -m; nohup sleep 300 >/dev/null 2>&1 & printf 'orphan=%d;' $!; exec sleep 299",
+                ],
+            ))
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut output = Vec::new();
+        let orphan = loop {
+            assert!(
+                Instant::now() < deadline,
+                "child never reported its orphan pid"
+            );
+            match stream.recv_timeout(Duration::from_millis(50)) {
+                Ok(RuntimeOutput::Stream(bytes)) => output.extend_from_slice(&bytes),
+                Ok(RuntimeOutput::StatusTransition { .. }) | Err(_) => {}
+            }
+            let text = String::from_utf8_lossy(&output);
+            if let Some(rest) = text.split("orphan=").nth(1) {
+                if let Some(pid) = rest.split(';').next().and_then(|p| p.parse::<i32>().ok()) {
+                    break pid;
+                }
+            }
+        };
+        assert!(process_exists(orphan), "orphan not running before stop");
+
+        rt.stop(&sess).unwrap();
+
+        assert!(
+            !process_exists(orphan),
+            "descendant {orphan} survived the session stop"
+        );
+        let status = rt.status(&sess).unwrap().unwrap();
+        assert!(!status.alive);
     }
 
     #[test]
