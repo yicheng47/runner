@@ -473,6 +473,9 @@ impl RenderOnce for ConfirmDialog {
                             )
                             .child(
                                 div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .whitespace_normal()
                                     .text_size(rems(15. / 16.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme::text())
@@ -481,6 +484,9 @@ impl RenderOnce for ConfirmDialog {
                     )
                     .children((!self.body.is_empty()).then(|| {
                         div()
+                            .w_full()
+                            .min_w_0()
+                            .whitespace_normal()
                             .text_size(rems(13. / 16.))
                             .line_height(rems(20. / 16.))
                             .text_color(theme::muted())
