@@ -14,9 +14,8 @@ use runner_app::ui::{
 
 use super::*;
 use crate::app_settings::{
-    normalize_zoom, nudge_zoom, AppFontFamily, TerminalCursorStyle, TerminalFontFamily,
-    TerminalTheme, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, TERMINAL_SCROLLBACK_LINES,
-    ZOOM_STEPS,
+    normalize_zoom, nudge_zoom, TerminalCursorStyle, TerminalFontFamily, TerminalTheme,
+    TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, TERMINAL_SCROLLBACK_LINES, ZOOM_STEPS,
 };
 use crate::surfaces::app_shell::TITLEBAR_DRAG_HEIGHT;
 use crate::theme::{DarkTheme, LightTheme, ThemeIntent};
@@ -153,7 +152,6 @@ enum SettingsSelection {
     DefaultCrew,
     LightTheme,
     DarkTheme,
-    AppFont,
     TerminalTheme,
     TerminalFont,
     TerminalCursor,
@@ -174,7 +172,6 @@ pub(crate) struct SettingsState {
     working_dir_browse_focus: FocusHandle,
     light_theme: Entity<StyledSelect>,
     dark_theme: Entity<StyledSelect>,
-    app_font: Entity<StyledSelect>,
     terminal_theme: Entity<StyledSelect>,
     terminal_font: Entity<StyledSelect>,
     terminal_cursor: Entity<StyledSelect>,
@@ -246,17 +243,6 @@ impl SettingsState {
                 SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
             ],
             SettingsSelection::DarkTheme,
-            cx,
-        );
-        let app_font = settings_select(
-            &root,
-            "settings-app-font",
-            app_font_value(settings.app_font_family),
-            ["Inter", "Geist", "Roboto", "System UI"]
-                .into_iter()
-                .map(|value| SelectOption::new(value, value))
-                .collect(),
-            SettingsSelection::AppFont,
             cx,
         );
         let terminal_theme = settings_select(
@@ -345,7 +331,6 @@ impl SettingsState {
             working_dir_browse_focus: cx.focus_handle(),
             light_theme,
             dark_theme,
-            app_font,
             terminal_theme,
             terminal_font,
             terminal_cursor,
@@ -626,8 +611,6 @@ impl NativeRoot {
                 .is_some_and(|value| update_if_changed(&mut settings.light_app_theme, value)),
             SettingsSelection::DarkTheme => parse_dark_theme(value)
                 .is_some_and(|value| update_if_changed(&mut settings.dark_app_theme, value)),
-            SettingsSelection::AppFont => parse_app_font(value)
-                .is_some_and(|value| update_if_changed(&mut settings.app_font_family, value)),
             SettingsSelection::TerminalTheme => parse_terminal_theme(value)
                 .is_some_and(|value| update_if_changed(&mut settings.terminal_theme, value)),
             SettingsSelection::TerminalFont => parse_terminal_font(value)
@@ -1561,11 +1544,6 @@ impl NativeRoot {
                 SettingsRow::new("Dark theme", self.settings_page.dark_theme.clone())
                     .subtitle("Picked when the OS is dark or Theme = Dark.")
                     .into_any_element(),
-                SettingsRow::new("App font", self.settings_page.app_font.clone())
-                    .subtitle(
-                        "UI typeface across the app. Doesn't apply to the embedded terminal — see Terminal pane.",
-                    )
-                    .into_any_element(),
             ]))
             .into_any_element()
     }
@@ -1769,25 +1747,6 @@ fn parse_dark_theme(value: &str) -> Option<DarkTheme> {
     match value {
         "carbon" => Some(DarkTheme::Runner),
         "catppuccin-mocha" => Some(DarkTheme::CatppuccinMocha),
-        _ => None,
-    }
-}
-
-fn app_font_value(value: AppFontFamily) -> &'static str {
-    match value {
-        AppFontFamily::Inter => "Inter",
-        AppFontFamily::Geist => "Geist",
-        AppFontFamily::Roboto => "Roboto",
-        AppFontFamily::SystemUi => "System UI",
-    }
-}
-
-fn parse_app_font(value: &str) -> Option<AppFontFamily> {
-    match value {
-        "Inter" => Some(AppFontFamily::Inter),
-        "Geist" => Some(AppFontFamily::Geist),
-        "Roboto" => Some(AppFontFamily::Roboto),
-        "System UI" => Some(AppFontFamily::SystemUi),
         _ => None,
     }
 }

@@ -45,36 +45,23 @@ impl TerminalTheme {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AppFontFamily {
-    #[default]
-    Inter,
-    Geist,
-    Roboto,
-    #[serde(rename = "System UI")]
-    SystemUi,
-}
-
-impl AppFontFamily {
-    pub fn font(self) -> Font {
-        let (family, named_fallback) = match self {
-            Self::Inter => ("Inter", Some("Inter Variable")),
-            Self::Geist => ("Geist Variable", Some("Geist")),
-            Self::Roboto => ("Roboto Variable", Some("Roboto")),
-            Self::SystemUi => (".SystemUIFont", None),
-        };
-        let mut fallbacks = Vec::with_capacity(6);
-        if let Some(named_fallback) = named_fallback {
-            fallbacks.push(named_fallback.to_owned());
-            fallbacks.push(".SystemUIFont".to_owned());
-        }
-        fallbacks.extend(
-            ["Segoe UI", "PingFang SC", "Microsoft YaHei", "sans-serif"].map(str::to_owned),
-        );
-        let mut font = font(family);
-        font.fallbacks = Some(FontFallbacks::from_fonts(fallbacks));
-        font
-    }
+/// The UI typeface is pinned to the bundled Inter (`assets/fonts/Inter-*.ttf`);
+/// a legacy `appFontFamily` key in `ui-settings.json` is ignored on load.
+pub fn app_font() -> Font {
+    let mut font = font("Inter");
+    font.fallbacks = Some(FontFallbacks::from_fonts(
+        [
+            "Inter Variable",
+            ".SystemUIFont",
+            "Segoe UI",
+            "PingFang SC",
+            "Microsoft YaHei",
+            "sans-serif",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
+    ));
+    font
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,7 +113,6 @@ pub struct AppSettings {
     pub app_theme: ThemeIntent,
     pub light_app_theme: LightTheme,
     pub dark_app_theme: DarkTheme,
-    pub app_font_family: AppFontFamily,
     pub app_zoom: f32,
     pub terminal_theme: TerminalTheme,
     pub terminal_font_family: TerminalFontFamily,
@@ -160,7 +146,6 @@ impl Default for AppSettings {
             app_theme: ThemeIntent::Auto,
             light_app_theme: LightTheme::Codex,
             dark_app_theme: DarkTheme::Runner,
-            app_font_family: AppFontFamily::Inter,
             app_zoom: 1.,
             terminal_theme: TerminalTheme::Runner,
             terminal_font_family: TerminalFontFamily::MesloNerdFont,
@@ -430,7 +415,6 @@ mod tests {
         assert_eq!(value["appTheme"], "auto");
         assert_eq!(value["lightAppTheme"], "codex");
         assert_eq!(value["darkAppTheme"], "carbon");
-        assert_eq!(value["appFontFamily"], "Inter");
         assert_eq!(value["terminalTheme"], "runner");
         assert_eq!(value["terminalFontFamily"], "Meslo Nerd Font");
         assert_eq!(value["defaultCrewId"], "");
@@ -566,8 +550,8 @@ mod tests {
     }
 
     #[test]
-    fn app_fonts_preserve_the_react_fallback_chain() {
-        let inter = AppFontFamily::Inter.font();
+    fn app_font_is_inter_with_the_cjk_fallback_chain() {
+        let inter = app_font();
         assert_eq!(inter.family.as_ref(), "Inter");
         assert_eq!(
             inter.fallbacks.unwrap().fallback_list(),
@@ -580,12 +564,16 @@ mod tests {
                 "sans-serif"
             ]
         );
+    }
 
-        let system = AppFontFamily::SystemUi.font();
-        assert_eq!(system.family.as_ref(), ".SystemUIFont");
-        assert_eq!(
-            system.fallbacks.unwrap().fallback_list(),
-            ["Segoe UI", "PingFang SC", "Microsoft YaHei", "sans-serif"]
-        );
+    #[test]
+    fn legacy_app_font_choices_still_load() {
+        for legacy in ["Inter", "Geist", "Roboto", "System UI"] {
+            let json = format!(r#"{{"appFontFamily":"{legacy}","appZoom":1.25}}"#);
+            let settings: AppSettings = serde_json::from_str(&json).unwrap();
+            assert_eq!(settings.app_zoom, 1.25, "{legacy}");
+        }
+        let value = serde_json::to_value(AppSettings::default()).unwrap();
+        assert!(value.get("appFontFamily").is_none());
     }
 }

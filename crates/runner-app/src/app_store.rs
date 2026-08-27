@@ -186,7 +186,6 @@ impl From<&AppSettings> for ShellSettingsSnapshot {
         std::mem::discriminant(&settings.app_theme).hash(&mut hasher);
         std::mem::discriminant(&settings.light_app_theme).hash(&mut hasher);
         std::mem::discriminant(&settings.dark_app_theme).hash(&mut hasher);
-        std::mem::discriminant(&settings.app_font_family).hash(&mut hasher);
         settings.app_zoom.to_bits().hash(&mut hasher);
         std::mem::discriminant(&settings.terminal_theme).hash(&mut hasher);
         std::mem::discriminant(&settings.terminal_font_family).hash(&mut hasher);
