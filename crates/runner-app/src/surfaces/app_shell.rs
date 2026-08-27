@@ -151,7 +151,7 @@ impl NativeRoot {
             .size_full()
             .overflow_hidden()
             .track_focus(&self.root_focus)
-            .font(self.settings(cx).app_font_family.font())
+            .font(crate::app_settings::app_font())
             .bg(theme::bg())
             .text_color(theme::text())
             .child(chrome)

@@ -204,7 +204,7 @@ The mission workspace's per-slot terminal switcher predates this hierarchy and i
 
 ### 3.7 Settings surface
 
-Settings is a full-window route rendered in place of the app shell, with its own grouped sidebar and card-grouped panes: Appearance (app font, zoom, theme), Terminal (font, cursor, theme palette), Agents (runtime discovery and overrides, the login-shell probe outcome), MCP, Keyboard shortcuts (a view over the registry in `runner-app/src/keymap.rs`), Updates, Diagnostics (log path, open-log), About, and Archived. Entry points — the sidebar Settings row, the command palette, and `⌘,` — navigate to the route and return to the caller's location.
+Settings is a full-window route rendered in place of the app shell, with its own grouped sidebar and card-grouped panes: Appearance (zoom, theme), Terminal (font, cursor, theme palette), Agents (runtime discovery and overrides, the login-shell probe outcome), MCP, Keyboard shortcuts (a view over the registry in `runner-app/src/keymap.rs`), Updates, Diagnostics (log path, open-log), About, and Archived. Entry points — the sidebar Settings row, the command palette, and `⌘,` — navigate to the route and return to the caller's location.
 
 Preferences persist in `$APPDATA/ui-settings.json`, read by the app at launch. They do **not** migrate from the Tauri app, which kept them in the webview's localStorage; a first native launch starts from defaults (both apps default resume-on-launch off).
 
